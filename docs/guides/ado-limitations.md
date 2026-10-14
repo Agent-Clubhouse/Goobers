@@ -161,6 +161,26 @@ due tick is sized to the number of eligible pull requests; on ADO it fires one
 run, bounded by the workflow's readiness limits, and a tick with nothing to
 remediate ends as no-work.
 
+## Backlog-health ready ages
+
+On Azure DevOps, `backlog-health` measures how long an item has been ready
+from the work item's `System.ChangedDate`, not from the time the
+`goobers:ready` tag was actually added. Azure DevOps has no repository-wide
+label-event feed, so the exact time would cost one paged
+`workItems/{id}/updates` read per ready item on every health run, against the
+organization's shared rate limit. That is too much for a metric that is
+only used to watch trends.
+
+`System.ChangedDate` is never earlier than the ready tag's addition, so ADO
+ready ages are lower bounds. Any later edit to the item, such as a comment,
+another tag or a field change, restarts its age. The report's
+`averageReadyAgeSeconds` and `oldestReadyAgeSeconds` can therefore read younger
+on ADO than the same backlog would on GitHub. Ready-pool depth and starvation
+are exact.
+
+`backlog-query` is not affected: when it claims an item it reads that one
+item's update history, and the claim's ready time is exact.
+
 ## Iterations (milestones)
 
 Goobers does not model Azure Boards iterations in v0.5.0. `set-milestone`

@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -81,8 +83,9 @@ func TestFilterDeclaredDependencyEligibilityFailsClosedWhenUndeclared(t *testing
 // in predecessorState, over the per-item GET, workitemsbatch and the Issue
 // type's state categories (Basic process: Doing is InProgress, Done is
 // Completed).
-func newADOPredecessorProvider(t *testing.T, predecessorState string) *providers.ADOProvider {
+func newADOPredecessorProvider(t *testing.T, predecessorState string) (*providers.ADOProvider, *atomic.Int32) {
 	t.Helper()
+	var successorReads atomic.Int32
 	item := func(id int, state string, relations []map[string]interface{}) map[string]interface{} {
 		return map[string]interface{}{
 			"id": id,
@@ -101,6 +104,7 @@ func newADOPredecessorProvider(t *testing.T, predecessorState string) *providers
 	}})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
+		successorReads.Add(1)
 		writeADOJSON(t, w, successor)
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitemsbatch", func(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +127,7 @@ func newADOPredecessorProvider(t *testing.T, predecessorState string) *providers
 	t.Cleanup(server.Close)
 	return providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
 		p.BaseURL = server.URL
-	})
+	}), &successorReads
 }
 
 // TestFilterDeclaredDependencyEligibilityUsesADOPredecessorState pins
@@ -141,11 +145,12 @@ func TestFilterDeclaredDependencyEligibilityUsesADOPredecessorState(t *testing.T
 		{predecessorState: "Doing", wantEligible: false},
 	} {
 		t.Run(tc.predecessorState, func(t *testing.T) {
-			provider := newADOPredecessorProvider(t, tc.predecessorState)
+			provider, successorReads := newADOPredecessorProvider(t, tc.predecessorState)
 			item, err := provider.GetWorkItem(context.Background(), repo, "42")
 			if err != nil {
 				t.Fatalf("GetWorkItem: %v", err)
 			}
+			successorReads.Store(0)
 			if item.BlockedByCount != 1 {
 				t.Fatalf("BlockedByCount = %d, want 1 for an ADO predecessor relation", item.BlockedByCount)
 			}
@@ -162,6 +167,12 @@ func TestFilterDeclaredDependencyEligibilityUsesADOPredecessorState(t *testing.T
 			}
 			if !tc.wantEligible && (len(reasons) != 1 || !strings.Contains(reasons[0], "open blocker(s): 41")) {
 				t.Fatalf("exclusion reasons = %v, want one naming open blocker 41", reasons)
+			}
+			// #5960: the verdict and the exclusion reason come from one
+			// read of the item's dependencies, not a yes/no check followed
+			// by a second full read to name the blockers.
+			if got := successorReads.Load(); got != 1 {
+				t.Fatalf("successor reads = %d, want exactly 1 per dependency check", got)
 			}
 		})
 	}
@@ -189,5 +200,88 @@ func TestFilterDeclaredDependencyEligibilityDispatchesWhenDeclared(t *testing.T)
 	}
 	if fake.blockerCalls != 1 {
 		t.Errorf("provider's HasOpenWorkItemBlocker was called %d time(s), want 1 (only the item with BlockedByCount > 0)", fake.blockerCalls)
+	}
+}
+
+// fakeDependencyListProvider is fakeDependencyCheckProvider for a provider
+// that also lists its blockers, as GitHub and ADO do.
+type fakeDependencyListProvider struct {
+	fakeDependencyCheckProvider
+	blockers  map[string][]providers.WorkItem
+	listCalls int
+}
+
+func (f *fakeDependencyListProvider) ListWorkItemBlockers(_ context.Context, _ providers.RepositoryRef, id string) ([]providers.WorkItem, error) {
+	f.listCalls++
+	return f.blockers[id], f.blockerErr
+}
+
+// TestFilterDeclaredDependencyEligibilityReadsBlockersOnce pins #5960: a
+// provider that lists its blockers is read once per item, and both the
+// blocked verdict and the exclusion reason come from that one list — an
+// item whose only blockers are closed is eligible, one with an open (or
+// stateless) blocker is excluded naming exactly those.
+func TestFilterDeclaredDependencyEligibilityReadsBlockersOnce(t *testing.T) {
+	fake := &fakeDependencyListProvider{
+		fakeDependencyCheckProvider: fakeDependencyCheckProvider{caps: providers.NewCapabilitySet(providers.CapBacklogBlockers), blocked: true},
+		blockers: map[string][]providers.WorkItem{
+			"blocked":  {{ID: "8", State: "closed"}, {ID: "7", State: "open"}, {ID: "9"}},
+			"released": {{ID: "8", State: "closed"}},
+		},
+	}
+	repo := providers.RepositoryRef{Owner: "acme", Name: "widgets"}
+	eligible := []providers.WorkItem{{ID: "blocked", BlockedByCount: 3}, {ID: "released", BlockedByCount: 1}}
+	reasons := map[string]string{}
+
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(context.Background(), fake, repo, eligible,
+		func(item providers.WorkItem, reason string) { reasons[item.ID] = reason })
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v, want none", warnings)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "released" {
+		t.Fatalf("filtered = %+v, want only the item whose blockers all closed", filtered)
+	}
+	if want := "native issue dependencies include open blocker(s): 7,9"; reasons["blocked"] != want {
+		t.Fatalf("exclusion reason = %q, want %q", reasons["blocked"], want)
+	}
+	if fake.listCalls != 2 || fake.blockerCalls != 0 {
+		t.Fatalf("list calls = %d, has-open calls = %d; want one list per item and no separate yes/no read", fake.listCalls, fake.blockerCalls)
+	}
+}
+
+// TestFilterDeclaredDependencyEligibilityListerStillNeedsDeclaration: a
+// provider that can list blockers but does not declare backlog.blockers
+// still fails closed through the Dispatcher, never reaching either read.
+func TestFilterDeclaredDependencyEligibilityListerStillNeedsDeclaration(t *testing.T) {
+	fake := &fakeDependencyListProvider{
+		fakeDependencyCheckProvider: fakeDependencyCheckProvider{caps: providers.NewCapabilitySet()},
+		blockers:                    map[string][]providers.WorkItem{"42": {{ID: "8", State: "closed"}}},
+	}
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(context.Background(), fake,
+		providers.RepositoryRef{Owner: "acme", Name: "widgets"}, []providers.WorkItem{{ID: "42", BlockedByCount: 1}}, nil)
+	if len(filtered) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], string(providers.CapBacklogBlockers)) {
+		t.Fatalf("filtered = %+v, warnings = %+v; want the item excluded with an unsupported-capability warning", filtered, warnings)
+	}
+	if fake.listCalls != 0 || fake.blockerCalls != 0 {
+		t.Fatalf("list calls = %d, has-open calls = %d; want neither reached", fake.listCalls, fake.blockerCalls)
+	}
+}
+
+// TestFilterDeclaredDependencyEligibilityListErrorFailsClosed: a list error
+// excludes the item with a warning, as a failed yes/no check did.
+func TestFilterDeclaredDependencyEligibilityListErrorFailsClosed(t *testing.T) {
+	fake := &fakeDependencyListProvider{
+		fakeDependencyCheckProvider: fakeDependencyCheckProvider{
+			caps:       providers.NewCapabilitySet(providers.CapBacklogBlockers),
+			blockerErr: errors.New("predecessor batch unavailable"),
+		},
+	}
+	var reasons []string
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(context.Background(), fake,
+		providers.RepositoryRef{Owner: "acme", Name: "widgets"}, []providers.WorkItem{{ID: "42", BlockedByCount: 1}},
+		func(_ providers.WorkItem, reason string) { reasons = append(reasons, reason) })
+	if len(filtered) != 0 || len(warnings) != 1 || len(reasons) != 1 || !strings.Contains(reasons[0], "check unavailable") {
+		t.Fatalf("filtered = %+v, warnings = %+v, reasons = %v; want the item excluded as unavailable", filtered, warnings, reasons)
 	}
 }

@@ -144,3 +144,40 @@ func TestParseADORemoteURL(t *testing.T) {
 		})
 	}
 }
+
+// TestIsADORemoteURLAgreesWithParserAnchoring pins #5960: the fail-closed
+// ADO classifier recognizes every host spelling ParseADORemoteURL anchors —
+// including the SSH hosts the old dev.azure.com/visualstudio.com check missed
+// — and nothing that is not anchored to an Azure DevOps host.
+func TestIsADORemoteURLAgreesWithParserAnchoring(t *testing.T) {
+	for _, remote := range []string{
+		"https://dev.azure.com/example-org/example-project/_git/example-repo",
+		"https://example-org.visualstudio.com/example-project/_git/example-repo",
+		"git@ssh.dev.azure.com:v3/example-org/example-project/example-repo",
+		"ssh://git@ssh.dev.azure.com/v3/example-org/example-project/example-repo",
+		"example-org@vs-ssh.visualstudio.com:v3/example-org/example-project/example-repo",
+		"ssh://example-org@vs-ssh.visualstudio.com/v3/example-org/example-project/example-repo",
+		"SSH://GIT@SSH.DEV.AZURE.COM/v3/example-org/example-project/example-repo",
+		// Anchored to an ADO host even though no full identity parses: still
+		// ADO, so an unroutable origin is refused rather than sent a GitHub token.
+		"https://dev.azure.com/example-org",
+		"ssh://git@ssh.dev.azure.com/extra/example-org/example-project/example-repo",
+	} {
+		if !IsADORemoteURL(remote) {
+			t.Errorf("IsADORemoteURL(%q) = false, want true", remote)
+		}
+	}
+	for _, remote := range []string{
+		"https://github.com/acme/web",
+		"git@github.com:acme/web.git",
+		"example-org/example-project/example-repo",
+		"/srv/acme/web",
+		"file:///srv/acme/web",
+		"https://dev.azure.com.example.invalid/example-org/example-project/_git/example-repo",
+		"",
+	} {
+		if IsADORemoteURL(remote) {
+			t.Errorf("IsADORemoteURL(%q) = true, want false", remote)
+		}
+	}
+}

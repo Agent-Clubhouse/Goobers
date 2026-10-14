@@ -84,6 +84,18 @@ func ParseADORemoteURL(raw string) (org, project, repo string, ok bool) {
 	return adoIdentityFromSegments(segments)
 }
 
+// IsADORemoteURL reports whether raw is anchored to an Azure DevOps host —
+// dev.azure.com, <org>.visualstudio.com, ssh.dev.azure.com or
+// vs-ssh.visualstudio.com, in URL or scp-like SSH form — whether or not its
+// path names a complete organization/project/repository. It shares
+// ParseADORemoteURL's host anchoring, so anything that parser can resolve is
+// classified as ADO (#5960): a fail-closed caller that refuses an
+// unroutable ADO origin must recognize every spelling the router accepts.
+func IsADORemoteURL(raw string) bool {
+	_, anchored := adoHostAnchoredSegments(strings.TrimSpace(raw))
+	return anchored
+}
+
 // adoHostAnchoredSegments returns the identity segments (organization first)
 // of a remote anchored to an Azure DevOps host; anchored is false for
 // anything else, including bare slugs and local paths.
