@@ -165,18 +165,18 @@ var goobersBookkeepingPayloads = []string{
 // would otherwise mask it under the legacy unbound rule).
 //
 // Every renderer writes its payload at the start of a line of its own, so only
-// a line that starts with one counts — outside a quote and outside a fenced
-// code block. A person who mentions a payload (in inline code, or a fenced
-// excerpt of a Goobers comment) is still a person.
+// a line that starts with one counts — outside a quote and outside a CLOSED
+// fenced code block. A person who mentions a payload (in inline code, or a
+// fenced excerpt of a Goobers comment) is still a person. A fence that is
+// never closed fences nothing: agent-written prose (a verdict rationale with a
+// truncated code block) must not hide the payload the renderer appends after
+// it, or a verdict would pass as a Goobers answer.
 func goobersBookkeepingComment(body string) bool {
-	fenced := false
-	for _, line := range strings.Split(body, "\n") {
+	lines := strings.Split(body, "\n")
+	fenced := closedFenceLines(lines)
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			fenced = !fenced
-			continue
-		}
-		if fenced || strings.HasPrefix(trimmed, ">") {
+		if fenced[i] || strings.HasPrefix(trimmed, ">") {
 			continue
 		}
 		for _, payload := range goobersBookkeepingPayloads {
@@ -186,6 +186,28 @@ func goobersBookkeepingComment(body string) bool {
 		}
 	}
 	return false
+}
+
+// closedFenceLines marks every line inside, or delimiting, a fenced code block
+// that is closed later in the body. An unterminated fence marks nothing.
+func closedFenceLines(lines []string) map[int]bool {
+	fenced := map[int]bool{}
+	open := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "```") && !strings.HasPrefix(trimmed, "~~~") {
+			continue
+		}
+		if open < 0 {
+			open = i
+			continue
+		}
+		for j := open; j <= i; j++ {
+			fenced[j] = true
+		}
+		open = -1
+	}
+	return fenced
 }
 
 // goobersMarkedComment reports whether body carries a marker only Goobers

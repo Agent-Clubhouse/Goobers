@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -36,5 +37,27 @@ func TestCommentClassifierPayloadMentionStaysHuman(t *testing.T) {
 	}
 	if !goobersBookkeepingComment(state) {
 		t.Fatal("a rendered remediation-state comment is no longer recognised as bookkeeping")
+	}
+}
+
+// An unterminated fence in agent-written prose (a verdict rationale with a
+// truncated code block) must not hide the payload the renderer appends after
+// it: otherwise the verdict passes as a Goobers answer and acknowledges every
+// earlier human comment.
+func TestBookkeepingPayloadSurvivesUnclosedFence(t *testing.T) {
+	verdict := renderVerdictComment(apiv1.Verdict{Decision: apiv1.VerdictPass, Rationale: "Checked:\n```go\nfunc x() {}\n"})
+	if !goobersBookkeepingComment(verdict) {
+		t.Fatal("a verdict whose rationale leaves a code fence open is no longer bookkeeping")
+	}
+	if !goobersBookkeepingComment(stampOwnFixtureBody(verdict, "comment")) {
+		t.Fatal("a marked verdict with an open fence in its rationale is no longer bookkeeping")
+	}
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	later := at.Add(time.Hour)
+	human := providers.Comment{Author: "alice", Body: "please fix X", CreatedAt: &at}
+	marked := providers.Comment{Author: "goobers-bot", Body: stampOwnFixtureBody(verdict, "comment"), CreatedAt: &later}
+	classifier := newCommentClassifier(loginCommentIdentity("goobers-bot"), commentIdentitySettings{mode: commentIdentityDedicated})
+	if _, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{human, marked}, classifier); !fresh {
+		t.Fatal("a verdict with an open fence acknowledged a person's comment")
 	}
 }
