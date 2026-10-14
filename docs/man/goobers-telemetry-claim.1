@@ -1,0 +1,32 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY CLAIM" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry claim \- append a Backprop claim from inside an agentic stage
+.SH SYNOPSIS
+\fBgoobers telemetry claim\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry claim --kind=assignment|reliance|credit|blame (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+
+Append one Backprop claim to the current stage attempt's claim log
+($GOOBERS_TELEMETRY_DIR/backprop-claims.jsonl). Run it from inside an
+agentic stage: the runner journals the attempt's claims when the stage
+exits and attributes them to the writing stage attempt, never to text in
+the claim. assignment says the target owns the work the statement
+describes; reliance says this stage consumed the target's output; credit
+and blame say the target helped or hurt the outcome and need --evidence.
+Evidence names a recorded artifact digest or an earlier journal seq.
+Statements are sanitized and capped at 1024 bytes; an attempt may record
+at most 32 claims. Backprop lists a claim as verified only when its writer,
+target, and evidence match records journaled before it; claims never
+change credit scores or stage outcomes.
+Read earlier stages' claims with `goobers telemetry claims`.
+Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry claim --kind=reliance --stage=plan --statement="used the plan's file list"
+goobers telemetry claim --kind=blame --stage=implement --evidence=seq:42 --confidence=0.6 --statement="tests failed on its change"
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

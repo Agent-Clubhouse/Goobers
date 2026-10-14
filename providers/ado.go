@@ -662,7 +662,7 @@ func (p *ADOProvider) doPatch(ctx context.Context, method, endpoint string, body
 }
 
 func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body interface{}, contentType string) (*http.Response, error) {
-	return sendJSONWithPolicy(ctx, restSendPolicy{
+	return sendJSONWithPolicy(declaredADOReadContext(ctx, method, endpoint, body), restSendPolicy{
 		client:              p.Client,
 		providerHTTPName:    "ado",
 		maxTransientRetries: p.maxRetries,
