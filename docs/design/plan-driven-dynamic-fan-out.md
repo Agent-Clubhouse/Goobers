@@ -608,11 +608,11 @@ fault-injection test land in the same change.
 
 | Slice | Scope | Depends on |
 | --- | --- | --- |
-| **FAN-1 Contract** | API types (`Parallel.Selection`, `Branch.Optional`, `WorkflowSpec.Maps`), closed JSON schema and CRD, envelope schemas, preview feature registry rows, compiler validation (§10), effective slot schema lowering (§4.1), graph projection, drift guard, local-runner and engine start refusal, docs. | — |
-| **FAN-2 Selective parallel runtime** | Freezing (§4.2, §5.3), `skipped` status, `parallel.started.selection`, completeness and Portal display of skipped branches, resume, conformance cases 1–8 and 21–22, and lifting the local-runner refusal for selective parallels. | FAN-1 |
-| **FAN-3 Map durability** | `map.started`/`map.finished`, branch item fields, cursor extension, strict reconstruction, corruption tests, per-occurrence result store. | FAN-1 |
-| **FAN-4 Map execution** | Bindings, expansion into the parallel executor, join inputs, bounds, cancellation, timeout, workspace, conformance cases 9–20, fault injection, and lifting the local-runner refusal for maps. | FAN-3 |
-| **FAN-5 Composition surfaces** | Child proposal admission and state counting (§11), authoring skill and composition-catalog guidance (§3), Portal map-item lineage, a reference example. | FAN-2, FAN-4 |
+| **FAN-1 Contract** (#7382) | API types (`Parallel.Selection`, `Branch.Optional`, `WorkflowSpec.Maps`), closed JSON schema and CRD, envelope schemas, preview feature registry rows, compiler validation (§10), effective slot schema lowering (§4.1), graph projection, drift guard, local-runner and engine start refusal, docs. | — |
+| **FAN-2 Selective parallel runtime** (#7383) | Freezing (§4.2, §5.3), `skipped` status, `parallel.started.selection`, completeness and Portal display of skipped branches, resume, conformance cases 1–8 and 21–22, and lifting the local-runner refusal for selective parallels. | FAN-1 |
+| **FAN-3 Map durability** (#7384) | `map.started`/`map.finished`, branch item fields, cursor extension, strict reconstruction, corruption tests, per-occurrence result store. | FAN-1 |
+| **FAN-4 Map execution** (#7385) | Bindings, expansion into the parallel executor, join inputs, bounds, cancellation, timeout, workspace, conformance cases 9–20, fault injection, and lifting the local-runner refusal for maps. | FAN-3 |
+| **FAN-5 Composition surfaces** (#7386) | Child proposal admission and state counting (§11), authoring skill and composition-catalog guidance (§3), Portal map-item lineage, a reference example. | FAN-2, FAN-4 |
 
 Engine-walk parity is not in this delivery. It follows static parallels on the
 engine (#155) and gates GA, not preview.
