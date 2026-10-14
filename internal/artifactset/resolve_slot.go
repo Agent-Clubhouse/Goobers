@@ -2,7 +2,6 @@ package artifactset
 
 import (
 	"context"
-	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -20,42 +19,16 @@ type SlotPayload struct {
 // payload pointer's size is checked against maxBytes BEFORE any payload byte
 // is read, and only the requested slot's payload is read.
 func ResolveSlot(ctx context.Context, reader Reader, pointers []apiv1.ContextPointer, producer, slot string, maxBytes int64) (SlotPayload, error) {
-	if !semanticName.MatchString(producer) || !slotName.MatchString(slot) || reader == nil {
-		return SlotPayload{}, fmt.Errorf("%w: invalid producer, slot or missing reader", ErrInvalid)
-	}
-	indexPointer, err := positional(pointers, producer, 0)
+	binding, err := LookupSlot(ctx, reader, pointers, producer, slot)
 	if err != nil {
 		return SlotPayload{}, err
 	}
-	if indexPointer.MediaType != "application/json" {
-		return SlotPayload{}, fmt.Errorf("%w: index must be application/json", ErrInvalid)
+	if err := boundedPointer(binding.Artifact, maxBytes); err != nil {
+		return SlotPayload{}, err
 	}
-	data, err := readVerified(ctx, reader, indexPointer, MaxIndexBytes)
+	payload, err := readVerified(ctx, reader, binding.Artifact, maxBytes)
 	if err != nil {
 		return SlotPayload{}, err
 	}
-	var index Index
-	if err := decodeIndex(data, &index); err != nil {
-		return SlotPayload{}, err
-	}
-	if err := validateIndex(index, pointers, producer); err != nil {
-		return SlotPayload{}, err
-	}
-	if index.SchemaVersion != NamedSchemaVersion {
-		return SlotPayload{}, fmt.Errorf("%w: producer published no named slots", ErrInvalid)
-	}
-	for _, binding := range index.Bindings {
-		if binding.Slot != slot {
-			continue
-		}
-		if err := boundedPointer(binding.Artifact, maxBytes); err != nil {
-			return SlotPayload{}, err
-		}
-		payload, err := readVerified(ctx, reader, binding.Artifact, maxBytes)
-		if err != nil {
-			return SlotPayload{}, err
-		}
-		return SlotPayload{Binding: binding, Bytes: payload}, nil
-	}
-	return SlotPayload{}, &PublicationError{Code: MissingSlotCode, Slot: slot}
+	return SlotPayload{Binding: binding, Bytes: payload}, nil
 }

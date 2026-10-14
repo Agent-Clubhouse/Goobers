@@ -1430,7 +1430,10 @@ type walkState struct {
 	// completed contains every completed stage's journaled Outputs, so a
 	// stage-qualified inputsFrom reference can reach past the immediately
 	// preceding stage (#562).
-	completed            stageOutputs
+	completed stageOutputs
+	// fanOutResults holds mapped (DSL 3.1 map) results per branch occurrence;
+	// completed cannot, because a map repeats one stage name (§6.3).
+	fanOutResults        *fanOutResults
 	parallel             *parallelExec
 	parallelRootPointers []apiv1.ContextPointer
 	fanIn                *parallelExec
@@ -1490,6 +1493,7 @@ func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state str
 		reg:           reg,
 		state:         state,
 		completed:     stageOutputs{},
+		fanOutResults: newFanOutResults(),
 		visitedStages: map[string]bool{},
 	}
 }

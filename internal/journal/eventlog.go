@@ -60,6 +60,9 @@ func marshalEvent(ev Event) ([]byte, error) {
 	if ev.Type == EventGateOverridden && ev.Target == "" {
 		return nil, fmt.Errorf("%s requires a target", EventGateOverridden)
 	}
+	if ev.Type == EventMapStarted && (ev.MapRoster == nil || ev.MapRoster.Items == nil || ev.Parallel == "") {
+		return nil, fmt.Errorf("%s requires a map name and a frozen roster", EventMapStarted)
+	}
 	if ev.Type == EventNotificationRequested && ev.NotificationRequest == nil {
 		return nil, fmt.Errorf("%s requires a notification request", EventNotificationRequested)
 	}

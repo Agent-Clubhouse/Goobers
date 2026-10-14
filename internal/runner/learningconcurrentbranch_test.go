@@ -290,7 +290,7 @@ func TestResumedBranchKeepsItsInjectedCorrection(t *testing.T) {
 			}},
 	}
 
-	par, _ := pendingParallel(events, machine)
+	par, _, _ := pendingParallel(events, machine)
 	if par == nil {
 		t.Fatal("pending parallel is nil — the interrupted branch was not reconstructed at all")
 	}

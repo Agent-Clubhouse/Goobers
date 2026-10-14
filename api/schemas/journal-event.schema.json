@@ -18,6 +18,15 @@
     },
     {
       "if": {
+        "properties": { "type": { "description": "Selects the map visit start record.", "const": "map.started" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["parallel", "mapRoster"]
+      }
+    },
+    {
+      "if": {
         "properties": { "type": { "const": "notification.requested" } },
         "required": ["type"]
       },
@@ -117,6 +126,8 @@
         "branch.started",
         "branch.finished",
         "parallel.finished",
+        "map.started",
+        "map.finished",
         "agent.lifecycle",
         "agent.message",
         "agent.progress",
@@ -325,12 +336,28 @@
       "$ref": "#/$defs/redactionInfo"
     },
     "parallel": {
-      "description": "Name of the parallel state a branch belongs to. Normative.",
+      "description": "Name of the fan-out state the event concerns: the parallel on parallel.*, the map on map.*, and the owning parallel or map on branch.*. Normative.",
       "type": "string"
     },
     "branchName": {
-      "description": "Declared name of the branch this event concerns; the numeric id is in `branch`. Normative.",
+      "description": "Declared name of the branch this event concerns, or a map item's roster identity; the numeric id is in `branch`. Normative.",
       "type": "string"
+    },
+    "mapItemIdentity": {
+      "description": "Roster identity of the map item a branch.started or branch.finished concerns. Absent for a static branch. Normative.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "x-conformance": "normative"
+    },
+    "mapItemDigest": {
+      "description": "Canonical digest of the map item a branch.started or branch.finished concerns: SHA-256 over the RFC 8785 form of {identity, item}. Absent for a static branch. Normative.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "x-conformance": "normative"
+    },
+    "mapRoster": {
+      "description": "Frozen, normalized roster on map.started: the durable source of truth for the map visit. Resume rebuilds item branches from it and never rereads the producer.",
+      "$ref": "#/$defs/mapRoster"
     },
     "branchStatus": {
       "description": "Terminal status of a branch on branch.finished. Normative. A skipped branch never starts, so it appears only in the completeness record, never on branch.finished.",
@@ -349,7 +376,9 @@
           "name": { "description": "Declared branch name from the workflow's parallel block.", "type": "string", "minLength": 1 },
           "status": { "description": "Terminal outcome recorded for the branch. 'skipped' means a selective parallel's frozen selection did not choose this optional branch.", "type": "string", "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output", "skipped"] },
           "artifacts": { "description": "Count of artifacts recorded by the branch before it finished.", "type": "integer", "minimum": 0 },
-          "reason": { "description": "Optional human-facing reason a selective parallel records: the selection's reason for a selected branch, or why a skipped branch did not run. Excluded from conformance.", "type": "string", "x-conformance": "excluded" }
+          "reason": { "description": "Optional human-facing reason a selective parallel records: the selection's reason for a selected branch, or why a skipped branch did not run. Excluded from conformance.", "type": "string", "x-conformance": "excluded" },
+          "mapItemIdentity": { "description": "Roster identity of a map completeness entry on map.finished. Absent for a static branch.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+          "mapItemDigest": { "description": "Canonical item digest of a map completeness entry on map.finished. Absent for a static branch.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
         }
       }
     },
@@ -430,6 +459,50 @@
     }
   },
   "$defs": {
+    "mapRoster": {
+      "description": "Frozen roster of one map visit (plan-driven-dynamic-fan-out.md §6.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "failurePolicy", "maxConcurrent", "items"],
+      "properties": {
+        "source": {
+          "description": "Immutable reference to the frozen source document and the producer attempt the journal bound it to.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["task", "slot", "visit", "attempt", "digest", "integrity"],
+          "properties": {
+            "task": { "description": "Declared source task.", "type": "string", "minLength": 1, "x-conformance": "normative" },
+            "slot": { "description": "Declared source artifact slot.", "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$", "x-conformance": "normative" },
+            "visit": { "description": "Producer stage.started sequence the artifact publication was bound to; a runner-local journal sequence.", "type": "integer", "minimum": 1, "x-conformance": "excluded" },
+            "attempt": { "description": "Producer attempt number that published the source.", "type": "integer", "minimum": 1, "x-conformance": "normative" },
+            "digest": { "description": "Content digest of the source artifact.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
+            "integrity": { "description": "Provenance grade of the source artifact, inherited by every mapped binding.", "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "x-conformance": "normative" },
+            "path": { "description": "Source blob location relative to the run directory. Not normative.", "type": "string", "x-conformance": "excluded" },
+            "size": { "description": "Source blob length in bytes. Not normative.", "type": "integer", "minimum": 0, "x-conformance": "excluded" },
+            "mediaType": { "description": "Source blob media type. Not normative.", "type": "string", "x-conformance": "excluded" }
+          }
+        },
+        "failurePolicy": { "description": "Map failure policy at freeze time.", "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"], "x-conformance": "normative" },
+        "itemTimeoutSeconds": { "description": "Per-item budget in seconds at freeze time; absent when unbounded.", "type": "integer", "minimum": 0, "x-conformance": "normative" },
+        "maxConcurrent": { "description": "Effective concurrency bound at freeze time.", "type": "integer", "minimum": 1, "maximum": 32, "x-conformance": "normative" },
+        "items": {
+          "description": "Normalized roster: unique identities sorted by bytewise UTF-8 order; item i runs as branch i+1.",
+          "type": "array",
+          "maxItems": 32,
+          "x-conformance": "normative",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["identity", "digest", "item"],
+            "properties": {
+              "identity": { "description": "Author-chosen stable item identity.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+              "digest": { "description": "SHA-256 over the RFC 8785 serialization of {identity, item}.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "item": { "description": "Canonical item object bound into the mapped task.", "type": "object" }
+            }
+          }
+        }
+      }
+    },
     "terminalBudget": {
       "type": "object",
       "additionalProperties": false,

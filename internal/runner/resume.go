@@ -708,7 +708,10 @@ func (r *Runner) newResumeFrame(
 	jr *journal.Run, rd *journal.Reader, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
 ) (*resumeFrame, error) {
-	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
+	activeParallel, parallelStart, err := pendingParallel(seedEvents, in.Machine)
+	if err != nil {
+		return nil, fmt.Errorf("runner: resume run %q: %w", in.RunID, err)
+	}
 	pointerEvents := seedEvents
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
@@ -742,6 +745,7 @@ func (r *Runner) newResumeFrame(
 		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
 	}
 	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+	ws.fanOutResults = reconstructFanOutResults(in.RunID, seedEvents, in.Machine)
 	ws.visitedStages = stageVisitSeed(seedEvents)
 	ws.parallel = activeParallel
 	ws.fanIn = pendingFanIn(seedEvents, in.Machine)
@@ -1584,46 +1588,26 @@ func runnerUint64(value any) uint64 {
 }
 
 // pendingParallel rebuilds the in-memory execution state for the latest
-// parallel.started that has not reached parallel.finished. A run.resumed event
-// starts a new run segment, so prior branch state must not cross that boundary;
-// run.finished alone does not, because RerunStage can reopen the branch.
-func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parallelExec, int) {
-	start := -1
-	for i, event := range events {
-		switch event.Type {
-		case journal.EventParallelStarted:
-			start = i
-		case journal.EventParallelFinished:
-			if start >= 0 && event.Parallel == events[start].Parallel {
-				start = -1
-			}
-		case journal.EventRunResumed:
-			if event.Target == workflow.TargetJoin {
-				if parallel, _, ok := interventionParallelContext(events[:i], machine, event.Gate); ok {
-					for candidate := i - 1; candidate >= 0; candidate-- {
-						if events[candidate].Type == journal.EventParallelStarted &&
-							events[candidate].Parallel == parallel {
-							start = candidate
-							break
-						}
-					}
-				}
-			} else {
-				start = -1
-			}
-		}
+// fan-out visit — a parallel.started or map.started — that has not reached its
+// finish event (design plan-driven-dynamic-fan-out.md §8). findPendingFanOut
+// locates the visit and verifies every map visit strictly; the branch set is
+// rebuilt from the start event alone, then branch lifecycle and stage events
+// are applied by numeric branch id. A map visit whose records are missing,
+// extra, duplicated or conflicting returns a typed workflow_integrity error.
+func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parallelExec, int, error) {
+	pending, err := findPendingFanOut(events, machine)
+	if err != nil {
+		return nil, -1, err
 	}
-	if start < 0 {
-		return nil, -1
+	if pending.start < 0 {
+		return nil, -1, nil
 	}
-
-	spec, ok := machine.Parallel(events[start].Parallel)
-	if !ok {
-		return nil, -1
+	start := pending.start
+	par := pending.exec(events, machine)
+	if par == nil {
+		return nil, -1, nil
 	}
-	par := newParallelExec(spec)
-	// A selective visit's skip set comes from its parallel.started alone.
-	par.applySelection(events[start].Selection)
+	spec := par.spec
 	branchByID := func(id int) (*branchState, int) {
 		for i, branch := range par.branches {
 			if branch.id == id {
@@ -1772,7 +1756,7 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			}
 		}
 	}
-	return par, start
+	return par, start, nil
 }
 
 func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {

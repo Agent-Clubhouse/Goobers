@@ -174,6 +174,20 @@ const (
 	// the root branch.
 	EventParallelFinished EventType = "parallel.finished"
 
+	// Map lifecycle (docs/design/plan-driven-dynamic-fan-out.md §6, §8). Both
+	// are conformance-normative and recorded on the root branch. A map's item
+	// branches reuse branch.started/branch.finished, carrying MapItemIdentity
+	// and MapItemDigest, so a map is expanded into the static branch lifecycle
+	// rather than a second one.
+
+	// EventMapStarted opens one map visit. Parallel names the map and
+	// MapRoster carries the frozen, normalized roster: the durable source of
+	// truth for the visit, so resume never rereads the producer.
+	EventMapStarted EventType = "map.started"
+	// EventMapFinished closes a map visit with one completeness entry per
+	// roster item, in identity order, and the routing target.
+	EventMapFinished EventType = "map.finished"
+
 	// Instance-journal event types (§4/§6): scheduler decisions and
 	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
 	// envelope as a run journal's events.jsonl. EventRunStarted/EventRunFinished
@@ -538,13 +552,29 @@ type Event struct {
 
 	// --- parallel/branch payload (§6.2) ---
 
-	// Parallel is the name of the parallel state a branch belongs to, set on
-	// parallel.started/finished and branch.started/finished. Normative.
+	// Parallel is the name of the fan-out state an event concerns: the
+	// parallel on parallel.started/finished, the map on map.started/finished,
+	// and the owning parallel or map on branch.started/finished. The event
+	// type, and MapItemIdentity on a branch event, say which construct it is.
+	// Normative.
 	Parallel string `json:"parallel,omitempty"`
 	// BranchName is the declared name of the branch this event concerns. The
 	// numeric id lives in Branch; the name is what an author wrote and what
-	// branch-qualified references use. Normative.
+	// branch-qualified references use. A map item's branch name is its roster
+	// identity, for display; MapItemIdentity is the authoritative field.
+	// Normative.
 	BranchName string `json:"branchName,omitempty"`
+	// MapItemIdentity is the roster identity of the map item a
+	// branch.started/branch.finished concerns. Empty for a static branch.
+	// Normative.
+	MapItemIdentity string `json:"mapItemIdentity,omitempty"`
+	// MapItemDigest is the canonical item digest (sha256 over the RFC 8785
+	// form of {identity, item}) of the map item a branch event concerns. Empty
+	// for a static branch. Normative.
+	MapItemDigest string `json:"mapItemDigest,omitempty"`
+	// MapRoster is the frozen roster on map.started. Normative; see
+	// MapRoster's own field comments for the excluded storage metadata.
+	MapRoster *MapRoster `json:"mapRoster,omitempty"`
 	// BranchStatus is the terminal status of a branch on branch.finished.
 	// Normative.
 	BranchStatus BranchStatus `json:"branchStatus,omitempty"`
@@ -645,6 +675,10 @@ type BranchOutcome struct {
 	// branch, or why a skipped branch did not run. Displayed, never compared
 	// by conformance.
 	Reason string `json:"reason,omitempty"`
+	// MapItemIdentity and MapItemDigest identify the roster item of a map
+	// completeness entry (map.finished). Empty for a static branch.
+	MapItemIdentity string `json:"mapItemIdentity,omitempty"`
+	MapItemDigest   string `json:"mapItemDigest,omitempty"`
 }
 
 // ParallelSelection is the frozen, normalized selection a selective parallel
