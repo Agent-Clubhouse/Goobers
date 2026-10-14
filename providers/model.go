@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/lifecycle"
@@ -1523,6 +1524,11 @@ type ClaimWorkItemRequest struct {
 	// ExpectedClaimRunID, when set, requires the currently open provider claim
 	// epoch to still be held by this run before releasing it.
 	ExpectedClaimRunID string `json:"expectedClaimRunId,omitempty"`
+	// Reason is why the claim ends (#4421), rendered into the release comment
+	// as a human "Reason:" line plus a versioned machine-readable marker.
+	// Release-only; a zero reason renders as an explicitly unknown (legacy)
+	// release.
+	Reason claimrelease.Reason `json:"reason,omitzero"`
 }
 
 // ClaimResult reports the outcome of a claim attempt.

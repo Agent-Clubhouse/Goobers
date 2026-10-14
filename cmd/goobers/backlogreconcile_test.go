@@ -15,6 +15,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -1408,7 +1409,7 @@ func TestRestoreInvisibleClaimsWindowRevalidatesLeaseBeforeRestore(t *testing.T)
 	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !released && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/8") {
 			released = true
-			if err := ledger.ReleaseScoped(key, "live-run"); err != nil {
+			if err := ledger.ReleaseScoped(key, "live-run", claimrelease.Completed.Reason()); err != nil {
 				t.Errorf("release live claim during provider read: %v", err)
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -35,7 +36,7 @@ type SharedClaimResolver interface {
 
 type sharedFileLedger interface {
 	ClaimSharedScoped(context.Context, sharedclaim.Store, string, Key, sharedclaim.Owner, string, time.Duration) (bool, string, error)
-	ReleaseCoordinatedShared(context.Context, sharedclaim.Store, string, Key, sharedclaim.Owner) error
+	ReleaseCoordinatedShared(context.Context, sharedclaim.Store, string, Key, sharedclaim.Owner, claimrelease.Reason) error
 }
 
 func (s *fileSession) claimShared(ctx context.Context, key Key, runID, workflow string, ttl time.Duration, binding SharedClaimBinding) (bool, string, error) {
@@ -57,7 +58,7 @@ func (s *fileSession) claimShared(ctx context.Context, key Key, runID, workflow 
 	return ledger.ClaimSharedScoped(ctx, binding.Store, binding.RemoteKey, key, binding.Owner, workflow, ttl)
 }
 
-func (s *fileSession) releaseShared(ctx context.Context, entry Entry) error {
+func (s *fileSession) releaseShared(ctx context.Context, entry Entry, reason claimrelease.Reason) error {
 	if s.file.cfg.Shared == nil {
 		return fmt.Errorf("claimsclient: shared release requires its provider resolver")
 	}
@@ -80,12 +81,12 @@ func (s *fileSession) releaseShared(ctx context.Context, entry Entry) error {
 	if binding.AfterTransition != nil {
 		defer binding.AfterTransition(ctx)
 	}
-	return ledger.ReleaseCoordinatedShared(ctx, binding.Store, binding.RemoteKey, KeyForEntry(entry), entry.SharedOwner)
+	return ledger.ReleaseCoordinatedShared(ctx, binding.Store, binding.RemoteKey, KeyForEntry(entry), entry.SharedOwner, reason)
 }
 
-func (s *fileSession) releaseEntry(ctx context.Context, entry Entry, runID string) error {
+func (s *fileSession) releaseEntry(ctx context.Context, entry Entry, runID string, reason claimrelease.Reason) error {
 	if !entry.SharedDeadline.IsZero() {
-		return s.releaseShared(ctx, entry)
+		return s.releaseShared(ctx, entry, reason)
 	}
-	return s.ledger.ReleaseEntry(entry, runID)
+	return s.ledger.ReleaseEntry(entry, runID, reason)
 }

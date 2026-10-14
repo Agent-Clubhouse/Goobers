@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -358,7 +359,7 @@ func TestPRSelectClaimedIntervalDoesNotResumeAfterReleaseOrExpiry(t *testing.T) 
 			}
 			unclaimedAt := entry.ExpiresAt.Add(time.Minute)
 			if tc.release {
-				if err := ledger.ReleaseScoped(key, runID); err != nil {
+				if err := ledger.ReleaseScoped(key, runID, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
 				}
 				unclaimedAt = time.Now().UTC().Add(time.Minute)

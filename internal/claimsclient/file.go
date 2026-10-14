@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
@@ -39,9 +40,9 @@ type FileLedger interface {
 	RecordClaimVerification(Entry, localscheduler.ClaimVerification) (bool, error)
 	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
 	ClaimScoped(key Key, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
-	Release(itemID, runID string) error
-	ReleaseScoped(key Key, runID string) error
-	ReleaseEntry(entry Entry, runID string) error
+	Release(itemID, runID string, reason claimrelease.Reason) error
+	ReleaseScoped(key Key, runID string, reason claimrelease.Reason) error
+	ReleaseEntry(entry Entry, runID string, reason claimrelease.Reason) error
 	ForRunAll(runID string) []Entry
 	Snapshot() []Entry
 	HistorySnapshot() []Entry
@@ -108,17 +109,17 @@ func (f *File) ClaimScoped(ctx context.Context, key Key, runID, workflow string,
 }
 
 // ReleaseScoped implements Ledger under a default-labelled critical section.
-func (f *File) ReleaseScoped(ctx context.Context, key Key, runID string) error {
+func (f *File) ReleaseScoped(ctx context.Context, key Key, runID string, reason claimrelease.Reason) error {
 	return f.Locked(ctx, fileOperationRelease, func(session Ledger) error {
-		return session.ReleaseScoped(ctx, key, runID)
+		return session.ReleaseScoped(ctx, key, runID, reason)
 	})
 }
 
 // ReleaseAllForRun implements Ledger under a default-labelled critical section.
-func (f *File) ReleaseAllForRun(ctx context.Context, runID string) (released []Entry, err error) {
+func (f *File) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) (released []Entry, err error) {
 	err = f.Locked(ctx, fileOperationReleaseAll, func(session Ledger) error {
 		var releaseErr error
-		released, releaseErr = session.ReleaseAllForRun(ctx, runID)
+		released, releaseErr = session.ReleaseAllForRun(ctx, runID, reason)
 		return releaseErr
 	})
 	return released, err
@@ -185,23 +186,23 @@ func (s *fileSession) ClaimScoped(ctx context.Context, key Key, runID, workflow 
 	return s.ledger.ClaimScoped(key, runID, workflow, lease)
 }
 
-func (s *fileSession) ReleaseScoped(ctx context.Context, key Key, runID string) error {
+func (s *fileSession) ReleaseScoped(ctx context.Context, key Key, runID string, reason claimrelease.Reason) error {
 	for _, entry := range s.ledger.ForRunAll(runID) {
 		if KeyForEntry(entry) == key && !entry.SharedDeadline.IsZero() {
-			return s.releaseShared(ctx, entry)
+			return s.releaseShared(ctx, entry, reason)
 		}
 	}
 	if key.Gaggle == "" && key.Provider == "" {
-		return s.ledger.Release(key.ExternalID, runID)
+		return s.ledger.Release(key.ExternalID, runID, reason)
 	}
-	return s.ledger.ReleaseScoped(key, runID)
+	return s.ledger.ReleaseScoped(key, runID, reason)
 }
 
-func (s *fileSession) ReleaseAllForRun(ctx context.Context, runID string) ([]Entry, error) {
+func (s *fileSession) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) ([]Entry, error) {
 	entries := s.ledger.ForRunAll(runID)
 	released := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		if err := s.releaseEntry(ctx, entry, runID); err != nil {
+		if err := s.releaseEntry(ctx, entry, runID, reason); err != nil {
 			return released, fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
 		}
 		released = append(released, reportEntry(entry))

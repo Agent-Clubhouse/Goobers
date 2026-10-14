@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -39,8 +40,18 @@ func releaseClaimsForRunLocked(l instance.Layout, log *journal.InstanceLog, runI
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
 	}
-	_, err = ledger.ReleaseAllForRun(claimContext(), runID)
+	_, err = ledger.ReleaseAllForRun(claimContext(), runID, claimHolderReleaseReason(l, runID))
 	return err
+}
+
+// claimHolderReleaseReason is why a terminal holder's claims end: the run's
+// own terminal outcome, or reconciliation for a backlog-reconcile reservation
+// whose owning run ended.
+func claimHolderReleaseReason(l instance.Layout, runID string) claimrelease.Reason {
+	if _, ok := parseBacklogReconcileRunID(runID); ok {
+		return claimrelease.Reconciled.Because("reconcile_owner_terminal", "")
+	}
+	return localscheduler.TerminalReleaseReason(l.FindRunDir, runID)
 }
 
 // renewLiveClaims re-acquires every LEDGER claim whose holding run is live
@@ -218,7 +229,7 @@ func recoverClaimsWithResolver(
 			if !terminal {
 				continue
 			}
-			if err := coordinated.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(current), current.RunID); err != nil {
+			if err := coordinated.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(current), current.RunID, claimHolderReleaseReason(l, current.RunID)); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
 				continue
 			}
@@ -239,7 +250,7 @@ func recoverExpiredSharedClaims(ctx context.Context, ledger *localscheduler.Clai
 		if entry.SharedDeadline.IsZero() || entry.ExpiresAt.After(now) {
 			continue
 		}
-		if err := coordinated.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), entry.RunID); err != nil {
+		if err := coordinated.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), entry.RunID, localscheduler.StallSweptReason()); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release expired shared claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
 			continue
 		}

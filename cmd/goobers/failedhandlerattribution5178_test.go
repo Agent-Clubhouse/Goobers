@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -69,7 +70,7 @@ func seedFailedRunForAttributionTest(t *testing.T, l instance.Layout, runID stri
 		}
 	}
 	return func() {
-		if err := ledger.Release("5178", runID); err != nil {
+		if err := ledger.Release("5178", runID, claimrelease.Completed.Reason()); err != nil {
 			t.Fatalf("release claim %s: %v", runID, err)
 		}
 	}

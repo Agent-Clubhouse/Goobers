@@ -16,6 +16,7 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
@@ -393,7 +394,7 @@ func TestBacklogQueryRepeatedContentionSkipsOnlyThatItem(t *testing.T) {
 	}); err != nil || !ok {
 		t.Fatalf("seed contention: ok=%v err=%v", ok, err)
 	}
-	if err := seed.ReleaseScoped(key, "earlier-run"); err != nil {
+	if err := seed.ReleaseScoped(key, "earlier-run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -489,7 +490,7 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 	if ok, holder, err := seed.Claim("7", "dead-run", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v holder=%q err=%v", ok, holder, err)
 	}
-	if err := seed.Release("7", "dead-run"); err != nil {
+	if err := seed.Release("7", "dead-run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("seed release: %v", err)
 	}
 

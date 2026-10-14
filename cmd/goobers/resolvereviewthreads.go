@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -274,7 +275,7 @@ func (p *reviewThreadPublication) checkHead(live, when string) (int, bool) {
 }
 
 func (p *reviewThreadPublication) endStaleHead(live string) int {
-	if err := releasePRRemediationClaim(p.root); err != nil {
+	if err := releasePRRemediationClaim(p.root, claimrelease.Superseded.Because("stale_head", "")); err != nil {
 		return p.fail("release remediation PR claim", err)
 	}
 	reason := fmt.Sprintf("stale head: PR #%s moved from this run's published head %s to %s", p.pullID, p.publishedHead, live)

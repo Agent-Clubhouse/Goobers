@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -349,7 +350,7 @@ func enforcePushRevision(root string, repo providers.RepositoryRef, selectedNumb
 	if check.State != prRevisionStale {
 		return 0, false
 	}
-	if err := releasePRRemediationClaim(root); err != nil {
+	if err := releasePRRemediationClaim(root, claimrelease.Superseded.Because("stale_selection", "")); err != nil {
 		return failProviderStage(stderr, "release remediation PR claim", err, pushRemediatedResultName), true
 	}
 	reason := fmt.Sprintf("stale selection: PR #%d moved from this run's %s head %s to %s",

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/decomposition"
@@ -966,7 +967,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return
 		}
 		for _, item := range session.newlyClaimed {
-			if releaseErr := session.rollback(ctx, item); releaseErr != nil {
+			if releaseErr := session.rollback(ctx, item, claimrelease.Abandoned.Because("backlog_query_failed", "")); releaseErr != nil {
 				pf(stderr, "error: roll back claim %s after backlog query failure: %v\n", item.ID, releaseErr)
 			}
 		}
@@ -1354,7 +1355,7 @@ func (session *backlogClaimSession) annotateNewReadyClaims(ctx context.Context, 
 // set, and warns why it was skipped.
 func (session *backlogClaimSession) skipMalformedClaim(ctx context.Context, index int, cause error) int {
 	malformed := session.claimed[index]
-	if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
+	if releaseErr := session.releaseLedger(ctx, malformed, claimrelease.Abandoned.Because("malformed_item", cause.Error())); releaseErr != nil {
 		pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
 		return 1
 	}
@@ -1533,7 +1534,7 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 	// this back instead of reconstructing ownership from the gaggle's
 	// static project or cfg.Repos[0].
 	if recordErr := recordItemRepositoryForPurpose(session.annotations, session.runID, item.ID, itemKindIssue, session.purpose, session.env.issueRepo()); recordErr != nil {
-		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
+		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID, claimrelease.Abandoned.Because("repository_identity_unrecorded", recordErr.Error())); releaseErr != nil {
 			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
 		}
 		return false, "", fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
@@ -1608,7 +1609,7 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			session.recordCurrentContention(ctx, item, result.ClaimedBy)
 		}
 		session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: result.ClaimedBy, source: claimRefusalProviderEpoch})
-		if err := session.releaseLedger(ctx, item); err != nil {
+		if err := session.releaseLedger(ctx, item, claimrelease.Superseded.Because("provider_claim_lost", "provider claim is held by run "+result.ClaimedBy)); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
 		session.forgetNewClaim(item.ID)
@@ -1628,7 +1629,7 @@ func (session *backlogClaimSession) dropLostLease(ctx context.Context, index int
 		return false, nil
 	}
 	item := session.claimed[index]
-	if releaseErr := session.releaseLedger(ctx, item); releaseErr != nil {
+	if releaseErr := session.releaseLedger(ctx, item, claimrelease.Superseded.Because("ledger_lease_lost", "")); releaseErr != nil {
 		return false, fmt.Errorf("release lapsed ledger claim %s: %w", item.ID, releaseErr)
 	}
 	session.refusals = append(session.refusals, claimRefusal{itemID: lost.itemID, source: claimRefusalLedger})
@@ -1821,6 +1822,7 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 		RunID:              session.runID,
 		LedgerAuthorized:   true,
 		ExpectedClaimRunID: holder,
+		Reason:             claimrelease.Reconciled.Because("surrendered_claim_retired", "ledger lease of run "+holder+" was already released"),
 	}); err != nil {
 		return false, fmt.Errorf("retire provider claim: %w", err)
 	}
@@ -1912,7 +1914,7 @@ func (session *backlogClaimSession) forgetNewClaim(itemID string) {
 	}
 }
 
-func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem) error {
+func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem, reason claimrelease.Reason) error {
 	legacy, err := legacyClaimMarkerAllowed(ctx, session.ledger, session.claimKey(item), session.runID)
 	if err != nil {
 		return err
@@ -1923,15 +1925,16 @@ func (session *backlogClaimSession) rollback(ctx context.Context, item providers
 			Repository: session.env.backlogRepo,
 			ID:         item.ID,
 			RunID:      session.runID,
+			Reason:     reason,
 		})
 	}
-	ledgerErr := session.releaseLedger(ctx, item)
+	ledgerErr := session.releaseLedger(ctx, item, reason)
 	return errors.Join(providerErr, ledgerErr)
 }
 
-func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem) error {
+func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem, reason claimrelease.Reason) error {
 	return session.ledger.Locked(ctx, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
-		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID)
+		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID, reason)
 	})
 }
 
@@ -3567,6 +3570,10 @@ func (s *backlogScanState) run(
 // issue. Curation still needs the early ledger release added by #234, but it
 // must also remove the provider-visible marker that --claim added; otherwise
 // the authoritative ledger becomes free while goobers:claimed leaks forever.
+// workflowReleaseStepReason records that the workflow itself released its
+// claims through an explicit --release step once its consuming step finished.
+var workflowReleaseStepReason = claimrelease.Completed.Because("workflow_release_step", "")
+
 func runBacklogQueryRelease(env backlogQueryEnv) int {
 	root, l := env.root, env.layout
 	stdout, stderr := env.stdout, env.stderr
@@ -3600,7 +3607,7 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 				localEntries = append(localEntries, entry)
 				continue
 			}
-			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); err != nil {
+			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); err != nil {
 				return fmt.Errorf("release shared claim %s: %w", entry.ItemID, err)
 			}
 			released = append(released, entry.ItemID)
@@ -3638,11 +3645,12 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 				ID:               entry.ItemID,
 				RunID:            runID,
 				LedgerAuthorized: true,
+				Reason:           workflowReleaseStepReason,
 			}); rerr != nil {
 				providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
 				return providerErr
 			}
-			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); rerr != nil {
+			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
 			}
 			released = append(released, entry.ItemID)

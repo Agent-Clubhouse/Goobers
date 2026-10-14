@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/planehttp"
 )
 
@@ -25,6 +26,9 @@ type claimRequest struct {
 	RunID        string `json:"runId"`
 	Workflow     string `json:"workflow,omitempty"`
 	LeaseSeconds int    `json:"leaseSeconds,omitempty"`
+	// Reason is release-only (#4421); omitted when zero so the request shape
+	// of every other route is unchanged.
+	Reason claimrelease.Reason `json:"reason,omitzero"`
 }
 
 type claimResponse struct {
@@ -235,28 +239,45 @@ func (h *HTTP) renew(ctx context.Context, key Key, runID, workflow string, lease
 }
 
 // ReleaseScoped implements Ledger over claims/release.
-func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string) error {
+func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string, reason claimrelease.Reason) error {
 	if err := scopedKey(key); err != nil {
 		return err
 	}
 	// Replay-safe: release of a claim not held, or held by another run, is a
 	// no-op in the ledger, so a replay cannot release a later holder's claim.
 	var response claimResponse
-	return h.post(ctx, apicontract.ClaimReleasePath, claimRequest{
+	return h.postRelease(ctx, claimRequest{
 		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID, RunID: runID,
+		Reason: reason.Normalize(),
 	}, &response, true)
 }
 
 // ReleaseAllForRun implements Ledger over claims/release with itemId omitted.
-func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string) ([]Entry, error) {
+func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) ([]Entry, error) {
 	// Not replay-safe after an ambiguous failure: the reply lists what THIS call
 	// released, and a replay of a call that did commit answers an empty list.
 	// It is still retried when the daemon refused it before a handler ran.
 	var response claimResponse
-	if err := h.post(ctx, apicontract.ClaimReleasePath, claimRequest{RunID: runID}, &response, false); err != nil {
+	if err := h.postRelease(ctx, claimRequest{RunID: runID, Reason: reason.Normalize()}, &response, false); err != nil {
 		return nil, err
 	}
 	return response.Released, nil
+}
+
+// postRelease sends a release carrying its reason. A daemon that predates the
+// reason field refuses the unknown field before any handler runs (strict
+// decoding), so the release is resent once without it: the claim must still
+// be surrendered across a version skew, and that older daemon records the
+// release as it always did — without a reason.
+func (h *HTTP) postRelease(ctx context.Context, request claimRequest, response *claimResponse, replaySafe bool) error {
+	err := h.post(ctx, apicontract.ClaimReleasePath, request, response, replaySafe)
+	var planeErr *Error
+	if err == nil || request.Reason.IsZero() || !errors.As(err, &planeErr) ||
+		planeErr.Status != http.StatusBadRequest || !strings.Contains(planeErr.Message, `unknown field "reason"`) {
+		return err
+	}
+	request.Reason = claimrelease.Reason{}
+	return h.post(ctx, apicontract.ClaimReleasePath, request, response, replaySafe)
 }
 
 // ForRunAll implements Ledger over claims/list scope=run.
@@ -420,7 +441,7 @@ func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Co
 	// handed back even when the stage is being torn down.
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultHTTPTimeout)
 	defer cancel()
-	if err := h.ReleaseScoped(releaseCtx, lock.Key, lock.RunID); err != nil {
+	if err := h.ReleaseScoped(releaseCtx, lock.Key, lock.RunID, claimrelease.Completed.Because(MergeLockReleaseCode, "")); err != nil {
 		return errors.Join(fnErr, fmt.Errorf("release merge lock %s: %w", lock.Key.ExternalID, err))
 	}
 	return fnErr
