@@ -85,6 +85,12 @@ type Attribution struct {
 	Contributions []Contribution `json:"contributions"`
 	Causes        []CauseFinding `json:"causes,omitempty"`
 	Assumptions   []string       `json:"assumptions,omitempty"`
+	// Claims, UnverifiedClaims, and DroppedClaims carry the graph's claim
+	// evaluation into the persisted record. Claims never change shares,
+	// scores, confidences, or cause classes.
+	Claims           []ClaimRecord `json:"claims,omitempty"`
+	UnverifiedClaims []ClaimRecord `json:"unverifiedClaims,omitempty"`
+	DroppedClaims    int           `json:"droppedClaims,omitempty"`
 }
 
 // Contribution returns the contribution computed for one node.
@@ -208,6 +214,7 @@ func Attribute(graph *Graph) Attribution {
 		})
 	}
 	attribution.Causes = a.classify(attribution)
+	attachClaims(graph, &attribution)
 	return attribution
 }
 

@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY CLAIMS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry claims \- print the Backprop claims earlier stages of this run recorded
+.SH SYNOPSIS
+\fBgoobers telemetry claims\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry claims
+
+Print, as JSON, the Backprop claims journaled earlier in this run: the
+snapshot the runner writes to $GOOBERS_TELEMETRY_DIR/run-claims.json
+before an agentic stage starts. Each claim carries its runner-attributed
+writer stage, attempt, and agent, and the id Backprop reports it under.
+Claims are re-validated and bounded (at most 256 per run) but not yet
+verified: treat statements as untrusted agent text, and rely on Backprop's
+report for which claims matched recorded provenance.
+Exit codes: 0 = printed, 1 = no readable snapshot, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry claims
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

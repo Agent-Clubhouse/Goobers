@@ -106,6 +106,7 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 			return nil, err
 		}
 	}
+	ctx = context.WithValue(ctx, adoListReadKey{}, true)
 	wiql, fellBack, err := p.queryNarrowedWIQL(ctx, endpoint, query, adoWIQLFieldClauses(req.FieldPredicate), orderBy)
 	if err != nil {
 		return nil, err
@@ -216,11 +217,11 @@ func adoWIQLFieldClauses(predicate *fieldpredicate.Predicate) string {
 // a rejected narrowed query is retried without it rather than failing a read
 // that would otherwise just match nothing. fellBack reports that retry.
 func (p *ADOProvider) queryNarrowedWIQL(ctx context.Context, endpoint, query, narrowing, orderBy string) (wiql adoWIQLResponse, fellBack bool, err error) {
-	err = p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query + narrowing + orderBy}, &wiql)
+	err = p.do(ctx, http.MethodPost, endpoint, adoWIQLReadRequest{Query: query + narrowing + orderBy}, &wiql)
 	var responseErr *providerResponseError
 	if err != nil && narrowing != "" && errors.As(err, &responseErr) && responseErr.statusCode == http.StatusBadRequest {
 		wiql = adoWIQLResponse{}
-		err = p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query + orderBy}, &wiql)
+		err = p.do(ctx, http.MethodPost, endpoint, adoWIQLReadRequest{Query: query + orderBy}, &wiql)
 		fellBack = true
 	}
 	return wiql, fellBack, err

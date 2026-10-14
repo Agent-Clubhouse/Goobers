@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
@@ -150,5 +151,19 @@ func TestChildJournalAcceptsExactHarnessPayloadScope(t *testing.T) {
 				t.Fatal("foreign scope accepted", forged)
 			}
 		}
+	}
+}
+
+func TestChildJournalAcceptsTheAttemptsBackpropClaims(t *testing.T) {
+	c := childpod.Contract{Identity: journal.RunIdentity{RunID: strings.Repeat("a", 32), Gaggle: "g"}, Stage: "work", Attempt: 2}
+	request := livejournal.EmitRequest{RunID: c.Identity.RunID, Gaggle: "g", Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "key", Event: &journal.Event{
+		Type: journal.EventRunnerAnnotation, Stage: "work", Attempt: 2, Runner: map[string]any{"kind": creditgraph.ClaimsAnnotation},
+	}}}}
+	if _, err := childJournalRequest(c, journal.Digest(nil), request); err != nil {
+		t.Fatalf("worker could not journal its attempt's claims: %v", err)
+	}
+	request.Ops[0].Event.Attempt = 1
+	if _, err := childJournalRequest(c, journal.Digest(nil), request); err == nil {
+		t.Fatal("worker journaled claims for another attempt")
 	}
 }
