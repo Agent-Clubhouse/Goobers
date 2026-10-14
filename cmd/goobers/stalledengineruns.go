@@ -63,11 +63,17 @@ func settleStalledEngineRun(
 		// whoever learns the outcome — reattachEngineRun's goroutine for a
 		// run this daemon seeded at startup — and freeing it on a request
 		// that has not landed is a duplicate-admission hazard.
-		if err := guards.cancel(ctx, identity.RunID); err != nil {
-			return fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err)
-		}
+		//
+		// The record is written BEFORE the cancel (#5638): the engine's
+		// terminal hooks read it to tell this watchdog stop from an
+		// operator's, and they can run as soon as the cancellation lands. A
+		// record whose cancel then fails is harmless — no run_canceled
+		// terminal follows from it, and an operator's own cancel still wins.
 		if err := appendEngineRecovery(log, identity, message, journal.RecoveryActionEngineCancelRequested, interrupt); err != nil {
 			return fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, err)
+		}
+		if err := guards.cancel(ctx, identity.RunID); err != nil {
+			return fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err)
 		}
 		return nil
 	}
@@ -240,6 +246,14 @@ func appendEngineRecovery(log *journal.InstanceLog, identity journal.RunIdentity
 // to cancel runID, or "" when it never did — or when an operator also asked,
 // because the engine journals both the same way and an operator's cancel must
 // never be read as infrastructure (#5638).
+//
+// "Operator wins" depends on the operator's own engine_cancel_requested
+// annotation reaching the instance log. The CLI path appends it reporting any
+// failure; the daemon's cancel plane appends it best-effort. If that append is
+// lost while a sweep record exists for the same run, the operator's cancel is
+// read as the sweep's interruption — a rare residual, accepted because the
+// alternative (ignoring the sweep's record) would charge every engine
+// watchdog stop as work.
 func engineWatchdogInterruption(schedulerDir, runID string) (string, error) {
 	value, _ := engineCancelIndexes.LoadOrStore(schedulerDir, &engineCancelIndex{cursor: journal.NewInstanceLogCursor(schedulerDir)})
 	index := value.(*engineCancelIndex)

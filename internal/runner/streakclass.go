@@ -90,6 +90,19 @@ func JournaledTerminalFault(events []journal.Event, engineInterruption string) T
 	return interruptedRetryFault(events[:finished])
 }
 
+// EndedByCancellation reports whether the run's latest terminal is a
+// run_canceled one — the only terminal JournaledTerminalFault consults an
+// engine interruption for, so a caller need not look one up otherwise.
+func EndedByCancellation(events []journal.Event) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunFinished {
+			cause := events[i].TerminalCause
+			return cause != nil && cause.Code == RunCanceledErrorCode
+		}
+	}
+	return false
+}
+
 func isWatchdogInterruption(code string) bool {
 	return code == RunDurationExceededErrorCode || code == RunStalledErrorCode
 }

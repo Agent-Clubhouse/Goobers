@@ -418,7 +418,10 @@ func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, err
 		return "", fmt.Errorf("read terminal classification for run %q: %w", runID, err)
 	}
 	var interruption string
-	if p.EngineInterruption != nil {
+	// Only a cancelled run can have been stopped by the engine stall sweep, so
+	// only it consults the sweep's record: a local terminal never depends on
+	// the instance log being readable.
+	if p.EngineInterruption != nil && runner.EndedByCancellation(events) {
 		var ierr error
 		if interruption, ierr = p.EngineInterruption(runID); ierr != nil {
 			// Without the sweep's record a cancelled engine run stays an

@@ -1050,7 +1050,11 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > network, lock, a harness that never gave the agent a turn, a required MCP
 > server that never came up); an expiry or stall during a dispatch's or gate
 > evaluator's own infrastructure retry; and an engine workflow the daemon
-> terminated because no worker polled it. A verified item judgment
+> terminated because no worker polled it. This is deliberate and has a cost:
+> a non-item infrastructure fault that is in fact specific to one item (its
+> build exhausting a worker's memory, git failing on its branch, credentials
+> missing for its repository only) is **not bounded by the circuit breaker**
+> and retries until a human or another control notices. A verified item judgment
 > (`ISSUE_NOT_APPLICABLE`, #3363) counts on neither either. An expiry or
 > stall during ordinary work, and an operator cancel, count on the
 > genuine/work streak.
