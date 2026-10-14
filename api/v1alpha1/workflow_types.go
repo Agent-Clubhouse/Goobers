@@ -1043,7 +1043,24 @@ type BackpropConfig struct {
 	// +kubebuilder:validation:Enum=v1
 	// +kubebuilder:validation:Required
 	Version string `json:"version" yaml:"version"`
+	// Granularity selects when attribution is recorded. run (the default)
+	// writes only the end-of-run record; stage additionally writes a
+	// best-effort, read-only checkpoint after each stage finishes, and the
+	// end-of-run record composes those checkpoints. Preview.
+	// +kubebuilder:validation:Enum=run;stage
+	// +optional
+	Granularity BackpropGranularity `json:"granularity,omitempty" yaml:"granularity,omitempty"`
 }
+
+// BackpropGranularity is how often an enrolled run records attribution.
+type BackpropGranularity string
+
+// Backprop granularities. Run records attribution once at terminalization;
+// stage also checkpoints attribution after every finished stage.
+const (
+	BackpropGranularityRun   BackpropGranularity = "run"
+	BackpropGranularityStage BackpropGranularity = "stage"
+)
 
 // BranchFailurePolicy declares what a parallel does when one of its branches
 // fails. It is required — there is no default — because parallelism without an

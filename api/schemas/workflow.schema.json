@@ -69,7 +69,8 @@
           "required": ["enabled", "version"],
           "properties": {
             "enabled": { "type": "boolean", "description": "Whether terminal runs produce attribution records." },
-            "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." }
+            "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." },
+            "granularity": { "enum": ["run", "stage"], "description": "Preview. When attribution is recorded: run (default) writes only the end-of-run record; stage also writes a best-effort, read-only checkpoint after each stage finishes that the end-of-run record composes. A failed checkpoint never blocks a stage transition." }
           }
         },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Absolute local filesystem root (or ~/ path) where durable journal outbox files are additionally mirrored. Tasks may override it." },

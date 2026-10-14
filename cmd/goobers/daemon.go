@@ -1386,7 +1386,7 @@ func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Man
 	runnerCfg.BacklogQueryLabelPredicate = input.BacklogLabelPredicateDefault
 	runnerCfg.IssueOwnershipAssignees = input.OwnershipAssigneesDefault
 	runnerCfg.IssueOwnershipUnassigned = input.OwnershipUnassignedDefault
-	runnerCfg.JournalAdvancedContext = telemetryingest.RunIntakeObserverContext(input.Watermarks, input.InstanceLog)
+	runnerCfg.JournalAdvancedContext = telemetryingest.RunObserversContext(input.Watermarks, input.Layout, input.InstanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(input.Layout, input.Config, input.GaggleProject, input.SharedRegistry, input.CredentialStores)
 	if err != nil {
 		return nil, nil, nil, err
