@@ -426,13 +426,13 @@ func TestFileURIIsAbsoluteSoSQLiteCanOpenIt(t *testing.T) {
 	// segment cannot be read as a scheme, producing "file:./C:/dir/intake.db" —
 	// a relative URI SQLite rejects with SQLITE_CANTOPEN. POSIX paths are
 	// already rooted, which is why this only ever failed on Windows.
-	uri := fileURI(filepath.Join(t.TempDir(), FileName))
+	uri := intakeURI(filepath.Join(t.TempDir(), FileName))
 
 	if !strings.HasPrefix(uri, "file:///") {
-		t.Errorf("fileURI = %q, want a rooted file:/// URI", uri)
+		t.Errorf("intakeURI = %q, want a rooted file:/// URI", uri)
 	}
 	if strings.Contains(uri, "./") {
-		t.Errorf("fileURI = %q, want no relative segment", uri)
+		t.Errorf("intakeURI = %q, want no relative segment", uri)
 	}
 }
 
