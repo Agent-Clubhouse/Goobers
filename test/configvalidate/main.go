@@ -181,7 +181,7 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		}
 		if len(tree.allowedWarnings) > 0 {
 			got := validationWarnings(commandStdout.String())
-			if !equalStrings(got, tree.allowedWarnings) {
+			if !slices.Equal(got, tree.allowedWarnings) {
 				_, _ = fmt.Fprintf(
 					stderr,
 					"validate-configs: %s: warnings changed: got %q, want %q\n",
@@ -266,18 +266,6 @@ func validationWarnings(output string) []string {
 		}
 	}
 	return warnings
-}
-
-func equalStrings(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
 }
 
 func validationArgs(root, tempDir string, tree checkedInTree) ([]string, error) {
