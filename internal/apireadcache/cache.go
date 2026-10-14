@@ -240,7 +240,10 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 		key = scopedRequestKey(c.partition+"\x00"+string(c.provider), req)
 	}
 	if c.snapshotID != "" && c.listRequest(req) {
-		snapshotKey := apiReadSnapshotKey(c.snapshotID, key)
+		snapshotKey, err := c.snapshotReadKey(key)
+		if err != nil {
+			return c.do(req)
+		}
 		// Snapshot invalidation is shared across wrappers/processes; memory alone
 		// cannot prove that an evaluation response remains current.
 		if entry, hit := c.lookupDisk(snapshotKey); hit {
