@@ -449,6 +449,7 @@ applies prefix scopes, path filters and lazy evaluation.
 |---|---|
 | Build or status policy `queued` / `running` | CI pending |
 | Build or status policy `rejected` / `broken` | CI failed. The build link is in `context.buildId`. |
+| Build policy `rejected` for a build whose result is `canceled` | CI pending (#6817): a canceled build is no verdict on the code, so it neither triggers remediation nor passes a merge gate. |
 | Minimum-reviewers or required-reviewers policy `queued` | **Waiting on a human.** Not CI pending, and never a remediation trigger. It stays `queued` even after a self-vote (F5). |
 | Comment-resolution policy `rejected` | Unresolved threads, which feed `pr-remediation`. Not CI failing (PO ruling 2026-09-27). |
 | Work-item-linking policy `rejected` | A missing link. `open-pr` adds `workItemRefs` when the backlog is ADO. Not CI failing (PO ruling 2026-09-27). |

@@ -113,6 +113,13 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list comments", err, "")
 	}
+	// #6817: CI that finished without a verdict (an outage cancelled it) is
+	// not a stuck PR. Counting it would demote the PR, and a demotion clears
+	// only when the head moves, so a rerun that turns CI green would not
+	// bring it back. It gets a one-per-head notice asking for the rerun.
+	if ciNoVerdictOnlyRefusal(reason) {
+		return recordCINoVerdictNotice(ctx, provider, repo, selectedNumber, headSha, reason, comments, stdout, stderr)
+	}
 	prior, priorCommentID, found := latestMergeDemotionState(comments)
 
 	attempts := 1

@@ -135,6 +135,58 @@ Reads the `ciStatus` output emitted by a `ci-poll` stage.
 **Outcomes:** `pass`, `fail`, `timeout`. A `ciStatus` value of `timeout`
 always produces the distinct `timeout` outcome.
 
+#### Checks that finished without a verdict (#6817)
+
+A check that ended without judging the code is never `failing` and never
+`passing`. These are a GitHub check or workflow run concluded `cancelled`,
+`startup_failure` or `stale`, or an Azure DevOps build policy rejected for a
+build whose result is `canceled`. Providers report such a check as pending
+with `noVerdict` set. A CI-provider outage that cancels jobs before they run
+therefore never routes to CI remediation, and no merge gate accepts it. On
+the GitHub `actions/runs` fallback a cancelled workflow run still fails when
+one of its jobs failed.
+
+Nothing reruns such a check by itself, so `ci-poll` does not wait out its
+timeout for it. Instead it acts once two consecutive polls of the same head
+find every non-passing check finished without a verdict:
+
+1. If the stage sets `retryFailedChecksMaxAttempts`, `ci-poll` reruns the
+   checks, up to that many times.
+2. Once those reruns are spent or refused, or if none were configured, the
+   stage's `noVerdict` input decides what happens:
+   - `fail` (the default): the stage fails with the infrastructure failure
+     code `ci_no_verdict`. The runner retries the stage within its
+     infrastructure budget. A run that ends on `ci_no_verdict` is an
+     infrastructure fault, not a work failure, so it does not count toward
+     the failure-streak park.
+   - `continue`: the stage reports `ciStatus: pending` as a determined
+     result. The run goes on, and the no-verdict checks are recorded in
+     `ci-checks.json`.
+
+The bound differs by lane:
+
+- **implementation** (`ci-poll`, no reruns, `noVerdict: fail`). The run ends
+  after the stage's attempts, which are its `retry.maxAttempts` plus one
+  infrastructure retry, at two polls each. The open PR is left as it is, not
+  parked, and `backlog-query` does not reselect its issue while the PR is
+  open.
+- **pr-remediation** (`retry-failed-ci`, one rerun, `noVerdict: continue`).
+  - A PR whose only problem is no-verdict CI is never selected.
+  - A PR selected for another cause reruns its CI once, then goes on to
+    `remediation-checkpoint`. That cause is fixed and charged as usual, and
+    the agent sees the no-verdict checks as context.
+- **merge-review.** `merge-pr` refuses with a `ci-no-verdict:` reason.
+  `record-merge-refusal` does not count that reason toward demotion.
+  Instead it posts one sticky comment per head asking for a CI rerun. The
+  PR merges once a rerun turns CI green.
+
+`startup_failure` is a trade-off. GitHub also reports it for a workflow
+definition error, which a pull request that edits `.github/workflows/` can
+cause. Such a PR is no longer remediated for failing CI. It waits for a
+person: the merge-review comment asks for one. When the PR is remediated for
+another cause, the startup failure that survived its rerun reaches the agent
+in `ci-checks.json`, where it can be recognized as the PR's own error.
+
 ### `land-outcome`
 
 Reads the `landOutcome` output emitted by `merge-pr`.

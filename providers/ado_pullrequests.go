@@ -289,6 +289,9 @@ func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, 
 	if err != nil {
 		return "", nil, err
 	}
+	if err := p.markCanceledBuilds(ctx, projectName, evals); err != nil {
+		return "", nil, err
+	}
 	state, checks := p.reducePolicyEvaluations(evals, projectName, humanOnly)
 	return state, checks, nil
 }
@@ -730,6 +733,10 @@ type adoPolicyEvaluation struct {
 	Context struct {
 		BuildID json.Number `json:"buildId"`
 	} `json:"context"`
+	// buildCanceled is never decoded: markCanceledBuilds sets it when the
+	// build a rejected build policy evaluated was canceled, which is no
+	// verdict on the code (#6817).
+	buildCanceled bool
 }
 
 // stringSet builds a lookup set from a slice, ignoring empty entries.

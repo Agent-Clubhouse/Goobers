@@ -691,6 +691,41 @@ type CheckDetail struct {
 	// queued. Such a check is never CI pending and never a remediation
 	// trigger. Providers without such checks leave it false.
 	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
+	// NoVerdict marks a check that finished without judging the code: it
+	// was cancelled, never started, or went stale (#6817), as on a CI
+	// provider outage. Its State is pending, never failing (nothing to
+	// remediate) and never passing (nothing proven), but unlike a running
+	// check it will not change until something reruns it.
+	NoVerdict bool `json:"noVerdict,omitempty"`
+}
+
+// OnlyNoVerdictPending reports whether checks are pending solely because CI
+// finished without a verdict: at least one check is NoVerdict, and every
+// other check passed or is a wait on a human. A pending check without the
+// marker may still be running, so it never qualifies.
+func OnlyNoVerdictPending(checks []CheckDetail) bool {
+	found := false
+	for _, check := range checks {
+		switch {
+		case check.State == CheckStatePassing || check.AwaitingHuman:
+		case check.State == CheckStatePending && check.NoVerdict:
+			found = true
+		default:
+			return false
+		}
+	}
+	return found
+}
+
+// NoVerdictCheckNames lists the names of the NoVerdict checks, in order.
+func NoVerdictCheckNames(checks []CheckDetail) []string {
+	var names []string
+	for _, check := range checks {
+		if check.NoVerdict {
+			names = append(names, check.Name)
+		}
+	}
+	return names
 }
 
 // CheckAnnotation is one provider-native diagnostic attached to a check run.

@@ -26,14 +26,18 @@ import (
 // gather-pr-context's tests: one open PR, its check state, and a fixed set of
 // comments (one of which may carry an embedded verdict-json payload).
 type gatherPRContextServer struct {
-	owner, repo         string
-	authenticatedLogin  string
-	prNumber            int
-	head, base          string
-	headSHA             string
-	baseSHA             string
-	body                string
-	checkState          string
+	owner, repo        string
+	authenticatedLogin string
+	prNumber           int
+	head, base         string
+	headSHA            string
+	baseSHA            string
+	body               string
+	checkState         string
+	// checkRuns, when set, are the selected head's check runs: its rollup
+	// reports FAILURE (GitHub counts a cancelled run as one) and it has no
+	// legacy statuses, so only the runs themselves say what failed (#6817).
+	checkRuns           []map[string]interface{}
 	labels              []string
 	comments            []map[string]interface{}
 	includeUnselected   bool
@@ -141,12 +145,16 @@ func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
 		state := "SUCCESS"
-		if s.checkState == "failure" {
+		if s.checkState == "failure" || s.checkRuns != nil {
 			state = "FAILURE"
 		}
 		serveBulkCheckStates(t, w, r, &s.graphQLCalls, map[string]string{s.headSHA: state})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
+		if s.checkRuns != nil {
+			writeFakeJSON(w, map[string]interface{}{"state": "pending", "statuses": []interface{}{}})
+			return
+		}
 		state := s.checkState
 		if state == "" {
 			state = "success"
@@ -159,7 +167,11 @@ func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+		runs := s.checkRuns
+		if runs == nil {
+			runs = []map[string]interface{}{}
+		}
+		writeFakeJSON(w, map[string]interface{}{"check_runs": runs})
 	})
 	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/status", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})

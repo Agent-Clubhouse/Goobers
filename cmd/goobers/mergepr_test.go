@@ -25,7 +25,7 @@ import (
 // SHA) is independently controllable per test case.
 type mergePRServerState struct {
 	draft      bool
-	checkState string // "success" or "failure" — maps to CheckStatePassing/Failing
+	checkState string // "success", "failure" or "cancelled" — maps to CheckStatePassing/Failing/Pending (#6817)
 	// advisoryCheckFails adds a second, red check-run ("windows-smoke") alongside
 	// the green required "make-ci" so the combined CheckState is Failing while the
 	// only red check is advisory — the #961 case. mergeableState should be set to
@@ -240,8 +240,8 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		// — a real "success" PR always has at least one check-run, so the fake
 		// server must too, or "success" here would silently mean "pending".
 		conclusion := "success"
-		if st.checkState == "failure" {
-			conclusion = "failure"
+		if st.checkState == "failure" || st.checkState == "cancelled" {
+			conclusion = st.checkState
 		}
 		runs := []map[string]interface{}{
 			{"name": "make-ci", "status": "completed", "conclusion": conclusion, "html_url": "https://ci/make-ci"},
@@ -983,6 +983,14 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 			name:    "failing CI",
 			mutate:  func(st *mergePRServerState, inputs map[string]string) { st.checkState = "failure" },
 			wantSub: "CI is",
+		},
+		{
+			// #6817: CI cancelled before it ran (a CI-provider outage) is no
+			// verdict on the code. It must never route to remediation, and
+			// it must never merge either: it reads as pending.
+			name:    "outage-cancelled CI",
+			mutate:  func(st *mergePRServerState, inputs map[string]string) { st.checkState = "cancelled" },
+			wantSub: ciNoVerdictReason + ": CI finished without a verdict (cancelled, never started or stale: make-ci)",
 		},
 		{
 			name:    "draft PR",
