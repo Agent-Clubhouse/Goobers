@@ -52,21 +52,37 @@ spec:
               backprop:
                 description: |-
                   Backprop explicitly enrolls terminal runs in provenance-aware credit
-                  attribution. Omitted and enabled=false both preserve legacy execution
-                  without attribution work.
+                  attribution, either actively or in shadow mode. Omitted, mode=off, and
+                  enabled=false without a mode all preserve legacy execution without
+                  attribution work.
                 properties:
                   enabled:
-                    description: Enabled opts terminal runs into attribution.
+                    description: |-
+                      Enabled is the legacy enrollment switch: true means active mode when
+                      Mode is omitted.
                     type: boolean
                   granularity:
                     description: |-
                       Granularity selects when attribution is recorded. run (the default)
                       writes only the end-of-run record; stage additionally writes a
                       best-effort, read-only checkpoint after each stage finishes, and the
-                      end-of-run record composes those checkpoints. Preview.
+                      end-of-run record composes those checkpoints. Applies only to active
+                      mode: shadow runs write no checkpoints. Preview.
                     enum:
                     - run
                     - stage
+                    type: string
+                  mode:
+                    description: |-
+                      Mode selects off, shadow, or active attribution. When set it is
+                      authoritative over Enabled. Shadow does no work at run end; its
+                      attribution is computed on demand from the run journal and filing
+                      passes, gates, and default read surfaces
+                      never consume. Enabled=true is accepted only with mode=active.
+                    enum:
+                    - "off"
+                    - shadow
+                    - active
                     type: string
                   version:
                     description: Version pins the attribution contract interpreted
@@ -75,9 +91,14 @@ spec:
                     - v1
                     type: string
                 required:
-                - enabled
                 - version
                 type: object
+                x-kubernetes-validations:
+                - message: backprop requires enabled or mode
+                  rule: has(self.enabled) || has(self.mode)
+                - message: backprop.enabled=true requires mode to be omitted or active
+                  rule: '!has(self.enabled) || !self.enabled || !has(self.mode) ||
+                    self.mode == ''active'''
               displayName:
                 description: DisplayName is the human-facing name shown on the portal.
                 type: string
