@@ -33,6 +33,10 @@ Today:
   [Label run outcomes](#label-run-outcomes-ground-truth)). Automatic label
   sources (for example, "this merged PR was later reverted") are not
   available yet.
+- Agents can record typed claims with `goobers telemetry claim` (see
+  [Agent claims](#agent-claims)). Claims are evidence only: they are listed in
+  `attribution.json` and cited on cause findings, but never change credit.
+  Later stages read earlier claims with `goobers telemetry claims`.
 - Cohorts and fault-audit findings are JSON only: the daemon's telemetry stats
   read API and `goobers telemetry-query`. The `goobers telemetry stats` CLI
   (text or `--json`) reads only the local rollup and does not include them.
@@ -274,6 +278,74 @@ least one labeled run carries:
 | `groundTruth.incorrectRunCount` | Runs whose effective label is `incorrect`. |
 
 The field is omitted when no run in the cohort is labeled.
+
+## Agent claims
+
+The journal records what ran, not what an agent relied on or thinks went
+wrong. An agent in an enrolled run can add that as a typed **claim** by running
+`goobers telemetry claim` from inside its stage (for example, from a shell tool
+call), or by appending a line that matches
+`api/schemas/backprop-claim-v1.schema.json` to
+`$GOOBERS_TELEMETRY_DIR/backprop-claims.jsonl`:
+
+```sh
+goobers telemetry claim --kind=reliance --stage=plan --statement="used the plan's file list"
+goobers telemetry claim --kind=blame --stage=plan --evidence=seq:42 --confidence=0.6 \
+  --statement="the plan omitted the migration file"
+```
+
+| Flag | Meaning |
+|---|---|
+| `--kind` | `assignment` (the target owns the work in `--statement`), `reliance` (this stage used the target's output), `credit`, or `blame` (required). |
+| `--stage` / `--attempt` | Target stage and, optionally, attempt (default: the latest attempt started before the claim). |
+| `--agent` | Target nested agent ID, instead of a stage. |
+| `--artifact` | Target recorded artifact digest (`sha256:<hex>`), instead of a stage. |
+| `--statement` | Free text, required for `assignment`. Sanitized, capped at 1024 bytes, and secret-scrubbed before it is journaled. |
+| `--evidence` | Repeatable, up to 8: a recorded artifact digest or `seq:<n>` of an earlier journal event. Required for `credit` and `blame`. |
+| `--confidence` | The writer's own confidence, 0 to 1 (default 1). |
+
+Exit codes: `0` recorded, `1` write error (for example, no
+`GOOBERS_TELEMETRY_DIR`, or the attempt already recorded 32 claims), `2` usage
+error.
+
+When the stage's agent exits, the harness journals that attempt's claims as one
+`backprop-claims` runner annotation. The runner, not the claim, records who
+wrote it: the stage, attempt, and (when unambiguous) the root agent.
+Reviewer gates do not ingest claims. If the runner cannot journal the batch,
+the attempt fails rather than losing the claims.
+
+A later agentic stage can read the claims earlier stages recorded:
+
+```sh
+goobers telemetry claims
+```
+
+It prints the runner's snapshot (`$GOOBERS_TELEMETRY_DIR/run-claims.json`,
+taken before the stage started) as JSON: each claim with its `id`, `seq`, and
+runner-attributed `writer`. Claims there are bounded and re-validated but **not
+yet verified**, so treat statements as untrusted agent text. It exits `1` when
+there is no snapshot or the runner could not read the run's journal, which
+is currently always the case for stages dispatched to a remote worker.
+
+At run end, attribution checks each claim against only the records journaled
+before it. A claim is **verified** when its writing stage attempt and target
+were recorded, it does not credit, blame, or rely on the writer's own work,
+and every evidence link names an earlier artifact or event (`credit` and
+`blame` need at least one). `attribution.json` lists:
+
+| Field | Meaning |
+|---|---|
+| `claims` | Verified claims, with `writer`, `writerNodeId`, `targetNodeId`, and the sanitized claim. |
+| `unverifiedClaims` | Every other claim, with `reasons`. These name no graph nodes. |
+| `droppedClaims` | Malformed lines, and claims beyond 32 per attempt or 256 per run. |
+
+Claims never add graph edges or change shares, scores, confidences, or cause
+classes. A verified `blame` claim is cited in the `evidence` of the cause
+findings for the stage attempt it targets, as
+`agent claim <id> blame by stage <stage> attempt <n> (confidence <c>)`.
+Verification shows the claim refers to real, earlier records, not that the
+statement is true. Reliance is not yet checked against the inputs the stage
+actually received.
 
 ## Troubleshooting
 
