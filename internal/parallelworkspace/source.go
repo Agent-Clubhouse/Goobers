@@ -142,6 +142,18 @@ func readSource(reader *journal.Reader, request spec.Request, source spec.Source
 // original root boundary. It supplies archive policy without inventing a worker
 // contract and does not mutate or acquire a repository.
 func ReadSource(reader *journal.Reader, source spec.Source, parallel string, sequence uint64) (recovery.ChildSnapshot, error) {
+	id, err := reader.Identity()
+	if err != nil {
+		return recovery.ChildSnapshot{}, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return recovery.ChildSnapshot{}, err
+	}
+	return readSourceWith(reader, id, events, source, parallel, sequence)
+}
+
+func readSourceWith(reader *journal.Reader, id journal.RunIdentity, events []journal.Event, source spec.Source, parallel string, sequence uint64) (recovery.ChildSnapshot, error) {
 	var metadata sourceMetadata
 	if source.Metadata.Integrity != apiv1.IntegrityTrusted || source.Bundle.Integrity != apiv1.IntegrityTrusted {
 		return metadata.Snapshot, errors.New("parallel source lacks host provenance")
@@ -153,10 +165,6 @@ func ReadSource(reader *journal.Reader, source spec.Source, parallel string, seq
 	if json.Unmarshal(data, &metadata) != nil || metadata.Version != 1 || metadata.Parallel != parallel || metadata.Sequence != sequence {
 		return metadata.Snapshot, errors.New("parallel source scope changed")
 	}
-	id, err := reader.Identity()
-	if err != nil {
-		return metadata.Snapshot, err
-	}
 	record := metadata.Snapshot.Record
 	if id.Child != nil || record.RunID != id.RunID || metadata.Gaggle != id.Gaggle || record.SnapshotSHA != source.SnapshotSHA || record.ArchiveDigest != source.Bundle.Digest || record.ArchiveBytes != source.Bundle.Size {
 		return metadata.Snapshot, errors.New("parallel source identity changed")
@@ -167,7 +175,7 @@ func ReadSource(reader *journal.Reader, source spec.Source, parallel string, seq
 	if err := metadata.Snapshot.Policy.Validate(); err != nil {
 		return metadata.Snapshot, err
 	}
-	if err := verifySourceBoundary(reader, metadata); err != nil {
+	if err := verifySourceBoundary(events, metadata); err != nil {
 		return metadata.Snapshot, err
 	}
 	if _, err := reader.ArtifactBytesBounded(source.Bundle, MaxBundleBytes); err != nil {
@@ -176,11 +184,7 @@ func ReadSource(reader *journal.Reader, source spec.Source, parallel string, seq
 	return metadata.Snapshot, nil
 }
 
-func verifySourceBoundary(reader *journal.Reader, metadata sourceMetadata) error {
-	events, err := reader.Events()
-	if err != nil {
-		return err
-	}
+func verifySourceBoundary(events []journal.Event, metadata sourceMetadata) error {
 	for _, event := range events {
 		if event.Seq != metadata.Sequence {
 			continue
