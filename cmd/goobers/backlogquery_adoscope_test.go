@@ -115,7 +115,8 @@ func (b *adoScopeBoard) serveItem(t *testing.T, w http.ResponseWriter, r *http.R
 		writeADOJSON(t, w, b.serveComments(t, id, r))
 	case len(parts) == 3 && parts[2] == "updates":
 		// The ready tag's add event, so a claim can measure ready age.
-		writeADOJSON(t, w, map[string]any{"count": 1, "value": []map[string]any{{"id": 1, "fields": map[string]any{
+		// rev matches the item's, so the walk reads a complete history (#5960).
+		writeADOJSON(t, w, map[string]any{"count": 1, "value": []map[string]any{{"id": 1, "rev": 1, "fields": map[string]any{
 			"System.Tags":        map[string]any{"oldValue": "goobers:approved", "newValue": b.item(id)["fields"].(map[string]any)["System.Tags"]},
 			"System.ChangedDate": map[string]any{"newValue": "2026-09-01T00:00:00Z"},
 		}}}})

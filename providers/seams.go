@@ -129,7 +129,9 @@ type RateLimitEvent struct {
 	// was present and parsed. Remaining is meaningless when this is false —
 	// an absent header must never be read as a genuine "0 remaining"
 	// (ADO-N40) — and json's zero-value default (false, omitted) already
-	// matches "unknown" for any event built without setting it.
+	// matches "unknown" for any event built without setting it. The GitHub
+	// and ADO providers parse X-RateLimit-Remaining and set it; Gitea's
+	// events never read that header, so they always report unknown (#5960).
 	RemainingKnown bool          `json:"remainingKnown,omitempty"`
 	Reset          time.Time     `json:"reset,omitempty"`
 	RetryAfter     time.Duration `json:"retryAfter,omitempty"`

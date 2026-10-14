@@ -293,6 +293,18 @@ func IntegrityForLabels(labels []string, trustLabel string) apiintegrity.Grade {
 // item only: a caller walking several items can skip it and continue.
 var ErrLabelHistoryIncomplete = errors.New("work item label history is incomplete")
 
+// ErrorCodeLabelHistoryRevisionMismatch is the stable code callers surface
+// for ErrLabelHistoryRevisionMismatch.
+const ErrorCodeLabelHistoryRevisionMismatch = "ado_label_history_revision_mismatch"
+
+// ErrLabelHistoryRevisionMismatch is the ErrLabelHistoryIncomplete case in
+// which an Azure DevOps item's update history ends before the item's current
+// revision (#5960). The walk relies on ADO writing exactly one update per
+// revision. If that assumption were ever wrong for some update kind, every
+// ADO claim would be skipped item by item, so callers report this case loudly
+// and distinctly rather than as an ordinary malformed item.
+var ErrLabelHistoryRevisionMismatch = fmt.Errorf("%w: update history ends before the item's current revision (%s)", ErrLabelHistoryIncomplete, ErrorCodeLabelHistoryRevisionMismatch)
+
 // WorkItemLabelTransition is one provider-issued label add/remove event.
 type WorkItemLabelTransition struct {
 	EventID    int64     `json:"eventId"`
