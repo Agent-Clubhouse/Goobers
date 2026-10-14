@@ -144,7 +144,7 @@ func TestADORunBranchRootsByRepo(t *testing.T) {
 	}
 	set.Workflows = []apiv1.Workflow{workflow("default", "implementation"), workflow("team", "merge-review"), workflow("site", "implementation")}
 	got := adoRunBranchRootsByRepo(cfg, set)
-	want := map[int][]string{1: {"goobers/", "goobers/implementation/", "team/runs/", "team/runs/merge-review/"}}
+	want := map[int][]string{1: {"goobers/", "goobers/children/", "goobers/implementation/", "team/runs/", "team/runs/children/", "team/runs/merge-review/"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("namespaces = %v, want %v", got, want)
 	}

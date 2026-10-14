@@ -62,7 +62,7 @@ func mcpCredentialProviderMisfit(server string, ref apiv1.MCPCredentialRef, gagg
 		server, key, owner, gaggle.Name, mcpProviderLabel(project))
 	if backlog := gaggle.Spec.Backlog.Provider; backlog != "" && backlog != project && capability.FitsProvider(key, backlog) {
 		message += fmt.Sprintf("; the gaggle's backlog is on %s, but an agentic stage's credentials follow the project repository, "+
-			"so issue capabilities are not routed to the backlog provider for it", backlog)
+			"so github:* capabilities are not routed to the backlog provider for it", backlog)
 	}
 	return message + "; bind the server's own credential with kind: byo and a named ref (instance credentials: mcp:), or remove the reference", true
 }

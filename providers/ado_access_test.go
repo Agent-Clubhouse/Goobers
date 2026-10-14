@@ -144,23 +144,26 @@ func TestADOProviderRunBranchPrefixPolicies(t *testing.T) {
 			config(16, "Build", true, true, scope("repo-guid", "refs/heads/te", "Prefix")),
 			config(17, "Build", true, true, scope("repo-guid", "refs/heads/team/goobers/", "Exact")),
 			config(18, "Build", true, true, scope("repo-guid", "refs/heads/team/goobers/merge-review/", "Prefix")),
+			config(19, "Build", true, true, scope("repo-guid", "refs/heads/team/goobers/children", "Prefix")),
 		}})
 	})
 	provider := newADOAccessTestProvider(t, mux)
-	policies, err := provider.RunBranchPrefixPolicies(context.Background(), adoAccessRepo(), "repo-guid", []string{"team/goobers/", "team/goobers/implementation/"})
+	policies, err := provider.RunBranchPrefixPolicies(context.Background(), adoAccessRepo(), "repo-guid", []string{"team/goobers/", "team/goobers/children/", "team/goobers/implementation/"})
 	if err != nil {
 		t.Fatalf("RunBranchPrefixPolicies: %v", err)
 	}
 	// 12 is the namespace folder itself, 13 a parent folder (in another case)
 	// and 14 a workflow's run-branch folder; 15 is the default namespace this
 	// gaggle does not use, 16 is a string prefix but not a parent folder, 17
-	// is not a Prefix scope, and 18 names a workflow that does not run here.
+	// is not a Prefix scope, 18 names a workflow that does not run here, and
+	// 19 is the published child runs' folder.
 	want := []ADOBranchPolicy{
 		{ID: 3, TypeName: "Minimum number of reviewers", RefName: "refs/heads"},
 		{ID: 7, TypeName: "Build", RefName: "refs/heads/"},
 		{ID: 12, TypeName: "Build", RefName: "refs/heads/team/goobers/", RunBranchRoot: "team/goobers/"},
 		{ID: 13, TypeName: "Build", RefName: "refs/heads/Team", RunBranchRoot: "team/goobers/"},
 		{ID: 14, TypeName: "Build", RefName: "refs/heads/team/goobers/implementation/", RunBranchRoot: "team/goobers/implementation/"},
+		{ID: 19, TypeName: "Build", RefName: "refs/heads/team/goobers/children", RunBranchRoot: "team/goobers/children/"},
 	}
 	if !reflect.DeepEqual(policies, want) {
 		t.Fatalf("policies = %+v, want %+v", policies, want)

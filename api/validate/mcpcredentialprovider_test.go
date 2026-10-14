@@ -155,7 +155,7 @@ func TestMCPCredentialProviderWarning(t *testing.T) {
 				t.Errorf("MCP002 message %q lacks %q", issue.Message, want)
 			}
 		}
-		backlogClause := strings.Contains(issue.Message, "not routed to the backlog provider")
+		backlogClause := strings.Contains(issue.Message, "github:* capabilities are not routed to the backlog provider")
 		if backlogClause != (issue.Gaggle == "mixed") {
 			t.Errorf("MCP002 backlog clause = %v for gaggle %q: %s", backlogClause, issue.Gaggle, issue.Message)
 		}

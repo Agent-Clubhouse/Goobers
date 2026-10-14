@@ -158,7 +158,9 @@ func checkADORepositoryAccess(repos []instance.RepoRef, runBranchRoots map[int][
 // adoRunBranchRootsByRepo maps each Azure DevOps repos[] index to the sorted
 // run-branch roots pushed to that repository: the normalized branch namespace
 // (spec.branchNamespace, default "goobers/") of each gaggle whose project
-// resolves to that entry, and <namespace><workflow>/ for each of its workflows.
+// resolves to that entry, <namespace><workflow>/ for each of its workflows, and
+// <namespace>children/, where published child runs push
+// (childPublicationProvider).
 func adoRunBranchRootsByRepo(cfg *instance.Config, set *instance.ConfigSet) map[int][]string {
 	out := map[int][]string{}
 	for _, gaggle := range set.Gaggles {
@@ -167,7 +169,7 @@ func adoRunBranchRootsByRepo(cfg *instance.Config, set *instance.ConfigSet) map[
 			continue
 		}
 		namespace := providers.NormalizeBranchNamespace(gaggle.Spec.BranchNamespace)
-		roots := []string{namespace}
+		roots := []string{namespace, namespace + "children/"}
 		for _, workflow := range set.Workflows {
 			if workflow.Spec.Gaggle == gaggle.Name {
 				roots = append(roots, namespace+workflow.Name+"/")

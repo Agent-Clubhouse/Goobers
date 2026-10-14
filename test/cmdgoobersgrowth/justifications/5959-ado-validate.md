@@ -1,13 +1,13 @@
 # #5959: ADOACCESS004 covers run-branch namespaces and workflow folders
 
-Growth: about +52 non-test lines and +0 files in `cmd/goobers`, all in
+Growth: about +55 non-test lines and +0 files in `cmd/goobers`, all in
 `validateadoaccess.go` (plus a one-line call-site change in
 `validateadobacklog.go`).
 
 - `adoRunBranchRootsByRepo` maps each Azure DevOps `repos[]` entry to the
   run-branch roots pushed to it: the branch namespace of each gaggle whose
   project resolves to that entry, and `<namespace><workflow>/` for each of its
-  workflows. The access read and its reporter thread those roots through, and
+  workflows, and `<namespace>children/`, where published child runs push. The access read and its reporter thread those roots through, and
   the ADOACCESS004 reporter gains the message for a namespace or workflow
   folder (doc comments included).
 - `adoDoneStatesByTypePointer` RFC 6901-escapes the

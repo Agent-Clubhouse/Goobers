@@ -176,9 +176,10 @@ func adoPermissionResults(response adoPermissionEvaluationBatch, permissions []A
 // Prefix scope covering Goobers' run branches: a scope over all of
 // refs/heads/ (which makes every branch PR-only, live probe F8), or one over a
 // folder that contains a run-branch root in runBranchRoots. A root is a
-// gaggle's branch namespace ("goobers/") or one of its workflows' run-branch
-// folders ("goobers/implementation/"), since a run branch is
-// <namespace><workflow>/<run> (BranchNameIn). Either way every push of the
+// gaggle's branch namespace ("goobers/") or one of its run-branch folders: a
+// workflow's ("goobers/implementation/"), since a run branch is
+// <namespace><workflow>/<run> (BranchNameIn), or the published child runs'
+// ("goobers/children/"). Either way every push of the
 // covered run branches must go through a pull request, so Goobers cannot push
 // them. A blanket policy is reported with an empty RunBranchRoot. Scopes that
 // name no ref, or name one branch or a folder that contains no root
