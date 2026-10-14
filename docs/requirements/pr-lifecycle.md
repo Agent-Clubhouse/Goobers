@@ -397,7 +397,14 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   candidate. When every strong candidate the run could claim was skipped, the
   behind-base fallback MUST be consulted as if no strong candidate existed.
   The cycle is no-work only when nothing claimable could progress, and its
-  reason names each skip. A clean, behind-base,
+  reason names each skip. On Azure DevOps, whose PR list carries no CI state,
+  the lane MUST discover failing CI itself: it reads the blocking-policy
+  evaluations of each eligible PR whose tier the read can change (not already
+  `needs-remediation`, not parked `merge-escalated`, not claimed by another
+  run), at most a bounded number per cycle in a window that rotates across
+  cycles so every such PR is eventually read (a targeted run reads its target
+  alone), so a red build-validation policy makes the PR a strong candidate
+  without waiting for merge-review to demote it. A clean, behind-base,
   finding-free candidate SHOULD be completed through the provider's
   update-branch API without provisioning a worktree (#720); everything else
   enters full remediation. A PR carrying `goobers:needs-human` MUST be excluded
