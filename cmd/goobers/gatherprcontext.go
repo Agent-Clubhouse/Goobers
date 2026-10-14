@@ -465,7 +465,12 @@ func gatherPRContextForCandidate(
 	if skip, code := handleGatherPRContextUnchangedDigest(root, a, ctx, selected, comments, stdout, stderr); skip != "" || code != 0 {
 		return gatheredPRContext{}, skip, code
 	}
-	return gatheredPRContext{pr: selected, behind: behind, verdict: gatherPRVerdict(root, repo, selected.Number, comments, author), comments: comments}, "", 0
+	verdict, _, err := gatherPRVerdictChecked(root, repo, selected.Number, comments, author)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return gatheredPRContext{}, "", 1
+	}
+	return gatheredPRContext{pr: selected, behind: behind, verdict: verdict, comments: comments}, "", 0
 }
 
 func gatherPRContextPullRequests(ctx context.Context, a gatherPRContextAdapter, repo providers.RepositoryRef, base, prefix string, target remediationTarget) ([]providers.PullRequestSummary, error) {
@@ -809,7 +814,40 @@ func skippedStrongTierFallback(
 // opportunistically migrated into the KV key (best-effort — see
 // migrateVerdictState) so a later read is authoritative without needing the
 // provider at all.
+//
+// The record returned is authoritative over every published merge-review
+// verdict on the same head (#5890): a finding an earlier review raised there
+// and no later review resolved or rejected is listed in its Findings, and a
+// pass carrying one reads needs-changes. A later generic pass therefore cannot
+// clear a finding for the healers and remediation stages that read this.
+//
+// When the ledger cannot be read this returns nil, which callers that can
+// only narrow a finding signal treat as "no narrowing". A caller that would
+// clear or skip work on the verdict uses gatherPRVerdictChecked and fails.
 func gatherPRVerdict(root string, repo providers.RepositoryRef, prNumber int, comments []providers.Comment, author string) *apiv1.Verdict {
+	verdict, _, err := gatherPRVerdictChecked(root, repo, prNumber, comments, author)
+	if err != nil {
+		return nil
+	}
+	return verdict
+}
+
+// gatherPRVerdictChecked is gatherPRVerdict that also names the standing
+// findings it carried into the record and reports a ledger read failure.
+func gatherPRVerdictChecked(root string, repo providers.RepositoryRef, prNumber int, comments []providers.Comment, author string) (*apiv1.Verdict, []string, error) {
+	latest := gatherLatestPRVerdict(root, repo, prNumber, comments, author)
+	if latest == nil {
+		return nil, nil, nil
+	}
+	records, err := verdictRecordsForPR(root, repo, prNumber, comments, author)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read merge-review verdict ledger for PR #%d: %w", prNumber, err)
+	}
+	folded, standing := carryOutstandingFindings(records, *latest, prNumber, true)
+	return &folded, standing, nil
+}
+
+func gatherLatestPRVerdict(root string, repo providers.RepositoryRef, prNumber int, comments []providers.Comment, author string) *apiv1.Verdict {
 	if root != "" {
 		if verdict, ok, err := loadVerdictState(root, repo, prNumber); err == nil && ok {
 			return &verdict
@@ -1119,6 +1157,12 @@ func validateRemediationAlgorithm(stderr io.Writer) {
 func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, minSeverity apiv1.Severity) bool {
 	if verdict == nil {
 		return false
+	}
+	// A standing finding (#5890) always counts, whatever its class or
+	// severity: merge-pr blocks on it at the info floor, so every healer must
+	// route it to remediation rather than heal past it.
+	if len(verdict.StandingFindings) > 0 {
+		return true
 	}
 	target := strconv.Itoa(prNumber)
 	for _, finding := range verdict.Findings {

@@ -162,6 +162,18 @@ above can never see.
    The remediation responder addresses findings by their 1-based array
    position and requires exactly one response per entry, so an incomplete
    findings list makes the verdict impossible to remediate.
+10. **Answer every standing finding.** `standingFindings` lists the findings
+    an earlier review raised on this same head that no later review
+    resolved or rejected. Each one still blocks the merge, whatever you
+    decide. For each, either raise it again in `findings` with the same `id`
+    and its own code-change class (it still holds), or add a `dispositions`
+    entry: `resolved` with
+    `evidence` naming where the diff addresses it, or `rejected` with a
+    `reason` saying why it does not hold. A pass that leaves a standing
+    finding unanswered is published as `needs-changes` with that finding
+    carried, so silence never clears it. Never reuse a standing finding's
+    `id` on a different finding (a `rebase-needed` or `cross-pr-blocked`
+    one, say): that does not answer it, and it stays standing.
 
 ## Repasses
 
@@ -229,6 +241,12 @@ populate differs.
 - `headSha` / `baseSha` — **holistic mode only**: copy `selectedHeadSha`/
   `selectedBaseSha` from your invocation context verbatim. Omit entirely in
   single-diff mode, which has no PR of its own to pin against.
+- `dispositions` — **holistic mode only**, and only to answer
+  `standingFindings` (see "Holistic mode" 10). Each entry has exactly
+  `findingId` (the standing finding's `id`, verbatim), `outcome` (`resolved`
+  or `rejected`), and `evidence` (required for `resolved`) or `reason`
+  (required for `rejected`). Do not set `standingFindings` yourself: the
+  runner writes it.
 
 Do **not** emit an `evidence` field in either mode. A verdict's `evidence`
 must be digested artifact pointers, which you cannot construct — and you

@@ -15,7 +15,11 @@ merge-base or at a base commit since, is red because its base was, so
 it is updated the same way. Other candidates are routed to full
 remediation, including a PR carrying goobers:needs-remediation that has
 human feedback no Goobers response has answered: this lane clears that
-label, and the feedback needs the agentic path. Comments are classified
+label, and the feedback needs the agentic path. So is a PR whose head
+carries a finding an earlier review raised and no later review resolved
+or rejected, even under a later pass: a current branch does not heal
+it (#5890). A verdict ledger that cannot be read fails the stage.
+Comments are classified
 as pr-comment-watch classifies them, under the same identityMode
 (dedicated or shared; default dedicated) and excludeAuthors inputs; set
 them to pr-comment-watch's values. A run dispatched for one

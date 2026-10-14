@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/findingledger"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -102,6 +103,10 @@ func verdictHasIndependentSubstantiveFindingForPR(
 	if verdict == nil {
 		return false
 	}
+	// A standing finding (#5890) is never attributable to sibling overlap.
+	if len(verdict.StandingFindings) > 0 {
+		return true
+	}
 	target := strconv.Itoa(prNumber)
 	overlapping := make(map[string]bool, len(overlappingSiblings))
 	for _, number := range overlappingSiblings {
@@ -190,7 +195,10 @@ const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-ca
 	"lookup, always forcing a fresh review. It also resolves the selected PR's\n" +
 	"base drift deterministically (selectedBaseDrift: current|behind|unknown,\n" +
 	"with selectedMergeBaseSha/selectedBaseTipSha) so the reviewer is told\n" +
-	"whether the base moved instead of inferring it. Exit codes: 0 = context\n" +
+	"whether the base moved instead of inferring it, and lists as\n" +
+	"standingFindings the findings an earlier review raised on the selected\n" +
+	"head that no later review resolved or rejected, for the reviewer to\n" +
+	"answer (#5890). Exit codes: 0 = context\n" +
 	"gathered (possibly empty — no siblings is not an error), 1 = business\n" +
 	"error, 2 = usage/IO error.\n"
 
@@ -668,14 +676,46 @@ siblingLoop:
 		// (evaluateGate), never through a declared inputsFrom edge.
 		out["cachedVerdictJson"] = cachedVerdictJSON
 	}
-	cacheNote := "no verdict cache hit"
-	if cachedVerdictJSON != "" {
-		cacheNote = "verdict cache HIT — reviewer call will be skipped"
-	}
+	// #5890: the earlier findings on this head the reviewer must answer.
+	out["standingFindings"] = standingFindingsForReview(ctx, root, provider, repo, selectedNumber, selectedHeadSHA, stderr)
 	return writeSiblingContextResult(resultFile, out, fmt.Sprintf(
 		"gathered context for %d sibling PR(s) (%d reused from cache, %d fetched fresh); %s",
-		len(siblings), reused, len(siblings)-reused, cacheNote,
+		len(siblings), reused, len(siblings)-reused, siblingContextCacheNote(cachedVerdictJSON),
 	), stdout, stderr)
+}
+
+func siblingContextCacheNote(cachedVerdictJSON string) string {
+	if cachedVerdictJSON != "" {
+		return "verdict cache HIT — reviewer call will be skipped"
+	}
+	return "no verdict cache hit"
+}
+
+// standingFindingsForReview lists the findings an earlier review raised on
+// the selected head that no later review resolved or rejected
+// (#5890). The reviewer receives them as standingFindings and must answer
+// each: raise it again under the same id, or disposition it. Best-effort: on
+// a read failure the reviewer sees none, and apply-verdict, which reads the
+// same records when it publishes, still carries them or fails.
+func standingFindingsForReview(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, number int, head string, stderr io.Writer) []apiv1.Finding {
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(number))
+	author := ""
+	if err == nil {
+		author, err = provider.AuthenticatedLogin(ctx)
+	}
+	if err != nil {
+		pf(stderr, "warning: read earlier verdicts on PR #%d for standing findings: %v\n", number, err)
+		comments = nil
+	}
+	records, err := verdictRecordsForPR(root, repo, number, comments, author)
+	if err != nil {
+		pf(stderr, "warning: read the scheduler-state verdict for PR #%d: %v\n", number, err)
+	}
+	standing := findingledger.Outstanding(records, head, prFindingPolicy(number))
+	if standing == nil {
+		return []apiv1.Finding{}
+	}
+	return standing
 }
 
 // writeSiblingContextResult preserves the shared stage artifact protocol once a

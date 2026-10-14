@@ -491,7 +491,11 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 	"unchanged head turns pending; exit 0 (this\n" +
 	"cycle's work is simply moot, not an error — merge-review re-reviews\n" +
 	"next tick). Requires selectedNumber, selectedHeadSha, and\n" +
-	"selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or\n" +
+	"selectedBaseSha from Task.InputsFrom. Every published verdict carries\n" +
+	"standingFindings: the findings earlier reviews raised on the same head\n" +
+	"that no verdict answered in its dispositions (resolved with evidence,\n" +
+	"or rejected with a reason). A pass that leaves one standing is\n" +
+	"published as needs-changes (#5890). Exit codes: 0 = applied (or\n" +
 	"voided), 1 = business error, 2 = usage/IO error.\n"
 
 // runApplyVerdict implements `goobers apply-verdict` (issue #359): reads the
@@ -698,7 +702,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			// *issue* comments and submit a native review, neither of which exists
 			// on ADO, so the ADO path returns here.
 			if adoProvider, ok := provider.(*providers.ADOProvider); ok {
-				return publishADONonPassVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+				return publishADOReviewedVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
 			}
 			pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 			return 1
@@ -730,7 +734,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// bridge (they return before reaching here); this gate is reached on ADO
 		// only for a PASS.
 		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
-			return publishADOPassVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+			return publishADOReviewedVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
 		}
 		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 		return 1
@@ -826,7 +830,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("load finding-set history for PR #%d", selectedNumber), err, resultFile)
 	}
-	priorHistory, err := findingSetHistoryFromComments(statusComments, verdictAuthor)
+	priorHistory, err := foldPriorVerdicts(root, repo, selectedNumber, statusComments, verdictAuthor, &posted, &effective, stdout)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("read finding-set history for PR #%d", selectedNumber), err, resultFile)
 	}
@@ -1069,6 +1073,11 @@ func applyAdvisoryVerdict(
 	}
 	if verdict.SourceRunID == "" {
 		verdict.SourceRunID = runID
+	}
+	// #5890: an advisory record replaces the same single-slot records, so it
+	// carries the finding ledger too.
+	if verdict, err = foldAdvisoryVerdict(ctx, root, provider, repo, selectedNumber, verdict, stdout); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("fold earlier verdicts for PR #%d", selectedNumber), err, resultFile)
 	}
 	// Authoritative KV write BEFORE the sticky status comment (Goobers#3025/
 	// #5030) — see publishADOPassVerdict's identical ordering rationale.
@@ -2025,6 +2034,7 @@ func renderVerdictComment(v apiv1.Verdict) string {
 		}
 		s += line
 	}
+	s += renderFindingDispositions(v)
 	if payload, err := verdictJSONComment(v); err == nil {
 		s += "\n\n" + payload
 	}
