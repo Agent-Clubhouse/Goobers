@@ -792,6 +792,28 @@ minutes after that. It logs `goobers worker: error: worker deployment "goobers" 
 while the current version does not route to it, in either mode. It never exits
 over it.
 
+The same check is visible from the operator's tools (#6020). Both compare the
+deployment's routing with the builds that polled the engine task queue
+(`engine.taskQueue`) in the last two minutes, and neither changes the routing
+(#4084):
+
+- `goobers status` on an instance with an `engine:` block prints
+  `Warning: engine routing stalled: ...` (no live worker is routed tasks) or
+  `Warning: engine routing degraded: ...` (a new build is unrouted while the
+  old one still serves), followed by the `set-current-version` command. It
+  prints `Engine routing: unknown (...)` when it cannot reach Temporal or sees
+  no live worker; it is silent when healthy. `status --json` carries the same
+  verdict as `engineRouting` (`state`, `currentVersion`, per-version
+  `workers`, `detail`, `remediation`). The probe dials the instance's engine
+  frontend with a 5-second budget, so run status where that frontend is
+  reachable (for example in the daemon pod). Instances without an engine are
+  not probed. `status --api` does not serve it yet (#5985).
+- `goobers doctor --k8s --instance <root>` runs the `temporal-worker-routing`
+  check: fail when no live worker is routed tasks, warn for a partial rollout
+  or an unknown routing, pass when every live build is routed. The hint is
+  the command to run. Use `--checks temporal-worker-routing` to run it alone,
+  and `--record-instance` to make its outcome a `Cluster check` line in status.
+
 **Upgrading an instance that already ran versioned** (anything built from main
 between #4083 and #5950, including v0.5.0 betas): the worker now starts
 unversioned unless you opt in, and the deployment's current version still names

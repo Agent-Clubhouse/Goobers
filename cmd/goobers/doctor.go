@@ -50,6 +50,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--instance <root>] [--kubeconfi
 	"  oidc-issuer        required* §1/§3  issuer discovery document reachable\n" +
 	"  egress             required* §1/§5  outbound targets reachable from this host\n" +
 	"  temporal-namespace required* §2/§4  configured Temporal namespace is registered\n" +
+	"  temporal-worker-routing required* §2/§4 worker deployment routes tasks to live engine workers\n" +
 	"  registry           optional  §1     registry reachable (host-side sanity)\n\n" +
 	"  apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint\n" +
 	"  runner-class-capacity required §7 active runner pod requests fit a compatible node\n" +
@@ -91,6 +92,11 @@ const doctorHelp = "Usage: goobers doctor --k8s [--instance <root>] [--kubeconfi
 	"--k8s alone.\n\n" +
 	"--temporal-codec reports per-instance opt-in and strict mode without probing keys.\n" +
 	"--k8s --instance <root> applies the instance Temporal TLS and payload codec.\n\n" +
+	"temporal-worker-routing compares the \"goobers\" worker deployment's current\n" +
+	"version with the builds polling the engine task queue (engine.taskQueue with\n" +
+	"--instance, else goobers-engine). It fails when no live worker is routed tasks,\n" +
+	"warns when only some are or when routing cannot be read, and hints the\n" +
+	"set-current-version command. It never changes the routing itself.\n\n" +
 	"--repo diffs each configured repo's declared forge-policy manifest\n" +
 	"(<instance-root>/instance.yaml repos[].policy: required merge method,\n" +
 	"merge-queue requirement, required status checks — issue #916, Tier 4 of\n" +

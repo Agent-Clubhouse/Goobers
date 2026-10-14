@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/temporaldial"
+	"github.com/goobers/goobers/internal/workerrouting"
 )
 
 // ErrAbandonedWork reports a drain that expired with activities still in
@@ -124,7 +125,7 @@ func New(cfg Config) (*Host, error) {
 		bootstrap.RegisterEngine(w, c, cfg.Deps)
 		return w
 	}
-	h.describeRouting = describeDeploymentRouting
+	h.describeRouting = workerrouting.DescribeRouting
 	h.routingDelay = routingCheckDelay
 	h.routingInterval = routingCheckInterval
 	h.childSettlementTimeout = ChildSettlementTimeout
