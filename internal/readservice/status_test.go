@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -375,7 +376,7 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("released claim = %v, %v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(releasedKey, "released"); err != nil {
+	if err := ledger.ReleaseScoped(releasedKey, "released", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	lookups := 0
@@ -698,7 +699,7 @@ func TestDecorateOperatorClaimsVerifiesTheLeasedItem(t *testing.T) {
 		return key
 	}
 	claim("merge-active", "pr/536")
-	if err := ledger.ReleaseScoped(claim("merge-released", "pr/538"), "merge-released"); err != nil {
+	if err := ledger.ReleaseScoped(claim("merge-released", "pr/538"), "merge-released", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	claim("worker", "3345")
@@ -809,7 +810,7 @@ func TestDecorateOperatorClaimsSkipsEveryLedgerOnlyLease(t *testing.T) {
 	}
 	release := func(key localscheduler.ClaimKey, runID string) {
 		t.Helper()
-		if err := ledger.ReleaseScoped(key, runID); err != nil {
+		if err := ledger.ReleaseScoped(key, runID, claimrelease.Completed.Reason()); err != nil {
 			t.Fatal(err)
 		}
 	}

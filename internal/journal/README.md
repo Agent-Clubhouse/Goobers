@@ -155,6 +155,16 @@ log: `workflow` (which workflow the decision concerns) and `runId` (which run a
 claim/dispatch pertains to) — a run's own events don't need either since both
 are implicit from the run directory.
 
+A release (`claim.released` / `claim.force_released`) also records why
+ownership ended (#4421). `reason` is the disposition code (`completed`,
+`failed`, `escalated`, `cancelled`, `abandoned`, `no-work`, `stall-swept`,
+`reconciled`, `force-released`, `superseded`, or `unknown`). `claimRelease`
+is the structured reason (`internal/claimrelease.Reason`): the disposition,
+plus the stage, a stable code, a bounded and scrubbed summary, and the
+operator actor, each when known. Only the release that actually ends a lease
+is journaled, so a retried release never adds a second, contradictory
+boundary. Events written before these fields existed simply lack them.
+
 ### In-daemon compaction and the generation pointer
 
 Unlike a run's `events.jsonl` (write-once for the run's lifetime, then

@@ -43,6 +43,35 @@ Claim and claim-release comments retain their existing
 `goobers-claim: run=...` markers for compatibility and also carry this general
 attribution block.
 
+### Claim-release reasons
+
+A claim-release comment states why the claim ended (#4421). Its first line is
+still the release boundary, `goobers-claim-release: run=<id>`, unchanged, so
+claim-epoch detection and historical comments keep parsing. A versioned
+machine-readable reason line follows in its own paragraph:
+
+```text
+goobers-claim-release-reason: v=1 disposition=<disposition> [stage=<stage>] [code=<code>] [actor=<actor>]
+```
+
+- **Fields.** The fields are space-separated `key=value` pairs. Values use a
+  restricted alphabet (ASCII letters, digits and `._-:+`, at most 64 bytes),
+  so a reader splits on whitespace and on the first `=` without unescaping.
+- **Dispositions.** `disposition` is one of `completed`, `failed`,
+  `escalated`, `cancelled`, `abandoned`, `no-work`, `stall-swept`,
+  `reconciled`, `force-released`, `superseded` or `unknown`. `stage`, `code`
+  and `actor` appear only when known.
+- **Reading it.** Ignore unknown keys. Treat a missing line, or any version
+  other than `v=1`, as an unknown (legacy) release.
+
+The human-readable `Reason:` line and an eligibility statement follow the
+reason line. The summary in the `Reason:` line is bounded to 240 bytes. It is
+scrubbed of secret shapes, credential assignments and local paths. HTML
+delimiters and `@` mentions in it are neutralized. The machine line never
+carries the summary. The same structured reason is recorded on the claim
+ledger's history entry and on the `claim.released` / `claim.force_released`
+instance-journal event (`claimRelease`).
+
 ## Reading back text Goobers wrote
 
 The forge stores the body with the attribution block appended, and provider

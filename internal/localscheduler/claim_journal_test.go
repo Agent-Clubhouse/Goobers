@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -23,7 +24,7 @@ func TestClaimLedgerJournalsTransitions(t *testing.T) {
 	if _, _, err := l.Claim("issue-8", "run-a", "curate", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Release("issue-8", "run-a"); err != nil {
+	if err := l.Release("issue-8", "run-a", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := l.Claim("issue-9", "run-b", "implement", time.Minute); err != nil {

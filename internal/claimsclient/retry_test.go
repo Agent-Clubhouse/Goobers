@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // flakyPlane fails the first n calls to each request with mode, then answers
@@ -44,11 +46,14 @@ var retryKey = Key{Gaggle: "g", Provider: "p", ExternalID: "1"}
 func TestSaturationIsRetriedForEveryRoute(t *testing.T) {
 	ctx := context.Background()
 	routes := map[string]func(*HTTP) error{
-		"acquire":     func(h *HTTP) error { _, _, err := h.ClaimScoped(ctx, retryKey, "run-1", "wf", time.Minute); return err },
-		"release":     func(h *HTTP) error { return h.ReleaseScoped(ctx, retryKey, "run-1") },
-		"release-all": func(h *HTTP) error { _, err := h.ReleaseAllForRun(ctx, "run-1"); return err },
-		"list":        func(h *HTTP) error { _, err := h.ForRunAll(ctx, "run-1"); return err },
-		"recover":     func(h *HTTP) error { _, err := h.RecoverStale(ctx); return err },
+		"acquire": func(h *HTTP) error { _, _, err := h.ClaimScoped(ctx, retryKey, "run-1", "wf", time.Minute); return err },
+		"release": func(h *HTTP) error { return h.ReleaseScoped(ctx, retryKey, "run-1", claimrelease.Completed.Reason()) },
+		"release-all": func(h *HTTP) error {
+			_, err := h.ReleaseAllForRun(ctx, "run-1", claimrelease.Completed.Reason())
+			return err
+		},
+		"list":    func(h *HTTP) error { _, err := h.ForRunAll(ctx, "run-1"); return err },
+		"recover": func(h *HTTP) error { _, err := h.RecoverStale(ctx); return err },
 	}
 	for name, call := range routes {
 		client, calls := flakyPlane(t, 2, "saturated")
@@ -65,7 +70,7 @@ func TestStreamResetRetriedOnlyForReplaySafeRoutes(t *testing.T) {
 	ctx := context.Background()
 	safe := map[string]func(*HTTP) error{
 		"acquire": func(h *HTTP) error { _, _, err := h.ClaimScoped(ctx, retryKey, "run-1", "wf", time.Minute); return err },
-		"release": func(h *HTTP) error { return h.ReleaseScoped(ctx, retryKey, "run-1") },
+		"release": func(h *HTTP) error { return h.ReleaseScoped(ctx, retryKey, "run-1", claimrelease.Completed.Reason()) },
 		"list":    func(h *HTTP) error { _, err := h.ForRunAll(ctx, "run-1"); return err },
 		"recover": func(h *HTTP) error { _, err := h.RecoverStale(ctx); return err },
 	}
@@ -79,7 +84,7 @@ func TestStreamResetRetriedOnlyForReplaySafeRoutes(t *testing.T) {
 		}
 	}
 	client, calls := flakyPlane(t, 1, "reset")
-	if _, err := client.ReleaseAllForRun(ctx, "run-1"); err == nil || !strings.Contains(err.Error(), "INTERNAL_ERROR") {
+	if _, err := client.ReleaseAllForRun(ctx, "run-1", claimrelease.Completed.Reason()); err == nil || !strings.Contains(err.Error(), "INTERNAL_ERROR") {
 		t.Fatalf("release-all after an ambiguous reset must surface it, err = %v", err)
 	}
 	if calls.Load() != 1 {

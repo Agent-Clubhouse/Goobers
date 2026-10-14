@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -25,7 +26,7 @@ func TestSharedReleaseRequiresExactPersistedIncarnation(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry, _ := ledger.LookupScoped(key)
-	if err := ledger.ReleaseEntry(entry, owner.Run); err == nil {
+	if err := ledger.ReleaseEntry(entry, owner.Run, claimrelease.Completed.Reason()); err == nil {
 		t.Fatal("local-only release discarded shared reconciliation owner")
 	}
 	if err := ledger.ForceReleaseEntry(entry, "cli"); err == nil {
@@ -33,19 +34,19 @@ func TestSharedReleaseRequiresExactPersistedIncarnation(t *testing.T) {
 	}
 	stale := owner
 	stale.Token = "previous"
-	if err := ledger.ReleaseSharedScoped(key, stale); !errors.Is(err, sharedclaim.ErrNotOwner) {
+	if err := ledger.ReleaseSharedScoped(key, stale, claimrelease.Completed.Reason()); !errors.Is(err, sharedclaim.ErrNotOwner) {
 		t.Fatalf("stale release: %v", err)
 	}
 	if got, found := ledger.LookupScoped(key); !found || got.SharedOwner != owner {
 		t.Fatal("refused release changed live ownership")
 	}
-	if err := ledger.ReleaseSharedScoped(key, owner); err != nil {
+	if err := ledger.ReleaseSharedScoped(key, owner, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if _, found := ledger.LookupScoped(key); found {
 		t.Fatal("acknowledged release left claim active")
 	}
-	if err := ledger.ReleaseSharedScoped(key, owner); err != nil {
+	if err := ledger.ReleaseSharedScoped(key, owner, claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("release retry: %v", err)
 	}
 }

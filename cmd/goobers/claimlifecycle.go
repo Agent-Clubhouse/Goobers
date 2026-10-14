@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -39,8 +40,23 @@ func releaseClaimsForRunLocked(l instance.Layout, log *journal.InstanceLog, runI
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
 	}
-	_, err = ledger.ReleaseAllForRun(claimContext(), runID)
+	// Read the run journal for the reason only when there is a claim to end:
+	// usually issue-close-out already released them all.
+	if held, err := ledger.ForRunAll(claimContext(), runID); err != nil || len(held) == 0 {
+		return err
+	}
+	_, err = ledger.ReleaseAllForRun(claimContext(), runID, claimHolderReleaseReason(l, runID))
 	return err
+}
+
+// claimHolderReleaseReason is why a terminal holder's claims end: the run's
+// own terminal outcome, or reconciliation for a backlog-reconcile reservation
+// whose owning run ended.
+func claimHolderReleaseReason(l instance.Layout, runID string) claimrelease.Reason {
+	if _, ok := parseBacklogReconcileRunID(runID); ok {
+		return claimrelease.Reconciled.Because("reconcile_owner_terminal", "")
+	}
+	return localscheduler.TerminalReleaseReason(l.FindRunDir, runID)
 }
 
 // renewLiveClaims re-acquires every LEDGER claim whose holding run is live
@@ -134,6 +150,8 @@ func recoverClaimsWithResolver(
 	}
 	var terminalEntries []localscheduler.ClaimEntry
 	terminalUpdates := make(map[string]remediationNoopUpdate)
+	// Release reasons are read once per terminal run, outside the claims lock.
+	reasons := make(map[string]claimrelease.Reason)
 	for _, entry := range snapshot.Snapshot() {
 		terminal, err := claimHolderTerminal(l.Root, entry)
 		if err != nil {
@@ -142,6 +160,9 @@ func recoverClaimsWithResolver(
 		}
 		if terminal {
 			terminalEntries = append(terminalEntries, entry)
+			if _, known := reasons[entry.RunID]; !known {
+				reasons[entry.RunID] = claimHolderReleaseReason(l, entry.RunID)
+			}
 			if _, isReconcileClaim := parseBacklogReconcileRunID(entry.RunID); isReconcileClaim {
 				// A backlog-reconcile claim's RunID (backlogreconcile.go) is a
 				// synthesized lease identity, not a workflow run — it has no
@@ -218,7 +239,7 @@ func recoverClaimsWithResolver(
 			if !terminal {
 				continue
 			}
-			if err := coordinated.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(current), current.RunID); err != nil {
+			if err := coordinated.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(current), current.RunID, reasons[current.RunID]); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
 				continue
 			}
@@ -239,7 +260,7 @@ func recoverExpiredSharedClaims(ctx context.Context, ledger *localscheduler.Clai
 		if entry.SharedDeadline.IsZero() || entry.ExpiresAt.After(now) {
 			continue
 		}
-		if err := coordinated.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), entry.RunID); err != nil {
+		if err := coordinated.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), entry.RunID, localscheduler.StallSweptReason()); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release expired shared claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
 			continue
 		}

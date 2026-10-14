@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
@@ -331,7 +332,22 @@ func TestClaimRoutesValidateAndDispatch(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("settle status = %d, body = %s", response.Code, response.Body)
 	}
-	if want := []string{"acquire", "renew", "release", "settle"}; strings.Join(claims.ops, ",") != strings.Join(want, ",") {
+	// A reason is accepted on release and settle and reaches the service.
+	for _, path := range []string{apicontract.ClaimReleasePath, apicontract.ClaimSettlePath} {
+		reasoned := `{"gaggle":"g","provider":"github","itemId":"42","runId":"run-1","outcome":"completed","reason":{"disposition":"completed","code":"closed_out"}}`
+		if path == apicontract.ClaimReleasePath {
+			reasoned = strings.Replace(reasoned, `"outcome":"completed",`, "", 1)
+		}
+		reasonResponse := httptest.NewRecorder()
+		handler.ServeHTTP(reasonResponse, jsonRequest(http.MethodPost, path, reasoned))
+		if reasonResponse.Code != http.StatusOK {
+			t.Fatalf("%s with reason status = %d, body = %s", path, reasonResponse.Code, reasonResponse.Body)
+		}
+		if got := claims.requests[len(claims.requests)-1].Reason; got.Code != "closed_out" {
+			t.Fatalf("%s reason reached the service as %+v", path, got)
+		}
+	}
+	if want := []string{"acquire", "renew", "release", "settle", "release", "settle"}; strings.Join(claims.ops, ",") != strings.Join(want, ",") {
 		t.Fatalf("ops = %v, want %v", claims.ops, want)
 	}
 	var decoded ClaimResponse
@@ -345,6 +361,8 @@ func TestClaimRoutesValidateAndDispatch(t *testing.T) {
 		"missing key fields":     jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, `{"itemId":"42"}`),
 		"negative lease":         jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, `{"gaggle":"g","provider":"p","itemId":"42","runId":"r","leaseSeconds":-1}`),
 		"outcome outside settle": jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, `{"gaggle":"g","provider":"p","itemId":"42","runId":"r","outcome":"completed"}`),
+		"reason on acquire":      jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, `{"gaggle":"g","provider":"p","itemId":"42","runId":"r","reason":{"disposition":"failed"}}`),
+		"reason on renew":        jsonRequest(http.MethodPost, apicontract.ClaimRenewPath, `{"gaggle":"g","provider":"p","itemId":"42","runId":"r","reason":{"disposition":"failed"}}`),
 		"unknown field":          jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, `{"gaggle":"g","provider":"p","itemId":"42","runId":"r","surprise":true}`),
 		"empty body":             jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, ``),
 		"wrong content type":     httptest.NewRequest(http.MethodPost, apicontract.ClaimAcquirePath, strings.NewReader(`{}`)),
@@ -715,6 +733,7 @@ func TestClaimEntryWireMatchesTheLedger(t *testing.T) {
 		Verification: localscheduler.ClaimVerification{State: "ownership-mismatch", ObservedAt: released.Add(-time.Minute), ProviderRunID: "other-run"},
 		ItemID:       "42", Gaggle: "g", Provider: "github", ExternalID: "42", RunID: "run-1", Workflow: "implementation",
 		ClaimedAt: released.Add(-time.Hour), ExpiresAt: released.Add(time.Hour), ReleasedAt: &released,
+		ReleaseReason: claimrelease.Reason{Disposition: claimrelease.ForceReleased, Code: "c", Summary: "s", Stage: "st", Actor: "cli"},
 	}
 	encoded, err := json.Marshal(original)
 	if err != nil {

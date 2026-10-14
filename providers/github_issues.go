@@ -16,6 +16,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // GitHub directs clients to wait at least one minute when a secondary-limit
@@ -620,7 +621,7 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 	}
 	body := comment
 	if claimed {
-		body = claimReleaseBreadcrumb(winner) + "\n\n" + comment
+		body = claimReleaseBreadcrumb(winner, claimrelease.Reconciled.Because(OrphanedClaimReleaseCode, "")) + "\n\n" + comment
 	}
 	if err := p.postComment(ctx, repo, id, body); err != nil {
 		return WorkItem{}, err
@@ -795,8 +796,15 @@ func claimBreadcrumb(runID string) string {
 	return fmt.Sprintf("goobers-claim: run=%s\n\nClaimed by Goobers run `%s` for exactly-once processing.", runID, runID)
 }
 
-func claimReleaseBreadcrumb(runID string) string {
-	return fmt.Sprintf("goobers-claim-release: run=%s\n\nReleased by Goobers run `%s`; a later run may claim this item.", runID, runID)
+// OrphanedClaimReleaseCode is the release code for retiring an orphaned
+// provider claim epoch during ledger-authoritative reconciliation.
+const OrphanedClaimReleaseCode = "orphaned_claim_epoch"
+
+// claimReleaseBreadcrumb renders a release comment: the historical
+// machine-parsed boundary line first (claimReleaseBreadcrumbPattern), then
+// the structured reason (claimrelease.Comment).
+func claimReleaseBreadcrumb(runID string, reason claimrelease.Reason) string {
+	return claimrelease.Comment(runID, reason)
 }
 
 // claimRunID extracts the run id from a claim breadcrumb body, or "" if the body is

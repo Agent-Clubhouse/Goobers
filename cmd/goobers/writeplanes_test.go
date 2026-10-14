@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -201,14 +202,60 @@ func TestClaimsPlaneSettleReleasesExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settleAnnotations := 0
+	// One release boundary, carrying the settle outcome as its reason: the
+	// retried and the stale settle were no-ops and journal nothing (#4421).
+	var boundaries []journal.Event
 	for _, event := range events {
-		if event.Type == journal.EventClaimReleased && event.Runner["settleOutcome"] == "completed" {
-			settleAnnotations++
+		if event.Type == journal.EventClaimReleased {
+			boundaries = append(boundaries, event)
 		}
 	}
-	if settleAnnotations != 1 {
-		t.Fatalf("settle annotations = %d, want exactly one", settleAnnotations)
+	if len(boundaries) != 1 || boundaries[0].RunID != "run-a" || boundaries[0].ClaimRelease == nil ||
+		boundaries[0].ClaimRelease.Disposition != claimrelease.Completed || boundaries[0].ClaimRelease.Code != "settled" {
+		t.Fatalf("settle release boundaries = %+v, want exactly one completed/settled", boundaries)
+	}
+}
+
+func TestClaimsPlaneReleaseRecordsTheCallersReason(t *testing.T) {
+	service, layout := newClaimServiceFixture(t)
+	ctx := context.Background()
+	for _, run := range []string{"run-a", "run-b"} {
+		if acquired, err := service.Acquire(ctx, claimPlaneRequest(run)); err != nil || !acquired.Ok {
+			t.Fatalf("acquire %s = %+v, err = %v", run, acquired, err)
+		}
+		request := claimPlaneRequest(run)
+		if run == "run-a" {
+			request.Reason = claimrelease.Escalated.Because("DEPENDENCY_NOT_MET", "registry access is unavailable").At("implement")
+		}
+		if released, err := service.Release(ctx, request); err != nil || !released.Ok {
+			t.Fatalf("release %s = %+v, err = %v", run, released, err)
+		}
+	}
+	ledger, err := localscheduler.OpenClaimLedger(service.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := ledger.HistoryForItem("42")
+	if len(history) != 2 {
+		t.Fatalf("history = %+v", history)
+	}
+	byRun := map[string]claimrelease.Disposition{}
+	for _, entry := range history {
+		byRun[entry.RunID] = entry.ReleaseReason.Disposition
+	}
+	// An older client sends no reason: recorded explicitly as unknown.
+	if byRun["run-a"] != claimrelease.Escalated || byRun["run-b"] != claimrelease.Unknown {
+		t.Fatalf("recorded dispositions = %v", byRun)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventClaimReleased && event.RunID == "run-a" &&
+			(event.ClaimRelease == nil || event.ClaimRelease.Stage != "implement" || event.ClaimRelease.Code != "DEPENDENCY_NOT_MET") {
+			t.Fatalf("claim.released for run-a = %+v", event)
+		}
 	}
 }
 
@@ -654,7 +701,7 @@ func TestClaimsPlaneListScopesAndContainment(t *testing.T) {
 	if ok, _, err := ledger.Claim("legacy", "run-legacy", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed legacy claim: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(localscheduler.ClaimKey{Gaggle: "g", Provider: "github", ExternalID: "2"}, "run-1"); err != nil {
+	if err := ledger.ReleaseScoped(localscheduler.ClaimKey{Gaggle: "g", Provider: "github", ExternalID: "2"}, "run-1", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	for _, gaggle := range []string{"g", "other"} {
