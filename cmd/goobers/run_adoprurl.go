@@ -39,8 +39,10 @@ func adoPullRequestURLByIDMatch(
 ) error {
 	outside := fmt.Errorf("pull request #%d resolves outside configured repository %s", number, repoDisplay)
 	org, project, repository, n, ok := providers.ParseADOPullRequestAPIURL(rawURL)
-	if !ok || resolvedRepo.Provider != apiv1.ProviderADO || n != number || !strings.EqualFold(org, resolvedRepo.Owner) ||
-		!(providers.IsADOGUID(project) || providers.IsADOGUID(repository)) {
+	if !ok || resolvedRepo.Provider != apiv1.ProviderADO || n != number || !strings.EqualFold(org, resolvedRepo.Owner) {
+		return outside
+	}
+	if byID := providers.IsADOGUID(project) || providers.IsADOGUID(repository); !byID {
 		return outside
 	}
 	reader, ok := provider.(adoRepositoryIDReader)
