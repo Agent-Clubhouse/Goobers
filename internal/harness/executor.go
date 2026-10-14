@@ -386,6 +386,11 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// capability backstop so a missing-tool code keeps its own, more specific
 	// classification rather than being absorbed into the operational one.
 	reclassifyOperationalFailureBlock(&result)
+	// #5871: an agent claiming its execution window ran out long before the
+	// deadline the runtime enforced stopped early; it did not time out. Judged
+	// against the observed deadline, with the input-inspection and goobers-io
+	// readiness evidence in the failure, and never accepting the claim.
+	reclassifyPrematureExhaustionClaim(&result, env.ContextPointers, out)
 	// #5182: a success that left its work uncommitted goes back through the
 	// stage's retry budget with a typed reason instead of reaching review as
 	// an empty diff. The work is never committed on the agent's behalf.
