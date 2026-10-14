@@ -386,8 +386,10 @@ external component; the auditor's keyword rules can override it either way.
 
 `-publish=<instance-root>` records the checked report's summary (schema
 `goobers.dev/backprop/attribution-eval-summary/v1`: set version and digest,
-accuracy, calibration bins) in `scheduler/backprop-audit/attribution-eval.json`;
-it is refused with `-update` and after a regression. The telemetry stats API,
+accuracy, domain calibration bins) in
+`scheduler/backprop-audit/attribution-eval.json`. A summary calibrated against
+any other granularity is rejected, and publishing is refused with `-update`
+and after a regression. The telemetry stats API,
 which the portal reads, returns it as `attributionEval`. The fault auditor
 derives its filing threshold from it: the upper bound of the highest populated
 calibration bin whose accuracy is below 0.8, else the lower bound of the lowest

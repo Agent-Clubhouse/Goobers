@@ -21,6 +21,9 @@ const (
 	// FilingTargetPrecision is the accuracy every calibration bin at or above
 	// a derived filing threshold must have measured.
 	FilingTargetPrecision = 0.8
+	// FilingCalibrationTarget is the granularity a published calibration must
+	// be measured against: the auditor files findings by fault domain.
+	FilingCalibrationTarget = "domain"
 )
 
 // Where a FilingThreshold came from.
@@ -96,8 +99,9 @@ func (summary AttributionEvalSummary) Validate() error {
 		return fmt.Errorf("attribution eval summary case counts are inconsistent (%d cases, %d unattributed)",
 			summary.CaseCount, summary.Unattributed)
 	}
-	if strings.TrimSpace(summary.Calibration.Target) == "" {
-		return errors.New("attribution eval summary calibration needs a target granularity")
+	if summary.Calibration.Target != FilingCalibrationTarget {
+		return fmt.Errorf("attribution eval summary calibration target is %q, want %q",
+			summary.Calibration.Target, FilingCalibrationTarget)
 	}
 	binned := 0
 	for index, bin := range summary.Calibration.Bins {
