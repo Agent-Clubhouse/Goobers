@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -135,8 +136,21 @@ func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
 	// before deleting, because ADO 400s on delete-by-name for colon-bearing
 	// names. The id embeds the name so the DELETE can map it back.
 	mux.HandleFunc(idPath+"/labels", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode label add: %v", err)
+			}
+			s.mu.Lock()
+			s.labels = append(s.labels, body.Name)
+			s.mu.Unlock()
+			writeJSONResp(t, w, map[string]interface{}{"id": "labelid-" + body.Name, "name": body.Name})
+			return
+		}
 		if r.Method != http.MethodGet {
-			t.Fatalf("labels method = %s, want GET", r.Method)
+			t.Fatalf("labels method = %s, want GET or POST", r.Method)
 		}
 		s.mu.Lock()
 		vals := make([]map[string]interface{}, 0, len(s.labels))

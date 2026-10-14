@@ -23,8 +23,16 @@ attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
 issues), preMergeCheck (optional; one command per line, run without a
 shell on the PR head merged onto the CURRENT base branch tip — a
-failure refuses the merge as pre-merge-check-failed), resultFile
-(default merge-result.json). Successful merges
+failure refuses the merge as pre-merge-check-failed),
+blockUnansweredFeedback (default true: refuse as unanswered-human-feedback
+while the newest open human review feedback — a PR comment, a submitted
+review body, or a comment in an unresolved review thread, on Azure
+DevOps any active thread — is unacknowledged by every Goobers response;
+record-merge-refusal then routes the PR to remediation. Feedback that
+cannot be read refuses as human-feedback-unverifiable. Comments are
+classified as pr-comment-watch classifies them, under the same
+identityMode and excludeAuthors inputs. Set false to merge over
+comments), resultFile (default merge-result.json). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked,
 skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
 (merged or not — see the result file's "merged" field), 1 = business

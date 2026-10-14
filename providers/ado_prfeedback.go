@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,6 +45,70 @@ const adoCodeReviewThreadTypeProperty = "CodeReviewThreadType"
 // id (identity cannot be compared) and a comment whose publishedDate does not
 // parse are errors.
 func (p *ADOProvider) ListPullRequestFeedbackComments(ctx context.Context, repo RepositoryRef, pullID string) ([]Comment, error) {
+	threads, err := p.adoFeedbackThreadEntries(ctx, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]adoFeedbackEntry, 0)
+	for _, thread := range threads {
+		entries = append(entries, thread.entries...)
+	}
+	return sortedADOFeedbackComments(entries), nil
+}
+
+// PullRequestFeedbackThread is one live Azure DevOps pull-request thread as
+// ListPullRequestFeedbackThreads reports it: its id, whether ADO reports it
+// resolved (fixed, won't fix, closed, by design), its file anchor when it has
+// one, and its live comments in thread order.
+type PullRequestFeedbackThread struct {
+	ID       string    `json:"id"`
+	Resolved bool      `json:"resolved"`
+	Path     string    `json:"path,omitempty"`
+	Comments []Comment `json:"comments"`
+}
+
+// ListPullRequestFeedbackThreads returns every live thread on an Azure DevOps
+// pull request — general conversation threads and file-anchored review threads
+// alike, whoever opened them — with its resolution status. It applies
+// ListPullRequestFeedbackComments' rules (deleted and ADO-synthesized threads,
+// and deleted and system comments, are skipped; a comment with no author id or
+// an unreadable publishedDate fails the read) but keeps each thread whole, so a
+// caller can tell an open conversation from a resolved one. merge-pr's
+// unanswered-feedback gate reads it (#6134): unlike
+// ListPullRequestReviewThreads it keeps general threads and threads the
+// credential's own identity opened, which under shared identity are a
+// person's.
+func (p *ADOProvider) ListPullRequestFeedbackThreads(ctx context.Context, repo RepositoryRef, pullID string) ([]PullRequestFeedbackThread, error) {
+	threads, err := p.adoFeedbackThreadEntries(ctx, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PullRequestFeedbackThread, 0, len(threads))
+	for _, thread := range threads {
+		comments := make([]Comment, len(thread.entries))
+		for i, entry := range thread.entries {
+			comments[i] = entry.comment
+		}
+		out = append(out, PullRequestFeedbackThread{
+			ID:       pullID + "/" + strconv.Itoa(thread.thread.ID),
+			Resolved: adoReviewThreadIsResolved(thread.thread.Status),
+			Path:     adoReviewThreadPath(thread.thread),
+			Comments: comments,
+		})
+	}
+	return out, nil
+}
+
+// adoFeedbackThread is one live thread and its mapped live comments.
+type adoFeedbackThread struct {
+	thread  adoPullRequestThread
+	entries []adoFeedbackEntry
+}
+
+// adoFeedbackThreadEntries reads the pull request's threads (bounded by
+// ADOFeedbackThreadPageLimit) and maps every live comment of every live,
+// person-or-tool-written thread, failing closed on a comment it cannot map.
+func (p *ADOProvider) adoFeedbackThreadEntries(ctx context.Context, repo RepositoryRef, pullID string) ([]adoFeedbackThread, error) {
 	if err := requireRepo(repo); err != nil {
 		return nil, err
 	}
@@ -54,11 +119,12 @@ func (p *ADOProvider) ListPullRequestFeedbackComments(ctx context.Context, repo 
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]adoFeedbackEntry, 0)
+	out := make([]adoFeedbackThread, 0, len(threads))
 	for _, thread := range threads {
 		if adoSystemThread(thread) {
 			continue
 		}
+		mapped := adoFeedbackThread{thread: thread}
 		for _, comment := range thread.Comments {
 			if comment.IsDeleted || strings.EqualFold(comment.CommentType, "system") {
 				continue
@@ -67,10 +133,13 @@ func (p *ADOProvider) ListPullRequestFeedbackComments(ctx context.Context, repo 
 			if err != nil {
 				return nil, err
 			}
-			entries = append(entries, entry)
+			mapped.entries = append(mapped.entries, entry)
+		}
+		if len(mapped.entries) > 0 {
+			out = append(out, mapped)
 		}
 	}
-	return sortedADOFeedbackComments(entries), nil
+	return out, nil
 }
 
 // adoFeedbackEntry is one mapped comment plus the ids its order breaks ties on.

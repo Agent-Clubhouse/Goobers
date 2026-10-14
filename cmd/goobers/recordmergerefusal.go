@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -24,7 +25,10 @@ const recordMergeRefusalHelp = "Usage: goobers record-merge-refusal [path]\n\n" 
 	"Record a merge-pr refusal against the selected PR's durable demotion\n" +
 	"counter (#950). After a bounded number of refusals at an unchanged\n" +
 	"head, apply goobers:merge-demoted so the election crowns a sibling\n" +
-	"instead and the cluster drains around the stuck PR. Runs on\n" +
+	"instead and the cluster drains around the stuck PR. A refusal for\n" +
+	"unanswered human review feedback is not counted: the PR is routed to\n" +
+	"remediation instead (goobers:needs-remediation added,\n" +
+	"goobers:merge-ready removed). Runs on\n" +
 	"merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to\n" +
 	"do), 1 = business error, 2 = usage/IO error.\n"
 
@@ -109,6 +113,10 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
+	if strings.HasPrefix(reason, unansweredHumanFeedbackReasonCode) {
+		return routeUnansweredFeedbackRefusal(ctx, provider, repo, selectedNumber, stdout, stderr)
+	}
+
 	comments, err := provider.ListComments(ctx, repo, selectedNumberStr)
 	if err != nil {
 		return failProviderStage(stderr, "list comments", err, "")
@@ -171,6 +179,35 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 	} else {
 		pf(stdout, "PR #%d: recorded merge refusal %d/%d at head %s (#950)\n", selectedNumber, attempts, threshold, headSha)
 	}
+	return 0
+}
+
+// routeUnansweredFeedbackRefusal routes a PR merge-pr refused for open,
+// unanswered human review feedback (#6134) to remediation: it adds
+// goobers:needs-remediation, which pr-remediation selects on and pr-select
+// excludes until remediation has answered, and strips goobers:merge-ready,
+// which would otherwise keep pr-comment-watch from scanning the PR as a
+// landing in progress. The refusal never counts toward demotion: the head is
+// not stuck, a person is waiting on an answer, and answering may not move the
+// head at all. On Azure DevOps the labels are pull-request labels, never the
+// work item that shares the PR's number.
+func routeUnansweredFeedbackRefusal(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, selectedNumber int, stdout, stderr io.Writer) int {
+	pullID := strconv.Itoa(selectedNumber)
+	var err error
+	if ado, ok := provider.(mergeReviewADOProvider); ok {
+		if err = ado.AddPullRequestLabels(ctx, repo, pullID, []string{needsRemediationLabel}); err == nil {
+			err = ado.RemovePullRequestLabel(ctx, repo, pullID, mergeReadyLabel)
+		}
+	} else {
+		_, err = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo, ID: pullID,
+			AddLabels: []string{needsRemediationLabel}, RemoveLabels: []string{mergeReadyLabel},
+		})
+	}
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("route PR #%d to remediation for unanswered review feedback", selectedNumber), err, "")
+	}
+	pf(stdout, "PR #%d: unanswered human review feedback — routed to remediation (%s), not recorded toward demotion\n", selectedNumber, needsRemediationLabel)
 	return 0
 }
 

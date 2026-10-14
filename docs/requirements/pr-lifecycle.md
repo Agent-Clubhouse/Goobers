@@ -368,6 +368,25 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   (default 3) the PR is labeled `goobers:merge-demoted` (+
   `needs-remediation`, so remediation has a path to move its head) and stops
   being crowned. The demotion self-heals the moment the head advances.
+- **PRL-046a (MUST, Shipped):** A merge MUST NOT land a pull request with open,
+  unanswered **human review feedback**, on any provider, whether or not the
+  forge enforces conversation resolution (#6134). Open feedback is the PR's
+  general comments, its submitted review bodies, and the comments of every
+  review thread that is not resolved (on Azure DevOps, every thread that is not
+  fixed, closed, won't-fix or by-design). It is unanswered when its newest human
+  entry postdates every Goobers acknowledgement, which is the rule
+  `pr-comment-watch` routes on. Human means the shared comment classifier's
+  verdict under the stage's `identityMode`/`excludeAuthors`, so a person writing
+  through Goobers' own identity is still a person. `merge-pr` checks this under
+  the merge lock against a live read.
+  - An unanswered PR is refused as `unanswered-human-feedback`.
+    `record-merge-refusal` then routes it to remediation (`goobers:needs-remediation`
+    added, `goobers:merge-ready` removed), and the refusal does not count toward
+    demotion.
+  - Feedback that cannot be read in full fails closed as
+    `human-feedback-unverifiable`.
+  - The check is on by default; `blockUnansweredFeedback: "false"` opts out for
+    teams that deliberately merge over comments.
 - **PRL-047 (SHOULD, Shipped):** An **advisory mode** toggle SHOULD let an
   instance evaluate the full conjunct set without attempting a merge;
   advisory refusals never accrue toward demotion. Advisory is the recommended

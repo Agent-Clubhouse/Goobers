@@ -102,6 +102,16 @@ type mergePRServerState struct {
 	// retried stage attempt whose pull request the queue landed in the
 	// meantime.
 	alreadyMerged bool
+	// reviews, inlineComments and reviewThreads serve the PR's native
+	// reviews (REST), inline review comments (REST) and review-thread states
+	// (GraphQL) the unanswered-feedback gate reads (#6134); unset is a PR with
+	// no review feedback. reviewThreadsStatus fails the inline-comment read.
+	reviews             []map[string]interface{}
+	inlineComments      []map[string]interface{}
+	reviewThreads       []map[string]interface{}
+	reviewThreadsStatus int
+	// extraComments are appended after the served verdict comment.
+	extraComments []map[string]interface{}
 }
 
 func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) *httptest.Server {
@@ -184,8 +194,13 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			}})
 			return
 		}
+		threads := st.reviewThreads
+		if threads == nil {
+			threads = []map[string]interface{}{}
+		}
 		pr := map[string]interface{}{
 			"id": "PR_node9", "merged": false, "mergeCommit": nil, "mergeQueueEntry": nil,
+			"reviewThreads": map[string]interface{}{"nodes": threads, "pageInfo": map[string]interface{}{"hasNextPage": false}},
 		}
 		if st.alreadyMerged {
 			pr["merged"] = true
@@ -229,7 +244,22 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		})
 	}
 	mux.HandleFunc(prefix+"/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, []map[string]interface{}{})
+		if st.reviews == nil {
+			writeFakeJSON(w, []map[string]interface{}{})
+			return
+		}
+		writeFakeJSON(w, st.reviews)
+	})
+	mux.HandleFunc(prefix+"/pulls/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		if st.reviewThreadsStatus != 0 {
+			http.Error(w, "review comments unavailable", st.reviewThreadsStatus)
+			return
+		}
+		if st.inlineComments == nil {
+			writeFakeJSON(w, []map[string]interface{}{})
+			return
+		}
+		writeFakeJSON(w, st.inlineComments)
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, st.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"state": st.checkState, "statuses": []map[string]interface{}{}})
@@ -275,6 +305,7 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			Elected:        st.elected,
 		})
 		comments := []map[string]interface{}{{"id": 1, "body": comment, "user": map[string]string{"login": st.verdictAuthor}}}
+		comments = append(comments, st.extraComments...)
 		if st.spoofedVerdict {
 			comments = append(comments, map[string]interface{}{
 				"id": 2,
@@ -934,6 +965,10 @@ func TestMergePRFindsVerdictBeyondFirstCommentPage(t *testing.T) {
 	server := newMergePRServer(t, "your-org", "your-repo", st)
 	root, _ := mergePREnv(t, server.URL, false, map[string]string{
 		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+		// This pins the verdict lookup's own pagination (two comment reads);
+		// the unanswered-feedback gate's read, and the 100 contributor
+		// comments it would refuse over, are out of scope here.
+		"blockUnansweredFeedback": "false",
 	})
 
 	code, _, stderr := runArgs(t, "merge-pr", root)

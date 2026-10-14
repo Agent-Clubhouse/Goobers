@@ -42,6 +42,10 @@ type rebasePRServerState struct {
 	// identityMode=shared.
 	commentUnmarked     []bool
 	rejectCommentUpdate bool
+	// reviewComments are raw GitHub inline review comments, all in one
+	// review thread, resolved when reviewThreadResolved is set.
+	reviewComments       []map[string]interface{}
+	reviewThreadResolved bool
 }
 
 func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber int) *httptest.Server {
@@ -119,6 +123,37 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 	})
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]string{"login": "goobers-bot"})
+	})
+	// The human-comment cause also reads the PR's reviews and review threads
+	// (#6134): reviewComments are inline comments of one thread whose
+	// resolution reviewThreadResolved sets.
+	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d/reviews", prefix, prNumber), func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, []map[string]interface{}{})
+	})
+	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d/comments", prefix, prNumber), func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		writeFakeJSON(w, s.reviewComments)
+	})
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		var nodes []map[string]interface{}
+		for _, c := range s.reviewComments {
+			nodes = append(nodes, map[string]interface{}{"databaseId": c["id"]})
+		}
+		threads := []map[string]interface{}{}
+		if len(nodes) > 0 {
+			threads = append(threads, map[string]interface{}{
+				"id": "THREAD_1", "isResolved": s.reviewThreadResolved, "path": "a.go",
+				"comments": map[string]interface{}{"nodes": nodes},
+			})
+		}
+		writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{"repository": map[string]interface{}{
+			"pullRequest": map[string]interface{}{"reviewThreads": map[string]interface{}{
+				"nodes": threads, "pageInfo": map[string]interface{}{"hasNextPage": false},
+			}},
+		}}})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/labels/", prefix, prNumber), func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
