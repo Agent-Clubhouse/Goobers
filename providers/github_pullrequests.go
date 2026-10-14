@@ -301,6 +301,9 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	}
 	// An accepted HTTP response is not evidence of a completed merge. In
 	// particular, missing/false `merged` must not inflate mutation telemetry.
+	if out.Merged {
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
+	}
 	if err := receipt.record(ctx, out.SHA, out.Merged); err != nil {
 		return MergePullRequestResult{Number: receipt.number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
 	}
@@ -607,6 +610,7 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 // external ref, so a queued-but-not-yet-merged pull request is as visible
 // in the run journal as a merged one.
 func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string, admission *QueueAdmission) error {
+	observeProviderMutation(ctx, p.Client, ProviderGitHub)
 	return recordLandingReceipt(ctx, p.recorder, ExternalRef{
 		QueueAdmission: admission,
 		Provider:       ProviderGitHub,

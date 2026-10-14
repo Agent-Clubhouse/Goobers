@@ -171,6 +171,9 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	}
 	// ADO has no queue-entry ID. Record the acknowledged auto-complete
 	// mutation, but do not invent a GitHub-style admission or merge receipt.
+	if adoAutoCompleteAcknowledged(out, identity.ID) {
+		observeProviderMutation(ctx, p.Client, ProviderADO)
+	}
 	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == identity.ID {
 		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
@@ -336,6 +339,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if strconv.Itoa(final.PullRequestID) != req.PullID {
 		return MergePullRequestResult{}, fmt.Errorf("merge response identifies a different pull request; completion is unconfirmed")
 	}
+	observeProviderMutation(ctx, p.Client, ProviderADO)
 	if p.mutationRecorder != nil {
 		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, final.LastMergeCommit.CommitID)
 		if intent != nil {

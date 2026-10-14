@@ -32,7 +32,11 @@ func (c *apiReadCache) readADOPlan(req *http.Request, digest string) (*http.Resp
 		return c.do(req)
 	}
 	started := adoReadSequence.Add(1)
-	key := "ado-list-plan-v1:" + digest + ":" + scopedRequestKey(c.partition+"\x00"+string(c.provider), req)
+	requestKey, err := c.scopedReadKey(req)
+	if err != nil {
+		return c.do(req)
+	}
+	key := "ado-list-plan-v1:" + digest + ":" + requestKey
 	if c.snapshotID != "" {
 		var err error
 		key, err = c.snapshotReadKey(key)
