@@ -35,7 +35,7 @@ func (s RetryBackoffState) After(event journal.Event) RetryBackoffState {
 	if !event.KnownSchema() {
 		return s
 	}
-	if event.Branch != 0 || event.Type == journal.EventBranchStarted || event.Type == journal.EventParallelStarted {
+	if event.Branch != 0 || event.Type == journal.EventBranchStarted || event.Type == journal.EventParallelStarted || event.Type == journal.EventMapStarted {
 		s.Parallel = true
 	}
 	switch event.Type {
