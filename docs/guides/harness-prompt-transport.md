@@ -56,7 +56,9 @@ the `cmd.exe` limit and that a real receiver process reads the exact bytes.
 
 Opt-in tests run a signed-in CLI with a prompt larger than the `CreateProcessW`
 limit. They force a completion-repair turn and check that it continues the same
-session:
+session. The Claude test copies your real Claude Code login into the run, from
+`~/.claude/.credentials.json` or the macOS login Keychain, the same way
+production does. The always-on unit tests never read it:
 
 ```sh
 GOOBERS_COPILOT_LIVE_SMOKE=1 go test -tags integration ./internal/harness \

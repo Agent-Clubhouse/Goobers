@@ -169,7 +169,7 @@ func TestClaudeAdapterRepairsInvalidPublicationInSameSession(t *testing.T) {
 		results: []ProcessResult{{Transcript: []byte(claudeResultStream)}, {Transcript: []byte(claudeResultStream)}},
 		acts:    []func(ProcessRequest) error{writeSuccessCompletion, nil},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	out, err := adapter.Run(context.Background(), claudeUncommittedRequest(workspace, publicationOnceValidator()))
 	if err != nil {
 		t.Fatalf("Run: %v", err)

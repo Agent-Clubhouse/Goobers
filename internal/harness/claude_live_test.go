@@ -16,9 +16,23 @@ import (
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
+// optInOperatorClaudeLogin lets a live test's adapter seed the operator's
+// real Claude Code login into the run's private config dir, as production
+// does: it reads ~/.claude/.credentials.json (or $CLAUDE_CONFIG_DIR's) and, on
+// macOS, the login Keychain via /usr/bin/security. That is the point of an
+// opt-in live test, which only runs when GOOBERS_CLAUDE_LIVE_SMOKE is set on a
+// machine signed in to Claude Code. Unit tests never call it: they inject a
+// fake KeychainReader and a temp HOME (#7447).
+func optInOperatorClaudeLogin(t *testing.T) {
+	t.Helper()
+	operatorClaudeLoginOptIn.Store(true)
+	t.Cleanup(func() { operatorClaudeLoginOptIn.Store(false) })
+}
+
 func TestIntegrationClaudeGoobersIOListInputsReceipt(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CLAUDE_LIVE_SMOKE")
 	testdep.Require(t, "claude")
+	optInOperatorClaudeLogin(t)
 	selfBin := os.Getenv("GOOBERS_CLAUDE_LIVE_SELF_BIN")
 	if selfBin == "" {
 		t.Fatal("GOOBERS_CLAUDE_LIVE_SELF_BIN must name the current goobers binary")
