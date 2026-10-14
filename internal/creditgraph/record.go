@@ -51,6 +51,20 @@ type RunRecord struct {
 	Attribution      Attribution               `json:"attribution"`
 	Evidence         []AttributionEvidenceLink `json:"evidence,omitempty"`
 	Failure          string                    `json:"failure,omitempty"`
+	// StageComposition reports how a stage-granular run's record was composed
+	// from its stage checkpoints. Absent for run-granular records.
+	StageComposition *StageComposition `json:"stageComposition,omitempty"`
+}
+
+// StageComposition describes the stage checkpoints an end-of-run record
+// composed. Checkpoints is the number of verified stage records whose journal
+// segments were composed, in order, ahead of the uncheckpointed tail.
+// Error discloses why composition was refused; the record is then computed
+// from the whole journal and Checkpoints is zero.
+type StageComposition struct {
+	Checkpoints     int    `json:"checkpoints"`
+	ThroughSequence uint64 `json:"throughSequence,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 type pinnedDefinition struct {
@@ -63,7 +77,18 @@ type pinnedDefinition struct {
 // WriteRunRecord computes and atomically publishes attribution for an enrolled
 // run. Local terminalization passes nil after run.finished is durable; terminal
 // remains available to callers analyzing an immutable synthetic event stream.
+// A stage-granular run's record composes its verified stage checkpoints.
 func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
+	// Stage-granular runs compose and publish under the checkpoint publication
+	// lock, so no checkpoint lands between composition and this write.
+	if run, _, enrolled, err := loadRunJournal(runDir, terminal); err == nil && enrolled &&
+		run.config.Granularity == apiv1.BackpropGranularityStage {
+		handle, lockErr := lockStagePublication(runDir, runRecordLockWait)
+		if lockErr != nil {
+			return true, fmt.Errorf("lock attribution record: %w", lockErr)
+		}
+		defer func() { _ = handle.Release() }()
+	}
 	record, enrolled, err := AnalyzeRun(runDir, terminal)
 	if !enrolled {
 		return false, err
@@ -83,20 +108,64 @@ func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 	return true, err
 }
 
-// AnalyzeRun computes one record without changing the run.
+// AnalyzeRun computes one record without changing the run. A stage-granular
+// run's record composes its verified stage checkpoints with the journal tail
+// they do not yet cover; the result equals the whole-journal analysis.
 func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error) {
+	return analyzeRun(runDir, terminal, true)
+}
+
+// loadedRun is one enrolled run's journal, read once for analysis.
+type loadedRun struct {
+	reader   *journal.Reader
+	identity journal.RunIdentity
+	config   apiv1.BackpropConfig
+	events   []journal.Event
+	spanData map[string][]byte
+}
+
+func analyzeRun(runDir string, terminal *journal.Event, compose bool) (RunRecord, bool, error) {
+	run, record, enrolled, err := loadRun(runDir, terminal)
+	if err != nil || !enrolled {
+		return record, enrolled, err
+	}
+	events := run.events
+	if compose && run.config.Granularity == apiv1.BackpropGranularityStage {
+		var composition StageComposition
+		events, composition = composeStageEvents(runDir, run)
+		record.StageComposition = &composition
+	}
+	return analyzeEvents(run, events, record)
+}
+
+func loadRun(runDir string, terminal *journal.Event) (loadedRun, RunRecord, bool, error) {
+	run, record, enrolled, err := loadRunJournal(runDir, terminal)
+	if err != nil || !enrolled {
+		return run, record, enrolled, err
+	}
+	run.spanData, err = readSpanData(run.reader, run.events)
+	if err != nil {
+		return run, record, true, err
+	}
+	return run, record, true, nil
+}
+
+// loadRunJournal is loadRun without span content, for callers that only need
+// the journal's events.
+func loadRunJournal(runDir string, terminal *journal.Event) (loadedRun, RunRecord, bool, error) {
 	reader, err := journal.OpenReadOnly(runDir)
 	if err != nil {
-		return RunRecord{}, false, fmt.Errorf("open run: %w", err)
+		return loadedRun{}, RunRecord{}, false, fmt.Errorf("open run: %w", err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return RunRecord{}, false, fmt.Errorf("read identity: %w", err)
+		return loadedRun{}, RunRecord{}, false, fmt.Errorf("read identity: %w", err)
 	}
 	config, enrolled, err := enrolledBackprop(reader, identity)
 	if err != nil || !enrolled {
-		return RunRecord{}, enrolled, err
+		return loadedRun{}, RunRecord{}, enrolled, err
 	}
+	run := loadedRun{reader: reader, identity: identity, config: config}
 	record := RunRecord{
 		Schema: RecordSchemaVersion, Status: RecordComplete, ContractVersion: config.Version,
 		RunID: identity.RunID, Gaggle: identity.Gaggle, Workflow: identity.Workflow,
@@ -109,7 +178,7 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return record, true, fmt.Errorf("read events: %w", err)
+		return run, record, true, fmt.Errorf("read events: %w", err)
 	}
 	if terminal != nil {
 		terminalEvent := *terminal
@@ -118,6 +187,11 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 		}
 		events = append(events, terminalEvent)
 	}
+	run.events = events
+	return run, record, true, nil
+}
+
+func readSpanData(reader *journal.Reader, events []journal.Event) (map[string][]byte, error) {
 	spanData := map[string][]byte{}
 	for _, event := range events {
 		if event.Type != journal.EventSpanRecorded || event.Ref == nil {
@@ -128,14 +202,18 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 			if errors.Is(readErr, os.ErrNotExist) {
 				continue
 			}
-			return record, true, fmt.Errorf("read span %s: %w", event.Ref.Digest, readErr)
+			return nil, fmt.Errorf("read span %s: %w", event.Ref.Digest, readErr)
 		}
 		spanData[event.Ref.Digest] = data
 	}
-	record.EffectiveVersion = runEffectiveVersion(identity, events, spanData)
+	return spanData, nil
+}
+
+func analyzeEvents(run loadedRun, events []journal.Event, record RunRecord) (RunRecord, bool, error) {
+	record.EffectiveVersion = runEffectiveVersion(run.identity, events, run.spanData)
 	graph, err := Build(Input{
-		RunID: identity.RunID, Gaggle: identity.Gaggle, Workflow: identity.Workflow,
-		Events: events, SpanData: spanData,
+		RunID: run.identity.RunID, Gaggle: run.identity.Gaggle, Workflow: run.identity.Workflow,
+		Events: events, SpanData: run.spanData,
 	})
 	if err != nil {
 		return record, true, fmt.Errorf("build credit graph: %w", err)

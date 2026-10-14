@@ -44,11 +44,12 @@ func TestFeatureRegistryAgainstLatestRelease(t *testing.T) {
 // registry, which the release snapshot reads, not by this interpreter. The
 // baseline must drop them or every release that ships one breaks this gate.
 var binaryLayerFeatureIDs = map[FeatureID]struct{}{
-	"gaggle.spec.cost.enabled":       {},
-	"gaggle.spec.enabled":            {},
-	"workflow.spec.enabled":          {},
-	"workflow.spec.backprop.enabled": {},
-	"workflow.spec.backprop.version": {},
+	"gaggle.spec.cost.enabled":           {},
+	"gaggle.spec.enabled":                {},
+	"workflow.spec.enabled":              {},
+	"workflow.spec.backprop.enabled":     {},
+	"workflow.spec.backprop.granularity": {},
+	"workflow.spec.backprop.version":     {},
 }
 
 func withoutBinaryLayerFeatures(t *testing.T, released FeatureRegistry) FeatureRegistry {
