@@ -81,7 +81,7 @@ func TestDesiredConcurrencyGuideExamples(t *testing.T) {
 	}
 	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "example", Name: "acme"}}}
 	repoRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "acme"}
-	counter, err := buildRefillDemandCounter(cfg, gaggle, &wf, repoRef, nil, nil, "", "", nil)
+	counter, err := buildRefillDemandCounter(cfg, gaggle, &wf, repoRef, nil, nil, "", "", nil, "")
 	if err != nil || counter == nil {
 		t.Fatalf("refill example must wire a refill counter, got %v, %v", counter, err)
 	}
