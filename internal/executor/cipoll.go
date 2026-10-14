@@ -148,6 +148,18 @@ const (
 	// outputs. This keeps explicit workflow data flow intact when a poll is
 	// inserted between two stages that already exchange typed scalar outputs.
 	InputCarryOutputs = "carryOutputs"
+	// InputNoVerdict says what ci-poll does with a head whose CI finished
+	// without a verdict once its reruns are spent (#6817). "fail" (the
+	// default) ends the stage with the ci_no_verdict infrastructure failure,
+	// for a stage whose run has nothing else to do while CI has no verdict
+	// (implementation). "continue" reports ciStatus=pending as a determined
+	// outcome, with the no-verdict checks in OutputCINoVerdictChecks and the
+	// ci-checks.json evidence, for a stage whose run goes on to fix other
+	// causes (pr-remediation's retry-failed-ci).
+	InputNoVerdict = "noVerdict"
+	// OutputCINoVerdictChecks names the checks a "continue" poll found
+	// without a verdict.
+	OutputCINoVerdictChecks = "ciNoVerdictChecks"
 )
 
 // Default poll cadence for CIPollExecutor: capped exponential backoff and an
@@ -215,6 +227,10 @@ type CIPollConfig struct {
 	RetryFailedChecksMaxAttempts int
 	RetryFailedChecksBackoff     time.Duration
 	CarryOutputs                 map[string]interface{}
+	// NoVerdictContinue (InputNoVerdict "continue") makes a head whose CI
+	// finished without a verdict a determined pending result instead of the
+	// ci_no_verdict infrastructure failure (#6817).
+	NoVerdictContinue bool
 }
 
 // CIPollConfigFromEnvelope builds a CIPollConfig from the well-known Input*
@@ -254,6 +270,13 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 	}
 	if cfg.RetryFailedChecksBackoff, err = durationInput(env, InputRetryFailedChecksBackoffSeconds); err != nil {
 		return CIPollConfig{}, err
+	}
+	switch mode := stringInput(env, InputNoVerdict); mode {
+	case "", "fail":
+	case "continue":
+		cfg.NoVerdictContinue = true
+	default:
+		return CIPollConfig{}, fmt.Errorf("executor: %s must be \"fail\" or \"continue\", got %q", InputNoVerdict, mode)
 	}
 	carryKeys := stringSliceInput(env, InputCarryOutputs)
 	if len(carryKeys) > 0 {
@@ -636,7 +659,11 @@ const (
 // ends with a ciPollNoVerdictError. That is an infrastructure failure: the
 // runner retries the stage within its infrastructure budget, and a run that
 // ends on it is not a work failure, so it never counts toward the
-// failure-streak park and refunds a pr-remediation charge.
+// failure-streak park and refunds a pr-remediation charge. A stage that sets
+// InputNoVerdict "continue" gets a determined pending result instead
+// (ciPollNoVerdictOutcome): pr-remediation must go on to fix the PR's other
+// causes, or a no-verdict head would end every cycle before its checkpoint
+// and be selected again, unbounded.
 func (e *CIPollExecutor) noVerdictStep(ctx context.Context, w ciPollWait, cfg CIPollConfig, result providers.PullRequestPollResult, guard *noVerdictGuard, retriesUsed *int) (noVerdictStep, apiv1.ResultEnvelope, error) {
 	if !guard.settled(result) {
 		return noVerdictWait, apiv1.ResultEnvelope{}, nil
@@ -646,9 +673,14 @@ func (e *CIPollExecutor) noVerdictStep(ctx context.Context, w ciPollWait, cfg CI
 		return noVerdictDone, outcome, nil
 	}
 	if !retried {
-		return noVerdictDone, apiv1.ResultEnvelope{}, fmt.Errorf("executor: %w", &ciPollInfrastructureError{cause: &ciPollNoVerdictError{
+		noVerdict := &ciPollNoVerdictError{
 			head: result.HeadSHA, checks: providers.NoVerdictCheckNames(result.Checks), reruns: *retriesUsed, rerunErr: rerunErr,
-		}})
+		}
+		if cfg.NoVerdictContinue {
+			outcome, err := e.ciPollNoVerdictOutcome(cfg, result, noVerdict)
+			return noVerdictDone, outcome, err
+		}
+		return noVerdictDone, apiv1.ResultEnvelope{}, fmt.Errorf("executor: %w", &ciPollInfrastructureError{cause: noVerdict})
 	}
 	*guard = noVerdictGuard{}
 	invoke.ReportProgress(ctx)
@@ -662,6 +694,23 @@ func (e *CIPollExecutor) noVerdictStep(ctx context.Context, w ciPollWait, cfg CI
 		return noVerdictDone, apiv1.ResultEnvelope{}, err
 	}
 	return noVerdictRetried, apiv1.ResultEnvelope{}, nil
+}
+
+// ciPollNoVerdictOutcome is the "continue" result for a no-verdict head: a
+// determined pending poll, so the run goes on to the causes it can fix. The
+// no-verdict checks are named in OutputCINoVerdictChecks and recorded, with
+// their conclusions, in the ci-checks.json evidence attached to later stages:
+// a startup_failure that survived its reruns may be the PR's own workflow
+// error, and the agent that could fix it must see it.
+func (e *CIPollExecutor) ciPollNoVerdictOutcome(cfg CIPollConfig, result providers.PullRequestPollResult, noVerdict *ciPollNoVerdictError) (apiv1.ResultEnvelope, error) {
+	outcome := ciPollOutcome(providers.CheckStatePending, "ci-poll: "+noVerdict.Error(), cfg.PullID)
+	pointer, err := e.recordCIChecksArtifact(result.Checks, nil, noVerdict.rerunErr)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	outcome.Outputs[OutputCINoVerdictChecks] = boundFailedCheckNames(noVerdict.checks)
+	outcome.Artifacts = []apiv1.ArtifactPointer{pointer}
+	return addCIPollCarry(outcome, cfg), nil
 }
 
 // ciPollNoVerdictError reports a head whose CI finished without a verdict and
@@ -757,21 +806,31 @@ func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollCon
 		return outcome, nil
 	}
 
-	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckEvidence(ctx, cfg, result), retryErr)
+	pointer, err := e.recordCIChecksArtifact(result.Checks, e.failingCheckEvidence(ctx, cfg, result), retryErr)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
+		return apiv1.ResultEnvelope{}, err
+	}
+	outcome.Outputs[OutputCIFailedChecks] = boundFailedCheckNames(names)
+	outcome.Artifacts = []apiv1.ArtifactPointer{pointer}
+	return outcome, nil
+}
+
+// recordCIChecksArtifact records the bounded ci-checks.json evidence for
+// checks as unapproved, provider-authored content.
+func (e *CIPollExecutor) recordCIChecksArtifact(checks []providers.CheckDetail, evidence ciCheckEvidence, retryErr error) (apiv1.ArtifactPointer, error) {
+	data, err := marshalCIChecksArtifact(checks, evidence, retryErr)
+	if err != nil {
+		return apiv1.ArtifactPointer{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
 	}
 	recorder, ok := e.Journal.(integrityArtifactRecorder)
 	if !ok {
-		return apiv1.ResultEnvelope{}, errors.New("executor: CI failure evidence integrity recorder is unavailable")
+		return apiv1.ArtifactPointer{}, errors.New("executor: CI failure evidence integrity recorder is unavailable")
 	}
 	ref, err := recorder.RecordArtifactWithIntegrity(CIChecksArtifactName, data, apiv1.IntegrityUnapproved)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record %s: %w", CIChecksArtifactName, err)
+		return apiv1.ArtifactPointer{}, fmt.Errorf("executor: record %s: %w", CIChecksArtifactName, err)
 	}
-	outcome.Outputs[OutputCIFailedChecks] = boundFailedCheckNames(names)
-	outcome.Artifacts = []apiv1.ArtifactPointer{artifactPointer(ref, "application/json")}
-	return outcome, nil
+	return artifactPointer(ref, "application/json"), nil
 }
 
 // CIFailureLister is the optional provider capability that returns failing

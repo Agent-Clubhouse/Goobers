@@ -213,6 +213,45 @@ func TestRecordMergeRefusalNoVerdictCI(t *testing.T) {
 	}
 }
 
+// TestRecordMergeRefusalNoVerdictNoticeIsStickyPerHead pins the #6817 notice:
+// one comment asking for a CI rerun, posted once per head, updated in place
+// when the head moves, and never a demotion record.
+func TestRecordMergeRefusalNoVerdictNoticeIsStickyPerHead(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(85, "goobers/implementation/outage", "main", "sha-one", "base1", false, nil, nil)
+	server.addIssue(85, "outage")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "85")
+	t.Setenv("GOOBERS_INPUT_REASON", ciNoVerdictReason+": CI finished without a verdict (cancelled, never started or stale: build), waiting for CI to be rerun")
+	t.Chdir(t.TempDir())
+
+	comments := func() []string {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return append([]string(nil), server.issues[85].comments...)
+	}
+	for _, head := range []string{"sha-one", "sha-one", "sha-one", "sha-two"} {
+		t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", head)
+		if code, _, stderr := runArgs(t, "record-merge-refusal", root); code != 0 {
+			t.Fatalf("head %s: code = %d, stderr = %q", head, code, stderr)
+		}
+		got := comments()
+		if len(got) != 1 {
+			t.Fatalf("head %s: comments = %q, want exactly one sticky notice", head, got)
+		}
+		if !strings.Contains(got[0], "CI needs a rerun") || !strings.Contains(got[0], "`"+head+"`") || !strings.Contains(got[0], "build") {
+			t.Fatalf("head %s: notice = %q, want it to ask for a rerun of build at this head", head, got[0])
+		}
+		if _, _, found := latestMergeDemotionState([]providers.Comment{{Body: got[0]}}); found {
+			t.Fatalf("head %s: notice carries a demotion record", head)
+		}
+	}
+	if issueHasLabel(server, 85, mergeDemotedLabel) {
+		t.Fatal("a no-verdict refusal must never demote")
+	}
+}
+
 // TestRecordMergeRefusalResetsOnHeadAdvance proves a refusal at a NEW head resets
 // the counter — a PR whose head advanced (a remediation push) is a genuinely
 // fresh attempt, not a continuation of the stuck run.

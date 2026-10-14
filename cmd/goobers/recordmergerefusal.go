@@ -85,14 +85,6 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "PR #%d: merge-review opt-out, not a real merge refusal — not recording demotion\n", selectedNumber)
 		return 0
 	}
-	// #6817: CI that finished without a verdict (an outage cancelled it) is
-	// not a stuck PR. Counting it would demote the PR, and a demotion clears
-	// only when the head moves, so a rerun that turns CI green would not
-	// bring it back. Only a refusal with no other reason is skipped.
-	if strings.HasPrefix(reason, ciNoVerdictReason+":") && !strings.Contains(reason, "; ") {
-		pf(stdout, "PR #%d: CI finished without a verdict — deferring without recording demotion\n", selectedNumber)
-		return 0
-	}
 	if strings.Contains(reason, requiredStatusPendingReason) {
 		pf(stdout, "PR #%d: required status checks are pending — deferring without recording demotion\n", selectedNumber)
 		return 0
@@ -120,6 +112,13 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 	comments, err := provider.ListComments(ctx, repo, selectedNumberStr)
 	if err != nil {
 		return failProviderStage(stderr, "list comments", err, "")
+	}
+	// #6817: CI that finished without a verdict (an outage cancelled it) is
+	// not a stuck PR. Counting it would demote the PR, and a demotion clears
+	// only when the head moves, so a rerun that turns CI green would not
+	// bring it back. It gets a one-per-head notice asking for the rerun.
+	if ciNoVerdictOnlyRefusal(reason) {
+		return recordCINoVerdictNotice(ctx, provider, repo, selectedNumber, headSha, reason, comments, stdout, stderr)
 	}
 	prior, priorCommentID, found := latestMergeDemotionState(comments)
 
