@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/childworkflow"
@@ -34,7 +33,7 @@ type durableTriggerService struct {
 	childFamilies      *childFamilyLifecycle
 	queue              *triggerqueue.Store
 	dispatch           *daemonTriggerService
-	sweepMu            sync.Mutex
+	sweepGuard         drainGuard
 	reconcileCursor    string
 	bootUncertain      map[string]bool
 	auditLog           *journal.InstanceLog
@@ -169,8 +168,11 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 // are never replayed here: crash reconciliation must prove whether a run exists
 // before releasing their custody. The request's HTTP context is never used.
 func (s *durableTriggerService) Drain(ctx context.Context) error {
-	s.sweepMu.Lock()
-	defer s.sweepMu.Unlock()
+	release, err := s.sweepGuard.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	// Child custody shares the ordinary queue database. Retention must run
 	// even while no scheduler is attached; otherwise inactive installations
 	// retain terminal lineages and cancellation fences indefinitely.
@@ -189,19 +191,32 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 		return pruneErr
 	}
 	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
-	records, err := s.queue.PendingSweep(ctx, 100)
-	if err != nil {
-		return errors.Join(reconcileErr, err)
-	}
-	for _, record := range records {
+	return errors.Join(reconcileErr, s.drainPending(ctx))
+}
+
+// Reserve only the candidate this pass is about to inspect. Reserving the whole
+// batch up front can repeatedly skip uninspected records when passes end early.
+func (s *durableTriggerService) drainPending(ctx context.Context) error {
+	seen := make(map[string]struct{}, 100)
+	var failures error
+	for range 100 {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(reconcileErr, err)
+			return errors.Join(failures, err)
 		}
+		records, err := s.queue.PendingSweep(ctx, 1)
+		if err != nil || len(records) == 0 {
+			return errors.Join(failures, err)
+		}
+		record := records[0]
+		if _, visited := seen[record.ID]; visited {
+			return failures
+		}
+		seen[record.ID] = struct{}{}
 		// One malformed or temporarily unavailable owner must not pin the
-		// rest of this inspection window. Its custody remains unchanged.
-		reconcileErr = errors.Join(reconcileErr, s.drainOne(ctx, record))
+		// remaining candidates. Its custody remains unchanged.
+		failures = errors.Join(failures, s.drainOne(ctx, record))
 	}
-	return reconcileErr
+	return failures
 }
 
 func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueue.Record) error {
