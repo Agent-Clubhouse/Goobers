@@ -168,6 +168,39 @@ func TestReleaseCommentRedactsAndBoundsTheSummary(t *testing.T) {
 	}
 }
 
+// A summary is provider- and agent-influenced text. Whatever it contains, the
+// release comment must still be attributable and postable: a refused comment
+// leaves the claim epoch open and the item stuck as claimed.
+func TestReleaseCommentSurvivesHostileSummaries(t *testing.T) {
+	attribution := Attribution{
+		InstanceID: "e62c1c105fdc4273a72d199394b41cb0", Gaggle: "example", Workflow: "implementation",
+		Task: "close-out", Goober: "implementer", Run: "224712dcde5c4deda9717a03a8c26770",
+	}
+	fullMarker, err := withAttribution("x", attribution, "verdict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, summary := range map[string]string{
+		"unclosed marker":    "agent said " + AttributionMarkerPrefix + "AAAA",
+		"truncated marker":   strings.Repeat("y", 200) + " " + fullMarker,
+		"html and a mention": "ping @octocat and <img src=x>",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body, err := withAttribution(claimReleaseBreadcrumb("run-A", claimrelease.Failed.Because("agent_exit", summary)), attribution, "claim-release")
+			if err != nil {
+				t.Fatalf("release comment refused: %v", err)
+			}
+			human := body[:strings.Index(body, AttributionMarkerPrefix)]
+			if strings.ContainsAny(human, "<>@") {
+				t.Fatalf("release comment carries raw HTML or a mention:\n%s", human)
+			}
+			if claimReleaseRunID(body) != "run-A" {
+				t.Fatalf("release boundary lost:\n%s", body)
+			}
+		})
+	}
+}
+
 func TestLegacyReleaseCommentStillClosesTheEpoch(t *testing.T) {
 	m := newIssueMock()
 	p, repo := newIssueProvider(t, m)

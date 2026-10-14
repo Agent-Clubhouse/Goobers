@@ -181,7 +181,8 @@ const PathPlaceholder = "[path]"
 
 // Sanitize returns text made safe for a provider-visible single line: secret
 // shapes scrubbed, credential assignments and local paths redacted, control
-// characters and Markdown code fences neutralized, whitespace collapsed, and
+// characters, Markdown code fences, HTML delimiters and @mentions
+// neutralized, whitespace collapsed, and
 // the result bounded to SummaryLimit bytes. Scrubbing happens before the cut
 // so truncation can never split a secret into an unrecognizable fragment.
 func Sanitize(text string) string {
@@ -195,6 +196,16 @@ func Sanitize(text string) string {
 		switch {
 		case r == '`':
 			return '\''
+		case r == '<':
+			// No raw HTML or HTML comment can open: a truncated
+			// "<!-- goobers:attribution" start would otherwise make the
+			// provider refuse the whole release comment as malformed.
+			return '‹'
+		case r == '>':
+			return '›'
+		case r == '@':
+			// A summary must never notify anyone.
+			return '＠'
 		case unicode.IsControl(r):
 			return ' '
 		}
@@ -299,12 +310,33 @@ func (r Reason) MarkerLine() string {
 	return MarkerPrefix + " " + strings.Join(fields, " ")
 }
 
+// RetiredCode is the code of a provider claim epoch closed by a later owner
+// when the ledger kept no reason for the lease it mirrored.
+const RetiredCode = "surrendered_claim_retired"
+
+// Retired is the reason a later owner records when it closes holder's
+// provider claim epoch after holder's ledger lease already ended. The
+// original release reason is the true answer to why ownership ended
+// (stall-swept, force-released with its actor, ...), so it is carried as is;
+// only ledger history without a reason (written before #4421) falls back to
+// reconciliation.
+func Retired(original Reason, holder string) Reason {
+	if original.IsZero() {
+		return Reconciled.Because(RetiredCode, "ledger lease of run "+holder+" had already ended").Normalize()
+	}
+	if original.Summary == "" {
+		original.Summary = "provider marker closed by a later run after the ledger lease ended"
+	}
+	return original.Normalize()
+}
+
 // Comment renders the provider-visible claim-release comment for runID. The
 // first line is the historical, machine-parsed release boundary
 // (goobers-claim-release: run=<id>), unchanged so claim-epoch detection and
 // historical comments keep parsing; the reason marker, the human reason and
-// the eligibility statement follow.
+// the eligibility statement follow, each its own paragraph so renderers
+// without hard line breaks (Azure DevOps Markdown) keep them apart.
 func Comment(runID string, reason Reason) string {
-	return fmt.Sprintf("goobers-claim-release: run=%s\n%s\n\nReleased by Goobers run `%s`.\n%s\n%s",
+	return fmt.Sprintf("goobers-claim-release: run=%s\n\n%s\n\nReleased by Goobers run `%s`.\n\n%s\n\n%s",
 		runID, reason.MarkerLine(), runID, reason.Sentence(), reason.Eligibility())
 }

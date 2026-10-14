@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -264,6 +266,18 @@ func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string, reason claimr
 	return response.Released, nil
 }
 
+// releaseFallbackLog receives the warning postRelease writes when it drops a
+// reason for an older daemon; a stage's stderr is its log. A var so tests can
+// capture it.
+var releaseFallbackLog io.Writer = os.Stderr
+
+func releaseTarget(request claimRequest) string {
+	if request.ItemID == "" {
+		return "every claim"
+	}
+	return "claim " + request.ItemID
+}
+
 // postRelease sends a release carrying its reason. A daemon that predates the
 // reason field refuses the unknown field before any handler runs (strict
 // decoding), so the release is resent once without it: the claim must still
@@ -276,6 +290,8 @@ func (h *HTTP) postRelease(ctx context.Context, request claimRequest, response *
 		planeErr.Status != http.StatusBadRequest || !strings.Contains(planeErr.Message, `unknown field "reason"`) {
 		return err
 	}
+	_, _ = fmt.Fprintf(releaseFallbackLog, "warning: claims plane predates release reasons; releasing %s for run %s without recording its %s reason\n",
+		releaseTarget(request), request.RunID, request.Reason.Disposition)
 	request.Reason = claimrelease.Reason{}
 	return h.post(ctx, apicontract.ClaimReleasePath, request, response, replaySafe)
 }

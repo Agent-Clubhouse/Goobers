@@ -71,6 +71,16 @@ func TestSanitizeCollapsesToOneBoundedLine(t *testing.T) {
 	}
 }
 
+func TestSanitizeDefusesHTMLAndMentions(t *testing.T) {
+	got := Sanitize("ping @octocat and <img src=x> then <!-- goobers:attribution v1 AAAA")
+	if strings.ContainsAny(got, "<>@") {
+		t.Fatalf("Sanitize kept an HTML delimiter or mention: %q", got)
+	}
+	if !strings.Contains(got, "octocat") || !strings.Contains(got, "goobers:attribution") {
+		t.Fatalf("Sanitize dropped readable text: %q", got)
+	}
+}
+
 func TestSanitizeBoundsLengthAfterScrubbing(t *testing.T) {
 	// The secret straddles the limit: scrubbing must happen before the cut so
 	// a truncated fragment of it can never survive.
@@ -170,6 +180,21 @@ func TestCommentKeepsHistoricalBoundaryParseable(t *testing.T) {
 	}
 	if got, ok := parseMarker(body); !ok || got.Disposition != Failed || got.Stage != "implement" {
 		t.Fatalf("parseMarker(comment) = %#v, %v", got, ok)
+	}
+}
+
+func TestRetiredCarriesTheOriginalReason(t *testing.T) {
+	swept := Retired(StallSwept.Because("lease_expired", ""), "run-old")
+	if swept.Disposition != StallSwept || swept.Code != "lease_expired" || swept.Summary == "" {
+		t.Fatalf("Retired(stall-swept) = %+v", swept)
+	}
+	forced := Retired(ForceReleased.Reason().By("cli"), "run-old")
+	if forced.Disposition != ForceReleased || forced.Actor != "cli" {
+		t.Fatalf("Retired(force-released) = %+v", forced)
+	}
+	legacy := Retired(Reason{}, "run-old")
+	if legacy.Disposition != Reconciled || legacy.Code != RetiredCode || !strings.Contains(legacy.Summary, "run-old") {
+		t.Fatalf("Retired(legacy) = %+v", legacy)
 	}
 }
 

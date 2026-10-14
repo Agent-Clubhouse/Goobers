@@ -30,6 +30,15 @@ func TestHTTPReleaseCarriesReasonOnTheWire(t *testing.T) {
 // An older daemon decodes strictly and refuses the reason field before any
 // handler runs; the claim must still be surrendered, without the reason.
 func TestHTTPReleaseFallsBackForADaemonWithoutReasons(t *testing.T) {
+	var warnings strings.Builder
+	previous := releaseFallbackLog
+	releaseFallbackLog = &warnings
+	t.Cleanup(func() { releaseFallbackLog = previous })
+	t.Cleanup(func() {
+		if got := warnings.String(); strings.Count(got, "predates release reasons") != 2 || !strings.Contains(got, "claim 7 for run run-1 without recording its completed reason") {
+			t.Errorf("fallback warnings = %q, want one per dropped reason", got)
+		}
+	})
 	plane, client := newFakePlane(t, func(_ string, body map[string]any) (int, any) {
 		if _, has := body["reason"]; has {
 			return http.StatusBadRequest, map[string]any{"error": map[string]any{

@@ -1807,7 +1807,7 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if current, held := listing.Lookup(session.claimKey(item)); held && (current.RunID == holder || !current.SharedDeadline.IsZero()) {
 		return false, nil
 	}
-	surrendered, err := session.providerClaimSurrendered(ctx, item, holder, listing)
+	surrendered, released, err := session.providerClaimSurrendered(ctx, item, holder, listing)
 	if err != nil {
 		return false, err
 	}
@@ -1822,14 +1822,16 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 		RunID:              session.runID,
 		LedgerAuthorized:   true,
 		ExpectedClaimRunID: holder,
-		Reason:             claimrelease.Reconciled.Because("surrendered_claim_retired", "ledger lease of run "+holder+" was already released"),
+		Reason:             claimrelease.Retired(released, holder),
 	}); err != nil {
 		return false, fmt.Errorf("retire provider claim: %w", err)
 	}
 	return true, nil
 }
 
-func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, listing claimsclient.Listing) (bool, error) {
+// providerClaimSurrendered also reports why the holder's lease ended (zero for
+// pre-#4421 history and orphaned epochs), so the retiring comment says it.
+func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, listing claimsclient.Listing) (bool, claimrelease.Reason, error) {
 	foundHistory := false
 	for _, entry := range listing.HistoryForItem(item.ID) {
 		if entry.RunID != holder {
@@ -1837,10 +1839,11 @@ func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context
 		}
 		foundHistory = true
 		if entry.ReleasedAt != nil {
-			return true, nil
+			return true, entry.ReleaseReason, nil
 		}
 	}
-	return session.orphanedProviderClaimSurrendered(ctx, item, holder, foundHistory)
+	surrendered, err := session.orphanedProviderClaimSurrendered(ctx, item, holder, foundHistory)
+	return surrendered, claimrelease.Reason{}, err
 }
 
 type providerClaimEpochReader interface {

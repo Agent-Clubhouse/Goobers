@@ -642,11 +642,8 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// reconciles the label from remote ownership after its CAS transition.
 	if claim.SharedDeadline.IsZero() {
 		if _, err := provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-			Repository:       backlogRepo,
-			ID:               claim.ItemID,
-			RunID:            runID,
-			LedgerAuthorized: true,
-			Reason:           issueCloseOutReleaseReason(status),
+			Repository: backlogRepo, ID: claim.ItemID, RunID: runID,
+			LedgerAuthorized: true, Reason: issueCloseOutReleaseReason(status),
 		}); err != nil {
 			pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
 		}

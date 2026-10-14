@@ -418,7 +418,7 @@
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },
     "reason": {
-      "description": "Instance-journal only: short, stable explanation for a scheduler decision or daemon lifecycle event.",
+      "description": "Instance-journal only: short, stable explanation for a scheduler decision or daemon lifecycle event. On claim.released and claim.force_released it is the release disposition code (claimRelease.disposition).",
       "type": "string",
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },
@@ -427,6 +427,45 @@
       "type": "integer",
       "minimum": 1,
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+    },
+    "claimRelease": {
+      "description": "Instance-journal only: why a claim ended, on claim.released and claim.force_released (#4421). Absent on events written before the field existed, which readers treat as an unknown release.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition"],
+      "x-conformance": "not applicable (instance journal, not a run's conformance set)",
+      "properties": {
+        "disposition": {
+          "description": "Stable release class.",
+          "type": "string",
+          "enum": ["completed", "failed", "escalated", "cancelled", "abandoned", "no-work", "stall-swept", "reconciled", "force-released", "superseded", "unknown"],
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "stage": {
+          "description": "Workflow stage or gate the holding run ended at, when known.",
+          "type": "string",
+          "maxLength": 64,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "code": {
+          "description": "Stable error or disposition code, when known.",
+          "type": "string",
+          "maxLength": 64,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "summary": {
+          "description": "Bounded, scrubbed, single-line human explanation.",
+          "type": "string",
+          "maxLength": 240,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "actor": {
+          "description": "Operator identity behind a force-release, when known.",
+          "type": "string",
+          "maxLength": 64,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        }
+      }
     }
   },
   "$defs": {
