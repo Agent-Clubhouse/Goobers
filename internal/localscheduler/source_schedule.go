@@ -28,20 +28,31 @@ func (s *Scheduler) queuePlainSchedule(ctx context.Context, entry WorkflowEntry,
 		s.mu.Unlock()
 		s.persistScheduleDemand(identity, false)
 	}
-	result := Tick(TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: before}, now)
+	window, err := EvaluateScheduleWindow(entry.Schedules, before, now)
+	if err != nil {
+		s.sourceQueueError(entry, err)
+		return true, false
+	}
+	result := window.Tick
 	// Transfer a legacy outstanding single worker fire once during adoption.
 	if adoptLegacy && now.After(before) {
 		result.Fire = true
 		result.LastEval = now
 	}
-	if result.Fire {
-		indexes := dueScheduleIndexes(entry.Schedules, before, now)
+	if result.Fire || !result.LastEval.Equal(before) {
+		indexes := window.Indexes
+		if adoptLegacy {
+			indexes = dueScheduleIndexes(entry.Schedules, before, now)
+		}
 		blocked, reason := s.scheduleBackedOff(identity, entry, indexes, now)
-		if err = s.sourceQueue.AcceptSchedule(ctx, entry, before, result.LastEval, !blocked); err != nil {
+		if err = s.sourceQueue.AcceptSchedule(ctx, entry, before, result.LastEval, result.Fire && !blocked); err != nil {
 			s.sourceQueueError(entry, err)
 			return true, false
 		}
-		if blocked {
+		if !result.Fire {
+			reason = "schedule catch-up window expired"
+		}
+		if blocked || !result.Fire {
 			s.journalEvent(journal.Event{Type: journal.EventTickSkipped, Workflow: entry.Workflow, Gaggle: entry.Gaggle, Reason: reason})
 		}
 		s.mu.Lock()
