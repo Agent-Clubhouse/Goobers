@@ -60,3 +60,26 @@ and [counted workers](queued-counted-workers.md). It narrowly adapts the schedul
 demand parts of reference snapshot
 `fa34a754148ea3076bfd04fe4976a5a461b063f2`. Generic emitted events, configurable
 debounce, shared provider polling and interactive restarts are separate slices.
+
+## Independent occurrence custody foundation
+
+The host queue can retain separate pinned schedule occurrences in one workflow
+scope alongside an older coalesced obligation. The oldest outstanding occurrence
+is selected for sizing; worker transfer resolves the selected occurrence by its
+exact ID and verifies its gaggle/workflow scope. Each occurrence keeps its own
+sealed count and next worker ordinal, and archive retention enumerates them all.
+
+An additive queue migration preserves existing coalesced records, payloads,
+acceptance times and partial worker progress. A partial unique index continues
+to allow only one coalesced obligation per scope. Independent captures advance
+their source cursor atomically; capacity or cursor conflicts roll back both
+custody and progress. Exact retained-capture retries preserve original pins;
+changing pins, scope, revision, cursor boundary or capture mode conflicts.
+Completed occurrences cannot be recreated behind the advanced cursor. Older
+binaries refuse the newer queue schema rather than silently dropping custody.
+
+This is internal storage support. The workflow authoring option for all missed
+occurrences is not enabled yet. Its ordered occurrence cursor, bounded
+100-occurrence discovery, schedule revision/config propagation and complete
+scheduler restart integration remain required before that option is exposed.
+The existing one-hour coalesced default remains in effect.
