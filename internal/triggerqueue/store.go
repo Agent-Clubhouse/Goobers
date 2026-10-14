@@ -264,7 +264,7 @@ func (s *Store) RetryUnstarted(ctx context.Context, id string) error {
 }
 
 // Requeue returns a dispatch attempt to the accepted queue after the scheduler
-// refused it for temporary capacity. The reason stays visible to status
+// refused it for a waitable operating constraint. The reason stays visible to status
 // readers while preserving the original acceptance ID and FIFO time.
 func (s *Store) Requeue(ctx context.Context, id, reason string) error {
 	if len(reason) > 1024 {
@@ -280,7 +280,7 @@ func (s *Store) RecordDispatch(ctx context.Context, id, runID string) error {
 	if len(runID) > 256 {
 		return ErrTransition
 	}
-	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET run_id=? WHERE id=? AND state='dispatching' AND run_id=''", runID, id)
+	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET run_id=?,reason='' WHERE id=? AND state='dispatching' AND run_id=''", runID, id)
 	return changed(result, err)
 }
 

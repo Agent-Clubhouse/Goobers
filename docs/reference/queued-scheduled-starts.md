@@ -70,3 +70,7 @@ The implementation adapts the schedule cursor and pinned schedule-start pieces
 of reference snapshot `fa34a754148ea3076bfd04fe4976a5a461b063f2` to the current
 scheduler. It extends [durable signal starts](queued-signal-starts.md) and uses
 the same captured-definition dispatch as [ordinary HTTP starts](pinned-http-starts.md).
+
+Accepted starts also retain custody through resettable operating constraints.
+See [waiting for start admission](queued-start-waits.md) for budget, quota,
+open-PR-cap and paused-workflow behavior and the remaining waiting-policy work.
