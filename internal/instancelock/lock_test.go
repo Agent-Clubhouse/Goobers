@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -137,5 +138,74 @@ func TestAcquireInstanceLockConflictIncludesHolderPID(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "already holds the lock") ||
 		!strings.Contains(err.Error(), fmt.Sprintf("holder pid %d", os.Getpid())) {
 		t.Fatalf("err = %v, want existing conflict message enriched with holder pid", err)
+	}
+}
+
+func holdLockWithContent(t *testing.T, content string) string {
+	t.Helper()
+	lockPath := filepath.Join(t.TempDir(), "up.lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := lock.TryAcquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Release() })
+	if content != "" {
+		if _, err := held.File().WriteString(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return lockPath
+}
+
+func TestInspectDaemonLockHeldWithEmptyStateReportsRunning(t *testing.T) {
+	lockPath := holdLockWithContent(t, "")
+	running, identity, err := InspectDaemonLock(lockPath)
+	if err != nil {
+		t.Fatalf("InspectDaemonLock: %v", err)
+	}
+	if !running || identity != nil {
+		t.Fatalf("running=%v identity=%v, want held with unknown identity", running, identity)
+	}
+}
+
+func TestInspectDaemonLockHeldByManualHolderIsNotDaemon(t *testing.T) {
+	lockPath := holdLockWithContent(t, fmt.Sprintf("{\"holderKind\":\"manual\",\"holderPid\":%d}\n", os.Getpid()))
+	running, identity, err := InspectDaemonLock(lockPath)
+	if err != nil {
+		t.Fatalf("InspectDaemonLock: %v", err)
+	}
+	if running || identity != nil {
+		t.Fatalf("running=%v identity=%v, want not running", running, identity)
+	}
+}
+
+func TestInspectDaemonLockHeldWithCorruptStateErrors(t *testing.T) {
+	lockPath := holdLockWithContent(t, "{not json")
+	running, _, err := InspectDaemonLock(lockPath)
+	if err == nil || running {
+		t.Fatalf("running=%v err=%v, want decode error", running, err)
+	}
+}
+
+func TestWriteInstanceLockStateShrinksWithoutResidue(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	long := State{HolderKind: HolderManual, HolderPID: 1234567}
+	short := State{HolderKind: HolderManual, HolderPID: 1}
+	if err := writeInstanceLockState(f, long); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInstanceLockState(f, short); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readInstanceLockState(f)
+	if err != nil || state == nil || state.HolderPID != 1 {
+		t.Fatalf("state=%v err=%v", state, err)
 	}
 }

@@ -140,14 +140,11 @@ func writeInstanceLockState(f *os.File, state State) error {
 		return fmt.Errorf("encode lock state: %w", err)
 	}
 	data = append(data, '\n')
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("truncate lock state: %w", err)
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek lock state: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := f.WriteAt(data, 0); err != nil {
 		return fmt.Errorf("write lock state: %w", err)
+	}
+	if err := f.Truncate(int64(len(data))); err != nil {
+		return fmt.Errorf("truncate lock state: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync lock state: %w", err)
@@ -245,9 +242,14 @@ func InspectDaemonLock(lockPath string) (running bool, identity *DaemonIdentity,
 	held, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		if errors.Is(err, lock.ErrHeld) {
-			state, readErr := ReadStatePath(lockPath)
-			if readErr != nil || state == nil {
+			state, readErr := readHeldState(lockPath)
+			if readErr != nil {
 				return false, nil, readErr
+			}
+			if state == nil {
+				// Held but no record yet: the holder is between acquiring and
+				// publishing its state, so its identity is unknown.
+				return true, nil, nil
 			}
 			identity, readErr := state.DaemonIdentity()
 			if readErr != nil {
@@ -261,6 +263,28 @@ func InspectDaemonLock(lockPath string) (running bool, identity *DaemonIdentity,
 
 	identity, err = ReadDaemonIdentity(held.File())
 	return false, identity, err
+}
+
+const (
+	heldStateReadAttempts = 5
+	heldStateReadBackoff  = 10 * time.Millisecond
+)
+
+// readHeldState retries briefly so a read racing the holder's in-place
+// rewrite does not observe a transiently empty or partial record.
+func readHeldState(lockPath string) (*State, error) {
+	var state *State
+	var err error
+	for i := 0; i < heldStateReadAttempts; i++ {
+		state, err = ReadStatePath(lockPath)
+		if err == nil && state != nil {
+			return state, nil
+		}
+		if i < heldStateReadAttempts-1 {
+			time.Sleep(heldStateReadBackoff)
+		}
+	}
+	return state, err
 }
 
 // InspectDaemonLiveness evaluates the held daemon lock using its pinned timeout.
