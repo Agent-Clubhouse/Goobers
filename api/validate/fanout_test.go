@@ -1,10 +1,13 @@
 package validate
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // fanOutSelectiveWorkflow is the design §5.1 example
@@ -184,4 +187,57 @@ func removeLinesWithPrefix(doc string, prefixes ...string) string {
 		}
 	}
 	return strings.Join(kept, "\n")
+}
+
+// TestFanOutGoTypesMatchClosedWorkflowSchema is the Go-to-schema structural
+// drift guard for the fan-out types: a fixture populating every JSON field of
+// Map, ParallelSelection, FanOutSource and Branch must validate against the
+// closed workflow schema, so a Go field without a schema property fails here.
+func TestFanOutGoTypesMatchClosedWorkflowSchema(t *testing.T) {
+	source := apiv1.FanOutSource{Task: "plan", Slot: "shards"}
+	fullMap := apiv1.Map{
+		Name: "run-shards", Source: source, Task: "run-shard",
+		Bindings:      map[string]apiv1.MapBinding{"shard": apiv1.MapBindingItem},
+		FailurePolicy: apiv1.BranchFailFast, Join: "collate", OnFailure: "@abort",
+		ItemTimeoutSeconds: 1800, MaxConcurrent: 4,
+	}
+	selective := apiv1.Parallel{
+		Name: "review", FailurePolicy: apiv1.BranchContinueOnError, Join: "collate",
+		Selection: &apiv1.ParallelSelection{Source: source},
+		Branches:  []apiv1.Branch{{Name: "a", Start: "plan", Optional: true}, {Name: "b", Start: "collate"}},
+	}
+	for _, value := range []any{fullMap, *selective.Selection, source, selective.Branches[0]} {
+		assertEveryJSONFieldPopulated(t, value)
+	}
+	raw, err := yaml.YAMLToJSON([]byte(fanOutMapWorkflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	spec := doc["spec"].(map[string]any)
+	spec["maps"] = []any{jsonValue(t, fullMap)}
+	spec["parallels"] = []any{jsonValue(t, selective)}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := newV(t).ValidateJSON("workflow.schema.json", encoded); err != nil {
+		t.Fatalf("closed workflow schema rejects fully populated fan-out Go types: %v", err)
+	}
+}
+
+func jsonValue(t *testing.T, value any) any {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }

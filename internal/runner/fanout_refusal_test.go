@@ -75,7 +75,9 @@ func TestFanOutRefusedBeforeLocalEffects(t *testing.T) {
 			call func() (Result, error)
 		}{
 			{"start", func() (Result, error) { return r.Start(context.Background(), StartInput{RunID: "blocked", Machine: m}) }},
-			{"resume", func() (Result, error) { return r.Resume(context.Background(), ResumeInput{RunID: "blocked", Machine: m}) }},
+			{"resume", func() (Result, error) {
+				return r.Resume(context.Background(), ResumeInput{RunID: "blocked", Machine: m})
+			}},
 			{"terminal resume", func() (Result, error) {
 				return r.ResumeFromTerminal(context.Background(), ResumeFromTerminalInput{RunID: "blocked", Machine: m})
 			}},

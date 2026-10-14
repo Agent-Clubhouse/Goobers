@@ -2435,34 +2435,36 @@ func (ix *index) checkWorkflowVersionAndReferences(r *Report, w apiv1.Workflow, 
 	return canInterpret
 }
 
-func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
-	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
-	states := map[string]bool{}
+// workflowStateNames collects every declared state name — tasks, gates,
+// parallels, then DSL 3.1 maps — reporting each repeated name once per
+// repetition.
+func workflowStateNames(r *Report, w apiv1.Workflow, file string) map[string]bool {
+	names := make([]string, 0, len(w.Spec.Tasks)+len(w.Spec.Gates)+len(w.Spec.Parallels)+len(w.Spec.Maps))
 	for _, t := range w.Spec.Tasks {
-		if states[t.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", t.Name)
-		}
-		states[t.Name] = true
+		names = append(names, t.Name)
 	}
 	for _, g := range w.Spec.Gates {
-		if states[g.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", g.Name)
-		}
-		states[g.Name] = true
+		names = append(names, g.Name)
 	}
-
 	for _, p := range w.Spec.Parallels {
-		if states[p.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", p.Name)
-		}
-		states[p.Name] = true
+		names = append(names, p.Name)
 	}
 	for _, m := range w.Spec.Maps {
-		if states[m.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", m.Name)
-		}
-		states[m.Name] = true
+		names = append(names, m.Name)
 	}
+	states := make(map[string]bool, len(names))
+	for _, name := range names {
+		if states[name] {
+			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", name)
+		}
+		states[name] = true
+	}
+	return states
+}
+
+func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
+	states := workflowStateNames(r, w, file)
 
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
 		r.add(errorStartState, Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
