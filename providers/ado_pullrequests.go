@@ -167,6 +167,7 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		if err := p.do(ctx, http.MethodPut, endpoint, map[string]int{"vote": 0}, nil); err != nil {
 			return err
 		}
+		observeProviderMutation(ctx, p.Client, ProviderADO)
 	}
 	return nil
 }

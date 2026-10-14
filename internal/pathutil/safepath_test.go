@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/pathutil"
@@ -144,5 +145,92 @@ func TestIsLexicallyContainedCases(t *testing.T) {
 		if _, err := pathutil.IsLexicallyContained("", rel); err != nil {
 			t.Errorf("IsLexicallyContained(%q) = %v", rel, err)
 		}
+	}
+}
+
+func TestValidateSymlinkEscape(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "r", "root")
+	tests := []struct {
+		name     string
+		resolved string
+		wantErr  bool
+	}{
+		{"root itself", root, false},
+		{"inside", filepath.Join(root, "a", "b"), false},
+		{"sibling", filepath.Join(root, "..", "other"), true},
+		{"parent", filepath.Dir(root), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := pathutil.ValidateSymlinkEscape(root, tt.resolved, "orig")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "symlink escape") {
+				t.Fatalf("unexpected message: %v", err)
+			}
+		})
+	}
+	if err := pathutil.ValidateSymlinkEscape("rel", filepath.Join(string(filepath.Separator), "abs"), "o"); err == nil {
+		t.Fatal("expected error when Rel fails")
+	}
+}
+
+func TestResolveWithSymlinks(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	for _, d := range []string{filepath.Join(root, "sub"), outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(root, "sub", "f.txt"), filepath.Join(outside, "secret.txt")} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := func(target, name string) {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			t.Skipf("symlinks unsupported: %v", err)
+		}
+	}
+	link(filepath.Join(root, "sub"), "inlink")
+	link(outside, "outlink")
+	link("loop2", "loop1")
+	link("loop1", "loop2")
+
+	tests := []struct {
+		name    string
+		rel     string
+		want    string
+		wantErr string
+	}{
+		{"plain", "sub/f.txt", filepath.Join(root, "sub", "f.txt"), ""},
+		{"in-root symlink", "inlink/f.txt", filepath.Join(root, "sub", "f.txt"), ""},
+		{"escaping symlink", "outlink/secret.txt", "", "symlink escape"},
+		{"looping symlink", "loop1", "", "*"},
+		{"missing", "nope.txt", "", "*"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pathutil.ResolveWithSymlinks(root, filepath.Join(root, tt.rel), tt.rel)
+			if tt.wantErr == "" {
+				if err != nil || got != tt.want {
+					t.Fatalf("got (%q, %v), want %q", got, err, tt.want)
+				}
+				return
+			}
+			if err == nil || got != "" || (tt.wantErr != "*" && !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("got (%q, %v), want error containing %q", got, err, tt.wantErr)
+			}
+		})
+	}
+
+	if _, err := pathutil.ResolveWithSymlinks(filepath.Join(base, "missing-root"), filepath.Join(root, "sub"), "sub"); err == nil || !strings.Contains(err.Error(), "resolve root") {
+		t.Fatalf("expected resolve root error, got %v", err)
 	}
 }

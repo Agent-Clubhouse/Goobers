@@ -184,6 +184,7 @@ workflow.spec.runControls                                2.0          ga        
 workflow.spec.runControls.maxRepasses                    2.0          ga               supported        dev
 workflow.spec.runControls.maxRunDuration                 2.0          ga               supported        dev
 workflow.spec.runControls.stalledRunTimeout              2.0          ga               supported        dev
+workflow.spec.scheduleCatchUp                            2.0          ga               supported        dev
 workflow.spec.start                                      2.0          ga               supported        dev
 workflow.spec.tasks                                      2.0          ga               supported        dev
 workflow.spec.triggers                                   2.0          ga               supported        dev
@@ -207,6 +208,7 @@ gaggle.spec.backlog.labels                               3.0          ga        
 gaggle.spec.backlog.provider.ado                         3.0          ga               preview          dev
 gaggle.spec.backlog.provider.gitea                       3.0          ga               preview          dev
 gaggle.spec.backlog.provider.github                      3.0          ga               preview          dev
+gaggle.spec.backprop.mode                                3.0          ga               preview          dev
 gaggle.spec.branchNamespace                              3.0          ga               preview          dev
 gaggle.spec.ciCommand                                    3.0          ga               preview          dev
 gaggle.spec.cost.enabled                                 3.0          ga               preview          v0.4.0
@@ -370,6 +372,8 @@ trigger.schedule                                         3.0          ga        
 trigger.signal                                           3.0          ga               preview          dev
 trigger.webhook                                          3.0          ga               preview          dev
 workflow.spec.backprop.enabled                           3.0          ga               preview          dev
+workflow.spec.backprop.granularity                       3.0          ga               preview          dev
+workflow.spec.backprop.mode                              3.0          ga               preview          dev
 workflow.spec.backprop.version                           3.0          ga               preview          dev
 workflow.spec.displayName                                3.0          ga               preview          dev
 workflow.spec.docsRoots                                  3.0          ga               preview          dev
@@ -398,6 +402,7 @@ workflow.spec.runControls                                3.0          ga        
 workflow.spec.runControls.maxRepasses                    3.0          ga               preview          dev
 workflow.spec.runControls.maxRunDuration                 3.0          ga               preview          dev
 workflow.spec.runControls.stalledRunTimeout              3.0          ga               preview          dev
+workflow.spec.scheduleCatchUp                            3.0          ga               preview          dev
 workflow.spec.start                                      3.0          ga               preview          dev
 workflow.spec.tasks                                      3.0          ga               preview          dev
 workflow.spec.triggers                                   3.0          ga               preview          dev
@@ -421,6 +426,7 @@ gaggle.spec.backlog.labels                               3.1          ga        
 gaggle.spec.backlog.provider.ado                         3.1          ga               preview          dev
 gaggle.spec.backlog.provider.gitea                       3.1          ga               preview          dev
 gaggle.spec.backlog.provider.github                      3.1          ga               preview          dev
+gaggle.spec.backprop.mode                                3.1          ga               preview          dev
 gaggle.spec.branchNamespace                              3.1          ga               preview          dev
 gaggle.spec.ciCommand                                    3.1          ga               preview          dev
 gaggle.spec.cost.enabled                                 3.1          ga               preview          v0.4.0
@@ -598,6 +604,8 @@ trigger.schedule                                         3.1          ga        
 trigger.signal                                           3.1          ga               preview          dev
 trigger.webhook                                          3.1          ga               preview          dev
 workflow.spec.backprop.enabled                           3.1          ga               preview          dev
+workflow.spec.backprop.granularity                       3.1          ga               preview          dev
+workflow.spec.backprop.mode                              3.1          ga               preview          dev
 workflow.spec.backprop.version                           3.1          ga               preview          dev
 workflow.spec.displayName                                3.1          ga               preview          dev
 workflow.spec.docsRoots                                  3.1          ga               preview          dev
@@ -626,6 +634,7 @@ workflow.spec.runControls                                3.1          ga        
 workflow.spec.runControls.maxRepasses                    3.1          ga               preview          dev
 workflow.spec.runControls.maxRunDuration                 3.1          ga               preview          dev
 workflow.spec.runControls.stalledRunTimeout              3.1          ga               preview          dev
+workflow.spec.scheduleCatchUp                            3.1          ga               preview          dev
 workflow.spec.start                                      3.1          ga               preview          dev
 workflow.spec.tasks                                      3.1          ga               preview          dev
 workflow.spec.triggers                                   3.1          ga               preview          dev
@@ -636,4 +645,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-636 feature/version row(s)
+645 feature/version row(s)

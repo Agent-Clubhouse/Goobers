@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,70 @@ type adoPlanRateObserver struct{ events []providers.RateLimitEvent }
 
 func (o *adoPlanRateObserver) ObserveRateLimit(_ context.Context, event providers.RateLimitEvent) {
 	o.events = append(o.events, event)
+}
+
+func TestADOPlanSnapshotContentionUsesProductionLockBudget(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	scope := Scope{Gaggle: "team", Binding: "automation:backlog", Generation: "generation-a"}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+	var queries atomic.Int32
+	fixture := &adoPlanFixture{before: func(req *http.Request) error {
+		if !strings.HasSuffix(req.URL.Path, "/wiql") {
+			return nil
+		}
+		if queries.Add(1) == 1 {
+			close(entered)
+			select {
+			case <-release:
+			case <-req.Context().Done():
+				return req.Context().Err()
+			}
+		} else {
+			releaseOnce()
+		}
+		return nil
+	}}
+	type result struct {
+		items []providers.WorkItem
+		info  providers.ListWorkItemsPageInfo
+		err   error
+	}
+	leader := make(chan result, 1)
+	go func() {
+		items, info, err := adoPlanRead(ctx, adoPlanProvider(dir, "evaluation", scope, "token", fixture))
+		leader <- result{items, info, err}
+		close(leader)
+	}()
+	defer func() {
+		cancel()
+		<-leader
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("leader did not enter its provider request", ctx.Err())
+	}
+	follower := adoPlanProvider(dir, "evaluation", scope, "token", fixture)
+	cache := follower.Client.(*apiReadCache)
+	if cache.lockBudget != time.Second {
+		t.Fatalf("production lock budget=%s, want 1s", cache.lockBudget)
+	}
+	started := time.Now()
+	items, info, err := adoPlanRead(ctx, follower)
+	assertADOPlanItems(t, items, info, err)
+	if elapsed := time.Since(started); elapsed < cache.lockBudget {
+		t.Fatalf("fallback after %s, before lock budget %s", elapsed, cache.lockBudget)
+	}
+	first := <-leader
+	assertADOPlanItems(t, first.items, first.info, first.err)
+	if got, _ := fixture.counts(); got != 2 {
+		t.Fatalf("provider queries=%d, want leader plus bounded fallback", got)
+	}
 }
 
 func TestADOPlanFollowerCancellationAndLeaderLeaseRevocation(t *testing.T) {

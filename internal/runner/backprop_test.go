@@ -319,6 +319,80 @@ func TestResumeBackfillsTerminalAttributionExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestRunnerCompletionDoesNotWaitForShadowBackprop(t *testing.T) {
+	const runID = "run-shadow"
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{runID + ":act": {status: apiv1.ResultFailure}}, nil)
+	attributed := make(chan string, 2)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	// A blocking attributor makes any synchronous terminal-path attribution
+	// hold Start open, so Start returning before a call proves shadow mode
+	// never waits on it.
+	r.attributeRun = func(runDir string, _ *journal.Event) (bool, error) {
+		attributed <- runDir
+		<-release
+		return false, nil
+	}
+	machine := backpropShadowMachine(t)
+	in := StartInput{
+		RunID: runID, Machine: machine,
+		Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}
+	type startResult struct {
+		result Result
+		err    error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		result, err := r.Start(context.Background(), in)
+		done <- startResult{result, err}
+	}()
+	select {
+	case runDir := <-attributed:
+		t.Fatalf("runner completion invoked terminal-path attribution for shadow run %s", runDir)
+	case got := <-done:
+		if got.err != nil || got.result.Phase != journal.PhaseFailed {
+			t.Fatalf("shadow result = %+v, err = %v, want unchanged failed phase", got.result, got.err)
+		}
+	}
+	resumed, err := r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine, RepoRef: in.RepoRef})
+	if err != nil || resumed.Phase != journal.PhaseFailed {
+		t.Fatalf("Resume = %+v, %v", resumed, err)
+	}
+	select {
+	case runDir := <-attributed:
+		t.Fatalf("resume invoked terminal-path attribution for shadow run %s", runDir)
+	default:
+	}
+
+	runDir := filepath.Join(runsDir, runID)
+	if _, err := creditgraph.ReadRunRecord(runDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("active record read = %v, want not exist for shadow run", err)
+	}
+	observation, observed, err := creditgraph.ObserveShadowRun(runDir, nil)
+	if err != nil || !observed || observation.ViaOverride || observation.Record.Mode != apiv1.BackpropModeShadow {
+		t.Fatalf("on-demand shadow observation = %+v, %v, %v; want workflow shadow record", observation, observed, err)
+	}
+}
+func backpropShadowMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "backprop", Version: 1, DSLVersion: "3.0", Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web", Backprop: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"},
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}, Start: "act",
+			Tasks: []apiv1.Task{{
+				Name: "act", Type: apiv1.TaskDeterministic, Goal: "act",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return machine
+}
+
 func createBackpropRun(t *testing.T, runsDir, runID string, machine *workflow.Machine, opts ...journal.Option) *journal.Run {
 	t.Helper()
 	definition, err := json.Marshal(machine.Def)

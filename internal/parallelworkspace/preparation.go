@@ -45,10 +45,20 @@ func PendingPreparations(reader *journal.Reader) ([]PendingPreparation, error) {
 }
 
 func readPreparations(reader *journal.Reader) ([]PendingPreparation, int, error) {
+	id, err := reader.Identity()
+	if err != nil {
+		return nil, 0, err
+	}
 	events, err := reader.Events()
 	if err != nil {
 		return nil, 0, err
 	}
+	return replayPreparations(events, func(event journal.Event) (PendingPreparation, error) {
+		return readPreparation(reader, id, events, event)
+	})
+}
+
+func replayPreparations(events []journal.Event, read func(journal.Event) (PendingPreparation, error)) ([]PendingPreparation, int, error) {
 	active := map[uint64]PendingPreparation{}
 	total := 0
 	for _, event := range events {
@@ -61,7 +71,7 @@ func readPreparations(reader *journal.Reader) ([]PendingPreparation, int, error)
 			if total > maxPreparations || event.Branch != 0 {
 				return nil, total, errors.New("parallel capture ownership limit or scope changed")
 			}
-			value, err := readPreparation(reader, event)
+			value, err := read(event)
 			if err != nil {
 				return nil, total, err
 			}
@@ -94,7 +104,7 @@ func consumePreparationRelease(event journal.Event, active map[uint64]PendingPre
 	return nil
 }
 
-func readPreparation(reader *journal.Reader, event journal.Event) (PendingPreparation, error) {
+func readPreparation(reader *journal.Reader, id journal.RunIdentity, events []journal.Event, event journal.Event) (PendingPreparation, error) {
 	value := PendingPreparation{Sequence: event.Seq}
 	data, err := json.Marshal(event.Runner["preparation"])
 	if err != nil || json.Unmarshal(data, &value.Reference) != nil || value.Reference.Integrity != apiv1.IntegrityTrusted {
@@ -107,7 +117,7 @@ func readPreparation(reader *journal.Reader, event journal.Event) (PendingPrepar
 	if json.Unmarshal(data, &value.Value) != nil || value.Value.Version != 1 {
 		return value, errors.New("invalid parallel capture preparation")
 	}
-	if err := validatePreparation(reader, value.Value); err != nil {
+	if err := validatePreparation(reader, id, events, value.Value); err != nil {
 		return value, err
 	}
 	if value.Value.Request.Sequence >= event.Seq || event.Parallel != value.Value.Request.Parallel {
@@ -116,19 +126,15 @@ func readPreparation(reader *journal.Reader, event journal.Event) (PendingPrepar
 	return value, nil
 }
 
-func validatePreparation(reader *journal.Reader, value Preparation) error {
+func validatePreparation(reader *journal.Reader, id journal.RunIdentity, events []journal.Event, value Preparation) error {
 	request, record := value.Request, value.Snapshot.Record
-	id, err := reader.Identity()
-	if err != nil {
-		return err
-	}
 	if id.Child != nil || request.RunID != id.RunID || request.Gaggle != id.Gaggle || record.RunID != id.RunID || record.RepositoryKey != repositoryKey(request.Repository) || request.Workspace != "" || !record.CreatedAt.Equal(request.At) {
 		return errors.New("parallel capture owner changed")
 	}
 	if err := validatePreparedSnapshot(value.Snapshot); err != nil {
 		return err
 	}
-	if err := verifySourceBoundary(reader, sourceMetadata{Gaggle: id.Gaggle, Parallel: request.Parallel, Sequence: request.Sequence, Snapshot: value.Snapshot}); err != nil {
+	if err := verifySourceBoundary(events, sourceMetadata{Gaggle: id.Gaggle, Parallel: request.Parallel, Sequence: request.Sequence, Snapshot: value.Snapshot}); err != nil {
 		return err
 	}
 	if request.Branch < 0 || request.Branch > 128 {
@@ -144,7 +150,7 @@ func validatePreparation(reader *journal.Reader, value Preparation) error {
 		if _, err := reader.ArtifactBytesBounded(request.Plan, MaxMetadataBytes); err != nil {
 			return err
 		}
-		if _, err := ReadSource(reader, request.Seed, request.Parallel, request.Sequence); err != nil {
+		if _, err := readSourceWith(reader, id, events, request.Seed, request.Parallel, request.Sequence); err != nil {
 			return err
 		}
 	}
@@ -158,14 +164,24 @@ func recordPreparation(rec Recorder, request spec.ResultRequest, snapshot recove
 	if err != nil {
 		return err
 	}
-	if err := validatePreparation(reader, value); err != nil {
+	id, err := reader.Identity()
+	if err != nil {
+		return err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	if err := validatePreparation(reader, id, events, value); err != nil {
 		return err
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	pending, total, err := readPreparations(reader)
+	pending, total, err := replayPreparations(events, func(event journal.Event) (PendingPreparation, error) {
+		return readPreparation(reader, id, events, event)
+	})
 	if err != nil {
 		return err
 	}
@@ -187,7 +203,15 @@ func recordPreparation(rec Recorder, request spec.ResultRequest, snapshot recove
 	if err := rec.Append(journal.Event{Type: journal.EventRunnerAnnotation, Parallel: request.Parallel, Runner: map[string]any{"kind": preparationKind, "preparation": ref}}); err != nil {
 		return err
 	}
-	pending, err = PendingPreparations(reader)
+	// The journal grew by the Append, so events must be re-read; identity is
+	// immutable and reused.
+	events, err = reader.Events()
+	if err != nil {
+		return err
+	}
+	pending, _, err = replayPreparations(events, func(event journal.Event) (PendingPreparation, error) {
+		return readPreparation(reader, id, events, event)
+	})
 	if err != nil {
 		return err
 	}

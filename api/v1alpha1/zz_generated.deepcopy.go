@@ -569,6 +569,11 @@ func (in *GaggleSpec) DeepCopyInto(out *GaggleSpec) {
 		*out = new(GaggleHealthPolicy)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Backprop != nil {
+		in, out := &in.Backprop, &out.Backprop
+		*out = new(GaggleBackprop)
+		**out = **in
+	}
 	if in.Sandbox != nil {
 		in, out := &in.Sandbox, &out.Sandbox
 		*out = new(GaggleSandbox)
@@ -2009,6 +2014,17 @@ func (in *GaggleHealthNotifications) DeepCopy() *GaggleHealthNotifications {
 		return nil
 	}
 	out := new(GaggleHealthNotifications)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleBackprop) DeepCopyInto(out *GaggleBackprop) {
+	*out = *in
+}
+func (in *GaggleBackprop) DeepCopy() *GaggleBackprop {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleBackprop)
 	in.DeepCopyInto(out)
 	return out
 }

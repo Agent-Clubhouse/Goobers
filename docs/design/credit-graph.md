@@ -24,20 +24,34 @@ For an operator walkthrough of enabling Backprop, reading attribution and
 fault-audit findings, and verifying fixes, see the
 [Backprop user guide](../guides/backprop.md).
 
-Backprop is opt-in per workflow on DSL 3.0:
+Backprop is opt-in per workflow on DSL 3.0 and 3.1 (preview):
 
 ```yaml
 dslVersion: "3.0"
 spec:
   backprop:
-    enabled: true
+    mode: active   # off | shadow | active
     version: v1
 ```
 
-Omitting `backprop`, or setting `enabled: false`, performs no attribution work.
+`mode` selects how a workflow takes part:
+
+| Mode | Attribution work | Record | Consumed by fault audit, filing, cohorts, `goobers trace` |
+|---|---|---|---|
+| `off` | none | none | no |
+| `shadow` | none at terminalization; computed on demand from the journal | none | **no** |
+| `active` | computed after terminalization | `attribution.json` | yes |
+
+The legacy `enabled` switch remains supported: `enabled: true` without a mode
+means `active`, and omitting `backprop` or setting `enabled: false` without a
+mode performs no attribution work. When `mode` is set it is authoritative;
+`enabled: true` is accepted only with `mode: active`; combining it with `off`
+or `shadow` is rejected, because binaries that predate `mode` read only
+`enabled` and would otherwise publish a shadow run's record as active.
+
 For an enrolled workflow, terminalization durably appends `run.finished` and
-then writes `attribution.json` beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,
-workload, run ID, contract version, deterministic attribution, and an explicit
+then writes the record beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,
+workload, run ID, contract version, mode, deterministic attribution, and an explicit
 `complete`, `insufficient-evidence`, or `failed` analysis status. Analysis is
 read-only and best effort: a failure is reported independently and never changes
 the run's phase, gate verdict, CI admission, or publication path.
@@ -47,10 +61,112 @@ for every analysis status so incompatible runs cannot enter the same cohort.
 Runs containing more than one model/harness pair have no defined
 EffectiveVersion and are excluded from cohort aggregation.
 
+### Stage granularity (preview)
+
+`spec.backprop.granularity` is `run` (the default) or `stage`. With `stage`,
+the daemon's journal observer queues a checkpoint each time a journal append
+lands. A single bounded worker handles the queue (at most 1024 pending runs) and
+writes `attribution-stages.json`
+(`goobers.dev/backprop/stage-records/v1`). The file has one record for each
+`stage.finished`. Each record covers the contiguous journal segment since the
+previous record and carries the following:
+
+- its sequence range, a SHA-256 segment digest, and a digest of the record itself;
+- the inputs, outputs, artifacts, and gate verdicts of that stage attempt;
+- provisional contributions and causes for the attempt, filtered from a build
+  over the journal prefix.
+
+The checkpoint is read-only with respect to the run. The observer only enqueues
+work, never on the stage-transition path. A write, verify, or build failure is
+logged and dropped and never changes a phase or blocks a transition. A pass
+reads only the journal until a `stage.finished` lies past the last checkpoint;
+span content is read, and existing records verified, only when there is a new
+stage to record. While
+the latest `run.finished` stands, no more records are written. A `run.resumed`,
+`gate.overridden` or `stage.rerun.requested` after it reopens the run, and
+checkpointing continues from the last record.
+
+Each record's segment is persisted as JSON Lines under `attribution-segments/`,
+content-addressed by its segment digest. The segment is written before the
+record set that references it.
+
+At terminalization `WriteRunRecord` first verifies the checkpoint set against
+the journal: the set's `runId` must equal the run's identity, and the records
+must tile the journal by position, sequence range, segment digest, record digest
+and a full rebuild of each record from its journal prefix, provisional
+attribution included, so an edited record is refused even with a recomputed
+digest. It then builds the analysis input from the persisted
+segments, not from the journal, followed by the journal tail that no checkpoint
+covers. Each persisted segment must match its digest and event count.
+
+Attribution is a global function of the whole graph: shares are normalized
+across stages, and edge weights depend on the final outcome. So composition
+works on the persisted evidence segments rather than summing provisional
+per-stage contributions. Because the segments tile the journal, the composed
+record is identical to the run-level analysis of the same journal.
+`TestStageComposedAttributionEqualsRunLevel` pins that property for full,
+lagging, and absent checkpoint sets.
+`TestStageCompositionConsumesPersistedSegments` pins two more things. First,
+the checkpointed prefix is rebuilt from the persisted segments alone. Second, a
+missing or altered segment refuses composition even when the journal is intact.
+When a checkpoint fails
+verification, the record falls back to the whole journal and discloses the
+reason in `stageComposition.error`, so the stage data never stands in for
+evidence that could not be verified. Re-deriving covers each record's
+status, inputs, outputs, artifacts, verdicts, contributions and causes. `goobers trace` shows only
+records that verify, including their persisted segments. A checkpoint
+pass publishes under a per-run file lock, `attribution.lock`, which
+`WriteRunRecord` also holds while it composes and writes `attribution.json`.
+Under the lock the pass re-checks for `run.finished` and drops its write if the
+run has finished. Since `run.finished` is durable before the record is
+composed, checkpoints either land before composition reads them or are never
+written, so a late checkpoint cannot contradict the composed end-of-run record.
+`TestStageCheckpointPublicationIsAtomicWithTerminalization` pins both orders. Feeding stage records forward into later
+stages is still out of scope.
+
+### Shadow mode
+
+Shadow mode lets an operator try Backprop on an existing workflow without
+enrolling it. Terminalization does no attribution work for a shadow run, so
+shadow mode adds nothing to run completion, terminalization latency, or
+dispatch-slot release: the runner and engine terminal hooks attribute only
+active runs. The same analysis is computed on demand, in memory, from the
+persisted journal when `goobers telemetry shadow` asks for it, and nothing is
+written. Nothing that files, gates, or reports sees it: `creditgraph.ReadRunRecord`
+— the only reader behind the fault audit, candidate-findings filing pass,
+cohort and contributing-path surfaces, and `goobers trace` — reads
+`attribution.json` alone, which shadow runs never write, and rejects a
+shadow-mode record found there. A shadow run therefore never starts a filing
+cooldown, records a verification baseline, or produces a finding. Run phase,
+scheduling, CI admission, and gate verdicts are unchanged. Stage granularity
+applies only to active runs: the stage checkpointer skips shadow runs, so a
+shadow run never writes `attribution-stages.json`, and its on-demand analysis
+reads the whole journal.
+
+`goobers status` prints `backprop: shadow (v1)` or `backprop: active (v1)` per
+workflow, and the status JSON, read API, and portal workflow page report
+`backprop.mode`; `backprop.enabled` stays true only for active workflows.
+
+**Promotion path.** Run a workflow in `mode: shadow`, inspect `goobers
+telemetry shadow` for the analysis status and findings you would expect, then
+change the workflow to `mode: active` and redeploy. New terminal runs then
+write `attribution.json` and enter the fault audit; earlier shadow runs are
+never backfilled into the active namespace, so promotion does not
+retroactively file findings. Demote by setting `mode: shadow` or `off`.
+
+**Gaggle override.** `gaggle.spec.backprop.mode: off|shadow` observes every
+workflow in the gaggle that does not declare its own mode. Precedence:
+workflow `mode`, then workflow `enabled: true`, then the gaggle override, then
+off. Like a workflow-declared shadow run, an override run writes nothing at
+terminalization; `goobers telemetry shadow` analyzes both kinds from the
+journal on request and compares the findings the
+fault audit would have filed with actual run phases and actual filings. That
+report is read-only and is not read by any gate, filing pass, or default view.
+
 ## Cross-workflow fault audit
 
-The read-only Backprop fault auditor consumes only persisted records from
-enrolled workflows. Its default seven-day window, sample floor, observation
+The read-only Backprop fault auditor consumes only persisted active-mode records
+from enrolled workflows; shadow attribution is never read. Its default seven-day window, sample floor, observation
 cap, finding budget, evidence/run caps, and cooldown make every pass bounded;
 the output is always `report-only` and never files an issue, edits a workflow,
 or rolls back a run. Operators can select a narrower gaggle, workflow, or time
@@ -417,7 +533,8 @@ No credit data migrates between the two stores, and none needs to:
   derived projection of run journals. They are rebuilt from the journals, not
   from creditgraph, and their meaning does not change.
 - Per-run attribution is the `attribution.json` record written at
-  terminalization for a workflow enrolled in `backprop` (DSL 3.0). The read
+  terminalization for a workflow enrolled in `backprop` in active mode (DSL
+  3.0/3.1). Shadow-mode runs write no record. The read
   service reads that record, and rebuilds the graph from the journal only for
   evidence links and environment labels. Runs with no record (unenrolled, or
   finished before enrollment) are skipped. They are not backfilled from the

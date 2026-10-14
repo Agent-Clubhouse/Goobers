@@ -75,6 +75,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.branchNamespace",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -985,6 +990,16 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.backprop.granularity",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.backprop.version",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -1121,6 +1136,11 @@
     },
     {
       "name": "workflow.spec.runControls.stalledRunTimeout",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.scheduleCatchUp",
       "stability": "ga",
       "sinceVersion": "dev"
     },

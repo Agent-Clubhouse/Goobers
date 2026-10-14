@@ -45,6 +45,9 @@ func ScopedClient(directory, snapshot string, scope Scope, provider providers.Pr
 	cache := newAPIReadCache(directory, scopedSnapshot(partition, snapshot), inner)
 	cache.partition = partition
 	cache.provider = provider
+	if partition != "" && directory != "" {
+		cache.mutationScope = scope.mutationKey(provider)
+	}
 	return cache
 }
 
@@ -107,4 +110,12 @@ func scopedCacheableHeaders(req *http.Request) bool {
 		}
 	}
 	return true
+}
+
+// Writes can affect readers using older retained generations or another binding.
+// Only the invalidation namespace is shared; response identities stay separate.
+func (s Scope) mutationKey(provider providers.ProviderKind) string {
+	raw, _ := json.Marshal([]string{s.Gaggle, string(provider)})
+	sum := sha256.Sum256(raw)
+	return "gaggle-write-v1:" + hex.EncodeToString(sum[:])
 }

@@ -395,6 +395,16 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if def.Spec.Backprop != nil && def.Spec.Backprop.Version != "v1" {
 		return nil, fmt.Errorf("invalid workflow %q: backprop.version must be %q", def.Name, "v1")
 	}
+	if err := validateBackpropMode(def.Spec.Backprop); err != nil {
+		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
+	}
+	if def.Spec.Backprop != nil {
+		switch def.Spec.Backprop.Granularity {
+		case "", apiv1.BackpropGranularityRun, apiv1.BackpropGranularityStage:
+		default:
+			return nil, fmt.Errorf("invalid workflow %q: backprop.granularity must be %q or %q", def.Name, apiv1.BackpropGranularityRun, apiv1.BackpropGranularityStage)
+		}
+	}
 	def.Spec.Tasks = append([]apiv1.Task(nil), def.Spec.Tasks...)
 	for i := range def.Spec.Tasks {
 		if def.Spec.Tasks[i].OutboxMirrorPath == "" {

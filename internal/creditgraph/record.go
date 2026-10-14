@@ -41,6 +41,7 @@ type RunRecord struct {
 	Schema           string                    `json:"schema"`
 	Status           RecordStatus              `json:"status"`
 	ContractVersion  string                    `json:"contractVersion"`
+	Mode             apiv1.BackpropMode        `json:"mode,omitempty"`
 	RunID            string                    `json:"runId"`
 	Gaggle           string                    `json:"gaggle"`
 	Workflow         string                    `json:"workflow"`
@@ -51,6 +52,20 @@ type RunRecord struct {
 	Attribution      Attribution               `json:"attribution"`
 	Evidence         []AttributionEvidenceLink `json:"evidence,omitempty"`
 	Failure          string                    `json:"failure,omitempty"`
+	// StageComposition reports how a stage-granular run's record was composed
+	// from its stage checkpoints. Absent for run-granular records.
+	StageComposition *StageComposition `json:"stageComposition,omitempty"`
+}
+
+// StageComposition describes the stage checkpoints an end-of-run record
+// composed. Checkpoints is the number of verified stage records whose journal
+// segments were composed, in order, ahead of the uncheckpointed tail.
+// Error discloses why composition was refused; the record is then computed
+// from the whole journal and Checkpoints is zero.
+type StageComposition struct {
+	Checkpoints     int    `json:"checkpoints"`
+	ThroughSequence uint64 `json:"throughSequence,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 type pinnedDefinition struct {
@@ -60,10 +75,23 @@ type pinnedDefinition struct {
 	} `json:"Spec"`
 }
 
-// WriteRunRecord computes and atomically publishes attribution for an enrolled
-// run. Local terminalization passes nil after run.finished is durable; terminal
+// WriteRunRecord computes and atomically publishes attribution for an actively
+// enrolled run. Shadow runs are skipped before any analysis: their attribution
+// is computed on demand from the persisted journal by ObserveShadowRun, so
+// shadow mode adds no work to terminalization. Local terminalization passes nil after run.finished is durable; terminal
 // remains available to callers analyzing an immutable synthetic event stream.
+// A stage-granular run's record composes its verified stage checkpoints.
 func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
+	// Stage-granular runs compose and publish under the checkpoint publication
+	// lock, so no checkpoint lands between composition and this write.
+	if run, _, enrolled, err := loadRunJournal(runDir, terminal); err == nil && enrolled &&
+		run.config.Granularity == apiv1.BackpropGranularityStage {
+		handle, lockErr := lockStagePublication(runDir, runRecordLockWait)
+		if lockErr != nil {
+			return true, fmt.Errorf("lock attribution record: %w", lockErr)
+		}
+		defer func() { _ = handle.Release() }()
+	}
 	record, enrolled, err := AnalyzeRun(runDir, terminal)
 	if !enrolled {
 		return false, err
@@ -83,22 +111,91 @@ func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 	return true, err
 }
 
-// AnalyzeRun computes one record without changing the run.
+// AnalyzeRun computes one record without changing the run. A stage-granular
+// run's record composes its verified stage checkpoints with the journal tail
+// they do not yet cover; the result equals the whole-journal analysis.
 func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error) {
+	return analyzeRun(runDir, terminal, true)
+}
+
+// loadedRun is one enrolled run's journal, read once for analysis.
+type loadedRun struct {
+	reader   *journal.Reader
+	identity journal.RunIdentity
+	config   apiv1.BackpropConfig
+	events   []journal.Event
+	spanData map[string][]byte
+}
+
+func analyzeRun(runDir string, terminal *journal.Event, compose bool) (RunRecord, bool, error) {
+	run, record, enrolled, err := loadRun(runDir, terminal)
+	if err != nil || !enrolled {
+		return record, enrolled, err
+	}
+	events := run.events
+	if compose && run.config.Granularity == apiv1.BackpropGranularityStage {
+		var composition StageComposition
+		events, composition = composeStageEvents(runDir, run)
+		record.StageComposition = &composition
+	}
+	return analyzeEvents(run, events, record)
+}
+
+func loadRun(runDir string, terminal *journal.Event) (loadedRun, RunRecord, bool, error) {
+	return loadRunFor(runDir, terminal, nil, true)
+}
+
+// loadRunFor is loadRun for a run resolved under an optional gaggle override.
+// activeOnly reports shadow runs as not enrolled before their events are read.
+func loadRunFor(
+	runDir string,
+	terminal *journal.Event,
+	override *apiv1.GaggleBackprop,
+	activeOnly bool,
+) (loadedRun, RunRecord, bool, error) {
+	run, record, enrolled, err := loadRunJournalFor(runDir, terminal, override, activeOnly)
+	if err != nil || !enrolled {
+		return run, record, enrolled, err
+	}
+	run.spanData, err = readSpanData(run.reader, run.events)
+	if err != nil {
+		return run, record, true, err
+	}
+	return run, record, true, nil
+}
+
+// loadRunJournal is loadRun without span content, for callers that only need
+// the journal's events. Only actively enrolled runs are enrolled: shadow runs
+// write no stage checkpoints and no attribution record.
+func loadRunJournal(runDir string, terminal *journal.Event) (loadedRun, RunRecord, bool, error) {
+	return loadRunJournalFor(runDir, terminal, nil, true)
+}
+
+func loadRunJournalFor(
+	runDir string,
+	terminal *journal.Event,
+	override *apiv1.GaggleBackprop,
+	activeOnly bool,
+) (loadedRun, RunRecord, bool, error) {
 	reader, err := journal.OpenReadOnly(runDir)
 	if err != nil {
-		return RunRecord{}, false, fmt.Errorf("open run: %w", err)
+		return loadedRun{}, RunRecord{}, false, fmt.Errorf("open run: %w", err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return RunRecord{}, false, fmt.Errorf("read identity: %w", err)
+		return loadedRun{}, RunRecord{}, false, fmt.Errorf("read identity: %w", err)
 	}
-	config, enrolled, err := enrolledBackprop(reader, identity)
+	config, enrolled, err := resolvedBackprop(reader, identity, override)
 	if err != nil || !enrolled {
-		return RunRecord{}, enrolled, err
+		return loadedRun{}, RunRecord{}, enrolled, err
 	}
+	if activeOnly && config.Mode != apiv1.BackpropModeActive {
+		return loadedRun{}, RunRecord{}, false, nil
+	}
+	run := loadedRun{reader: reader, identity: identity, config: config}
 	record := RunRecord{
 		Schema: RecordSchemaVersion, Status: RecordComplete, ContractVersion: config.Version,
+		Mode:  config.EffectiveMode(),
 		RunID: identity.RunID, Gaggle: identity.Gaggle, Workflow: identity.Workflow,
 		WorkflowVersion: identity.WorkflowVersion, WorkflowDigest: identity.WorkflowDigest,
 		EffectiveVersion: (rollup.EffectiveVersion{
@@ -109,7 +206,7 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return record, true, fmt.Errorf("read events: %w", err)
+		return run, record, true, fmt.Errorf("read events: %w", err)
 	}
 	if terminal != nil {
 		terminalEvent := *terminal
@@ -118,6 +215,11 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 		}
 		events = append(events, terminalEvent)
 	}
+	run.events = events
+	return run, record, true, nil
+}
+
+func readSpanData(reader *journal.Reader, events []journal.Event) (map[string][]byte, error) {
 	spanData := map[string][]byte{}
 	for _, event := range events {
 		if event.Type != journal.EventSpanRecorded || event.Ref == nil {
@@ -128,14 +230,18 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 			if errors.Is(readErr, os.ErrNotExist) {
 				continue
 			}
-			return record, true, fmt.Errorf("read span %s: %w", event.Ref.Digest, readErr)
+			return nil, fmt.Errorf("read span %s: %w", event.Ref.Digest, readErr)
 		}
 		spanData[event.Ref.Digest] = data
 	}
-	record.EffectiveVersion = runEffectiveVersion(identity, events, spanData)
+	return spanData, nil
+}
+
+func analyzeEvents(run loadedRun, events []journal.Event, record RunRecord) (RunRecord, bool, error) {
+	record.EffectiveVersion = runEffectiveVersion(run.identity, events, run.spanData)
 	graph, err := Build(Input{
-		RunID: identity.RunID, Gaggle: identity.Gaggle, Workflow: identity.Workflow,
-		Events: events, SpanData: spanData,
+		RunID: run.identity.RunID, Gaggle: run.identity.Gaggle, Workflow: run.identity.Workflow,
+		Events: events, SpanData: run.spanData,
 	})
 	if err != nil {
 		return record, true, fmt.Errorf("build credit graph: %w", err)
@@ -371,7 +477,14 @@ func spanDigest(nodeID string) string {
 	return nodeID[at+1 : hash]
 }
 
-func enrolledBackprop(reader *journal.Reader, identity journal.RunIdentity) (apiv1.BackpropConfig, bool, error) {
+// resolvedBackprop applies apiv1.ResolveBackpropMode to the run's trusted
+// pinned workflow and an optional gaggle override. The returned config's Mode
+// is the resolved mode.
+func resolvedBackprop(
+	reader *journal.Reader,
+	identity journal.RunIdentity,
+	override *apiv1.GaggleBackprop,
+) (apiv1.BackpropConfig, bool, error) {
 	var ref *journal.InputRef
 	for i := range identity.Inputs {
 		if identity.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
@@ -393,27 +506,48 @@ func enrolledBackprop(reader *journal.Reader, identity journal.RunIdentity) (api
 	if err := json.Unmarshal(data, &definition); err != nil {
 		return apiv1.BackpropConfig{}, false, fmt.Errorf("decode pinned workflow definition: %w", err)
 	}
-	if definition.Spec.Backprop == nil || !definition.Spec.Backprop.Enabled {
+	mode := apiv1.ResolveBackpropMode(definition.Spec.Backprop, override)
+	if mode != apiv1.BackpropModeActive && mode != apiv1.BackpropModeShadow {
 		return apiv1.BackpropConfig{}, false, nil
 	}
-	return *definition.Spec.Backprop, true, nil
+	config := apiv1.BackpropConfig{Mode: mode, Version: defaultBackpropVersion}
+	if definition.Spec.Backprop != nil {
+		config.Granularity = definition.Spec.Backprop.Granularity
+		if definition.Spec.Backprop.Version != "" {
+			config.Version = definition.Spec.Backprop.Version
+		}
+	}
+	return config, true, nil
 }
 
-// RunEnrolled reports whether a run's trusted pinned workflow opted into
-// Backprop without performing attribution.
+// defaultBackpropVersion is the contract a gaggle override observes a workflow
+// under when the workflow declares no Backprop config of its own.
+const defaultBackpropVersion = "v1"
+
+// RunEnrolled reports whether a run's trusted pinned workflow resolves to
+// active Backprop without performing attribution. Shadow runs are not
+// enrolled for terminal-path attribution; ObserveShadowRun computes them on
+// demand.
 func RunEnrolled(runDir string) (bool, error) {
+	mode, err := runBackpropMode(runDir, nil)
+	return mode == apiv1.BackpropModeActive, err
+}
+
+func runBackpropMode(runDir string, override *apiv1.GaggleBackprop) (apiv1.BackpropMode, error) {
 	reader, err := journal.OpenReadOnly(runDir)
 	if err != nil {
-		return false, fmt.Errorf("open run: %w", err)
+		return apiv1.BackpropModeOff, fmt.Errorf("open run: %w", err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return false, fmt.Errorf("read identity: %w", err)
+		return apiv1.BackpropModeOff, fmt.Errorf("read identity: %w", err)
 	}
-	_, enrolled, err := enrolledBackprop(reader, identity)
-	return enrolled, err
+	config, enrolled, err := resolvedBackprop(reader, identity, override)
+	if err != nil || !enrolled {
+		return apiv1.BackpropModeOff, err
+	}
+	return config.Mode, nil
 }
-
 func attributionInsufficient(graph *Graph, attribution Attribution) bool {
 	if graph == nil || len(graph.Gaps) > 0 || len(attribution.Contributions) == 0 {
 		return true
@@ -426,7 +560,51 @@ func attributionInsufficient(graph *Graph, attribution Attribution) bool {
 	return true
 }
 
-// ReadRunRecord reads a previously published attribution result.
+// ShadowObservation is one terminal run observed in shadow mode.
+type ShadowObservation struct {
+	Record RunRecord
+	// ViaOverride is true when the run resolves to shadow only through the
+	// gaggle override rather than its own pinned workflow.
+	ViaOverride bool
+}
+
+// ObserveShadowRun computes the shadow-mode record for one terminal run on
+// demand from its persisted journal, in memory and off the run's terminal
+// path; nothing is written. Runs resolve to shadow through their own pinned
+// workflow (mode=shadow) or only through the gaggle override. Runs that
+// resolve to active or off, or that already published an active record, are
+// not shadow runs.
+func ObserveShadowRun(runDir string, override *apiv1.GaggleBackprop) (ShadowObservation, bool, error) {
+	if _, err := os.Stat(filepath.Join(runDir, RecordFileName)); err == nil {
+		return ShadowObservation{}, false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ShadowObservation{}, false, err
+	}
+	run, record, enrolled, err := loadRunFor(runDir, nil, override, false)
+	if !enrolled {
+		return ShadowObservation{}, false, err
+	}
+	if record.Mode != apiv1.BackpropModeShadow {
+		return ShadowObservation{}, false, nil
+	}
+	// Shadow runs write no stage checkpoints, so the whole journal is analyzed.
+	if err == nil {
+		record, _, err = analyzeEvents(run, run.events, record)
+	}
+	if err != nil {
+		record.Status = RecordFailed
+		record.Failure = err.Error()
+	}
+	ownMode, modeErr := runBackpropMode(runDir, nil)
+	if modeErr != nil {
+		return ShadowObservation{}, false, modeErr
+	}
+	return ShadowObservation{Record: record, ViaOverride: ownMode != apiv1.BackpropModeShadow}, true, nil
+}
+
+// ReadRunRecord reads a previously published active attribution result. It
+// rejects a shadow-mode record so shadow attribution cannot reach filing or
+// gates.
 func ReadRunRecord(runDir string) (RunRecord, error) {
 	data, err := os.ReadFile(filepath.Join(runDir, RecordFileName))
 	if err != nil {
@@ -438,6 +616,9 @@ func ReadRunRecord(runDir string) (RunRecord, error) {
 	}
 	if record.Schema != RecordSchemaVersion {
 		return RunRecord{}, fmt.Errorf("unsupported attribution schema %q", record.Schema)
+	}
+	if record.Mode == apiv1.BackpropModeShadow {
+		return RunRecord{}, fmt.Errorf("attribution record for run %q is a shadow record", record.RunID)
 	}
 	return record, nil
 }
