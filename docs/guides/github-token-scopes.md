@@ -342,6 +342,8 @@ variable, which carries the Gitea repository token. An MCP server is different: 
 the credential, so a `capability:` reference that does not fit the run's
 provider fails the stage before the harness starts, and the error names the
 server and the reference. Give such a server a `kind: byo` credential instead.
+`goobers validate` reports such a reference ahead of the first run (MCP002),
+naming the goober, the server and the gaggle whose provider it does not fit.
 
 ### Mixed-harness instances: scoping `agent:model` per harness
 

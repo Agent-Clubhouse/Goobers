@@ -297,6 +297,16 @@ const (
 	// explicit operator choice that validated cleanly before must not turn a
 	// --strict pipeline red on upgrade.
 	WarningCrossProviderCredentialOverride WarningCode = "CFG012"
+	// WarningMCPCredentialProvider (MCP002) identifies an external MCP
+	// server credentialRef that names a first-party capability (no kind: byo)
+	// whose credential belongs to another provider's repositories than the
+	// gaggle the goober runs in (a github:* capability on an Azure DevOps
+	// gaggle, an ado:* capability anywhere else). The harness refuses to
+	// materialise it and fails the stage before the harness starts
+	// (capability.FitsProvider), so every run of that goober on that
+	// gaggle fails; this surfaces it at validate time. Not strict-neutral:
+	// the config cannot run as written, so --strict promotes it.
+	WarningMCPCredentialProvider WarningCode = "MCP002"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -1288,6 +1298,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	}
 	ix.checkWorkflowsCompile(r)
 	ix.checkInertADOCapabilities(r)
+	ix.checkMCPCredentialProviders(r)
 	ix.checkManifestPreviewAnnotationDeprecated(r)
 
 	// Every referenceNotFound call in this pass (including from checkWorkflow

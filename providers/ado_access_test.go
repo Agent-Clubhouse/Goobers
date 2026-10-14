@@ -113,7 +113,7 @@ func TestADOProviderEvaluateGitPermissionsMissingValueIsError(t *testing.T) {
 	}
 }
 
-func TestADOProviderBlanketPrefixPolicies(t *testing.T) {
+func TestADOProviderRunBranchPrefixPolicies(t *testing.T) {
 	scope := func(repositoryID, refName, matchKind string) map[string]string {
 		return map[string]string{"repositoryId": repositoryID, "refName": refName, "matchKind": matchKind}
 	}
@@ -137,16 +137,30 @@ func TestADOProviderBlanketPrefixPolicies(t *testing.T) {
 			config(9, "Build", true, true, scope("other-repo-guid", "refs/heads/", "Prefix")),
 			config(10, "File size restriction", true, true, scope("repo-guid", "", "")),
 			config(11, "Build", true, true),
+			config(12, "Build", true, true, scope("repo-guid", "refs/heads/team/goobers/", "Prefix")),
+			config(13, "Build", true, true, scope("repo-guid", "refs/heads/Team", "Prefix")),
+			config(14, "Build", true, true, scope("repo-guid", "refs/heads/team/goobers/implementation/", "Prefix")),
+			config(15, "Build", true, true, scope("repo-guid", "refs/heads/goobers/", "Prefix")),
+			config(16, "Build", true, true, scope("repo-guid", "refs/heads/te", "Prefix")),
+			config(17, "Build", true, true, scope("repo-guid", "refs/heads/team/goobers/", "Exact")),
+			config(18, "Build", true, true, scope("repo-guid", "refs/heads/team/goobers/merge-review/", "Prefix")),
 		}})
 	})
 	provider := newADOAccessTestProvider(t, mux)
-	policies, err := provider.BlanketPrefixPolicies(context.Background(), adoAccessRepo(), "repo-guid")
+	policies, err := provider.RunBranchPrefixPolicies(context.Background(), adoAccessRepo(), "repo-guid", []string{"team/goobers/", "team/goobers/implementation/"})
 	if err != nil {
-		t.Fatalf("BlanketPrefixPolicies: %v", err)
+		t.Fatalf("RunBranchPrefixPolicies: %v", err)
 	}
+	// 12 is the namespace folder itself, 13 a parent folder (in another case)
+	// and 14 a workflow's run-branch folder; 15 is the default namespace this
+	// gaggle does not use, 16 is a string prefix but not a parent folder, 17
+	// is not a Prefix scope, and 18 names a workflow that does not run here.
 	want := []ADOBranchPolicy{
 		{ID: 3, TypeName: "Minimum number of reviewers", RefName: "refs/heads"},
 		{ID: 7, TypeName: "Build", RefName: "refs/heads/"},
+		{ID: 12, TypeName: "Build", RefName: "refs/heads/team/goobers/", RunBranchRoot: "team/goobers/"},
+		{ID: 13, TypeName: "Build", RefName: "refs/heads/Team", RunBranchRoot: "team/goobers/"},
+		{ID: 14, TypeName: "Build", RefName: "refs/heads/team/goobers/implementation/", RunBranchRoot: "team/goobers/implementation/"},
 	}
 	if !reflect.DeepEqual(policies, want) {
 		t.Fatalf("policies = %+v, want %+v", policies, want)

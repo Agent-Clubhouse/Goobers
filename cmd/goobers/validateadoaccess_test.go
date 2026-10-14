@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -46,7 +48,7 @@ func fullADOBacklogStates() adoBacklogStates {
 func stubADOAccessReads(t *testing.T, access adoRepositoryAccess, states adoBacklogStates) {
 	t.Helper()
 	previousAccess := targetADORepositoryAccess
-	targetADORepositoryAccess = func(context.Context, instance.RepoRef, credentials.StoreResolver) adoRepositoryAccess {
+	targetADORepositoryAccess = func(context.Context, instance.RepoRef, []string, credentials.StoreResolver) adoRepositoryAccess {
 		return access
 	}
 	previousStates := targetADOBacklogStates
@@ -77,10 +79,13 @@ func diagnosticCodes(collector *diagnosticCollector) map[string]string {
 func TestCheckADORepositoryAccessReportsIdentityWhenAllHeld(t *testing.T) {
 	calls := 0
 	previous := targetADORepositoryAccess
-	targetADORepositoryAccess = func(ctx context.Context, repo instance.RepoRef, _ credentials.StoreResolver) adoRepositoryAccess {
+	targetADORepositoryAccess = func(ctx context.Context, repo instance.RepoRef, namespaces []string, _ credentials.StoreResolver) adoRepositoryAccess {
 		calls++
 		if repo.Provider != "ado" || repo.Name != "web" {
 			t.Fatalf("access read for non-ADO repo %+v", repo)
+		}
+		if strings.Join(namespaces, ",") != "goobers/,team/runs/" {
+			t.Fatalf("run-branch namespaces = %q, want the ADO repository's own", namespaces)
 		}
 		if _, ok := ctx.Deadline(); !ok {
 			t.Fatal("unbounded access read")
@@ -91,7 +96,8 @@ func TestCheckADORepositoryAccessReportsIdentityWhenAllHeld(t *testing.T) {
 
 	var out strings.Builder
 	collector := &diagnosticCollector{}
-	if !checkADORepositoryAccess(adoAccessTestRepos(), nil, &out, "instance.yaml", collector) {
+	namespaces := map[int][]string{0: {"github-only/"}, 1: {"goobers/", "team/runs/"}}
+	if !checkADORepositoryAccess(adoAccessTestRepos(), namespaces, nil, &out, "instance.yaml", collector) {
 		t.Fatalf("access check failed:\n%s", out.String())
 	}
 	if calls != 1 {
@@ -107,6 +113,40 @@ func TestCheckADORepositoryAccessReportsIdentityWhenAllHeld(t *testing.T) {
 	}
 	if len(collector.findings) != 0 {
 		t.Fatalf("diagnostics = %+v, want none", collector.findings)
+	}
+}
+
+// The run-branch namespaces a repository's access check sees are those of the
+// gaggles whose project resolves to it, normalized and deduplicated; a
+// GitHub repository and a gaggle with no configured repository get none.
+func TestADORunBranchRootsByRepo(t *testing.T) {
+	gaggle := func(name, namespace string, project apiv1.RepoRef) apiv1.Gaggle {
+		g := apiv1.Gaggle{}
+		g.Name = name
+		g.Spec.BranchNamespace = namespace
+		g.Spec.Project = project
+		return g
+	}
+	web := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "web"}
+	cfg := &instance.Config{Repos: append(adoAccessTestRepos(), instance.RepoRef{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "api"})}
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		gaggle("default", "", web),
+		gaggle("team", "team/runs", web),
+		gaggle("again", "goobers/", web),
+		gaggle("site", "site/", apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-org", Name: "site"}),
+		gaggle("unbound", "unbound/", apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "missing"}),
+	}}
+	workflow := func(gaggle, name string) apiv1.Workflow {
+		w := apiv1.Workflow{}
+		w.Name = name
+		w.Spec.Gaggle = gaggle
+		return w
+	}
+	set.Workflows = []apiv1.Workflow{workflow("default", "implementation"), workflow("team", "merge-review"), workflow("site", "implementation")}
+	got := adoRunBranchRootsByRepo(cfg, set)
+	want := map[int][]string{1: {"goobers/", "goobers/implementation/", "team/runs/", "team/runs/merge-review/"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("namespaces = %v, want %v", got, want)
 	}
 }
 
@@ -158,6 +198,14 @@ func TestCheckADORepositoryAccessDiagnostics(t *testing.T) {
 			wantCode: adoAccessBlanketPolicyCode, wantSev: "warning", wantText: `blocking policy 7 (Build) has a Prefix scope "refs/heads/"`,
 		},
 		{
+			name: "prefix policy over a workflow's run branches is a warning",
+			mutate: func(a *adoRepositoryAccess) {
+				a.policies = []providers.ADOBranchPolicy{{ID: 9, TypeName: "Build", RefName: "refs/heads/goobers/implementation/", RunBranchRoot: "goobers/implementation/"}}
+			},
+			wantOK:   true,
+			wantCode: adoAccessBlanketPolicyCode, wantSev: "warning", wantText: `blocking policy 9 (Build) has a Prefix scope "refs/heads/goobers/implementation/" covering the run branches under refs/heads/goobers/implementation/`,
+		},
+		{
 			name:     "unreadable permissions are unknown, not missing",
 			mutate:   func(a *adoRepositoryAccess) { a.permissions, a.permissionsErr = nil, errors.New("status 401") },
 			wantOK:   true,
@@ -167,7 +215,7 @@ func TestCheckADORepositoryAccessDiagnostics(t *testing.T) {
 			name:     "unreadable policies are unknown",
 			mutate:   func(a *adoRepositoryAccess) { a.policiesErr = errors.New("status 403") },
 			wantOK:   true,
-			wantCode: adoAccessUnknownCode, wantSev: "warning", wantText: "blanket policies are unknown",
+			wantCode: adoAccessUnknownCode, wantSev: "warning", wantText: "policies covering run branches are unknown",
 		},
 		{
 			name:     "unreadable identity is a warning",
@@ -183,7 +231,7 @@ func TestCheckADORepositoryAccessDiagnostics(t *testing.T) {
 			stubADOAccessReads(t, access, fullADOBacklogStates())
 			var out strings.Builder
 			collector := &diagnosticCollector{}
-			ok := checkADORepositoryAccess(adoAccessTestRepos(), nil, &out, "instance.yaml", collector)
+			ok := checkADORepositoryAccess(adoAccessTestRepos(), nil, nil, &out, "instance.yaml", collector)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v:\n%s", ok, tc.wantOK, out.String())
 			}
@@ -225,7 +273,7 @@ func TestReadADORepositoryAccessIsReadOnly(t *testing.T) {
 		access := readADORepositoryAccess(context.Background(), instance.RepoRef{
 			Provider: "ado", Owner: "example-org", Project: "example-project", Name: "web",
 			Token: instance.TokenRef{Env: "ADO_ACCESS_TEST_PAT"},
-		}, nil)
+		}, []string{"goobers/"}, nil)
 		for _, request := range requests {
 			if !strings.HasPrefix(request, http.MethodGet+" ") && request != http.MethodPost+" /example-org/_apis/security/permissionevaluationbatch" {
 				t.Fatalf("access check issued a write: %s", request)
@@ -234,7 +282,8 @@ func TestReadADORepositoryAccessIsReadOnly(t *testing.T) {
 		if access.identityErr != nil || access.identity.ID != "identity-guid" {
 			t.Fatalf("identity = %+v, %v", access.identity, access.identityErr)
 		}
-		if access.policiesErr != nil || len(access.policies) != 1 || access.policies[0].ID != 3 {
+		if access.policiesErr != nil || len(access.policies) != 2 || access.policies[0].ID != 3 ||
+			access.policies[1].ID != 4 || access.policies[1].RunBranchRoot != "goobers/" {
 			t.Fatalf("policies = %+v, %v", access.policies, access.policiesErr)
 		}
 		if !denyEvaluation {
@@ -260,7 +309,8 @@ func adoAccessFixture(t *testing.T, req *http.Request, token string, denyEvaluat
 	case "/example-org/example-project/_apis/git/repositories/web":
 		return http.StatusOK, `{"id":"repo-guid","project":{"id":"project-guid"}}`
 	case "/example-org/example-project/_apis/policy/configurations":
-		return http.StatusOK, `{"value":[{"id":3,"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"},"settings":{"scope":[{"repositoryId":"repo-guid","refName":"refs/heads/","matchKind":"Prefix"}]}}]}`
+		return http.StatusOK, `{"value":[{"id":3,"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"},"settings":{"scope":[{"repositoryId":"repo-guid","refName":"refs/heads/","matchKind":"Prefix"}]}},` +
+			`{"id":4,"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"},"settings":{"scope":[{"repositoryId":"repo-guid","refName":"refs/heads/goobers/","matchKind":"Prefix"}]}}]}`
 	case "/example-org/_apis/security/permissionevaluationbatch":
 		if denyEvaluation {
 			return http.StatusForbidden, `{"message":"denied ` + token + `"}`
@@ -338,6 +388,37 @@ func TestCheckADOBacklogStatesWarnsOnCaseDuplicateTypes(t *testing.T) {
 		instance.RepoRef{Provider: "ado"}, "work", nil, &out, "gaggle.yaml", collector)
 	if len(collector.findings) != 1 || !strings.Contains(collector.findings[0].Message, `keys "Bug" and "bug" name the same work item type`) {
 		t.Fatalf("diagnostics = %+v, want one duplicate-key warning", collector.findings)
+	}
+}
+
+// A work item type name is free text; its diagnostic JSON pointer must
+// escape it as an RFC 6901 reference token, or a "/" in the name points the
+// diagnostic at a location that does not exist.
+func TestCheckADOBacklogStatesEscapesTypePointer(t *testing.T) {
+	states := fullADOBacklogStates()
+	states.byType = map[string][]providers.ADOWorkItemState{
+		"Bug/Defect": {{Name: "Closed", Category: "Completed"}},
+		"bug/defect": {{Name: "Closed", Category: "Completed"}},
+	}
+	states.byTypeErrs = map[string]error{"Tilde~Type": errors.New("status 404")}
+	stubADOAccessReads(t, fullADORepositoryAccess(), states)
+	var out strings.Builder
+	collector := &diagnosticCollector{}
+	checkADOBacklogStates("alpha", map[string][]string{"Bug/Defect": {"Closed"}, "bug/defect": {"Closed"}, "Tilde~Type": {"Done"}},
+		instance.RepoRef{Provider: "ado"}, "work", nil, &out, "gaggle.yaml", collector)
+	var paths []string
+	for _, finding := range collector.findings {
+		paths = append(paths, finding.Path)
+	}
+	want := []string{
+		"/spec/backlog/doneStates/byType/bug~1defect",
+		"/spec/backlog/doneStates/byType/Tilde~0Type",
+	}
+	if strings.Join(paths, " ") != strings.Join(want, " ") {
+		t.Fatalf("diagnostic paths = %q, want %q", paths, want)
+	}
+	if got := adoDoneStatesByTypePointer("a~/b"); got != "/spec/backlog/doneStates/byType/a~0~1b" {
+		t.Fatalf("pointer = %q, want each character escaped exactly once", got)
 	}
 }
 

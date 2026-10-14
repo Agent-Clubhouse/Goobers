@@ -237,7 +237,11 @@ identity should not be able to:
 Scope blocking branch policies to the branches they protect, such as the
 default branch. A blocking policy with a **Prefix** scope over `refs/heads/`
 makes every branch accept changes only through a pull request, so Goobers
-cannot push its run branches.
+cannot push its run branches. So does one over the run-branch namespace, such
+as `refs/heads/goobers/` for the default `goobers/` namespace (a gaggle sets
+its own with `spec.branchNamespace`), or over a folder that contains it. A
+policy over one workflow's folder, such as `refs/heads/goobers/implementation/`,
+stops every run of that workflow from pushing.
 
 ### What `validate --check-repos` reports
 
@@ -250,7 +254,7 @@ these reads against the configured organization only. It changes nothing.
 | Contribute, Contribute to pull requests, Create branch | `ADOACCESS001` error when the identity lacks one. `validate` exits 1. |
 | Force push | `ADOACCESS002` warning when the identity lacks it at repository level. Only branches the identity did not create are affected. |
 | Either bypass permission | `ADOACCESS003` warning when the identity holds it |
-| Branch policies | `ADOACCESS004` warning for each enabled, blocking policy with a Prefix scope over `refs/heads/` |
+| Branch policies | `ADOACCESS004` warning for each enabled, blocking policy with a Prefix scope over `refs/heads/`, over the run-branch namespace of a gaggle whose project is this repository, or over one of that gaggle's workflow folders (`<namespace><workflow>/`, which blocks every run of that workflow), or over a folder that contains one of these. |
 | A read that fails | `ADOACCESS005` warning. The result is unknown, not missing. |
 | Boards states | For each Azure Boards backlog, prints the states of the work item type Goobers creates. A `BACKLOG002` warning names a type with no Completed state, and each `backlog.doneStates.byType` type or state name the project does not have. |
 

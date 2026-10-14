@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,7 +78,10 @@ func adoErrScrubber(registry *journal.RegistryScrubber) func(error) error {
 // the provider and never leave the process.
 var targetADORepositoryAccess = readADORepositoryAccess
 
-func readADORepositoryAccess(ctx context.Context, repo instance.RepoRef, stores credentials.StoreResolver) adoRepositoryAccess {
+// readADORepositoryAccess reads repo's identity, Git permissions and the
+// blocking Prefix policies covering its run branches: every branch, or a root
+// in runBranchRoots (adoRunBranchRootsByRepo).
+func readADORepositoryAccess(ctx context.Context, repo instance.RepoRef, runBranchRoots []string, stores credentials.StoreResolver) adoRepositoryAccess {
 	registry := journal.NewRegistryScrubber()
 	scrub := adoErrScrubber(registry)
 	provider, err := adoauth.Provider(repo, nil, registry, nil, nil, stores)
@@ -96,7 +100,7 @@ func readADORepositoryAccess(ctx context.Context, repo instance.RepoRef, stores 
 	}
 	access.permissions, err = provider.EvaluateGitPermissions(ctx, ids, adoEvaluatedGitPermissions())
 	access.permissionsErr = scrub(err)
-	access.policies, err = provider.BlanketPrefixPolicies(ctx, ref, ids.RepositoryID)
+	access.policies, err = provider.RunBranchPrefixPolicies(ctx, ref, ids.RepositoryID, runBranchRoots)
 	access.policiesErr = scrub(err)
 	return access
 }
@@ -122,16 +126,18 @@ func (r adoAccessReporter) fail(code, message string) {
 }
 
 // checkADORepositoryAccess runs the read-only access checks on every Azure
-// DevOps repository. It returns false when a required permission is denied;
-// every other finding is a warning.
-func checkADORepositoryAccess(repos []instance.RepoRef, stores credentials.StoreResolver, stdout io.Writer, file string, diagnostics *diagnosticCollector) bool {
+// DevOps repository. runBranchRoots maps a repos[] index to the run-branch
+// roots pushed to that repository (adoRunBranchRootsByRepo). It
+// returns false when a required permission is denied; every other finding is
+// a warning.
+func checkADORepositoryAccess(repos []instance.RepoRef, runBranchRoots map[int][]string, stores credentials.StoreResolver, stdout io.Writer, file string, diagnostics *diagnosticCollector) bool {
 	ok := true
 	for i, repo := range repos {
 		if repo.Provider != string(providers.ProviderADO) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
-		access := targetADORepositoryAccess(ctx, repo, stores)
+		access := targetADORepositoryAccess(ctx, repo, runBranchRoots[i], stores)
 		cancel()
 		reporter := adoAccessReporter{
 			label:       fmt.Sprintf("repos[%d] %s/%s", i, repo.Owner, repo.Name),
@@ -144,9 +150,33 @@ func checkADORepositoryAccess(repos []instance.RepoRef, stores credentials.Store
 		if !reportADOPermissions(reporter, access) {
 			ok = false
 		}
-		reportADOBlanketPolicies(reporter, access)
+		reportADORunBranchPolicies(reporter, access)
 	}
 	return ok
+}
+
+// adoRunBranchRootsByRepo maps each Azure DevOps repos[] index to the sorted
+// run-branch roots pushed to that repository: the normalized branch namespace
+// (spec.branchNamespace, default "goobers/") of each gaggle whose project
+// resolves to that entry, and <namespace><workflow>/ for each of its workflows.
+func adoRunBranchRootsByRepo(cfg *instance.Config, set *instance.ConfigSet) map[int][]string {
+	out := map[int][]string{}
+	for _, gaggle := range set.Gaggles {
+		repo, found := configuredRepoForProject(cfg, gaggle.Spec.Project)
+		if !found || repo.Provider != string(providers.ProviderADO) {
+			continue
+		}
+		namespace := providers.NormalizeBranchNamespace(gaggle.Spec.BranchNamespace)
+		roots := []string{namespace}
+		for _, workflow := range set.Workflows {
+			if workflow.Spec.Gaggle == gaggle.Name {
+				roots = append(roots, namespace+workflow.Name+"/")
+			}
+		}
+		i := slices.IndexFunc(cfg.Repos, func(candidate instance.RepoRef) bool { return candidate == repo })
+		out[i] = slices.Compact(slices.Sorted(slices.Values(append(out[i], roots...))))
+	}
+	return out
 }
 
 func reportADOIdentity(r adoAccessReporter, access adoRepositoryAccess) {
@@ -202,12 +232,22 @@ func adoPermissionsWithValue(evaluated map[providers.ADOGitPermission]bool, perm
 	return names
 }
 
-func reportADOBlanketPolicies(r adoAccessReporter, access adoRepositoryAccess) {
+// reportADORunBranchPolicies warns about each blocking Prefix policy that
+// makes run-branch pushes PR-only: one covering every branch, or one over a
+// folder containing a gaggle's run-branch namespace or a workflow's run
+// branches.
+func reportADORunBranchPolicies(r adoAccessReporter, access adoRepositoryAccess) {
 	if access.policiesErr != nil {
-		r.warn(adoAccessUnknownCode, fmt.Sprintf("could not read branch policies: %v; blanket policies are unknown, not absent", access.policiesErr))
+		r.warn(adoAccessUnknownCode, fmt.Sprintf("could not read branch policies: %v; policies covering run branches are unknown, not absent", access.policiesErr))
 		return
 	}
 	for _, policy := range access.policies {
+		if policy.RunBranchRoot != "" {
+			r.warn(adoAccessBlanketPolicyCode, fmt.Sprintf(
+				"blocking policy %d (%s) has a Prefix scope %q covering the run branches under refs/heads/%s; every push of one must go through a pull request, so Goobers cannot push them (scope the policy to the target branch, or set the gaggle's spec.branchNamespace outside it)",
+				policy.ID, policy.TypeName, policy.RefName, policy.RunBranchRoot))
+			continue
+		}
 		r.warn(adoAccessBlanketPolicyCode, fmt.Sprintf(
 			"blocking policy %d (%s) has a Prefix scope %q covering every branch; every push to refs/heads/ must go through a pull request, so Goobers cannot push run branches (scope the policy to the target branch instead)",
 			policy.ID, policy.TypeName, policy.RefName))
@@ -277,7 +317,7 @@ func checkADOBacklogStates(gaggleName string, byType map[string][]string, repo i
 	reportADOCreateTypeStates(gaggleName, states, stdout, warn)
 	warnCaseDuplicateADOTypes(types, warn)
 	for _, itemType := range types {
-		path := "/spec/backlog/doneStates/byType/" + itemType
+		path := adoDoneStatesByTypePointer(itemType)
 		if err := states.byTypeErrs[itemType]; err != nil {
 			warn(path, fmt.Sprintf("could not read the states of work item type %q in project %q: %v; check the type name", itemType, project, err))
 			continue
@@ -289,6 +329,18 @@ func checkADOBacklogStates(gaggleName string, byType map[string][]string, repo i
 	}
 }
 
+// adoDoneStatesByTypePointer is the diagnostic JSON pointer to one
+// backlog.doneStates.byType entry. A work item type name is free text, so it
+// is escaped as an RFC 6901 reference token: "~" as "~0" and "/" as "~1";
+// unescaped, a type such as "Bug/Defect" would point two levels too deep.
+func adoDoneStatesByTypePointer(itemType string) string {
+	return "/spec/backlog/doneStates/byType/" + jsonPointerTokenEscaper.Replace(itemType)
+}
+
+// jsonPointerTokenEscaper escapes an RFC 6901 reference token in one pass, so
+// the "~" a "/" escape introduces is never escaped again.
+var jsonPointerTokenEscaper = strings.NewReplacer("~", "~0", "/", "~1")
+
 // warnCaseDuplicateADOTypes warns about backlog.doneStates.byType keys that
 // name the same work item type in different case (ADO type names are
 // case-insensitive). The provider merges them, but two keys usually mean a
@@ -298,7 +350,7 @@ func warnCaseDuplicateADOTypes(types []string, warn func(path, message string)) 
 	for _, itemType := range types {
 		folded := strings.ToLower(strings.TrimSpace(itemType))
 		if earlier, ok := first[folded]; ok {
-			warn("/spec/backlog/doneStates/byType/"+itemType, fmt.Sprintf(
+			warn(adoDoneStatesByTypePointer(itemType), fmt.Sprintf(
 				"backlog.doneStates.byType keys %q and %q name the same work item type; their states are merged", earlier, itemType))
 			continue
 		}
