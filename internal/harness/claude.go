@@ -251,6 +251,14 @@ type ClaudeAdapter struct {
 	// EphemeralTmpRoot overrides the temp root the per-attempt directory is
 	// carved out of. Empty means the daemon's own temp root.
 	EphemeralTmpRoot string
+	// KeychainReader reads Claude Code's stored login from the macOS
+	// Keychain when no credentials file is found. Nil selects the invoking
+	// user's real login Keychain via /usr/bin/security, which is what
+	// production wiring wants. A unit test must inject a fake (#7447): left
+	// nil under `go test`, Run panics rather than read the developer's own
+	// Claude Code login, unless an opt-in live integration test called
+	// optInOperatorClaudeLogin (see claude_credential_guard.go).
+	KeychainReader ClaudeKeychainReader
 }
 
 // Name returns the adapter's diagnostic identity.
@@ -490,7 +498,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
 	}
-	if err := seedClaudeCredentials(ctx, env, configDir); err != nil {
+	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
 	}
 	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
@@ -685,10 +693,18 @@ func ensurePlainDirectory(path string) error {
 
 const claudeCodeKeychainService = "Claude Code-credentials"
 
-type claudeKeychainReader func(context.Context, string) ([]byte, error)
+// ClaudeKeychainReader returns the generic-password secret stored under
+// service in the macOS Keychain. An absent item is reported as an error
+// matching ErrClaudeKeychainItemNotFound (errors.Is).
+type ClaudeKeychainReader func(ctx context.Context, service string) ([]byte, error)
 
-func seedClaudeCredentials(ctx context.Context, env []string, destination string) error {
-	return seedClaudeCredentialsForPlatform(ctx, env, destination, runtime.GOOS, readClaudeKeychainCredentials)
+// ErrClaudeKeychainItemNotFound is a ClaudeKeychainReader's report that the
+// Keychain holds no Claude Code login: the machine was never signed in.
+// Seeding treats it like a missing credentials file, not as a failure.
+var ErrClaudeKeychainItemNotFound = errors.New("keychain item not found")
+
+func seedClaudeCredentials(ctx context.Context, env []string, destination string, readKeychain ClaudeKeychainReader) error {
+	return seedClaudeCredentialsForPlatform(ctx, env, destination, runtime.GOOS, readKeychain)
 }
 
 func seedClaudeCredentialsForPlatform(
@@ -696,7 +712,7 @@ func seedClaudeCredentialsForPlatform(
 	env []string,
 	destination string,
 	goos string,
-	readKeychain claudeKeychainReader,
+	readKeychain ClaudeKeychainReader,
 ) error {
 	sourceDir := ""
 	var home, userProfile string
@@ -735,6 +751,7 @@ func seedClaudeCredentialsForPlatform(
 	var credentials []byte
 	if sourceDir != "" {
 		source := filepath.Join(sourceDir, ".credentials.json")
+		refuseHostClaudeConfigDirUnderTest(sourceDir)
 		var err error
 		credentials, err = os.ReadFile(source)
 		if err != nil && !os.IsNotExist(err) {
@@ -756,7 +773,7 @@ func seedClaudeCredentialsForPlatform(
 			// which includes every CI runner. Genuine failures (a locked
 			// keychain, a denied prompt, security(1) missing) still fail
 			// closed, since they leave the credential state unknown.
-			if isKeychainItemNotFound(err) {
+			if errors.Is(err, ErrClaudeKeychainItemNotFound) {
 				return nil
 			}
 			return fmt.Errorf("read Claude Code credentials from macOS Keychain service %q: %w", claudeCodeKeychainService, err)
@@ -777,8 +794,17 @@ func seedClaudeCredentialsForPlatform(
 	return nil
 }
 
-func readClaudeKeychainCredentials(ctx context.Context, service string) ([]byte, error) {
-	return exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+// readOperatorClaudeKeychain is the production ClaudeKeychainReader: it runs
+// /usr/bin/security against the invoking user's login Keychain, so it reads
+// the operator's real Claude Code login. It is the nil KeychainReader
+// default: always in production, and under `go test` only for an opt-in live
+// integration test (operatorClaudeLoginOptIn).
+func readOperatorClaudeKeychain(ctx context.Context, service string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+	if isKeychainItemNotFound(err) {
+		return nil, fmt.Errorf("%w: %w", ErrClaudeKeychainItemNotFound, err)
+	}
+	return out, err
 }
 
 // keychainItemNotFoundExit is security(1)'s exit status for

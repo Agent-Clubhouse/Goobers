@@ -27,6 +27,7 @@ const claudeResultStream = `{"type":"system","subtype":"init","model":"claude-so
 `
 
 func TestClaudeAdapterPreservesLifecycleEvents(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	var live []journal.Event
 	runner := &fakeProcessRunner{
@@ -38,7 +39,7 @@ func TestClaudeAdapterPreservesLifecycleEvents(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude-lifecycle-test"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude-lifecycle-test"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	out, err := adapter.Run(context.Background(), RunRequest{
 		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath,
 		AgentEventSink: func(event journal.Event) error {
@@ -69,8 +70,9 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 		},
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude-headless-test"},
-		Runner:  runner,
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude-headless-test"},
+		Runner:         runner,
 		EnvCapabilities: map[string]string{
 			"agent:model":         "ANTHROPIC_API_KEY",
 			"github:issues:write": "GH_TOKEN",
@@ -159,6 +161,7 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 // genuinely Anthropic-shaped key (sk-ant-...) must still pass through
 // unchanged (see TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment).
 func TestClaudeAdapterRunDropsForeignShapedAnthropicAPIKey(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0, Transcript: []byte(claudeResultStream)},
@@ -170,8 +173,9 @@ func TestClaudeAdapterRunDropsForeignShapedAnthropicAPIKey(t *testing.T) {
 		},
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
-		Runner:  runner,
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude"},
+		Runner:         runner,
 		EnvCapabilities: map[string]string{
 			"agent:model": "ANTHROPIC_API_KEY",
 		},
@@ -213,8 +217,9 @@ func TestClaudeAdapterRunRoutesOAuthTokenToOAuthEnvVar(t *testing.T) {
 		},
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
-		Runner:  runner,
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude"},
+		Runner:         runner,
 		EnvCapabilities: map[string]string{
 			"agent:model": "ANTHROPIC_API_KEY",
 		},
@@ -377,11 +382,21 @@ func (r *claudeSequenceRunner) Run(_ context.Context, req ProcessRequest) (Proce
 	return result, nil
 }
 
+// absentClaudeKeychain is the ClaudeKeychainReader every Run-level unit test
+// injects (#7447): a Keychain with no Claude Code login, which is what a Mac
+// that never signed in (every macOS CI runner) reports. Leaving
+// ClaudeAdapter.KeychainReader nil under go test panics rather than reading
+// the developer's real login Keychain.
+func absentClaudeKeychain(context.Context, string) ([]byte, error) {
+	return nil, ErrClaudeKeychainItemNotFound
+}
+
 // stubClaudeCredentialsHome points HOME at a fresh directory seeded with a
 // stored credential, so an unsandboxed Run's unconditional credential-seeding
-// finds a file to copy instead of falling through to the real macOS
-// Keychain — the fallback that TestSeedClaudeCredentialsReadsMacOSKeychainWhenFileMissing
-// exercises deliberately, but that other tests must not hit incidentally.
+// copies a planted login instead of the developer's real ~/.claude one (which
+// refuseHostClaudeConfigDirUnderTest turns into a panic), and never needs the
+// Keychain fallback that TestSeedClaudeCredentialsReadsMacOSKeychainWhenFileMissing
+// exercises with a fake reader.
 func stubClaudeCredentialsHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -413,7 +428,7 @@ func TestClaudeAdapterPreservesTerminalResultBeyondTranscriptLimit(t *testing.T)
 			},
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 
 	out, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:           testEnvelope(workspace),
@@ -454,7 +469,7 @@ func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing
 			},
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 
 	out, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:           testEnvelope(workspace),
@@ -499,7 +514,7 @@ func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *te
 			},
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 
 	out, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:           testEnvelope(workspace),
@@ -574,7 +589,7 @@ func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 					},
 				},
 			}
-			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 			out, err := adapter.Run(context.Background(), RunRequest{
 				Mode:           tc.mode,
 				Envelope:       testEnvelope(workspace),
@@ -638,7 +653,7 @@ func TestClaudeAdapterRepairsSchemaInvalidCompletionInSameSession(t *testing.T) 
 					},
 				},
 			}
-			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 			out, err := adapter.Run(context.Background(), RunRequest{
 				Mode:           ModeInvoke,
 				Envelope:       testEnvelope(workspace),
@@ -696,7 +711,7 @@ func TestClaudeAdapterFailsClearlyAfterInvalidCompletionRepairIsExhausted(t *tes
 			},
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	out, err := adapter.Run(context.Background(), RunRequest{
 		Mode:           ModeInvoke,
 		Envelope:       testEnvelope(workspace),
@@ -737,7 +752,7 @@ func TestClaudeAdapterFailsClosedWhenRecoveryOmitsCompletion(t *testing.T) {
 			{ExitCode: 0, Transcript: []byte(claudeResultStream)},
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	_, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
@@ -848,7 +863,7 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude-sandbox-test"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude-sandbox-test"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	if _, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
@@ -960,20 +975,19 @@ func TestSeedClaudeCredentialsKeychainFailuresFailClosed(t *testing.T) {
 // fail the run — before this, the adapter was unusable on any such machine,
 // which is every macOS CI runner (TestClaudeAdapterRunWiresGoobersIO failed
 // there with `exit status 44` while passing on developer laptops that happened
-// to have a real login stored).
+// to have a real login stored). readOperatorClaudeKeychain reports that status
+// as ErrClaudeKeychainItemNotFound; TestKeychainItemNotFoundMatchesOnlyExit44
+// pins the classification without running security(1).
 func TestSeedClaudeCredentialsKeychainItemNotFoundIsOptional(t *testing.T) {
-	notFound := exec.Command("sh", "-c", "exit 44").Run()
-	var exitErr *exec.ExitError
-	if !errors.As(notFound, &exitErr) || exitErr.ExitCode() != keychainItemNotFoundExit {
-		t.Fatalf("fixture error = %v, want *exec.ExitError with status %d", notFound, keychainItemNotFoundExit)
-	}
 	destination := t.TempDir()
 	err := seedClaudeCredentialsForPlatform(
 		context.Background(),
 		[]string{"HOME=" + t.TempDir()},
 		destination,
 		"darwin",
-		func(context.Context, string) ([]byte, error) { return nil, notFound },
+		func(context.Context, string) ([]byte, error) {
+			return nil, fmt.Errorf("%w: exit status 44", ErrClaudeKeychainItemNotFound)
+		},
 	)
 	if err != nil {
 		t.Fatalf("seedClaudeCredentialsForPlatform: %v", err)
@@ -981,6 +995,113 @@ func TestSeedClaudeCredentialsKeychainItemNotFoundIsOptional(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(destination, ".credentials.json")); !os.IsNotExist(err) {
 		t.Fatalf("stat seeded credentials = %v, want not-exist (nothing to seed)", err)
 	}
+}
+
+func TestKeychainItemNotFoundMatchesOnlyExit44(t *testing.T) {
+	notFound := exec.Command("sh", "-c", "exit 44").Run()
+	if !isKeychainItemNotFound(notFound) {
+		t.Fatalf("isKeychainItemNotFound(%v) = false, want true for exit status %d", notFound, keychainItemNotFoundExit)
+	}
+	// 51 is what a locked or sandboxed keychain returned in the #7447
+	// reports: the credential state is unknown, so it must stay a failure.
+	locked := exec.Command("sh", "-c", "exit 51").Run()
+	if isKeychainItemNotFound(locked) {
+		t.Fatalf("isKeychainItemNotFound(%v) = true, want false", locked)
+	}
+	if isKeychainItemNotFound(errors.New("exit status 44")) {
+		t.Fatal("isKeychainItemNotFound matched a message instead of an exit status")
+	}
+}
+
+// TestClaudeAdapterRefusesRealKeychainUnderTest pins the #7447 guard: a unit
+// test that reaches credential seeding without injecting a KeychainReader
+// panics instead of running security(1) against the developer's login
+// Keychain. The guard fires on every platform so Linux CI catches the
+// omission too. Only the reader selection is exercised here, so even a broken
+// guard returns the real reader without calling it.
+func TestClaudeAdapterRefusesRealKeychainUnderTest(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil KeychainReader under go test did not panic")
+		}
+	}()
+	_ = (&ClaudeAdapter{}).keychainReader()
+}
+
+func TestClaudeAdapterUsesInjectedKeychainReader(t *testing.T) {
+	// An empty temp HOME: no credentials file, so on macOS seeding falls
+	// through to the injected reader.
+	t.Setenv("HOME", t.TempDir())
+	workspace := t.TempDir()
+	var gotService string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &ClaudeAdapter{
+		Command: []string{"claude"},
+		Runner:  runner,
+		KeychainReader: func(_ context.Context, service string) ([]byte, error) {
+			gotService = service
+			return []byte(`{"claudeAiOauth":"fake-keychain-login"}`), nil
+		},
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runtime.GOOS != "darwin" {
+		if gotService != "" {
+			t.Fatalf("Keychain reader consulted on %s", runtime.GOOS)
+		}
+		return
+	}
+	if gotService != claudeCodeKeychainService {
+		t.Fatalf("Keychain service = %q, want %q", gotService, claudeCodeKeychainService)
+	}
+	configDir := ""
+	for _, entry := range runner.lastReq.Env {
+		if value, ok := strings.CutPrefix(entry, "CLAUDE_CONFIG_DIR="); ok {
+			configDir = value
+		}
+	}
+	seeded, err := os.ReadFile(filepath.Join(configDir, ".credentials.json"))
+	if err != nil {
+		t.Fatalf("read seeded credentials: %v", err)
+	}
+	if string(seeded) != `{"claudeAiOauth":"fake-keychain-login"}` {
+		t.Fatalf("seeded credentials = %q, want the injected reader's login", seeded)
+	}
+}
+
+// TestSeedClaudeCredentialsRefusesHostConfigDirUnderTest pins the file-side
+// #7447 guard: the config dirs captured when the test binary started (the
+// developer's real ~/.claude) are recognized, and a temp HOME is not. It
+// checks the predicate, never a seeding call, so a broken guard cannot read
+// the real file.
+func TestSeedClaudeCredentialsRefusesHostConfigDirUnderTest(t *testing.T) {
+	if len(hostClaudeConfigDirs) == 0 {
+		t.Skip("test binary started with no HOME, USERPROFILE or CLAUDE_CONFIG_DIR; nothing to guard")
+	}
+	for _, dir := range hostClaudeConfigDirs {
+		if !isHostClaudeConfigDir(dir + string(filepath.Separator)) {
+			t.Fatalf("host config dir %s not recognized", dir)
+		}
+	}
+	if isHostClaudeConfigDir(filepath.Join(t.TempDir(), ".claude")) {
+		t.Fatal("temp HOME's .claude treated as the host config dir")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("seeding from the host config dir under go test did not panic")
+		}
+	}()
+	refuseHostClaudeConfigDirUnderTest(hostClaudeConfigDirs[0])
 }
 
 func TestSeedClaudeCredentialsMissingFileRemainsOptionalOutsideMacOS(t *testing.T) {
@@ -1039,7 +1160,7 @@ func TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	if _, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
@@ -1084,8 +1205,9 @@ func TestClaudeAdapterRejectsSymlinkedSandboxRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
-		Runner:  &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude"},
+		Runner:         &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
 	}
 	_, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
@@ -1111,7 +1233,7 @@ func runClaudeAdapterForCommand(t *testing.T, tools []string) []string {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	_, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
@@ -1214,8 +1336,9 @@ func TestClaudeAdapterToolAllowlist(t *testing.T) {
 func TestClaudeAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
 	workspace := t.TempDir()
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
-		Runner:  &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude"},
+		Runner:         &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
 	}
 	_, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),

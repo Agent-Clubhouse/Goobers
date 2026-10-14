@@ -298,7 +298,7 @@ func TestClaudeAdapterRepairsUncommittedSuccessInSameSession(t *testing.T) {
 		results: []ProcessResult{{Transcript: []byte(claudeResultStream)}, {Transcript: []byte(claudeResultStream)}},
 		acts:    []func(ProcessRequest) error{writeSuccessCompletion, nil},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	out, err := adapter.Run(context.Background(), claudeUncommittedRequest(workspace, uncommittedOnceValidator()))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -326,7 +326,7 @@ func TestClaudeAdapterFailedUncommittedRepairKeepsCompletion(t *testing.T) {
 			return errors.New("repair session crashed")
 		}},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	alwaysUncommitted := func([]byte) error { return ErrUncommittedChanges }
 	out, err := adapter.Run(context.Background(), claudeUncommittedRequest(workspace, alwaysUncommitted))
 	if !errors.Is(err, ErrUncommittedChanges) || errors.Is(err, ErrInvalidCompletion) {

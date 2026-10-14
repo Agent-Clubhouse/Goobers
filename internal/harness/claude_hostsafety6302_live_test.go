@@ -78,6 +78,7 @@ func claudeDeniedBashCommands(t *testing.T, raw [][]byte) []string {
 func TestIntegrationClaudeDeniesNameBasedKill(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CLAUDE_LIVE_SMOKE")
 	testdep.Require(t, "claude")
+	optInOperatorClaudeLogin(t)
 
 	for _, tc := range []struct {
 		name  string
