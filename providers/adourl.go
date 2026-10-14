@@ -3,6 +3,7 @@ package providers
 import (
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -174,4 +175,59 @@ func adoIdentityFromSegments(segments []string) (org, project, repo string, ok b
 		return "", "", "", false
 	}
 	return trimmed[0], trimmed[1], trimmed[2], true
+}
+
+// adoGUID matches the GUID Azure DevOps uses to name a project or repository
+// in its API URLs.
+var adoGUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+
+// IsADOGUID reports whether segment is an Azure DevOps project or repository
+// GUID rather than a name.
+func IsADOGUID(segment string) bool {
+	return adoGUID.MatchString(segment)
+}
+
+// ParseADOPullRequestAPIURL parses the API form of an Azure DevOps pull
+// request URL — <org>/<project>/_apis/git/repositories/<repository>/
+// pullRequests/<n> on dev.azure.com, or <project>/... on
+// <org>.visualstudio.com — the raw "url" ADO returns for a pull request. The
+// project and repository segments are returned as written: a name or, as ADO
+// usually writes them, a GUID (IsADOGUID). Segments are percent-decoded; the
+// organization comes from the path or the visualstudio.com host label.
+func ParseADOPullRequestAPIURL(raw string) (org, project, repository string, number int, ok bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" {
+		return "", "", "", 0, false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	hostOrg, visualStudio := strings.CutSuffix(host, ".visualstudio.com")
+	if host != "dev.azure.com" && (!visualStudio || hostOrg == "" || strings.Contains(hostOrg, ".")) {
+		return "", "", "", 0, false
+	}
+	parts := strings.FieldsFunc(parsed.EscapedPath(), func(r rune) bool { return r == '/' })
+	for i := range parts {
+		if parts[i], err = url.PathUnescape(parts[i]); err != nil {
+			return "", "", "", 0, false
+		}
+	}
+	for i := 1; i+5 < len(parts); i++ {
+		if !strings.EqualFold(parts[i], "_apis") || !strings.EqualFold(parts[i+1], "git") ||
+			!strings.EqualFold(parts[i+2], "repositories") || !strings.EqualFold(parts[i+4], "pullRequests") {
+			continue
+		}
+		n, convErr := strconv.Atoi(parts[i+5])
+		if convErr != nil || n <= 0 {
+			return "", "", "", 0, false
+		}
+		switch {
+		case visualStudio:
+			org = hostOrg
+		case i >= 2:
+			org = parts[i-2]
+		default:
+			return "", "", "", 0, false
+		}
+		return org, parts[i-1], parts[i+3], n, true
+	}
+	return "", "", "", 0, false
 }
