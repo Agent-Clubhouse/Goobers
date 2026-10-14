@@ -28,7 +28,9 @@ func TestRuntimeReloadWaitsForIssuanceThenRevokesBeforePublication(t *testing.T)
 		}
 		return load(ctx, id, stage)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	// A deadlock watchdog only: ordering is asserted through channels. Slow
+	// SQLite fsyncs on loaded Windows runners exceeded a 5s budget (#7338).
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	type acquired struct {
 		access *mcpio.ChildWorkflowAccess
