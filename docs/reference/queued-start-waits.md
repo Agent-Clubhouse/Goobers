@@ -25,3 +25,7 @@ or revoked authorization is not interpreted as a temporary operating constraint.
 This slice reuses the existing accepted state and reason field. It does not yet
 add the full typed waiting metadata, next-check scheduling, operator queue
 controls, or event/child-specific admission policy described in the event design.
+
+[Bounded pending-start scans](pending-start-sweeps.md) advance through held starts
+and retain scan progress across daemon reopen, so a held prefix does not pin the
+next eligible window. Custody and normal admission remain separate from scanning.
