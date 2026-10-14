@@ -32,7 +32,6 @@ import {
 } from "./dataCache";
 import { useLiveData, type LiveFreshness } from "./liveData";
 import { loadFailureReasons, type FailureReasons } from "./overviewFailures";
-import { repositoryPath } from "./repositoryIdentity";
 
 const PAGE_LIMIT = 100;
 const HEALTH_REFRESH_INTERVAL_MS = 60_000;
@@ -1389,7 +1388,10 @@ async function loadOverviewInventory(
   );
   const workflowNames = new Map<string, string>();
   const repositoryNames = new Map(
-    gaggles.map((gaggle) => [gaggle.name, repositoryPath(gaggle.project)]),
+    gaggles.map((gaggle) => [
+      gaggle.name,
+      `${gaggle.project.owner}/${gaggle.project.name}`,
+    ]),
   );
   for (const workflows of workflowLists) {
     for (const workflow of workflows) {

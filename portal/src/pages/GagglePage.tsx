@@ -245,7 +245,7 @@ function ConnectionTopology({
       </p>
       <ul>
         {connections.map((connection) => {
-          const identity = repositoryIdentity(connection);
+          const identity = repositoryPath(connection.repository);
           const access = formatAccessMode(connection);
           return (
             <li key={`${identity}/${connection.accessMode}`}>
@@ -427,11 +427,6 @@ function GoobersPanel({
       )}
     </section>
   );
-}
-
-function repositoryIdentity(connection: RepositoryConnection): string {
-  const { owner, project, name } = connection.repository;
-  return [owner, project, name].filter(Boolean).join("/");
 }
 
 function formatAccessMode(connection: RepositoryConnection): string {
