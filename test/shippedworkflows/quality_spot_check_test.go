@@ -43,6 +43,23 @@ func TestQualitySpotCheckSelectsLensesFromChangedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The script may rely on sh builtins and git only: pin PATH to exactly
+	// those two so a new tool dependency fails here rather than on a runner
+	// image that lacks it.
+	tools := t.TempDir()
+	shell := ""
+	for _, name := range []string{"git", "sh"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatalf("locate %s: %v", name, err)
+		}
+		if name == "sh" {
+			shell = path
+		}
+		if err := os.Symlink(path, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	for name, tc := range map[string]struct {
 		files []string
@@ -67,9 +84,9 @@ func TestQualitySpotCheckSelectsLensesFromChangedPaths(t *testing.T) {
 			runGit(t, repo, "add", "-A")
 			runGit(t, repo, "-c", "user.email=contract@example.test", "-c", "user.name=contract", "commit", "-m", "change")
 
-			command := exec.Command("sh", "-c", triage.Run.Script)
+			command := exec.Command(shell, "-c", triage.Run.Script)
 			command.Dir = repo
-			command.Env = append(os.Environ(),
+			command.Env = append(os.Environ(), "PATH="+tools,
 				"GOOBERS_INPUT_SINCE="+triage.Inputs["since"],
 				"GOOBERS_INPUT_ARTIFACTMANIFESTFILE="+triage.Inputs["artifactManifestFile"])
 			if output, err := command.CombinedOutput(); err != nil {

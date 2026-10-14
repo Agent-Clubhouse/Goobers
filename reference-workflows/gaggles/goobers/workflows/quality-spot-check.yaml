@@ -34,18 +34,24 @@ spec:
       goal: Select the quality lenses that apply to the paths changed in the recent window.
       run:
         script: |
-          set -eu
-          changed=$(git log --since="${GOOBERS_INPUT_SINCE}" --name-only --pretty=format: | sed '/^$/d' | sort -u)
+          set -euf
+          # Plain POSIX sh plus git: count the recent changes each optional
+          # lens cares about, then select the lenses with at least one.
+          security=0 tests=0 dependencies=0
+          for path in $(git log --since="${GOOBERS_INPUT_SINCE}" --name-only --pretty=format:); do
+            case "/$path" in */credentials/* | */auth/* | */sandbox/* | */policy/*) security=$((security + 1)) ;; esac
+            case "$path" in *_test.go | *.test.ts | *.test.tsx) tests=$((tests + 1)) ;; esac
+            case "/$path" in */go.mod | */go.sum | */package.json | */package-lock.json) dependencies=$((dependencies + 1)) ;; esac
+          done
           selected=""
           select_lens() {
-            count=$(printf '%s\n' "$changed" | grep -Ec "$2" || true)
-            if [ "$count" -gt 0 ]; then
-              selected="${selected:+$selected,}{\"name\":\"$1\",\"reason\":\"$count changed path(s) touch $3\"}"
+            if [ "$2" -gt 0 ]; then
+              selected="${selected:+$selected,}{\"name\":\"$1\",\"reason\":\"$2 recent change(s) to $3\"}"
             fi
           }
-          select_lens security '(^|/)(credentials|auth|sandbox|policy)/' 'credential, auth, sandbox or policy code'
-          select_lens testCoverage '(_test\.go|\.test\.tsx?)$' 'tests'
-          select_lens dependencies '(^|/)(go\.(mod|sum)|package(-lock)?\.json)$' 'dependency manifests'
+          select_lens security "$security" 'credential, auth, sandbox or policy code'
+          select_lens testCoverage "$tests" 'tests'
+          select_lens dependencies "$dependencies" 'dependency manifests'
           printf '{"schemaVersion":1,"branches":[%s]}\n' "$selected" >lenses.json
           printf '%s\n' '{"schemaVersion":"goobers.dev/stage-artifact-set/v1alpha1","entries":[{"name":"lenses","path":"lenses.json","mediaType":"application/json"}]}' >"$GOOBERS_INPUT_ARTIFACTMANIFESTFILE"
         workspace: repo
