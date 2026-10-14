@@ -90,7 +90,7 @@ func WorkflowRequiredCapabilities(gaggle apiv1.Gaggle, wf apiv1.Workflow) []stri
 	seen := make(map[string]struct{})
 	addGaggleCapabilities(seen, gaggle)
 	addWorkflowCapabilities(seen, &wf)
-	return sortedKeys(seen)
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func addGaggleCapabilities(seen map[string]struct{}, gaggle apiv1.Gaggle) {
@@ -151,11 +151,7 @@ func RequiredCapabilities(gaggle apiv1.Gaggle, workflows []apiv1.Workflow) []str
 			addWorkflowCapabilities(seen, &workflows[i])
 		}
 	}
-	return sortedKeys(seen)
-}
-
-func sortedKeys(set map[string]struct{}) []string {
-	return slices.Sorted(maps.Keys(set))
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // CheckCapabilityRequirements reports when a gaggle or stage requires a runner

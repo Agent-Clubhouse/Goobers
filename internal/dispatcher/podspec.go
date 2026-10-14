@@ -965,7 +965,7 @@ var controlEnvReference = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 // context are escaped by literalPodEnv, so kubelet cannot expand their data
 // against a control-plane bearer stamped earlier in the environment.
 func refuseControlEnvOverrides(attempt Attempt) error {
-	for _, name := range sortedKeys(attempt.Env) {
+	for _, name := range slices.Sorted(maps.Keys(attempt.Env)) {
 		if slices.Contains(DispatcherControlEnv, name) {
 			return &ControlEnvOverrideError{Key: name}
 		}
@@ -1207,19 +1207,19 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	}
 	env = append(env, corev1.EnvVar{Name: EnvStageTimeout, Value: attempt.stageTimeout().String()})
 	env = append(env, corev1.EnvVar{Name: EnvRecoveryCustodyTimeout, Value: cfg.recoveryCustodyTimeout().String()})
-	for _, key := range sortedKeys(attempt.Env) {
+	for _, key := range slices.Sorted(maps.Keys(attempt.Env)) {
 		env = append(env, corev1.EnvVar{Name: key, Value: attempt.Env[key]})
 	}
 	// Declared inputs, named exactly as the local executor names them so a
 	// stage reads GOOBERS_INPUT_<KEY> identically on both substrates.
-	for _, key := range sortedKeys(attempt.Inputs) {
+	for _, key := range slices.Sorted(maps.Keys(attempt.Inputs)) {
 		env = append(env, corev1.EnvVar{Name: InputEnvVar(key), Value: literalPodEnv(attempt.Inputs[key])})
 	}
 	// Run context, for goobers-CLI stages ONLY. stageEnvironment() in the pod
 	// strips the dispatcher's control plane, and these names overlap it — so
 	// they are re-stamped here under a distinct prefix-free contract and
 	// re-admitted in the pod only when the stage is a CLI stage.
-	for _, key := range sortedKeys(attempt.RunContext) {
+	for _, key := range slices.Sorted(maps.Keys(attempt.RunContext)) {
 		env = append(env, corev1.EnvVar{Name: key, Value: literalPodEnv(attempt.RunContext[key])})
 	}
 	if attempt.CLIStage {
@@ -1475,11 +1475,11 @@ func stampsPlaneEnv(cfg Config, attempt Attempt) bool {
 // reserving the GOOBERS_ prefix for env keys, which is its own change.
 func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string) []string {
 	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer)+1)
-	names = append(names, sortedKeys(attempt.Env)...)
-	for _, key := range sortedKeys(attempt.Inputs) {
+	names = append(names, slices.Sorted(maps.Keys(attempt.Env))...)
+	for _, key := range slices.Sorted(maps.Keys(attempt.Inputs)) {
 		names = append(names, InputEnvVar(key))
 	}
-	names = append(names, sortedKeys(attempt.RunContext)...)
+	names = append(names, slices.Sorted(maps.Keys(attempt.RunContext))...)
 	// The run's operational identity, stamped in stageEnv's base block above.
 	// A goobers-CLI stage keeps these; every other stage is stripped of them
 	// by the control-plane strip that runs after the rebuild.
@@ -1753,13 +1753,6 @@ func copyStringMap(m map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-// sortedKeys returns m's keys in sorted order, so a rendered pod's env list
-// (and any test asserting on it) is deterministic despite Go's randomized
-// map iteration.
-func sortedKeys(m map[string]string) []string {
-	return slices.Sorted(maps.Keys(m))
 }
 
 // InputEnvVar renders a declared input key as its stage environment variable.

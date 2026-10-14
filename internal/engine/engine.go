@@ -945,7 +945,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// preceding stage. A declared outputKey that resolves nowhere fails the
 	// stage closed: the declaration is a contract, not a hint. Keys are walked
 	// sorted so the first-missing error is deterministic under replay.
-	for _, inputKey := range sortedKeys(t.InputsFrom) {
+	for _, inputKey := range slices.Sorted(maps.Keys(t.InputsFrom)) {
 		outputKey := t.InputsFrom[inputKey]
 		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualifiedInputs)
 		if !ok {
@@ -1307,10 +1307,6 @@ func normalizeArtifactIntegrity(taskType apiv1.TaskType, artifacts []apiv1.Artif
 		}
 	}
 	return artifacts
-}
-
-func sortedKeys(m map[string]string) []string {
-	return slices.Sorted(maps.Keys(m))
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {

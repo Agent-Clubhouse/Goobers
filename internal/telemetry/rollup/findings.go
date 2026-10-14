@@ -711,7 +711,7 @@ func (db *DB) gateRuns(ctx context.Context, req StatsRequest, gate, mode string,
 // window/gaggle filter.
 func (db *DB) detectCoverageGaps(req CoverageRequest) ([]Finding, error) {
 	var out []Finding
-	for _, workflow := range sortedKeys(req.Workflows) {
+	for _, workflow := range slices.Sorted(maps.Keys(req.Workflows)) {
 		count, err := db.workflowRunCount(context.Background(), req.StatsRequest, workflow)
 		if err != nil {
 			return nil, fmt.Errorf("rollup: detect coverage gap for workflow %q: %w", workflow, err)
@@ -798,12 +798,4 @@ func queryRunIDs(ctx context.Context, db *DB, query string, args []any) ([]Journ
 		out = append(out, JournalPointer{RunID: runID})
 	}
 	return out, rows.Err()
-}
-
-// sortedKeys returns m's keys sorted ascending — Detect's coverage pass
-// iterates workflows in a stable order so its Findings are deterministic
-// for a fixed input (T2's own test-plan requirement) even though Go map
-// iteration order is not.
-func sortedKeys(m map[string][]string) []string {
-	return slices.Sorted(maps.Keys(m))
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -305,7 +307,7 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	// Snapshot inputs immutably before pinning run.yaml, so run.yaml commits to
 	// the scrubbed digests.
 	id.Inputs = id.Inputs[:0:0]
-	for _, name := range sortedKeys(inputs) {
+	for _, name := range slices.Sorted(maps.Keys(inputs)) {
 		if name == "" || name == "." || name == ".." || path.Base(name) != name || strings.ContainsAny(name, `/\`) {
 			releaseRunLock(lock)
 			return nil, fmt.Errorf("journal: invalid input name %q", name)
