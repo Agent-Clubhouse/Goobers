@@ -112,6 +112,13 @@ func StoredShadowBackprop(
 	if config.Now.IsZero() {
 		config.Now = time.Now().UTC()
 	}
+	if config.Filing.Source == "" {
+		summary, err := ReadAttributionEval(root)
+		if err != nil {
+			return ShadowBackpropReport{}, err
+		}
+		config.Filing = creditgraph.DeriveFilingThreshold(summary)
+	}
 	config.PreviousReports, config.FixesAppliedAt, config.BaselineObservations = nil, nil, nil
 	report.WouldFile = creditgraph.AuditFaultDomains(observations, config)
 	report.WouldFile.Mode = "shadow"
@@ -128,6 +135,9 @@ func StoredShadowBackprop(
 		report.WouldFile.WorkflowFindings, report.WouldFile.UnknownFindings,
 	} {
 		for _, finding := range findings {
+			if !finding.Fileable {
+				continue
+			}
 			comparison := ShadowFindingComparison{
 				FindingID: finding.ID, Domain: finding.Domain,
 				RecommendedOwner: finding.RecommendedOwner, RecommendedAction: finding.RecommendedAction,

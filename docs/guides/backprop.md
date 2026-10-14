@@ -158,7 +158,8 @@ The report lists each shadow run (from a workflow's `mode: shadow` or a
 gaggle override) with its actual phase. It then lists the findings the active
 fault audit would have filed: domain, recommended owner and action, the actual
 phases of the runs behind each finding, and whether the active audit also
-filed it. The report is read-only. It records no filing, cooldown, or
+filed it. Like the active audit, it uses the instance's filing threshold, so
+findings that are not fileable are left out. The report is read-only. It records no filing, cooldown, or
 verification state, and no gate, filing pass, or default portal view reads it.
 
 ### Promote
@@ -336,6 +337,17 @@ Each finding carries a stable `id` (`backprop-` followed by 20 hex characters),
 and artifact `evidence` links, `counterEvidence`, `alternativeDomains`,
 `recommendedOwner`, `recommendedAction`, and `verification`. The same failure
 signature always produces the same finding ID across runs and passes.
+
+Each finding also carries `fileable`: whether its `confidence` meets the
+report's `filingThreshold`. The threshold is 0.5 unless an attribution accuracy
+eval has been published to the instance (`go run ./test/attributioneval
+-publish=./instance` from a source checkout); then it is derived from the eval's
+measured calibration (`source: attribution-eval`; `noneFileable` when even its
+most confident predictions missed the target precision) and the stats API also
+returns the eval summary as `attributionEval`, which the portal's Insight page
+shows as "Attribution accuracy". Only fileable findings start the
+`telemetry-query` report cooldown. See
+[Attribution accuracy eval](../design/credit-graph.md#attribution-accuracy-eval).
 
 ## Record a fix and verify it
 

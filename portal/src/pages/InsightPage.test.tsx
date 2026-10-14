@@ -355,6 +355,61 @@ describe("Insight page", () => {
     expect(wasteTokens).toHaveTextContent("12,000 tokens, 2/3 attempts measured");
   });
 
+  it("shows the published attribution accuracy eval only at instance scope", async () => {
+    window.location.hash = "#/insight";
+    const fixtures = populatedDaemonFixtures();
+    fixtures.telemetryStats.attributionEval = {
+      schema: "goobers.dev/backprop/attribution-eval-summary/v1",
+      evalSetVersion: "v1",
+      evalSetDigest: "sha256:abc",
+      caseCount: 12,
+      unattributed: 0,
+      accuracy: [
+        { granularity: "domain", correct: 8, total: 12, accuracy: 8 / 12 },
+        { granularity: "step", correct: 10, total: 12, accuracy: 10 / 12 },
+      ],
+      calibration: {
+        target: "domain",
+        brierScore: 0.2786,
+        expectedCalibrationError: 0.2461,
+        bins: [
+          { lower: 0, upper: 0.2, count: 0, correct: 0, meanConfidence: 0, accuracy: 0 },
+          { lower: 0.2, upper: 0.4, count: 5, correct: 3, meanConfidence: 0.3, accuracy: 0.6 },
+          { lower: 0.4, upper: 0.6, count: 7, correct: 5, meanConfidence: 0.5, accuracy: 5 / 7 },
+        ],
+      },
+    };
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(await screen.findByRole("heading", { name: "Attribution accuracy" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Eval set v1: 12 labeled cases, 0 unattributed\. Calibration against domain: Brier 0\.2786, ECE 0\.2461\./),
+    ).toBeInTheDocument();
+    const accuracy = screen.getByLabelText("Attribution accuracy by granularity");
+    expect(within(accuracy).getByText("domain").nextElementSibling).toHaveTextContent("66.7% · 8/12");
+    expect(within(accuracy).getByText("step").nextElementSibling).toHaveTextContent("83.3% · 10/12");
+    const calibration = screen.getByLabelText("Attribution confidence calibration");
+    expect(within(calibration).queryByText("Confidence 0.0–0.2")).not.toBeInTheDocument();
+    expect(within(calibration).getByText("Confidence 0.4–0.6").nextElementSibling).toHaveTextContent(
+      "71.4% correct · 5/7",
+    );
+
+    const scoped = fixtures.telemetryStats.runs[0];
+    await selectScope(user, JSON.stringify(["gaggle", scoped.gaggle]));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Attribution accuracy" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("omits attribution accuracy when no eval is published", async () => {
+    window.location.hash = "#/insight";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Attribution accuracy" })).not.toBeInTheDocument();
+  });
+
   it("keeps fully measured retry waste free of a coverage note", async () => {
     window.location.hash = "#/cost";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
