@@ -45,14 +45,20 @@ func PendingPreparations(reader *journal.Reader) ([]PendingPreparation, error) {
 }
 
 func readPreparations(reader *journal.Reader) ([]PendingPreparation, int, error) {
-	events, err := reader.Events()
-	if err != nil {
-		return nil, 0, err
-	}
 	id, err := reader.Identity()
 	if err != nil {
 		return nil, 0, err
 	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, 0, err
+	}
+	return replayPreparations(events, func(event journal.Event) (PendingPreparation, error) {
+		return readPreparation(reader, id, events, event)
+	})
+}
+
+func replayPreparations(events []journal.Event, read func(journal.Event) (PendingPreparation, error)) ([]PendingPreparation, int, error) {
 	active := map[uint64]PendingPreparation{}
 	total := 0
 	for _, event := range events {
@@ -65,7 +71,7 @@ func readPreparations(reader *journal.Reader) ([]PendingPreparation, int, error)
 			if total > maxPreparations || event.Branch != 0 {
 				return nil, total, errors.New("parallel capture ownership limit or scope changed")
 			}
-			value, err := readPreparation(reader, id, events, event)
+			value, err := read(event)
 			if err != nil {
 				return nil, total, err
 			}
@@ -173,7 +179,9 @@ func recordPreparation(rec Recorder, request spec.ResultRequest, snapshot recove
 	if err != nil {
 		return err
 	}
-	pending, total, err := readPreparations(reader)
+	pending, total, err := replayPreparations(events, func(event journal.Event) (PendingPreparation, error) {
+		return readPreparation(reader, id, events, event)
+	})
 	if err != nil {
 		return err
 	}
@@ -195,7 +203,15 @@ func recordPreparation(rec Recorder, request spec.ResultRequest, snapshot recove
 	if err := rec.Append(journal.Event{Type: journal.EventRunnerAnnotation, Parallel: request.Parallel, Runner: map[string]any{"kind": preparationKind, "preparation": ref}}); err != nil {
 		return err
 	}
-	pending, err = PendingPreparations(reader)
+	// The journal grew by the Append, so events must be re-read; identity is
+	// immutable and reused.
+	events, err = reader.Events()
+	if err != nil {
+		return err
+	}
+	pending, _, err = replayPreparations(events, func(event journal.Event) (PendingPreparation, error) {
+		return readPreparation(reader, id, events, event)
+	})
 	if err != nil {
 		return err
 	}
