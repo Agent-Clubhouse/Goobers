@@ -38,3 +38,26 @@ func (c *apiReadCache) scopedReadKey(req *http.Request) (string, error) {
 	}
 	return scopedRequestKey(scope, req), nil
 }
+
+// MutationClient preserves live transport reads while reporting confirmed writes
+// to the same gaggle/provider generation as scoped cached readers. Existing
+// transport observers keep receiving the notification as well.
+func MutationClient(directory string, scope Scope, provider providers.ProviderKind, inner providers.HTTPClient) providers.HTTPClient {
+	if inner == nil {
+		inner = &http.Client{Timeout: apiReadHTTPTimeout}
+	}
+	observer := ScopedClient(directory, "", scope, provider, inner).(*apiReadCache)
+	return &mutationClient{HTTPClient: inner, observer: observer}
+}
+
+type mutationClient struct {
+	providers.HTTPClient
+	observer providers.ProviderMutationObserver
+}
+
+func (c *mutationClient) ObserveProviderMutation(ctx context.Context, kind providers.ProviderKind) {
+	c.observer.ObserveProviderMutation(ctx, kind)
+	if observer, ok := c.HTTPClient.(providers.ProviderMutationObserver); ok {
+		observer.ObserveProviderMutation(ctx, kind)
+	}
+}

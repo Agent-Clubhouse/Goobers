@@ -59,6 +59,13 @@ failure after an acknowledged write still refreshes reads without changing the
 reported write/receipt outcome. Rejected operations do not report a successful
 effect; confirmed absence after label removal can also refresh a stale list.
 
+The stage provider factory also attaches mutation reporting to GitHub clients
+that deliberately bypass read caching. Their reads still use the original live
+transport; successful writes invalidate scoped readers in the same gaggle.
+The wrapper preserves existing transport observers and provider quota ownership.
+It requires the same explicit launch scope and never invents a gaggle for an
+unscoped client.
+
 This is based on provider operation semantics, not HTTP verbs. ADO WIQL, batch
 hydration and permission queries use POST without invalidating reads; GitHub
 GraphQL queries likewise do not imply a write. Unscoped transports and writes
