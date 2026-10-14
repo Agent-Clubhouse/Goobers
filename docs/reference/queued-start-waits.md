@@ -29,3 +29,22 @@ controls, or event/child-specific admission policy described in the event design
 [Bounded pending-start scans](pending-start-sweeps.md) advance through held starts
 and retain scan progress across daemon reopen, so a held prefix does not pin the
 next eligible window. Custody and normal admission remain separate from scanning.
+
+## Default manual admission deadline
+
+New ordinary manual starts capture a seven-day admission deadline with their
+first durable acceptance. This covers the normal pinned HTTP and standalone
+start paths. An exact retry keeps the original deadline, acceptance time, and
+reserved run identity; it cannot extend the waiting period.
+
+The deadline is checked by the existing admission owner. Expiry records a
+terminal rejection with the reason `accepted trigger expired before execution
+admission` only after proving the request has not launched. A matching journal
+wins over the clock. Unreadable evidence or an uncertain launch keeps custody,
+and the deadline does not cancel an already running workflow.
+
+Previously accepted receipts retain their original deadline, including an absent
+deadline. Explicit host deadlines, such as file-delegated admission limits, keep
+their existing meaning. This default does not add expiry to scheduler signals,
+schedule demand, direct-engine starts, or children. Those source policies and
+the design's distinct public `expired` state remain separate work.
