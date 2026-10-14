@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -115,5 +118,72 @@ func TestADOPullRequestURLByIDMatchReadsConfiguredRepositoryIDs(t *testing.T) {
 	}
 	if reads != 1 {
 		t.Fatalf("repository reads = %d, want 1", reads)
+	}
+}
+
+// TestValidateTargetedPullRequestVerifiesADOGUIDFormURL drives the fix
+// through run --pr's real validation path (validateTargetedPullRequest), not
+// just the helper: an open ADO pull request whose web link is the GUID API
+// form is accepted when the GUIDs are the configured repository's own, and
+// rejected as outside it when the repository GUID belongs elsewhere.
+func TestValidateTargetedPullRequestVerifiesADOGUIDFormURL(t *testing.T) {
+	const otherRepositoryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	apiURL := "https://dev.azure.com/acme/" + adoTestProjectID + "/_apis/git/repositories/" + adoTestRepositoryID + "/pullRequests/42"
+	for _, tc := range []struct {
+		name         string
+		repositoryID string
+		wantErr      string
+	}{
+		{name: "configured repository's own ids", repositoryID: adoTestRepositoryID},
+		{name: "another repository's id", repositoryID: otherRepositoryID, wantErr: "outside configured repository acme/platform/web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var repositoryReads int
+			mux := http.NewServeMux()
+			mux.HandleFunc("/acme/platform/_apis/git/repositories/web/pullrequests/42", func(w http.ResponseWriter, _ *http.Request) {
+				writeADOJSON(t, w, map[string]any{
+					"pullRequestId": 42,
+					"status":        "active",
+					"url":           apiURL,
+					"_links":        map[string]any{"web": map[string]any{"href": apiURL}},
+					"repository": map[string]any{
+						"id": adoTestRepositoryID, "name": "web",
+						"project": map[string]any{"id": adoTestProjectID, "name": "platform"},
+					},
+				})
+			})
+			mux.HandleFunc("/acme/platform/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+				writeADOJSON(t, w, map[string]any{"value": []any{}})
+			})
+			mux.HandleFunc("/acme/platform/_apis/git/repositories/web", func(w http.ResponseWriter, _ *http.Request) {
+				repositoryReads++
+				writeADOJSON(t, w, map[string]any{"id": tc.repositoryID, "project": map[string]any{"id": adoTestProjectID}})
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			previous := stageProviderFactories[providers.ProviderADO]
+			t.Cleanup(func() { stageProviderFactories[providers.ProviderADO] = previous })
+			stageProviderFactories[providers.ProviderADO] = func(cfg stageProviderConfig) (providers.Provider, error) {
+				return providers.NewADOProvider(cfg.repo.Owner, cfg.repo.Project, "token", func(p *providers.ADOProvider) {
+					p.BaseURL = server.URL
+				}), nil
+			}
+			cfg := &instance.Config{
+				APIVersion: instance.ConfigAPIVersion,
+				Kind:       instance.ConfigKind,
+				Repos:      []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "platform", Name: "web"}},
+			}
+			err := validateTargetedPullRequest(context.Background(), t.TempDir(), cfg, nil, journal.NewRegistryScrubber(),
+				localscheduler.WorkflowEntry{Workflow: "merge-review"}, 42)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("validateTargetedPullRequest = %v, want the configured repository's GUID-form URL accepted", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("validateTargetedPullRequest = %v, want an error containing %q", err, tc.wantErr)
+			}
+			if repositoryReads != 1 {
+				t.Fatalf("configured repository reads = %d, want exactly 1", repositoryReads)
+			}
+		})
 	}
 }
