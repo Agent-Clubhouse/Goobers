@@ -10,88 +10,11 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
-// A harness group whose sign-in probe failed because the provider could not
-// answer (#6017) is not re-probed until its backoff elapses:
-// harnessProbeBackoffInitial doubling per consecutive transient failure up to
-// harnessProbeBackoffMax, or the provider's Retry-After when that is longer.
-const (
-	harnessProbeBackoffInitial = time.Minute
-	harnessProbeBackoffMax     = 30 * time.Minute
-)
-
 // harnessProbeThrottle is the process-wide backoff every harness preflight
-// consults. It is shared because the worker rebuilds a degraded gaggle kit on
-// every activity (#5949), and before #6017 each rebuild re-ran the sign-in
-// probe against a provider that had just rate limited it.
-var harnessProbeThrottle = newHarnessProbeBackoff(time.Now)
-
-// harnessProbeBackoff records, per harness group, the transient failure that
-// is being waited out and when the group may be probed again.
-type harnessProbeBackoff struct {
-	now func() time.Time
-
-	mu      sync.Mutex
-	waiting map[string]harnessProbeWait
-}
-
-type harnessProbeWait struct {
-	cause   error
-	retryAt time.Time
-	delay   time.Duration
-}
-
-func newHarnessProbeBackoff(now func() time.Time) *harnessProbeBackoff {
-	return &harnessProbeBackoff{now: now, waiting: make(map[string]harnessProbeWait)}
-}
-
-// pending returns the transient failure key is waiting out, if its backoff
-// has not elapsed yet.
-func (b *harnessProbeBackoff) pending(key string) (harnessProbeWait, bool) {
-	now := b.now()
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	wait, ok := b.waiting[key]
-	if !ok || !now.Before(wait.retryAt) {
-		return harnessProbeWait{}, false
-	}
-	return wait, true
-}
-
-// due reports whether key may be probed at now.
-func (b *harnessProbeBackoff) due(key string, now time.Time) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	wait, ok := b.waiting[key]
-	return !ok || !now.Before(wait.retryAt)
-}
-
-// record schedules key's next probe after a transient failure and returns
-// when that is.
-func (b *harnessProbeBackoff) record(key string, cause error) time.Time {
-	now := b.now()
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delay := harnessProbeBackoffInitial
-	if previous, ok := b.waiting[key]; ok {
-		delay = min(2*previous.delay, harnessProbeBackoffMax)
-	}
-	// The provider's Retry-After is a floor, never a shortcut: a short one
-	// must not let a host that keeps failing re-probe faster than its backoff.
-	wait := delay
-	if retryAfter, ok := harness.TransientPreflightRetryAfter(cause); ok {
-		wait = max(wait, retryAfter)
-	}
-	retryAt := now.Add(wait)
-	b.waiting[key] = harnessProbeWait{cause: cause, retryAt: retryAt, delay: delay}
-	return retryAt
-}
-
-// clear forgets key's backoff: its last probe was not a transient failure.
-func (b *harnessProbeBackoff) clear(key string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.waiting, key)
-}
+// consults (#6017). It is shared because the worker rebuilds a degraded gaggle
+// kit on every activity (#5949), and before #6017 each rebuild re-ran the
+// sign-in probe against a provider that had just rate limited it.
+var harnessProbeThrottle = harness.NewProbeBackoff(time.Now)
 
 // transientHarnessReason is the refusal text for a transient group failure.
 func transientHarnessReason(cause error, retryAt time.Time) string {
@@ -130,7 +53,7 @@ func newHarnessGroupRecheck(preflight harnessGroupPreflight, outcome harnessGrou
 func (g *harnessGroupRecheck) current(ctx context.Context, now time.Time) string {
 	g.mu.Lock()
 	reason := g.reason
-	launch := reason != "" && !g.permanent && !g.probing && ctx.Err() == nil && g.preflight.throttle.due(g.key, now)
+	launch := reason != "" && !g.permanent && !g.probing && ctx.Err() == nil && g.preflight.throttle.Due(g.key, now)
 	if launch {
 		g.probing = true
 	}

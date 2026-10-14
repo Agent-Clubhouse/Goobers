@@ -371,7 +371,7 @@ type harnessGroupPreflight struct {
 	environment    harness.EnvironmentConfig
 	harnessCommand map[string][]string
 	credentialFor  modelCredentialFor
-	throttle       *harnessProbeBackoff
+	throttle       *harness.ProbeBackoff
 }
 
 // harnessGroupOutcome is one group's preflight result: info when usable, else
@@ -408,8 +408,8 @@ func (p harnessGroupPreflight) run(ctx context.Context) harnessGroupOutcome {
 		return p.finish(p.key(""), harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its agent:model credential could not be resolved: %w", p.harness, err))
 	}
 	key := p.key(fingerprint)
-	if wait, waiting := p.throttle.pending(key); waiting {
-		return harnessGroupOutcome{reason: transientHarnessReason(wait.cause, wait.retryAt), retryAt: wait.retryAt, key: key}
+	if wait, waiting := p.throttle.Pending(key); waiting {
+		return harnessGroupOutcome{reason: transientHarnessReason(wait.Cause, wait.RetryAt), retryAt: wait.RetryAt, key: key}
 	}
 	info, err := p.check(ctx, modelCredential)
 	return p.finish(key, info, err)
@@ -418,14 +418,14 @@ func (p harnessGroupPreflight) run(ctx context.Context) harnessGroupOutcome {
 // finish records a probe's result in the backoff and shapes the outcome.
 func (p harnessGroupPreflight) finish(key string, info harness.PreflightInfo, err error) harnessGroupOutcome {
 	if err == nil {
-		p.throttle.clear(key)
+		p.throttle.Clear(key)
 		return harnessGroupOutcome{info: info, key: key}
 	}
 	if errors.Is(err, credentials.ErrTransientProvider) {
-		retryAt := p.throttle.record(key, err)
+		retryAt := p.throttle.Record(key, err)
 		return harnessGroupOutcome{reason: transientHarnessReason(err, retryAt), retryAt: retryAt, key: key}
 	}
-	p.throttle.clear(key)
+	p.throttle.Clear(key)
 	return harnessGroupOutcome{reason: err.Error(), key: key}
 }
 

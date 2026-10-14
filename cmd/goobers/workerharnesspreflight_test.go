@@ -115,7 +115,7 @@ func TestWorkerDoesNotReprobeARateLimitedHarnessOnEveryActivity(t *testing.T) {
 	seams := workerReloadSeams(t, root)
 
 	dependent := apiv1.InvocationEnvelope{RunID: "dependent-run", Gaggle: pinGaggle, WorkflowID: pinWorkflow, TaskID: "dependent-run:implement", Goober: "missing-goober"}
-	wantRetryAt := clock.Now().Add(harnessProbeBackoffInitial)
+	wantRetryAt := clock.Now().Add(harness.ProbeBackoffInitial)
 	for activity := range 3 {
 		_, err := seams.Agentic().Invoke(context.Background(), dependent)
 		retryAt, ok := invoke.InfrastructureRetryAt(err)
@@ -131,7 +131,7 @@ func TestWorkerDoesNotReprobeARateLimitedHarnessOnEveryActivity(t *testing.T) {
 	// After the backoff the next activity re-probes, and a recovered harness
 	// is served.
 	adapters.set(nil, nil)
-	clock.Advance(harnessProbeBackoffInitial)
+	clock.Advance(harness.ProbeBackoffInitial)
 	_, err := seams.Agentic().Invoke(context.Background(), dependent)
 	if err == nil || invoke.IsInfrastructureFailure(err) || !strings.Contains(err.Error(), `goober "missing-goober" not found in config`) {
 		t.Fatalf("recovered harness still refused: %v", err)

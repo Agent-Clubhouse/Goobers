@@ -43,7 +43,7 @@ func withHarnessProbeThrottle(t *testing.T) *fakeHarnessClock {
 	t.Helper()
 	clock := &fakeHarnessClock{now: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)}
 	previous := harnessProbeThrottle
-	harnessProbeThrottle = newHarnessProbeBackoff(clock.Now)
+	harnessProbeThrottle = harness.NewProbeBackoff(clock.Now)
 	t.Cleanup(func() { harnessProbeThrottle = previous })
 	return clock
 }
@@ -54,60 +54,6 @@ func rateLimitedPreflight(retryAfter time.Duration) error {
 	return &harness.TransientPreflightError{
 		Err:        errors.New(`harness: copilot-cli: sign-in check exited 1: Failed to fetch PAT user login (403): API rate limit exceeded`),
 		RetryAfter: retryAfter,
-	}
-}
-
-func TestHarnessProbeBackoffSchedule(t *testing.T) {
-	clock := &fakeHarnessClock{now: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)}
-	backoff := newHarnessProbeBackoff(clock.Now)
-	transient := rateLimitedPreflight(0)
-
-	// Without a Retry-After: 1m, doubling per consecutive failure, capped.
-	var waits []time.Duration
-	for range 7 {
-		start := clock.Now()
-		retryAt := backoff.record("copilot", transient)
-		waits = append(waits, retryAt.Sub(start))
-		if _, waiting := backoff.pending("copilot"); !waiting {
-			t.Fatal("a just-recorded transient failure is not being waited out")
-		}
-		clock.Advance(retryAt.Sub(start) - time.Second)
-		if _, waiting := backoff.pending("copilot"); !waiting {
-			t.Fatal("the backoff elapsed early")
-		}
-		clock.Advance(time.Second)
-		if _, waiting := backoff.pending("copilot"); waiting {
-			t.Fatal("the backoff did not elapse at its retry time")
-		}
-	}
-	want := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute}
-	for i := range want {
-		if waits[i] != want[i] {
-			t.Fatalf("backoff waits = %v, want %v", waits, want)
-		}
-	}
-
-	// A provider Retry-After is a floor: longer than the backoff, it is the
-	// wait; shorter, the backoff still applies.
-	backoff.clear("copilot")
-	start := clock.Now()
-	if retryAt := backoff.record("copilot", rateLimitedPreflight(90*time.Second)); retryAt.Sub(start) != 90*time.Second {
-		t.Fatalf("retry-after wait = %s, want the provider's 90s over the 1m backoff", retryAt.Sub(start))
-	}
-	clock.Advance(90 * time.Second)
-	start = clock.Now()
-	if retryAt := backoff.record("copilot", rateLimitedPreflight(10*time.Second)); retryAt.Sub(start) != 2*time.Minute {
-		t.Fatalf("short retry-after wait = %s, want the 2m backoff", retryAt.Sub(start))
-	}
-
-	// Another key is independent, and clear resets the schedule.
-	if _, waiting := backoff.pending("claude-code"); waiting {
-		t.Fatal("an unrelated harness group was backed off")
-	}
-	backoff.clear("copilot")
-	start = clock.Now()
-	if retryAt := backoff.record("copilot", transient); retryAt.Sub(start) != time.Minute {
-		t.Fatalf("wait after clear = %s, want the initial 1m", retryAt.Sub(start))
 	}
 }
 
