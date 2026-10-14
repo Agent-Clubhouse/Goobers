@@ -1,7 +1,7 @@
 # #6134: merge-review refuses to land over open, unanswered human feedback
 
 This PR is stacked on #6494 (`6494-rebase-pr-shared-identity.md`). Its own
-growth is about +375 non-test lines and +2 files in `cmd/goobers`.
+growth is about +590 non-test lines and +3 files in `cmd/goobers`.
 
 ## Why the growth belongs in the command package
 
@@ -15,6 +15,12 @@ growth is about +375 non-test lines and +2 files in `cmd/goobers`.
   unresolved threads, and Goobers answers kept from resolved threads. Both
   stages must use one definition, or a refused PR is cleared and handed back
   every cycle.
+- **`feedbackrefusal.go` (new).** It routes a refused comment to remediation
+  once, and parks the PR for a human if the same comment is refused again.
+  Refusals never count toward demotion, so this is the only bound on a
+  review/remediation cycle over feedback Goobers cannot answer. It also holds
+  the per-provider sticky-record and label transport (PR threads and labels on
+  Azure DevOps).
 - **`recordmergerefusal.go`.** It routes the new refusal to remediation instead
   of demotion, on the stage that already owns merge-refusal bookkeeping.
 - **`mergepr.go`, `rebasepr.go`, `mergereviewado.go`.** These are one-line

@@ -59,16 +59,19 @@ func openFeedbackComments(general []providers.Comment, threads []feedbackThread,
 // reviewThreadFeedback maps a GitHub or Gitea review listing: a submitted
 // review with a body is a general entry (a change requested in a review
 // summary is feedback like any comment), and inline comments are grouped into
-// their threads. Pending (unsubmitted, visible to no one else) and dismissed
-// reviews are not feedback. A "[bot]" login is automation.
+// their threads. Pending (unsubmitted, visible to no one else), dismissed and
+// approving reviews are not feedback that waits on an answer: an approval's
+// body ("LGTM") asks for nothing. The provider's account type marks
+// automation (GitHub's "Bot", e.g. a code-review bot whose login carries no
+// "[bot]" suffix); a "[bot]" login is automation where no type is reported.
 func reviewThreadFeedback(listing providers.PullRequestReviewThreads) (general []providers.Comment, threads []feedbackThread) {
 	for _, review := range listing.Reviews {
 		state := strings.ToUpper(strings.TrimSpace(review.State))
-		if strings.TrimSpace(review.Body) == "" || state == "PENDING" || state == "DISMISSED" {
+		if strings.TrimSpace(review.Body) == "" || state == "PENDING" || state == "DISMISSED" || state == "APPROVED" {
 			continue
 		}
 		general = append(general, providers.Comment{
-			ID: "review-" + strconv.FormatInt(review.ID, 10), Author: review.Author, AuthorType: loginAuthorType(review.Author),
+			ID: "review-" + strconv.FormatInt(review.ID, 10), Author: review.Author, AuthorType: feedbackAuthorType(review.AuthorType, review.Author),
 			Body: review.Body, CreatedAt: review.SubmittedAt, URL: review.URL,
 		})
 	}
@@ -86,16 +89,19 @@ func reviewThreadFeedback(listing providers.PullRequestReviewThreads) (general [
 		}
 		threads[at].resolved = threads[at].resolved || inline.IsResolved
 		threads[at].comments = append(threads[at].comments, providers.Comment{
-			ID: strconv.FormatInt(inline.ID, 10), Author: inline.Author, AuthorType: loginAuthorType(inline.Author),
+			ID: strconv.FormatInt(inline.ID, 10), Author: inline.Author, AuthorType: feedbackAuthorType(inline.AuthorType, inline.Author),
 			Body: inline.Body, CreatedAt: inline.CreatedAt, URL: inline.URL,
 		})
 	}
 	return general, threads
 }
 
-// loginAuthorType reports GitHub's Bot account type for a "[bot]" login, which
-// the review listings carry in place of the REST user type.
-func loginAuthorType(login string) string {
+// feedbackAuthorType is the provider-reported account type, or "Bot" for a
+// "[bot]" login when the provider reports none (Gitea).
+func feedbackAuthorType(reported, login string) string {
+	if reported != "" {
+		return reported
+	}
 	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(login)), "[bot]") {
 		return "Bot"
 	}

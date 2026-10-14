@@ -110,6 +110,10 @@ type mergePRServerState struct {
 	inlineComments      []map[string]interface{}
 	reviewThreads       []map[string]interface{}
 	reviewThreadsStatus int
+	// inlineCommentsAfterReads withholds inlineComments from that many
+	// reads, so a comment can appear between the gate's two reads.
+	inlineCommentsAfterReads int
+	inlineCommentReads       int
 	// extraComments are appended after the served verdict comment.
 	extraComments []map[string]interface{}
 }
@@ -255,7 +259,8 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			http.Error(w, "review comments unavailable", st.reviewThreadsStatus)
 			return
 		}
-		if st.inlineComments == nil {
+		st.inlineCommentReads++
+		if st.inlineComments == nil || st.inlineCommentReads <= st.inlineCommentsAfterReads {
 			writeFakeJSON(w, []map[string]interface{}{})
 			return
 		}

@@ -35,6 +35,10 @@ type mergeFeedbackGate struct {
 	err      error
 	settings commentIdentitySettings
 	reader   mergeFeedbackReader
+	// recheck reads the feedback again after a configured pre-merge check:
+	// the check can take minutes, and a comment left meanwhile must not land
+	// unread.
+	recheck bool
 }
 
 // mergeFeedbackReader reads one pull request's feedback and the identity the
@@ -47,8 +51,9 @@ type mergeFeedbackReader interface {
 // newMergeFeedbackGate reads the gate's inputs (blockUnansweredFeedback,
 // identityMode, excludeAuthors) and binds the provider's feedback read. A
 // configuration error is kept and refuses at evaluation, inside the merge
-// lock, like every other conjunct.
-func newMergeFeedbackGate(repo providers.RepositoryRef, provider providers.Provider, verdictAuthor string) mergeFeedbackGate {
+// lock, like every other conjunct. preMergeCheck reports whether a pre-merge
+// check runs between the first read and the land.
+func newMergeFeedbackGate(repo providers.RepositoryRef, provider providers.Provider, verdictAuthor string, preMergeCheck bool) mergeFeedbackGate {
 	raw := providerInput("blockUnansweredFeedback", "true")
 	enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
 	if err != nil {
@@ -62,7 +67,22 @@ func newMergeFeedbackGate(repo providers.RepositoryRef, provider providers.Provi
 		return mergeFeedbackGate{err: err}
 	}
 	reader, err := newMergeFeedbackReader(repo, provider, verdictAuthor)
-	return mergeFeedbackGate{settings: settings, reader: reader, err: err}
+	return mergeFeedbackGate{settings: settings, reader: reader, err: err, recheck: preMergeCheck}
+}
+
+// afterPreMergeCheck is the refusal set once the pre-merge check has run:
+// its own refusal when it failed, else — when a check ran at all — a second
+// read of the feedback immediately before the land. Unlike the head, which
+// the land re-pins, feedback has no pin, so the earlier read alone would let
+// a comment posted during a multi-minute build land unread.
+func (g mergeFeedbackGate) afterPreMergeCheck(ctx context.Context, pullID, checkReason string) []string {
+	if checkReason != "" {
+		return []string{checkReason}
+	}
+	if !g.recheck {
+		return nil
+	}
+	return g.refuse(ctx, pullID, nil)
 }
 
 // refuse appends the gate's refusal to reasons. It reads feedback only when
@@ -112,8 +132,8 @@ func unansweredHumanFeedbackReason(comment providers.Comment) string {
 	if comment.URL != "" {
 		detail += " (" + comment.URL + ")"
 	}
-	return fmt.Sprintf("%s: %s left review feedback%s that no Goobers response has acknowledged — routing to remediation instead of landing over it",
-		unansweredHumanFeedbackReasonCode, who, detail)
+	return fmt.Sprintf("%s: %s left review feedback%s that no Goobers response has acknowledged — routing to remediation instead of landing over it %s",
+		unansweredHumanFeedbackReasonCode, who, detail, feedbackCommentToken(comment))
 }
 
 func humanFeedbackUnverifiableReason(err error) string {

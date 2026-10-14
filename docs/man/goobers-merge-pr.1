@@ -28,7 +28,12 @@ blockUnansweredFeedback (default true: refuse as unanswered-human-feedback
 while the newest open human review feedback — a PR comment, a submitted
 review body, or a comment in an unresolved review thread, on Azure
 DevOps any active thread — is unacknowledged by every Goobers response;
-record-merge-refusal then routes the PR to remediation. Feedback that
+approving reviews and Bot-typed authors never wait on an answer. The
+feedback is read again after a preMergeCheck, right before landing.
+record-merge-refusal routes the PR to remediation, and parks it
+goobers:needs-human when the same comment is refused again. Gitea reports
+no thread resolution and keeps a dismissed review's state, so there every
+review comment counts until answered. Feedback that
 cannot be read refuses as human-feedback-unverifiable. Comments are
 classified as pr-comment-watch classifies them, under the same
 identityMode and excludeAuthors inputs. Set false to merge over

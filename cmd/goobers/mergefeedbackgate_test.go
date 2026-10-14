@@ -99,12 +99,12 @@ func TestMergeFeedbackGateFailsClosedAndOptsOut(t *testing.T) {
 	}
 
 	t.Setenv("GOOBERS_INPUT_BLOCKUNANSWEREDFEEDBACK", "sometimes")
-	invalid := newMergeFeedbackGate(providers.RepositoryRef{Provider: providers.ProviderGitHub}, nil, "goobers-bot")
+	invalid := newMergeFeedbackGate(providers.RepositoryRef{Provider: providers.ProviderGitHub}, nil, "goobers-bot", false)
 	if reasons := invalid.refuse(context.Background(), "9", nil); len(reasons) != 1 || !strings.Contains(reasons[0], "blockUnansweredFeedback") {
 		t.Fatalf("invalid setting reasons = %q, want a fail-closed refusal naming it", reasons)
 	}
 	t.Setenv("GOOBERS_INPUT_BLOCKUNANSWEREDFEEDBACK", "true")
-	noThreads := newMergeFeedbackGate(providers.RepositoryRef{Provider: providers.ProviderGitHub}, nil, "goobers-bot")
+	noThreads := newMergeFeedbackGate(providers.RepositoryRef{Provider: providers.ProviderGitHub}, nil, "goobers-bot", false)
 	if reasons := noThreads.refuse(context.Background(), "9", nil); len(reasons) != 1 || !strings.HasPrefix(reasons[0], humanFeedbackUnverifiableReasonCode+":") {
 		t.Fatalf("provider without a thread read reasons = %q, want a fail-closed refusal", reasons)
 	}
@@ -118,18 +118,20 @@ func TestReviewThreadFeedbackMapping(t *testing.T) {
 			{ID: 3, Author: "bob", State: "DISMISSED", Body: "old ask", SubmittedAt: feedbackAt(2)},
 			{ID: 4, Author: "carol", State: "PENDING", Body: "draft", SubmittedAt: feedbackAt(3)},
 			{ID: 5, Author: "reviewer[bot]", State: "COMMENTED", Body: "lint", SubmittedAt: feedbackAt(4)},
+			{ID: 6, Author: "bob", State: "APPROVED", Body: "LGTM, ship it", SubmittedAt: feedbackAt(4)},
 		},
 		InlineComments: []providers.PullRequestInlineComment{
 			{ID: 10, ThreadID: "T1", Author: "alice", Body: "a", CreatedAt: feedbackAt(5)},
 			{ID: 11, ThreadID: "T2", Author: "bob", Body: "b", IsResolved: true, CreatedAt: feedbackAt(6)},
 			{ID: 12, ThreadID: "T1", Author: "goobers-bot", Body: "c", CreatedAt: feedbackAt(7)},
+			{ID: 13, ThreadID: "T3", Author: "Copilot", AuthorType: "Bot", Body: "consider X", CreatedAt: feedbackAt(8)},
 		},
 	}
 	general, threads := reviewThreadFeedback(listing)
 	if len(general) != 2 || general[0].Body != "rename X" || general[1].AuthorType != "Bot" {
 		t.Fatalf("general = %+v, want the change request and the bot review only", general)
 	}
-	if len(threads) != 2 || len(threads[0].comments) != 2 || threads[0].resolved || !threads[1].resolved {
+	if len(threads) != 3 || len(threads[0].comments) != 2 || threads[0].resolved || !threads[1].resolved || threads[2].comments[0].AuthorType != "Bot" {
 		t.Fatalf("threads = %+v, want T1 (open, 2 comments) and T2 (resolved)", threads)
 	}
 	open := openFeedbackComments(general, threads, newCommentClassifier(loginCommentIdentity("goobers-bot"), commentIdentitySettings{mode: commentIdentityDedicated}))
@@ -137,7 +139,7 @@ func TestReviewThreadFeedbackMapping(t *testing.T) {
 	for _, c := range open {
 		bodies = append(bodies, c.Body)
 	}
-	if strings.Join(bodies, ",") != "rename X,lint,a,c" {
+	if strings.Join(bodies, ",") != "rename X,lint,a,c,consider X" {
 		t.Fatalf("open feedback = %v, want time-ordered and the resolved human comment dropped", bodies)
 	}
 }
