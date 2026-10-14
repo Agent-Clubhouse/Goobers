@@ -99,6 +99,46 @@ func TestMergePRRefusesStaleBaseCompileCollision(t *testing.T) {
 	}
 }
 
+// #6134: a review comment left while the (slow) pre-merge check runs is read
+// again immediately before the land: the PR passes the first feedback read,
+// the check builds, and the comment that appeared meanwhile refuses it.
+func TestMergePRRereadsFeedbackAfterPreMergeCheck(t *testing.T) {
+	f, headSHA, staleBase := newPreMergeFixture(t, "package fixture\n\nfunc Use() int { return Helper() }\n",
+		"package fixture\n\nfunc Helper() int { return 1 }\n\nfunc Other() int { return 2 }\n")
+	st := &mergePRServerState{
+		checkState: "success", headSHA: headSHA, baseSHA: staleBase, headBranch: "fork-feature",
+		inlineComments: []map[string]interface{}{{
+			"id": 501, "body": "Wait, this breaks the README example.", "path": "a.go",
+			"created_at": "2026-10-01T12:00:00Z", "user": map[string]string{"login": "alice", "type": "User"},
+		}},
+		reviewThreads: []map[string]interface{}{{
+			"id": "THREAD_1", "isResolved": false, "path": "a.go",
+			"comments": map[string]interface{}{"nodes": []map[string]interface{}{{"databaseId": 501}}},
+		}},
+		inlineCommentsAfterReads: 1,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": headSHA, "baseSha": staleBase,
+		"preMergeCheck": "go build ./...", "verdictAuthor": "goobers",
+	})
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
+	f.git(dir, "clone", "-q", f.origin, ".")
+
+	if code, _, stderr := runArgs(t, "merge-pr", root); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	reason, _ := result["reason"].(string)
+	if st.mergeCalls != 0 || !strings.HasPrefix(reason, unansweredHumanFeedbackReasonCode+":") {
+		t.Fatalf("merge calls = %d, result = %+v; want a refusal over the comment left during the check", st.mergeCalls, result)
+	}
+	if st.inlineCommentReads != 2 {
+		t.Fatalf("inline comment reads = %d, want 2 (before and after the pre-merge check)", st.inlineCommentReads)
+	}
+}
+
 func TestMergePRLandsWhenMergeResultStillBuilds(t *testing.T) {
 	st, code, stderr, result := runPreMergeCheckedMergePR(t, "package fixture\n\nfunc Helper() int { return 1 }\n\nfunc Other() int { return 2 }\n")
 	if code != 0 || st.mergeCalls != 1 {

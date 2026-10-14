@@ -264,13 +264,13 @@ func TestTerminalADOCredentialKindFollowsRepositoryAuth(t *testing.T) {
 		instance.ADOAuthWorkloadIdentity: providers.ADOCredentialKindBearer,
 		instance.ADOAuthManagedIdentity:  providers.ADOCredentialKindBearer,
 	} {
-		got, err := terminalADOCredentialKind(adoTerminalConfig(auth), apiv1.RepoRef{})
+		got, err := terminalADOCredentialKind(adoTerminalConfig(auth), apiv1.RepoRef{}, "")
 		if err != nil || got != want {
 			t.Fatalf("%s: kind = %q, %v; want %q", auth, got, err, want)
 		}
 	}
 	unconfigured := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "other-org", Project: "p", Name: "other-repo"}
-	if _, err := terminalADOCredentialKind(adoTerminalConfig(instance.ADOAuthPAT), unconfigured); err == nil {
+	if _, err := terminalADOCredentialKind(adoTerminalConfig(instance.ADOAuthPAT), unconfigured, ""); err == nil {
 		t.Fatal("an unconfigured terminal project resolved a credential kind")
 	}
 }

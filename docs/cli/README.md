@@ -2842,7 +2842,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -2907,8 +2907,21 @@ attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
 issues), preMergeCheck (optional; one command per line, run without a
 shell on the PR head merged onto the CURRENT base branch tip — a
-failure refuses the merge as pre-merge-check-failed), resultFile
-(default merge-result.json). Successful merges
+failure refuses the merge as pre-merge-check-failed),
+blockUnansweredFeedback (default true: refuse as unanswered-human-feedback
+while the newest open human review feedback — a PR comment, a submitted
+review body, or a comment in an unresolved review thread, on Azure
+DevOps any active thread — is unacknowledged by every Goobers response;
+approving reviews and Bot-typed authors never wait on an answer. The
+feedback is read again after a preMergeCheck, right before landing.
+record-merge-refusal routes the PR to remediation, and parks it
+goobers:needs-human when the same comment is refused again. Gitea reports
+no thread resolution and keeps a dismissed review's state, so there every
+review comment counts until answered. Feedback that
+cannot be read refuses as human-feedback-unverifiable. Comments are
+classified as pr-comment-watch classifies them, under the same
+identityMode and excludeAuthors inputs. Set false to merge over
+comments), resultFile (default merge-result.json). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked,
 skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
 (merged or not — see the result file's "merged" field), 1 = business
@@ -3436,6 +3449,9 @@ own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
 identity, such a comment is that person's and counts as human.
+rebase-pr and update-behind-pr classify comments by this same rule
+before they clear needs-remediation; give them the same identityMode and
+excludeAuthors.
 
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such
@@ -3698,8 +3714,17 @@ detected causes are allowed to trigger remediation; the shipped default is
 fully liberal. behind-base is accepted vocabulary but cannot fire yet (no
 detection reaches this stage's decision today). human-comment fires when a
 genuinely new human comment postdates the watermark recorded in the sticky
-remediation-state comment; detection runs only when the declared policy
-names human-comment, so an old pinned policy is unaffected.
+remediation-state comment, or when no Goobers response has acknowledged the
+newest human comment (the rule pr-comment-watch routes on), so a clean
+rebase never clears goobers:needs-remediation over unanswered feedback;
+detection runs only when the declared policy names human-comment, so an
+old pinned policy is unaffected. Comments are classified as
+pr-comment-watch classifies them, under the same identityMode (dedicated or
+shared; default shared on Azure DevOps, dedicated elsewhere) and
+excludeAuthors inputs; set them to pr-comment-watch's values. On Azure
+DevOps every live general and file-thread comment counts; on GitHub and
+Gitea, submitted review bodies and unresolved review-thread comments
+count alongside PR comments (the feedback merge-pr refuses to land over).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -3768,7 +3793,10 @@ Usage: goobers record-merge-refusal [path]
 Record a merge-pr refusal against the selected PR's durable demotion
 counter (#950). After a bounded number of refusals at an unchanged
 head, apply goobers:merge-demoted so the election crowns a sibling
-instead and the cluster drains around the stuck PR. Runs on
+instead and the cluster drains around the stuck PR. A refusal for
+unanswered human review feedback is not counted: the PR is routed to
+remediation instead (goobers:needs-remediation added,
+goobers:merge-ready removed). Runs on
 merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
 do), 1 = business error, 2 = usage/IO error.
 ~~~
@@ -5498,7 +5526,12 @@ is mergeable, CI-clean, and carries no substantive findings. A behind
 PR whose failing checks all failed on its base branch too, at its
 merge-base or at a base commit since, is red because its base was, so
 it is updated the same way. Other candidates are routed to full
-remediation. A run dispatched for one
+remediation, including a PR carrying goobers:needs-remediation that has
+human feedback no Goobers response has answered: this lane clears that
+label, and the feedback needs the agentic path. Comments are classified
+as pr-comment-watch classifies them, under the same identityMode
+(dedicated or shared; default dedicated) and excludeAuthors inputs; set
+them to pr-comment-watch's values. A run dispatched for one
 pull request (goobers run --pr, or a pull_request webhook delivery)
 selects that PR and no other; when the target is not selectable the
 stage reports no-work naming the reason instead of falling back to
@@ -5529,7 +5562,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable

@@ -24,6 +24,9 @@ own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
 identity, such a comment is that person's and counts as human.
+rebase-pr and update-behind-pr classify comments by this same rule
+before they clear needs-remediation; give them the same identityMode and
+excludeAuthors.
 
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such

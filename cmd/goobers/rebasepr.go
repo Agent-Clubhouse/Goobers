@@ -55,8 +55,17 @@ const rebasePRHelp = "Usage: goobers rebase-pr [path]\n\n" +
 	"fully liberal. behind-base is accepted vocabulary but cannot fire yet (no\n" +
 	"detection reaches this stage's decision today). human-comment fires when a\n" +
 	"genuinely new human comment postdates the watermark recorded in the sticky\n" +
-	"remediation-state comment; detection runs only when the declared policy\n" +
-	"names human-comment, so an old pinned policy is unaffected.\n\n" +
+	"remediation-state comment, or when no Goobers response has acknowledged the\n" +
+	"newest human comment (the rule pr-comment-watch routes on), so a clean\n" +
+	"rebase never clears goobers:needs-remediation over unanswered feedback;\n" +
+	"detection runs only when the declared policy names human-comment, so an\n" +
+	"old pinned policy is unaffected. Comments are classified as\n" +
+	"pr-comment-watch classifies them, under the same identityMode (dedicated or\n" +
+	"shared; default shared on Azure DevOps, dedicated elsewhere) and\n" +
+	"excludeAuthors inputs; set them to pr-comment-watch's values. On Azure\n" +
+	"DevOps every live general and file-thread comment counts; on GitHub and\n" +
+	"Gitea, submitted review bodies and unresolved review-thread comments\n" +
+	"count alongside PR comments (the feedback merge-pr refuses to land over).\n\n" +
 	"Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.\n"
 
 func runRebasePR(args []string, stdout, stderr io.Writer) int {
@@ -156,6 +165,9 @@ type rebasePRTransport interface {
 	LoadCommentEvidence(context.Context, providers.RepositoryRef, string) (rebasePRCommentEvidence, error)
 	LoadHumanCommentEvidence(context.Context, providers.RepositoryRef, string) (rebasePRCommentEvidence, error)
 	AuthenticatedLogin(context.Context) (string, error)
+	// CommentIdentity is the credential's identity in the form the shared
+	// comment classifier compares authors against (login, or ADO identity id).
+	CommentIdentity(context.Context) (commentIdentity, error)
 	UpdateComment(context.Context, providers.RepositoryRef, string, string) error
 	ClearNeedsRemediation(context.Context, providers.RepositoryRef, string) error
 }
@@ -167,6 +179,10 @@ type rebasePRTransport interface {
 type rebasePRCommentEvidence struct {
 	available bool
 	comments  []providers.Comment
+	// threads are the review threads the human-comment cause also reads on
+	// GitHub and Gitea: the same open feedback merge-pr refuses to land over
+	// (#6134), so a PR that gate routes here is one this stage acts on.
+	threads []feedbackThread
 }
 
 type issueCommentRebaseTransport struct {
@@ -183,7 +199,11 @@ func (t issueCommentRebaseTransport) LoadCommentEvidence(ctx context.Context, re
 }
 
 func (t issueCommentRebaseTransport) LoadHumanCommentEvidence(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) (rebasePRCommentEvidence, error) {
-	return t.LoadCommentEvidence(ctx, repo, selectedNumber)
+	general, threads, err := readForgeFeedback(ctx, t.handoffProvider, repo, selectedNumber)
+	if err != nil {
+		return rebasePRCommentEvidence{}, err
+	}
+	return rebasePRCommentEvidence{available: true, comments: general, threads: threads}, nil
 }
 
 func (t issueCommentRebaseTransport) UpdateComment(ctx context.Context, repo providers.RepositoryRef, commentID, body string) error {
@@ -192,6 +212,14 @@ func (t issueCommentRebaseTransport) UpdateComment(ctx context.Context, repo pro
 
 func (t issueCommentRebaseTransport) AuthenticatedLogin(ctx context.Context) (string, error) {
 	return t.handoffProvider.AuthenticatedLogin(ctx)
+}
+
+func (t issueCommentRebaseTransport) CommentIdentity(ctx context.Context) (commentIdentity, error) {
+	login, err := t.handoffProvider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return commentIdentity{}, err
+	}
+	return loginCommentIdentity(login), nil
 }
 
 func (t issueCommentRebaseTransport) ClearNeedsRemediation(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) error {
@@ -207,8 +235,26 @@ func (threadCommentRebaseTransport) LoadCommentEvidence(_ context.Context, _ pro
 	return rebasePRCommentEvidence{available: false}, nil
 }
 
-func (threadCommentRebaseTransport) LoadHumanCommentEvidence(_ context.Context, _ providers.RepositoryRef, _ string) (rebasePRCommentEvidence, error) {
-	return rebasePRCommentEvidence{available: false}, nil
+// LoadHumanCommentEvidence reads every live comment across the PR's general
+// and file-anchored threads: the read pr-comment-watch routes the PR on, which
+// also carries Goobers' own sticky remediation-state thread whose watermark
+// the human-comment cause compares against. Before #6494 this reported the
+// evidence unavailable, so on Azure DevOps a rebase-only pass never saw the
+// human comment pr-comment-watch had routed and cleared the label over it.
+func (t threadCommentRebaseTransport) LoadHumanCommentEvidence(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) (rebasePRCommentEvidence, error) {
+	comments, err := t.provider.ListPullRequestFeedbackComments(ctx, repo, selectedNumber)
+	if err != nil {
+		return rebasePRCommentEvidence{}, err
+	}
+	return rebasePRCommentEvidence{available: true, comments: comments}, nil
+}
+
+func (t threadCommentRebaseTransport) CommentIdentity(ctx context.Context) (commentIdentity, error) {
+	self, err := t.provider.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return commentIdentity{}, err
+	}
+	return adoCommentIdentity(self), nil
 }
 
 func (threadCommentRebaseTransport) UpdateComment(_ context.Context, _ providers.RepositoryRef, _, _ string) error {
@@ -269,16 +315,9 @@ func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.Re
 		}
 	}
 	if remediatePolicyAllows(remediate, remediateCauseHumanComment) {
-		humanCommentEvidence, err := transport.LoadHumanCommentEvidence(ctx, repo, selectedNumber)
+		hasNewHumanComment, err = detectRebasePRHumanComment(ctx, transport, repo, selectedNumber, stderr)
 		if err != nil {
-			return fail(fmt.Errorf("list comments on PR #%s: %w", selectedNumber, err))
-		}
-		if humanCommentEvidence.available {
-			botLogin, err := transport.AuthenticatedLogin(ctx)
-			if err != nil {
-				return fail(fmt.Errorf("resolve authenticated login for PR #%s: %w", selectedNumber, err))
-			}
-			hasNewHumanComment = hasNewHumanCommentSince(humanCommentEvidence.comments, botLogin)
+			return fail(err)
 		}
 	}
 	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, hasNewHumanComment)
@@ -423,20 +462,70 @@ func remediatePolicyAllows(remediate, cause string) bool {
 	return false
 }
 
+// detectRebasePRHumanComment reports whether the selected PR carries human
+// feedback this cycle must remediate. Comments are classified by the same
+// commentClassifier pr-comment-watch routes on, under the same identityMode
+// and excludeAuthors inputs (#6494): under identityMode=shared a comment is
+// Goobers' own only when it carries a Goobers marker, so a person commenting
+// through the identity Goobers runs as is still a person.
+func detectRebasePRHumanComment(ctx context.Context, transport rebasePRTransport, repo providers.RepositoryRef, selectedNumber string, stderr io.Writer) (bool, error) {
+	settings, err := readCommentIdentitySettings(repo.Provider)
+	if err != nil {
+		return false, err
+	}
+	evidence, err := transport.LoadHumanCommentEvidence(ctx, repo, selectedNumber)
+	if errors.Is(err, providers.ErrUnreadableFeedbackComment) {
+		// A comment whose author or time cannot be read might be a person's
+		// unanswered feedback. Fail closed on the comment, not the stage: the
+		// cause fires (the label is never cleared over it) and the rebase and
+		// every other cause still run.
+		pf(stderr, "warning: PR #%s: %v — treating it as unanswered human feedback\n", selectedNumber, err)
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("list comments on PR #%s: %w", selectedNumber, err)
+	}
+	if !evidence.available {
+		return false, nil
+	}
+	self, err := transport.CommentIdentity(ctx)
+	if err != nil {
+		return false, fmt.Errorf("resolve authenticated identity for PR #%s: %w", selectedNumber, err)
+	}
+	classifier := newCommentClassifier(self, settings)
+	return humanCommentNeedsRemediation(openFeedbackComments(evidence.comments, evidence.threads, classifier), classifier), nil
+}
+
+// humanCommentNeedsRemediation is the human-comment cause: a human comment
+// newer than the sticky state's watermark (hasNewHumanCommentSince), or one no
+// Goobers response has acknowledged yet (latestUnaddressedHumanComment, the
+// rule pr-comment-watch routes a PR to remediation on). The second arm keeps a
+// rebase-only pass from clearing a needs-remediation label pr-comment-watch
+// set for feedback nothing has answered: a watermark says only that a
+// checkpoint saw the comment, not that anything responded to it.
+func humanCommentNeedsRemediation(comments []providers.Comment, classifier commentClassifier) bool {
+	if hasNewHumanCommentSince(comments, classifier) {
+		return true
+	}
+	_, fresh, _ := latestUnaddressedHumanComment(comments, classifier)
+	return fresh
+}
+
 // hasNewHumanCommentSince reports whether comments contains a genuinely new
 // human comment that should retrigger remediation, using the watermark the
 // last checkpoint recorded in the sticky remediation-state comment
 // (remediationState.LastSeenCommentAt).
 //
-// Scope limits: issue-level comments only — inline review threads are a
-// different provider API and out of scope here; edited comments do not
-// retrigger, since providers.Comment carries no UpdatedAt to compare against.
+// Scope limits: the provider's PR comment list (issue-level comments on GitHub
+// and Gitea; every live general and file thread comment on Azure DevOps);
+// edited comments do not retrigger, since providers.Comment carries no
+// UpdatedAt to compare against.
 //
-// A comment triggers iff ALL hold: it has a CreatedAt; its author is not a Bot
-// (GitHub sets User.Type; Gitea leaves it empty, which passes); it is not the
-// authenticated bot itself (isTrustedMergeReviewAuthor); and its body carries
-// no machine payload (neither a remediation-state nor a verdict comment —
-// defensive, since those are the bot's own).
+// A comment triggers iff ALL hold: it has a CreatedAt; classifier says it is
+// human (not Goobers' own and not third-party automation, see
+// commentClassifier); and its body carries no machine payload (neither a
+// remediation-state nor a verdict comment — defensive, since those are the
+// bot's own).
 //
 // Watermark comparison, from latestRemediationState(comments):
 //   - state found but LastSeenCommentAt == "": pre-upgrade state, fail closed —
@@ -446,7 +535,7 @@ func remediatePolicyAllows(remediate, cause string) bool {
 //     is strictly After the watermark.
 //   - no state ever recorded: fail open — every qualifying human comment counts
 //     (bounded by the per-cause budget downstream).
-func hasNewHumanCommentSince(comments []providers.Comment, botLogin string) bool {
+func hasNewHumanCommentSince(comments []providers.Comment, classifier commentClassifier) bool {
 	state, _, found := latestRemediationState(comments)
 	var watermark time.Time
 	haveWatermark := false
@@ -465,10 +554,7 @@ func hasNewHumanCommentSince(comments []providers.Comment, botLogin string) bool
 		if c.CreatedAt == nil {
 			continue
 		}
-		if strings.EqualFold(c.AuthorType, "Bot") {
-			continue
-		}
-		if isTrustedMergeReviewAuthor(c.Author, botLogin) {
+		if classifier.origin(c) != commentFromHuman {
 			continue
 		}
 		if _, ok := parseRemediationStateComment(c.Body); ok {

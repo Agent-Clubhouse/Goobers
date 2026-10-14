@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -59,7 +60,7 @@ func TestFailureStreakPersistsInJournalAcrossHandlerCalls(t *testing.T) {
 		if got, err := loadFailureStreakCount(context.Background(), fake, l, repo, "2701"); err != nil || got != i+1 {
 			t.Fatalf("streak after call %d = %d, %v; want %d", i, got, err, i+1)
 		}
-		if err := ledger.Release("2701", runID); err != nil {
+		if err := ledger.Release("2701", runID, claimrelease.Completed.Reason()); err != nil {
 			t.Fatalf("release claim %d: %v", i, err)
 		}
 	}

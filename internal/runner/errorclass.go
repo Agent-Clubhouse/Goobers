@@ -45,6 +45,13 @@ const (
 // gate as an empty diff that fails terminally.
 const UncommittedChangesCode = "UNCOMMITTED_CHANGES"
 
+// PrematureExhaustionClaimCode is the harness's typed failure for an agent
+// that reported its execution window exhausted well before the runtime
+// deadline (#5871; internal/harness.ErrorCodePrematureExhaustionClaim). The
+// agent stopped early rather than timing out, so like the other agent-side
+// completion-contract misses it retries on the stage's policy budget.
+const PrematureExhaustionClaimCode = telemetry.ErrCodePrematureExhaustionClaim
+
 // Runner-namespace keys carrying a dispatch failure's typed cause on its
 // error event. The journal's normative Error.Code stays executor_error for
 // every dispatch failure — that exact string is how three attempt-boundary
@@ -93,14 +100,15 @@ func codedStageFailure(code string, err error) error {
 // DeclaredArtifactRetryFailure converts agent-authored declared-artifact
 // contract failures back into a policy-class dispatch failure so a stage's
 // retry.maxAttempts budget covers transient omitted or malformed artifacts.
-// An UNCOMMITTED_CHANGES result (#5182) is the same kind of agent-side
-// completion-contract miss and takes the same retry path.
+// An UNCOMMITTED_CHANGES result (#5182) and a PREMATURE_EXHAUSTION_CLAIM
+// (#5871) are the same kind of agent-side completion-contract miss and take
+// the same retry path.
 func DeclaredArtifactRetryFailure(result apiv1.ResultEnvelope) error {
 	if result.Status != apiv1.ResultFailure || result.Error == nil || !result.Error.Retryable {
 		return nil
 	}
 	switch result.Error.Code {
-	case missingDeclaredArtifactCode, invalidDeclaredArtifactSet, UncommittedChangesCode:
+	case missingDeclaredArtifactCode, invalidDeclaredArtifactSet, UncommittedChangesCode, PrematureExhaustionClaimCode:
 	default:
 		return nil
 	}

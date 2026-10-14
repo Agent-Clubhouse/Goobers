@@ -214,9 +214,10 @@ func TestClaudeAdapterRunWiresGoobersIO(t *testing.T) {
 		},
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
-		Runner:  runner,
-		SelfBin: "/usr/local/bin/goobers",
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude"},
+		Runner:         runner,
+		SelfBin:        "/usr/local/bin/goobers",
 	}
 	envelope := testEnvelope(workspace)
 	envelope.Inputs = map[string]interface{}{InputArtifactFile: "findings.md"}
@@ -291,9 +292,10 @@ func TestClaudeAdapterRunKeepsShellBoundaryWithGoobersIO(t *testing.T) {
 		},
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
-		Runner:  runner,
-		SelfBin: "/usr/local/bin/goobers",
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude"},
+		Runner:         runner,
+		SelfBin:        "/usr/local/bin/goobers",
 	}
 	_, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
@@ -369,9 +371,10 @@ func TestClaudeAdapterReportsRegisteredMCPServersLostAtInvocation(t *testing.T) 
 				},
 			}
 			adapter := &ClaudeAdapter{
-				Command: []string{"claude"},
-				Runner:  runner,
-				SelfBin: "/usr/local/bin/goobers",
+				KeychainReader: absentClaudeKeychain,
+				Command:        []string{"claude"},
+				Runner:         runner,
+				SelfBin:        "/usr/local/bin/goobers",
 			}
 			out, err := adapter.Run(context.Background(), RunRequest{
 				Envelope:       testEnvelope(workspace),
@@ -456,9 +459,10 @@ func TestClaudeAdapterToleratesGoobersIOPendingAtInitWhenLaterUsed(t *testing.T)
 				},
 			}
 			adapter := &ClaudeAdapter{
-				Command: []string{"claude"},
-				Runner:  runner,
-				SelfBin: "/usr/local/bin/goobers",
+				KeychainReader: absentClaudeKeychain,
+				Command:        []string{"claude"},
+				Runner:         runner,
+				SelfBin:        "/usr/local/bin/goobers",
 			}
 			out, err := adapter.Run(context.Background(), RunRequest{
 				Envelope:       testEnvelope(workspace),

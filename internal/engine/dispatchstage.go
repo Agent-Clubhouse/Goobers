@@ -819,7 +819,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// the field surrenders nothing about it and is journaled as nothing,
 		// not as a verified fact.
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
-		Placement:               placementProvenance(report),
+		Placement:               placementProvenance(report), WorkspaceHeadMoved: surrendered.WorkspaceHeadMoved,
 	})
 	return result, withDispatchFailurePlacement(resultErr, report)
 }
@@ -858,6 +858,11 @@ func (a *Activities) reviewActivityResult(ctx context.Context, input DispatchSta
 			code = "agentic_review_failed"
 		}
 		err := fmt.Errorf("engine: reviewer gate %q attempt %d failed in its pod: %s: %s", stage, number, code, message)
+		if code == runner.WorkspaceHeadMovedErrorCode {
+			// #6019: typed so the walk can end the run superseded. Never
+			// retried: a fresh pod clones the same moved head (#5948).
+			return stageActivityResult{}, temporal.NewNonRetryableApplicationError(err.Error(), FailureTypeWorkspaceHeadMoved, nil)
+		}
 		retryable := surrendered.Result.Error != nil && surrendered.Result.Error.Retryable
 		if retryable || reviewKitFetchFailure(code) {
 			return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(err))

@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
@@ -712,6 +713,13 @@ func completeJournalEvent() journal.Event {
 		RunID:     "run-123",
 		Reason:    "manual trigger",
 		SkipCount: 1,
+		ClaimRelease: &claimrelease.Reason{
+			Disposition: claimrelease.ForceReleased,
+			Stage:       "implement",
+			Code:        "operator_override",
+			Summary:     "stuck lease recovered",
+			Actor:       "cli",
+		},
 	}
 }
 

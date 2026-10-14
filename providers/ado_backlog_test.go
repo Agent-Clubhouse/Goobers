@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // TestADOMergeLabels pins the add/remove label reconciliation UpdateWorkItem
@@ -326,7 +328,7 @@ func TestADOClaimIgnoresBreadcrumbFromAnotherIdentity(t *testing.T) {
 func TestADOClaimIgnoresReleaseFromAnotherIdentity(t *testing.T) {
 	fake := &adoClaimFake{}
 	fake.seed(adoTestSelfID, claimBreadcrumb("run-owner"))
-	fake.seed(adoTestOtherID, claimReleaseBreadcrumb("run-owner"))
+	fake.seed(adoTestOtherID, legacyClaimReleaseBreadcrumb("run-owner"))
 	result, err := claimADOTestItem(t, fake.server(t, true), "run-ours")
 	if err != nil {
 		t.Fatalf("ClaimWorkItem: %v", err)
@@ -497,7 +499,7 @@ func TestADOReleaseWorkItemClaimRetiresEpochAndVisibleMarker(t *testing.T) {
 func TestADOReleaseWorkItemClaimPreservesNewerOwner(t *testing.T) {
 	comments := []map[string]interface{}{
 		{"commentId": 1, "text": claimBreadcrumb("old-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
-		{"commentId": 2, "text": claimReleaseBreadcrumb("old-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
+		{"commentId": 2, "text": claimReleaseBreadcrumb("old-run", claimrelease.Completed.Reason()), "createdBy": map[string]string{"id": adoTestSelfID}},
 		{"commentId": 3, "text": claimBreadcrumb("new-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
 	}
 	var mutations int

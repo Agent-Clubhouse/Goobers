@@ -82,8 +82,21 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"commitMessage (default: PR title + review rationale + referenced\n" +
 	"issues), preMergeCheck (optional; one command per line, run without a\n" +
 	"shell on the PR head merged onto the CURRENT base branch tip — a\n" +
-	"failure refuses the merge as pre-merge-check-failed), resultFile\n" +
-	"(default merge-result.json). Successful merges\n" +
+	"failure refuses the merge as pre-merge-check-failed),\n" +
+	"blockUnansweredFeedback (default true: refuse as unanswered-human-feedback\n" +
+	"while the newest open human review feedback — a PR comment, a submitted\n" +
+	"review body, or a comment in an unresolved review thread, on Azure\n" +
+	"DevOps any active thread — is unacknowledged by every Goobers response;\n" +
+	"approving reviews and Bot-typed authors never wait on an answer. The\n" +
+	"feedback is read again after a preMergeCheck, right before landing.\n" +
+	"record-merge-refusal routes the PR to remediation, and parks it\n" +
+	"goobers:needs-human when the same comment is refused again. Gitea reports\n" +
+	"no thread resolution and keeps a dismissed review's state, so there every\n" +
+	"review comment counts until answered. Feedback that\n" +
+	"cannot be read refuses as human-feedback-unverifiable. Comments are\n" +
+	"classified as pr-comment-watch classifies them, under the same\n" +
+	"identityMode and excludeAuthors inputs. Set false to merge over\n" +
+	"comments), resultFile (default merge-result.json). Successful merges\n" +
 	"also report headBranch and branchCleanup (deleted, skipped-stacked,\n" +
 	"skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated\n" +
 	"(merged or not — see the result file's \"merged\" field), 1 = business\n" +
@@ -261,6 +274,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 	}
 	resultFile := providerInput("resultFile", "merge-result.json")
 	preMergeCheck := premergecheck.ParseCommands(providerInput("preMergeCheck", ""))
+	feedbackGate := newMergeFeedbackGate(repo, stageProvider, verdictAuthor, len(preMergeCheck) > 0)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -352,6 +366,9 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		}
 
 		reasons = append(reasons, liveConjunctReasons(ctx, dispatcher, repo, pullNumber, verdict, expectedHeadSHA, expectedBaseSHA, poll)...)
+		// #6134: never land over open human review feedback Goobers has not
+		// answered, whether or not the forge enforces conversation resolution.
+		reasons = feedbackGate.refuse(ctx, pullNumber, reasons)
 		// Tutor-change classification is GitHub-only: classifyRemoteTutorChanges
 		// takes the concrete *GitHubProvider and the tutor lane does not run on
 		// ADO, so gate the whole block to GitHub (no-op; ADO tutor parity is
@@ -430,8 +447,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		if checkErr != nil {
 			return nil
 		}
-		if checkReason != "" {
-			reasons = append(reasons, checkReason)
+		// #6134: a reviewer may comment while the check runs; re-read feedback.
+		if reasons = feedbackGate.afterPreMergeCheck(ctx, pullNumber, checkReason); len(reasons) > 0 {
 			return nil
 		}
 

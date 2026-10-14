@@ -87,7 +87,7 @@ func TestClaudeAdapterAlwaysDeniesNameBasedKill(t *testing.T) {
 					return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 				},
 			}
-			adapter := &ClaudeAdapter{Command: tc.command, ExtraArgs: tc.extraArgs, Runner: runner}
+			adapter := &ClaudeAdapter{Command: tc.command, ExtraArgs: tc.extraArgs, Runner: runner, KeychainReader: absentClaudeKeychain}
 			if _, err := adapter.Run(context.Background(), RunRequest{
 				Envelope:       testEnvelope(workspace),
 				Workspace:      workspace,
@@ -127,7 +127,7 @@ func TestClaudeAdapterCompletionRepairKeepsNameBasedKillDeny(t *testing.T) {
 			},
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	if _, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
@@ -161,7 +161,7 @@ func TestClaudeAdapterSandboxedRunKeepsNameBasedKillDeny(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	if _, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,

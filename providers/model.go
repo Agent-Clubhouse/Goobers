@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/lifecycle"
@@ -555,8 +556,12 @@ type PullRequestReviewResult struct {
 
 // PullRequestNativeReview is one provider-native review submitted on a pull request.
 type PullRequestNativeReview struct {
-	ID          int64              `json:"id"`
-	Author      string             `json:"author,omitempty"`
+	ID     int64  `json:"id"`
+	Author string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot"), so automation is told from people by
+	// type rather than by login spelling.
+	AuthorType  string             `json:"authorType,omitempty"`
 	State       string             `json:"state"`
 	Body        string             `json:"body,omitempty"`
 	CommitSHA   string             `json:"commitSha,omitempty"`
@@ -568,9 +573,12 @@ type PullRequestNativeReview struct {
 // PullRequestInlineComment is one inline review comment with its thread state
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
-	ID                int64              `json:"id"`
-	ThreadID          string             `json:"threadId"`
-	Author            string             `json:"author,omitempty"`
+	ID       int64  `json:"id"`
+	ThreadID string `json:"threadId"`
+	Author   string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot").
+	AuthorType        string             `json:"authorType,omitempty"`
 	Body              string             `json:"body"`
 	Path              string             `json:"path"`
 	Line              int                `json:"line,omitempty"`
@@ -1523,6 +1531,11 @@ type ClaimWorkItemRequest struct {
 	// ExpectedClaimRunID, when set, requires the currently open provider claim
 	// epoch to still be held by this run before releasing it.
 	ExpectedClaimRunID string `json:"expectedClaimRunId,omitempty"`
+	// Reason is why the claim ends (#4421), rendered into the release comment
+	// as a human "Reason:" line plus a versioned machine-readable marker.
+	// Release-only; a zero reason renders as an explicitly unknown (legacy)
+	// release.
+	Reason claimrelease.Reason `json:"reason,omitzero"`
 }
 
 // ClaimResult reports the outcome of a claim attempt.

@@ -37,6 +37,16 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 			"configRepoDir":  {"open-pr", "config-checkout", "gate-removal-guard"},
 		},
 	},
+	// The shared comment classifier (#6494): every stage that acts on human
+	// feedback reads the same identityMode and excludeAuthors inputs.
+	"commentorigin.go": {
+		command: "pr-comment-watch",
+		shared: map[string][]string{
+			"identityMode":   {"rebase-pr", "update-behind-pr", "merge-pr"},
+			"excludeAuthors": {"rebase-pr", "update-behind-pr", "merge-pr"},
+		},
+	},
+	"mergefeedbackgate.go":           {command: "merge-pr"},
 	"backlogassignment.go":           {command: "backlog-assignment"},
 	"backlogdedupe.go":               {command: "backlog-dedupe"},
 	"backloghealth.go":               {command: "backlog-health"},

@@ -325,6 +325,11 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 		if e.Type != journal.EventStageFinished || e.Stage == "" {
 			continue
 		}
+		if isMappedTask(machine, e.Stage) {
+			// Mapped results are per item; only the per-occurrence store
+			// holds them (design plan-driven-dynamic-fan-out.md §6.3).
+			continue
+		}
 		if machine != nil {
 			if task, ok := machine.Task(e.Stage); ok &&
 				e.Status == string(apiv1.ResultFailure) && task.ContinueOnError {

@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -204,14 +205,27 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 			return pr, err
 		},
 		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+			if pr.CheckState == providers.CheckStateFailing {
+				// prepare already read this PR's policy evaluations this cycle.
+				return nil
+			}
 			return resolveADOSelectedCheckState(ctx, provider, repo, pr)
 		},
-		prepare: func(_ context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
-			eligible := make([]providers.PullRequestSummary, 0, len(prs))
-			for _, pr := range prs {
-				if !held[pr.Head] && !hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
-					eligible = append(eligible, pr)
-				}
+		prepare: func(ctx context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
+			eligible, err := adoRemediationCandidates(ctx, prs, held, adoCIProbePlan{
+				target: remediationTargetFromEnv(),
+				available: func(prs []providers.PullRequestSummary) ([]providers.PullRequestSummary, error) {
+					return stageClaimAvailablePullRequests(root, repo, os.Getenv(executor.RunIDEnvVar), prs, time.Now())
+				},
+				window: func(probeable []int) ([]int, error) {
+					return advanceADOCIProbeWindow(layoutFor(root), repo, probeable)
+				},
+				probe: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+					return resolveADOSelectedCheckState(ctx, provider, repo, pr)
+				},
+			})
+			if err != nil {
+				return nil, nil, gatherPRAdapterError("resolve remediation check states", err)
 			}
 			return eligible, map[int]int{}, nil
 		},
@@ -353,7 +367,7 @@ func gatherPRContextClaimProgressable(
 			candidates = next
 		}
 		if claimed != nil {
-			if err := releasePRRemediationClaim(root); err != nil {
+			if err := releasePRRemediationClaim(root, claimrelease.NoWork.Because("pr_skipped", skipped[len(skipped)-1])); err != nil {
 				return failProviderStage(stderr, fmt.Sprintf("release skipped PR #%d's claim", claimed.Number), err, remediationBriefResultFile)
 			}
 		}
@@ -609,7 +623,8 @@ func writeGatherPRContextResult(
 // gatherPRContextCandidateScope applies the durable handoff and run-target
 // constraints before a provider prepares the candidate set. The provider paths
 // deliberately retain their native preparation work after this point: GitHub
-// resolves CI, escalation, and sibling state; ADO has only its label tier.
+// resolves CI, escalation, and sibling state; ADO resolves CI for the PRs it
+// can promote (adoRemediationCandidates).
 func gatherPRContextCandidateScope(
 	root string,
 	target remediationTarget,

@@ -30,6 +30,17 @@ func voidRemediationChargeForRun(ctx context.Context, poster gate.Commenter, l i
 	if err != nil {
 		return fmt.Errorf("resolve claimed pull requests to void remediation charge: %w", err)
 	}
+	return markRemediationCharges(ctx, poster, items, runID, func(state *remediationState) {
+		state.InfrastructureVoided = true
+	})
+}
+
+// markRemediationCharges applies mark to the latest remediation-state record
+// of every pull request in items, when that record is a cycle runID charged
+// and nothing has settled it yet (remediationChargeVoidable). It is the one
+// writer both provisional-charge refunds share: the infrastructure void above
+// and the superseded-run refund (#6019, settleSupersededRun).
+func markRemediationCharges(ctx context.Context, poster gate.Commenter, items []claimedItem, runID string, mark func(*remediationState)) error {
 	var errs []error
 	for _, item := range items {
 		if item.Kind != itemKindPullRequest {
@@ -44,7 +55,7 @@ func voidRemediationChargeForRun(ctx context.Context, poster gate.Commenter, l i
 		if !found || commentID == "" || !remediationChargeVoidable(state, runID) {
 			continue
 		}
-		state.InfrastructureVoided = true
+		mark(&state)
 		if err := poster.UpdateComment(ctx, item.Repo, commentID, renderRemediationComment(state)); err != nil {
 			errs = append(errs, fmt.Errorf("void remediation charge on %s#%s: %w", item.Repo.Name, item.ItemID, err))
 		}
@@ -53,8 +64,8 @@ func voidRemediationChargeForRun(ctx context.Context, poster gate.Commenter, l i
 }
 
 // remediationChargeVoidable reports whether state is an advancing cycle this
-// run charged and has not already been voided.
+// run charged and has not already been voided or refunded as superseded.
 func remediationChargeVoidable(state remediationState, runID string) bool {
 	return runID != "" && state.RunID == runID && !state.Escalated &&
-		!state.InfrastructureVoided && len(state.ChargedCauses) > 0
+		!state.InfrastructureVoided && !state.Superseded && len(state.ChargedCauses) > 0
 }

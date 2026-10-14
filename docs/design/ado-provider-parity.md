@@ -62,8 +62,8 @@ code path byte-identical.
 
 ADO stage branches build the provider through the shared stage seam
 (`newProviderForStage` → `newADOProviderForStage`) from the credential delivered for the
-capability the stage declared, in the daemon-stated `GOOBERS_REPO_AUTH_SCHEME`
-(ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
+capability the stage declared, in the daemon-stated
+`GOOBERS_CREDENTIAL_SCHEME_<capability>`, falling back to `GOOBERS_REPO_AUTH_SCHEME` (#5957; ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
 `provider:pr:write` for pull-request work, `github:issues:*` for work items, `repo:push` for
 Git, `github:pr:merge` (or a declared `ado:pr:complete`) for completion. Every auth kind —
 PAT, Azure CLI, workload identity, managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
@@ -152,6 +152,19 @@ ADO PRs support native labels. Two routing markers ride there — and only there
 hazard. Writes go through `AddPullRequestLabels` (ADO takes one label per POST, so one call
 per name), reads through `PullRequestLabelNames`, and clears through
 `RemovePullRequestLabel`.
+
+Failing CI is the one remediation signal that is not a label, and the list call carries
+no CI state. `gather-pr-context` therefore reads the blocking-policy evaluations
+(`HasPullRequestCIFailures`, the ADO-N22 classification `gather-ci-failures` reports) for
+each eligible PR that read could promote — not already `goobers:needs-remediation`, not
+parked `goobers:merge-escalated`, not claimed by another run — at most
+`adoRemediationCIProbeLimit` per cycle (#6482). The window rotates: a persisted cursor
+(`pr-remediation-ci-probe-<sha256>.json`, one per gaggle and repository) records where the
+last window ended, so a larger open set is read in full over successive cycles. A targeted
+run (`--pr N`) reads PR N alone, outside the bound. Each probe is the PR detail read and
+its evaluations, plus one build read per rejected build policy once cancelled-build
+classification applies (#6817). A red build-validation policy then makes the PR a strong
+remediation candidate on its own, rather than only after merge-review demotes it.
 
 ### 4.3 The three ADO PR-label API quirks
 

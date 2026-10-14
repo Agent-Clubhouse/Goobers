@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -66,7 +67,7 @@ func TestLiveClaimRenewalRequiresProviderAckAndNeverResurrectsRelease(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.ReleaseScoped(t.Context(), claimKey(request), request.RunID); err != nil {
+	if err := client.ReleaseScoped(t.Context(), claimKey(request), request.RunID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger, live, time.Minute, resolver); err != nil || len(renewed) != 0 || store.writes != 3 {
@@ -94,14 +95,14 @@ func TestHeldLifecycleLedgerRetainsSharedOwnershipUntilReleaseAcknowledged(t *te
 		t.Fatal(err)
 	}
 	store.failRelease = true
-	if released, err := ledger.ReleaseAllForRun(t.Context(), request.RunID); err == nil || len(released) != 0 {
+	if released, err := ledger.ReleaseAllForRun(t.Context(), request.RunID, claimrelease.Completed.Reason()); err == nil || len(released) != 0 {
 		t.Fatalf("unacknowledged release succeeded: %+v %v", released, err)
 	}
 	if entries, err := ledger.ForRunAll(t.Context(), request.RunID); err != nil || len(entries) != 1 || store.record.Owner.Run != request.RunID {
 		t.Fatalf("failed cleanup discarded custody: %+v %v", entries, err)
 	}
 	store.failRelease = false
-	if released, err := ledger.ReleaseAllForRun(t.Context(), request.RunID); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
+	if released, err := ledger.ReleaseAllForRun(t.Context(), request.RunID, claimrelease.Completed.Reason()); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
 		t.Fatalf("acknowledged release: %+v %v", released, err)
 	}
 }

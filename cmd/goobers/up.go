@@ -1812,18 +1812,14 @@ func (u *upSession) startMaintenance() int {
 				} else {
 					claimRenewErrors.report(probeErr)
 				}
-				released, err := u.recoverExpiredClaims(now)
+				// Each reaped lease is journaled by the ledger itself as its own
+				// claim.released boundary carrying stall-swept (#4421), so the
+				// sweep adds no aggregate claim.released of its own.
+				_, err := u.recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
 					claimSweepErrors.report(nil)
 				} else {
 					claimSweepErrors.report(err)
-				}
-				if err == nil && len(released) > 0 {
-					u.setup.InstanceLog.AppendBestEffort(journal.Event{
-						Type:   journal.EventClaimReleased,
-						Reason: fmt.Sprintf("periodic recovery released %d expired claim(s)", len(released)),
-						Runner: map[string]any{"releasedClaims": len(released)},
-					})
 				}
 			}
 		}
