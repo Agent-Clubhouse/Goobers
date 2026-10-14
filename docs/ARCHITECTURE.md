@@ -413,11 +413,16 @@ Contract rules:
   suspension and durable child waits) independently of journal activity and
   is disabled when omitted. An automated or
   agentic gate may override `maxRepasses`. The value bounds cumulative
-  re-entries to a branch's target stage across all gates that route back to
-  that stage; a pass at one gate does not reset that target's live budget.
-  Only non-pass outcomes are charged: a `pass` branch into an already-completed
-  stage is a forward step, so each repair loop is bounded by the failure that
-  sent it back rather than by the passing validation that follows. Separate target stages can therefore have independent budgets. Stall
+  re-entries to a branch's target stage: every automated or agentic gate
+  outcome that routes back to that stage is charged to it, as is every
+  producer retry after an invalid handoff, and a pass at one gate does not
+  reset that target's live budget. Only policy outcomes (anything other than
+  `pass`, `infra`, or `timeout`) are charged: a `pass` branch into an
+  already-completed stage is a forward step, so each repair loop is bounded by
+  the failure that sent it back rather than by the passing validation that
+  follows; `infra` and `timeout` outcomes spend their own retry and polling
+  budgets; and human-gate decisions are never charged. Separate target stages
+  can therefore have independent budgets. Stall
   detection does not have a task-level override: task/gate `timeoutSeconds`
   and retry policies already own per-attempt execution bounds, while the stall
   watchdog protects the run journal as a whole.
