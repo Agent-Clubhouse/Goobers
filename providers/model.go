@@ -556,8 +556,12 @@ type PullRequestReviewResult struct {
 
 // PullRequestNativeReview is one provider-native review submitted on a pull request.
 type PullRequestNativeReview struct {
-	ID          int64              `json:"id"`
-	Author      string             `json:"author,omitempty"`
+	ID     int64  `json:"id"`
+	Author string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot"), so automation is told from people by
+	// type rather than by login spelling.
+	AuthorType  string             `json:"authorType,omitempty"`
 	State       string             `json:"state"`
 	Body        string             `json:"body,omitempty"`
 	CommitSHA   string             `json:"commitSha,omitempty"`
@@ -569,9 +573,12 @@ type PullRequestNativeReview struct {
 // PullRequestInlineComment is one inline review comment with its thread state
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
-	ID                int64              `json:"id"`
-	ThreadID          string             `json:"threadId"`
-	Author            string             `json:"author,omitempty"`
+	ID       int64  `json:"id"`
+	ThreadID string `json:"threadId"`
+	Author   string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot").
+	AuthorType        string             `json:"authorType,omitempty"`
 	Body              string             `json:"body"`
 	Path              string             `json:"path"`
 	Line              int                `json:"line,omitempty"`

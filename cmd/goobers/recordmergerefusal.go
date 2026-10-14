@@ -24,7 +24,10 @@ const recordMergeRefusalHelp = "Usage: goobers record-merge-refusal [path]\n\n" 
 	"Record a merge-pr refusal against the selected PR's durable demotion\n" +
 	"counter (#950). After a bounded number of refusals at an unchanged\n" +
 	"head, apply goobers:merge-demoted so the election crowns a sibling\n" +
-	"instead and the cluster drains around the stuck PR. Runs on\n" +
+	"instead and the cluster drains around the stuck PR. A refusal for\n" +
+	"unanswered human review feedback is not counted: the PR is routed to\n" +
+	"remediation instead (goobers:needs-remediation added,\n" +
+	"goobers:merge-ready removed). Runs on\n" +
 	"merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to\n" +
 	"do), 1 = business error, 2 = usage/IO error.\n"
 
@@ -108,6 +111,10 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+
+	if strings.HasPrefix(reason, unansweredHumanFeedbackReasonCode) {
+		return routeUnansweredFeedbackRefusal(ctx, provider, repo, selectedNumber, headSha, reason, stdout, stderr)
+	}
 
 	comments, err := provider.ListComments(ctx, repo, selectedNumberStr)
 	if err != nil {

@@ -38,10 +38,13 @@ func TestCommentIdentityDisagreementWarns(t *testing.T) {
 		watchMode    string
 		healerMode   string
 		wantWarnings int
+		wantNamed    string
 	}{
 		{name: "shared watcher, defaulted dedicated healer on GitHub", watchMode: "shared", wantWarnings: 1},
 		{name: "both defaulted", wantWarnings: 0},
-		{name: "both shared", watchMode: "shared", healerMode: "shared", wantWarnings: 0},
+		// acme-web's merge-review runs merge-pr, which defaults to dedicated on
+		// GitHub: two shared stages still disagree with it (#6134).
+		{name: "shared stages beside a defaulted merge-pr", watchMode: "shared", healerMode: "shared", wantWarnings: 1, wantNamed: "merge-review/merge-pr (identityMode=dedicated"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,6 +80,9 @@ func TestCommentIdentityDisagreementWarns(t *testing.T) {
 			}
 			if tt.wantWarnings > 0 && !strings.Contains(got[0].Explanation, "identityMode=shared") {
 				t.Fatalf("WF029 explanation = %q, want each stage's resolved setting named", got[0].Explanation)
+			}
+			if tt.wantNamed != "" && !strings.Contains(got[0].Explanation, tt.wantNamed) {
+				t.Fatalf("WF029 explanation = %q, want it to name %q", got[0].Explanation, tt.wantNamed)
 			}
 		})
 	}

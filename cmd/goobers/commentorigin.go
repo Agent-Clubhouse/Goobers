@@ -155,6 +155,7 @@ var goobersBookkeepingPayloads = []string{
 	"<!-- implementation-escalation: ",
 	"<!-- issue-spec-pin: ",
 	"<!-- post-merge-remediation: ",
+	feedbackRefusalPayloadPrefix,
 }
 
 // goobersBookkeepingComment reports whether body carries one of Goobers'

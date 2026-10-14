@@ -2906,8 +2906,21 @@ attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
 issues), preMergeCheck (optional; one command per line, run without a
 shell on the PR head merged onto the CURRENT base branch tip — a
-failure refuses the merge as pre-merge-check-failed), resultFile
-(default merge-result.json). Successful merges
+failure refuses the merge as pre-merge-check-failed),
+blockUnansweredFeedback (default true: refuse as unanswered-human-feedback
+while the newest open human review feedback — a PR comment, a submitted
+review body, or a comment in an unresolved review thread, on Azure
+DevOps any active thread — is unacknowledged by every Goobers response;
+approving reviews and Bot-typed authors never wait on an answer. The
+feedback is read again after a preMergeCheck, right before landing.
+record-merge-refusal routes the PR to remediation, and parks it
+goobers:needs-human when the same comment is refused again. Gitea reports
+no thread resolution and keeps a dismissed review's state, so there every
+review comment counts until answered. Feedback that
+cannot be read refuses as human-feedback-unverifiable. Comments are
+classified as pr-comment-watch classifies them, under the same
+identityMode and excludeAuthors inputs. Set false to merge over
+comments), resultFile (default merge-result.json). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked,
 skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
 (merged or not — see the result file's "merged" field), 1 = business
@@ -3708,7 +3721,9 @@ old pinned policy is unaffected. Comments are classified as
 pr-comment-watch classifies them, under the same identityMode (dedicated or
 shared; default shared on Azure DevOps, dedicated elsewhere) and
 excludeAuthors inputs; set them to pr-comment-watch's values. On Azure
-DevOps every live general and file-thread comment counts.
+DevOps every live general and file-thread comment counts; on GitHub and
+Gitea, submitted review bodies and unresolved review-thread comments
+count alongside PR comments (the feedback merge-pr refuses to land over).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -3777,7 +3792,10 @@ Usage: goobers record-merge-refusal [path]
 Record a merge-pr refusal against the selected PR's durable demotion
 counter (#950). After a bounded number of refusals at an unchanged
 head, apply goobers:merge-demoted so the election crowns a sibling
-instead and the cluster drains around the stuck PR. Runs on
+instead and the cluster drains around the stuck PR. A refusal for
+unanswered human review feedback is not counted: the PR is routed to
+remediation instead (goobers:needs-remediation added,
+goobers:merge-ready removed). Runs on
 merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
 do), 1 = business error, 2 = usage/IO error.
 ~~~

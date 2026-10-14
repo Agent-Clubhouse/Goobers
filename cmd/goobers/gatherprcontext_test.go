@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -143,7 +145,24 @@ func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		}
 		writeFakeJSON(w, prs)
 	})
+	// rebase-pr's human-comment cause reads the PR's reviews and review
+	// threads (#6134); this PR has none.
+	for _, path := range []string{"reviews", "comments"} {
+		mux.HandleFunc(fmt.Sprintf("%s/pulls/%d/%s", prefix, s.prNumber, path), func(w http.ResponseWriter, r *http.Request) {
+			writeFakeJSON(w, []map[string]interface{}{})
+		})
+	}
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if strings.Contains(string(body), "reviewThreads") {
+			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{"repository": map[string]interface{}{
+				"pullRequest": map[string]interface{}{"reviewThreads": map[string]interface{}{
+					"nodes": []interface{}{}, "pageInfo": map[string]interface{}{"hasNextPage": false},
+				}},
+			}}})
+			return
+		}
 		state := "SUCCESS"
 		if s.checkState == "failure" || s.checkRuns != nil {
 			state = "FAILURE"

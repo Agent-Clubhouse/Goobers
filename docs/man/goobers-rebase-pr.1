@@ -33,7 +33,9 @@ old pinned policy is unaffected. Comments are classified as
 pr-comment-watch classifies them, under the same identityMode (dedicated or
 shared; default shared on Azure DevOps, dedicated elsewhere) and
 excludeAuthors inputs; set them to pr-comment-watch's values. On Azure
-DevOps every live general and file-thread comment counts.
+DevOps every live general and file-thread comment counts; on GitHub and
+Gitea, submitted review bodies and unresolved review-thread comments
+count alongside PR comments (the feedback merge-pr refuses to land over).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 .fi
