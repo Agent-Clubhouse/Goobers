@@ -6,17 +6,16 @@ import (
 	"strings"
 	"testing"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
 func TestVerdictStateBlocksEveryNonPass(t *testing.T) {
-	tests := map[apiv1.VerdictDecision]providers.CheckState{
-		apiv1.VerdictPass:         providers.CheckStatePassing,
-		apiv1.VerdictNeedsChanges: providers.CheckStateFailing,
-		apiv1.VerdictFail:         providers.CheckStateFailing,
-		apiv1.VerdictEscalate:     providers.CheckStateFailing,
-		apiv1.VerdictDefer:        providers.CheckStatePending,
+	tests := map[string]providers.CheckState{
+		"pass":          providers.CheckStatePassing,
+		"needs-changes": providers.CheckStateFailing,
+		"fail":          providers.CheckStateFailing,
+		"escalate":      providers.CheckStateFailing,
+		"defer":         providers.CheckStatePending,
 	}
 	for decision, want := range tests {
 		got, err := VerdictState(decision)
@@ -31,7 +30,7 @@ func TestVerdictStateBlocksEveryNonPass(t *testing.T) {
 
 func TestVerdictStatusRequestPinsHeadAndRecordsBase(t *testing.T) {
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
-	req, err := VerdictStatusRequest(repo, "9", apiv1.VerdictNeedsChanges, "head-sha", "base-sha", "  Fix the\n loop bound. ", "https://verdict")
+	req, err := VerdictStatusRequest(repo, "9", "needs-changes", "head-sha", "base-sha", "  Fix the\n loop bound. ", "https://verdict")
 	if err != nil {
 		t.Fatalf("VerdictStatusRequest: %v", err)
 	}
@@ -45,17 +44,17 @@ func TestVerdictStatusRequestPinsHeadAndRecordsBase(t *testing.T) {
 	if req != want {
 		t.Fatalf("request = %+v, want %+v", req, want)
 	}
-	if _, err := VerdictStatusRequest(repo, "9", apiv1.VerdictPass, "", "base-sha", "", ""); err == nil {
+	if _, err := VerdictStatusRequest(repo, "9", "pass", "", "base-sha", "", ""); err == nil {
 		t.Fatal("a verdict status without the reviewed head must be refused, never posted on the live head")
 	}
-	if _, err := VerdictStatusRequest(repo, "9", apiv1.VerdictPass, "head-sha", "", "", ""); err == nil {
+	if _, err := VerdictStatusRequest(repo, "9", "pass", "head-sha", "", "", ""); err == nil {
 		t.Fatal("a verdict status without the reviewed base must be refused")
 	}
 }
 
 func TestParseVerdictDescriptionRoundTrips(t *testing.T) {
 	for _, summary := range []string{"", "ready"} {
-		decision, base, ok := ParseVerdictDescription(VerdictDescription(apiv1.VerdictPass, "base-sha", summary))
+		decision, base, ok := ParseVerdictDescription(VerdictDescription("pass", "base-sha", summary))
 		if !ok || decision != "pass" || base != "base-sha" {
 			t.Errorf("summary %q: parsed (%q, %q, %v), want (pass, base-sha, true)", summary, decision, base, ok)
 		}
@@ -79,12 +78,12 @@ func TestVerdictStatusRefusalReproduces4188(t *testing.T) {
 		status     *providers.CheckDetail
 		wantRefuse string
 	}{
-		{"needs-changes blocks", status(providers.CheckStateFailing, VerdictDescription(apiv1.VerdictNeedsChanges, "base", "fix it")), "is failure"},
-		{"defer blocks", status(providers.CheckStatePending, VerdictDescription(apiv1.VerdictDefer, "base", "after #1")), "is pending"},
+		{"needs-changes blocks", status(providers.CheckStateFailing, VerdictDescription("needs-changes", "base", "fix it")), "is failure"},
+		{"defer blocks", status(providers.CheckStatePending, VerdictDescription("defer", "base", "after #1")), "is pending"},
 		{"stale blocks", status(providers.CheckStatePending, VerdictDescription("stale", "base", "re-review pending")), "is pending"},
-		{"pass for an older base does not authorize", status(providers.CheckStatePassing, VerdictDescription(apiv1.VerdictPass, "old-base", "")), "is a pass for base old-base"},
+		{"pass for an older base does not authorize", status(providers.CheckStatePassing, VerdictDescription("pass", "old-base", "")), "is a pass for base old-base"},
 		{"pass without a base does not authorize", status(providers.CheckStatePassing, "goobers merge-review verdict: pass"), "names no reviewed base"},
-		{"pinned pass clears", status(providers.CheckStatePassing, VerdictDescription(apiv1.VerdictPass, "base", "ready")), ""},
+		{"pinned pass clears", status(providers.CheckStatePassing, VerdictDescription("pass", "base", "ready")), ""},
 		{"no status is left to the provider's required check", nil, ""},
 	}
 	for _, tt := range tests {
@@ -136,10 +135,10 @@ func TestPublishVerdictDegradesOnlyAMissingGrant(t *testing.T) {
 }
 
 func TestVerdictSummaryFallsBackToRationale(t *testing.T) {
-	if got := VerdictSummary(apiv1.Verdict{Summary: " ready "}); got != "ready" {
+	if got := VerdictSummary(" ready ", ""); got != "ready" {
 		t.Errorf("summary = %q", got)
 	}
-	if got := VerdictSummary(apiv1.Verdict{Rationale: "\nFirst line.\nSecond."}); got != "First line." {
+	if got := VerdictSummary("", "\nFirst line.\nSecond."); got != "First line." {
 		t.Errorf("rationale fallback = %q", got)
 	}
 }

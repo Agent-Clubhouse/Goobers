@@ -1194,8 +1194,8 @@ func (r verdictRecord) publish(ctx context.Context, comment string, posted apiv1
 	if err := reconcileMergeReviewStatusCommentAs(ctx, r.provider, r.repo, r.number, r.author, comment); err != nil {
 		return err
 	}
-	req, err := prstatus.VerdictStatusRequest(r.repo, strconv.Itoa(r.number), posted.Decision,
-		r.current.HeadSHA, r.current.BaseSHA, prstatus.VerdictSummary(posted), r.targetURL())
+	req, err := prstatus.VerdictStatusRequest(r.repo, strconv.Itoa(r.number), string(posted.Decision),
+		r.current.HeadSHA, r.current.BaseSHA, prstatus.VerdictSummary(posted.Summary, posted.Rationale), r.targetURL())
 	if err != nil {
 		return err
 	}
@@ -1743,7 +1743,7 @@ func publishADOPassVerdict(
 		State:      providers.CheckStatePassing,
 		// "pass for base <sha>": the same base-pinned description the
 		// GitHub/Gitea verdict status carries (#4199).
-		Description: prstatus.VerdictDescription(apiv1.VerdictPass, current.BaseSHA, prstatus.VerdictSummary(verdict)),
+		Description: prstatus.VerdictDescription(string(apiv1.VerdictPass), current.BaseSHA, prstatus.VerdictSummary(verdict.Summary, verdict.Rationale)),
 		// Pin to the reviewed head: a push after the pin check must not
 		// inherit this pass on ADO's latest iteration. The non-pass path is
 		// pinned the same way.
@@ -1826,7 +1826,7 @@ func publishADONonPassVerdict(
 		Genre:       "goobers",
 		Name:        "validation",
 		State:       providers.CheckStateFailing,
-		Description: prstatus.VerdictDescription(verdict.Decision, current.BaseSHA, prstatus.VerdictSummary(verdict)),
+		Description: prstatus.VerdictDescription(string(verdict.Decision), current.BaseSHA, prstatus.VerdictSummary(verdict.Summary, verdict.Rationale)),
 		HeadSHA:     current.HeadSHA,
 	}); err != nil {
 		var moved providers.PullRequestHeadMovedError

@@ -173,7 +173,7 @@ func TestApplyVerdictWithdrawsStandingVerdictStatusWhenBaseMoved(t *testing.T) {
 		"reviewed-head", "moved-base")
 	server.seedCommitStatus("reviewed-head", fakeCommitStatus{
 		context: providers.MergeReviewStatusContext, state: "success",
-		description: prstatus.VerdictDescription(apiv1.VerdictPass, "older-base", "ready"),
+		description: prstatus.VerdictDescription(string(apiv1.VerdictPass), "older-base", "ready"),
 	})
 
 	code, stdout, stderr := runArgs(t, "apply-verdict", root)
@@ -295,7 +295,7 @@ func TestMergePRRefusesWhileVerdictStatusBlocks(t *testing.T) {
 	status := func(state string, decision apiv1.VerdictDecision, base string) map[string]interface{} {
 		return map[string]interface{}{
 			"context": providers.MergeReviewStatusContext, "state": state,
-			"description": prstatus.VerdictDescription(decision, base, "review"),
+			"description": prstatus.VerdictDescription(string(decision), base, "review"),
 		}
 	}
 	tests := []struct {

@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -33,13 +32,16 @@ var verdictDescriptionPattern = regexp.MustCompile(`^(\S+) for base (\S+)`)
 // enforces it: pass succeeds; needs-changes, fail and escalate fail; defer
 // (waiting on a sibling, not a defect) stays pending. Every state but
 // success blocks a required check.
-func VerdictState(decision apiv1.VerdictDecision) (providers.CheckState, error) {
+//
+// Decisions are the published verdict decision strings (api/v1alpha1's
+// VerdictDecision values); this package stays free of the wire contract.
+func VerdictState(decision string) (providers.CheckState, error) {
 	switch decision {
-	case apiv1.VerdictPass:
+	case "pass":
 		return providers.CheckStatePassing, nil
-	case apiv1.VerdictNeedsChanges, apiv1.VerdictFail, apiv1.VerdictEscalate:
+	case "needs-changes", "fail", "escalate":
 		return providers.CheckStateFailing, nil
-	case apiv1.VerdictDefer:
+	case "defer":
 		return providers.CheckStatePending, nil
 	default:
 		return "", fmt.Errorf("unsupported verdict decision %q", decision)
@@ -48,7 +50,7 @@ func VerdictState(decision apiv1.VerdictDecision) (providers.CheckState, error) 
 
 // VerdictDescription renders the status description: the decision and the
 // reviewed base, then a one-line summary. Providers bound its length.
-func VerdictDescription(decision apiv1.VerdictDecision, baseSHA, summary string) string {
+func VerdictDescription(decision, baseSHA, summary string) string {
 	description := fmt.Sprintf("%s for base %s", decision, strings.TrimSpace(baseSHA))
 	if line := strings.Join(strings.Fields(summary), " "); line != "" {
 		description += ": " + line
@@ -61,7 +63,7 @@ func VerdictDescription(decision apiv1.VerdictDecision, baseSHA, summary string)
 func VerdictStatusRequest(
 	repo providers.RepositoryRef,
 	pullID string,
-	decision apiv1.VerdictDecision,
+	decision string,
 	headSHA, baseSHA, summary, targetURL string,
 ) (providers.PullRequestStatusRequest, error) {
 	state, err := VerdictState(decision)
@@ -139,11 +141,11 @@ func VerdictStatusRefusal(status *providers.CheckDetail, headSHA, baseSHA string
 
 // VerdictSummary is the one-line reason a verdict status shows: the
 // verdict's summary, else the first line of its rationale.
-func VerdictSummary(v apiv1.Verdict) string {
-	if summary := strings.TrimSpace(v.Summary); summary != "" {
+func VerdictSummary(summary, rationale string) string {
+	if summary := strings.TrimSpace(summary); summary != "" {
 		return summary
 	}
-	line, _, _ := strings.Cut(strings.TrimSpace(v.Rationale), "\n")
+	line, _, _ := strings.Cut(strings.TrimSpace(rationale), "\n")
 	return line
 }
 
