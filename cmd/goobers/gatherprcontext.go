@@ -211,8 +211,17 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 			return resolveADOSelectedCheckState(ctx, provider, repo, pr)
 		},
 		prepare: func(ctx context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
-			eligible, err := adoRemediationCandidates(ctx, prs, held, func(ctx context.Context, pr *providers.PullRequestSummary) error {
-				return resolveADOSelectedCheckState(ctx, provider, repo, pr)
+			eligible, err := adoRemediationCandidates(ctx, prs, held, adoCIProbePlan{
+				target: remediationTargetFromEnv(),
+				available: func(prs []providers.PullRequestSummary) ([]providers.PullRequestSummary, error) {
+					return stageClaimAvailablePullRequests(root, repo, os.Getenv(executor.RunIDEnvVar), prs, time.Now())
+				},
+				window: func(probeable []int) ([]int, error) {
+					return advanceADOCIProbeWindow(layoutFor(root), repo, probeable)
+				},
+				probe: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+					return resolveADOSelectedCheckState(ctx, provider, repo, pr)
+				},
 			})
 			if err != nil {
 				return nil, nil, gatherPRAdapterError("resolve remediation check states", err)
@@ -236,73 +245,6 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 			return nil
 		},
 	}, nil
-}
-
-// adoRemediationCIProbeLimit bounds how many pull requests one Azure DevOps
-// remediation cycle reads policy evaluations for (#6482). Each probe is two
-// reads (the PR detail that names its project, then its evaluations), and
-// the lane runs a few cycles an hour, so the bound only caps the worst case of
-// a repository with an unusually large open-PR set; a typical set is probed
-// whole every cycle.
-const adoRemediationCIProbeLimit = 25
-
-// adoRemediationCandidates is the Azure DevOps eligibility pass (#6482): drop
-// PRs another local worktree holds or a human was asked to take
-// (goobers:needs-human), then discover failing CI.
-//
-// ListPullRequests on ADO carries no CI state, so before this the lane saw
-// only its label tier: a PR whose build-validation policy a human's push
-// turned red was invisible to scheduled remediation until merge-review
-// demoted it to goobers:needs-remediation. probe reads one PR's policy
-// evaluations — the same CI classification gather-ci-failures reports
-// (resolveADOSelectedCheckState, ADO-N22) — and marks the PR failing, which
-// puts it in the strong tier (strongRemediationCandidates) beside the labelled
-// PRs, in the same oldest-first order.
-//
-// PRs are probed oldest first, at most adoRemediationCIProbeLimit per cycle,
-// and only when the probe can change their tier: a PR already labelled
-// goobers:needs-remediation is in the strong tier regardless, and a PR parked
-// goobers:merge-escalated is out of the automated loop until a human clears
-// that label (ADO has no head-moved self-heal for it the way GitHub's
-// escalationStillBlocks does), so failing CI must not pull it back in. A
-// probe error fails the stage, as a check-state read does on GitHub
-// (resolveRemediationCheckStates): an unreadable CI state is not "passing".
-func adoRemediationCandidates(
-	ctx context.Context,
-	prs []providers.PullRequestSummary,
-	held map[string]bool,
-	probe func(context.Context, *providers.PullRequestSummary) error,
-) ([]providers.PullRequestSummary, error) {
-	eligible := make([]providers.PullRequestSummary, 0, len(prs))
-	for _, pr := range prs {
-		if !held[pr.Head] && !hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
-			eligible = append(eligible, pr)
-		}
-	}
-	order := make([]int, 0, len(eligible))
-	for i, pr := range eligible {
-		if adoCIProbeCanChangeTier(pr) {
-			order = append(order, i)
-		}
-	}
-	sort.SliceStable(order, func(a, b int) bool { return eligible[order[a]].Number < eligible[order[b]].Number })
-	if len(order) > adoRemediationCIProbeLimit {
-		order = order[:adoRemediationCIProbeLimit]
-	}
-	for _, i := range order {
-		if err := probe(ctx, &eligible[i]); err != nil {
-			return nil, fmt.Errorf("resolve CI state for PR #%d: %w", eligible[i].Number, err)
-		}
-	}
-	return eligible, nil
-}
-
-// adoCIProbeCanChangeTier reports whether reading pr's CI state could move it
-// into the strong tier this cycle.
-func adoCIProbeCanChangeTier(pr providers.PullRequestSummary) bool {
-	return pr.CheckState != providers.CheckStateFailing &&
-		!hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) &&
-		!hasLabelFold(pr.Labels, remediationEscalatedLabel)
 }
 
 // resolveADOSelectedCheckState marks the selected pull request's CI failing
