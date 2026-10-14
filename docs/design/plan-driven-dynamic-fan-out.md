@@ -4,7 +4,7 @@
 > Area: workflow DSL, runner, journal, conformance
 > Tracking: #1310
 > Extends: [`static-fan-out-fan-in.md`](static-fan-out-fan-in.md)
-> Companion: [`agent-authored-child-workflows.md`](agent-authored-child-workflows.md)
+> Companion: [`agent-authored-child-workflows.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/agent-authored-child-workflows.md)
 > Related: #155, #817, #2891, #4769, #4771, #5123, #6868
 > Verified: 561268950 (2026-10-14)
 
