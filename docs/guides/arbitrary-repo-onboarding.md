@@ -19,9 +19,9 @@ Finish the single-repository path before adding another gaggle.
 `goobers init --guided` follows the
 same convention: it loads the canonical work-nomination, backlog-curation, and
 implementation modules from
-`config-examples/gaggles/acme-web` (on Azure DevOps it offers merge-review
-instead of work-nomination, whose `file-issues` stage files GitHub issues
-only; guided merge-review is Azure DevOps-only), then adapts repository identity, branch,
+`config-examples/gaggles/acme-web` (on Azure DevOps it drops work-nomination,
+whose `file-issues` stage files GitHub issues only, and selects merge-review by
+default; on GitHub merge-review is offered but not selected), then adapts repository identity, branch,
 issue scope, harness, CI command, and required capabilities from the choices
 and evidence collected by the wizard. It does not reuse the deliberately
 simplified `quickstart@v1` tutorial workflow.
@@ -68,7 +68,9 @@ branch and workflow policy, and configure the named credential references before
 running. The generated GitHub references are `GOOBERS_GITHUB_TOKEN`,
 `GOOBERS_GITHUB_ISSUES_TOKEN`, `GOOBERS_GITHUB_PR_TOKEN`, and
 `GOOBERS_GITHUB_PUSH_TOKEN`; they contain environment-variable names, never token
-values. Authenticate the selected harness using its supported local login path.
+values. Adding `merge-review` to `--workflows` also backs its pull-request,
+review, merge and branch-delete capabilities with `GOOBERS_GITHUB_PR_TOKEN` (see
+[GitHub token scopes](github-token-scopes.md)). Authenticate the selected harness using its supported local login path.
 Follow the credential scopes and first-run checks below. Existing instance
 configuration is refused rather than overwritten; use a fresh durable destination.
 `--source-tree` remains available only with the quickstart template.
@@ -197,19 +199,28 @@ reading a token or starting a run. Pass `--repo=organization/project/repository`
 to write the real coordinates directly, and `--repo-auth-kind` to choose
 `workload-identity`, `managed-identity` or `pat` (see
 [what `init` produces](../../examples/ado-onboarding/README.md#what-init-produces)).
-For PAT onboarding, connect the real organization, project and repository
+Without `--repo`, connect the real organization, project and repository
 before running:
 
 ```sh
-# Set GOOBERS_ADO_TOKEN securely in your environment; pass its name, not its value.
 goobers connect organization/project/repository --seed ./ado-instance
 goobers validate --strict --check-repos ./ado-instance
 ```
 
 `connect` preserves the provider boundary: it will not convert an existing
-GitHub instance to ADO. It records PAT authentication; use the authentication
-guide for Azure CLI or unattended identity configuration instead. Without the
-token, the local connection completes and the starter task is reported pending.
+GitHub instance to ADO. It also keeps the repository's credential source: the
+`azure-cli`, `workload-identity` or `managed-identity` block, or a PAT's own
+token reference (for example the variable `init --repo-token-env` named).
+`--seed` files the starter task through it. To switch an `azure-cli` or
+identity source to a PAT, pass the token variable's name explicitly:
+
+```sh
+# Set GOOBERS_ADO_TOKEN securely in your environment; pass its name, not its value.
+goobers connect organization/project/repository --token-env GOOBERS_ADO_TOKEN --seed ./ado-instance
+```
+
+With PAT authentication and the token unset, the local connection completes
+and the starter task is reported pending.
 
 Azure Boards tags are attached to work items, not provisioned as a GitHub-style
 label catalog. `--seed` creates a `Task` carrying only the connected workflow's
@@ -219,8 +230,9 @@ the repository-specific seed marker. The duplicate scan is bounded to 1000
 candidates and fails without creating a task if it cannot finish; large backlogs
 may need manual seeding. A seed failure does not undo the local connection.
 
-With credentials available, ADO `connect` also reports how many open work items
-match the selector tags. This is not a claim or full workflow-eligibility check.
+When the repository's PAT variable is set and passes the reachability
+preflight, ADO `connect` also reports how many open work items match the
+selector tags. With a kept `azure-cli` or identity source the count is skipped. This is not a claim or full workflow-eligibility check.
 The query scans at most ten bounded pages; unfinished scans report a lower
 bound, and provider failures report the count as unknown. JSON callers receive
 this advisory on stderr, leaving the action envelope unchanged.

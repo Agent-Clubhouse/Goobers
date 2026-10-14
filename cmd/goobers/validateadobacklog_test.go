@@ -89,7 +89,7 @@ func TestValidateADOBacklogProjectFailureJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init: %d %s", code, stderr)
 	}
-	code, _, stderr = runArgs(t, "connect", "org/code/web", root)
+	code, _, stderr = runArgs(t, "connect", "org/code/web", "--token-env", "GOOBERS_ADO_TOKEN", root)
 	if code != 0 {
 		t.Fatalf("connect: %d %s", code, stderr)
 	}
