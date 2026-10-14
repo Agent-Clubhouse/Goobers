@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // FaultAuditSchemaVersion identifies the persisted fault-audit report contract.
@@ -227,6 +228,26 @@ func selectAuditObservations(observations []AttributionObservation, config Fault
 }
 
 func makeFaultSignal(observation AttributionObservation, cause CauseFinding) faultSignal {
+	signature := causeSignature(cause)
+	if ClassFaultDomain(cause.Class) == FaultDomainWorkflow {
+		signature = workflowScopedSignature(observation.Workflow, cause.Stage, signature)
+	}
+	var path []string
+	if contribution, ok := observation.Attribution.Contribution(cause.NodeID); ok {
+		path = auditNodePath(contribution, observation.RunID)
+	}
+	var evidence []AttributionEvidenceLink
+	for _, link := range observation.Evidence {
+		if link.Source == string(cause.Class) && link.NodeID == cause.NodeID &&
+			(cause.Stage == "" || link.Stage == cause.Stage) {
+			evidence = append(evidence, link)
+		}
+	}
+	return faultSignal{observation: observation, cause: cause, signature: signature, path: path, evidence: evidence}
+}
+
+// causeSignature is the stable, run-independent text a cause groups by.
+func causeSignature(cause CauseFinding) string {
 	text := strings.TrimSpace(cause.Summary)
 	if text == "" && len(cause.Evidence) > 0 {
 		text = cause.Evidence[0]
@@ -239,19 +260,18 @@ func makeFaultSignal(observation AttributionObservation, cause CauseFinding) fau
 	if text == "stage:" {
 		text = "unknown-failure"
 	}
-	signature := text
-	var path []string
-	if contribution, ok := observation.Attribution.Contribution(cause.NodeID); ok {
-		path = contributionPath(contribution)
-	}
-	var evidence []AttributionEvidenceLink
-	for _, link := range observation.Evidence {
-		if link.Source == string(cause.Class) && link.NodeID == cause.NodeID &&
-			(cause.Stage == "" || link.Stage == cause.Stage) {
-			evidence = append(evidence, link)
-		}
-	}
-	return faultSignal{observation: observation, cause: cause, signature: signature, path: path, evidence: evidence}
+	return text
+}
+
+// workflowScopedSignature scopes a workflow-owned cause's signature to the
+// workflow and stage it occurred in. The attributor's summaries are fixed text
+// per failure class, so without the scope every weak-instructions failure in
+// every workflow shares one signature, and a defect that lives in each
+// workflow's own definition is collapsed into one cross-workflow group that
+// can only ever classify as mixed. Shared-component causes keep the unscoped
+// signature: crossing workflow boundaries is the evidence they need.
+func workflowScopedSignature(workflow, stage, text string) string {
+	return "workflow:" + workflow + " stage:" + stage + " " + text
 }
 
 func faultFindingID(signature string) string {
@@ -330,11 +350,16 @@ func faultClassificationSignals(findingID string, signals []faultSignal, fixesAp
 	return baseline
 }
 
+// unownedEnvironmentEvidence explains why an environment cause stays unknown
+// rather than defaulting to an owner.
+const unownedEnvironmentEvidence = "an environment cause recorded no error code or named component, so Goobers runtime and external ownership cannot be told apart"
+
 type faultSignalSummary struct {
 	runs, workflows, versions, environments, paths map[string]bool
 	domainCounts                                   map[FaultDomain]int
 	confidence, weight                             float64
 	missingProvenance, contradictory               bool
+	unownedEnvironment                             bool
 	evidence                                       []AttributionEvidenceLink
 	counterEvidence                                []string
 }
@@ -366,7 +391,12 @@ func summarizeFaultSignals(signals []faultSignal) faultSignalSummary {
 				summary.counterEvidence = append(summary.counterEvidence, assumption)
 			}
 		}
-		summary.domainCounts[signalDomain(signal)]++
+		domain := signalDomain(signal)
+		if domain == FaultDomainUnknown && signal.cause.Class == ClassEnvironment && !summary.unownedEnvironment {
+			summary.unownedEnvironment = true
+			summary.counterEvidence = append(summary.counterEvidence, unownedEnvironmentEvidence)
+		}
+		summary.domainCounts[domain]++
 		weight := groundTruthWeight(signal.observation.GroundTruth)
 		summary.weight += weight
 		summary.confidence += weight * groundTruthConfidence(signal.cause.Confidence, signal.observation.GroundTruth)
@@ -395,17 +425,99 @@ func baselineObservations(signals []faultSignal, fixedAt time.Time, limit int) [
 }
 
 func signalDomain(signal faultSignal) FaultDomain {
-	text := strings.ToLower(signal.signature + " " + strings.Join(signal.cause.Evidence, " "))
+	return CauseFaultDomain(signal.cause)
+}
+
+// CauseFaultDomain is the fault domain the auditor assigns one cause before
+// the cohort rules (sample floor, provenance, mixed domains, boundary
+// crossing) apply. Evidence is consulted in order of authority:
+//
+//  1. The failure class, when it alone names an owner (ClassFaultDomain).
+//     The attributor's summaries are fixed text per class, so the words in
+//     them are never weighed against the class: "the model that ran is not
+//     the model the subagent requested" is a routing finding, not a model
+//     one.
+//  2. The failing stage's recorded error code, the journal's structured
+//     statement of which component failed.
+//  3. Component keywords, only in text the attributor did not author from a
+//     template — a cause with no class that decides and no recorded code.
+//
+// A cause none of these resolve is mixed-or-unknown. In particular an
+// environment cause with no code or named component stays unknown: the class
+// rules out the workflow but cannot tell a Goobers runtime fault from an
+// external one.
+func CauseFaultDomain(cause CauseFinding) FaultDomain {
+	if domain := ClassFaultDomain(cause.Class); domain != FaultDomainUnknown {
+		return domain
+	}
+	if domain := errorCodeFaultDomain(cause.ErrorCode); domain != FaultDomainUnknown {
+		return domain
+	}
+	return componentKeywordDomain(cause)
+}
+
+// ClassFaultDomain is the fault domain a failure class names on its own, or
+// FaultDomainUnknown when the class does not identify an owner. Environment
+// is "not an agent decision", which rules the workflow out without choosing
+// between Goobers runtime and an external component; a bad tool result or an
+// explicit unknown names no owner at all.
+func ClassFaultDomain(class FailureClass) FaultDomain {
+	switch class {
+	case ClassBadToolChoice, ClassBadInterpretation, ClassWeakInstructions, ClassRouting, ClassTopology:
+		return FaultDomainWorkflow
+	case ClassModel:
+		return FaultDomainExternal
+	default:
+		return FaultDomainUnknown
+	}
+}
+
+// errorCodeFaultDomain maps a stage's recorded error code to the component
+// that owns it. Codes whose owner is ambiguous (a timeout, a validation
+// refusal, an operator cancel, a generic infra failure) decide nothing.
+func errorCodeFaultDomain(code string) FaultDomain {
+	switch code {
+	case "":
+		return FaultDomainUnknown
+	case telemetry.ErrCodeInfraWorkspace, telemetry.ErrCodeInfraJournal,
+		telemetry.ErrCodeWorkspaceProvisionFailed, telemetry.ErrCodeContextMaterializeFailed,
+		telemetry.ErrCodeAgenticExecutorUnavailable, telemetry.ErrCodeAgenticKitMissing,
+		telemetry.ErrCodeAgenticKitUnavailable:
+		return FaultDomainProductRuntime
+	case telemetry.ErrCodeCredentialUnavailable, telemetry.ErrCodeCredentialResolveFailed,
+		telemetry.ErrCodeHarnessRequiredMCPUnavailable:
+		return FaultDomainExternal
+	}
+	switch telemetry.ClassifyError(code) {
+	case telemetry.ErrorClassExecutor, telemetry.ErrorClassInfraLock:
+		return FaultDomainProductRuntime
+	case telemetry.ErrorClassProvider, telemetry.ErrorClassProviderRateLimit, telemetry.ErrorClassInfraNet,
+		telemetry.ErrorClassInfraGit, telemetry.ErrorClassHarnessFailure:
+		return FaultDomainExternal
+	default:
+		return FaultDomainUnknown
+	}
+}
+
+// componentKeywordDomain is the fallback for causes whose class and code
+// decide nothing. It reads only text that can name a component: a summary the
+// attributor did not write from its environment template, and evidence
+// entries other than its own intervention notes.
+func componentKeywordDomain(cause CauseFinding) FaultDomain {
+	var parts []string
+	if strings.TrimSpace(cause.Summary) != environmentCauseSummary {
+		parts = append(parts, causeSignature(cause))
+	}
+	for _, entry := range cause.Evidence {
+		if !strings.HasPrefix(entry, "intervention:") {
+			parts = append(parts, entry)
+		}
+	}
+	text := strings.ToLower(strings.Join(parts, " "))
 	switch {
 	case containsAny(text, "scheduler", "daemon", "worktree", "journal", "claim", "admission", "publication", "shared ci", "recovery"):
 		return FaultDomainProductRuntime
 	case containsAny(text, "credential", "rate limit", "provider", "model", "network", "filesystem", "antivirus", "operating system", "harness"):
-		return FaultDomainExternal
-	}
-	switch signal.cause.Class {
-	case ClassBadToolChoice, ClassBadInterpretation, ClassWeakInstructions, ClassRouting, ClassTopology:
-		return FaultDomainWorkflow
-	case ClassModel, ClassEnvironment:
 		return FaultDomainExternal
 	default:
 		return FaultDomainUnknown
@@ -432,7 +544,7 @@ func explainFaultFinding(finding FaultFinding, samples int) (string, []string, s
 			"harness/provider/environment owner", "investigate the shared external component and preserve provider/environment evidence"
 	case FaultDomainWorkflow:
 		return scope + " localize to one workflow, EffectiveVersion, and node path.",
-			[]string{"product/runtime rejected: no cross-workflow occurrence", "external rejected: evidence identifies a workflow-controlled stage, topology, instruction, or tool choice"},
+			[]string{"product/runtime rejected: no cross-workflow occurrence", "external rejected: the failure class names a workflow-controlled instruction, interpretation, tool choice, routing, or topology"},
 			"workflow/config owner", "remediate the pinned workflow version and verify on a held-out post-fix cohort"
 	default:
 		return fmt.Sprintf("%s produced %d signals, but sparse, contradictory, mixed, or incomplete evidence prevents a single-owner classification.", scope, samples),
@@ -544,12 +656,31 @@ func sameOptionalValue(left, right string) bool {
 	return left == "" || right == "" || left == right
 }
 
+// auditRunPlaceholder stands in for a run's own node in an audit node path.
+const auditRunPlaceholder = "run"
+
+// auditNodePath is a contribution's node path with the run's own node
+// (run:<runID>) replaced by a placeholder. Every path the attributor records
+// descends from the outcome through that node, so a raw path is unique to its
+// run: compared across runs, no failure would ever localize to one node path,
+// and no post-fix run would ever exercise the affected one.
+func auditNodePath(contribution Contribution, runID string) []string {
+	path := contributionPath(contribution)
+	own := runNodeID(runID)
+	for index, nodeID := range path {
+		if nodeID == own {
+			path[index] = auditRunPlaceholder
+		}
+	}
+	return path
+}
+
 func observationExercisesPath(observation AttributionObservation, affectedPath []string) bool {
 	if len(affectedPath) == 0 {
 		return false
 	}
 	for _, contribution := range observation.Attribution.Contributions {
-		if slicesEqual(contributionPath(contribution), affectedPath) {
+		if slicesEqual(auditNodePath(contribution, observation.RunID), affectedPath) {
 			return true
 		}
 	}

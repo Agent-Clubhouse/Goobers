@@ -195,9 +195,23 @@ func (b *builder) addStages(events []journal.Event) {
 		if event.Type != journal.EventStageFinished {
 			continue
 		}
-		if position, ok := b.graph.index[id]; ok && event.Status != "" {
-			b.graph.Nodes[position].Attributes["status"] = event.Status
+		if position, ok := b.graph.index[id]; ok {
+			recordStageFinish(b.graph.Nodes[position].Attributes, event)
 		}
+	}
+}
+
+// recordStageFinish copies a stage.finished event's status and normative error
+// code onto the stage attempt's node. The error code is the journal's only
+// structured statement of WHAT failed — attribution's cause summaries are
+// fixed rule text — so the fault auditor reads it to tell a Goobers runtime
+// fault from an external one.
+func recordStageFinish(attributes map[string]string, event journal.Event) {
+	if event.Status != "" {
+		attributes["status"] = event.Status
+	}
+	if event.Error != nil && event.Error.Code != "" {
+		attributes[stageErrorCodeAttribute] = event.Error.Code
 	}
 }
 
