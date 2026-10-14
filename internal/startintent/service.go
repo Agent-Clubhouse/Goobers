@@ -160,10 +160,14 @@ func (s *Service) finishExpired(ctx context.Context, record triggerqueue.Record)
 	return s.Queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", "accepted trigger expired before execution admission", s.Now())
 }
 
+// Sized above the queue's 5s SQLite busy timeout so a loaded host's slow fsync
+// does not fail a custody write that would otherwise succeed.
+const refusalCustodyTimeout = 15 * time.Second
+
 func (s *Service) refuseDispatch(ctx context.Context, id string, err error) error {
 	// The scheduler returned before launching. Finish this bounded custody
 	// update even when its provider-validation context just expired.
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), refusalCustodyTimeout)
 	defer cancel()
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return s.Queue.Requeue(cleanup, id, "ordinary start validation interrupted")
