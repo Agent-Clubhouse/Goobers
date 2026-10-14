@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -138,8 +139,8 @@ func stagePodAVExclusionAdvisory(ctx context.Context, deps avExclusionDeps, getw
 	if err != nil {
 		workspace = dispatcher.WindowsWorkspacePath
 	}
-	tmp := firstNonEmpty(getenv("TMP"), getenv("TEMP"), deps.tempDir)
-	home := firstNonEmpty(getenv("USERPROFILE"), getenv("HOME"))
+	tmp := cmp.Or(getenv("TMP"), getenv("TEMP"), deps.tempDir)
+	home := cmp.Or(getenv("USERPROFILE"), getenv("HOME"))
 	dirs := avexclusion.StagePodDirectories(workspace, tmp, home, getenv("GOOBERS_INSTANCE_ROOT"))
 	return avexclusion.Summary("stage pod", avExclusionReport(ctx, dirs, deps))
 }
