@@ -1028,6 +1028,19 @@ func TestClaudeAdapterRefusesRealKeychainUnderTest(t *testing.T) {
 	_ = (&ClaudeAdapter{}).keychainReader()
 }
 
+// TestReadOperatorClaudeKeychainRefusesUnderTest pins the backstop inside the
+// real reader: called directly under go test it panics before security(1)
+// runs, so naming the real reader in a unit test cannot reach the developer's
+// Keychain either.
+func TestReadOperatorClaudeKeychainRefusesUnderTest(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("real Keychain reader under go test did not panic")
+		}
+	}()
+	_, _ = readOperatorClaudeKeychain(context.Background(), claudeCodeKeychainService)
+}
+
 func TestClaudeAdapterUsesInjectedKeychainReader(t *testing.T) {
 	// An empty temp HOME: no credentials file, so on macOS seeding falls
 	// through to the injected reader.

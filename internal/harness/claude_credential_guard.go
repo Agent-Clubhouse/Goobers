@@ -38,6 +38,17 @@ func (c *ClaudeAdapter) keychainReader() ClaudeKeychainReader {
 	return readOperatorClaudeKeychain
 }
 
+// refuseOperatorClaudeKeychainUnderTest is the backstop inside the real
+// reader itself: it panics before security(1) runs, so a test that names
+// readOperatorClaudeKeychain directly (as a KeychainReader, a seeding
+// argument, or a plain call) fails as loudly as one that left the field nil.
+func refuseOperatorClaudeKeychainUnderTest() {
+	if testing.Testing() && !operatorClaudeLoginOptIn.Load() {
+		panic("harness: claude-code: the real macOS Keychain reader was called under go test; " +
+			"inject a fake ClaudeKeychainReader instead (#7447)")
+	}
+}
+
 // hostClaudeConfigDirs are the invoking user's real Claude Code config
 // directories, captured when a test binary initializes (before any test's
 // t.Setenv can move HOME) and empty in every other binary.

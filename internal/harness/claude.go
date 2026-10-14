@@ -798,8 +798,10 @@ func seedClaudeCredentialsForPlatform(
 // /usr/bin/security against the invoking user's login Keychain, so it reads
 // the operator's real Claude Code login. It is the nil KeychainReader
 // default: always in production, and under `go test` only for an opt-in live
-// integration test (operatorClaudeLoginOptIn).
+// integration test (operatorClaudeLoginOptIn). It refuses to run under
+// `go test` otherwise, however a test reached it.
 func readOperatorClaudeKeychain(ctx context.Context, service string) ([]byte, error) {
+	refuseOperatorClaudeKeychainUnderTest()
 	out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
 	if isKeychainItemNotFound(err) {
 		return nil, fmt.Errorf("%w: %w", ErrClaudeKeychainItemNotFound, err)
