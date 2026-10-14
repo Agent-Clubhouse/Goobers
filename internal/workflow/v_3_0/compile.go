@@ -397,6 +397,9 @@ func structuralProblems(m *Machine) []string {
 	for _, p := range def.Spec.Parallels {
 		dup(p.Name)
 	}
+	for _, fanOut := range def.Spec.Maps {
+		dup(fanOut.Name)
+	}
 
 	if def.Spec.Start == TerminalComplete {
 		problems = append(problems, "start state is empty")

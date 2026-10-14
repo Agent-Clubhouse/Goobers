@@ -193,7 +193,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	in.Target = strings.TrimSpace(in.Target)
@@ -381,7 +381,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if res, refused, verr := r.verifyResumePin(jr, &in, rd, id); refused || verr != nil {
 		return res, verr
 	}
-	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	if err := resetRetryBackoffOnResume(jr, events); err != nil {
@@ -2341,7 +2341,7 @@ func resumeItem(rd *journal.Reader, id journal.RunIdentity) (*apiv1.BacklogItem,
 // ownership of malformed/missing-journal diagnostics and terminalization.
 func (r *Runner) admitChildWorkflowResume(ctx context.Context, machine *workflow.Machine, dir string) error {
 	if machine != nil {
-		return r.admitParentExecution(ctx, machine)
+		return r.admitExecution(ctx, machine)
 	}
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
@@ -2355,5 +2355,5 @@ func (r *Runner) admitChildWorkflowResume(ctx context.Context, machine *workflow
 	if err != nil {
 		return nil
 	}
-	return r.admitParentExecution(ctx, machine)
+	return r.admitExecution(ctx, machine)
 }

@@ -2457,6 +2457,12 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 		states[p.Name] = true
 	}
+	for _, m := range w.Spec.Maps {
+		if states[m.Name] {
+			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", m.Name)
+		}
+		states[m.Name] = true
+	}
 
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
 		r.add(errorStartState, Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)

@@ -526,10 +526,11 @@ func validateSchedule(expr string) error {
 	return err
 }
 
-// stateNames returns every defined state name in definition order (tasks then
-// gates) — a deterministic order for stable problem reporting.
+// stateNames returns every defined state name in definition order (tasks,
+// gates, parallels, then DSL 3.1 maps) — a deterministic order for stable
+// problem reporting.
 func stateNames(def Definition) []string {
-	names := make([]string, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
+	names := make([]string, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels)+len(def.Spec.Maps))
 	for _, t := range def.Spec.Tasks {
 		names = append(names, t.Name)
 	}
@@ -538,6 +539,9 @@ func stateNames(def Definition) []string {
 	}
 	for _, p := range def.Spec.Parallels {
 		names = append(names, p.Name)
+	}
+	for _, m := range def.Spec.Maps {
+		names = append(names, m.Name)
 	}
 	return names
 }
