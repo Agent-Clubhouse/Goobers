@@ -27,10 +27,15 @@ func adoTestTagUpdate(id int, oldTags, newTags, changed string) map[string]inter
 	update := adoTestUpdate(id, map[string]interface{}{
 		"System.Tags":        tags,
 		"System.ChangedDate": map[string]interface{}{"oldValue": "2026-01-01T00:00:00Z", "newValue": changed},
+		// A real updates entry also carries System.RevisedDate as an
+		// old/new field change. Its value here differs from both the change
+		// date and the top-level revisedDate, so taking either revised date
+		// as the transition time fails the test.
+		"System.RevisedDate": map[string]interface{}{"oldValue": "9999-01-01T00:00:00Z", "newValue": "2025-06-01T00:00:00Z"},
 	})
-	// revisedDate sits at the top level of a real updates entry, beside id
-	// and rev: it is when the revision was superseded (9999-01-01 for the
-	// latest), so the walk must not take it as the transition time.
+	// revisedDate also sits at the top level of a real updates entry, beside
+	// id and rev: it is when the revision was superseded (9999-01-01 for the
+	// latest), so the walk must not take it as the transition time either.
 	update["revisedDate"] = "9999-01-01T00:00:00Z"
 	return update
 }
