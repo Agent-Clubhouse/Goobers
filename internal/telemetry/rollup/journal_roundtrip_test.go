@@ -20,7 +20,7 @@ func TestJournalEventMirrorFieldSet(t *testing.T) {
 		"decision", "disposition", "gaggle", "instructionAddendum", "integrity",
 		"minimumIntegrity", "notificationReceipt", "notificationRequest",
 		"operatorMessageAcknowledgement", "operatorMessageOutcome", "operatorMessageRequest",
-		"parallel", "peerMessage", "progress", "rationale", "skipCount",
+		"parallel", "peerMessage", "progress", "rationale", "selection", "skipCount",
 		// Run terminal causes are exposed by readservice; rollups still consume
 		// the existing status and error fields, without a terminal-cause column.
 		"terminalCause",
