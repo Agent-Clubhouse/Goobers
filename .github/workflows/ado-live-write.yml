@@ -15,7 +15,10 @@ name: ADO Live Write
 # and secrets.ADO_PAT. When any is absent the provisioning check records
 # provisioned=false and emits a notice instead of failing, so the run ends
 # green and the scheduled-failure alarm never files a streak for a leg nobody
-# has provisioned yet. Provision the scratch repository's policies once with
+# has provisioned yet. An ADO_WRITE_REPOSITORY equal to the testbed repository
+# (vars.ADO_REPOSITORY, else the project name) fails the check outright, so a
+# mis-set variable can never point the mutating leg at the testbed. Provision
+# the scratch repository's policies once with
 # `go run ./test/adolive provision -apply` (see
 # docs/guides/provider-fixture-drift.md), set the variables, and delete the
 # marker line above once the first run is green.
@@ -62,6 +65,9 @@ jobs:
           ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
           ADO_PROJECT: ${{ vars.ADO_PROJECT }}
           ADO_WRITE_REPOSITORY: ${{ vars.ADO_WRITE_REPOSITORY }}
+          # The read-only legs' testbed repository (ado-live-conformance.yml
+          # defaults it to the project name), read only to refuse it below.
+          ADO_REPOSITORY: ${{ vars.ADO_REPOSITORY }}
           ADO_LIVE_CI_FAILURE_PIPELINE: ${{ vars.ADO_LIVE_CI_FAILURE_PIPELINE }}
           ADO_PAT: ${{ secrets.ADO_PAT }}
         run: |
@@ -79,6 +85,14 @@ jobs:
           org="${org##*/}"
           if [ -z "$org" ]; then
             echo "::error title=ADO live write leg misconfigured::ADO_ORG_URL has no organization segment after the last /."
+            exit 1
+          fi
+          # The mutating leg must never point at the testbed repository the
+          # read-only legs read. ADO repository names ignore case.
+          testbed="${ADO_REPOSITORY:-$ADO_PROJECT}"
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ "$(lower "$ADO_WRITE_REPOSITORY")" = "$(lower "$testbed")" ]; then
+            echo "::error title=ADO live write leg misconfigured::ADO_WRITE_REPOSITORY ($ADO_WRITE_REPOSITORY) is the testbed repository the read-only legs use; point it at a dedicated scratch repository."
             exit 1
           fi
           echo "provisioned=true" >> "$GITHUB_OUTPUT"
