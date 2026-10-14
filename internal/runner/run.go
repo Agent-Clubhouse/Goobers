@@ -1542,7 +1542,8 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	// past the failure that parked it.
 	r.releaseBaselineParks(ctx, ws)
 	ws.gateEval = r.newWalkGateEvaluator(ws)
-	runConcurrent := func(p apiv1.Parallel, existing *parallelExec, selection *journal.ParallelSelection) (Result, bool, error) {
+	runConcurrent := func(visit parallelVisit) (Result, bool, error) {
+		p := visit.spec
 		if err := validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))
 			return res, true, failErr
@@ -1552,7 +1553,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			return res, true, failErr
 		}
 		outcome, err := r.runConcurrentParallel(
-			ctx, ws.jr, ws.in, parallelVisit{spec: p, existing: existing, selection: selection}, ws.pointers, ws.lastStage, ws.lastResult,
+			ctx, ws.jr, ws.in, visit, ws.pointers, ws.lastStage, ws.lastResult,
 			ws.completed, ws.workspaceBranch, ws.reg, &ws.stepBudget,
 		)
 		ws.steps = int(ws.stepBudget.Load())
@@ -1571,6 +1572,9 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		}
 		ws.pointers, ws.completed = outcome.pointers, outcome.completed
 		ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
+		if outcome.fanOutResults != nil {
+			ws.fanOutResults = outcome.fanOutResults
+		}
 		ws.in.workspaceRevision = outcome.workspaceRevision.DeepCopy()
 		if outcome.repoRef != nil {
 			ws.in.RepoRef = *outcome.repoRef
@@ -1610,7 +1614,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		return Result{}, false, nil
 	}
 	if ws.parallel != nil && parallelUsesDispatcher(ws.in.Machine, ws.parallel.spec) {
-		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel, nil)
+		result, done, err := runConcurrent(parallelVisit{spec: ws.parallel.spec, existing: ws.parallel})
 		if done || err != nil {
 			return result, err
 		}
@@ -1730,9 +1734,9 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			continue
 		}
 
-		// Entering a parallel: fan out into its declared branches.
-		if p, ok := ws.in.Machine.Parallel(ws.state); ok {
-			result, done, err := r.enterParallel(ctx, ws, p, runConcurrent)
+		// Entering a parallel or a map: fan out into its declared branches,
+		// or into one branch per frozen roster item.
+		if result, entered, done, err := r.enterFanOut(ctx, ws, runConcurrent); entered {
 			if done || err != nil {
 				return result, err
 			}
@@ -3360,8 +3364,11 @@ type taskFrame struct {
 	upstreamResult      apiv1.ResultEnvelope
 	completed           stageOutputs
 	fanIn               *parallelExec
-	workspaceBranch     string
-	branchRecorded      *bool
+	// mapItem is the frozen roster item a map branch binds into this
+	// task's invocation inputs (design §6.1); nil outside a map item.
+	mapItem         *mapItemBinding
+	workspaceBranch string
+	branchRecorded  *bool
 	// reboundRecorded is the rebound branch already journaled through
 	// ReboundWorkspaceBranchAnnotation, so the sticky rebinding is recorded
 	// once rather than once per stage. A run that rebinds twice records both,
@@ -3383,8 +3390,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		tf.in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
 	}
 	jr, in, t := tf.jr, tf.in, tf.t
-	upstream, upstreamResult := tf.upstream, tf.upstreamResult
-	completed, fanIn := tf.completed, tf.fanIn
+	upstream := tf.upstream
 
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
@@ -3597,8 +3603,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// stages resolving inputsFrom grade against this, because Outputs are
 		// bare scalars that cannot carry a label of their own (TBH-4). A grade
 		// the executor stamped itself is kept when it is weaker (#2979).
-		result.Integrity = StageResultIntegrity(result.Integrity, producedIntegrity(t, in.Item, upstream,
-			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn)))
+		result.Integrity = StageResultIntegrity(result.Integrity, producedIntegrity(t, in.Item, upstream, taskInputGrades(tf)))
 		outputs := stageFinishedOutputs(result, t.ContinueOnError)
 		var eventWorkspaceRevision *apiv1.WorkspaceRevision
 		if t.Type == apiv1.TaskDeterministic &&
@@ -3859,15 +3864,16 @@ func (r *Runner) applyInvocationBacklogQueryBacklogScope(task apiv1.Task, inputs
 	return backlogdefaults.ApplyBacklogScopeToInvocation(task, inputs, r.cfg.BacklogQueryBacklogLabels, r.cfg.BacklogQueryLabelPredicate)
 }
 
-func (r *Runner) finalizeInvocationInputs(task apiv1.Task, env *apiv1.InvocationEnvelope, fanIn *parallelExec) error {
+func (r *Runner) finalizeInvocationInputs(task apiv1.Task, env *apiv1.InvocationEnvelope, fanIn *parallelExec, mapItem *mapItemBinding) error {
+	if err := mapItem.apply(env.Inputs); err != nil {
+		return fmt.Errorf("stage %q map item binding: %w", task.Name, err)
+	}
 	inputs, err := r.applyInvocationBacklogQueryBacklogScope(task, env.Inputs)
 	if err != nil {
 		return fmt.Errorf("stage %q backlog scope: %w", task.Name, err)
 	}
 	env.Inputs = inputs
-	if fanIn != nil && task.Name == fanIn.spec.Join {
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
-	}
+	joinInputs(fanIn, task.Name, env.Inputs)
 	return nil
 }
 
@@ -4050,7 +4056,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		env.Inputs[inputKey] = v
 	}
-	if err := r.finalizeInvocationInputs(t, &env, fanIn); err != nil {
+	if err := r.finalizeInvocationInputs(t, &env, fanIn, tf.mapItem); err != nil {
 		return apiv1.ResultEnvelope{}, nil, nil, err
 	}
 
@@ -4805,7 +4811,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		if env.Inputs == nil {
 			env.Inputs = map[string]interface{}{}
 		}
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+		joinInputs(fanIn, g.Name, env.Inputs)
 	}
 
 	if knownOutcome != "" {

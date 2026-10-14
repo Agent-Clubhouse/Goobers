@@ -12,7 +12,7 @@ import (
 
 // concurrentParallelRunner runs one parallel visit through the bounded
 // dispatcher; walk supplies it as a closure over its own state.
-type concurrentParallelRunner func(p apiv1.Parallel, existing *parallelExec, selection *journal.ParallelSelection) (Result, bool, error)
+type concurrentParallelRunner func(visit parallelVisit) (Result, bool, error)
 
 // enterParallel fans the walk out into parallel p. A selective parallel first
 // freezes its selection; a source that cannot be frozen fails the parallel
@@ -35,7 +35,7 @@ func (r *Runner) enterParallel(ctx context.Context, ws *walkState, p apiv1.Paral
 		return Result{}, false, nil
 	}
 	if parallelUsesDispatcher(ws.in.Machine, p) {
-		return runConcurrent(p, nil, selection)
+		return runConcurrent(parallelVisit{spec: p, selection: selection})
 	}
 	ws.parallel = newParallelExec(p)
 	ws.parallel.applySelection(selection)

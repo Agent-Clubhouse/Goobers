@@ -272,7 +272,7 @@ func recordChildCompletion(tf *taskFrame, attempt int, class journal.AttemptClas
 
 func admitTaskIntegrity(tf taskFrame) error {
 	jr, in, t := tf.jr, tf.in, tf.t
-	upstream, upstreamResult, completed, fanIn := tf.upstream, tf.upstreamResult, tf.completed, tf.fanIn
+	upstream := tf.upstream
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
 	// ValidateInputIntegrity; inputsFrom values are bare scalars whose only
@@ -282,8 +282,7 @@ func admitTaskIntegrity(tf taskFrame) error {
 	// producer's provider-authored text through inputsFrom (TBH-4).
 	integrityErr := apiv1.ValidateInputIntegrity(in.Item, upstream, t.MinimumIntegrity)
 	if integrityErr == nil {
-		integrityErr = apiv1.ValidateResolvedInputIntegrity(
-			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn), t.MinimumIntegrity)
+		integrityErr = apiv1.ValidateResolvedInputIntegrity(taskInputGrades(tf), t.MinimumIntegrity)
 	}
 	if err := integrityErr; err != nil {
 		admission := &apiv1.IntegrityAdmissionError{}

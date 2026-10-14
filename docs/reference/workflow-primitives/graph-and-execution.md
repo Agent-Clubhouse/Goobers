@@ -252,12 +252,11 @@ are not permitted inside parallel branches.
 Both require the `goobers.dev/allow-preview-features: "true"` workflow
 annotation and are rejected under DSL 2.0 and 3.0.
 
-**Runtime support.** The local runner executes selective parallels. Maps
-validate, but no runtime executes them yet. The engine walk refuses both at
-run start with a typed unsupported-feature error, and the local runner
-refuses maps, and selective parallels whose branches can start child
-workflows, the same way. A refused selective parallel never runs as a plain
-parallel.
+**Runtime support.** The local runner executes selective parallels and maps.
+The engine walk refuses both at run start with a typed unsupported-feature
+error. The local runner refuses selective parallels whose branches can start
+child workflows the same way. A refused selective parallel never runs as a
+plain parallel.
 
 Both read a source document the same way:
 
@@ -357,6 +356,55 @@ maps:
 
 A map may not be nested in a parallel branch, and a map's task may not be a
 parallel or map.
+
+The roster document lists the items, each with a unique identity, a JSON
+object, and an optional digest:
+
+```json
+{ "schemaVersion": 1, "items": [{ "identity": "unit-a", "item": { "packages": ["./internal/a/..."] } }] }
+```
+
+At run time the map behaves as follows:
+
+- **Freezing.** Before any item starts, the runner reads the slot from the
+  producer's journal-bound attempt. It checks the media type, the byte size
+  before decoding (1 MiB) and the closed envelope, rejects duplicate
+  identities and more than 32 items, and computes each item's canonical
+  digest: SHA-256 over the RFC 8785 serialization of `{identity, item}`. A
+  supplied digest must match it, so a planner may omit digests. Items are
+  sorted by identity and written into `map.started` with the source
+  reference, its digest and integrity, and the effective failure policy,
+  timeout and concurrency bound.
+- **Invalid source.** A document that fails these checks fails the map with
+  error code `fanout_source_invalid` before `map.started`. The run follows
+  the map's `onFailure`, or `@abort` when none is declared.
+- **Execution.** Item *i* in identity order runs as branch *i*, starting at
+  the mapped task, through the same bounded worker pool as a parallel:
+  `maxConcurrent` is the branch concurrency and `itemTimeoutSeconds` the
+  branch timeout, checked at stage boundaries. Item branch events carry
+  `mapItemIdentity` and `mapItemDigest`. Retries repeat only the mapped task
+  for the same frozen item. `fail_fast` records every item that has not
+  started as `cancelled`.
+- **Bindings.** Each declared binding is delivered as an invocation input:
+  `item` as the frozen object, `identity` and `digest` as strings. Every
+  bound value carries the roster source's integrity. It counts toward the
+  mapped task's `minimumIntegrity` admission and caps the integrity of the
+  task's outputs, exactly like an `inputsFrom` value.
+- **Join.** The join runs exactly once, after every item settles, and an
+  empty roster goes straight from `map.started` to `map.finished` and the
+  join. It receives two inputs, both in identity order: `mapCompleteness`,
+  one outcome per item with its identity, digest and status; and
+  `mapResults`, one entry per item with its identity, digest, branch,
+  status, outputs, integrity and context pointers. Both are assembled from
+  the journal, never from completion order. The mapped task's outputs are
+  reachable only through `mapResults`: a stage-qualified `inputsFrom`
+  reference to the mapped task does not resolve. Item artifacts also reach
+  the join as context pointers tagged with the item's branch and identity.
+- **Resume.** Resume rebuilds the items from the recorded `map.started`
+  only. It never reruns or rereads the producer and never reruns a settled
+  item. A journal whose item records are missing, extra, duplicated or in
+  conflict with the frozen roster is refused with error code
+  `workflow_integrity`.
 
 ## Run-control primitives
 

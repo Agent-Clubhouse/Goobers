@@ -45,7 +45,7 @@ type FanOutSourceError struct {
 }
 
 func (e *FanOutSourceError) Error() string {
-	return fmt.Sprintf("runner: parallel %q selection source %s.%s is invalid: %v", e.State, e.Source.Task, e.Source.Slot, e.Err)
+	return fmt.Sprintf("runner: fan-out %q source %s.%s is invalid: %v", e.State, e.Source.Task, e.Source.Slot, e.Err)
 }
 
 // Unwrap exposes the underlying refusal.

@@ -94,5 +94,8 @@ func settleConcurrentBranch(jr *journal.Run, par *parallelExec, name string, res
 	branch := par.branchSnapshot(result.index)
 	cursors := par.settleBranch(branch.id, result.status, result.artifacts, result.pointers, result.produced, result.failed, result.noOutput)
 	jr.SetBranchCursors(cursors)
-	return jr.Append(journal.Event{Type: journal.EventBranchFinished, Branch: branch.id, Parallel: name, BranchName: branch.name, BranchStatus: result.status})
+	return jr.Append(journal.Event{
+		Type: journal.EventBranchFinished, Branch: branch.id, Parallel: name, BranchName: branch.name, BranchStatus: result.status,
+		MapItemIdentity: branch.itemIdentity, MapItemDigest: branch.itemDigest,
+	})
 }
