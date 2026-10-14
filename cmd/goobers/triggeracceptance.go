@@ -256,7 +256,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 		var rejected *localscheduler.TriggerRejectedError
 		if errors.As(err, &rejected) {
 			reason = rejected.Reason
-			if rejected.Transient() {
+			if rejected.WaitableForQueue() {
 				return s.queue.Requeue(ctx, record.ID, reason)
 			}
 		}
