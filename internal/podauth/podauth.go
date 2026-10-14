@@ -362,3 +362,13 @@ func bearerToken(request *http.Request) string {
 	}
 	return strings.TrimSpace(authorization[len(prefix):])
 }
+
+// authenticateWith resolves the configured verifier to the interface V a token
+// form needs; a verifier lacking it fails closed with an explanatory error.
+func authenticateWith[V any](a *Authenticator, authenticate func(V) (*httpapi.Principal, error)) (*httpapi.Principal, error) {
+	v, ok := a.verifier.(V)
+	if !ok {
+		return nil, fmt.Errorf("%w: verifier %T does not support this token type", ErrUnknownToken, a.verifier)
+	}
+	return authenticate(v)
+}

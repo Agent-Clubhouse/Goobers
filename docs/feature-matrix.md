@@ -218,6 +218,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.backlog.provider.ado` | 3.0 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.gitea` | 3.0 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.github` | 3.0 | ga | preview | dev |
+| `gaggle.spec.backprop.mode` | 3.0 | ga | preview | dev |
 | `gaggle.spec.branchNamespace` | 3.0 | ga | preview | dev |
 | `gaggle.spec.ciCommand` | 3.0 | ga | preview | dev |
 | `gaggle.spec.cost.enabled` | 3.0 | ga | preview | v0.4.0 |
@@ -382,6 +383,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.webhook` | 3.0 | ga | preview | dev |
 | `workflow.spec.backprop.enabled` | 3.0 | ga | preview | dev |
 | `workflow.spec.backprop.granularity` | 3.0 | ga | preview | dev |
+| `workflow.spec.backprop.mode` | 3.0 | ga | preview | dev |
 | `workflow.spec.backprop.version` | 3.0 | ga | preview | dev |
 | `workflow.spec.displayName` | 3.0 | ga | preview | dev |
 | `workflow.spec.docsRoots` | 3.0 | ga | preview | dev |
@@ -433,6 +435,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.backlog.provider.ado` | 3.1 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.gitea` | 3.1 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.github` | 3.1 | ga | preview | dev |
+| `gaggle.spec.backprop.mode` | 3.1 | ga | preview | dev |
 | `gaggle.spec.branchNamespace` | 3.1 | ga | preview | dev |
 | `gaggle.spec.ciCommand` | 3.1 | ga | preview | dev |
 | `gaggle.spec.cost.enabled` | 3.1 | ga | preview | v0.4.0 |
@@ -611,6 +614,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.webhook` | 3.1 | ga | preview | dev |
 | `workflow.spec.backprop.enabled` | 3.1 | ga | preview | dev |
 | `workflow.spec.backprop.granularity` | 3.1 | ga | preview | dev |
+| `workflow.spec.backprop.mode` | 3.1 | ga | preview | dev |
 | `workflow.spec.backprop.version` | 3.1 | ga | preview | dev |
 | `workflow.spec.displayName` | 3.1 | ga | preview | dev |
 | `workflow.spec.docsRoots` | 3.1 | ga | preview | dev |
@@ -659,7 +663,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 2.0 -> 3.0
 
-- Added: `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.capabilities.privilege.windows-admin`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.capabilities.privilege.windows-admin`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.capabilities.privilege.windows-admin`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`, `workflow.spec.backprop.enabled`, `workflow.spec.backprop.granularity`, `workflow.spec.backprop.version`
+- Added: `gaggle.spec.backprop.mode`, `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.capabilities.privilege.windows-admin`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.capabilities.privilege.windows-admin`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.capabilities.privilege.windows-admin`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`, `workflow.spec.backprop.enabled`, `workflow.spec.backprop.granularity`, `workflow.spec.backprop.mode`, `workflow.spec.backprop.version`
 - Removed: `gaggle.spec.requiredCapabilities`, `gaggle.spec.sandbox`, `stage.run.network.none`, `task.experiment`, `task.requiredCapabilities`
 - Level changes: none
 

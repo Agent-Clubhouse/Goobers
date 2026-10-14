@@ -18,16 +18,17 @@ func (s *SignedKey) MintWorkflowParentPod(runID, contractDigest string, ttl time
 func (s *SignedKey) verifyWorkflowParentPod(token string) (string, string, error) {
 	return s.verifyContractPod(token, WorkflowParentPodPrefix, workflowParentPodMACDomain)
 }
+
+type workflowParentVerifier interface {
+	verifyWorkflowParentPod(string) (string, string, error)
+}
+
 func (a *Authenticator) authenticateWorkflowParentPod(token string) (*httpapi.Principal, error) {
-	verifier, ok := a.verifier.(interface {
-		verifyWorkflowParentPod(string) (string, string, error)
+	return authenticateWith(a, func(v workflowParentVerifier) (*httpapi.Principal, error) {
+		runID, digest, err := v.verifyWorkflowParentPod(token)
+		if err != nil {
+			return nil, err
+		}
+		return &httpapi.Principal{Subject: "run:" + runID, Issuer: httpapi.WorkflowParentPrincipalIssuer, WorkflowParent: &httpapi.WorkflowParentPrincipal{ContractDigest: digest}}, nil
 	})
-	if !ok {
-		return nil, ErrUnknownToken
-	}
-	runID, digest, err := verifier.verifyWorkflowParentPod(token)
-	if err != nil {
-		return nil, err
-	}
-	return &httpapi.Principal{Subject: "run:" + runID, Issuer: httpapi.WorkflowParentPrincipalIssuer, WorkflowParent: &httpapi.WorkflowParentPrincipal{ContractDigest: digest}}, nil
 }

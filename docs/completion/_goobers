@@ -267,6 +267,7 @@ _goobers_completion()
                 mark-fix) flags+=(--finding --applied-at) ;;
                 label) flags+=(--run --outcome --reason --by --labeled-at) ;;
                 claim) flags+=(--kind --stage --attempt --agent --artifact --statement --evidence --confidence) ;;
+                shadow) flags+=(--json --gaggle --workflow --since --until) ;;
                 prune) flags+=(--dry-run) ;;
                 prune-orphans) flags+=(--delete --min-age) ;;
                 compact) flags+=(--dry-run) ;;
@@ -561,7 +562,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( CURRENT == 3 )); then
-                candidates=(configure test merges stats errors export mark-fix label claim claims prune prune-orphans compact)
+                candidates=(configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact)
                 _describe -V 'command' candidates
                 return
             fi
