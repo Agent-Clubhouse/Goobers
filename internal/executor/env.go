@@ -35,6 +35,13 @@ func CredentialExpiryEnvVar(capabilityName string) string {
 	return capability.CredentialExpiryEnvVar(capabilityName)
 }
 
+// CredentialSchemeEnvVar returns the variable that carries the non-secret
+// Azure DevOps authorization scheme of the credential delivered for
+// capabilityName (capability.CredentialSchemeEnvVar, #5957).
+func CredentialSchemeEnvVar(capabilityName string) string {
+	return capability.CredentialSchemeEnvVar(capabilityName)
+}
+
 // InputEnvVar returns the deterministic env var name a stage's declared
 // Task.Inputs key is passed through under, e.g. "trustLabel" ->
 // "GOOBERS_INPUT_TRUSTLABEL". Exported for the same reason as
@@ -205,7 +212,13 @@ func baseEnv(extra []string) []string {
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, error) {
+//
+// The second result names the capabilities whose credential was materialized
+// into the env, in declaration order. It is what the executor stamps the
+// non-secret scheme variables from (appendRepoEnv), so a GOOBERS_CRED_*
+// variable a stage set by hand in run.env never earns one: the count matches
+// the stage pod's, which stamps from the credentials the plane minted (#5957).
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, []string, error) {
 	env := baseEnv(withoutDispatcherStamps(extraEnvAllowlist))
 	keys := make([]string, 0, len(declaredEnv))
 	for key := range declaredEnv {
@@ -215,13 +228,13 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	for _, key := range keys {
 		value := declaredEnv[key]
 		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, '\x00') {
-			return nil, errors.New("executor: declared environment contains an invalid name or value")
+			return nil, nil, errors.New("executor: declared environment contains an invalid name or value")
 		}
 		if key == GaggleBacklogEnvVar {
 			// A stage pod refuses the same override (dispatcher
 			// refuseControlEnvOverrides): a workflow must not author its
 			// gaggle's backlog settings.
-			return nil, fmt.Errorf("executor: declared environment may not set %s: it carries the gaggle's backlog settings, which only the dispatcher stamps", GaggleBacklogEnvVar)
+			return nil, nil, fmt.Errorf("executor: declared environment may not set %s: it carries the gaggle's backlog settings, which only the dispatcher stamps", GaggleBacklogEnvVar)
 		}
 		env = append(env, key+"="+value)
 	}
@@ -271,7 +284,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		}
 	}
 	if injector == nil || len(declared) == 0 {
-		return env, nil
+		return env, nil, nil
 	}
 	// A credential that cannot be materialized is an infrastructure fault, not
 	// evidence about the work (#3361): typed with its own code AND marked via
@@ -281,8 +294,9 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	// classification converted a transient 403 into a terminal work failure.
 	set, err := injector.Materialize(ctx, declared)
 	if err != nil {
-		return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
+		return nil, nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 	}
+	var materialized []string
 	for _, capability := range declared {
 		token, err := set.Token(ctx, capability)
 		if err != nil {
@@ -291,13 +305,14 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 			}
 			// Same seam as Materialize above: a granted capability whose token
 			// resolution fails at env-build time is credential infrastructure.
-			return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
+			return nil, nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 		}
 		registrar.Register([]byte(token))
 		env = append(env, CredentialEnvVar(capability)+"="+token)
 		env = appendCredentialExpiry(env, set, capability)
+		materialized = append(materialized, capability)
 	}
-	return env, nil
+	return env, materialized, nil
 }
 
 // withoutDispatcherStamps drops dispatcher-owned stamps from the operator's

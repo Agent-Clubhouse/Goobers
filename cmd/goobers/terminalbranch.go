@@ -67,7 +67,9 @@ func (d adoUnusedBranchDeleter) DeleteBranch(ctx context.Context, req providers.
 	return d.DeleteUnusedBranch(ctx, req)
 }
 
-func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource, registrar providers.SecretRegistrar) (providers.BranchDeleter, error) {
+// adoScheme is the scheme stated for github:branch:delete's source
+// (adoCredentialSchemes), "" for the repository's own.
+func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource, registrar providers.SecretRegistrar, adoScheme string) (providers.BranchDeleter, error) {
 	return terminalProviderForProject(
 		cfg,
 		project,
@@ -77,6 +79,7 @@ func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project api
 		func(repo providers.RepositoryRef, kind string, source providers.TokenSource) (providers.BranchDeleter, error) {
 			return newADOTerminalBranchDeleter(repo, kind, source, registrar)
 		},
+		adoScheme,
 		terminalBranchDeleteSupported,
 	)
 }
@@ -226,6 +229,9 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 		return nil, providers.RepositoryRef{}, fmt.Errorf("build terminal branch-delete credentials: %w", err)
 	}
 	repo := terminalRepositoryRefForProject(cfg, project)
+	// A credentials: entry for github:branch:delete is a PAT, sent as Basic
+	// even on an Entra-authenticated repository (#5957).
+	adoScheme := adoCredentialSchemes(cfg, project, grants)[string(capability.GitHubBranchDelete)]
 	deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 		if err := terminalBranchDeleteSupported(repo.Provider); err != nil {
 			return providers.DeleteBranchResult{}, err
@@ -234,7 +240,7 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 		if err != nil {
 			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
 		}
-		deleter, err := newTerminalBranchDeleteProviderForProject(cfg, project, set.For(string(capability.GitHubBranchDelete)), registrar)
+		deleter, err := newTerminalBranchDeleteProviderForProject(cfg, project, set.For(string(capability.GitHubBranchDelete)), registrar, adoScheme)
 		if err != nil {
 			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
 		}

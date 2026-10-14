@@ -31,6 +31,9 @@ type adoMergePRServer struct {
 	// threadComments is the PR's thread comments the pre-lock verdict recovery
 	// reads (#2746) — empty until setVerdictThread seeds one.
 	threadComments atomic.Value // []map[string]any
+	// feedbackThreads are further PR threads (each a raw ADO thread object)
+	// served after the verdict thread: review feedback for the #6134 gate.
+	feedbackThreads atomic.Value // []map[string]any
 	// stackedOnHead, when set, is an open pull request whose target is PR
 	// 359's source branch (a stacked PR), served by the list endpoint.
 	stackedOnHead atomic.Bool
@@ -53,9 +56,15 @@ func (s *adoMergePRServer) setVerdictThread(author, body string) {
 		"id":          1,
 		"commentType": "text",
 		"content":     body,
-		"author":      map[string]string{"displayName": author},
+		"author":      map[string]string{"displayName": author, "id": adoMergePRSelfID},
+		// The unanswered-feedback gate (#6134) reads every thread and fails
+		// closed on a comment whose author id or publish time it cannot read.
+		"publishedDate": "2026-09-01T10:00:00Z",
 	}})
 }
+
+// adoMergePRSelfID is the identity id the fake connectionData endpoint reports.
+const adoMergePRSelfID = "id"
 
 // newADOMergePRServer stands up the fake ADO endpoints for org/project/repo,
 // polling for pull request 359. The PR is a clean pass: active, not draft, head
@@ -146,8 +155,10 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Serve
 		comments, _ := state.threadComments.Load().([]map[string]any)
 		threads := []map[string]any{}
 		if len(comments) > 0 {
-			threads = append(threads, map[string]any{"id": 11, "comments": comments})
+			threads = append(threads, map[string]any{"id": 11, "status": "closed", "comments": comments})
 		}
+		extra, _ := state.feedbackThreads.Load().([]map[string]any)
+		threads = append(threads, extra...)
 		_ = json.NewEncoder(w).Encode(map[string]any{"value": threads})
 	})
 	mux.HandleFunc("/myorg/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {

@@ -63,7 +63,9 @@ const rebasePRHelp = "Usage: goobers rebase-pr [path]\n\n" +
 	"pr-comment-watch classifies them, under the same identityMode (dedicated or\n" +
 	"shared; default shared on Azure DevOps, dedicated elsewhere) and\n" +
 	"excludeAuthors inputs; set them to pr-comment-watch's values. On Azure\n" +
-	"DevOps every live general and file-thread comment counts.\n\n" +
+	"DevOps every live general and file-thread comment counts; on GitHub and\n" +
+	"Gitea, submitted review bodies and unresolved review-thread comments\n" +
+	"count alongside PR comments (the feedback merge-pr refuses to land over).\n\n" +
 	"Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.\n"
 
 func runRebasePR(args []string, stdout, stderr io.Writer) int {
@@ -177,6 +179,10 @@ type rebasePRTransport interface {
 type rebasePRCommentEvidence struct {
 	available bool
 	comments  []providers.Comment
+	// threads are the review threads the human-comment cause also reads on
+	// GitHub and Gitea: the same open feedback merge-pr refuses to land over
+	// (#6134), so a PR that gate routes here is one this stage acts on.
+	threads []feedbackThread
 }
 
 type issueCommentRebaseTransport struct {
@@ -193,7 +199,11 @@ func (t issueCommentRebaseTransport) LoadCommentEvidence(ctx context.Context, re
 }
 
 func (t issueCommentRebaseTransport) LoadHumanCommentEvidence(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) (rebasePRCommentEvidence, error) {
-	return t.LoadCommentEvidence(ctx, repo, selectedNumber)
+	general, threads, err := readForgeFeedback(ctx, t.handoffProvider, repo, selectedNumber)
+	if err != nil {
+		return rebasePRCommentEvidence{}, err
+	}
+	return rebasePRCommentEvidence{available: true, comments: general, threads: threads}, nil
 }
 
 func (t issueCommentRebaseTransport) UpdateComment(ctx context.Context, repo providers.RepositoryRef, commentID, body string) error {
@@ -482,7 +492,8 @@ func detectRebasePRHumanComment(ctx context.Context, transport rebasePRTransport
 	if err != nil {
 		return false, fmt.Errorf("resolve authenticated identity for PR #%s: %w", selectedNumber, err)
 	}
-	return humanCommentNeedsRemediation(evidence.comments, newCommentClassifier(self, settings)), nil
+	classifier := newCommentClassifier(self, settings)
+	return humanCommentNeedsRemediation(openFeedbackComments(evidence.comments, evidence.threads, classifier), classifier), nil
 }
 
 // humanCommentNeedsRemediation is the human-comment cause: a human comment

@@ -15,23 +15,25 @@ import (
 const prCommentWatchResultName = "comment-watch-result.json"
 
 // mergeReadyLabel mirrors verdictLabel's pass label (applyverdict.go:64, a bare
-// string literal there). It is one of the PR-side lifecycle labels the watcher
-// must treat as "already routed / parked / opted out": a PR carrying it is
-// landing, so remediation would race the merge.
+// string literal there): the PR passed review and its landing is in progress,
+// possibly armed (an Azure DevOps auto-complete, a GitHub merge-queue entry)
+// and waiting on a policy. Such a PR is still scanned (#6134): fresh human
+// feedback disarms the landing first and only then routes the PR, so neither
+// the armed landing nor remediation races the other.
 const mergeReadyLabel = "goobers:merge-ready"
 
 // prCommentWatchDefaultExcludeLabels are the lifecycle labels that HARD-exclude a
 // PR from the scan: a fresh human comment must neither re-route it nor clear the
 // label, because — unlike the human-decision parks below — a comment is not the
 // signal that changes any of these states. needs-remediation is the re-fire
-// guard (already routed); merge-ready is landing in progress (self-heals on
-// demotion, and remediation must not race the merge); blocked-on-sibling is an
-// ordering park, not a content decision; no-merge-review is an explicit operator
-// opt-out we must respect.
+// guard (already routed); blocked-on-sibling is an ordering park, not a content
+// decision; no-merge-review is an explicit operator opt-out we must respect.
+// merge-ready is added to these unless blockUnansweredFeedback is "true"
+// (#6134), which scans landing PRs so an armed landing does not complete over
+// feedback that arrived after it was armed.
 func prCommentWatchDefaultExcludeLabels() string {
 	return strings.Join([]string{
 		needsRemediationLabel,
-		mergeReadyLabel,
 		blockedOnSiblingLabel,
 		noMergeReviewLabel,
 	}, ",")
@@ -72,7 +74,14 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"that PR in place. A PR parked for a human (needs-human / merge-escalated)\n" +
 	"is un-parked when a fresh human comment lands: the park label is cleared\n" +
 	"and needs-remediation added, since the human the PR was parked for has\n" +
-	"now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps\n" +
+	"now weighed in. With blockUnansweredFeedback \"true\" (declare policy\n" +
+	"action disarm-landing) a PR that is landing (goobers:merge-ready) is\n" +
+	"scanned too, by its open feedback: fresh human feedback first disarms\n" +
+	"its armed landing — on Azure DevOps it cancels the auto-complete; on\n" +
+	"GitHub queue-watch withdraws the queued PR once it is routed — then\n" +
+	"removes merge-ready and routes it. Default false: landing PRs are\n" +
+	"skipped, as before; set it false to merge over comments.\n" +
+	"Works on GitHub, Gitea and Azure DevOps. On Azure DevOps\n" +
 	"general comments and review-thread replies both count; deleted comments\n" +
 	"and system threads (votes, pushes, policy status) never do.\n\n" +
 	"A comment is Goobers' own when it carries a Goobers marker (the\n" +
@@ -118,6 +127,10 @@ type prCommentWatchLabeled struct {
 	// label (needs-human / merge-escalated); ClearedLabels lists what was stripped.
 	Unparked      bool     `json:"unparked,omitempty"`
 	ClearedLabels []string `json:"clearedLabels,omitempty"`
+	// Disarmed is true when this stage cancelled the PR's armed landing (an
+	// Azure DevOps auto-complete) before routing it. On GitHub a queued PR is
+	// withdrawn by queue-watch once routed, so this stays false there.
+	Disarmed bool `json:"disarmed,omitempty"`
 }
 
 type prCommentWatchResult struct {
@@ -148,6 +161,10 @@ type prCommentWatchSettings struct {
 	unpark     map[string]bool
 	identity   commentIdentitySettings
 	resultFile string
+	// disarmLandings scans landing (goobers:merge-ready) PRs and disarms
+	// them on fresh human feedback (#6134). Opt-in, because it is a new
+	// mutation the task must declare (policy action disarm-landing).
+	disarmLandings bool
 }
 
 func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatchSettings, error) {
@@ -160,14 +177,27 @@ func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatch
 	if err != nil {
 		return prCommentWatchSettings{}, err
 	}
+	rawDisarm := providerInput("blockUnansweredFeedback", "false")
+	disarm, err := strconv.ParseBool(strings.TrimSpace(rawDisarm))
+	if err != nil {
+		return prCommentWatchSettings{}, fmt.Errorf("invalid blockUnansweredFeedback %q (want true or false)", rawDisarm)
+	}
+	// An operator's own excludeLabels list is honoured as written; the
+	// default skips landing PRs unless disarming them is enabled.
+	defaultExclude := prCommentWatchDefaultExcludeLabels()
+	if !disarm {
+		defaultExclude += "," + mergeReadyLabel
+	}
+	exclude := toLowerSet(splitLabelList(providerInput("excludeLabels", defaultExclude)))
 	return prCommentWatchSettings{
-		maxPRs:     maxPRs,
-		base:       providerInput("base", providerBaseBranch()),
-		prefixes:   splitLabelList(providerInput("headPrefixes", providerBranchNamespace())),
-		exclude:    toLowerSet(splitLabelList(providerInput("excludeLabels", prCommentWatchDefaultExcludeLabels()))),
-		unpark:     toLowerSet(splitLabelList(providerInput("unparkLabels", prCommentWatchDefaultUnparkLabels()))),
-		identity:   identity,
-		resultFile: providerInput("resultFile", prCommentWatchResultName),
+		maxPRs:         maxPRs,
+		base:           providerInput("base", providerBaseBranch()),
+		prefixes:       splitLabelList(providerInput("headPrefixes", providerBranchNamespace())),
+		exclude:        exclude,
+		disarmLandings: disarm,
+		unpark:         toLowerSet(splitLabelList(providerInput("unparkLabels", prCommentWatchDefaultUnparkLabels()))),
+		identity:       identity,
+		resultFile:     providerInput("resultFile", prCommentWatchResultName),
 	}, nil
 }
 
@@ -265,7 +295,7 @@ func scanPRComments(ctx context.Context, forge prCommentWatchForge, prs []provid
 // the lane can pick it up (un-park). Only park labels the PR actually carries
 // are cleared, so a normal (non-parked) PR strips nothing.
 func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr providers.PullRequestSummary, settings prCommentWatchSettings, classifier commentClassifier, result *prCommentWatchResult, stdout io.Writer) error {
-	comments, err := forge.listComments(ctx, pr)
+	comments, err := forge.listComments(ctx, pr, classifier)
 	if err != nil {
 		return fmt.Errorf("list comments: %w", err)
 	}
@@ -277,12 +307,24 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 		return nil
 	}
 	cleared := carriedLabels(pr.Labels, settings.unpark)
-	if err := forge.route(ctx, pr, cleared); err != nil {
+	landing := carriedLabels(pr.Labels, map[string]bool{mergeReadyLabel: true})
+	disarmed := false
+	if len(landing) > 0 {
+		// #6134: disarm the landing BEFORE routing; a failed disarm leaves
+		// the PR untouched and is retried next tick rather than routed while
+		// the armed landing can still complete. A PR that landed first is
+		// reported, never routed as withdrawn.
+		var err error
+		if disarmed, err = forge.disarm(ctx, pr); err != nil {
+			return fmt.Errorf("disarm the armed landing: %w", err)
+		}
+	}
+	if err := forge.route(ctx, pr, append(append([]string(nil), cleared...), landing...)); err != nil {
 		return fmt.Errorf("label %s: %w", needsRemediationLabel, err)
 	}
 	entry := prCommentWatchLabeled{
 		Number: pr.Number, URL: pr.URL, CommentAuthor: triggering.Author, CommentAuthorID: triggering.AuthorID,
-		CommentURL: triggering.URL, Unparked: len(cleared) > 0, ClearedLabels: cleared,
+		CommentURL: triggering.URL, Unparked: len(cleared) > 0, ClearedLabels: cleared, Disarmed: disarmed,
 	}
 	if triggering.CreatedAt != nil {
 		entry.CommentCreatedAt = triggering.CreatedAt.UTC().Format(time.RFC3339)

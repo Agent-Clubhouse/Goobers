@@ -556,8 +556,12 @@ type PullRequestReviewResult struct {
 
 // PullRequestNativeReview is one provider-native review submitted on a pull request.
 type PullRequestNativeReview struct {
-	ID          int64              `json:"id"`
-	Author      string             `json:"author,omitempty"`
+	ID     int64  `json:"id"`
+	Author string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot"), so automation is told from people by
+	// type rather than by login spelling.
+	AuthorType  string             `json:"authorType,omitempty"`
 	State       string             `json:"state"`
 	Body        string             `json:"body,omitempty"`
 	CommitSHA   string             `json:"commitSha,omitempty"`
@@ -569,9 +573,12 @@ type PullRequestNativeReview struct {
 // PullRequestInlineComment is one inline review comment with its thread state
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
-	ID                int64              `json:"id"`
-	ThreadID          string             `json:"threadId"`
-	Author            string             `json:"author,omitempty"`
+	ID       int64  `json:"id"`
+	ThreadID string `json:"threadId"`
+	Author   string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot").
+	AuthorType        string             `json:"authorType,omitempty"`
 	Body              string             `json:"body"`
 	Path              string             `json:"path"`
 	Line              int                `json:"line,omitempty"`
@@ -874,6 +881,14 @@ type PullRequestPollResult struct {
 	CommentsSince  []PullRequestComment `json:"commentsSince,omitempty"`
 	URL            string               `json:"url,omitempty"`
 	Integrity      apiintegrity.Grade   `json:"integrity,omitempty"`
+	// VerdictStatus is the merge-review verdict commit status
+	// (MergeReviewStatusContext) on the polled head, when the provider
+	// reports one (#4199). It is Goobers' own review decision, not CI, so it
+	// is kept out of CheckState and Checks: a needs-changes verdict must not
+	// read as a CI failure that the CI-remediation lane tries to fix. Nil
+	// when the head carries no such status or the provider exposes none
+	// (Azure DevOps keeps its verdict in the goobers/validation PR status).
+	VerdictStatus *CheckDetail `json:"verdictStatus,omitempty"`
 }
 
 // ClosePullRequestRequest describes closing a pull request, optionally leaving a comment.
@@ -913,6 +928,32 @@ type PullRequestStatusRequest struct {
 	// nobody reviewed. Empty keeps the unpinned behaviour (the head current
 	// at post time).
 	HeadSHA string `json:"headSha,omitempty"`
+}
+
+// The merge-review verdict status contract (#4199). merge-review's
+// apply-verdict publishes the current verdict as a commit status under this
+// stable context on the exact head it reviewed, so the provider's own merge
+// policy (a required status check) blocks every merge path, not only
+// Goobers' own merge-pr. GitHub and Gitea name the context genre/name;
+// Azure DevOps keeps its established goobers/validation PR status.
+const (
+	MergeReviewStatusGenre   = "goobers"
+	MergeReviewStatusName    = "merge-review"
+	MergeReviewStatusContext = MergeReviewStatusGenre + "/" + MergeReviewStatusName
+)
+
+// mergeReviewStatusDetail reports whether a commit status is the merge-review
+// verdict rather than CI evidence, and returns it as the poll's VerdictStatus
+// when it is. Counting the verdict as CI would turn every needs-changes
+// verdict into a failing check the CI-remediation lane tries to fix.
+func mergeReviewStatusDetail(context, state, description, targetURL string) (*CheckDetail, bool) {
+	if context != MergeReviewStatusContext {
+		return nil, false
+	}
+	return &CheckDetail{
+		Name: context, State: normalizeCombinedStatusState(state), Conclusion: state,
+		URL: targetURL, Summary: description,
+	}, true
 }
 
 // PullRequestStatusResult reports the published status's provider-assigned id.

@@ -88,6 +88,10 @@ func terminalGiteaBaseURLForProject(cfg *instance.Config, project apiv1.RepoRef)
 // materialized capability token. A nil arm means the hook has no ADO backend.
 type terminalADOArm[T any] func(repo providers.RepositoryRef, kind string, source providers.TokenSource) (T, error)
 
+// terminalProviderForProject dispatches a terminal hook on the terminal
+// repository's provider. adoScheme is the scheme stated for the capability
+// the ADO arm's token was materialized for (adoCredentialSchemes), "" to use
+// the repository's own.
 func terminalProviderForProject[T any](
 	cfg *instance.Config,
 	project apiv1.RepoRef,
@@ -95,6 +99,7 @@ func terminalProviderForProject[T any](
 	github func(providers.TokenSource) T,
 	gitea func(string, providers.TokenSource) T,
 	ado terminalADOArm[T],
+	adoScheme string,
 	unsupported func(providers.ProviderKind) error,
 ) (T, error) {
 	repo := terminalRepositoryRefForProject(cfg, project)
@@ -103,7 +108,7 @@ func terminalProviderForProject[T any](
 		if ado == nil {
 			break
 		}
-		kind, err := terminalADOCredentialKind(cfg, project)
+		kind, err := terminalADOCredentialKind(cfg, project, adoScheme)
 		if err != nil {
 			var zero T
 			return zero, err
@@ -124,14 +129,19 @@ func terminalProviderForProject[T any](
 }
 
 // terminalADOCredentialKind is the Azure DevOps credential kind the terminal
-// repository's capability token is sent as: the scheme of the repository's
-// configured auth (adoauth.AuthScheme), the same scheme the daemon states to
-// a stage beside the token it delivers. The repository must be configured, so
-// the scheme is never guessed.
-func terminalADOCredentialKind(cfg *instance.Config, project apiv1.RepoRef) (string, error) {
+// repository's capability token is sent as: stated, the scheme of the
+// capability's own source (a credentials: entry's PAT is "basic", #5957), or
+// else the scheme of the repository's configured auth (adoauth.AuthScheme) —
+// the rule the daemon applies to a stage's delivered tokens. The repository
+// must be configured, so the scheme is never guessed.
+func terminalADOCredentialKind(cfg *instance.Config, project apiv1.RepoRef, stated string) (string, error) {
 	repo, err := terminalConfiguredRepo(cfg, project)
 	if err != nil {
 		return "", err
 	}
-	return adoCredentialKindForScheme(adoauth.AuthScheme(repo))
+	scheme := stated
+	if scheme == "" {
+		scheme = adoauth.AuthScheme(repo)
+	}
+	return adoCredentialKindForScheme(scheme)
 }

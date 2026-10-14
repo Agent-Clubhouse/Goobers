@@ -303,10 +303,20 @@ the other repository capabilities have a credential for `azure-cli`,
 `workload-identity`, `managed-identity` and `pat` alike. With an Azure DevOps
 credential the stage also receives the non-secret `GOOBERS_REPO_AUTH_SCHEME`
 (`basic` for a PAT, `bearer` for an Entra token), so it builds the right
-Authorization header without inferring it from the token. The rule is the same
-for a local stage and a stage pod: a deterministic stage that received at least
-one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
-receive it. An Entra token also carries its `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`.
+Authorization header without inferring it from the token. A delivered
+credential whose source states its own scheme also carries it as the non-secret
+`GOOBERS_CREDENTIAL_SCHEME_<CAPABILITY>` (#5957): a capability backed by the
+repository's credential has the repository's scheme, and one backed by a
+`credentials:` entry or a token-based `daemonIdentity` is a personal access
+token, `basic`, even when the repository's scheme is `bearer`. A stage sends each value in its own
+capability's scheme and falls back to `GOOBERS_REPO_AUTH_SCHEME`. Like the
+expiry, the name is outside the `GOOBERS_CRED_` prefix because the value is
+not a secret. The rule is the same for a local stage and a stage pod: a
+deterministic stage that received at least one `GOOBERS_CRED_<CAPABILITY>` from
+the daemon also receives the schemes, counted from the credentials the daemon
+delivered. A `GOOBERS_CRED_<CAPABILITY>` a workflow sets by hand in `run.env`
+earns no scheme. Agentic stages do not receive them. An Entra token also
+carries its `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`.
 See "Where the credential resolves" in `docs/guides/ado-authentication.md`.
 
 A stage pod has no instance config, so the dispatcher also stamps every
@@ -325,7 +335,8 @@ every provider. On Azure DevOps a declared `github:*` capability selects the
 credential for the same operation on the provider the stage routes to
 (pull-request work from `github:pr:write`, backlog work items from
 `github:issues:*`, pushes from `repo:push`), and the command builds its
-connection from that capability's `GOOBERS_CRED_<CAPABILITY>` and
+connection from that capability's `GOOBERS_CRED_<CAPABILITY>` and its
+`GOOBERS_CREDENTIAL_SCHEME_<CAPABILITY>`, falling back to
 `GOOBERS_REPO_AUTH_SCHEME`. It never reads `repos[].auth` from `instance.yaml`,
 so an undeclared capability means no credential on Azure DevOps too, and the
 command runs the same in a stage pod, which has no instance config. A

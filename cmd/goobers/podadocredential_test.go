@@ -58,6 +58,24 @@ func TestPodCheckoutSendsADOBearerCredentialWithPassthrough(t *testing.T) {
 	}
 }
 
+// A credential the plane stated its own scheme for is sent in that scheme,
+// not the repository's (#5957): a credentials: PAT backing repo:push on an
+// Entra gaggle is a Basic header, with no MSA passthrough slot.
+func TestPodCheckoutSendsAPerCredentialSchemeOverTheRepository(t *testing.T) {
+	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "override-pat-value", Scheme: "basic"}}
+	ado := adoCheckoutAuthFor(apiv1.RepoRef{Provider: apiv1.ProviderADO}, "bearer", podADOCloneURL)
+
+	env, err := checkoutGitAuthEnv(context.Background(), t.TempDir(), creds, ado)
+	if err != nil {
+		t.Fatalf("checkoutGitAuthEnv: %v", err)
+	}
+	eff := gitEnvMap(env)
+	want := "AUTHORIZATION: Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:override-pat-value"))
+	if eff["GIT_CONFIG_VALUE_1"] != want || eff["GIT_CONFIG_COUNT"] != "2" {
+		t.Fatalf("checkout header = %q (count %q), want %q in a two-slot layout", eff["GIT_CONFIG_VALUE_1"], eff["GIT_CONFIG_COUNT"], want)
+	}
+}
+
 func TestPodCheckoutSendsADOPATAsBasicHeader(t *testing.T) {
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "example-pat-value"}}
 	ado := adoCheckoutAuthFor(apiv1.RepoRef{Provider: apiv1.ProviderADO}, "basic", podADOCloneURL)

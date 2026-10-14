@@ -368,6 +368,56 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   (default 3) the PR is labeled `goobers:merge-demoted` (+
   `needs-remediation`, so remediation has a path to move its head) and stops
   being crowned. The demotion self-heals the moment the head advances.
+- **PRL-046a (MUST, Shipped):** A merge MUST NOT land a pull request with open,
+  unanswered **human review feedback**, on any provider, whether or not the
+  forge enforces conversation resolution (#6134). Open feedback is the PR's
+  general comments, its submitted review bodies, and the comments of every
+  review thread that is not resolved (on Azure DevOps, every thread that is not
+  fixed, closed, won't-fix or by-design). It is unanswered when its newest human
+  entry postdates every Goobers acknowledgement, which is the rule
+  `pr-comment-watch` routes on. Human means the shared comment classifier's
+  verdict under the stage's `identityMode`/`excludeAuthors`, so a person writing
+  through Goobers' own identity is still a person. Approving reviews and
+  Bot-typed authors never wait on an answer. `merge-pr` checks this under the
+  merge lock against a live read, and reads the feedback again after a
+  configured pre-merge check, immediately before landing.
+  - An unanswered PR is refused as `unanswered-human-feedback`.
+    `record-merge-refusal` then routes it to remediation (`goobers:needs-remediation`
+    added, `goobers:merge-ready` removed), and the refusal does not count toward
+    demotion. If the same comment is refused again after that, the PR is parked
+    `goobers:needs-human` with a comment that acknowledges the feedback, so the
+    review/remediation cycle is bounded.
+  - Gitea reports no review-thread resolution, and a dismissed Gitea review keeps
+    its state. So on Gitea every review comment counts until it is answered.
+    This over-blocks; it never under-blocks.
+  - An armed landing is withdrawn when feedback arrives after it was armed.
+    - `queue-watch` runs the same check on every poll of a still-queued PR (a
+      GitHub merge-queue entry, or an armed Azure DevOps auto-complete). It
+      uses the same classifier, open-feedback set and `blockUnansweredFeedback`
+      knob, on by default. On unanswered human feedback it withdraws the PR
+      (GitHub: dequeue; ADO: cancel the auto-complete, confirmed by a re-read),
+      removes `goobers:merge-ready` and routes it to
+      `goobers:needs-remediation` with the `unanswered-human-feedback` reason.
+      This does not count toward demotion.
+    - A feedback read that fails on one poll keeps the PR queued and is
+      retried on the next. One failed read is not evidence of feedback, and
+      `merge-pr` already failed closed before arming.
+    - `queue-watch` also withdraws on an opt-out label, or on
+      `needs-remediation` without `merge-ready` (a feedback route). A
+      `needs-remediation` label next to `merge-ready` (post-merge's overlap
+      fan-out) is not a withdrawal.
+    - With `blockUnansweredFeedback: "true"` and the `disarm-landing` policy
+      action, `pr-comment-watch` scans `merge-ready` PRs by their open
+      feedback, disarms an armed ADO auto-complete, and only then removes
+      `merge-ready` and routes the PR. This is opt-in because it is a new
+      mutation for that stage.
+    - Residual: an auto-complete still armed after `queue-watch`'s poll window
+      ends is uncovered unless `pr-comment-watch` is opted in. A GitHub queue
+      entry outliving that window is uncovered.
+  - Feedback that cannot be read in full fails closed as
+    `human-feedback-unverifiable`.
+  - The check is on by default; `blockUnansweredFeedback: "false"` opts out for
+    teams that deliberately merge over comments.
 - **PRL-047 (SHOULD, Shipped):** An **advisory mode** toggle SHOULD let an
   instance evaluate the full conjunct set without attempting a merge;
   advisory refusals never accrue toward demotion. Advisory is the recommended

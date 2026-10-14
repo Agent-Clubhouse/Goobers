@@ -54,6 +54,19 @@ type MintedCredential struct {
 	// (httpapi.MintedCredential), nil when its source states none. The pod
 	// delivers it to the stage beside the value (#5905).
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	// Scheme is the Azure DevOps authorization scheme the plane stated for
+	// Value (httpapi.MintedCredential), empty when the response's
+	// RepoAuthScheme applies (#5957).
+	Scheme string `json:"scheme,omitempty"`
+}
+
+// SchemeOr returns the scheme stated for this credential, or fallback (the
+// response's RepoAuthScheme) when none was stated.
+func (c MintedCredential) SchemeOr(fallback string) string {
+	if c.Scheme != "" {
+		return c.Scheme
+	}
+	return fallback
 }
 
 // CredentialResolution is one resolve answer: the minted credentials, plus

@@ -290,9 +290,9 @@ for the capabilities it declares:
 - A stage pod resolves the same values from the daemon's credential plane at
   stage start.
 - A deterministic stage that received at least one credential, local or in a
-  pod, also receives `GOOBERS_REPO_AUTH_SCHEME` (`basic` or `bearer`), so it
-  never infers the scheme from the token's shape. Agentic stages do not
-  receive it.
+  pod, also receives `GOOBERS_REPO_AUTH_SCHEME` (`basic` or `bearer`) and, for
+  each credential whose source states one, `GOOBERS_CREDENTIAL_SCHEME_<CAPABILITY>`, so it never infers
+  the scheme from the token's shape. Agentic stages do not receive them.
 
 The daemon tracks each Entra token's expiry. Before it delivers a token with
 less than 20 minutes left, locally or through the credential plane, it rebuilds
@@ -378,13 +378,28 @@ repository credential never backs it. The same ADO repository credential backs
 `ado:packaging:read` for stages that need to query or restore from private
 Azure Artifacts feeds.
 
-The daemon states one authorization scheme per stage, taken from the
-repository's `auth` kind, and it applies to every credential the stage
-receives, including a `credentials:` entry. On a gaggle whose repository
-authenticates as a Microsoft Entra identity (`azure-cli`, `workload-identity`,
-`managed-identity`), a `credentials:` value, such as one that overrides the
-repository credential for `ado:work-items:write`, is therefore sent as `Bearer`
-and must be an Entra access token; a PAT there is rejected.
+The daemon states the authorization scheme of each credential it delivers,
+taken from that credential's own source:
+
+- A capability backed by the repository's credential uses the repository's
+  `auth` kind: `bearer` for `azure-cli`, `workload-identity` and
+  `managed-identity`, and `basic` for `pat`.
+- A capability backed by a `credentials:` entry, or by a token-based
+  `daemonIdentity`, is a personal access token and is sent as `basic`, whatever
+  the repository's kind.
+
+So on a gaggle whose repository authenticates as a Microsoft Entra identity, a
+`credentials:` PAT, such as one that sources `ado:work-items:write`, is sent as
+Basic and works. Before #5957 the daemon stated one scheme per stage and sent
+that PAT as `Bearer`, which Azure DevOps rejected with 401.
+
+A deterministic stage on an Azure DevOps gaggle receives the scheme of each
+delivered credential whose source states one as the non-secret
+`GOOBERS_CREDENTIAL_SCHEME_<CAPABILITY>` beside `GOOBERS_CRED_<CAPABILITY>`,
+and still receives `GOOBERS_REPO_AUTH_SCHEME` for the repository. A built-in
+command reads the capability's own scheme first and falls back to
+`GOOBERS_REPO_AUTH_SCHEME`. The rule is the same for a local stage and a stage
+pod, and for the daemon's own terminal branch cleanup.
 
 Operator commands that are not stages, such as `goobers status` and
 `goobers run`, still read the repository's `auth` block on the host where they

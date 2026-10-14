@@ -26,7 +26,11 @@ and complete these fields before generating the token:
    selected workflow. The getting-started quickstart needs **Contents: Read
    and write**, **Issues: Read and write**, and **Pull requests: Read and
    write**. Add **Actions: Read-only** and **Commit statuses: Read-only** for
-   workflows that only poll hosted CI. Use **Actions: Read and write** when
+   workflows that only poll hosted CI. Use **Commit statuses: Read and write**
+   on the token that backs `github:pr:review` when `merge-review` runs, so it
+   can publish the `goobers/merge-review` verdict status (see
+   [Enforce the merge-review verdict as a required check](merge-review-verdict-status.md)).
+   Use **Actions: Read and write** when
    `merge-review` is configured to cancel obsolete pending runs after a
    non-pass verdict, or when a `ci-poll` stage sets
    `retryFailedChecksMaxAttempts` to rerun failed checks (the shipped
@@ -83,7 +87,7 @@ for this page; see [`ado-authentication.md`](ado-authentication.md).
 | `provider:pr:write` | Pull requests: Read and write, Commit statuses: Read-only, Actions: Read (**Read and write** when a `ci-poll` stage sets `retryFailedChecksMaxAttempts`) | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. GitHub's fine-grained PAT UI has no separate Checks permission to grant, so a private repo whose CI is entirely GitHub Actions-based is otherwise unreadable on this token type: `commits/{ref}/status` reports empty (Actions doesn't bridge into legacy statuses) and `commits/{ref}/check-runs` 403s. Also granting **Actions: Read** lets `checkDetails` fall back to `GET /actions/runs` automatically on that specific 403 (#2685), restoring CI visibility without any config change. A `ci-poll` stage that opts into `retryFailedChecksMaxAttempts` (the shipped `pr-remediation` workflow sets it) calls GitHub's rerun-failed-jobs endpoint, which needs **Actions: Read and write**; on a GitHub App installation grant the same Actions permission. Without it the rerun is refused with 403, ci-poll reports the ordinary `failing` outcome, and `retryFailedChecksError` names the missing grant (#4751). |
 | `github:pr:read` | Pull requests: Read-only | Forge merge-inventory comparison. Explicit credential only; it does not inherit a write token or authorize any mutation. |
 | `github:pr:write` | Pull requests: Read and write, Contents: Read and write | GitHub-specific stages that open or update PRs. |
-| `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
+| `github:pr:review` | Pull requests: Read and write, Commit statuses: Read and write | Submit native approve/request-changes reviews, and publish the `goobers/merge-review` verdict status a required check enforces ([Enforce the merge-review verdict as a required check](merge-review-verdict-status.md)). Without Commit statuses write, `apply-verdict` warns and the verdict is enforced only by `merge-pr`. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `provider:ci:cancel` | Actions: Read and write | Cancel a bounded set of pending GitHub Actions runs only after re-checking the open PR and its exact reviewed head SHA. Providers without a safe cancellation API report unsupported without changing the published verdict. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:read` | Contents: Read-only | A read-only worktree of the stage's **own** target repo, with no push. This is the capability the work-nomination lane uses; there is no `repo:clone`. |
@@ -486,7 +490,9 @@ expose a Checks permission. Grant the App the union of what the selected
 workflows' capabilities need: Contents (Read and write
 for `repo:push`, Read-only for clone-only), Issues (Read and write), Pull
 requests (Read and write), Checks + Commit statuses (Read-only, for
-`ci-poll`), and Actions (Read and write when a `ci-poll` stage sets
+`ci-poll`; Commit statuses **Read and write** when the App backs
+`github:pr:review` for `merge-review`, which publishes the
+`goobers/merge-review` verdict status), and Actions (Read and write when a `ci-poll` stage sets
 `retryFailedChecksMaxAttempts` or a stage declares `provider:ci:cancel`).
 Install it on **only the target repositories**.
 

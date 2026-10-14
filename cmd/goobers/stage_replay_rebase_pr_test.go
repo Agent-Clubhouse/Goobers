@@ -40,6 +40,9 @@ func replayRebasePRSiblingHandoffGitHub(t *testing.T) replayFixture {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "Selected PR", needsRemediationLabel)
+	// The human-comment cause also reads the PR's reviews and review threads
+	// (#6134); the PR has none.
+	server.addOpenPR(prNumber, prBranch, "main", targetHeadSHA, "", false, []string{needsRemediationLabel}, nil)
 	server.addComment(prNumber, renderVerdictComment(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{{

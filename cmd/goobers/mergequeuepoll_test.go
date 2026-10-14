@@ -68,6 +68,12 @@ type mergeQueuePollServerState struct {
 	dequeueCalls            int
 	dequeueFails            bool
 	dequeueFailures         int
+	// issueComments are the PR's conversation comments the queue-watch
+	// feedback check (#6134) reads; feedbackReadStatus, when set, fails the
+	// inline review-comment read so the check cannot complete.
+	issueComments      []map[string]interface{}
+	feedbackReadStatus int
+	addedLabels        []string
 }
 
 func TestMergeQueuePollBackoffJittersWithinCappedExponentialRange(t *testing.T) {
@@ -136,6 +142,15 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode graphql request: %v", err)
 			http.Error(w, "invalid graphql request", http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(body.Query, "reviewThreads") {
+			// The feedback check's thread-state read; not a queue poll.
+			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{"repository": map[string]interface{}{
+				"pullRequest": map[string]interface{}{"reviewThreads": map[string]interface{}{
+					"nodes": []interface{}{}, "pageInfo": map[string]interface{}{"hasNextPage": false},
+				}},
+			}}})
 			return
 		}
 		if strings.Contains(body.Query, "dequeuePullRequest(input:") {
@@ -247,6 +262,19 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 	mux.HandleFunc(prefix+"/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, []map[string]interface{}{})
 	})
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]string{"login": "goobers"})
+	})
+	mux.HandleFunc(prefix+"/pulls/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		status := st.feedbackReadStatus
+		st.mu.Unlock()
+		if status != 0 {
+			http.Error(w, "review comments unavailable", status)
+			return
+		}
+		writeFakeJSON(w, []map[string]interface{}{})
+	})
 	mux.HandleFunc(prefix+"/commits/"+st.headSHA+"/status", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []map[string]interface{}{}})
 	})
@@ -264,7 +292,13 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 		st.commentCalls++
 		st.mu.Unlock()
 		if r.Method == http.MethodGet {
-			writeFakeJSON(w, []map[string]interface{}{})
+			st.mu.Lock()
+			comments := st.issueComments
+			st.mu.Unlock()
+			if comments == nil {
+				comments = []map[string]interface{}{}
+			}
+			writeFakeJSON(w, comments)
 			return
 		}
 		st.mu.Lock()
@@ -298,6 +332,13 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 		st.mu.Lock()
 		st.labelCalls++
 		status := st.labelStatus
+		if r.Method == http.MethodPost {
+			var body struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			st.addedLabels = append(st.addedLabels, body.Labels...)
+		}
 		st.mu.Unlock()
 		if status != 0 {
 			http.Error(w, "label failed", status)
@@ -527,8 +568,8 @@ func TestMergeQueuePollReportsEvictedAndLabelsForRemediation(t *testing.T) {
 	if st.labelCalls != 1 {
 		t.Fatalf("label calls = %d, want 1 (eviction must apply goobers:needs-remediation)", st.labelCalls)
 	}
-	if st.commentCalls != 1 {
-		t.Fatalf("comment calls = %d, want 1 (eviction must explain why)", st.commentCalls)
+	if st.commentPostCalls != 1 {
+		t.Fatalf("comment calls = %d, want 1 (eviction must explain why)", st.commentPostCalls)
 	}
 	if st.deleteCalls != 0 {
 		t.Fatalf("branch delete calls = %d, want 0 (an evicted pull request was never merged, nothing to clean up)", st.deleteCalls)
@@ -895,19 +936,37 @@ type adoPRDetailState struct {
 	sourceRef string
 	headSHA   string
 	refs      *fakeADORefs
+	// labels are served on the detail; a PATCH clears autoComplete (the
+	// withdrawal's auto-complete cancel, #6134) and counts in cancels.
+	labels  []string
+	cancels int
+	// threads are the PR's threads the queue-watch feedback check reads, and
+	// labelWrites records pull-request label adds and removals.
+	threads       []map[string]interface{}
+	labelWrites   []string
+	postedThreads []string
 }
 
 func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *adoPRDetailState) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	prPath := "/" + owner + "/" + project + "/_apis/git/repositories/" + name + "/pullrequests/9"
-	mux.HandleFunc(prPath, func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(prPath, func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.detailCalls++
+		if r.Method == http.MethodPatch {
+			st.autoComplete = false
+			st.cancels++
+		}
+		labels := make([]map[string]string, 0, len(st.labels))
+		for _, label := range st.labels {
+			labels = append(labels, map[string]string{"name": label})
+		}
 		body := map[string]interface{}{
 			"pullRequestId":   9,
 			"status":          st.status,
 			"lastMergeCommit": map[string]string{"commitId": st.mergeCommit},
+			"labels":          labels,
 		}
 		if st.autoComplete {
 			body["autoCompleteSetBy"] = map[string]string{"uniqueName": "goobers"}
@@ -928,6 +987,69 @@ func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *a
 	if st.refs != nil {
 		st.refs.register(t, mux, owner, project, name)
 	}
+	mux.HandleFunc(prPath+"/threads", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		if r.Method == http.MethodPost {
+			var body struct {
+				Comments []map[string]interface{} `json:"comments"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			content, _ := body.Comments[0]["content"].(string)
+			thread := map[string]interface{}{
+				"id": 100 + len(st.threads), "status": "closed",
+				"comments": []map[string]interface{}{{
+					"id": 1, "commentType": "text", "content": content,
+					"author":        map[string]string{"id": "self-guid", "displayName": "goobers"},
+					"publishedDate": "2026-10-01T13:00:00Z",
+				}},
+			}
+			st.threads = append(st.threads, thread)
+			st.postedThreads = append(st.postedThreads, content)
+			st.mu.Unlock()
+			writeFakeJSON(w, thread)
+			return
+		}
+		threads := st.threads
+		st.mu.Unlock()
+		if threads == nil {
+			threads = []map[string]interface{}{}
+		}
+		writeFakeJSON(w, map[string]interface{}{"value": threads})
+	})
+	mux.HandleFunc(prPath+"/labels", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if r.Method == http.MethodPost {
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			st.labels = append(st.labels, body["name"])
+			st.labelWrites = append(st.labelWrites, "add:"+body["name"])
+			writeFakeJSON(w, map[string]string{"id": "id-" + body["name"], "name": body["name"]})
+			return
+		}
+		value := make([]map[string]string, 0, len(st.labels))
+		for _, label := range st.labels {
+			value = append(value, map[string]string{"id": "id-" + label, "name": label})
+		}
+		writeFakeJSON(w, map[string]interface{}{"value": value})
+	})
+	mux.HandleFunc(prPath+"/labels/", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		name := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, prPath+"/labels/"), "id-")
+		kept := st.labels[:0]
+		for _, label := range st.labels {
+			if label != name {
+				kept = append(kept, label)
+			}
+		}
+		st.labels = kept
+		st.labelWrites = append(st.labelWrites, "remove:"+name)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/"+owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"authenticatedUser": map[string]interface{}{"id": "self-guid", "providerDisplayName": "goobers"}})
+	})
 	mux.HandleFunc("/"+owner+"/"+project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
 		st.mu.Lock()
 		evals := st.evaluations

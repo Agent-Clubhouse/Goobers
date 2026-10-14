@@ -929,12 +929,20 @@ func (c podStageCredentials) withGrant(creds []dispatcher.MintedCredential) []di
 // executor applies too (#5905): the stage cannot refresh the value, and the
 // expiry lets its Azure DevOps credential source say "expired" rather than
 // "revoked or without access" when Azure DevOps answers 401.
+//
+// On Azure DevOps (a stated repoAuthScheme) each credential the plane stated a
+// scheme for also gets GOOBERS_CREDENTIAL_SCHEME_<capability> (#5957); one with
+// none uses the repository's. The local executor applies the same rule
+// (executor.ShellExecutor.appendRepoEnv).
 func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
-	env := make([]string, 0, 2*len(creds)+1)
+	env := make([]string, 0, 3*len(creds)+1)
 	for _, cred := range creds {
 		env = append(env, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
 		if cred.ExpiresAt != nil && !cred.ExpiresAt.IsZero() {
 			env = append(env, capability.CredentialExpiryEnvVar(cred.Capability)+"="+capability.FormatCredentialExpiry(*cred.ExpiresAt))
+		}
+		if repoAuthScheme != "" && cred.Scheme != "" {
+			env = append(env, capability.CredentialSchemeEnvVar(cred.Capability)+"="+cred.Scheme)
 		}
 	}
 	if repoAuthScheme != "" && len(creds) > 0 {
@@ -1011,17 +1019,21 @@ func podCheckoutCredentials(ctx context.Context, stageCreds []dispatcher.MintedC
 // every credential this pod held — the stage's and the checkout's — and, for
 // an Azure DevOps repository credential, every header form it can be sent in
 // (providers.ADOCredential.ScrubForms): a bare base64 Basic value has no
-// "Basic " prefix for the pattern net to key on. The daemon's minting source
-// registers the same forms, so a self runner and a pod redact the same bytes.
+// "Basic " prefix for the pattern net to key on. The self runner registers the
+// same forms (executor.ShellExecutor.registerADOCredentialForms), so a self
+// runner and a pod redact the same bytes.
+// Each value's forms follow its own stated scheme (#5957): a credentials:
+// entry's PAT on an Entra gaggle is sent as Basic, so its Basic form is what
+// must be redacted.
 func podStageScrubber(creds []dispatcher.MintedCredential, repoAuthScheme string) journal.Scrubber {
 	registry, scrubber := journal.DefaultScrubber()
-	kind := ""
-	if strings.TrimSpace(repoAuthScheme) != "" {
-		kind, _ = adoCredentialKindForScheme(repoAuthScheme)
-	}
 	for _, cred := range creds {
 		registry.Register([]byte(cred.Value))
-		if kind == "" {
+		if strings.TrimSpace(repoAuthScheme) == "" {
+			continue
+		}
+		kind, err := adoCredentialKindForScheme(cred.SchemeOr(repoAuthScheme))
+		if err != nil {
 			continue
 		}
 		for _, form := range (providers.ADOCredential{Kind: kind, Secret: cred.Value}).ScrubForms() {

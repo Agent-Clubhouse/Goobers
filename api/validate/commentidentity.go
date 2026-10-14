@@ -10,7 +10,7 @@ import (
 
 // WarningCommentIdentityDisagreement (WF029) identifies a gaggle whose stages
 // that classify pull-request comments as human or Goobers' own — pr-comment-
-// watch, rebase-pr and update-behind-pr — resolve identityMode or
+// watch, rebase-pr, update-behind-pr, merge-pr and merge-queue-poll — resolve identityMode or
 // excludeAuthors to different values (#6494). The stages share one classifier
 // but read these settings per stage, so a disagreement brings the original bug
 // back by configuration: pr-comment-watch routes a person's comment to
@@ -24,6 +24,8 @@ var commentIdentityStages = map[string]bool{
 	"pr-comment-watch": true,
 	"rebase-pr":        true,
 	"update-behind-pr": true,
+	"merge-pr":         true,
+	"merge-queue-poll": true,
 }
 
 // commentIdentityUse is one stage's resolved classifier settings.
@@ -79,7 +81,7 @@ func (ix *index) checkCommentIdentityAgreement(r *Report) {
 		}
 		r.addWarning(WarningCommentIdentityDisagreement, uses[0].file, gaggle, "Workflow", uses[0].name,
 			"gaggle %q classifies pull-request comments with different settings: %s; set identityMode and excludeAuthors "+
-				"to the same values on every pr-comment-watch, rebase-pr and update-behind-pr stage, or a comment one stage "+
+				"to the same values on every pr-comment-watch, rebase-pr, update-behind-pr, merge-pr and merge-queue-poll stage, or a comment one stage "+
 				"routes to remediation as a person's can be cleared by another as Goobers' own (#6494)",
 			gaggle, strings.Join(parts, ", "))
 	}
