@@ -208,6 +208,7 @@ gaggle.spec.backlog.labels                               3.0          ga        
 gaggle.spec.backlog.provider.ado                         3.0          ga               preview          dev
 gaggle.spec.backlog.provider.gitea                       3.0          ga               preview          dev
 gaggle.spec.backlog.provider.github                      3.0          ga               preview          dev
+gaggle.spec.backprop.mode                                3.0          ga               preview          dev
 gaggle.spec.branchNamespace                              3.0          ga               preview          dev
 gaggle.spec.ciCommand                                    3.0          ga               preview          dev
 gaggle.spec.cost.enabled                                 3.0          ga               preview          v0.4.0
@@ -372,6 +373,7 @@ trigger.signal                                           3.0          ga        
 trigger.webhook                                          3.0          ga               preview          dev
 workflow.spec.backprop.enabled                           3.0          ga               preview          dev
 workflow.spec.backprop.granularity                       3.0          ga               preview          dev
+workflow.spec.backprop.mode                              3.0          ga               preview          dev
 workflow.spec.backprop.version                           3.0          ga               preview          dev
 workflow.spec.displayName                                3.0          ga               preview          dev
 workflow.spec.docsRoots                                  3.0          ga               preview          dev
@@ -424,6 +426,7 @@ gaggle.spec.backlog.labels                               3.1          ga        
 gaggle.spec.backlog.provider.ado                         3.1          ga               preview          dev
 gaggle.spec.backlog.provider.gitea                       3.1          ga               preview          dev
 gaggle.spec.backlog.provider.github                      3.1          ga               preview          dev
+gaggle.spec.backprop.mode                                3.1          ga               preview          dev
 gaggle.spec.branchNamespace                              3.1          ga               preview          dev
 gaggle.spec.ciCommand                                    3.1          ga               preview          dev
 gaggle.spec.cost.enabled                                 3.1          ga               preview          v0.4.0
@@ -602,6 +605,7 @@ trigger.signal                                           3.1          ga        
 trigger.webhook                                          3.1          ga               preview          dev
 workflow.spec.backprop.enabled                           3.1          ga               preview          dev
 workflow.spec.backprop.granularity                       3.1          ga               preview          dev
+workflow.spec.backprop.mode                              3.1          ga               preview          dev
 workflow.spec.backprop.version                           3.1          ga               preview          dev
 workflow.spec.displayName                                3.1          ga               preview          dev
 workflow.spec.docsRoots                                  3.1          ga               preview          dev
@@ -641,4 +645,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-641 feature/version row(s)
+645 feature/version row(s)

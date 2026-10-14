@@ -965,8 +965,9 @@ type WorkflowSpec struct {
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 	// Backprop explicitly enrolls terminal runs in provenance-aware credit
-	// attribution. Omitted and enabled=false both preserve legacy execution
-	// without attribution work.
+	// attribution, either actively or in shadow mode. Omitted, mode=off, and
+	// enabled=false without a mode all preserve legacy execution without
+	// attribution work.
 	// +optional
 	Backprop *BackpropConfig `json:"backprop,omitempty" yaml:"backprop,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where this
@@ -1035,10 +1036,21 @@ type WorkflowSpec struct {
 
 // BackpropConfig is the versioned workflow-level enrollment contract for
 // post-outcome credit attribution.
+// +kubebuilder:validation:XValidation:rule="has(self.enabled) || has(self.mode)",message="backprop requires enabled or mode"
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || !has(self.mode) || self.mode == 'active'",message="backprop.enabled=true requires mode to be omitted or active"
 type BackpropConfig struct {
-	// Enabled opts terminal runs into attribution.
-	// +kubebuilder:validation:Required
+	// Enabled is the legacy enrollment switch: true means active mode when
+	// Mode is omitted.
+	// +optional
 	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Mode selects off, shadow, or active attribution. When set it is
+	// authoritative over Enabled. Shadow does no work at run end; its
+	// attribution is computed on demand from the run journal and filing
+	// passes, gates, and default read surfaces
+	// never consume. Enabled=true is accepted only with mode=active.
+	// +kubebuilder:validation:Enum=off;shadow;active
+	// +optional
+	Mode BackpropMode `json:"mode,omitempty" yaml:"mode,omitempty"`
 	// Version pins the attribution contract interpreted for the run.
 	// +kubebuilder:validation:Enum=v1
 	// +kubebuilder:validation:Required
@@ -1046,7 +1058,8 @@ type BackpropConfig struct {
 	// Granularity selects when attribution is recorded. run (the default)
 	// writes only the end-of-run record; stage additionally writes a
 	// best-effort, read-only checkpoint after each stage finishes, and the
-	// end-of-run record composes those checkpoints. Preview.
+	// end-of-run record composes those checkpoints. Applies only to active
+	// mode: shadow runs write no checkpoints. Preview.
 	// +kubebuilder:validation:Enum=run;stage
 	// +optional
 	Granularity BackpropGranularity `json:"granularity,omitempty" yaml:"granularity,omitempty"`
@@ -1061,6 +1074,48 @@ const (
 	BackpropGranularityRun   BackpropGranularity = "run"
 	BackpropGranularityStage BackpropGranularity = "stage"
 )
+
+// BackpropMode is how a workflow participates in Backprop attribution.
+type BackpropMode string
+
+// Backprop modes. Off performs no attribution work; shadow computes
+// attribution on demand from the run journal, never at run end; active
+// publishes the record
+// consumed by the fault audit and other Backprop read surfaces.
+const (
+	BackpropModeOff    BackpropMode = "off"
+	BackpropModeShadow BackpropMode = "shadow"
+	BackpropModeActive BackpropMode = "active"
+)
+
+// EffectiveMode resolves Mode, falling back to the legacy Enabled switch. A
+// nil config is off.
+func (c *BackpropConfig) EffectiveMode() BackpropMode {
+	if c == nil {
+		return BackpropModeOff
+	}
+	if c.Mode != "" {
+		return c.Mode
+	}
+	if c.Enabled {
+		return BackpropModeActive
+	}
+	return BackpropModeOff
+}
+
+// ResolveBackpropMode applies Backprop precedence for one workflow: an
+// explicit workflow mode (including off, which opts out of any override),
+// then legacy enabled=true (active), then the gaggle override, then off. The
+// gaggle override can only resolve to shadow.
+func ResolveBackpropMode(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropMode {
+	if workflow != nil && (workflow.Mode != "" || workflow.Enabled) {
+		return workflow.EffectiveMode()
+	}
+	if gaggle != nil && gaggle.Mode == BackpropModeShadow {
+		return BackpropModeShadow
+	}
+	return BackpropModeOff
+}
 
 // BranchFailurePolicy declares what a parallel does when one of its branches
 // fails. It is required — there is no default — because parallelism without an

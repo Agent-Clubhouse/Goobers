@@ -1,7 +1,6 @@
 package podauth
 
 import (
-	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"strconv"
@@ -37,6 +36,8 @@ var (
 
 // workerTokenKinds lists longer prefixes before the config-digest prefix they extend.
 var workerTokenKinds = []workerTokenKind{workerSurrenderKind, workerBlobKind, workerConfigDigestKind}
+
+const maxWorkerTokenBodyBytes = 512
 
 // MaxWorkerTokenTTL bounds the config-observability worker identity. Workers
 // mint a fresh bearer for each digest poll or transition report; this
@@ -79,17 +80,13 @@ func validWorkerID(id string) bool {
 }
 
 func (s *SignedKey) verifyWorkerToken(kind workerTokenKind, token string) (string, error) {
-	rest, ok := strings.CutPrefix(token, kind.prefix)
-	if !ok || len(rest) > 512 {
-		return "", ErrMalformedToken
+	payload, err := s.verifyMAC(token, kind.prefix, kind.macDomain)
+	if err != nil {
+		return "", err
 	}
-	segments := strings.Split(rest, ".")
-	if len(segments) != 3 {
+	segments := strings.Split(payload, ".")
+	if len(segments) != 2 || len(token) > len(kind.prefix)+maxWorkerTokenBodyBytes {
 		return "", ErrMalformedToken
-	}
-	payload := segments[0] + "." + segments[1]
-	if subtle.ConstantTimeCompare([]byte(segments[2]), []byte(s.sign(kind.macDomain+payload))) != 1 {
-		return "", ErrUnknownToken
 	}
 	identity, err := base64.RawURLEncoding.DecodeString(segments[0])
 	if err != nil || !validWorkerID(string(identity)) {
@@ -99,23 +96,22 @@ func (s *SignedKey) verifyWorkerToken(kind workerTokenKind, token string) (strin
 	if err != nil {
 		return "", ErrMalformedToken
 	}
-	now := s.now()
-	if !time.Unix(exp, 0).After(now) || time.Unix(exp, 0).After(now.Add(MaxWorkerTokenTTL)) {
+	if !s.unexpired(exp) || time.Unix(exp, 0).After(s.now().Add(MaxWorkerTokenTTL)) {
 		return "", ErrUnknownToken
 	}
 	return string(identity), nil
 }
 
+type workerVerifier interface {
+	verifyWorkerToken(workerTokenKind, string) (string, error)
+}
+
 func (a *Authenticator) authenticateWorker(kind workerTokenKind, token string) (*httpapi.Principal, error) {
-	verifier, ok := a.verifier.(interface {
-		verifyWorkerToken(workerTokenKind, string) (string, error)
+	return authenticateWith(a, func(v workerVerifier) (*httpapi.Principal, error) {
+		id, err := v.verifyWorkerToken(kind, token)
+		if err != nil {
+			return nil, err
+		}
+		return &httpapi.Principal{Subject: "worker:" + id, Issuer: kind.issuer}, nil
 	})
-	if !ok {
-		return nil, ErrUnknownToken
-	}
-	id, err := verifier.verifyWorkerToken(kind, token)
-	if err != nil {
-		return nil, err
-	}
-	return &httpapi.Principal{Subject: "worker:" + id, Issuer: kind.issuer}, nil
 }
