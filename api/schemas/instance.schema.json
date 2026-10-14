@@ -184,6 +184,7 @@
         "baseURLEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the endpoint URL." },
         "keyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the API key." },
         "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the model name." },
+        "publicationLeakScreen": { "type": "boolean", "default": false, "description": "Separately opts shadow mode into sending proposed public PR and nominated issue text to the decision model for advisory leak screening. Omitted means publication text is never sent." },
         "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
         "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
         "gate": {
@@ -1244,7 +1245,7 @@
         "maxRepasses": {
           "type": "integer",
           "minimum": 1,
-          "description": "Instance default for how many times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
+          "description": "Instance default for how many times a run may be routed back to the same already-completed stage before escalation. The count is cumulative per target stage across the run, charged by automated and agentic gate outcomes that route back to that stage and by producer retries after an invalid handoff. Only policy outcomes (anything other than pass, infra, or timeout) are charged: a pass branch into a completed stage is a forward step, infra and timeout outcomes spend their own retry and polling budgets, and human-gate decisions are never charged. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
         },
         "stalledRunTimeout": {
           "description": "How long a running journal may stay silent before the watchdog escalates the run. Empty defaults to 45 minutes. Size it above your slowest single stage, or a healthy long stage looks stalled.",

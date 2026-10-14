@@ -52,6 +52,7 @@ func TestFileCrossRunBranchOwnership(t *testing.T) {
 		wantDetail string
 	}{
 		{name: "owned terminal", events: []journal.Event{branchTouch(ownershipBranch), finished}, wantPhase: "completed", wantTime: true},
+		{name: "owned ado branch", events: []journal.Event{{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "ado", Kind: "branch", ID: ownershipBranch}}, finished}, wantPhase: "completed", wantTime: true},
 		{name: "owned active run", events: []journal.Event{branchTouch(ownershipBranch)}, wantPhase: "running"},
 		{name: "missing run", target: "run-missing", wantReason: "ambiguous-ownership", wantDetail: "open owning run run-missing"},
 		{name: "invalid run id", target: "../escape", wantReason: "ambiguous-ownership", wantDetail: "invalid run id"},

@@ -1061,7 +1061,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	effectiveControls, err := r.resolveRunControls(&in.RunControls)

@@ -537,6 +537,49 @@ describe("WorkItemsPage", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
+  it("renders a missing work item as not found, not as a connectivity failure", async () => {
+    const navigate = vi.fn();
+    const daemon = client();
+    // The PR exists, but under another repository: the daemon answers with
+    // the work-item route's own 404.
+    vi.spyOn(daemon, "getWorkItem").mockRejectedValue(
+      new DaemonApiError(404, "not_found", "work item was not found"),
+    );
+    render(
+      <WorkItemsPage
+        client={daemon}
+        navigate={navigate}
+        route={{ page: "work-items", provider: "github", repository: "acme/service", kind: "pr", id: "42" }}
+        standalone={false}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Work item not found" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("pull request acme/service#42");
+    expect(screen.queryByText(/Couldn't load Goobers data/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Browse work items" }));
+    expect(navigate).toHaveBeenCalledWith({ page: "work-items", kind: "pr" });
+  });
+
+  it("still reports a detail transport failure as a connectivity failure", async () => {
+    const failing = client();
+    vi.spyOn(failing, "getWorkItem").mockRejectedValue(
+      new DaemonApiError(500, "read_error", "telemetry could not be read"),
+    );
+    render(
+      <WorkItemsPage
+        client={failing}
+        navigate={vi.fn()}
+        route={{ page: "work-items", provider: "github", repository: "acme/app", kind: "pr", id: "42" }}
+        standalone={false}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Couldn't load Goobers data" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Work item not found" })).not.toBeInTheDocument();
+  });
+
   it("labels an Azure Boards detail page as work-item activity", async () => {
     render(
       <WorkItemsPage

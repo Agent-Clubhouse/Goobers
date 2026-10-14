@@ -623,14 +623,26 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.enabled` | 3.1 | ga | preview | v0.4.0 |
 | `workflow.spec.gaggle` | 3.1 | ga | preview | dev |
 | `workflow.spec.gates` | 3.1 | ga | preview | dev |
+| `workflow.spec.maps` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.bindings` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.failurePolicy` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.itemTimeoutSeconds` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.join` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.maxConcurrent` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.onFailure` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.source` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.task` | 3.1 | preview | preview | dev |
 | `workflow.spec.outboxMirrorPath` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.branchTimeoutSeconds` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.branches` | 3.1 | ga | preview | dev |
+| `workflow.spec.parallels.branches.optional` | 3.1 | preview | preview | dev |
 | `workflow.spec.parallels.failurePolicy` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.join` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.maxConcurrentBranches` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.onFailure` | 3.1 | ga | preview | dev |
+| `workflow.spec.parallels.selection` | 3.1 | preview | preview | dev |
+| `workflow.spec.parallels.selection.source` | 3.1 | preview | preview | dev |
 | `workflow.spec.readiness` | 3.1 | ga | preview | dev |
 | `workflow.spec.readiness.claimVisibility` | 3.1 | ga | preview | dev |
 | `workflow.spec.readiness.desiredConcurrentRuns` | 3.1 | ga | preview | dev |
@@ -672,6 +684,6 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 3.0 -> 3.1
 
-- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`
+- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`, `workflow.spec.maps`, `workflow.spec.maps.bindings`, `workflow.spec.maps.failurePolicy`, `workflow.spec.maps.itemTimeoutSeconds`, `workflow.spec.maps.join`, `workflow.spec.maps.maxConcurrent`, `workflow.spec.maps.onFailure`, `workflow.spec.maps.source`, `workflow.spec.maps.task`, `workflow.spec.parallels.branches.optional`, `workflow.spec.parallels.selection`, `workflow.spec.parallels.selection.source`
 - Removed: none
 - Level changes: none

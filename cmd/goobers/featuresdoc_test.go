@@ -84,6 +84,11 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"WorkflowSpec.Tasks":     {"workflow.spec.tasks"},
 		"WorkflowSpec.Gates":     {"workflow.spec.gates"},
 		"WorkflowSpec.Parallels": {"workflow.spec.parallels"},
+		"WorkflowSpec.Maps": {
+			"workflow.spec.maps", "workflow.spec.maps.source", "workflow.spec.maps.task", "workflow.spec.maps.bindings",
+			"workflow.spec.maps.failurePolicy", "workflow.spec.maps.join", "workflow.spec.maps.onFailure",
+			"workflow.spec.maps.itemTimeoutSeconds", "workflow.spec.maps.maxConcurrent",
+		},
 
 		"GaggleSpec.DisplayName":  {"gaggle.spec.displayName"},
 		"GaggleSpec.Enabled":      {"gaggle.spec.enabled"},

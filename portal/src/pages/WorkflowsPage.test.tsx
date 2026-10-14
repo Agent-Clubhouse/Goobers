@@ -23,6 +23,25 @@ describe("workflows page", () => {
     }
   });
 
+  it("identifies an Azure DevOps gaggle by organization, project and repository", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.gaggles.items = fixtures.gaggles.items.map((gaggle) =>
+      gaggle.name === "tools"
+        ? {
+            ...gaggle,
+            project: { provider: "ado", owner: "example-org", project: "Platform", name: "Toolbox" },
+          }
+        : gaggle,
+    );
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const adoGaggle = await screen.findByRole("button", { name: /Developer tools/ });
+    expect(within(adoGaggle).getByText("tools · example-org/Platform/Toolbox")).toBeInTheDocument();
+    // GitHub carries no project and keeps its owner/repository identity.
+    const githubGaggle = screen.getByRole("button", { name: /Core product/ });
+    expect(within(githubGaggle).getByText("core · Agent-Clubhouse/Goobers")).toBeInTheDocument();
+  });
+
   it("greys out disabled gaggles and workflows without blocking navigation", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);

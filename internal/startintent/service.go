@@ -28,15 +28,25 @@ type Service struct {
 	Now          func() time.Time
 }
 
-// Accept captures one ordinary selection under an archive lease. Retries retain
-// the original pins even if the applied configuration has changed.
+// DefaultPendingAge bounds admission for new manual, signal, and backlog starts.
+// It does not limit a run after execution has started.
+const DefaultPendingAge = 7 * 24 * time.Hour
+
+// Accept captures one ordinary selection with the default pending deadline.
+// Retries retain the original pins and deadline across configuration changes.
 func (s *Service) Accept(ctx context.Context, key, actor string, request Request) (triggerqueue.Record, bool, error) {
-	return s.AcceptBefore(ctx, key, actor, request, time.Time{})
+	return s.accept(ctx, key, actor, request, nil)
 }
 
 // AcceptBefore records a host-selected admission deadline. Exact retries keep
 // the first accepted deadline, alongside its generation and execution identity.
 func (s *Service) AcceptBefore(ctx context.Context, key, actor string, request Request, deadline time.Time) (triggerqueue.Record, bool, error) {
+	return s.accept(ctx, key, actor, request, &deadline)
+}
+
+// A nil deadline selects the default; an explicit zero preserves the host's
+// existing unbounded contract. Both are pinned only for the first acceptance.
+func (s *Service) accept(ctx context.Context, key, actor string, request Request, deadline *time.Time) (triggerqueue.Record, bool, error) {
 	if err := request.Validate(); err != nil {
 		return triggerqueue.Record{}, false, err
 	}
@@ -56,11 +66,16 @@ func (s *Service) AcceptBefore(ctx context.Context, key, actor string, request R
 		return triggerqueue.Record{}, false, errors.New("startintent: archive lease unavailable")
 	}
 	defer release()
-	raw, err := (Envelope{Kind: Kind, Request: request, Target: target, Deadline: deadline.UTC()}).Marshal()
+	now := s.Now().UTC()
+	limit := now.Add(DefaultPendingAge)
+	if deadline != nil {
+		limit = deadline.UTC()
+	}
+	raw, err := (Envelope{Kind: Kind, Request: request, Target: target, Deadline: limit}).Marshal()
 	if err != nil {
 		return triggerqueue.Record{}, false, err
 	}
-	record, repeated, err := s.Queue.Accept(ctx, key, actor, raw, s.Now())
+	record, repeated, err := s.Queue.Accept(ctx, key, actor, raw, now)
 	if errors.Is(err, triggerqueue.ErrConflict) {
 		if prior, readErr := s.Queue.ByKey(ctx, key); readErr == nil {
 			return duplicate(prior, actor, request)
@@ -160,10 +175,14 @@ func (s *Service) finishExpired(ctx context.Context, record triggerqueue.Record)
 	return s.Queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", "accepted trigger expired before execution admission", s.Now())
 }
 
+// Sized above the queue's 5s SQLite busy timeout so a loaded host's slow fsync
+// does not fail a custody write that would otherwise succeed.
+const refusalCustodyTimeout = 15 * time.Second
+
 func (s *Service) refuseDispatch(ctx context.Context, id string, err error) error {
 	// The scheduler returned before launching. Finish this bounded custody
 	// update even when its provider-validation context just expired.
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), refusalCustodyTimeout)
 	defer cancel()
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return s.Queue.Requeue(cleanup, id, "ordinary start validation interrupted")

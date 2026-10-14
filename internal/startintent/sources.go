@@ -62,7 +62,7 @@ func (s *Sources) AcceptSignal(ctx context.Context, entries []localscheduler.Wor
 	}()
 	batch := triggerqueue.SourceBatch{Key: sourceKey, Actor: actor, Fingerprint: fingerprint}
 	for _, entry := range entries {
-		raw, release, err := s.pin(ctx, entry, localscheduler.SourceTrigger{Signal: name, Ref: ref, Webhook: delivery != nil})
+		raw, release, err := s.pinUntil(ctx, entry, localscheduler.SourceTrigger{Signal: name, Ref: ref, Webhook: delivery != nil}, now.Add(DefaultPendingAge))
 		if err != nil {
 			return nil, err
 		}
@@ -74,8 +74,14 @@ func (s *Sources) AcceptSignal(ctx context.Context, entries []localscheduler.Wor
 }
 
 func (s *Sources) pin(ctx context.Context, entry localscheduler.WorkflowEntry, source localscheduler.SourceTrigger) ([]byte, func(), error) {
+	return s.pinUntil(ctx, entry, source, time.Time{})
+}
+
+// pinUntil retains a source-owned admission deadline with the same immutable pins.
+// Callers that have not adopted an expiry policy preserve their absent deadline.
+func (s *Sources) pinUntil(ctx context.Context, entry localscheduler.WorkflowEntry, source localscheduler.SourceTrigger, deadline time.Time) ([]byte, func(), error) {
 	target := Target{Gaggle: entry.Gaggle, Workflow: entry.Workflow, ConfigGeneration: entry.ConfigGeneration, WorkflowDigest: entry.WorkflowDigest, GooberDigest: entry.GooberDigest}
-	raw, err := (Envelope{Kind: Kind, Request: Request{Workflow: entry.Workflow, Gaggle: entry.Gaggle}, Target: target, Source: &source}).Marshal()
+	raw, err := (Envelope{Kind: Kind, Request: Request{Workflow: entry.Workflow, Gaggle: entry.Gaggle}, Target: target, Source: &source, Deadline: deadline.UTC()}).Marshal()
 	if err != nil {
 		return nil, nil, err
 	}

@@ -425,7 +425,8 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if problems := childWorkflowProblems(def, config.goobers, config.goobersSet); len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
-	for _, diagnostic := range CheckFeatureSupport(def, usedChildWorkflowFeatures(def), config.allowPreviewFeatures) {
+	routerFeatures := append(usedChildWorkflowFeatures(def), usedFanOutFeatures(def)...)
+	for _, diagnostic := range CheckFeatureSupport(def, routerFeatures, config.allowPreviewFeatures) {
 		if diagnostic.Blocking {
 			return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, diagnostic.Message)
 		}
@@ -495,6 +496,12 @@ func compileV31(def Definition, config compileConfig) (*Machine, error) {
 		return nil, &CompileError{Workflow: def.Name, Diagnostics: diagnostics}
 	}
 	machine.SetArtifactBindings(bindings)
+	index, _ := collectArtifactContracts(machine.Def)
+	envelopes, diagnostics := lowerFanOutSources(machine, index)
+	if len(diagnostics) > 0 {
+		return nil, &CompileError{Workflow: def.Name, Diagnostics: diagnostics}
+	}
+	machine.SetSlotEnvelopes(envelopes)
 	return machine, nil
 }
 
@@ -554,7 +561,7 @@ func preV31ArtifactSurfaceProblems(def Definition, version string) []string {
 				task.Name, supportmatrix.V31DSLVersion, version))
 		}
 	}
-	return problems
+	return append(problems, preV31FanOutSurfaceProblems(def, version)...)
 }
 
 func artifactContractProblems(def Definition) []string {
@@ -936,6 +943,13 @@ func artifactPrecedesOnEveryPath(machine *Machine, producer, consumer string) bo
 
 func artifactOutgoing(machine *Machine, state string) []string {
 	joinTargets := artifactJoinTargets(machine)
+	if fanOut, ok := machine.Map(state); ok {
+		targets := []string{fanOut.Task}
+		if fanOut.OnFailure != "" {
+			targets = append(targets, fanOut.OnFailure)
+		}
+		return targets
+	}
 	if parallel, ok := machine.Parallel(state); ok {
 		targets := make([]string, 0, len(parallel.Branches)+1)
 		for _, branch := range parallel.Branches {
@@ -964,6 +978,11 @@ func artifactJoinTargets(machine *Machine) map[string]string {
 			for _, terminal := range artifactJoinTerminalStates(machine, branch.Start) {
 				targets[terminal] = parallel.Join
 			}
+		}
+	}
+	for _, fanOut := range machine.Def.Spec.Maps {
+		for _, terminal := range artifactJoinTerminalStates(machine, fanOut.Task) {
+			targets[terminal] = fanOut.Join
 		}
 	}
 	return targets

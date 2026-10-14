@@ -496,6 +496,30 @@ function WorkItemDetailView({
 
   if (state.status === "loading") return <DaemonLoadingState standalone={standalone} />;
   if (state.status === "error") {
+    if (isWorkItemNotFound(state.error)) {
+      // The daemon answered: it has no recorded activity for this item. That
+      // is not a connectivity failure, so don't offer "Reconnect" (#6799).
+      return (
+        <section className="daemon-state" role="alert">
+          <div>
+            <h1>Work item not found</h1>
+            <p>
+              Goobers has no recorded activity for {workItemKindLabel(provider, kind)}{" "}
+              {workItemLabel(repository, externalId)}. Check the repository and number, or
+              browse the recorded work items.
+            </p>
+          </div>
+          <Action
+            variant="primary"
+            className="reconnect-button"
+            onClick={() => navigate({ page: "work-items", kind })}
+            type="button"
+          >
+            Browse work items
+          </Action>
+        </section>
+      );
+    }
     return <DaemonErrorState error={state.error} retry={load} standalone={standalone} />;
   }
   const item = state.data;
@@ -708,6 +732,10 @@ function formatWorkItemCost(cost: WorkItemDetail["cost"]): string {
 function humanizeOperation(operation: string): string {
   if (!operation) return "Provider action";
   return operation.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isWorkItemNotFound(error: Error): boolean {
+  return error instanceof DaemonApiError && (error.status === 404 || error.code === "not_found");
 }
 
 function isMissingWorkItemsCapability(error: Error): boolean {

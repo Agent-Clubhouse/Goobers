@@ -85,6 +85,9 @@ func TestOrdinaryHTTPKeepsAcceptedDefinitionAfterSourceEdit(t *testing.T) {
 	if err != nil || envelope.Target.ConfigGeneration != setup.ExecutionGeneration {
 		t.Fatal(envelope, err)
 	}
+	if !envelope.Deadline.Equal(record.AcceptedAt.Add(startintent.DefaultPendingAge)) {
+		t.Fatalf("HTTP acceptance deadline=%v acceptedAt=%v", envelope.Deadline, record.AcceptedAt)
+	}
 	writeFileContent(t, filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml"), "invalid pending configuration: [")
 	repeated := submit()
 	if !repeated.Duplicate || repeated.AcceptanceID != accepted.AcceptanceID {
