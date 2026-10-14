@@ -34,7 +34,11 @@ func (c *apiReadCache) readADOPlan(req *http.Request, digest string) (*http.Resp
 	started := adoReadSequence.Add(1)
 	key := "ado-list-plan-v1:" + digest + ":" + scopedRequestKey(c.partition+"\x00"+string(c.provider), req)
 	if c.snapshotID != "" {
-		key = apiReadSnapshotKey(c.snapshotID, key)
+		var err error
+		key, err = c.snapshotReadKey(key)
+		if err != nil {
+			return c.do(req)
+		}
 	}
 	held, err := apiReadCacheLocks.acquireContext(req.Context(), apiReadListLockPath(c.schedulerDir, key), c.lockBudget, lock.TryAcquire)
 	if err != nil {
