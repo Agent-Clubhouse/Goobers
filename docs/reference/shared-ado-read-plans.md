@@ -25,7 +25,8 @@ can share the stored response. Without an evaluation ID, only overlapping reads
 in one process share a result; a later foreground read goes back to ADO. The
 process nonce and monotonic completion sequence avoid wall-clock freshness
 assumptions. A completed explicit snapshot invalidation is visible to reused
-wrappers.
+wrappers. [Snapshot generations](provider-read-invalidation.md) additionally prevent
+late fills from reviving an explicitly invalidated snapshot.
 
 At most 64 reads wait for sharing, and lock acquisition remains bounded. Excess
 callers use the ordinary provider transport. No background provider request is
@@ -48,5 +49,5 @@ add portal credentials or authorization, generalize the daemon's supported
 backlog-counter providers, or claim production ADO performance qualification.
 
 Metrics, policy-driven foreground/background freshness, event invalidation and
-in-flight write fences remain later work. Fewer HTTP calls do not establish a
+provider-wide write fences remain later work. Fewer HTTP calls do not establish a
 proportional reduction in ADO resource cost.
