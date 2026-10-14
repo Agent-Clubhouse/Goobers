@@ -799,7 +799,13 @@ shares: the current version gets 100% minus the ramp, and the ramping version
 gets the ramp percentage. The check works in both directions:
 
 - every version that receives a share needs a live worker;
-- every live build should receive a share.
+- every live build should receive a share, unless the deployment reports
+  its version as draining. A draining version was replaced by a newer
+  current or ramping version and keeps serving only its pinned workflows.
+  Status shows it as `draining`, raises no warning, and never suggests
+  reverting to it while the current version has live workers.
+
+The worker's own log check applies the same rule.
 
 Neither tool changes the routing (#4084).
 
@@ -836,8 +842,9 @@ Neither tool changes the routing (#4084).
   line in status.
 
 The poller listing can come from a single task-queue partition. On a queue
-with several partitions, a live worker may then be missed. That errs toward a
-warning, never toward a false healthy.
+with several partitions, a live worker may then be missed. That usually errs
+toward a warning (a routed version reported without a live worker). Only a
+missed, unpromoted build could go unreported.
 
 **Upgrading an instance that already ran versioned** (anything built from main
 between #4083 and #5950, including v0.5.0 betas): the worker now starts

@@ -25,15 +25,6 @@ const (
 	routingCheckTimeout  = 10 * time.Second
 )
 
-// routingProblem explains why the deployment's routing sends this worker no
-// tasks, or returns "" when it does not (#5950). Worker logs are otherwise
-// clean in that state: a versioned poll that is never routed anything
-// succeeds, so the engine stalls with nothing reported. The rule is shared
-// with `goobers status` and `goobers doctor` (#6020).
-func routingProblem(versioned bool, buildID string, routing client.WorkerDeploymentRoutingConfig, describeErr error) string {
-	return workerrouting.Check(versioned, buildID, routing, describeErr).Problem
-}
-
 // checkRoutingLoop reports routing problems until ctx ends. It never fails the
 // worker: a mismatch is an operator action away from healthy, and a restart
 // would not change it.
@@ -53,7 +44,10 @@ func (h *Host) checkRoutingLoop(ctx context.Context, c client.Client) {
 }
 
 // checkRoutingOnce logs a current problem on every check, so it stays visible
-// in a recent log window, and logs its resolution once.
+// in a recent log window, and logs its resolution once. Worker logs are
+// otherwise clean in that state: a versioned poll that is never routed
+// anything succeeds, so the engine stalls with nothing reported (#5950). The
+// rule is shared with `goobers status` and `goobers doctor` (#6020).
 func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported string) string {
 	callCtx, cancel := context.WithTimeout(ctx, routingCheckTimeout)
 	routing, err := h.describeRouting(callCtx, c)
@@ -61,14 +55,16 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 	if ctx.Err() != nil {
 		return reported
 	}
-	problem := routingProblem(h.versioned(), h.cfg.BuildVersion, routing, err)
+	finding := workerrouting.Check(h.versioned(), h.cfg.BuildVersion, routing, err)
 	switch {
-	case problem != "":
-		h.logf("goobers worker: error: %s", problem)
+	case finding.Problem != "":
+		h.logf("goobers worker: error: %s", finding.Problem)
+	case reported != "" && finding.Draining:
+		h.logf("goobers worker: worker deployment %q replaced this worker's version; it is draining", DeploymentName)
 	case reported != "":
 		h.logf("goobers worker: worker deployment %q now routes tasks to this worker", DeploymentName)
 	}
-	return problem
+	return finding.Problem
 }
 
 func (h *Host) logf(format string, args ...any) {

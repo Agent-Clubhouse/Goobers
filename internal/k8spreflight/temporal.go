@@ -75,7 +75,7 @@ func (d dialedTemporalClient) Close() { d.c.Close() }
 
 // DescribeRouting and WorkflowPollers make the dialed client a
 // workerrouting.Client for the temporal-worker-routing check (#6020).
-func (d dialedTemporalClient) DescribeRouting(ctx context.Context) (client.WorkerDeploymentRoutingConfig, error) {
+func (d dialedTemporalClient) DescribeRouting(ctx context.Context) (workerrouting.Routing, error) {
 	return workerrouting.NewClient(d.c).DescribeRouting(ctx)
 }
 

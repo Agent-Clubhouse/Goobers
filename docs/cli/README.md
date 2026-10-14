@@ -1465,8 +1465,8 @@ temporal-worker-routing compares the "goobers" worker deployment's current and
 ramping traffic shares with the builds polling the engine task queue
 (engine.taskQueue with --instance, else goobers-engine). It fails when no live
 worker serves any share, warns when a share has no live worker, a live build
-gets none, or routing cannot be read, and hints the Temporal CLI command to
-run. It never changes the routing itself.
+that is not draining gets none, or routing cannot be read, and hints the
+Temporal CLI command to run. It never changes the routing itself.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,

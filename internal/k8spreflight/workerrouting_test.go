@@ -28,8 +28,8 @@ type fakeRoutingTemporal struct {
 	queues      []string
 }
 
-func (f *fakeRoutingTemporal) DescribeRouting(context.Context) (client.WorkerDeploymentRoutingConfig, error) {
-	return f.routing, f.describeErr
+func (f *fakeRoutingTemporal) DescribeRouting(context.Context) (workerrouting.Routing, error) {
+	return workerrouting.Routing{WorkerDeploymentRoutingConfig: f.routing}, f.describeErr
 }
 
 func (f *fakeRoutingTemporal) WorkflowPollers(_ context.Context, taskQueue string) ([]*taskqueuepb.PollerInfo, error) {

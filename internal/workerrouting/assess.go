@@ -39,6 +39,7 @@ const (
 	WorkerRouted   = "routed"
 	WorkerUnrouted = "unrouted"
 	WorkerUnknown  = "unknown"
+	WorkerDraining = "draining"
 )
 
 const (
@@ -54,7 +55,7 @@ const (
 // adapts an SDK client; tests substitute a fake deployment.
 type Client interface {
 	// DescribeRouting returns the "goobers" worker deployment's routing.
-	DescribeRouting(ctx context.Context) (client.WorkerDeploymentRoutingConfig, error)
+	DescribeRouting(ctx context.Context) (Routing, error)
 	// WorkflowPollers returns the workflow-task pollers of taskQueue.
 	WorkflowPollers(ctx context.Context, taskQueue string) ([]*taskqueuepb.PollerInfo, error)
 }
@@ -64,7 +65,7 @@ func NewClient(c client.Client) Client { return sdkClient{c: c} }
 
 type sdkClient struct{ c client.Client }
 
-func (s sdkClient) DescribeRouting(ctx context.Context) (client.WorkerDeploymentRoutingConfig, error) {
+func (s sdkClient) DescribeRouting(ctx context.Context) (Routing, error) {
 	return DescribeRouting(ctx, s.c)
 }
 
@@ -72,10 +73,11 @@ func (s sdkClient) DescribeRouting(ctx context.Context) (client.WorkerDeployment
 // pollers with their deployment options beside unversioned ones (verified
 // against a dev server; see the integration test). The server may answer
 // from the root partition alone, so on a multi-partition queue a live worker
-// whose pollers all sit on other partitions can be missed. That errs toward
-// alarm (a version reported without a live worker), never toward a false
-// healthy; the enhanced per-version poller reports belong to the deprecated
-// build-ID versioning API and do not describe worker deployments.
+// whose pollers all sit on other partitions can be missed. That usually errs
+// toward alarm (a routed version reported without a live worker); only a
+// missed unrouted build could hide. The enhanced per-version poller reports
+// belong to the deprecated build-ID versioning API and do not describe worker
+// deployments.
 func (s sdkClient) WorkflowPollers(ctx context.Context, taskQueue string) ([]*taskqueuepb.PollerInfo, error) {
 	resp, err := s.c.DescribeTaskQueue(ctx, taskQueue, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
 	if err != nil {

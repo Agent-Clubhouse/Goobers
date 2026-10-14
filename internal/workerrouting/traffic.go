@@ -110,6 +110,19 @@ func (p trafficPlan) rampServed() bool {
 	return p.ramp != nil && p.ramp.share > 0 && p.ramp.live
 }
 
+func (p trafficPlan) currentServing() bool {
+	return p.current.live && p.current.share > 0
+}
+
+// currentDescription names the current version, and the ramp beside it.
+func (p trafficPlan) currentDescription() string {
+	text := p.current.label()
+	if p.ramp != nil {
+		text += fmt.Sprintf(" (ramping %s at %s)", p.ramp.label(), percent(p.ramp.share))
+	}
+	return text
+}
+
 func (p trafficPlan) describe() string {
 	text := fmt.Sprintf("current %s (%s)", p.current.label(), percent(p.current.share))
 	if p.ramp != nil {
@@ -122,11 +135,26 @@ func percent(share float32) string {
 	return strings.TrimSuffix(strings.TrimRight(fmt.Sprintf("%.2f", share), "0"), ".") + "%"
 }
 
+// liveGroups is the per-version verdict for each live poller group, by the
+// same Check the worker logs with.
+type liveGroups struct {
+	unrouted, draining, unverified []pollerGroup
+	all                            []pollerGroup
+}
+
+func (l liveGroups) labels(groups []pollerGroup) string {
+	labels := make([]string, 0, len(groups))
+	for _, group := range groups {
+		labels = append(labels, group.label())
+	}
+	return strings.Join(labels, ", ")
+}
+
 // evaluate checks both directions of the routing: every version that
 // receives a share of new workflow tasks needs a live worker, and every live
-// worker build should receive a share. No live worker for any share stalls
-// the engine; anything less is degraded.
-func evaluate(taskQueue string, routing client.WorkerDeploymentRoutingConfig, describeErr error, pollers []*taskqueuepb.PollerInfo, now time.Time) Assessment {
+// worker build should receive a share unless it is draining. No live worker
+// for any share stalls the engine; anything less is degraded.
+func evaluate(taskQueue string, routing Routing, describeErr error, pollers []*taskqueuepb.PollerInfo, now time.Time) Assessment {
 	groups := livePollerGroups(pollers, now)
 	if len(groups) == 0 {
 		return Unknown(taskQueue, fmt.Sprintf("no goobers worker has polled task queue %q for workflow tasks in the last %s, "+
@@ -136,54 +164,43 @@ func evaluate(taskQueue string, routing client.WorkerDeploymentRoutingConfig, de
 		return Unknown(taskQueue, fmt.Sprintf("cannot read worker deployment %q routing: %v", DeploymentName, describeErr), now)
 	}
 	a := Assessment{Deployment: DeploymentName, TaskQueue: taskQueue, CheckedAt: now.UTC()}
-	if describeErr != nil {
-		// No deployment: new tasks go to unversioned workers. A live
-		// versioned worker means the deployment should exist, so its
-		// routing is unknown rather than absent.
-		if unverified := unverifiedWorkers(&a, groups); unverified != "" {
-			a.State, a.Detail = StateUnknown, fmt.Sprintf("live workers serve %s, but worker deployment %q cannot be described: %v",
-				unverified, DeploymentName, describeErr)
-			return a
-		}
-	}
-	plan := planTraffic(routing, groups)
+	plan := planTraffic(routing.WorkerDeploymentRoutingConfig, groups)
 	if describeErr == nil {
 		a.CurrentVersion = plan.current.label()
 		if plan.ramp != nil {
 			a.RampingVersion, a.RampingPercentage = plan.ramp.label(), plan.ramp.share
 		}
 	}
-	var unrouted []string
+	live := liveGroups{all: groups}
 	for _, group := range groups {
+		finding := Check(group.versioned, group.build, routing, describeErr)
 		worker := WorkerRouting{Version: group.label(), Pollers: group.count, Routing: WorkerRouted, TrafficPercent: plan.shareOf(group.version)}
-		if worker.TrafficPercent == 0 {
+		switch {
+		case finding.Unverified:
+			worker.Routing, worker.TrafficPercent = WorkerUnknown, 0
+			live.unverified = append(live.unverified, group)
+		case finding.Draining:
+			worker.Routing = WorkerDraining
+			live.draining = append(live.draining, group)
+		case !finding.Routed():
 			worker.Routing = WorkerUnrouted
-			unrouted = append(unrouted, worker.Version)
+			live.unrouted = append(live.unrouted, group)
 		}
 		a.Workers = append(a.Workers, worker)
 	}
-	a.Remediation = remediation(plan, groups)
-	a.State, a.Detail = verdict(a, plan, describeErr != nil, unrouted)
+	if len(live.unverified) > 0 {
+		// No deployment, yet a versioned worker polls: the deployment should
+		// exist, so its routing is unknown rather than absent.
+		a.State, a.Detail = StateUnknown, fmt.Sprintf("live workers serve %s, but worker deployment %q cannot be described: %v",
+			live.labels(live.unverified), DeploymentName, describeErr)
+		return a
+	}
+	a.Remediation = remediation(plan, live)
+	a.State, a.Detail = verdict(a, plan, describeErr != nil, live)
 	return a
 }
 
-func unverifiedWorkers(a *Assessment, groups []pollerGroup) string {
-	var versioned []string
-	for _, group := range groups {
-		routing := WorkerRouted
-		if group.versioned {
-			routing = WorkerUnknown
-			versioned = append(versioned, group.label())
-		}
-		a.Workers = append(a.Workers, WorkerRouting{Version: group.label(), Pollers: group.count, Routing: routing, TrafficPercent: 0})
-	}
-	if len(versioned) == 0 {
-		a.Workers = nil
-	}
-	return strings.Join(versioned, ", ")
-}
-
-func verdict(a Assessment, plan trafficPlan, absent bool, unrouted []string) (State, string) {
+func verdict(a Assessment, plan trafficPlan, absent bool, live liveGroups) (State, string) {
 	var covered float32
 	var problems []string
 	for _, target := range plan.targets() {
@@ -194,16 +211,16 @@ func verdict(a Assessment, plan trafficPlan, absent bool, unrouted []string) (St
 			problems = append(problems, fmt.Sprintf("%s of new workflow tasks go to %s, which no live worker serves", percent(target.share), target.label()))
 		}
 	}
-	if len(unrouted) > 0 {
-		problems = append(problems, fmt.Sprintf("live workers serving %s receive no new workflow tasks%s", strings.Join(unrouted, ", "), unversionedNote(plan, unrouted)))
+	if len(live.unrouted) > 0 {
+		problems = append(problems, fmt.Sprintf("live workers serving %s receive no new workflow tasks%s",
+			live.labels(live.unrouted), unversionedNote(plan, live.unrouted)))
 	}
 	routes := plan.describe()
 	if absent {
 		routes = "current " + UnversionedLabel + " (100%; no versioned worker has registered the deployment)"
 	}
-	live := make([]string, 0, len(a.Workers))
-	for _, worker := range a.Workers {
-		live = append(live, worker.Version)
+	if len(live.draining) > 0 {
+		routes += fmt.Sprintf("; %s draining", live.labels(live.draining))
 	}
 	switch {
 	case covered == 0:
@@ -214,22 +231,24 @@ func verdict(a Assessment, plan trafficPlan, absent bool, unrouted []string) (St
 			a.Deployment, a.TaskQueue, routes, strings.Join(problems, "; "))
 	default:
 		return StateHealthy, fmt.Sprintf("worker deployment %q routes workflow tasks to the live workers on task queue %q (%s); %s",
-			a.Deployment, a.TaskQueue, strings.Join(live, ", "), routes)
+			a.Deployment, a.TaskQueue, live.labels(live.all), routes)
 	}
 }
 
-func unversionedNote(plan trafficPlan, unrouted []string) string {
-	for _, label := range unrouted {
-		if label == UnversionedLabel && plan.current.versioned {
-			return " (engine.workerVersioning is off: either route the deployment to unversioned workers or set engine.workerVersioning: true)"
+func unversionedNote(plan trafficPlan, unrouted []pollerGroup) string {
+	for _, group := range unrouted {
+		if !group.versioned && plan.current.versioned {
+			return " (engine.workerVersioning is off: either set engine.workerVersioning: true, or route the deployment to unversioned workers)"
 		}
 	}
 	return ""
 }
 
 // remediation names set-current-version or set-ramping-version commands
-// that move traffic onto live workers. Each line is one alternative.
-func remediation(plan trafficPlan, groups []pollerGroup) []string {
+// that move traffic onto live workers. Each line is one alternative. It
+// never suggests replacing a live, serving current version with a draining
+// build or with unversioned workers, either of which would be a rollback.
+func remediation(plan trafficPlan, live liveGroups) []string {
 	var commands []string
 	add := func(command string) {
 		for _, existing := range commands {
@@ -239,8 +258,9 @@ func remediation(plan trafficPlan, groups []pollerGroup) []string {
 		}
 		commands = append(commands, command)
 	}
+	// With no share served, any live build is a way out.
 	promoteLive := func() {
-		for _, group := range groups {
+		for _, group := range live.all {
 			add(group.promoteCommand())
 		}
 	}
@@ -258,15 +278,19 @@ func remediation(plan trafficPlan, groups []pollerGroup) []string {
 			promoteLive()
 		}
 	}
-	for _, group := range groups {
-		if plan.shareOf(group.version) > 0 {
-			continue
-		}
-		if group.version != plan.current.version {
-			add(group.promoteCommand())
-		} else if plan.rampServed() {
+	for _, group := range live.unrouted {
+		switch {
+		case group.version == plan.current.version:
 			// Current at 0% under a full ramp: finish the rollout.
-			add(plan.ramp.promoteCommand())
+			if plan.rampServed() {
+				add(plan.ramp.promoteCommand())
+			}
+		case !group.versioned && plan.currentServing():
+			// Old or misconfigured unversioned workers beside a serving
+			// versioned fleet: the note says which way to go.
+		default:
+			// A build that was never current or ramping: promote it.
+			add(group.promoteCommand())
 		}
 	}
 	return commands
