@@ -110,6 +110,16 @@ type Graph struct {
 	Nodes    []Node `json:"nodes"`
 	Edges    []Edge `json:"edges"`
 	Gaps     []Gap  `json:"gaps,omitempty"`
+	// Claims are the agent-authored Backprop claims whose writer, target, and
+	// evidence match recorded provenance. They relate recorded nodes but are
+	// never edges: traversal and credit propagation ignore them.
+	Claims []ClaimRecord `json:"claims,omitempty"`
+	// UnverifiedClaims are claims that did not match recorded provenance,
+	// each with the reasons it failed. They name no graph nodes.
+	UnverifiedClaims []ClaimRecord `json:"unverifiedClaims,omitempty"`
+	// DroppedClaims counts claims refused for being malformed or over the
+	// per-attempt or per-run bound.
+	DroppedClaims int `json:"droppedClaims,omitempty"`
 
 	index    map[string]int
 	children map[string][]int
