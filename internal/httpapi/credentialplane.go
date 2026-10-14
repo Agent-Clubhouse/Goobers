@@ -94,10 +94,19 @@ type PublicationLeakScreenDelivery struct {
 // when the backing source states an expiry (GitHub App installation tokens
 // do); absent means the source stated none — the consumer must still treat
 // the value as a snapshot, not a lease (DS10).
+//
+// Scheme is the non-secret Azure DevOps authorization scheme ("basic" or
+// "bearer") of this value, set only for a gaggle whose repository is on Azure
+// DevOps (#5957). It differs from the response's RepoAuthScheme when the value
+// does not come from the repository's own credential: a credentials: entry's
+// personal access token is "basic" even on a gaggle whose repository
+// authenticates with a Microsoft Entra token. Empty means RepoAuthScheme
+// applies.
 type MintedCredential struct {
 	Capability string     `json:"capability"`
 	Value      string     `json:"value"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	Scheme     string     `json:"scheme,omitempty"`
 }
 
 // CredentialResolveResponse carries the minted credentials for one resolve

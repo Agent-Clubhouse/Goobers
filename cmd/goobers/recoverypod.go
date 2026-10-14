@@ -308,16 +308,18 @@ func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
 // A credential that cannot be resolved leaves the fetch anonymous, as before.
 func recoveryFetchAuthEnv(ctx context.Context, url string) ([]string, error) {
 	creds, scheme, credErr := resolveCheckoutCredential(ctx)
-	var token string
+	var cred dispatcher.MintedCredential
 	if credErr == nil {
-		token = gitToken(creds)
+		cred, _ = gitCredential(creds)
 	}
-	if token == "" {
+	if cred.Value == "" {
 		return nil, nil
 	}
 	provider := apiv1.Provider(os.Getenv(executor.RepoProviderEnvVar))
 	if ado := adoCheckoutAuthFor(apiv1.RepoRef{Provider: provider}, scheme, url); ado.scheme != "" {
-		return adoCheckoutGitAuthEnv(ctx, token, ado)
+		// The value's own stated scheme wins over the repository's (#5957).
+		ado.scheme = cred.SchemeOr(ado.scheme)
+		return adoCheckoutGitAuthEnv(ctx, cred.Value, ado)
 	}
-	return gitAuthEnv(token), nil
+	return gitAuthEnv(cred.Value), nil
 }

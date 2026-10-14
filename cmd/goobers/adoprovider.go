@@ -89,17 +89,17 @@ func buildADOProviderForStage(routed providers.RepositoryRef, credential provide
 
 // stageADOCredentialSource turns the token delivered for cap
 // (GOOBERS_CRED_<cap>) into an Azure DevOps credential, in the authorization
-// scheme the daemon stated beside it (executor.RepoAuthSchemeEnvVar). The
-// scheme is never guessed from the token. A token with no scheme is sent as
-// Basic: that is the historical personal-access-token behaviour a standalone
-// invocation (GOOBERS_CRED_<cap> set by hand) relies on.
+// scheme the daemon stated beside it (stageADOCredentialKind). The scheme is
+// never guessed from the token. A token with no scheme is sent as Basic: that
+// is the historical personal-access-token behaviour a standalone invocation
+// (GOOBERS_CRED_<cap> set by hand) relies on.
 //
 // The expiry the daemon delivered beside the token
 // (GOOBERS_CREDENTIAL_EXPIRES_<cap>, #5905) lets a 401 say whether the token
 // expired or was revoked. A missing or unreadable expiry is ignored: it only
 // sharpens that error.
 func stageADOCredentialSource(cap capability.Capability, token string) (providers.ADOCredentialSource, error) {
-	kind, err := stageADOCredentialKind()
+	kind, err := stageADOCredentialKind(cap)
 	if err != nil {
 		return nil, err
 	}
@@ -113,15 +113,32 @@ func stageADOCredentialSource(cap capability.Capability, token string) (provider
 	return providers.NewADODeliveredCredentialSourceWithExpiry(kind, token, string(cap), expiresAt)
 }
 
-func stageADOCredentialKind() (string, error) {
-	return adoCredentialKindForScheme(os.Getenv(executor.RepoAuthSchemeEnvVar))
+// stageADOCredentialKind is the credential kind the token delivered for cap
+// is sent as: the scheme the daemon stated for that capability
+// (GOOBERS_CREDENTIAL_SCHEME_<cap>, #5957), else the repository's
+// (GOOBERS_REPO_AUTH_SCHEME). The per-capability scheme exists because one
+// stage's capabilities can come from different sources: a credentials: entry's
+// personal access token is Basic on a gaggle whose repository sends a
+// Microsoft Entra token as Bearer, and sending it as Bearer earns a 401.
+func stageADOCredentialKind(cap capability.Capability) (string, error) {
+	name := capability.CredentialSchemeEnvVar(string(cap))
+	scheme := strings.TrimSpace(os.Getenv(name))
+	if scheme == "" {
+		name, scheme = executor.RepoAuthSchemeEnvVar, os.Getenv(executor.RepoAuthSchemeEnvVar)
+	}
+	kind, err := adoCredentialKindForScheme(scheme)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	return kind, nil
 }
 
 // adoCredentialKindForScheme maps the authorization scheme the daemon stated
-// for an Azure DevOps repository credential (GOOBERS_REPO_AUTH_SCHEME for a
-// stage, the credential plane's repoAuthScheme for a pod checkout) to the
-// credential kind that sends it: "basic", or no stated scheme, is a PAT and
-// "bearer" a Microsoft Entra token.
+// for an Azure DevOps credential (GOOBERS_CREDENTIAL_SCHEME_<cap> or
+// GOOBERS_REPO_AUTH_SCHEME for a stage, the credential plane's per-credential
+// scheme or repoAuthScheme for a pod checkout) to the credential kind that
+// sends it: "basic", or no stated scheme, is a PAT and "bearer" a Microsoft
+// Entra token.
 func adoCredentialKindForScheme(scheme string) (string, error) {
 	scheme = strings.TrimSpace(scheme)
 	switch strings.ToLower(scheme) {
@@ -130,7 +147,7 @@ func adoCredentialKindForScheme(scheme string) (string, error) {
 	case adoauth.SchemeBearer:
 		return providers.ADOCredentialKindBearer, nil
 	default:
-		return "", fmt.Errorf("%s=%q is not a supported Azure DevOps authorization scheme (want %q or %q)", executor.RepoAuthSchemeEnvVar, scheme, adoauth.SchemeBasic, adoauth.SchemeBearer)
+		return "", fmt.Errorf("%q is not a supported Azure DevOps authorization scheme (want %q or %q)", scheme, adoauth.SchemeBasic, adoauth.SchemeBearer)
 	}
 }
 
