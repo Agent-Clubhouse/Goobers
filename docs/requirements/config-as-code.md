@@ -124,7 +124,7 @@ is delivered to a running instance at each deployment tier.
 
 ### Proposed composition contract (not shipped)
 
-The draft [apply-time gaggle reference design](../design/apply-time-gaggle-references.md)
+The draft apply-time gaggle reference design (`docs/design/apply-time-gaggle-references.md`)
 addresses `CFG-Q3` and #3578. The following are proposed acceptance requirements,
 not claims that current binaries accept reference or macro syntax:
 
@@ -170,7 +170,7 @@ not claims that current binaries accept reference or macro syntax:
   (and the tier-3 `infra` repo).
 - **CFG-Q3:** *(under design review)* Definition composition/reuse mechanism
   (shared fragments — `GBO-004`, `WF-005`). Proposed contract:
-  [apply-time gaggle references](../design/apply-time-gaggle-references.md),
+  `docs/design/apply-time-gaggle-references.md`,
   tracked by #3572/#3578. Not resolved or implemented merely by writing the proposal.
 - **CFG-Q4:** ~~Secrets in config~~ **Resolved (updated):** secrets are **references,
   never stored** (`CFG-009`) — env/file refs at tiers 1–2, **Key Vault references**
