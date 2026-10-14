@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -179,5 +180,56 @@ func TestSourceWebhookReopenRunsCapturedDefinitionOnce(t *testing.T) {
 func TestSourceStageResult(t *testing.T) {
 	if os.Getenv("SOURCE_STAGE_RESULT") == "fail" {
 		t.Fatal("replacement definition must not execute")
+	}
+}
+
+func TestSourceWebhookExpiredAfterReopenDoesNotExecuteOrRenew(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	workflowPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
+	workflow := strings.Replace(deterministicWorkflowYAML, "    - type: schedule\n      schedule: \"@every 24h\"\n", "    - type: webhook\n      events: [issues]\n", 1)
+	if workflow == deterministicWorkflowYAML {
+		t.Fatal("missing schedule fixture")
+	}
+	writeFileContent(t, workflowPath, workflow)
+	first := openSourceDaemonFixture(t, layout)
+	body := []byte(`{"action":"opened"}`)
+	if status := postWebhook(t, first.address, "source-secret", "issues", "expired-delivery", body); status != http.StatusAccepted {
+		t.Fatal(status)
+	}
+	pending, err := first.service.queue.Pending(t.Context(), 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatal(pending, err)
+	}
+	accepted := pending[0]
+	first.close()
+	restarted := openSourceDaemonFixture(t, layout)
+	restarted.service.ordinary.Now = func() time.Time { return accepted.AcceptedAt.Add(7 * 24 * time.Hour) }
+	if status := postWebhook(t, restarted.address, "source-secret", "issues", "expired-delivery", body); status != http.StatusAccepted {
+		t.Fatal(status)
+	}
+	if err := restarted.service.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	restarted.scheduler.Wait()
+	restarted.workers.Wait()
+	record, err := restarted.service.queue.Get(t.Context(), accepted.ID, "github-webhook")
+	if err != nil || record.State != triggerqueue.Rejected || record.Reason != "accepted trigger expired before execution admission" || string(record.Payload) != string(accepted.Payload) || !record.AcceptedAt.Equal(accepted.AcceptedAt) {
+		t.Fatalf("expired source custody: id=%s state=%s reason=%q err=%v", record.ID, record.State, record.Reason, err)
+	}
+	if status := postWebhook(t, restarted.address, "source-secret", "issues", "expired-delivery", body); status != http.StatusAccepted {
+		t.Fatal(status)
+	}
+	if err := restarted.service.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRunStarted {
+			t.Fatal("expired source started", event.RunID)
+		}
 	}
 }

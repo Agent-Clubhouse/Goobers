@@ -34,7 +34,7 @@ func (s *Sources) AcceptWorkers(ctx context.Context, entry localscheduler.Workfl
 		return err
 	}
 	source := localscheduler.SourceTrigger{WorkerKind: observation.Kind, ObservedAt: observation.At.UTC(), ObservedCount: observation.Eligible, WorkerOrdinal: 1}
-	raw, release, err := s.pin(ctx, entry, source)
+	raw, release, err := s.pinUntil(ctx, entry, source, observation.At.Add(DefaultPendingAge))
 	if err != nil {
 		return err
 	}
