@@ -553,6 +553,11 @@ func attributionObservationFromRecord(
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read ground-truth labels %q: %w", row.RunID, err)
 	}
+	// A failed record whose journal cannot be read keeps its unfiltered label,
+	// as before groundTruth contracts; attachAcceptedGroundTruth narrows it.
+	if label, ok := creditgraph.EffectiveLabel(labels.Labels); ok {
+		observation.GroundTruth = &label
+	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
 		return attributionProvenanceError(record.Status, observation, "open attribution journal", row.RunID, err)
@@ -941,6 +946,7 @@ func attachAcceptedGroundTruth(
 			accepted = append(accepted, label)
 		}
 	}
+	observation.GroundTruth = nil
 	if label, ok := creditgraph.EffectiveLabel(accepted); ok {
 		observation.GroundTruth = &label
 	}
