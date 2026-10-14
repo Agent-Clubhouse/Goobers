@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/boundedwait"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -888,6 +889,12 @@ type adoPRDetailState struct {
 	// address the pull request's policy evaluations, which serve evaluations.
 	projectID   string
 	evaluations []map[string]interface{}
+	// sourceRef and headSHA, when set, are reported as the pull request's
+	// source branch and merged head; refs, when set, serves the repository's
+	// Git Refs and pull-request list for the source-branch backstop.
+	sourceRef string
+	headSHA   string
+	refs      *fakeADORefs
 }
 
 func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *adoPRDetailState) *httptest.Server {
@@ -905,6 +912,10 @@ func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *a
 		if st.autoComplete {
 			body["autoCompleteSetBy"] = map[string]string{"uniqueName": "goobers"}
 		}
+		if st.sourceRef != "" {
+			body["sourceRefName"] = "refs/heads/" + st.sourceRef
+			body["lastMergeSourceCommit"] = map[string]string{"commitId": st.headSHA}
+		}
 		if st.projectID != "" {
 			body["repository"] = map[string]interface{}{
 				"name":    name,
@@ -914,6 +925,9 @@ func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *a
 		st.mu.Unlock()
 		writeFakeJSON(w, body)
 	})
+	if st.refs != nil {
+		st.refs.register(t, mux, owner, project, name)
+	}
 	mux.HandleFunc("/"+owner+"/"+project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
 		st.mu.Lock()
 		evals := st.evaluations
@@ -1014,6 +1028,58 @@ func TestMergeQueuePollADOReportsMergedWithoutBranchCleanupOrWorkItemWrite(t *te
 	}
 	if len(st.workItemHits) != 0 {
 		t.Fatalf("work-item writes = %v, want none — a merged PR must never mutate a work item that shares its numeric id", st.workItemHits)
+	}
+}
+
+// TestMergeQueuePollADOBackstopsSourceBranchDeletion is #5957's post-merge
+// backstop on the auto-complete path, where the validation soak saw Azure
+// DevOps leave the source branch: when the queue reports the pull request
+// merged and the stage holds github:branch:delete, a branch still at the
+// merged head is deleted conditionally on it, and a branch another open pull
+// request targets is kept.
+func TestMergeQueuePollADOBackstopsSourceBranchDeletion(t *testing.T) {
+	const branch = "goobers/implementation/run-9"
+	const headSHA = "6666666666666666666666666666666666666666"
+	for _, tc := range []struct {
+		name       string
+		stacked    bool
+		wantStatus string
+		wantKept   bool
+	}{
+		{name: "left behind", wantStatus: "deleted"},
+		{name: "stacked", stacked: true, wantStatus: "skipped-stacked", wantKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refs := newFakeADORefs(map[string]string{branch: headSHA})
+			if tc.stacked {
+				refs.stackedOn[branch] = "goobers/implementation/child"
+			}
+			st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha", sourceRef: branch, headSHA: headSHA, refs: refs}
+			server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+			root, dir := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", true, map[string]string{
+				"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+			})
+			t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "branch-delete-token")
+
+			code, _, stderr := runArgs(t, "merge-queue-poll", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			result := readQueueResult(t, dir)
+			if result["queueOutcome"] != "merged" || result["branchCleanup"] != tc.wantStatus || result["headBranch"] != branch {
+				t.Fatalf("result = %+v, want merged with branchCleanup=%s for %q", result, tc.wantStatus, branch)
+			}
+			tips, updates, _ := refs.snapshot()
+			if _, kept := tips[branch]; kept != tc.wantKept {
+				t.Fatalf("branch kept = %t, want %t", kept, tc.wantKept)
+			}
+			if !tc.wantKept && (len(updates) != 1 || updates[0]["oldObjectId"] != headSHA) {
+				t.Fatalf("ref updates = %v, want one delete conditional on the merged head", updates)
+			}
+			if len(st.workItemHits) != 0 {
+				t.Fatalf("work-item writes = %v, want none", st.workItemHits)
+			}
+		})
 	}
 }
 

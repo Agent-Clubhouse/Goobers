@@ -97,6 +97,7 @@ func newTerminalRunAbortLabelProviderForProject(cfg *instance.Config, project ap
 		source,
 		newRunAbortLabelProvider,
 		newGiteaRunAbortLabelProvider,
+		nil,
 		func(kind providers.ProviderKind) error {
 			return fmt.Errorf("run-abort labeling does not support repository provider %q", kind)
 		},

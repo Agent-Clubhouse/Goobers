@@ -540,7 +540,11 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   `deleteSourceBranch` flag rather than this cleanup path, and `merge-pr` skips
   the shared cleanup for ADO by construction. #2061. The flag honours the same
   stacked exception: it is withheld (`branchCleanup: skipped-stacked`) when an
-  open PR targets the source branch when the landing is requested. The landing stage still
+  open PR targets the source branch when the landing is requested. ADO does not
+  always honour the flag, so the stage that observes the merge backs it up:
+  it confirms the source ref is gone and otherwise deletes it with a ref update
+  conditional on the merged head, keeping a branch that moved
+  (`skipped-moved`) or that a stacked PR now targets (#5957). The landing stage still
   declares `github:branch:delete` on ADO, and completes with `github:pr:merge`
   or a declared `ado:pr:complete` per PRL-040.)* After an actual merge
   (direct or queue-reported), the merged head branch MUST be deleted unless
