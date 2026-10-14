@@ -8537,6 +8537,11 @@ code,
 .workflow-graph-edge-branch-no-output {
   opacity: 0.5;
 }
+/* A selective parallel's skipped branch never started: sparse dots, faded. */
+.workflow-graph-edge-branch-skipped {
+  stroke-dasharray: 1 5;
+  opacity: 0.4;
+}
 
 /* #1431: the accessible key for the encoding above — a collapsible details
    element, mirroring ReplayScrubber's "Chapter key" pattern. Every sample

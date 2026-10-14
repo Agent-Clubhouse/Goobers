@@ -397,12 +397,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err := validateHumanResumeDecision(in, humanProgress); err != nil {
 		return Result{}, err
 	}
-	rerun, seedEvents, err := pendingRerun(events, in.Machine)
+	rerun, seedEvents, err := resumeSeedEvents(events, in.Machine)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: restore pending stage rerun for run %q: %w", in.RunID, err)
-	}
-	if rerun == nil {
-		seedEvents = events
 	}
 
 	f, err := r.newResumeFrame(ctx, jr, rd, in, id, registrar, events, seedEvents, rerun, humanProgress)
@@ -677,6 +674,24 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 	return nil
 }
 
+// resumeSeedEvents selects the events a resume reconstructs from — the
+// pending rerun's seed, or the whole journal — and refuses them when a
+// recorded selective-parallel visit conflicts (a typed workflow_integrity
+// failure, never repaired by rerunning the source task).
+func resumeSeedEvents(events []journal.Event, machine *workflow.Machine) (*rerunContext, []journal.Event, error) {
+	rerun, seedEvents, err := pendingRerun(events, machine)
+	if err != nil {
+		return nil, nil, err
+	}
+	if rerun == nil {
+		seedEvents = events
+	}
+	if err := verifyRecordedSelections(seedEvents, machine); err != nil {
+		return nil, nil, err
+	}
+	return rerun, seedEvents, nil
+}
+
 // newResumeFrame reconstructs the walk-local state a live run only ever holds
 // in memory — pointers accumulated so far (#107) and the last finished stage's
 // result (#108), the subject a resumed gate needs. Both are exactly what a live
@@ -814,6 +829,9 @@ func (f *resumeFrame) resolveStartState(rd *journal.Reader, machine *workflow.Ma
 	if ws.parallel != nil {
 		current := ws.parallel.current()
 		switch {
+		case current == nil && ws.parallel.runnable() == 0:
+			// The frozen selection skipped every branch; only the join remains.
+			startState = workflow.TargetJoin
 		case current == nil:
 			return "", fmt.Errorf("runner: restore active parallel %q: no current branch", ws.parallel.spec.Name)
 		case current.settled:
@@ -1604,6 +1622,8 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 		return nil, -1
 	}
 	par := newParallelExec(spec)
+	// A selective visit's skip set comes from its parallel.started alone.
+	par.applySelection(events[start].Selection)
 	branchByID := func(id int) (*branchState, int) {
 		for i, branch := range par.branches {
 			if branch.id == id {
@@ -1889,6 +1909,7 @@ func fanInFromFinished(spec apiv1.Parallel, event journal.Event) *parallelExec {
 		}
 		branch.status = outcome.Status
 		branch.artifacts = outcome.Artifacts
+		branch.reason = outcome.Reason
 		branch.settled = true
 	}
 	return fanIn

@@ -332,9 +332,9 @@
       "type": "string"
     },
     "branchStatus": {
-      "description": "Terminal status of a branch on branch.finished. Normative.",
+      "description": "Terminal status of a branch on branch.finished. Normative. A skipped branch never starts, so it appears only in the completeness record, never on branch.finished.",
       "type": "string",
-      "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"]
+      "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output", "skipped"]
     },
     "completeness": {
       "description": "Branch completeness record on parallel.finished: one entry per DECLARED branch, in declaration order (which is what assigns branch ids). Normative — it, not the interleaving, is what a parallel means.",
@@ -346,10 +346,15 @@
         "properties": {
           "branch": { "description": "Numeric branch id assigned from declaration order.", "type": "integer", "minimum": 1 },
           "name": { "description": "Declared branch name from the workflow's parallel block.", "type": "string", "minLength": 1 },
-          "status": { "description": "Terminal outcome recorded for the branch.", "type": "string", "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"] },
-          "artifacts": { "description": "Count of artifacts recorded by the branch before it finished.", "type": "integer", "minimum": 0 }
+          "status": { "description": "Terminal outcome recorded for the branch. 'skipped' means a selective parallel's frozen selection did not choose this optional branch.", "type": "string", "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output", "skipped"] },
+          "artifacts": { "description": "Count of artifacts recorded by the branch before it finished.", "type": "integer", "minimum": 0 },
+          "reason": { "description": "Optional human-facing reason a selective parallel records: the selection's reason for a selected branch, or why a skipped branch did not run. Excluded from conformance.", "type": "string", "x-conformance": "excluded" }
         }
       }
+    },
+    "selection": {
+      "description": "Frozen selection of a DSL 3.1 selective parallel, present only on that parallel's parallel.started. Resume rebuilds the skip set from it alone. Normative except reasons and source.visit.",
+      "$ref": "#/$defs/parallelSelection"
     },
     "runner": {
       "description": "Runner-specific annotations. The ONLY sanctioned runner-specific divergence and ALWAYS excluded from conformance.",
@@ -777,6 +782,41 @@
         "oldDigest": { "description": "Digest of the original content before redaction.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
         "newDigest": { "description": "Digest of the scrubbed content after redaction.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
         "reason": { "description": "Human-facing explanation of why the content was redacted.", "type": "string", "x-conformance": "excluded" }
+      }
+    },
+    "parallelSelection": {
+      "description": "Normalized selection a selective parallel froze from its source slot before any branch started.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "sourceDigest", "integrity", "selected"],
+      "properties": {
+        "source": {
+          "description": "Journal-bound producer attempt the selection document came from.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["task", "slot", "visit", "attempt"],
+          "properties": {
+            "task": { "description": "Producing task.", "type": "string", "minLength": 1, "x-conformance": "normative" },
+            "slot": { "description": "Producer's DSL 3.1 artifact slot.", "type": "string", "minLength": 1, "x-conformance": "normative" },
+            "visit": { "description": "Producer's artifact publication visit, a runner-local journal sequence.", "type": "integer", "minimum": 1, "x-conformance": "excluded" },
+            "attempt": { "description": "Producer attempt that published the document.", "type": "integer", "minimum": 1, "x-conformance": "normative" }
+          }
+        },
+        "sourceDigest": { "description": "Digest of the frozen source document.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
+        "integrity": { "description": "Integrity of the source artifact, recorded for audit; the selection is never branch input.", "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "x-conformance": "normative" },
+        "selected": {
+          "description": "Selected optional branch names in branch-id order. Non-optional branches always run and are never listed.",
+          "type": "array",
+          "maxItems": 32,
+          "items": { "description": "Declared optional branch name.", "type": "string", "minLength": 1 },
+          "x-conformance": "normative"
+        },
+        "reasons": {
+          "description": "Optional human-facing reason per selected branch, at most 512 bytes each.",
+          "type": "object",
+          "additionalProperties": { "description": "Reason recorded for one selected branch.", "type": "string", "maxLength": 512 },
+          "x-conformance": "excluded"
+        }
       }
     }
   }

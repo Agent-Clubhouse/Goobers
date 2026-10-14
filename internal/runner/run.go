@@ -1538,7 +1538,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	// past the failure that parked it.
 	r.releaseBaselineParks(ctx, ws)
 	ws.gateEval = r.newWalkGateEvaluator(ws)
-	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
+	runConcurrent := func(p apiv1.Parallel, existing *parallelExec, selection *journal.ParallelSelection) (Result, bool, error) {
 		if err := validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))
 			return res, true, failErr
@@ -1548,7 +1548,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			return res, true, failErr
 		}
 		outcome, err := r.runConcurrentParallel(
-			ctx, ws.jr, ws.in, p, existing, ws.pointers, ws.lastStage, ws.lastResult,
+			ctx, ws.jr, ws.in, parallelVisit{spec: p, existing: existing, selection: selection}, ws.pointers, ws.lastStage, ws.lastResult,
 			ws.completed, ws.workspaceBranch, ws.reg, &ws.stepBudget,
 		)
 		ws.steps = int(ws.stepBudget.Load())
@@ -1606,7 +1606,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		return Result{}, false, nil
 	}
 	if ws.parallel != nil && parallelUsesDispatcher(ws.in.Machine, ws.parallel.spec) {
-		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel)
+		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel, nil)
 		if done || err != nil {
 			return result, err
 		}
@@ -1648,7 +1648,9 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			}
 			settling := ws.parallel.current()
 			status := ws.parallel.currentStatus()
-			if !settling.settled {
+			// A selective parallel whose selection skipped every branch
+			// reaches its join with no current branch: nothing to settle.
+			if settling != nil && !settling.settled {
 				if err := ws.jr.Append(journal.Event{
 					Type: journal.EventBranchFinished, Branch: settling.id,
 					Parallel: ws.parallel.spec.Name, BranchName: settling.name,
@@ -1726,39 +1728,10 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 
 		// Entering a parallel: fan out into its declared branches.
 		if p, ok := ws.in.Machine.Parallel(ws.state); ok {
-			if err := supportedFailurePolicy(p.FailurePolicy); err != nil {
-				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
-					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
+			result, done, err := r.enterParallel(ctx, ws, p, runConcurrent)
+			if done || err != nil {
+				return result, err
 			}
-			if parallelUsesDispatcher(ws.in.Machine, p) {
-				result, done, err := runConcurrent(p, nil)
-				if done || err != nil {
-					return result, err
-				}
-				continue
-			}
-			ws.parallel = newParallelExec(p)
-			ws.fanIn = nil
-			ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
-			ws.jr.SetMachineState(ws.state)
-			if err := ws.jr.Append(journal.Event{
-				Type: journal.EventParallelStarted, Parallel: p.Name,
-				Completeness: ws.parallel.completeness(),
-			}); err != nil {
-				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
-			}
-			first := ws.parallel.current()
-			ws.jr.SetBranchCursors(ws.parallel.cursors())
-			if err := ws.jr.Append(journal.Event{
-				Type: journal.EventBranchStarted, Branch: first.id,
-				Parallel: p.Name, BranchName: first.name, Stage: first.start,
-			}); err != nil {
-				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
-			}
-			first.started = true
-			first.startedAt = time.Now()
-			ws.jr.SetBranch(first.id)
-			ws.state = first.start
 			continue
 		}
 

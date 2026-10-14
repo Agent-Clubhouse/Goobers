@@ -63,16 +63,23 @@ func (e *UnsupportedFanOutError) Error() string {
 // Unwrap exposes the sentinel to errors.Is.
 func (e *UnsupportedFanOutError) Unwrap() error { return e.Err }
 
-// RefuseUnsupportedFanOut rejects a definition using a fan-out construct the
-// local runner cannot execute yet. Call before any execution effects,
-// including when resuming or rerunning a pinned machine. Selective parallels
-// lift with FAN-2 (#7383) and maps with FAN-4 (#7385).
+// RefuseUnsupportedFanOut rejects a definition using any DSL 3.1 fan-out
+// construct: selective parallels and maps. The engine walk executes neither
+// and calls it before any execution effects (design §13).
 func RefuseUnsupportedFanOut(spec apiv1.WorkflowSpec) error {
 	for _, parallel := range spec.Parallels {
 		if parallelIsSelective(parallel) {
 			return &UnsupportedFanOutError{State: parallel.Name, Feature: "spec.parallels.selection", Err: ErrSelectiveParallelUnsupported}
 		}
 	}
+	return RefuseUnsupportedLocalFanOut(spec)
+}
+
+// RefuseUnsupportedLocalFanOut rejects a definition using a fan-out construct
+// the local runner cannot execute yet. Call before any execution effects,
+// including when resuming or rerunning a pinned machine. Selective parallels
+// run locally since FAN-2 (#7383); maps lift here with FAN-4 (#7385).
+func RefuseUnsupportedLocalFanOut(spec apiv1.WorkflowSpec) error {
 	if len(spec.Maps) > 0 {
 		return &UnsupportedFanOutError{State: spec.Maps[0].Name, Feature: "spec.maps", Err: ErrMapUnsupported}
 	}

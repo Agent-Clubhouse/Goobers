@@ -682,8 +682,15 @@ func completeJournalEvent() journal.Event {
 		BranchName:   "east",
 		BranchStatus: journal.BranchSucceeded,
 		Completeness: []journal.BranchOutcome{{
-			Branch: 1, Name: "east", Status: journal.BranchSucceeded, Artifacts: 1,
+			Branch: 1, Name: "east", Status: journal.BranchSucceeded, Artifacts: 1, Reason: "touches internal/auth",
 		}},
+		Selection: &journal.ParallelSelection{
+			Source:       journal.SelectionSource{Task: "triage", Slot: "lenses", Visit: 4, Attempt: 1},
+			SourceDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			Integrity:    apiv1.IntegrityDerived,
+			Selected:     []string{"east"},
+			Reasons:      map[string]string{"east": "touches internal/auth"},
+		},
 		Workflow:  "implementation",
 		Gaggle:    "goobers",
 		RunID:     "run-123",

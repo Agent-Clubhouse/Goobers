@@ -54,17 +54,35 @@ func mapMachine(t *testing.T) *workflow.Machine {
 	})
 }
 
-// TestFanOutRefusedBeforeLocalEffects pins design §13: until FAN-2 and FAN-4
-// land, the local runner refuses selective parallels and maps at every entry
-// point with a typed error, before touching run storage, and never runs a
-// selective parallel as a plain parallel.
+// childSelectiveParallelMachine is a selective parallel whose optional
+// branch can start child workflows: the one selective shape whose per-branch
+// fork custody the local runner cannot yet reserve for selected branches only.
+func childSelectiveParallelMachine(t *testing.T) *workflow.Machine {
+	child := apiv1.Task{Name: "security", Type: apiv1.TaskAgentic, Goal: "delegate", Goober: "coder", Workspace: apiv1.WorkspaceRepo,
+		ChildWorkflows: &apiv1.ChildWorkflowPolicy{AllowedGoobers: []string{"coder"}}, Next: workflow.TargetJoin}
+	return compileFanOutMachine(t, apiv1.WorkflowSpec{
+		Start: "triage",
+		Tasks: []apiv1.Task{fanOutSourceTask("triage", "review"), fanOutTestTask("baseline", workflow.TargetJoin), child, fanOutTestTask("collate", "")},
+		Parallels: []apiv1.Parallel{{
+			Name: "review", FailurePolicy: apiv1.BranchContinueOnError, Join: "collate", MaxConcurrentBranches: 1,
+			Selection: &apiv1.ParallelSelection{Source: apiv1.FanOutSource{Task: "triage", Slot: "plan"}},
+			Branches:  []apiv1.Branch{{Name: "baseline", Start: "baseline"}, {Name: "security", Start: "security", Optional: true}},
+		}},
+	})
+}
+
+// TestFanOutRefusedBeforeLocalEffects pins design §13 for what the local
+// runner still cannot execute: maps until FAN-4, and selective parallels
+// whose branches can start child workflows. Both are refused at every entry
+// point with a typed error, before touching run storage, and never run as a
+// plain parallel.
 func TestFanOutRefusedBeforeLocalEffects(t *testing.T) {
 	for _, construct := range []struct {
 		name     string
 		machine  *workflow.Machine
 		sentinel error
 	}{
-		{"selective parallel", selectiveParallelMachine(t), workflow.ErrSelectiveParallelUnsupported},
+		{"child-capable selective parallel", childSelectiveParallelMachine(t), workflow.ErrSelectiveParallelUnsupported},
 		{"map", mapMachine(t), workflow.ErrMapUnsupported},
 	} {
 		m := construct.machine
@@ -142,5 +160,19 @@ func TestFanOutSourceSlotEffectiveSchemaIsEnvelope(t *testing.T) {
 				t.Fatalf("nil loader must keep publication validation disabled: %v %v", disabled, err)
 			}
 		})
+	}
+}
+
+// TestSelectiveParallelAdmittedLocally pins FAN-2 (#7383): a selective
+// parallel without child-capable branches is no longer refused at the
+// local-runner admission boundary.
+func TestSelectiveParallelAdmittedLocally(t *testing.T) {
+	r := &Runner{cfg: Config{RunsDir: t.TempDir()}}
+	if err := r.admitExecution(context.Background(), selectiveParallelMachine(t)); err != nil {
+		t.Fatalf("selective parallel refused at admission: %v", err)
+	}
+	var typed *workflow.UnsupportedFanOutError
+	if err := r.admitExecution(context.Background(), childSelectiveParallelMachine(t)); !errors.As(err, &typed) || typed.State != "review" {
+		t.Fatalf("child-capable selective parallel admission = %v, want typed refusal", err)
 	}
 }

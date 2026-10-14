@@ -902,8 +902,10 @@ function edgeDescription(
 ): string {
   const { edge } = layoutEdge;
   const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
+  const branchState = edge.branch ? branchStates?.get(edge.branch) : undefined;
+  const reason = branchState?.reason ? ` (${branchState.reason})` : "";
   const route = edge.branch
-    ? `branch ${branchEdgeLabel(edge.branch, branchStates?.get(edge.branch))} to ${target}`
+    ? `branch ${branchEdgeLabel(edge.branch, branchState)}${reason} to ${target}`
     : `${edge.outcome || "next"} to ${target}`;
   const shape = layoutEdge.repass ? "repass route" : "forward route";
   if (traversedEdges === undefined) {

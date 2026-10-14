@@ -110,7 +110,8 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
   started/finished, stage started/finished (policy-retry attempts included), gate
   verdicts, artifacts recorded (with digests), external refs touched, parallel and
   branch lifecycle (`parallel.started`, `branch.started`, `branch.finished`,
-  `parallel.finished`) including the branch completeness record. Events are compared in
+  `parallel.finished`) including the branch completeness record and a selective
+  parallel's frozen `parallel.started` selection (its reasons excluded). Events are compared in
   `seq` order (§4); parallel-branch events order by `(branch, seq)` **at every tier**.
 - **Excluded** from comparison: timestamps and durations; infrastructure-retry
   attempts (attempt events are tagged `policy` vs `infra`, and only `policy`
