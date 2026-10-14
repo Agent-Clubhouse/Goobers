@@ -635,8 +635,14 @@ type RetryPolicy struct {
 // RunControls tunes runner-level safety budgets. An omitted field inherits from
 // the next broader scope: workflow, then gaggle, then instance defaults.
 type RunControls struct {
-	// MaxRepasses bounds how many times gates may route a run back to the same
-	// already-completed stage before escalation, regardless of gate or outcome.
+	// MaxRepasses bounds how many times a run may be routed back to the same
+	// already-completed stage before escalation. The count is cumulative per
+	// target stage across the run, charged by automated and agentic gate
+	// outcomes that route back to that stage and by producer retries after an
+	// invalid handoff. Only policy outcomes (anything other than pass, infra,
+	// or timeout) are charged: a pass branch into a completed stage is a
+	// forward step, infra and timeout outcomes spend their own retry and
+	// polling budgets, and human-gate decisions are never charged.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`

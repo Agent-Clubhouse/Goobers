@@ -321,7 +321,7 @@ narrower scope overriding the broader one.
 
 | Field | Description |
 | --- | --- |
-| `maxRepasses` | Bounds how often gates may route back to an already completed stage. A non-human gate may override it. |
+| `maxRepasses` | Bounds how often a run may be routed back to the same already completed stage. The count is cumulative per target stage, charged by automated and agentic gate outcomes that route back to it and by producer retries after an invalid handoff. Only policy outcomes (anything other than `pass`, `infra`, or `timeout`) are charged: a `pass` branch into a completed stage is a forward step, `infra` and `timeout` outcomes spend their own retry and polling budgets, and human-gate decisions are never charged. A non-human gate may override it. |
 | `stalledRunTimeout` | Positive Go duration after which a silent running journal is escalated. |
 | `maxRunDuration` | Positive Go duration bounding active execution time: run age less time the host spent suspended and durable child waits. Empty disables this bound. |
 

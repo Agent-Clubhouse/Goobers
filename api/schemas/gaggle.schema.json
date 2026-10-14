@@ -226,7 +226,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times a run may be routed back to the same already-completed stage before escalation. The count is cumulative per target stage across the run, charged by automated and agentic gate outcomes that route back to that stage and by producer retries after an invalid handoff. Only policy outcomes (anything other than pass, infra, or timeout) are charged: a pass branch into a completed stage is a forward step, infra and timeout outcomes spend their own retry and polling budgets, and human-gate decisions are never charged." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum active execution time of a run (its age less host suspension and durable child waits), expressed as a Go duration. Omit to disable." }
       }
