@@ -176,23 +176,37 @@ pressure from an inventory wedged behind a retain floor, and appends
 
 After every successful workspace cleanup the runner observes the recovery
 state that cleanup retained and copies it into the run's journal. When that
-observation fails, the run records a `recovery_observation_failed` error and
-`goobers status` lists it among the run's blockers, with when it was observed
-and how long ago (`(observed <time>, <age> ago)`; `blockers[].observedAt` and
-`ageMillis` in `--json`). The observation reads the shared inventory, and a
-run that has finished never observes again, so the blocker is retracted by
-*another* run's later successful observation: the daemon journals a
-`blocker.cleared` record in the instance log on the first successful
-observation of each process lifetime, on the first one after any failure it
-saw, and otherwise at most every fifteen minutes. A failure recorded after the
-newest such record stays listed, and a blocker whose observed time is unknown
-(a read-model row projected by an older build) is never treated as cleared. The
-recorded error itself stays in the run's journal and `latestError`; only its
-listing as a current blocker is retracted. Other run blockers clear the way
-they always have: a later error or review in the same run supersedes the
-earlier one, and stale-heartbeat and claim-drift blockers are recomputed on
-every read. Any other recorded error code has no automatic clear — it is the
-run's last recorded failure (#5404).
+observation fails, the run records an error and `goobers status` lists it among
+the run's blockers, with when it was observed and how long ago
+(`(observed <time>, <age> ago)`; `blockers[].observedAt` and `ageMillis` in
+`--json`). The error code says which part failed, because the two clear
+differently (#5404):
+
+- `recovery_observation_failed`: the shared inventory itself could not be read
+  (its configuration, or the directory — for example the pre-#5354 cap
+  refusal). A run that has finished never observes again, but any other run's
+  later successful observation reads the same inventory, so that retracts the
+  blocker. The daemon journals an instance-scoped `blocker.cleared` record in
+  the instance log on the first successful observation of each process
+  lifetime, on the first one after an inventory failure it saw, and otherwise
+  at most every fifteen minutes.
+- `recovery_observation_run_failed`: the inventory was readable, but the run's
+  own records, its observation-count or ownership checks, or the append into
+  its journal failed. Another run's success never looks at any of those, so
+  only a later successful observation of the *same* run retracts it (a
+  run-scoped `blocker.cleared` record). A run that never observes again keeps
+  the blocker.
+
+Each record carries the time its successful observation *started*, and only a
+failure recorded before that time is retracted: a success that read the
+inventory before a concurrent failure never retracts it, however late its record
+is written. A blocker whose observed time is unknown (a read-model row projected
+by an older build) is never treated as cleared. The recorded error itself stays
+in the run's journal and `latestError`; only its listing as a current blocker
+is retracted. Other run blockers clear the way they always have: a later error
+or review in the same run supersedes the earlier one, and stale-heartbeat and
+claim-drift blockers are recomputed on every read. Any other recorded error code
+has no automatic clear — it is the run's last recorded failure.
 
 A legitimately full inventory no longer refuses the cleanup. Capacity gates
 bundle publication, never worktree teardown. A snapshot's objects are written

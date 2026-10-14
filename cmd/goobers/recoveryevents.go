@@ -6,21 +6,27 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 func recoveryRunEvents(layout instance.Layout) func(context.Context, string) ([]journal.Event, int, error) {
 	return func(ctx context.Context, runID string) ([]journal.Event, int, error) {
 		// Observation of the run's OWN records, reported as
-		// recovery_observation_failed when it fails. A read bounded by the
-		// operator cap refused on an inventory already holding more entries
-		// than the cap, so cleanup that had already succeeded was reported as
-		// a failure to observe it (#5354). The read is bounded by the
-		// structural ceiling and not by the operator cap it reports back:
-		// that bound is what the caller checks the observation count against,
-		// and it is still the operator's.
+		// recovery_observation_failed (inventory) or
+		// recovery_observation_run_failed (this run's records) when it
+		// fails. A read bounded by the operator cap refused on an inventory
+		// already holding more entries than the cap, so cleanup that had
+		// already succeeded was reported as a failure to observe it (#5354).
+		// The read is bounded by the structural ceiling and not by the
+		// operator cap it reports back: that bound is what the caller checks
+		// the observation count against, and it is still the operator's.
 		entries, _, limit, err := observeRecoveryInventory(ctx, layout)
 		if err != nil {
-			return nil, limit, err
+			// The shared inventory, not this run's records: journaled as
+			// recovery_observation_failed, which another run's later
+			// successful observation can show cleared (#5404). Everything
+			// below is this run's own and is not marked.
+			return nil, limit, &runner.RecoveryInventoryError{Err: err}
 		}
 		var events []journal.Event
 		for _, entry := range entries {

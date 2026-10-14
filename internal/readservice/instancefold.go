@@ -43,7 +43,7 @@ type instanceState struct {
 	workerDivergence      map[string]WorkerConfigDivergenceStatus
 	telemetryRetention    *TelemetryRetentionStatus
 	configReloadRejection *ConfigReloadRejectionStatus
-	// blockerClears is the newest blocker.cleared record per error code
+	// blockerClears is the newest blocker.cleared observation per clear key
 	// (#5404).
 	blockerClears map[string]time.Time
 }

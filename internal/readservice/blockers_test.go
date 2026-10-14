@@ -12,23 +12,51 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 )
 
-// appendBlockerCleared journals what cmd/goobers' recovery observation
-// recorder writes after a successful observation, stamped at at.
-func appendBlockerCleared(t *testing.T, layout instance.Layout, code string, at time.Time) {
+// blockerClear is one blocker.cleared record as cmd/goobers' recovery
+// observation recorder writes it: observedAt is when the successful
+// observation started, writtenAt when the record reached the journal.
+type blockerClear struct {
+	code, scope, runID    string
+	observedAt, writtenAt time.Time
+	omitObservedAt        bool
+}
+
+func instanceClear(at time.Time) blockerClear {
+	return blockerClear{code: journal.ErrorCodeRecoveryObservationFailed, scope: "instance", runID: "observer", observedAt: at, writtenAt: at}
+}
+
+func appendBlockerCleared(t *testing.T, layout instance.Layout, clears ...blockerClear) {
 	t.Helper()
-	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return at }))
+	for _, clear := range clears {
+		appendOneBlockerCleared(t, layout, clear)
+	}
+}
+
+func appendOneBlockerCleared(t *testing.T, layout instance.Layout, clear blockerClear) {
+	t.Helper()
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return clear.writtenAt }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := log.Append(journal.Event{
-		Type: journal.EventRunnerAnnotation, RunID: "observer",
-		Runner: map[string]any{"kind": journal.RunnerAnnotationBlockerCleared, "code": code},
-	}); err != nil {
+	payload := map[string]any{"kind": journal.RunnerAnnotationBlockerCleared, "code": clear.code, "scope": clear.scope}
+	if !clear.omitObservedAt {
+		payload["observedAt"] = clear.observedAt.Format(time.RFC3339Nano)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventRunnerAnnotation, RunID: clear.runID, Runner: payload}); err != nil {
 		t.Fatal(err)
 	}
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func listStatusBlockers(t *testing.T, service *Local, runID string) []OperatorBlocker {
+	t.Helper()
+	runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return blockerFor(t, runs, runID)
 }
 
 func createErroredFixtureRun(t *testing.T, layout instance.Layout, runID string, startedAt time.Time, code string) {
@@ -85,7 +113,7 @@ func TestRecoveryObservationBlockerIsRetractedByLaterObservation(t *testing.T) {
 	}
 
 	// A success observed before the failure proves nothing about it.
-	appendBlockerCleared(t, layout, journal.ErrorCodeRecoveryObservationFailed, observedAt.Add(-time.Second))
+	appendBlockerCleared(t, layout, instanceClear(observedAt.Add(-time.Second)))
 	runs, err = service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -94,8 +122,10 @@ func TestRecoveryObservationBlockerIsRetractedByLaterObservation(t *testing.T) {
 		t.Fatalf("an earlier clear retracted a later failure: %+v", blockers)
 	}
 
-	appendBlockerCleared(t, layout, journal.ErrorCodeRecoveryObservationFailed, startedAt.Add(2*time.Hour))
-	appendBlockerCleared(t, layout, "worktree_remove_failed", startedAt.Add(2*time.Hour))
+	appendBlockerCleared(t, layout, instanceClear(startedAt.Add(2*time.Hour)))
+	unregistered := instanceClear(startedAt.Add(2 * time.Hour))
+	unregistered.code = "worktree_remove_failed"
+	appendBlockerCleared(t, layout, unregistered)
 	runs, err = service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +152,63 @@ func TestRecoveryObservationBlockerIsRetractedByLaterObservation(t *testing.T) {
 	}
 	if detail.Operator.LatestError == nil || detail.Operator.LatestError.Code != journal.ErrorCodeRecoveryObservationFailed {
 		t.Fatalf("the recorded error itself must stay as history: %+v", detail.Operator.LatestError)
+	}
+}
+
+// TestBlockerClearUsesObservationStartNotWriteTime: a success that read the
+// inventory BEFORE a concurrent failure, but whose record reached the journal
+// AFTER it, must not retract that failure — the condition may still be
+// present. A record carrying no observation time clears nothing.
+func TestBlockerClearUsesObservationStartNotWriteTime(t *testing.T) {
+	service, layout, _ := fixtureService(t)
+	startedAt := time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC)
+	createErroredFixtureRun(t, layout, "concurrent-failure", startedAt, journal.ErrorCodeRecoveryObservationFailed)
+	failedAt := startedAt.Add(time.Minute)
+	service.now = func() time.Time { return startedAt.Add(time.Hour) }
+
+	late := instanceClear(failedAt.Add(-time.Second))
+	late.writtenAt = failedAt.Add(time.Minute)
+	appendBlockerCleared(t, layout, late)
+	if blockers := listStatusBlockers(t, service, "concurrent-failure"); len(blockers) != 1 {
+		t.Fatalf("a success observed before the failure but written after it retracted it: %+v", blockers)
+	}
+
+	undated := instanceClear(failedAt.Add(time.Hour))
+	undated.omitObservedAt = true
+	appendBlockerCleared(t, layout, undated)
+	if blockers := listStatusBlockers(t, service, "concurrent-failure"); len(blockers) != 1 {
+		t.Fatalf("a clear without an observation time retracted a failure: %+v", blockers)
+	}
+
+	appendBlockerCleared(t, layout, instanceClear(failedAt.Add(time.Second)))
+	if blockers := listStatusBlockers(t, service, "concurrent-failure"); len(blockers) != 0 {
+		t.Fatalf("a success observed after the failure did not retract it: %+v", blockers)
+	}
+}
+
+// TestRunScopedObservationFailureIsClearedOnlyBySameRun: when the inventory
+// was readable but the run's own records, checks or journal append failed,
+// another run's success — and an instance-level clear — proves nothing about
+// it. Only a later successful observation of the same run retracts it.
+func TestRunScopedObservationFailureIsClearedOnlyBySameRun(t *testing.T) {
+	service, layout, _ := fixtureService(t)
+	startedAt := time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC)
+	createErroredFixtureRun(t, layout, "own-record-failed", startedAt, journal.ErrorCodeRecoveryObservationRunFailed)
+	after := startedAt.Add(2 * time.Minute)
+	service.now = func() time.Time { return startedAt.Add(time.Hour) }
+
+	asInstance := instanceClear(after)
+	asInstance.code = journal.ErrorCodeRecoveryObservationRunFailed
+	appendBlockerCleared(t, layout, instanceClear(after), asInstance,
+		blockerClear{code: journal.ErrorCodeRecoveryObservationRunFailed, scope: "run", runID: "another-run", observedAt: after, writtenAt: after})
+	blockers := listStatusBlockers(t, service, "own-record-failed")
+	if len(blockers) != 1 || blockers[0].Code != journal.ErrorCodeRecoveryObservationRunFailed {
+		t.Fatalf("another run's success retracted a run-specific failure: %+v", blockers)
+	}
+
+	appendBlockerCleared(t, layout, blockerClear{code: journal.ErrorCodeRecoveryObservationRunFailed, scope: "run", runID: "own-record-failed", observedAt: after, writtenAt: after})
+	if blockers := listStatusBlockers(t, service, "own-record-failed"); len(blockers) != 0 {
+		t.Fatalf("the same run's later success did not retract its failure: %+v", blockers)
 	}
 }
 
@@ -174,7 +261,7 @@ func TestReadModelBlockersCarryObservedAtAndNeverClearWithoutIt(t *testing.T) {
 		t.Fatalf("legacy blockers = %+v, want one with no observed time", legacy)
 	}
 
-	appendBlockerCleared(t, layout, journal.ErrorCodeRecoveryObservationFailed, startedAt.Add(30*time.Minute))
+	appendBlockerCleared(t, layout, instanceClear(startedAt.Add(30*time.Minute)))
 	runs, err = service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)

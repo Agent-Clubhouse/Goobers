@@ -6,6 +6,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // recoveryObservationRefresh bounds how long a recovery_observation_failed
@@ -14,25 +15,33 @@ import (
 // Failures this process sees itself are cleared by its very next success.
 const recoveryObservationRefresh = 15 * time.Minute
 
-// recoveryObservationRecorder journals the instance-level evidence that
-// retracts recovery_observation_failed run blockers (#5404).
+// recoveryObservationRecorder journals the evidence that retracts recovery
+// observation run blockers (#5404).
 //
 // A failed post-cleanup observation is recorded in the run's own journal and
 // read-model row, and nothing used to retract it: a terminal run never
 // observes again, so the blocker stayed on `goobers status` after the
 // inventory became readable — once per affected run, across every later
-// daemon lifetime. The observation, however, reads the shared recovery
-// inventory, so any later successful observation of the same kind proves the
-// condition has cleared. This recorder writes that proof to the instance
-// journal as a blocker.cleared annotation, and the read service drops every
-// recovery_observation_failed blocker observed before it.
+// daemon lifetime. This recorder writes blocker.cleared records to the
+// instance journal, each carrying when the successful observation STARTED,
+// and the read service drops blockers recorded before that time. There are
+// two scopes, because the observation can fail in two ways:
 //
-// It writes sparingly rather than per stage: on the first success of a
-// process (so a blocker from an earlier daemon lifetime is cleared by the
-// next one), on the first success after a failure this process observed, and
-// otherwise at most once per recoveryObservationRefresh. Failures are never
-// written here — the run journal already holds them — so a missed or failed
-// write only leaves a blocker visible longer; it can never hide one.
+//   - recovery_observation_failed: the shared inventory could not be read.
+//     Any run's later successful observation reads that same inventory, so
+//     an "instance" clear is written on the first success of a process (so a
+//     blocker from an earlier daemon lifetime is cleared by the next one), on
+//     the first success after an inventory failure this process saw, and
+//     otherwise at most once per recoveryObservationRefresh.
+//   - recovery_observation_run_failed: the run's own records, its count or
+//     ownership checks, or its journal append failed. Another run's success
+//     proves nothing about those, so a "run" clear is written only when the
+//     SAME run later observes successfully after a failure this process saw.
+//     A run that never observes again keeps its blocker.
+//
+// Failures are never written here — the run journal already holds them — so a
+// missed or failed write only leaves a blocker visible longer; it can never
+// hide one.
 type recoveryObservationRecorder struct {
 	schedulerDir string
 	now          func() time.Time
@@ -42,6 +51,7 @@ type recoveryObservationRecorder struct {
 	written     bool
 	lastWritten time.Time
 	failedSince bool
+	failedRuns  map[string]struct{}
 }
 
 func newRecoveryObservationRecorder(schedulerDir string, now func() time.Time) *recoveryObservationRecorder {
@@ -52,6 +62,7 @@ func newRecoveryObservationRecorder(schedulerDir string, now func() time.Time) *
 		schedulerDir: schedulerDir,
 		now:          now,
 		refresh:      recoveryObservationRefresh,
+		failedRuns:   make(map[string]struct{}),
 	}
 }
 
@@ -62,60 +73,93 @@ var recoveryObservationRecorders sync.Map
 
 // recoveryObservationReporter is the runner.Config.RecoveryObserved hook for
 // the instance at l.
-func recoveryObservationReporter(l instance.Layout) func(string, error) {
+func recoveryObservationReporter(l instance.Layout) func(string, time.Time, error) {
 	dir := l.SchedulerDir()
 	recorder, _ := recoveryObservationRecorders.LoadOrStore(dir, newRecoveryObservationRecorder(dir, nil))
 	return recorder.(*recoveryObservationRecorder).observe
 }
 
-func (r *recoveryObservationRecorder) observe(runID string, err error) {
-	if !r.claimWrite(err) {
+func (r *recoveryObservationRecorder) observe(runID string, observedAt time.Time, err error) {
+	instanceClear, runClear := r.claimWrites(runID, err)
+	if !instanceClear && !runClear {
 		return
 	}
-	writeErr := appendInstanceEvent(r.schedulerDir, r.now, journal.Event{
-		Type:  journal.EventRunnerAnnotation,
-		RunID: runID,
-		Runner: map[string]any{
-			"kind": journal.RunnerAnnotationBlockerCleared,
-			"code": journal.ErrorCodeRecoveryObservationFailed,
-		},
-	})
+	var events []journal.Event
+	if instanceClear {
+		events = append(events, blockerClearedEvent(runID, journal.ErrorCodeRecoveryObservationFailed, "instance", observedAt))
+	}
+	if runClear {
+		events = append(events, blockerClearedEvent(runID, journal.ErrorCodeRecoveryObservationRunFailed, "run", observedAt))
+	}
+	writeErr := appendInstanceEvents(r.schedulerDir, r.now, events)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if writeErr != nil {
-		// Leave the state as it was so the next success tries again.
-		r.failedSince = true
+		// Restore what the write was meant to clear so the next success of
+		// the same kind tries again.
+		r.failedSince = r.failedSince || instanceClear
+		if runClear {
+			r.failedRuns[runID] = struct{}{}
+		}
 		return
 	}
-	r.written = true
-	r.lastWritten = r.now()
+	if instanceClear {
+		r.written = true
+		r.lastWritten = r.now()
+	}
 }
 
-// claimWrite decides under the lock whether this outcome must be journaled,
+// claimWrites decides under the lock which clears this outcome must journal,
 // so the journal write itself happens without holding it: the instance-log
 // lock can take a while, and the hook runs on a stage's cleanup path.
-func (r *recoveryObservationRecorder) claimWrite(err error) bool {
+func (r *recoveryObservationRecorder) claimWrites(runID string, err error) (instanceClear, runClear bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {
-		r.failedSince = true
-		return false
+		if runner.IsRecoveryInventoryError(err) {
+			r.failedSince = true
+		} else {
+			r.failedRuns[runID] = struct{}{}
+		}
+		return false, false
 	}
-	if r.written && !r.failedSince && r.now().Sub(r.lastWritten) < r.refresh {
-		return false
+	if _, failed := r.failedRuns[runID]; failed {
+		delete(r.failedRuns, runID)
+		runClear = true
 	}
-	r.failedSince = false
-	return true
+	if !r.written || r.failedSince || r.now().Sub(r.lastWritten) >= r.refresh {
+		r.failedSince = false
+		instanceClear = true
+	}
+	return instanceClear, runClear
 }
 
-// appendInstanceEvent opens the instance journal for one append, as other
-// out-of-scheduler writers do; now stamps the event.
-func appendInstanceEvent(dir string, now func() time.Time, event journal.Event) error {
+func blockerClearedEvent(runID, code, scope string, observedAt time.Time) journal.Event {
+	return journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: runID,
+		Runner: map[string]any{
+			"kind":       journal.RunnerAnnotationBlockerCleared,
+			"code":       code,
+			"scope":      scope,
+			"observedAt": observedAt.UTC().Format(time.RFC3339Nano),
+		},
+	}
+}
+
+// appendInstanceEvents opens the instance journal for one batch of appends,
+// as other out-of-scheduler writers do.
+func appendInstanceEvents(dir string, now func() time.Time, events []journal.Event) error {
 	log, _, err := journal.OpenInstanceLog(dir, journal.WithClock(now))
 	if err != nil {
 		return err
 	}
-	appendErr := log.Append(event)
+	var appendErr error
+	for _, event := range events {
+		if appendErr = log.Append(event); appendErr != nil {
+			break
+		}
+	}
 	if closeErr := log.Close(); appendErr == nil {
 		appendErr = closeErr
 	}

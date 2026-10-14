@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 type steppedClock struct{ now time.Time }
@@ -31,40 +32,73 @@ func blockerClearedRecords(t *testing.T, schedulerDir string) []journal.Event {
 	return cleared
 }
 
-// TestRecoveryObservationRecorderWritesSparingly pins the write policy: the
-// first success of a process, the first success after a failure, and a
-// periodic refresh — not one record per stage cleanup.
+func countClears(events []journal.Event, scope string) int {
+	count := 0
+	for _, event := range events {
+		if event.Runner["scope"] == scope {
+			count++
+		}
+	}
+	return count
+}
+
+// TestRecoveryObservationRecorderWritesSparingly pins the write policy. An
+// instance clear is written on the first success of a process, the first
+// success after an INVENTORY failure, and a periodic refresh — not one record
+// per stage cleanup. A run clear is written only when a run that failed for a
+// run-specific reason later observes successfully itself.
 func TestRecoveryObservationRecorderWritesSparingly(t *testing.T) {
 	dir := instance.NewLayout(t.TempDir()).SchedulerDir()
 	clock := &steppedClock{now: time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC)}
 	recorder := newRecoveryObservationRecorder(dir, clock.Now)
-	full := errors.New("recovery inventory is full")
+	full := &runner.RecoveryInventoryError{Err: errors.New("recovery inventory is full")}
+	ownRecord := errors.New("read own retained record")
 
 	steps := []struct {
-		advance time.Duration
-		err     error
-		want    int
+		advance       time.Duration
+		runID         string
+		err           error
+		instance, run int
 	}{
-		{0, nil, 1},                               // first success of the process
-		{time.Minute, nil, 1},                     // nothing new to say
-		{time.Minute, full, 1},                    // failures live in the run journal
-		{time.Minute, nil, 2},                     // first success after a failure
-		{time.Minute, nil, 2},                     // nothing new again
-		{recoveryObservationRefresh, nil, 3},      // periodic refresh
-		{recoveryObservationRefresh / 2, nil, 3},  // within the refresh window
-		{recoveryObservationRefresh / 2, full, 3}, // failure, then
-		{0, nil, 4},                               // immediately cleared by the next success
+		{0, "a", nil, 1, 0},                               // first success of the process
+		{time.Minute, "a", nil, 1, 0},                     // nothing new to say
+		{time.Minute, "a", full, 1, 0},                    // failures live in the run journal
+		{time.Minute, "b", nil, 2, 0},                     // first success after an inventory failure
+		{time.Minute, "b", nil, 2, 0},                     // nothing new again
+		{time.Minute, "c", ownRecord, 2, 0},               // a run-specific failure of c
+		{time.Minute, "b", nil, 2, 0},                     // another run's success says nothing about c
+		{time.Minute, "c", nil, 2, 1},                     // c's own success clears c
+		{time.Minute, "c", nil, 2, 1},                     // once
+		{recoveryObservationRefresh, "a", nil, 3, 1},      // periodic refresh
+		{recoveryObservationRefresh / 2, "a", nil, 3, 1},  // within the refresh window
+		{recoveryObservationRefresh / 2, "a", full, 3, 1}, // inventory failure, then
+		{0, "a", nil, 4, 1},                               // immediately cleared by the next success
 	}
 	for i, step := range steps {
 		clock.now = clock.now.Add(step.advance)
-		recorder.observe("run", step.err)
-		if got := blockerClearedRecords(t, dir); len(got) != step.want {
-			t.Fatalf("step %d: %d blocker.cleared records, want %d", i, len(got), step.want)
+		recorder.observe(step.runID, clock.now.Add(-time.Second), step.err)
+		got := blockerClearedRecords(t, dir)
+		if countClears(got, "instance") != step.instance || countClears(got, "run") != step.run {
+			t.Fatalf("step %d: %d instance and %d run clears, want %d and %d", i, countClears(got, "instance"), countClears(got, "run"), step.instance, step.run)
 		}
 	}
-	last := blockerClearedRecords(t, dir)[3]
-	if last.RunID != "run" || last.Runner["code"] != journal.ErrorCodeRecoveryObservationFailed || !last.Time.Equal(clock.now) {
-		t.Fatalf("blocker.cleared record = %+v", last)
+	records := blockerClearedRecords(t, dir)
+	var runClear journal.Event
+	for _, record := range records {
+		if record.Runner["scope"] == "run" {
+			runClear = record
+		}
+	}
+	if runClear.RunID != "c" || runClear.Runner["code"] != journal.ErrorCodeRecoveryObservationRunFailed {
+		t.Fatalf("run clear = %+v", runClear)
+	}
+	last := records[len(records)-1]
+	// The record carries when the observation started, not when it was
+	// written: a success that read the inventory before a concurrent failure
+	// must not be stamped after it.
+	if last.RunID != "a" || last.Runner["code"] != journal.ErrorCodeRecoveryObservationFailed ||
+		last.Runner["observedAt"] != clock.now.Add(-time.Second).Format(time.RFC3339Nano) || !last.Time.Equal(clock.now) {
+		t.Fatalf("instance clear = %+v", last)
 	}
 }
 
@@ -87,41 +121,53 @@ func statusJSONRun(t *testing.T, root, runID string) statusJSONSummary {
 	return statusJSONSummary{}
 }
 
-// TestStatusRecoveryObservationBlockerClearsAcrossDaemonRestart is #5404's
-// regression. One daemon lifetime observes successfully, then records
-// recovery_observation_failed on a run that goes on to complete — a run that
-// will never observe again. Status shows that blocker once, with when it was
-// observed. The next daemon lifetime's first successful observation (by a
-// different run) retracts it from both the text and the JSON status.
-func TestStatusRecoveryObservationBlockerClearsAcrossDaemonRestart(t *testing.T) {
-	root := initScheduledDemo(t)
-	layout := instance.NewLayout(root)
-	firstLifetime := &steppedClock{now: time.Date(2026, 9, 18, 9, 0, 0, 0, time.UTC)}
-	failedAt := firstLifetime.now.Add(time.Minute)
-
-	// Lifetime 1: an earlier success, then the failure on run "stale-blocker".
-	daemon1 := newRecoveryObservationRecorder(layout.SchedulerDir(), firstLifetime.Now)
-	daemon1.observe("earlier-run", nil)
+// recordObservationFailure writes a completed run whose post-cleanup
+// observation failed at failedAt with code, as the runner journals it.
+func recordObservationFailure(t *testing.T, layout instance.Layout, runID, code string, failedAt time.Time) {
+	t.Helper()
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
-		Schema: journal.RunSchema, RunID: "stale-blocker", Gaggle: "example", Workflow: "default-implement",
-		WorkflowVersion: 1, StartedAt: firstLifetime.now,
+		Schema: journal.RunSchema, RunID: runID, Gaggle: "example", Workflow: "default-implement",
+		WorkflowVersion: 1, StartedAt: failedAt.Add(-time.Minute),
 	}, nil, journal.WithClock(func() time.Time { return failedAt }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Append(journal.Event{
 		Type: journal.EventError, Stage: "implement",
-		Error: &journal.ErrorDetail{Code: journal.ErrorCodeRecoveryObservationFailed, Message: "observe retained recovery state: recovery inventory is full: 10 of 8 slots used"},
+		Error: &journal.ErrorDetail{Code: code, Message: "observe retained recovery state: recovery inventory is full: 10 of 8 slots used"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	daemon1.observe("stale-blocker", errors.New("recovery inventory is full"))
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestStatusRecoveryObservationBlockerClearsAcrossDaemonRestart is #5404's
+// regression. One daemon lifetime observes successfully, then records an
+// inventory recovery_observation_failed on a run that goes on to complete — a
+// run that will never observe again. Status shows that blocker once, with when
+// it was observed. The next daemon lifetime's first successful observation (by
+// a different run) retracts it from both the text and the JSON status. A
+// run-specific failure on another completed run is NOT retracted by that
+// success: nothing re-checked that run's own records or journal.
+func TestStatusRecoveryObservationBlockerClearsAcrossDaemonRestart(t *testing.T) {
+	root := initScheduledDemo(t)
+	layout := instance.NewLayout(root)
+	firstLifetime := &steppedClock{now: time.Date(2026, 9, 18, 9, 0, 0, 0, time.UTC)}
+	failedAt := firstLifetime.now.Add(time.Minute)
+
+	// Lifetime 1: an earlier success, then an inventory failure on
+	// "stale-blocker" and a run-specific one on "own-record".
+	daemon1 := newRecoveryObservationRecorder(layout.SchedulerDir(), firstLifetime.Now)
+	daemon1.observe("earlier-run", firstLifetime.now, nil)
+	recordObservationFailure(t, layout, "stale-blocker", journal.ErrorCodeRecoveryObservationFailed, failedAt)
+	daemon1.observe("stale-blocker", failedAt, &runner.RecoveryInventoryError{Err: errors.New("recovery inventory is full")})
+	recordObservationFailure(t, layout, "own-record", journal.ErrorCodeRecoveryObservationRunFailed, failedAt)
+	daemon1.observe("own-record", failedAt, errors.New("read own retained record"))
 
 	before := statusJSONRun(t, root, "stale-blocker")
 	if len(before.Operator.Blockers) != 1 || len(before.Operator.PotentialBlockers) != 1 {
@@ -136,7 +182,7 @@ func TestStatusRecoveryObservationBlockerClearsAcrossDaemonRestart(t *testing.T)
 	if code != 0 {
 		t.Fatalf("status code = %d, stderr = %q", code, stderr)
 	}
-	if strings.Count(text, journal.ErrorCodeRecoveryObservationFailed) != 1 ||
+	if strings.Count(text, journal.ErrorCodeRecoveryObservationFailed+":") != 1 ||
 		!strings.Contains(text, "(observed "+failedAt.Format(time.RFC3339)+", ") {
 		t.Fatalf("status text before restart must show the blocker once with its observed time:\n%s", text)
 	}
@@ -144,7 +190,7 @@ func TestStatusRecoveryObservationBlockerClearsAcrossDaemonRestart(t *testing.T)
 	// Lifetime 2: a fresh process, a different run, a successful observation.
 	secondLifetime := &steppedClock{now: failedAt.Add(time.Hour)}
 	daemon2 := newRecoveryObservationRecorder(layout.SchedulerDir(), secondLifetime.Now)
-	daemon2.observe("next-lifetime-run", nil)
+	daemon2.observe("next-lifetime-run", secondLifetime.now, nil)
 
 	after := statusJSONRun(t, root, "stale-blocker")
 	if len(after.Operator.Blockers) != 0 || len(after.Operator.PotentialBlockers) != 0 {
@@ -153,11 +199,15 @@ func TestStatusRecoveryObservationBlockerClearsAcrossDaemonRestart(t *testing.T)
 	if after.Operator.LatestError == nil || after.Operator.LatestError.Code != journal.ErrorCodeRecoveryObservationFailed {
 		t.Fatalf("the recorded error is history and must remain: %+v", after.Operator.LatestError)
 	}
+	ownRecord := statusJSONRun(t, root, "own-record")
+	if len(ownRecord.Operator.Blockers) != 1 || ownRecord.Operator.Blockers[0].Code != journal.ErrorCodeRecoveryObservationRunFailed {
+		t.Fatalf("another run's success retracted a run-specific failure: %+v", ownRecord.Operator)
+	}
 	code, text, stderr = runArgs(t, "status", root)
 	if code != 0 {
 		t.Fatalf("status code = %d, stderr = %q", code, stderr)
 	}
-	if strings.Contains(text, journal.ErrorCodeRecoveryObservationFailed) {
+	if strings.Contains(text, journal.ErrorCodeRecoveryObservationFailed+":") {
 		t.Fatalf("status text still shows the cleared blocker:\n%s", text)
 	}
 }

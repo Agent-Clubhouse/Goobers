@@ -461,10 +461,11 @@ type Config struct {
 	RecoveryEvents func(context.Context, string) ([]journal.Event, int, error)
 	// RecoveryObserved receives the outcome of every post-cleanup recovery
 	// observation RecoveryEvents was asked for: nil when the retained state
-	// was observed and journaled, the observation failure otherwise. It is
-	// how a later success retracts an earlier recovery_observation_failed
-	// blocker (#5404); it must not block and must not fail the stage.
-	RecoveryObserved func(runID string, err error)
+	// was observed and journaled, the observation failure otherwise, with the
+	// time the observation started. It is how a later success retracts an
+	// earlier recovery observation blocker (#5404); it must not block and
+	// must not fail the stage.
+	RecoveryObserved func(runID string, observedAt time.Time, err error)
 	// InstanceID is pinned into each new run, never inferred during replay.
 	InstanceID string
 	// NewDeterministic constructs this run's deterministic-task executor

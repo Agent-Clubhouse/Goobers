@@ -5,13 +5,33 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
-const recoveryObservationFailureCode = journal.ErrorCodeRecoveryObservationFailed
 const recoveryObservationBatchSize = 128 // journal.AppendBatchIfAbsent's generic transaction ceiling
+
+// RecoveryInventoryError marks a post-cleanup observation failure that came
+// from reading the shared recovery inventory itself (its configuration or its
+// directory), as opposed to anything specific to the observing run: its own
+// records, the observation-count and ownership checks, or the append into its
+// journal. The two are journaled under different codes (#5404) because only
+// the inventory failure can be shown cleared by ANOTHER run's later
+// successful observation; a run-specific failure is cleared only by a later
+// successful observation of the same run.
+type RecoveryInventoryError struct{ Err error }
+
+func (e *RecoveryInventoryError) Error() string { return e.Err.Error() }
+func (e *RecoveryInventoryError) Unwrap() error { return e.Err }
+
+// IsRecoveryInventoryError reports whether err failed reading the shared
+// recovery inventory rather than anything run-specific.
+func IsRecoveryInventoryError(err error) bool {
+	var inventoryErr *RecoveryInventoryError
+	return errors.As(err, &inventoryErr)
+}
 
 // recoveryObservationError distinguishes a failure to observe already-retained
 // evidence after cleanup from a failure to perform the cleanup itself.
@@ -26,7 +46,10 @@ func workspaceCleanupErrorDetail(err error) *journal.ErrorDetail {
 	code := "worktree_remove_failed"
 	var observationErr *recoveryObservationError
 	if errors.As(err, &observationErr) {
-		code = recoveryObservationFailureCode
+		code = journal.ErrorCodeRecoveryObservationRunFailed
+		if IsRecoveryInventoryError(observationErr) {
+			code = journal.ErrorCodeRecoveryObservationFailed
+		}
 	}
 	return journal.ErrorDetailFor(code, err)
 }
@@ -39,12 +62,17 @@ func (r *Runner) recordRecoveryAfterCleanup(ctx context.Context, log recoveryEve
 	if cleanupErr != nil {
 		return cleanupErr
 	}
+	// The time the observation STARTED is what a success proves: the
+	// inventory was readable from then on. Stamping the report any later — at
+	// the end of the journal append, or when a recorder gets the instance-log
+	// lock — would let a success that read the inventory before a concurrent
+	// failure retract that newer failure (#5404).
+	startedAt := time.Now().UTC()
 	err := r.recordRecoveryEvents(context.WithoutCancel(ctx), log, runID)
-	// Report successes as well as failures: a recovery_observation_failed
-	// blocker is retracted only by evidence that a later observation of the
-	// same kind succeeded (#5404).
+	// Report successes as well as failures: a recovery observation blocker is
+	// retracted only by evidence that a later observation succeeded.
 	if r.cfg.RecoveryEvents != nil && r.cfg.RecoveryObserved != nil {
-		r.cfg.RecoveryObserved(runID, err)
+		r.cfg.RecoveryObserved(runID, startedAt, err)
 	}
 	if err != nil {
 		return &recoveryObservationError{err: err}

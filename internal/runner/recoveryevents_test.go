@@ -47,38 +47,61 @@ func TestRecoveryObservationsHonorConfiguredCapacityAcrossJournalBatches(t *test
 }
 
 func TestRecoveryObservationFailureIsNotWorktreeRemovalFailure(t *testing.T) {
-	observationFailure := errors.New("inventory unavailable")
-	r := &Runner{cfg: Config{RecoveryEvents: func(context.Context, string) ([]journal.Event, int, error) {
-		return nil, 500, observationFailure
-	}}}
-	err := r.recordRecoveryAfterCleanup(t.Context(), nil, "run", nil)
-	if !errors.Is(err, observationFailure) || workspaceCleanupErrorDetail(err).Code != recoveryObservationFailureCode {
-		t.Fatalf("post-cleanup observation = %v / %+v", err, workspaceCleanupErrorDetail(err))
+	// #5404: an unreadable shared inventory and a failure specific to the
+	// observing run are journaled under different codes, because only the
+	// first can be shown cleared by another run's later success.
+	inventoryFailure := errors.New("recovery inventory is full")
+	runFailure := errors.New("read own retained record")
+	for _, tc := range []struct {
+		observed error
+		cause    error
+		code     string
+	}{
+		{&RecoveryInventoryError{Err: inventoryFailure}, inventoryFailure, journal.ErrorCodeRecoveryObservationFailed},
+		{runFailure, runFailure, journal.ErrorCodeRecoveryObservationRunFailed},
+	} {
+		r := &Runner{cfg: Config{RecoveryEvents: func(context.Context, string) ([]journal.Event, int, error) {
+			return nil, 500, tc.observed
+		}}}
+		err := r.recordRecoveryAfterCleanup(t.Context(), nil, "run", nil)
+		if !errors.Is(err, tc.cause) || workspaceCleanupErrorDetail(err).Code != tc.code {
+			t.Fatalf("post-cleanup observation = %v / %+v, want code %s", err, workspaceCleanupErrorDetail(err), tc.code)
+		}
 	}
+	r := &Runner{cfg: Config{RecoveryEvents: func(context.Context, string) ([]journal.Event, int, error) {
+		return nil, 500, nil
+	}}}
 	removeFailure := errors.New("remove worktree")
-	err = r.recordRecoveryAfterCleanup(t.Context(), nil, "run", removeFailure)
+	err := r.recordRecoveryAfterCleanup(t.Context(), nil, "run", removeFailure)
 	if !errors.Is(err, removeFailure) || workspaceCleanupErrorDetail(err).Code != "worktree_remove_failed" {
 		t.Fatalf("removal failure = %v / %+v", err, workspaceCleanupErrorDetail(err))
 	}
 }
 
 // TestRecoveryObservationOutcomeIsReported: a later success is what retracts
-// a recovery_observation_failed blocker (#5404), so the runner must report
-// successes as well as failures — and nothing for a cleanup that failed before
-// any observation was attempted.
+// a recovery observation blocker (#5404), so the runner must report successes
+// as well as failures — and nothing for a cleanup that failed before any
+// observation was attempted. The reported time is when the observation
+// STARTED, so a success that read the inventory before a concurrent failure
+// cannot be stamped after it.
 func TestRecoveryObservationOutcomeIsReported(t *testing.T) {
 	type outcome struct {
-		runID string
-		err   error
+		runID      string
+		observedAt time.Time
+		err        error
 	}
 	var reported []outcome
+	var readStarted []time.Time
 	observationFailure := errors.New("inventory unavailable")
 	var observeErr error
 	r := &Runner{cfg: Config{
 		RecoveryEvents: func(context.Context, string) ([]journal.Event, int, error) {
+			readStarted = append(readStarted, time.Now())
 			return nil, 500, observeErr
 		},
-		RecoveryObserved: func(runID string, err error) { reported = append(reported, outcome{runID, err}) },
+		RecoveryObserved: func(runID string, observedAt time.Time, err error) {
+			reported = append(reported, outcome{runID, observedAt, err})
+		},
 	}}
 	observeErr = observationFailure
 	if err := r.recordRecoveryAfterCleanup(t.Context(), nil, "first", nil); !errors.Is(err, observationFailure) {
@@ -94,6 +117,11 @@ func TestRecoveryObservationOutcomeIsReported(t *testing.T) {
 	if len(reported) != 2 || reported[0].runID != "first" || !errors.Is(reported[0].err, observationFailure) ||
 		reported[1].runID != "second" || reported[1].err != nil {
 		t.Fatalf("reported outcomes = %+v", reported)
+	}
+	for i, got := range reported {
+		if got.observedAt.IsZero() || got.observedAt.After(readStarted[i]) {
+			t.Fatalf("outcome %d observed at %v, want a time taken before the inventory read at %v", i, got.observedAt, readStarted[i])
+		}
 	}
 }
 
@@ -120,7 +148,7 @@ func TestTaskCleanupJournalsRecoveryObservationFailureSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := events[len(events)-1]
-	if last.Error == nil || last.Error.Code != recoveryObservationFailureCode {
+	if last.Error == nil || last.Error.Code != journal.ErrorCodeRecoveryObservationRunFailed {
 		t.Fatalf("cleanup journal event = %+v", last)
 	}
 }

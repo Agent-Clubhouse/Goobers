@@ -28,16 +28,16 @@ type OperatorBlocker struct {
 
 // Blocker sources: every producer of a run blocker and what retracts it
 // (#5404). A blocker without a clear path stays on status after its condition
-// ends; a clear path that is too broad hides a live outage. So clear paths are explicit, and a recorded run error is
-// retracted by instance evidence ONLY when its code is registered in
-// instanceClearedErrorCodes.
+// ends; a clear path that is too broad hides a live outage. So clear paths are
+// explicit, and a recorded run error is retracted by later evidence ONLY when
+// its code is registered in clearedErrorCodes.
 //
 //   - error (persisted: the run's latest ErrorDetail, read-model LatestError):
 //     superseded by a later error in the same run. A code registered in
-//     instanceClearedErrorCodes is also retracted by a later
-//     blocker.cleared instance-journal record for that code. Every other code
-//     is the run's last recorded failure and has no automatic clear — it
-//     leaves status only with the run itself.
+//     clearedErrorCodes is also retracted by a later blocker.cleared
+//     instance-journal record of that code's scope. Every other code is the
+//     run's last recorded failure and has no automatic clear — it leaves
+//     status only with the run itself.
 //   - review (persisted: the latest review verdict, or its unreadable
 //     rationale artifact): superseded by the next review gate evaluation;
 //     cleared by a passing one.
@@ -61,18 +61,40 @@ const (
 	BlockerCodeClaimMarkerDrift         = "claim_marker_drift"
 )
 
-// instanceClearedErrorCodes are the run-error codes whose condition belongs to
-// the instance rather than to the run, with the evidence that retracts them.
+// Scopes of a blocker.cleared record.
+const (
+	clearScopeInstance = "instance"
+	clearScopeRun      = "run"
+)
+
+// clearedErrorCodes are the run-error codes a blocker.cleared record can
+// retract, and the scope whose evidence retracts each. A record is honoured
+// only for the scope registered here.
 //
-// recovery_observation_failed: the observation reads the shared recovery
-// inventory (#5354), and a terminal run never observes again, so only another
-// run's later successful observation can show the condition has cleared. The
-// runner reports every observation outcome; the daemon journals a
-// blocker.cleared record on the first success of each process lifetime and
-// after any failure it saw (cmd/goobers blockerclear.go). A failure recorded
-// after the newest such record stays a blocker.
-var instanceClearedErrorCodes = map[string]string{
-	journal.ErrorCodeRecoveryObservationFailed: "a later successful post-cleanup recovery observation",
+// recovery_observation_failed (instance): the shared recovery inventory could
+// not be read (#5354). A terminal run never observes again, but any other
+// run's later successful observation reads the same inventory, so it shows
+// the condition cleared. The daemon journals an instance clear on the first
+// success of each process lifetime, on the first success after an inventory
+// failure it saw, and periodically (cmd/goobers blockerclear.go).
+//
+// recovery_observation_run_failed (run): the inventory was readable but this
+// run's own records, its count or ownership checks, or its journal append
+// failed. Another run's success never looks at any of those, so only a later
+// successful observation of the SAME run clears it; a run that never
+// observes again keeps the blocker.
+var clearedErrorCodes = map[string]string{
+	journal.ErrorCodeRecoveryObservationFailed:    clearScopeInstance,
+	journal.ErrorCodeRecoveryObservationRunFailed: clearScopeRun,
+}
+
+// blockerClearKey is the fold key for a clear: the code alone for instance
+// scope, the code and run for run scope.
+func blockerClearKey(code, scope, runID string) string {
+	if scope == clearScopeRun {
+		return code + "\x00" + runID
+	}
+	return code
 }
 
 // addBlocker records b, replacing any earlier blocker of the same source and
@@ -160,17 +182,21 @@ func reviewBlocker(review *OperatorReview, observedAt *time.Time) (OperatorBlock
 	}, true
 }
 
-// blockerSuperseded reports whether clears retract b: b is a recorded run
-// error whose code is instance-cleared, its observed-at time is known, and a
-// clear for that code was recorded after it. Unknown times never clear.
-func blockerSuperseded(b OperatorBlocker, clears map[string]time.Time) bool {
+// blockerSuperseded reports whether clears retract b on run runID: b is a
+// recorded run error whose code is registered, its observed-at time is known,
+// and a clear of the registered scope was observed after it. The clear's time
+// is when its successful observation STARTED, so a success that read the
+// inventory before a concurrent failure never retracts that failure, however
+// late its record was written. Unknown times never clear.
+func blockerSuperseded(b OperatorBlocker, runID string, clears map[string]time.Time) bool {
 	if b.Source != BlockerSourceError || b.ObservedAt == nil {
 		return false
 	}
-	if _, registered := instanceClearedErrorCodes[b.Code]; !registered {
+	scope, registered := clearedErrorCodes[b.Code]
+	if !registered {
 		return false
 	}
-	cleared, ok := clears[b.Code]
+	cleared, ok := clears[blockerClearKey(b.Code, scope, runID)]
 	return ok && cleared.After(*b.ObservedAt)
 }
 
@@ -178,7 +204,7 @@ func blockerSuperseded(b OperatorBlocker, clears map[string]time.Time) bool {
 // recorded as cleared. Failing to read the instance journal leaves every
 // blocker in place: an unreadable clear record must never hide one.
 func (s *Local) decorateBlockerClears(ctx context.Context, runs []RunSummary) {
-	if len(runs) == 0 || !anyInstanceClearable(runs) {
+	if len(runs) == 0 || !anyClearable(runs) {
 		return
 	}
 	projection, err := s.workflowSchedulerSnapshot(ctx)
@@ -187,15 +213,15 @@ func (s *Local) decorateBlockerClears(ctx context.Context, runs []RunSummary) {
 	}
 	for i := range runs {
 		runs[i].Operator.removeBlockers(func(b OperatorBlocker) bool {
-			return blockerSuperseded(b, projection.blockerClears)
+			return blockerSuperseded(b, runs[i].ID, projection.blockerClears)
 		})
 	}
 }
 
-func anyInstanceClearable(runs []RunSummary) bool {
+func anyClearable(runs []RunSummary) bool {
 	for _, run := range runs {
 		for _, blocker := range run.Operator.Blockers {
-			if _, ok := instanceClearedErrorCodes[blocker.Code]; ok && blocker.Source == BlockerSourceError {
+			if _, ok := clearedErrorCodes[blocker.Code]; ok && blocker.Source == BlockerSourceError {
 				return true
 			}
 		}
@@ -203,21 +229,30 @@ func anyInstanceClearable(runs []RunSummary) bool {
 	return false
 }
 
-// applyBlockerCleared folds a blocker.cleared record: the newest clear per code.
+// applyBlockerCleared folds a blocker.cleared record: the newest observedAt
+// per code (instance scope) or per code and run (run scope). A record without
+// a parseable observedAt, or of a scope its code is not registered for, is
+// ignored — it can prove nothing about when the condition cleared.
 func (s *instanceState) applyBlockerCleared(event journal.Event) {
 	if event.Type != journal.EventRunnerAnnotation ||
-		runnerString(event.Runner, "kind") != journal.RunnerAnnotationBlockerCleared || event.Time.IsZero() {
+		runnerString(event.Runner, "kind") != journal.RunnerAnnotationBlockerCleared {
 		return
 	}
-	code := runnerString(event.Runner, "code")
-	if code == "" {
+	code, scope := runnerString(event.Runner, "code"), runnerString(event.Runner, "scope")
+	if registered, ok := clearedErrorCodes[code]; !ok || registered != scope ||
+		(scope == clearScopeRun && event.RunID == "") {
+		return
+	}
+	observedAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "observedAt"))
+	if err != nil {
 		return
 	}
 	if s.blockerClears == nil {
 		s.blockerClears = make(map[string]time.Time)
 	}
-	if event.Time.After(s.blockerClears[code]) {
-		s.blockerClears[code] = event.Time
+	key := blockerClearKey(code, scope, event.RunID)
+	if observedAt.After(s.blockerClears[key]) {
+		s.blockerClears[key] = observedAt
 	}
 }
 
