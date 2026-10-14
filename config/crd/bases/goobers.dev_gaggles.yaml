@@ -225,6 +225,25 @@ spec:
                 - project
                 - provider
                 type: object
+              backprop:
+                description: |-
+                  Backprop overrides Backprop attribution for this gaggle's workflows
+                  without editing them. mode=shadow observes every workflow that declares
+                  neither its own backprop.mode nor enabled=true; the override can never
+                  activate filing. Omitted or mode=off applies no override.
+                properties:
+                  mode:
+                    description: |-
+                      Mode is the override applied to workflows without their own mode.
+                      Only off and shadow are accepted: a gaggle cannot enroll workflows
+                      in active filing.
+                    enum:
+                    - "off"
+                    - shadow
+                    type: string
+                required:
+                - mode
+                type: object
               branchNamespace:
                 description: |-
                   BranchNamespace is the refs/heads/ root this gaggle's run branches live

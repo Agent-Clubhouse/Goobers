@@ -143,6 +143,21 @@ func storedAttributionObservationsLimit(
 	query StoredAttributionQuery,
 	limit int,
 ) ([]creditgraph.AttributionObservation, error) {
+	return scanAttributionObservations(ctx, root, reads, query, limit, storedAttributionObservation)
+}
+
+type attributionObserver func(
+	context.Context, instance.Layout, readmodel.RunRow,
+) (creditgraph.AttributionObservation, bool, error)
+
+func scanAttributionObservations(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	limit int,
+	observe attributionObserver,
+) ([]creditgraph.AttributionObservation, error) {
 	if reads == nil || strings.TrimSpace(root) == "" {
 		return nil, nil
 	}
@@ -175,7 +190,7 @@ func storedAttributionObservationsLimit(
 				return observations, nil
 			}
 			terminalScanned++
-			observation, ok, err := storedAttributionObservation(ctx, layout, row)
+			observation, ok, err := observe(ctx, layout, row)
 			if err != nil {
 				return nil, err
 			}
@@ -510,6 +525,17 @@ func storedAttributionObservation(
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution record %q: %w", row.RunID, err)
 	}
+	return attributionObservationFromRecord(layout, row, runDir, record)
+}
+
+// attributionObservationFromRecord rebuilds the audit observation for one
+// run's attribution record from its persisted journal.
+func attributionObservationFromRecord(
+	layout instance.Layout,
+	row readmodel.RunRow,
+	runDir string,
+	record creditgraph.RunRecord,
+) (creditgraph.AttributionObservation, bool, error) {
 	observation := creditgraph.AttributionObservation{
 		RunID: record.RunID, Workflow: record.Workflow, EffectiveVersion: record.EffectiveVersion,
 		WorkflowDigest: record.WorkflowDigest,

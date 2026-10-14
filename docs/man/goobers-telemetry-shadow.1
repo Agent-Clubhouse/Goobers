@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY SHADOW" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry shadow \- compare Backprop shadow-mode findings with actual run outcomes
+.SH SYNOPSIS
+\fBgoobers telemetry shadow\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry shadow [--json] [--gaggle=name] [--workflow=name] [--since=RFC3339] [--until=RFC3339] [path]
+
+Compare what Backprop's active fault audit would have filed and recommended
+from shadow-mode attribution with what actually happened to those runs.
+Shadow runs come from workflows with backprop.mode: shadow and from
+workflows observed through a gaggle's backprop.mode: shadow override. This
+report is read-only: it records no filing, cooldown, or verification state,
+and no gate, filing pass, or default portal view reads it. Exit codes:
+0 = OK, 1 = query error, 2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry shadow
+goobers telemetry shadow --json --gaggle=goobers
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

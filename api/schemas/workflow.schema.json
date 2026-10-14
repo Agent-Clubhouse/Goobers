@@ -59,13 +59,16 @@
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
         "backprop": {
           "type": "object",
-          "description": "Explicitly enrolls terminal runs in provenance-aware Backprop attribution. Omitted or enabled=false performs no attribution work.",
+          "description": "Explicitly enrolls terminal runs in provenance-aware Backprop attribution. Omitted, mode=off, or enabled=false without a mode performs no attribution work.",
           "additionalProperties": false,
-          "required": ["enabled", "version"],
+          "required": ["version"],
+          "anyOf": [{ "required": ["enabled"] }, { "required": ["mode"] }],
+          "not": { "required": ["enabled", "mode"], "properties": { "enabled": { "const": true }, "mode": { "enum": ["off", "shadow"] } } },
           "properties": {
-            "enabled": { "type": "boolean", "description": "Whether terminal runs produce attribution records." },
+            "enabled": { "type": "boolean", "description": "Legacy enrollment switch: true means mode=active when mode is omitted." },
+            "mode": { "enum": ["off", "shadow", "active"], "description": "Attribution mode. off performs no work; shadow does no work at run end and computes attribution on demand from the run journal for the shadow comparison report, which filing, gates, and default read surfaces never consume; active publishes the attribution record. Overrides enabled when set; enabled=true is accepted only with mode=active." },
             "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." },
-            "granularity": { "enum": ["run", "stage"], "description": "Preview. When attribution is recorded: run (default) writes only the end-of-run record; stage also writes a best-effort, read-only checkpoint after each stage finishes that the end-of-run record composes. A failed checkpoint never blocks a stage transition." }
+            "granularity": { "enum": ["run", "stage"], "description": "Preview. When attribution is recorded: run (default) writes only the end-of-run record; stage also writes a best-effort, read-only checkpoint after each stage finishes that the end-of-run record composes. A failed checkpoint never blocks a stage transition. Applies only to active mode: shadow runs write no stage checkpoints." }
           }
         },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Absolute local filesystem root (or ~/ path) where durable journal outbox files are additionally mirrored. Tasks may override it." },

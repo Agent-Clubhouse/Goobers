@@ -496,6 +496,18 @@ func TestBaselineRefusesNonAddressUnits(t *testing.T) {
 	}
 }
 
+func TestParseBaselineRejectsTrailingData(t *testing.T) {
+	valid := `{"unit":"addresses","classes":{}}`
+	if _, err := ParseBaseline([]byte(valid + "\n  \n")); err != nil {
+		t.Fatalf("trailing whitespace rejected: %v", err)
+	}
+	for _, trailing := range []string{` {}`, ` garbage`, ` ` + valid} {
+		if _, err := ParseBaseline([]byte(valid + trailing)); err == nil || !strings.Contains(err.Error(), "trailing") {
+			t.Errorf("trailing %q: err = %v, want trailing-data error", trailing, err)
+		}
+	}
+}
+
 func TestBaselineRoundTrips(t *testing.T) {
 	classes, coverage := ratchetFixture(t)
 	baseline := NewBaseline(classes, coverage)

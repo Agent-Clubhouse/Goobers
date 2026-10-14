@@ -3,12 +3,14 @@ package readservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -299,6 +301,148 @@ func TestStoredFaultAuditScopesCooldownToQuery(t *testing.T) {
 	}
 }
 
+func TestShadowBackpropWorkflowRunsNeverReachFaultAuditFiling(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	rows := writeShadowAuditRuns(t, root, now, map[string]any{"mode": "shadow", "version": "v1"}, "shadow-1", "shadow-2")
+	for _, row := range rows {
+		runDir := filepath.Join(instance.NewLayout(root).RunsDir(), row.RunID)
+		if wrote, err := creditgraph.WriteRunRecord(runDir, nil); wrote || err != nil {
+			t.Fatalf("terminal-path WriteRunRecord(%s) = %v, %v; want shadow skipped", row.RunID, wrote, err)
+		}
+	}
+	reader := func() readmodel.Reader {
+		return &pagedAttributionReader{pages: []readmodel.ListPage{{Runs: rows}}}
+	}
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+
+	report, err := StoredShadowBackprop(context.Background(), root, reader(), StoredAttributionQuery{}, nil, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Runs) != 2 || report.Runs[0].Source != ShadowSourceWorkflow || report.WouldFile.ObservationsScanned != 2 {
+		t.Fatalf("shadow report = %+v, want two workflow-enrolled runs computed on demand", report)
+	}
+	assertShadowRunsInvisibleToFiling(t, root, reader, config, rows)
+}
+
+func TestShadowBackpropReportEnrollsOverrideRunsWithoutReachingFiling(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	rows := writeShadowAuditRuns(t, root, now, nil, "override-1", "override-2")
+	reader := func() readmodel.Reader {
+		return &pagedAttributionReader{pages: []readmodel.ListPage{{Runs: rows}}}
+	}
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+	overrides := map[string]*apiv1.GaggleBackprop{"goobers": {Mode: apiv1.BackpropModeShadow}}
+
+	report, err := StoredShadowBackprop(context.Background(), root, reader(), StoredAttributionQuery{}, overrides, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Runs) != 2 || report.Runs[0].Source != ShadowSourceGaggleOverride || report.WouldFile.Mode != "shadow" {
+		t.Fatalf("shadow report runs = %+v mode %q, want two override-enrolled runs", report.Runs, report.WouldFile.Mode)
+	}
+	if report.WouldFile.ObservationsScanned != 2 || len(report.Comparisons) == 0 {
+		t.Fatalf("shadow report = %+v, want would-file findings from override runs", report)
+	}
+	for _, comparison := range report.Comparisons {
+		if comparison.ActuallyFiled || comparison.ActualPhases[journal.PhaseFailed] == 0 || comparison.RecommendedAction == "" {
+			t.Fatalf("comparison = %+v, want unfiled recommendation beside failed actual outcome", comparison)
+		}
+	}
+	unobserved, err := StoredShadowBackprop(context.Background(), root, reader(), StoredAttributionQuery{}, nil, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unobserved.Runs) != 0 {
+		t.Fatalf("report without override = %+v, want off workflows unobserved", unobserved.Runs)
+	}
+	assertShadowRunsInvisibleToFiling(t, root, reader, config, rows)
+}
+
+// writeShadowAuditRuns creates failed terminal runs whose trusted pinned
+// workflow declares backprop (nil omits it) and returns their read-model rows.
+func writeShadowAuditRuns(t *testing.T, root string, now time.Time, backprop any, runIDs ...string) []readmodel.RunRow {
+	t.Helper()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := map[string]any{}
+	if backprop != nil {
+		spec["backprop"] = backprop
+	}
+	definition, err := json.Marshal(map[string]any{"Name": "implementation", "Version": 1, "dslVersion": "3.0", "Spec": spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []readmodel.RunRow
+	for _, runID := range runIDs {
+		run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+			RunID: runID, Workflow: "implementation", WorkflowVersion: 1,
+			WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober", Gaggle: "goobers",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual}, StartedAt: now.Add(-2 * time.Hour),
+		}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition},
+			journal.WithInputIntegrity(map[string]apiv1.Integrity{journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range []journal.Event{
+			{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+			{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: "failed"},
+			{Type: journal.EventRunFinished, Status: "failed"},
+		} {
+			if err := run.Append(event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		row := terminalAuditRow(runID, now.Add(-time.Hour))
+		row.Gaggle, row.Workflow, row.Phase = "goobers", "implementation", journal.PhaseFailed
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func assertShadowRunsInvisibleToFiling(
+	t *testing.T,
+	root string,
+	reader func() readmodel.Reader,
+	config creditgraph.FaultAuditConfig,
+	rows []readmodel.RunRow,
+) {
+	t.Helper()
+	preview, err := PreviewStoredFaultAudit(context.Background(), root, reader(), StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filed, err := StoredFaultAudit(context.Background(), root, reader(), StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, audit := range map[string]creditgraph.FaultAuditReport{"preview": preview, "filing": filed} {
+		findings := len(audit.ProductFindings) + len(audit.ExternalFindings) + len(audit.WorkflowFindings) + len(audit.UnknownFindings)
+		if audit.ObservationsScanned != 0 || findings != 0 || audit.Suppressed != 0 {
+			t.Fatalf("%s audit = %+v, want shadow runs invisible", name, audit)
+		}
+	}
+	for _, row := range rows {
+		runDir := filepath.Join(instance.NewLayout(root).RunsDir(), row.RunID)
+		if _, err := os.Stat(filepath.Join(runDir, creditgraph.RecordFileName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s attribution record stat = %v, want shadow runs to write nothing", row.RunID, err)
+		}
+	}
+	state, err := os.ReadFile(faultAuditStatePath(root))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(state), "backprop-") {
+		t.Fatalf("fault audit state = %s, want no cooldown, baseline, or filing state from shadow runs", state)
+	}
+}
 func writeAuditRecord(t *testing.T, root, runID, version string, withCause bool) {
 	t.Helper()
 	writeAuditRecordWithEnvironment(t, root, runID, version, withCause, "")
