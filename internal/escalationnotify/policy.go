@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/goobers/goobers/internal/blockedcycle"
@@ -255,14 +257,15 @@ func (p *Policy) Failed(ctx context.Context, o runner.FailedOutcome) error {
 	// #3363) are likewise not work failures. Timeout deliberately still
 	// counts: a recurring harness session timeout is this circuit
 	// breaker's motivating case (#1054).
-	if failureStreakExempt(o) {
-		// #5588/#5598: a pr-remediation cycle this run already charged
-		// never had its fix evaluated. Mark it so the next checkpoint
-		// refunds the charge instead of escalating the PR.
-		if failedOutcomeClass(o).InfraFault() {
-			return p.State.VoidRemediationCharge(ctx, p.Poster, o.RunID)
-		}
-		return nil
+	//
+	// The runner's own classification wins (#5638): a dispatch that exhausted
+	// its infrastructure retry budget is infra whatever code it surfaced
+	// under. Only an explicit class exempts that way; an unclassified terminal
+	// is judged by its code, so a bare session timeout still counts (#1054).
+	// An exempt infra terminal refunds a pr-remediation cycle this run
+	// charged but never had evaluated (#5588/#5598).
+	if exempt, err := p.exemptFromStreak(ctx, o.RunID, failedOutcomeClass(o)); exempt {
+		return err
 	}
 	// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
 	// necessarily the repo the item this run actually claimed belongs
@@ -322,7 +325,7 @@ func (p *Policy) TerminalNotifier(inner runner.TerminalNotifier) runner.Terminal
 			runURL, _ := p.State.RunURL(runID)
 			if phase == journal.PhaseCompleted {
 				errs = append(errs, p.settleCompleted(attributedCtx, runID, finalState, runURL)...)
-			} else if err := p.applyCircuitBreaker(attributedCtx, runID, finalState, runURL); err != nil {
+			} else if err := p.chargeTerminal(attributedCtx, runID, finalState, runURL); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
 			}
 		}
@@ -360,16 +363,56 @@ func (p *Policy) settleCompleted(ctx context.Context, runID, finalState, runURL 
 	return errs
 }
 
-// failureStreakExempt reports whether a failed terminal must stay out of the
-// failure streak. The runner's own classification wins (#5638): a dispatch
-// that exhausted its infrastructure retry budget is infra whatever code it
-// surfaced under — a no-agent-turn harness startup failure carried a code
-// ClassifyError could only call executor/unknown. Only an explicit class
-// exempts that way; an unclassified terminal is judged by its code, so a
-// bare session timeout still counts (#1054).
-func failureStreakExempt(o runner.FailedOutcome) bool {
-	class := failedOutcomeClass(o)
-	return class.InfraFault() || class == telemetry.ErrorClassItemJudgment
+// chargeTerminal is the escalated/aborted arm of the breaker. Like Failed, it
+// honors the classification the run already carries (#5638): an escalated or
+// aborted terminal the journal attributes to infrastructure — a gate that
+// exhausted its infrastructure repass budget, or a watchdog expiry or stall
+// that interrupted an infrastructure retry — is weather, not a strike against
+// the item. Before this, these terminals were charged with no classification
+// at all, so a local-ci timeout the gate had judged infra still posted a
+// genuine/work-failure comment when the run then expired.
+//
+// A journal that cannot be read leaves the terminal unclassified and charged,
+// as before; a read failure other than absence is reported with the breaker's
+// errors.
+func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL string) error {
+	class, readErr := p.journaledTerminalClass(runID)
+	if exempt, err := p.exemptFromStreak(ctx, runID, class); exempt {
+		return errors.Join(readErr, err)
+	}
+	return errors.Join(readErr, p.applyCircuitBreaker(ctx, runID, finalState, runURL))
+}
+
+func (p *Policy) journaledTerminalClass(runID string) (telemetry.ErrorClass, error) {
+	reader, err := journal.OpenReadOnly(filepath.Join(p.RunsDir, runID))
+	var events []journal.Event
+	if err == nil {
+		events, err = reader.Events()
+	}
+	switch {
+	case err == nil:
+		return runner.JournaledTerminalFaultClass(events), nil
+	case errors.Is(err, os.ErrNotExist):
+		return "", nil
+	default:
+		return "", fmt.Errorf("read terminal classification for run %q: %w", runID, err)
+	}
+}
+
+// exemptFromStreak reports whether a terminal of class must stay out of the
+// failure streak, and settles what an exempt terminal still owes: an
+// infrastructure fault refunds a pr-remediation cycle this run charged but
+// never had evaluated (#5588/#5598). Shared by every terminal phase the
+// breaker counts, so failed, escalated and aborted terminals cannot disagree
+// about the same class.
+func (p *Policy) exemptFromStreak(ctx context.Context, runID string, class telemetry.ErrorClass) (bool, error) {
+	if !class.InfraFault() && class != telemetry.ErrorClassItemJudgment {
+		return false, nil
+	}
+	if class.InfraFault() {
+		return true, p.State.VoidRemediationCharge(ctx, p.Poster, runID)
+	}
+	return true, nil
 }
 
 // failedOutcomeClass is the terminal's class: the runner's explicit

@@ -1019,6 +1019,14 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > the failure-streak circuit breaker and out of the success-rate denominator
 > (#3364) — at attempt budgets of 1, the prior classification converted
 > transient infrastructure weather into permanent-looking work failures.
+> The breaker counts escalated and aborted terminals as well as failed ones,
+> and those honor the run's journaled classification too (#5638): a gate that
+> escalates on an exhausted infrastructure repass budget, or a run that expires
+> (`run_duration_exceeded`) or stalls (`run_stalled`) while retrying on an
+> infrastructure classification — for example after a failure-class gate sent
+> a timed-out `local-ci` back down its `infra` branch — leaves the item's
+> failure streak untouched. An expiry or stall during ordinary work, and an
+> operator cancel, still count.
 >
 > **A pull request head that moved under the run is superseded, not failed
 > (#6019):** when a run has rebound its workspace to a pull request's own head
