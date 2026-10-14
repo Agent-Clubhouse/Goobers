@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,12 +28,21 @@ import (
 // failed. A divergence on the run's own branch, or any other provisioning
 // fault, keeps the generic infrastructure code.
 func TestWorkspaceProvisionFailureCodeTypesAMovedPullRequestHead(t *testing.T) {
-	diverged := fmt.Errorf("workspace delta: %w (the workspace is on branch %q)",
-		&workspacedelta.DivergedError{Digest: "sha256:d", Current: "aaaa", Tip: "bbbb"}, "goobers/impl/pr")
+	divergedFrom := func(origin string) error {
+		return fmt.Errorf("workspace delta: %w (the workspace is on branch %q)",
+			&workspacedelta.DivergedError{Digest: "sha256:d", Current: "aaaa", Tip: "bbbb", Origin: origin}, "goobers/impl/pr")
+	}
+	diverged := divergedFrom("cccc")
 
 	t.Setenv(dispatcher.EnvWorkspaceBranch, "goobers/impl/pr")
 	if got := workspaceProvisionFailureCode(diverged); got != runner.WorkspaceHeadMovedErrorCode {
-		t.Fatalf("rebound divergence code = %q, want %q", got, runner.WorkspaceHeadMovedErrorCode)
+		t.Fatalf("rebound divergence from a moved head code = %q, want %q", got, runner.WorkspaceHeadMovedErrorCode)
+	}
+	if got := workspaceProvisionFailureCode(divergedFrom("AAAA")); got != telemetry.ErrCodeWorkspaceProvisionFailed {
+		t.Fatalf("divergence on an unmoved head code = %q, want %q: the run rewrote its own history", got, telemetry.ErrCodeWorkspaceProvisionFailed)
+	}
+	if got := workspaceProvisionFailureCode(divergedFrom("")); got != telemetry.ErrCodeWorkspaceProvisionFailed {
+		t.Fatalf("divergence with no recorded origin code = %q, want %q: a move that cannot be established is not typed", got, telemetry.ErrCodeWorkspaceProvisionFailed)
 	}
 	if got := workspaceProvisionFailureCode(errors.New("clone failed")); got != telemetry.ErrCodeWorkspaceProvisionFailed {
 		t.Fatalf("clone failure code = %q, want %q", got, telemetry.ErrCodeWorkspaceProvisionFailed)
@@ -225,5 +235,65 @@ func TestDecideRemediationCheckpointRefundsSupersededCycle(t *testing.T) {
 	}
 	if got.State.Superseded {
 		t.Fatal("the new cycle inherited the superseded mark")
+	}
+	if got.State.SupersededCycles != 1 {
+		t.Fatalf("superseded cycles = %d, want 1 carried forward", got.State.SupersededCycles)
+	}
+
+	// Review finding on #7403: a head that moves under every cycle must not
+	// be remediated forever with every cycle refunded.
+	t.Run("the superseded allowance bounds the refund", func(t *testing.T) {
+		bounded := prior
+		bounded.SupersededCycles = remediationSupersededAllowance - 1
+		got := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+			Prior:   bounded,
+			Causes:  []remediationCause{remediationCauseFailingCI},
+			Budgets: remediationBudgets{FailingCI: 2},
+			Digest:  "sha256:new", HeadSHA: "head2", BaseSHA: "base",
+			RunID: "run-now",
+		})
+		if !got.Escalated || got.Escalation.Outcome != remediationOutcomeDidNotConverge ||
+			!strings.Contains(got.Escalation.Reason, "head moved under each of the last") {
+			t.Fatalf("decision = %+v, want a did-not-converge park after %d superseded cycles", got.Escalation, remediationSupersededAllowance)
+		}
+	})
+
+	t.Run("an ordinary cycle resets the count", func(t *testing.T) {
+		ordinary := prior
+		ordinary.Superseded = false
+		ordinary.SupersededCycles = 2
+		ordinary.AttemptsByCause = remediationAttempts{FailingCI: 1}
+		got := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+			Prior:   ordinary,
+			Causes:  []remediationCause{remediationCauseFailingCI},
+			Budgets: remediationBudgets{FailingCI: 3},
+			Digest:  "sha256:new", HeadSHA: "head2", BaseSHA: "base",
+			RunID: "run-now",
+		})
+		if got.Escalated || got.State.SupersededCycles != 0 {
+			t.Fatalf("decision = %+v state = %+v, want an advancing cycle with the count reset", got.Escalation, got.State)
+		}
+	})
+}
+
+// TestSettleSupersededRunFailsClosedOnAnUnreadableJournal pins the review
+// finding: a run whose journal cannot be read is an error, never an ordinary
+// completion that resets the item's streaks.
+func TestSettleSupersededRunFailsClosedOnAnUnreadableJournal(t *testing.T) {
+	l, fake := seedSupersededRun(t, true, headMovedEvent("review"))
+	// A journal that exists but cannot be read: its event log is not JSON.
+	if err := os.WriteFile(filepath.Join(l.RunsDir(), supersededRunID, "events.jsonl"), []byte("{not json\n{also not json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	superseded, err := settleSupersededRun(context.Background(), fake, l, supersededRunID, "review")
+	if err == nil || superseded {
+		t.Fatalf("superseded = %v, err = %v; want an error for a journal that cannot be read", superseded, err)
+	}
+
+	// No run directory at all is not a superseded run: there is nothing it
+	// could have journaled.
+	none := instance.NewLayout(t.TempDir())
+	if superseded, err := settleSupersededRun(context.Background(), fake, none, "run-missing", "review"); err != nil || superseded {
+		t.Fatalf("missing run: superseded = %v, err = %v; want an ordinary completion", superseded, err)
 	}
 }

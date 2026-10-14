@@ -281,10 +281,21 @@ type remediationState struct {
 	// Unlike one, it is not a strike toward the infrastructure allowance: a
 	// person's push says nothing about the substrate.
 	Superseded bool `json:"superseded,omitempty"`
+	// SupersededCycles counts consecutive cycles refunded that way before this
+	// one. It bounds the refund the way InfrastructureFailures bounds an
+	// infrastructure void: a PR whose head keeps moving under every cycle (an
+	// active author, another bot, an auto-update) escalates after
+	// remediationSupersededAllowance of them instead of spending an agent
+	// session per cycle forever, invisible to every other counter.
+	SupersededCycles int `json:"supersededCycles,omitempty"`
 	// OperatorRetry records the last audited `goobers pr retry` that reset
 	// this state.
 	OperatorRetry *operatorRetryRecord `json:"operatorRetry,omitempty"`
 }
+
+// remediationSupersededAllowance is how many consecutive superseded cycles
+// (#6019) a PR may refund before the checkpoint parks it for a human.
+const remediationSupersededAllowance = 3
 
 // remediationInfrastructureAllowance is how many consecutive
 // infrastructure-voided cycles a PR may refund before the checkpoint parks it
@@ -631,6 +642,7 @@ type remediationCheckpointDecision struct {
 
 func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediationCheckpointDecision {
 	retry, retryInfraFailures := rewindOwnCheckpointWrite(&in)
+	supersededCycles := countSupersededCycle(&in)
 	infraFailures := settleInfrastructureVoidedCycle(&in)
 	if retry {
 		infraFailures = retryInfraFailures
@@ -752,8 +764,33 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 			HeadSHA: in.HeadSHA, BaseSHA: in.BaseSHA, LastSeenCommentAt: in.Watermark,
 			RunID: in.RunID, ChargedCauses: slices.Clone(in.Causes),
 			InfrastructureFailures: infraFailures,
+			SupersededCycles:       supersededCycles,
 		},
 	}
+}
+
+// countSupersededCycle counts a superseded prior cycle (#6019) toward the
+// consecutive bound and returns the count to carry forward — 0 once a cycle
+// is not superseded. At remediationSupersededAllowance it forces a
+// did-not-converge park: each of those cycles may have spent a full agent
+// session before the move was noticed, and the refund (settled by
+// settleInfrastructureVoidedCycle) hides every one of them from the cause
+// budget and the same-diff stall.
+func countSupersededCycle(in *remediationCheckpointDecisionInput) int {
+	prior := in.Prior
+	if prior.Escalated || !prior.Superseded {
+		return 0
+	}
+	count := prior.SupersededCycles + 1
+	if count >= remediationSupersededAllowance && !in.Forced {
+		in.Forced = true
+		in.ForcedOutcome = remediationOutcomeDidNotConverge
+		in.ForcedReason = fmt.Sprintf(
+			"the pull request's head moved under each of the last %d remediation cycles before their fix could be published; remediation cannot keep up with concurrent pushes to it",
+			count,
+		)
+	}
+	return count
 }
 
 func remediationAttempted(attempts remediationAttempts) bool {

@@ -198,7 +198,7 @@ func publishWorkspaceDelta(ctx context.Context, dir string, stderr io.Writer) (p
 	if err != nil {
 		return publishedWorkspaceDelta{}, fmt.Errorf("workspace delta: %w", err)
 	}
-	bundle, err := workspacedelta.Create(ctx, podGit{stderr: stderr}, dir, baseRef, "HEAD")
+	bundle, err := workspacedelta.CreateWithOrigin(ctx, podGit{stderr: stderr}, dir, baseRef, "HEAD", readCheckoutOrigin(dir))
 	if err != nil {
 		return publishedWorkspaceDelta{}, err
 	}
@@ -275,6 +275,10 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 		// delta would destroy (#5948).
 		var diverged *workspacedelta.DivergedError
 		if errors.As(err, &diverged) {
+			// #6019: what the producer's checkout started from on this
+			// branch, so the refusal can tell someone else's push from the
+			// run's own history rewrite (workspaceProvisionFailureCode).
+			diverged.Origin = workspacedelta.OriginOf(bundle.Data)
 			return fmt.Errorf("%w%s%s", err, deltaBranchContext(dir, movedReboundBranchClause), divergedResidue(ctx, git, dir, diverged))
 		}
 		return fmt.Errorf("%w%s", err, deltaBranchContext(dir, movedReboundBranchClause))
@@ -327,23 +331,81 @@ func deltaBranchContext(dir string, reboundClause func(rebound string) string) s
 // not provision a stage's workspace.
 //
 // One refusal gets its own code (#6019): the ancestry guard refusing a delta
-// on a REBOUND branch (#392). That is a pull request head that moved under
-// the run — a person pushed while the run was working (#5948) — so landing
-// the delta would discard their push, and refusing is right. But nothing
-// about the run's work failed: its subject moved. The typed code is what
-// lets the engine end the run superseded instead of failed, so the moved PR
-// is neither charged a failure strike nor a remediation attempt, and the
-// next cycle picks it up at its new head.
+// on a REBOUND branch (#392) whose head is no longer the commit the delta's
+// producer started from. That is a pull request head someone else moved under
+// the run — a person pushed while the run was working (#5948) — so landing the
+// delta would discard their push, and refusing is right. But nothing about the
+// run's work failed: its subject moved. The typed code is what lets the engine
+// end the run superseded instead of failed, so the moved PR is neither charged
+// a failure strike nor a remediation attempt, and the next cycle picks it up
+// at its new head.
 //
-// A divergence on a run's OWN branch (no rebind) keeps the generic code: the
-// run branch is written by push-branch alone, so its moving under the run is
-// a genuine fault, not someone else's legitimate push.
+// The producer's starting commit is the evidence, and without it the refusal
+// stays generic (fail closed):
+//   - The branch did NOT move (checkout == origin): the divergence is the
+//     run's own rewrite of the PR's history — a conflict-resolved rebase, an
+//     amend — and refusing it is a genuine failure the existing failure and
+//     budget accounting must keep bounding. Typing it as superseded would
+//     refund every cycle of a loop that never ends.
+//   - No origin recorded (an older producer, or a self/worker producer): the
+//     move cannot be established.
+//   - No rebind: the run branch is written by push-branch alone, so its moving
+//     under the run is a genuine fault, not someone else's legitimate push.
 func workspaceProvisionFailureCode(err error) string {
 	var diverged *workspacedelta.DivergedError
-	if errors.As(err, &diverged) && strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch)) != "" {
+	if errors.As(err, &diverged) && strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch)) != "" &&
+		diverged.Origin != "" && !strings.EqualFold(diverged.Origin, diverged.Current) {
 		return runner.WorkspaceHeadMovedErrorCode
 	}
 	return telemetry.ErrCodeWorkspaceProvisionFailed
+}
+
+// checkoutOriginFile is where dispatch-checkout records, in a REBOUND
+// workspace, the commit the clone landed on before any inherited delta moved
+// it — the pull request head as this stage found it. publishWorkspaceDelta
+// carries it in the bundle (workspacedelta.OriginRef).
+const checkoutOriginFile = "goobers-checkout-origin"
+
+// recordCheckoutOrigin writes the rebound branch's freshly cloned HEAD next to
+// the publish baseline. A no-op for a stage that did not rebind.
+func recordCheckoutOrigin(ctx context.Context, dir string, gitEnv []string, stderr io.Writer) error {
+	if strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch)) == "" {
+		return nil
+	}
+	head, err := podGit{env: gitEnv, stderr: stderr}.Output(ctx, dir, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("record the checkout origin: determine cloned HEAD: %w", err)
+	}
+	path, err := checkoutOriginPath(dir)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(head)+"\n"), 0o600); err != nil {
+		return fmt.Errorf("record the checkout origin: %w", err)
+	}
+	return nil
+}
+
+// readCheckoutOrigin returns the recorded checkout origin, or "" when none
+// was recorded (a stage that did not rebind, or an older image).
+func readCheckoutOrigin(dir string) string {
+	path, err := checkoutOriginPath(dir)
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func checkoutOriginPath(dir string) (string, error) {
+	base, err := publishBasePath(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(base), checkoutOriginFile), nil
 }
 
 // preRebindDeltaClause words the rebind for a FETCH refusal: the thin

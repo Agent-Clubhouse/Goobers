@@ -253,3 +253,46 @@ func TestReconcileArms(t *testing.T) {
 		}
 	})
 }
+
+// #6019: a bundle can carry the commit its producer's checkout started from
+// under OriginRef, readable from the header alone, without changing what a
+// receiver fetches. A plain Create carries none.
+func TestCreateWithOriginCarriesTheProducersStartingCommit(t *testing.T) {
+	ctx := context.Background()
+	origin := initOrigin(t)
+	src := clone(t, origin, "main")
+	run(t, src, "checkout", "-q", "-b", "goobers/wf/pr-1")
+	started := commit(t, src, "pr.txt", "pr\n")
+	run(t, src, "push", "-q", "origin", "goobers/wf/pr-1")
+	// The producer rewrites the PR's own commit, so the started-from commit
+	// is no longer on the tip's history.
+	if err := os.WriteFile(filepath.Join(src, "pr.txt"), []byte("pr, reworked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, src, "commit", "-q", "-a", "--amend", "--no-edit")
+	tipWant := run(t, src, "rev-parse", "HEAD")
+
+	b, err := CreateWithOrigin(ctx, testGit{}, src, "origin/main", "HEAD", started)
+	if err != nil {
+		t.Fatalf("CreateWithOrigin: %v", err)
+	}
+	if b.Origin != started || OriginOf(b.Data) != started {
+		t.Fatalf("origin = %q (header %q), want %s", b.Origin, OriginOf(b.Data), started)
+	}
+	if out := run(t, src, "for-each-ref", "--format=%(refname)", OriginRef); out != "" {
+		t.Fatalf("origin ref left behind in the source repo: %q", out)
+	}
+	checkout := clone(t, origin, "main")
+	tip, err := Fetch(ctx, testGit{}, checkout, b)
+	if err != nil || tip != tipWant {
+		t.Fatalf("Fetch = %s, %v; want the delta's own tip %s", tip, err, tipWant)
+	}
+
+	plain, err := Create(ctx, testGit{}, src, "origin/main", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if plain.Origin != "" || OriginOf(plain.Data) != "" {
+		t.Fatalf("plain bundle origin = %q, want none", plain.Origin)
+	}
+}

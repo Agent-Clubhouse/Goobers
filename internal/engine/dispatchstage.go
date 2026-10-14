@@ -819,7 +819,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// the field surrenders nothing about it and is journaled as nothing,
 		// not as a verified fact.
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
-		Placement:               placementProvenance(report),
+		Placement:               placementProvenance(report), WorkspaceHeadMoved: surrendered.WorkspaceHeadMoved,
 	})
 	return result, withDispatchFailurePlacement(resultErr, report)
 }

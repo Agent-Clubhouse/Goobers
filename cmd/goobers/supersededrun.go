@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -45,20 +46,31 @@ type supersededRunEvidence struct {
 // its own work: the next cycle remediates the PR at its new head without
 // having been charged an attempt for work the push made moot.
 //
-// A journal that cannot be read is not superseded, which is what every
-// completed run was before this existed — the same posture settleNoWorkStreak
-// takes, for the same reason.
+// A journal that cannot be read is an ERROR, not "not superseded": the caller
+// then leaves every streak alone rather than giving a run it cannot classify
+// an ordinary completion's failure-streak reset — the reset is exactly what a
+// superseded run must not get, and the same reasoning settleNoWorkStreak
+// applies to its own counter. The error reaches the run trace as a terminal
+// notification failure.
 func settleSupersededRun(ctx context.Context, poster gate.Commenter, l instance.Layout, runID, finalState string) (bool, error) {
 	if finalState == "" {
 		return false, nil
 	}
 	reader, err := journal.OpenReadOnly(filepath.Join(l.RunsDir(), runID))
-	if err != nil {
+	if errors.Is(err, journal.ErrNotRunDirectory) {
+		// No run directory at all is not an unclassifiable run: a superseded
+		// run is always journaled (the engine's marker, or the guard's
+		// stage.finished) before its terminal fires, and an engine run's
+		// journal already carries run.finished by then. Only a journal that
+		// exists and cannot be read is the fail-closed case.
 		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("open journal for run %q: %w", runID, err)
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("read journal for run %q: %w", runID, err)
 	}
 	evidence, superseded := supersededRunFromEvents(events, finalState)
 	if !superseded || evidence.published {

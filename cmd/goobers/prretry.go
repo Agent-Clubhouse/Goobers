@@ -402,7 +402,7 @@ func prRetryEligibility(labels []string) string {
 func prRetryStateNeedsReset(state remediationState) bool {
 	return state.Escalated || state.EscalatedHeadSHA != "" || state.EscalatedBaseSHA != "" ||
 		state.LastDiffDigest != "" || state.AttemptsByCause != (remediationAttempts{}) ||
-		state.RemediationAttempted || state.InfrastructureFailures > 0 || state.InfrastructureVoided || state.Superseded
+		state.RemediationAttempted || state.InfrastructureFailures > 0 || state.InfrastructureVoided || state.Superseded || state.SupersededCycles > 0
 }
 
 func prRetryResetState(state remediationState, route string) remediationState {
@@ -427,6 +427,7 @@ func prRetryResetState(state remediationState, route string) remediationState {
 	state.ChargedCauses = nil
 	state.InfrastructureVoided = false
 	state.Superseded = false
+	state.SupersededCycles = 0
 	state.InfrastructureFailures = 0
 	return state
 }

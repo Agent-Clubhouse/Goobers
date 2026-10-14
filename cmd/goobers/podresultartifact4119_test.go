@@ -113,7 +113,7 @@ func TestPodStageSurrendersItsResultFileAsAnArtifact(t *testing.T) {
 	t.Setenv(dispatcher.InputEnvVar("resultFile"), "brief.json")
 
 	var out, errOut bytes.Buffer
-	got := runDeclaredStage(context.Background(), &out, &errOut)
+	got := runDeclaredStage(context.Background(), &out, &errOut, nil)
 	if got.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %q (%+v), want success", got.Status, got.Error)
 	}
@@ -201,7 +201,7 @@ func TestPodStageSurrendersTheResultFileOfAFailingStage(t *testing.T) {
 	t.Setenv(dispatcher.InputEnvVar("resultFile"), "r.json")
 
 	var out, errOut bytes.Buffer
-	if got := runDeclaredStage(context.Background(), &out, &errOut); got.Status != apiv1.ResultFailure {
+	if got := runDeclaredStage(context.Background(), &out, &errOut, nil); got.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %q, want failure", got.Status)
 	}
 

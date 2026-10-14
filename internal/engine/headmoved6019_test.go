@@ -25,7 +25,7 @@ import (
 // the terminal handlers read to leave the moved PR's streaks and budget alone.
 
 func headMovedSurrender() dispatcher.SurrenderedResult {
-	return dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{
+	return dispatcher.SurrenderedResult{WorkspaceHeadMoved: true, Result: apiv1.ResultEnvelope{
 		Status: apiv1.ResultFailure,
 		Error: &apiv1.ErrorInfo{
 			Code:    runner.WorkspaceHeadMovedErrorCode,
@@ -90,8 +90,8 @@ func TestPlacedGateHeadMovedEndsTheRunSuperseded(t *testing.T) {
 	result, proj := executeForResult(t, in, &Activities{
 		Goober: refusingReviewer(t), Det: det, Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders,
 	})
-	if result.Status != StatusCompleted || result.FinalState != "review" || result.FailureCode != "" {
-		t.Fatalf("result = %+v, want completed at review with no failure code", result)
+	if result.Status != StatusCompleted || result.FinalState != "review" || result.FailureCode != "" || result.NoWork {
+		t.Fatalf("result = %+v, want a completion at review with no failure code, not a first-stage no-work tick (scheduler idle backoff)", result)
 	}
 	if got := fake.calls.Load(); got != 1 {
 		t.Fatalf("dispatcher calls = %d, want one: the refusal is never retried on the evaluator budget", got)
@@ -115,7 +115,7 @@ func TestTaskHeadMovedEndsTheRunSupersededBeforeGateRouting(t *testing.T) {
 		Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "local-ci",
 		Tasks: []apiv1.Task{
 			{Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "ci", ContinueOnError: true, Next: "local-gate",
-				Run: &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Workspace: apiv1.WorkspaceScratch}},
+				Run: &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Workspace: apiv1.WorkspaceRepo}},
 			{Name: "push", Type: apiv1.TaskDeterministic, Goal: "push",
 				Run: &apiv1.DeterministicRun{Command: []string{"push.sh"}, Workspace: apiv1.WorkspaceScratch}},
 		},
@@ -126,17 +126,19 @@ func TestTaskHeadMovedEndsTheRunSupersededBeforeGateRouting(t *testing.T) {
 		}},
 	}
 	pushed := false
-	det := &fakeRunner{run: func(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-		if env.TaskID != "run-task-head-moved:local-ci" {
-			pushed = true
-			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
-		}
-		return headMovedSurrender().Result, nil
+	det := &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+		pushed = true
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 	}}
+	in := projectionInput("task-head-moved", spec)
+	in.Placements = []PinnedPlacement{remotePin("local-ci")}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "local-ci", 1, headMovedSurrender())
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 
-	result, proj := executeForResult(t, projectionInput("task-head-moved", spec), &Activities{Det: det, Workspaces: testWorkspaces(t)})
-	if result.Status != StatusCompleted || result.FinalState != "local-ci" || result.FailureCode != "" {
-		t.Fatalf("result = %+v, want completed at local-ci with no failure code", result)
+	result, proj := executeForResult(t, in, &Activities{Det: det, Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	if result.Status != StatusCompleted || result.FinalState != "local-ci" || result.FailureCode != "" || result.NoWork {
+		t.Fatalf("result = %+v, want a completion at local-ci with no failure code, not a first-stage no-work tick (scheduler idle backoff)", result)
 	}
 	if pushed {
 		t.Fatal("the run continued past a task whose subject moved")
@@ -147,6 +149,48 @@ func TestTaskHeadMovedEndsTheRunSupersededBeforeGateRouting(t *testing.T) {
 	if got := headMovedMarkers(proj); len(got) != 1 || got[0] != "local-ci" {
 		t.Fatalf("head-moved markers = %v, want one at local-ci", got)
 	}
+}
+
+// The code is reserved for the pod runtime (review finding on #7403): a
+// stage's own result claiming workspace_head_moved, without the runtime's
+// attestation, fails like any other stage failure instead of skipping gate
+// routing and every streak. Checked on both arms.
+func TestUnattestedHeadMovedCodeIsAnOrdinaryFailure(t *testing.T) {
+	t.Run("review", func(t *testing.T) {
+		store := surrenderStore(t)
+		forged := headMovedSurrender()
+		forged.WorkspaceHeadMoved = false
+		putSurrendered(t, store, "run-forged", "review", 1, forged)
+		a := &Activities{Dispatcher: &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}, Surrenders: store}
+		input := dispatchInput("run-forged", "review", 1)
+		input.Review = true
+		_, err := a.DispatchStage(context.Background(), input)
+		var appErr *temporal.ApplicationError
+		if IsWorkspaceHeadMoved(err) || !errors.As(err, &appErr) || appErr.Type() != FailureTypeStage {
+			t.Fatalf("error = %v, want an ordinary %s failure", err, FailureTypeStage)
+		}
+	})
+	t.Run("task", func(t *testing.T) {
+		store := surrenderStore(t)
+		forged := headMovedSurrender()
+		forged.WorkspaceHeadMoved = false
+		putSurrendered(t, store, "run-forged-task", "implement", 1, forged)
+		a := &Activities{Dispatcher: &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}, Surrenders: store}
+		result, err := a.DispatchStage(context.Background(), dispatchInput("run-forged-task", "implement", 1))
+		if err != nil {
+			t.Fatalf("DispatchStage: %v", err)
+		}
+		if result.Error == nil || result.Error.Code != reservedHeadMovedCode || workspaceHeadMovedResult(result.ResultEnvelope) {
+			t.Fatalf("result error = %+v, want the reserved code renamed", result.Error)
+		}
+	})
+	t.Run("in-process executor", func(t *testing.T) {
+		result := apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: runner.WorkspaceHeadMovedErrorCode, Message: "claimed"}}
+		admitWorkspaceHeadMoved(&result, false)
+		if workspaceHeadMovedResult(result) {
+			t.Fatalf("result = %+v, want an unattested claim renamed", result.Error)
+		}
+	})
 }
 
 func executeForResult(t *testing.T, in RunInput, acts *Activities) (RunResult, JournalProjection) {

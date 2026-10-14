@@ -243,6 +243,11 @@ func finishWritableRepoCheckoutOnExistingBranch(ctx context.Context, dir string,
 	if err := ensureRecoveryBaseRemoteRef(ctx, dir, gitEnv, stderr, base); err != nil {
 		return err
 	}
+	// Before the inherited delta moves HEAD: the pull request head as this
+	// stage found it, carried in this stage's own delta (#6019).
+	if err := recordCheckoutOrigin(ctx, dir, gitEnv, stderr); err != nil {
+		return err
+	}
 	if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
 		return err
 	}

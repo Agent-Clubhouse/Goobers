@@ -98,7 +98,10 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		// A pull request head that moved under the run surrenders its own
 		// code (#6019) — non-retryable, like every DivergedError (#5948) —
 		// so the engine ends the run superseded rather than failed.
-		return fail(workspaceProvisionFailureCode(err), err)
+		code := workspaceProvisionFailureCode(err)
+		out := fail(code, err)
+		out.WorkspaceHeadMoved = code == runner.WorkspaceHeadMovedErrorCode
+		return out
 	}
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace

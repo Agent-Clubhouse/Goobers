@@ -76,7 +76,9 @@ type State interface {
 	// pushed, or a pr-claim guard reporting a stale selection — and refunds
 	// the remediation charge that run recorded. superseded=true tells the
 	// caller the run is evidence about neither the work nor the item, so the
-	// failure and no-work streaks must be left exactly as they were.
+	// failure and no-work streaks must be left exactly as they were; an error
+	// means the run could not be classified, and the caller leaves them alone
+	// too.
 	SettleSupersededRun(ctx context.Context, poster gate.Commenter, runID, finalState string) (superseded bool, err error)
 	// SettleNoWorkStreak advances or resets the repeated-no-work streak for a
 	// completed run (#5379).
@@ -337,14 +339,14 @@ func (p *Policy) TerminalNotifier(inner runner.TerminalNotifier) runner.Terminal
 // (#6019) neither resets the failure streak nor touches the no-work streak:
 // its subject moved under it, so it says nothing about whether the work on
 // that item succeeds — crediting it would erase real strikes, and counting it
-// as no-work would walk the item toward a park it did nothing to earn. A
-// superseded check that could not be read is reported and treated as an
-// ordinary completion, which is what every completed run did before.
+// as no-work would walk the item toward a park it did nothing to earn. A run
+// the check could not classify fails closed the same way: its streaks are
+// left alone and the error is reported, never an ordinary completion's reset.
 func (p *Policy) settleCompleted(ctx context.Context, runID, finalState, runURL string) []error {
 	var errs []error
 	superseded, err := p.State.SettleSupersededRun(ctx, p.Poster, runID, finalState)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("settle superseded run %q: %w", runID, err))
+		return append(errs, fmt.Errorf("settle superseded run %q: %w", runID, err))
 	}
 	if superseded {
 		return errs

@@ -181,6 +181,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		Mutations:            mutations,
 		Result:               envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
+		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runner.WorkspaceHeadMovedErrorCode,
 		Verdict:                 outcome.Verdict,
 	})
 	if err != nil {
@@ -248,6 +249,10 @@ func surrenderRetryDeadline(stageTimeout time.Duration) time.Duration {
 type stageOutcome struct {
 	Result  apiv1.ResultEnvelope
 	Verdict *apiv1.Verdict
+	// WorkspaceHeadMoved marks Result as this runtime's own provisioning
+	// refusal on a moved pull request head (#6019); see
+	// dispatcher.SurrenderedResult.WorkspaceHeadMoved.
+	WorkspaceHeadMoved bool
 }
 
 // runStage executes whatever this pod was dispatched to run. An AGENTIC stage
@@ -273,14 +278,20 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	case executor.KindExternalTelemetry:
 		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr)}
 	}
-	return stageOutcome{Result: runDeclaredStage(ctx, stdout, stderr)}
+	var headMoved bool
+	result := runDeclaredStage(ctx, stdout, stderr, &headMoved)
+	return stageOutcome{Result: result, WorkspaceHeadMoved: headMoved}
 }
 
 // runDeclaredStage builds and runs the pinned Command/Script, and always
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
-func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome apiv1.ResultEnvelope) {
+//
+// headMoved, when non-nil, reports whether its workspace provisioning refused
+// a delta on a moved pull request head (#6019) — provenance only this runtime
+// can vouch for (dispatcher.SurrenderedResult.WorkspaceHeadMoved).
+func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *bool) (outcome apiv1.ResultEnvelope) {
 	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
 	// it is currently enforced by an ABSENCE and an absence is invisible to the
@@ -379,7 +390,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that
 		// says nothing about provisioning.
-		return failureEnvelope(workspaceProvisionFailureCode(err), err.Error())
+		return provisionFailureEnvelope(err, headMoved)
 	}
 	// The STAGE's git needs the same exemption: it runs in the same
 	// differently-owned workspace, and real workflows commit and push from it.
@@ -665,6 +676,16 @@ func logStageFailureEnvelope(stderr io.Writer, envelope apiv1.ResultEnvelope) {
 		message = message[:maxMessage] + "...(truncated)"
 	}
 	pf(stderr, "dispatch-exec: stage %s: code=%q message=%q\n", envelope.Status, code, message)
+}
+
+// provisionFailureEnvelope is the declared-stage arm's workspace-provisioning
+// failure, attesting a moved pull request head through headMoved (#6019).
+func provisionFailureEnvelope(err error, headMoved *bool) apiv1.ResultEnvelope {
+	code := workspaceProvisionFailureCode(err)
+	if headMoved != nil {
+		*headMoved = code == runner.WorkspaceHeadMovedErrorCode
+	}
+	return failureEnvelope(code, err.Error())
 }
 
 func failureEnvelope(code, message string) apiv1.ResultEnvelope {

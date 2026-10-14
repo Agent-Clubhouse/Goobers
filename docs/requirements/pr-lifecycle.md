@@ -454,10 +454,14 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   for the cycle budget to expire (#367).
   A cycle whose PR head moved under the run before the run published — a
   pr-claim guard's `stale_selection`, or a pod refusing to land the run's
-  workspace delta on the moved head (`workspace_head_moved`) — MUST end the run
-  completed rather than failed, MUST NOT touch the PR's failure or no-work
-  streaks, and MUST have its charged attempt refunded at the next checkpoint
-  without counting toward the infrastructure allowance (#6019).
+  workspace delta on a head that is no longer the commit the delta's producer
+  started from (`workspace_head_moved`) — MUST end the run completed rather than
+  failed, MUST NOT touch the PR's failure or no-work streaks, and
+  MUST have its charged attempt refunded at the next checkpoint without
+  counting toward the infrastructure allowance (#6019). The run's own rewrite
+  of the PR's history on an unmoved head is NOT a moved head and keeps the
+  ordinary failure accounting. Consecutive superseded cycles MUST be bounded:
+  the third forces a did-not-converge park.
 - **PRL-055 (MUST, Shipped):** A reviewer `fail` verdict inside remediation
   MUST escalate immediately with the terminal reason (skipping budget/stall
   checks), surfaced through the run's escalated phase — never retried against

@@ -81,6 +81,7 @@ type fakeState struct {
 	// (#6019); supersededChecked records every run it was asked about.
 	superseded        map[string]bool
 	supersededChecked []string
+	supersededErr     error
 }
 
 func newFakeState() *fakeState {
@@ -145,7 +146,7 @@ func (s *fakeState) VoidRemediationCharge(_ context.Context, _ gate.Commenter, r
 
 func (s *fakeState) SettleSupersededRun(_ context.Context, _ gate.Commenter, runID, _ string) (bool, error) {
 	s.supersededChecked = append(s.supersededChecked, runID)
-	return s.superseded[runID], nil
+	return s.superseded[runID], s.supersededErr
 }
 
 func (s *fakeState) SettleNoWorkStreak(_ context.Context, _ gate.Commenter, runID, _, _ string) error {
@@ -464,6 +465,20 @@ func TestTerminalNotifierLeavesStreaksAloneForSupersededRun(t *testing.T) {
 	if len(state.settled) != 0 {
 		t.Fatalf("no-work streak settled for %v, want it untouched", state.settled)
 	}
+
+	t.Run("an unclassifiable run fails closed", func(t *testing.T) {
+		p, _, state := newTestPolicy(t)
+		state.items["run-2"] = []Item{{ItemID: "pr/42", Repo: webRepo}}
+		state.streaks["web#pr/42"] = 2
+		state.supersededErr = errors.New("journal unreadable")
+		err := p.TerminalNotifier(nil)("run-2", journal.PhaseCompleted, "review")
+		if err == nil || !strings.Contains(err.Error(), "journal unreadable") {
+			t.Fatalf("err = %v, want the classification failure reported", err)
+		}
+		if state.streaks["web#pr/42"] != 2 || len(state.settled) != 0 {
+			t.Fatalf("streaks=%v settled=%v, want both left alone", state.streaks, state.settled)
+		}
+	})
 }
 
 // labeledPoster is a fakePoster whose item carries labels, so it satisfies

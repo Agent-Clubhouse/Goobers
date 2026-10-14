@@ -46,8 +46,26 @@ func IsWorkspaceHeadMoved(err error) bool {
 	return errors.As(err, &appErr) && appErr.Type() == FailureTypeWorkspaceHeadMoved
 }
 
+// reservedHeadMovedCode is what admitWorkspaceHeadMoved renames a
+// workspace_head_moved code to when nothing vouches for it.
+const reservedHeadMovedCode = "workspace_head_moved_unattested"
+
+// admitWorkspaceHeadMoved enforces that only the pod runtime's own workspace
+// provisioning can end a run superseded (#6019): a workspace_head_moved code
+// the runtime did not attest (attested=false) is a stage's own claim — its
+// result file, or an in-process executor's — and is renamed so it fails like
+// any other stage failure instead of skipping gate routing and every streak.
+func admitWorkspaceHeadMoved(result *apiv1.ResultEnvelope, attested bool) {
+	if attested || result.Error == nil || result.Error.Code != runner.WorkspaceHeadMovedErrorCode {
+		return
+	}
+	result.Error.Code = reservedHeadMovedCode
+	result.Error.Message = "stage reported the runtime-reserved code " + runner.WorkspaceHeadMovedErrorCode + ": " + result.Error.Message
+}
+
 // workspaceHeadMovedResult reports whether a stage's surrendered failure is a
-// pull request head that moved under the run (#6019).
+// pull request head that moved under the run (#6019). Only an attested code
+// survives admitWorkspaceHeadMoved to reach here.
 func workspaceHeadMovedResult(result apiv1.ResultEnvelope) bool {
 	return result.Status == apiv1.ResultFailure && result.Error != nil && result.Error.Code == runner.WorkspaceHeadMovedErrorCode
 }
@@ -74,6 +92,13 @@ func gateEvaluationFailed(ctx workflow.Context, rec *runJournal, gate string, er
 // finalization like any other run's, so the next cycle selects the PR at its
 // new head, and the terminal handlers recognise the journaled
 // workspace_head_moved marker and neither charge nor credit the item.
+//
+// NoWork is deliberately NOT set. It is the scheduler's first-stage
+// "this tick found nothing" signal (taskOutcome's steps == 1, the local
+// runner's identical rule) and drives idle backoff for the whole lane; a
+// superseded run ran stages, often a full agent session, so it ends
+// `produced` exactly as pr-claim's mid-run stale_selection exit does. The
+// superseded outcome itself is the journaled workspace_head_moved marker.
 func supersededRunResult(state string, upstream map[string]apiv1.ResultEnvelope, steps int) RunResult {
 	return RunResult{Status: StatusCompleted, FinalState: state, Outputs: upstream, Steps: steps}
 }
