@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.temporal.io/sdk/client"
 )
@@ -34,6 +35,25 @@ type Routing struct {
 	// they were current or ramping and no longer are, so they receive no new
 	// workflows by design while their pinned workflows finish.
 	Draining map[string]bool
+	// Created holds each version's creation time in the deployment (its first
+	// poll). It backs up Draining, which the server fills from a deprecated
+	// field: a build created before the versioned current one was superseded
+	// by it, so it is never a build to promote.
+	Created map[string]time.Time
+}
+
+// superseded reports whether build is draining, or was created before the
+// versioned current version and so was replaced by it.
+func (r Routing) superseded(build string) bool {
+	if r.Draining[build] {
+		return true
+	}
+	current := r.CurrentVersion
+	if current == nil || current.BuildID == build {
+		return false
+	}
+	created, currentCreated := r.Created[build], r.Created[current.BuildID]
+	return !created.IsZero() && !currentCreated.IsZero() && created.Before(currentCreated)
 }
 
 // Finding is one worker's routing verdict. The zero value is routed.
@@ -71,6 +91,12 @@ func DescribeRouting(ctx context.Context, c client.Client) (Routing, error) {
 	for _, summary := range resp.Info.VersionSummaries {
 		if summary.Version.DeploymentName != DeploymentName {
 			continue
+		}
+		if !summary.CreateTime.IsZero() {
+			if routing.Created == nil {
+				routing.Created = map[string]time.Time{}
+			}
+			routing.Created[summary.Version.BuildID] = summary.CreateTime
 		}
 		switch summary.DrainageStatus {
 		case client.WorkerDeploymentVersionDrainageStatusDraining, client.WorkerDeploymentVersionDrainageStatusDrained:
@@ -113,14 +139,17 @@ func Check(versioned bool, buildID string, routing Routing, describeErr error) F
 	if plan.shareOf(served) > 0 {
 		return Finding{}
 	}
-	if versioned && routing.Draining[buildID] {
+	if versioned && routing.superseded(buildID) {
 		return Finding{Draining: true}
 	}
 	if served == plan.current.version && plan.ramp != nil {
+		// The worker cannot see whether the ramped version has workers, so
+		// it offers both ways out; status picks the one that fits.
 		command := plan.ramp.promoteCommand()
 		return Finding{
 			Problem: fmt.Sprintf("worker deployment %q ramps %s of new workflow tasks to %s, so this worker (%s, the current version) receives none. "+
-				"Finish the rollout: %s", DeploymentName, percent(plan.ramp.share), plan.ramp.label(), served.label(), command),
+				"Finish the rollout: %s; or, if %s has no workers, cancel the ramp: %s",
+				DeploymentName, percent(plan.ramp.share), plan.ramp.label(), served.label(), command, plan.ramp.label(), plan.ramp.rampDeleteCommand()),
 			Command: command,
 		}
 	}

@@ -238,7 +238,9 @@ func verdict(a Assessment, plan trafficPlan, absent bool, live liveGroups) (Stat
 func unversionedNote(plan trafficPlan, unrouted []pollerGroup) string {
 	for _, group := range unrouted {
 		if !group.versioned && plan.current.versioned {
-			return " (engine.workerVersioning is off: either set engine.workerVersioning: true, or route the deployment to unversioned workers)"
+			return " (unversioned workers: if they are the previous fleet shutting down, this clears when they exit; " +
+				"otherwise they run with engine.workerVersioning off, so either set engine.workerVersioning: true for them " +
+				"or route the deployment to unversioned workers)"
 		}
 	}
 	return ""

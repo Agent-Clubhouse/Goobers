@@ -22,6 +22,7 @@ import (
 type fakeDeployment struct {
 	routing     client.WorkerDeploymentRoutingConfig
 	draining    map[string]bool
+	created     map[string]time.Time
 	describeErr error
 	pollers     []*taskqueuepb.PollerInfo
 	pollersErr  error
@@ -29,7 +30,7 @@ type fakeDeployment struct {
 }
 
 func (f *fakeDeployment) DescribeRouting(context.Context) (Routing, error) {
-	return Routing{WorkerDeploymentRoutingConfig: f.routing, Draining: f.draining}, f.describeErr
+	return Routing{WorkerDeploymentRoutingConfig: f.routing, Draining: f.draining, Created: f.created}, f.describeErr
 }
 
 func (f *fakeDeployment) WorkflowPollers(_ context.Context, taskQueue string) ([]*taskqueuepb.PollerInfo, error) {
@@ -218,7 +219,7 @@ func TestAssess(t *testing.T) {
 				routing: client.WorkerDeploymentRoutingConfig{CurrentVersion: deployVersion("dev")},
 				pollers: live(time.Second, ""),
 			},
-			state: StateStalled, detail: "engine.workerVersioning is off",
+			state: StateStalled, detail: "otherwise they run with engine.workerVersioning off",
 			remediation: []string{promoteNone},
 			workers:     []WorkerRouting{{Version: UnversionedLabel, Pollers: 1, Routing: WorkerUnrouted}},
 		},
@@ -228,7 +229,7 @@ func TestAssess(t *testing.T) {
 			// The unversioned workers may be leftovers or a misconfigured
 			// rollout; with the current build serving, no command reverts it.
 			state:  StateDegraded,
-			detail: "live workers serving __unversioned__ receive no new workflow tasks (engine.workerVersioning is off",
+			detail: "live workers serving __unversioned__ receive no new workflow tasks (unversioned workers: if they are the previous fleet shutting down",
 			workers: []WorkerRouting{
 				{Version: UnversionedLabel, Pollers: 1, Routing: WorkerUnrouted},
 				{Version: "goobers.v1", Pollers: 1, Routing: WorkerRouted, TrafficPercent: 100},
@@ -249,6 +250,39 @@ func TestAssess(t *testing.T) {
 			workers: []WorkerRouting{
 				{Version: "goobers.v1", Pollers: 1, Routing: WorkerDraining},
 				{Version: "goobers.v2", Pollers: 1, Routing: WorkerRouted, TrafficPercent: 100},
+			},
+		},
+		{
+			// The drainage status comes from a deprecated server field. Without
+			// it, creation order still shows v1 was replaced by v2: no alarm,
+			// and no advice to promote the older build.
+			name: "replaced build without drainage status, by creation order",
+			fake: fakeDeployment{
+				routing: client.WorkerDeploymentRoutingConfig{CurrentVersion: deployVersion("v2")},
+				created: map[string]time.Time{"v1": assessNow.Add(-2 * time.Hour), "v2": assessNow.Add(-time.Hour)},
+				pollers: live(time.Second, "v1", "v2"),
+			},
+			state:  StateHealthy,
+			detail: "goobers.v1 draining",
+			workers: []WorkerRouting{
+				{Version: "goobers.v1", Pollers: 1, Routing: WorkerDraining},
+				{Version: "goobers.v2", Pollers: 1, Routing: WorkerRouted, TrafficPercent: 100},
+			},
+		},
+		{
+			// Creation order does not hide a newer build nobody promoted.
+			name: "unpromoted build created after the current one",
+			fake: fakeDeployment{
+				routing: client.WorkerDeploymentRoutingConfig{CurrentVersion: deployVersion("v1")},
+				created: map[string]time.Time{"v1": assessNow.Add(-2 * time.Hour), "v2": assessNow.Add(-time.Hour)},
+				pollers: live(time.Second, "v1", "v2"),
+			},
+			state:       StateDegraded,
+			detail:      "live workers serving goobers.v2 receive no new workflow tasks",
+			remediation: []string{promoteV2},
+			workers: []WorkerRouting{
+				{Version: "goobers.v1", Pollers: 1, Routing: WorkerRouted, TrafficPercent: 100},
+				{Version: "goobers.v2", Pollers: 1, Routing: WorkerUnrouted},
 			},
 		},
 		{
@@ -374,6 +408,15 @@ func TestAssessmentJSONShape(t *testing.T) {
 	}
 }
 
+// withCreated records builds as created in the given order, oldest first.
+func withCreated(r Routing, builds ...string) Routing {
+	r.Created = map[string]time.Time{}
+	for i, build := range builds {
+		r.Created[build] = assessNow.Add(time.Duration(i) * time.Minute)
+	}
+	return r
+}
+
 // Check is the per-worker form of the fleet rule: routed means a share of new
 // workflow tasks, and a draining version with none is no problem.
 func TestCheck(t *testing.T) {
@@ -401,9 +444,16 @@ func TestCheck(t *testing.T) {
 		{name: "never current", versioned: true, routing: routes(nil, nil, 0), problem: "current version is __unversioned__ but this worker serves goobers.v2", command: BuildCommand("v2")},
 		{name: "paused ramp", versioned: true, routing: routes(deployVersion("v1"), deployVersion("v2"), 0), problem: "current version is goobers.v1 (ramping goobers.v2 at 0%)", command: BuildCommand("v2")},
 		{name: "replaced build is draining", versioned: true, routing: routes(deployVersion("v3"), nil, 0, "v2"), draining: true},
+		{name: "older than the current build", versioned: true, routing: withCreated(routes(deployVersion("v3"), nil, 0), "v2", "v3"), draining: true},
+		{
+			name: "newer than the current build", versioned: true, routing: withCreated(routes(deployVersion("v1"), nil, 0), "v1", "v2"),
+			problem: "current version is goobers.v1 but this worker serves goobers.v2", command: BuildCommand("v2"),
+		},
 		{
 			name: "current under a full ramp", versioned: true, routing: routes(deployVersion("v2"), deployVersion("v3"), 100),
-			problem: "ramps 100% of new workflow tasks to goobers.v3, so this worker (goobers.v2, the current version) receives none", command: BuildCommand("v3"),
+			problem: "receives none. Finish the rollout: " + BuildCommand("v3") +
+				"; or, if goobers.v3 has no workers, cancel the ramp: temporal worker deployment set-ramping-version --deployment-name goobers --build-id v3 --delete",
+			command: BuildCommand("v3"),
 		},
 		{name: "unversioned while a version is current", routing: routes(deployVersion("v1"), nil, 0), problem: "this UNVERSIONED worker", command: UnversionedCommand()},
 		{

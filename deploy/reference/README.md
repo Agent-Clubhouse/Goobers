@@ -802,6 +802,8 @@ gets the ramp percentage. The check works in both directions:
 - every live build should receive a share, unless the deployment reports
   its version as draining. A draining version was replaced by a newer
   current or ramping version and keeps serving only its pinned workflows.
+  A build created in the deployment before the current versioned one counts
+  as replaced too, even if the server reports no drainage status.
   Status shows it as `draining`, raises no warning, and never suggests
   reverting to it while the current version has live workers.
 
