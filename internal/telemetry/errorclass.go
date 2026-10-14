@@ -106,6 +106,11 @@ const (
 	// the unknown bucket; internal/runner.NoWorkUnsubstantiatedCode is this
 	// same constant.
 	ErrCodeNoWorkUnsubstantiated = "NO_WORK_UNSUBSTANTIATED"
+	// ErrCodePrematureExhaustionClaim is the harness's rewrite of an agent
+	// that reported its execution window exhausted well before the deadline
+	// the runtime enforced (#5871); internal/harness owns the literal. It is
+	// deliberately NOT the timeout class: no deadline expired.
+	ErrCodePrematureExhaustionClaim = "PREMATURE_EXHAUSTION_CLAIM"
 )
 
 // Substrate codes an agentic stage reports when it never got an agent turn
@@ -165,6 +170,10 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	// The run's evidence contract, not the work: the claim did not hold up
 	// against what the journal says its upstream produced.
 	ErrCodeNoWorkUnsubstantiated: ErrorClassValidation,
+	// Same family: the agent's claim did not hold up against the deadline
+	// the runtime observed, so it is an evidence-contract failure, not a
+	// timeout (#5871).
+	ErrCodePrematureExhaustionClaim: ErrorClassValidation,
 	// No agent turn happened: the substrate, not the work, failed (#5638).
 	ErrCodeHarnessRequiredMCPUnavailable: ErrorClassInfra,
 	ErrCodeCredentialResolveFailed:       ErrorClassInfra,

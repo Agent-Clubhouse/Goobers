@@ -1094,6 +1094,33 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
 
+> **A deadline you did not reach is not a timeout (#5871).** Only the runtime
+> observes a stage's execution deadline; it records it as an
+> `execution-deadline.v1` annotation, and a session that really runs out of
+> time ends as a harness timeout, not as a completion. A `failure` or
+> `blocked` result whose `error.code` claims the stage's own execution window
+> ran out — `EXECUTION_WINDOW_EXHAUSTED`, or one of the runner's own
+> wall-clock codes `timeout` / `run_duration_exceeded` — returned while less
+> than half of the observed window had elapsed is rewritten to a retryable
+> `failure` with `error.code: PREMATURE_EXHAUSTION_CLAIM`. Its `error.message`
+> states the elapsed time, the window, the deadline and the time that
+> remained; for every artifact-backed context input, whether the goobers-io
+> receipts show it fully read, partially read (lines covered of total),
+> searched but never read, or not inspected, plus the inspection call count
+> and whether `list_inputs` was called; and the goobers-io readiness state.
+> Your original code, message and summary are kept in the message, and
+> `outputs.agentErrorCode`, `outputs.executionDeadline`,
+> `outputs.executionWindowSeconds`, `outputs.executionElapsedSeconds`,
+> `outputs.goobersIOInspectionCalls`, `outputs.goobersIOReadiness` and
+> `outputs.inputsNotFullyInspected` carry the same evidence. Nothing the claim
+> reported is accepted and the stage still fails; the code classifies as
+> `validation`, never `timeout`, and like a missing declared artifact it
+> spends the stage's `retry.maxAttempts` budget. An inner timeout you observed
+> while doing the work (a test suite, a provider call) is a finding about the
+> work: report it under its own code and it is left alone. If the input you
+> need is large, page through it with `read_input` line ranges until you have
+> read all of it; do not stop early on the assumption that time has run out.
+
 > **A missing capability is a system defect, not a block (#2197).** `blocked`
 > means a per-item business/content decision or an unmet per-item dependency,
 > and it parks **every item the run has claimed** — up to a full curate batch —
