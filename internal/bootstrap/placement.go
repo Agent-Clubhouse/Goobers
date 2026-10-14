@@ -92,7 +92,6 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 			break
 		}
 	}
-	roleRouted := providerconfig.CrossProviderBacklog(gaggleSpec.Project.Provider, gaggleSpec.Backlog.Provider)
 	goobers := make(map[string]apiv1.GooberSpec, len(set.Goobers))
 	for i := range set.Goobers {
 		goobers[set.Goobers[i].Name] = set.Goobers[i].Spec
@@ -170,9 +169,9 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		// dispatch time (Linux-preferring, Windows excluded for
 		// ledger-touching stages), so the queue pinned here and the runner
 		// resolved there cannot disagree.
-		selected, serr := selectPinnedRunner(dispatcher.Attempt{
+		selected, serr := SelectStageRunner(gaggleSpec, dispatcher.Attempt{
 			RunID: def.Name, Stage: stage.Stage, Number: 1, LedgerTouching: ledger,
-		}, eligible, roleRouted)
+		}, eligible)
 		if serr != nil {
 			return nil, fmt.Errorf("workflow %q: %w", def.Name, serr)
 		}
@@ -198,16 +197,23 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 	return placements, nil
 }
 
-// selectPinnedRunner is dispatcher.SelectRunner, except for a stage of a
-// topology (b) gaggle (roleRouted: a GitHub or Gitea backlog for Azure DevOps
-// code, providerconfig.CrossProviderBacklog). The engine refuses every stage
-// of such a run a pod (engine.CrossProviderBacklogPodCode), so when a self
-// runner is eligible the stage is pinned there, even where SelectRunner's
-// Linux preference would pick a pod over a self entry that declares no OS.
-// That makes "no self runner is eligible" the exact condition under which the
+// SelectStageRunner picks the runner a stage of gaggle is pinned to from the
+// solver's eligible set. It is dispatcher.SelectRunner, except for a stage of
+// a topology (b) gaggle (a GitHub or Gitea backlog for Azure DevOps code,
+// providerconfig.CrossProviderBacklog). The engine refuses every stage of such
+// a run a pod (engine.CrossProviderBacklogPodCode), so when a self runner is
+// eligible the stage is pinned there, even where SelectRunner's Linux
+// preference would pick a pod over a self entry that declares no OS. That
+// makes "no self runner is eligible" the exact condition under which the
 // stage is refused, which is what `goobers validate` warns about (RNR007).
-func selectPinnedRunner(attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec, roleRouted bool) (dispatcher.RunnerSpec, error) {
-	if roleRouted {
+//
+// The preference covers every placed stage, agentic gates that declare runsOn
+// included, deliberately: a gate pod of a topology (b) run has the same
+// missing backlog routing, so self is never the worse choice for one.
+// `goobers preflight` reports runner selection through this function too, so
+// its report and the run-start pin agree.
+func SelectStageRunner(gaggle apiv1.GaggleSpec, attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec) (dispatcher.RunnerSpec, error) {
+	if providerconfig.CrossProviderBacklog(gaggle.Project.Provider, gaggle.Backlog.Provider) {
 		var self []dispatcher.RunnerSpec
 		for _, r := range eligible {
 			if r.HostKind == instance.RunnerHostSelf {
