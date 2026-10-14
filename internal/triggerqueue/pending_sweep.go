@@ -54,7 +54,16 @@ func (s *Store) PendingSweep(ctx context.Context, limit int) ([]Record, error) {
 }
 
 func pendingSweepWindow(ctx context.Context, tx *sql.Tx, ns int64, id string, limit int) ([]Record, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='accepted' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) AND (?='' OR accepted_ns>? OR (accepted_ns=? AND id>?)) ORDER BY accepted_ns,id LIMIT ?", id, ns, ns, id, limit)
+	query := "SELECT " + columns + " FROM triggers WHERE state='accepted' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id)"
+	var args []any
+	if id != "" {
+		// A tuple range seeks directly into the pending-order index. An OR
+		// against an empty-cursor sentinel would rescan the prefix every time.
+		query += " AND (accepted_ns,id)>(?,?)"
+		args = append(args, ns, id)
+	}
+	args = append(args, limit)
+	rows, err := tx.QueryContext(ctx, query+" ORDER BY accepted_ns,id LIMIT ?", args...)
 	if err != nil {
 		return nil, err
 	}
