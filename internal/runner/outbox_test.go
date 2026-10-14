@@ -594,6 +594,28 @@ func TestMakeContainedDirRejectsLexicalEscapes(t *testing.T) {
 	}
 }
 
+// #7242: a walked path that escapes the workspace used to be reported by
+// wrapping the nil filepath.Rel error with %w ("%!w(<nil>)").
+func TestOutboxRelPathRejectsEscapeWithOwnError(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	for _, p := range []string{parent, filepath.Join(parent, "sibling", "x.txt")} {
+		rel, err := outboxRelPath(root, p)
+		if err == nil {
+			t.Fatalf("outboxRelPath(%q) = %q, want escape error", p, rel)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "outside the workspace") || strings.Contains(msg, "%!") {
+			t.Fatalf("outboxRelPath(%q) err = %q, want a well-formed escape error", p, msg)
+		}
+	}
+	for _, name := range []string{"..a", filepath.Join("reports", "b.txt")} {
+		rel, err := outboxRelPath(root, filepath.Join(root, name))
+		if err != nil || rel != name {
+			t.Fatalf("outboxRelPath(%q) = %q, %v; want %q", name, rel, err, name)
+		}
+	}
+}
+
 func TestCollectOutboxFilesDedupesOverlappingEntries(t *testing.T) {
 	root := t.TempDir()
 	writeWorkspaceFile(t, root, "a.txt", "a")
