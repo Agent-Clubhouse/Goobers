@@ -395,6 +395,9 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if def.Spec.Backprop != nil && def.Spec.Backprop.Version != "v1" {
 		return nil, fmt.Errorf("invalid workflow %q: backprop.version must be %q", def.Name, "v1")
 	}
+	if err := validateBackpropMode(def.Spec.Backprop); err != nil {
+		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
+	}
 	if def.Spec.Backprop != nil {
 		switch def.Spec.Backprop.Granularity {
 		case "", apiv1.BackpropGranularityRun, apiv1.BackpropGranularityStage:

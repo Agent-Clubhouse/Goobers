@@ -377,6 +377,32 @@ func TestStageCheckpointsSkipAppendsThatFinishNoStage(t *testing.T) {
 		t.Fatalf("pass without a finished stage rewrote checkpoints: %v", err)
 	}
 }
+
+// TestShadowRunsWriteNoStageCheckpoints pins that stage granularity applies
+// only to active runs: a shadow run's checkpoint passes write nothing, and its
+// on-demand shadow analysis still covers the whole journal.
+func TestShadowRunsWriteNoStageCheckpoints(t *testing.T) {
+	run, runDir := recordTestRun(t, map[string]any{"mode": "shadow", "version": "v1", "granularity": "stage"})
+	defer func() { _ = run.Close() }()
+	stageScenario(t, run, func(string, int) {
+		result, err := WriteStageCheckpoints(runDir)
+		if err != nil || result.Written != 0 {
+			t.Fatalf("shadow checkpoint pass = %+v, %v; want nothing written", result, err)
+		}
+	})
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{StageRecordsFileName, RecordFileName} {
+		if _, err := os.Stat(filepath.Join(runDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("shadow run wrote %s: %v", name, err)
+		}
+	}
+	observation, observed, err := ObserveShadowRun(runDir, nil)
+	if err != nil || !observed || observation.Record.Status == RecordFailed || observation.Record.StageComposition != nil {
+		t.Fatalf("ObserveShadowRun = %+v, %v, %v; want an unfailed whole-journal shadow record", observation, observed, err)
+	}
+}
 func TestStageCheckpointPublicationIsAtomicWithTerminalization(t *testing.T) {
 	for _, tc := range []struct {
 		phase       string
