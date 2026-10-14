@@ -17,6 +17,7 @@ import { GaggleWorkflowExplorer } from "../components/GaggleWorkflowExplorer";
 import { DisclosureSection } from "../components/DisclosureSection";
 import { ScopePivot } from "../components/ScopePivot";
 import { providerName } from "../runDetailData";
+import { repositoryPath } from "../repositoryIdentity";
 import {
   incompleteRunPhasesMessage,
   useGaggleActivity,
@@ -121,7 +122,7 @@ function GaggleTopology({
         className="gaggle-detail-heading"
         description={
           <>
-            {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
+            {gaggle.name} · {repositoryPath(gaggle.project)}
           </>
         }
         fullWidth
@@ -244,7 +245,7 @@ function ConnectionTopology({
       </p>
       <ul>
         {connections.map((connection) => {
-          const identity = repositoryIdentity(connection);
+          const identity = repositoryPath(connection.repository);
           const access = formatAccessMode(connection);
           return (
             <li key={`${identity}/${connection.accessMode}`}>
@@ -426,11 +427,6 @@ function GoobersPanel({
       )}
     </section>
   );
-}
-
-function repositoryIdentity(connection: RepositoryConnection): string {
-  const { owner, project, name } = connection.repository;
-  return [owner, project, name].filter(Boolean).join("/");
 }
 
 function formatAccessMode(connection: RepositoryConnection): string {
