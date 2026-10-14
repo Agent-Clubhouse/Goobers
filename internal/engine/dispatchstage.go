@@ -279,12 +279,19 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 // outcome without spending a pod). Each is a stated, narrowing cut.
 //
 // CLOSED since: credential injection (#3722), journal/artifact emission
-// (#3723), and goobers-CLI/providerstage wiring (this change) — the pod
-// resolves its own credentials, emits its own journal, and receives the run
-// context a CLI stage reads. The CLI refusal that stood here is gone.
+// (#3723), goobers-CLI/providerstage wiring, agentic stages (#3751) and the
+// pod-side repo checkout — the pod resolves its own credentials, emits its
+// own journal, receives the run context a CLI stage reads, and provisions a
+// repo-backed or scratch workspace.
 //
-// STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
-// so a stage declaring a workspace other than scratch is still refused.
+// STILL OPEN, the refusals below, in order:
+//   - every task of a topology (b) run (CrossProviderBacklogPodCode), as a
+//     journaled stage outcome;
+//   - a deterministic task with no run, command or script, and one declaring
+//     a workspace mode that is neither scratch nor repo-backed;
+//   - a command that reads the instance config directory;
+//   - a command or built-in kind that needs the daemon's instance root
+//     (decision 003 ruling 3), as a journaled stage outcome.
 func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
 	// Topology (b) (a GitHub or Gitea backlog for Azure DevOps code,
 	// docs/design/ado-parity-dsl-2-0.md §7.2): every task of such a run, of

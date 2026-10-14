@@ -222,8 +222,12 @@ func formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdat
 		fmt.Fprintf(&b, "**local-ci:** `%s`\n", html.EscapeString(ci.status))
 		if ci.output != "" {
 			b.WriteString("\n<details>\n<summary>local-ci cases</summary>\n\n<pre>")
-			// In topology (b) a bare "#<n>" here would name ADO work item n;
-			// it is rewritten like the issue text (crossProviderIssueText).
+			// In topology (b) a bare "#<n>" here would name ADO work item n,
+			// so it is rewritten like the issue text (crossProviderIssueText).
+			// Escaping it instead is not a documented option: Azure DevOps's
+			// Markdown guidance offers only "\#", and says that avoids the
+			// editor's work-item suggestions, not server-side mention links;
+			// inside <pre> the backslash would also render literally.
 			b.WriteString(html.EscapeString(crossProviderIssueText(ci.output, issueID, issueRef)))
 			b.WriteString("</pre>\n\n</details>\n")
 		}

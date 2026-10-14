@@ -9,8 +9,10 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 func topologyBValidateGaggle(name string, backlog apiv1.Provider) apiv1.Gaggle {
@@ -42,6 +44,7 @@ func TestCrossProviderBacklogPlacementFinding(t *testing.T) {
 		task             apiv1.Task
 		selfRestrictions []string
 		selfExecution    string
+		podOS            instance.RunnerOS
 		want             validate.Severity
 	}{
 		{name: "topology (b) task resolves off self", backlog: apiv1.ProviderGitHub, task: offSelf, want: validate.Warning},
@@ -51,6 +54,15 @@ func TestCrossProviderBacklogPlacementFinding(t *testing.T) {
 			Name: "query-backlog", Type: apiv1.TaskDeterministic,
 			Run: &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
 		}},
+		// The common cluster inventory: a self entry with no declared OS
+		// next to a Linux pod. Self stays eligible, and the run-start pin
+		// (bootstrap.PinStagePlacements) places a topology (b) stage on self
+		// whenever it is, so validate stays silent.
+		{name: "Linux pod, self eligible", backlog: apiv1.ProviderGitHub, podOS: instance.RunnerOSLinux, task: apiv1.Task{
+			Name: "query-backlog", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
+		}},
+		{name: "Linux pod, self ineligible", backlog: apiv1.ProviderGitHub, podOS: instance.RunnerOSLinux, task: offSelf, want: validate.Warning},
 		{name: "same-provider gaggle", backlog: apiv1.ProviderADO, task: offSelf},
 		{name: "unsatisfiable task is RNR001's", backlog: apiv1.ProviderGitHub, task: apiv1.Task{
 			Name: "query-backlog", Type: apiv1.TaskDeterministic,
@@ -67,7 +79,8 @@ func TestCrossProviderBacklogPlacementFinding(t *testing.T) {
 			}
 			cfg := &instance.Config{Runners: []instance.RunnerEntry{
 				{Name: "self", Host: "self", Restrictions: selfRestrictions},
-				{Name: "pod", Host: "ghcr.io/example/pod:v1", Restrictions: instance.KnownRunnerRestrictions()},
+				{Name: "pod", Host: "ghcr.io/example/pod:v1", Restrictions: instance.KnownRunnerRestrictions(),
+					Provides: instance.RunnerProvides{OS: tc.podOS}},
 			}}
 			if tc.selfExecution != "" {
 				cfg.Placement = &instance.PlacementConfig{SelfExecution: tc.selfExecution}
@@ -91,6 +104,7 @@ func TestCrossProviderBacklogPlacementFinding(t *testing.T) {
 						got = append(got, finding{severity, path, message})
 					}
 				})
+			assertTopologyBPinAgreesWithRNR007(t, cfg, set, tc.backlog, tc.selfExecution, len(got) > 0)
 			if tc.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("RNR007 = %+v, want none", got)
@@ -182,5 +196,27 @@ func TestCrossProviderBacklogUnboundWarning(t *testing.T) {
 	}
 	if slices.Contains(strictNeutralWarningCodes, validate.WarningCrossProviderBacklogUnbound) {
 		t.Fatal("CFG015 must not be strict-neutral: the stage cannot run as configured")
+	}
+}
+
+// assertTopologyBPinAgreesWithRNR007 checks RNR007 against the run-start pin:
+// bootstrap.PinStagePlacements pins a placeable topology (b) stage off self,
+// where the engine refuses it a pod, exactly when RNR007 warns.
+func assertTopologyBPinAgreesWithRNR007(t *testing.T, cfg *instance.Config, set *instance.ConfigSet, backlog apiv1.Provider, selfExecution string, warned bool) {
+	t.Helper()
+	if backlog == apiv1.ProviderADO || selfExecution != "" {
+		return
+	}
+	wf := set.Workflows[0]
+	pins, err := bootstrap.PinStagePlacements(cfg, set, wf.Spec.Gaggle, workflow.Definition{
+		Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+	})
+	if err != nil {
+		return // unsatisfiable: RNR001's case, refused at run start
+	}
+	for _, pin := range pins {
+		if pin.Self == warned {
+			t.Fatalf("pin %+v disagrees with RNR007 (warned=%t): a topology (b) stage pinned off self is refused at dispatch", pin, warned)
+		}
 	}
 }

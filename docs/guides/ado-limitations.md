@@ -127,10 +127,11 @@ Not yet covered in topology (b):
   or 0.6 lines. A stage pod has no instance config, so it cannot route
   backlog work and credentials by role. The engine refuses every stage of a
   topology (b) run before a pod is created (failure code
-  `cross_provider_backlog_pod_unsupported`). `validate` warns (RNR007) about
-  each stage whose eligible runners exclude the daemon's own host, and fails
-  on it under `placement.selfExecution: deny`. Place the gaggle's stages on a
-  self runner.
+  `cross_provider_backlog_pod_unsupported`). A stage that a self runner can
+  run is placed there, even where a Linux pod is also eligible. `validate`
+  warns (RNR007) about each stage whose eligible runners exclude the daemon's
+  own host, and fails on it under `placement.selfExecution: deny`. Place the
+  gaggle's stages on a self runner.
 - The daemon's terminal claim-marker release for a Gitea backlog. As on a
   plain Gitea gaggle, backlog curation reconciles the marker instead.
 - A stage that is not routed by role and opens the Azure DevOps repository

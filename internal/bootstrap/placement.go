@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -91,6 +92,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 			break
 		}
 	}
+	roleRouted := providerconfig.CrossProviderBacklog(gaggleSpec.Project.Provider, gaggleSpec.Backlog.Provider)
 	goobers := make(map[string]apiv1.GooberSpec, len(set.Goobers))
 	for i := range set.Goobers {
 		goobers[set.Goobers[i].Name] = set.Goobers[i].Spec
@@ -168,9 +170,9 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		// dispatch time (Linux-preferring, Windows excluded for
 		// ledger-touching stages), so the queue pinned here and the runner
 		// resolved there cannot disagree.
-		selected, serr := dispatcher.SelectRunner(dispatcher.Attempt{
+		selected, serr := selectPinnedRunner(dispatcher.Attempt{
 			RunID: def.Name, Stage: stage.Stage, Number: 1, LedgerTouching: ledger,
-		}, eligible)
+		}, eligible, roleRouted)
 		if serr != nil {
 			return nil, fmt.Errorf("workflow %q: %w", def.Name, serr)
 		}
@@ -194,6 +196,29 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		placements = append(placements, pin)
 	}
 	return placements, nil
+}
+
+// selectPinnedRunner is dispatcher.SelectRunner, except for a stage of a
+// topology (b) gaggle (roleRouted: a GitHub or Gitea backlog for Azure DevOps
+// code, providerconfig.CrossProviderBacklog). The engine refuses every stage
+// of such a run a pod (engine.CrossProviderBacklogPodCode), so when a self
+// runner is eligible the stage is pinned there, even where SelectRunner's
+// Linux preference would pick a pod over a self entry that declares no OS.
+// That makes "no self runner is eligible" the exact condition under which the
+// stage is refused, which is what `goobers validate` warns about (RNR007).
+func selectPinnedRunner(attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec, roleRouted bool) (dispatcher.RunnerSpec, error) {
+	if roleRouted {
+		var self []dispatcher.RunnerSpec
+		for _, r := range eligible {
+			if r.HostKind == instance.RunnerHostSelf {
+				self = append(self, r)
+			}
+		}
+		if selected, err := dispatcher.SelectRunner(attempt, self); err == nil {
+			return selected, nil
+		}
+	}
+	return dispatcher.SelectRunner(attempt, eligible)
 }
 
 func selfDeniedInstanceRootTask(cfg *instance.Config, task apiv1.Task) bool {
