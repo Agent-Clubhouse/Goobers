@@ -193,3 +193,27 @@ func TestEnqueueLanderPropagatesError(t *testing.T) {
 		t.Fatalf("Land error = %v, want %v", err, wantErr)
 	}
 }
+
+// TestLandersForwardDeleteSourceBranch pins ADO-N25's branch cleanup through
+// both landers: ADO deletes the source branch as part of completing (directly,
+// or later via auto-complete), so a lander that drops DeleteSourceBranch
+// silently leaves every landed run branch behind.
+func TestLandersForwardDeleteSourceBranch(t *testing.T) {
+	req := Request{Repository: providers.RepositoryRef{Owner: "acme", Name: "widgets"}, PullID: "7", DeleteSourceBranch: true}
+
+	direct := &fakeRepoProvider{mergeResult: providers.MergePullRequestResult{Merged: true, MergeSHA: "abc"}}
+	if _, err := (directLander{}).Land(context.Background(), providers.NewDispatcher(direct), req); err != nil {
+		t.Fatalf("direct Land: %v", err)
+	}
+	if len(direct.mergeCalls) != 1 || !direct.mergeCalls[0].DeleteSourceBranch {
+		t.Fatalf("direct MergePullRequest calls = %+v, want one with DeleteSourceBranch=true", direct.mergeCalls)
+	}
+
+	enqueue := &fakeRepoProvider{}
+	if _, err := (enqueueLander{}).Land(context.Background(), providers.NewDispatcher(enqueue), req); err != nil {
+		t.Fatalf("enqueue Land: %v", err)
+	}
+	if len(enqueue.enqueueCalls) != 1 || !enqueue.enqueueCalls[0].DeleteSourceBranch {
+		t.Fatalf("EnqueuePullRequest calls = %+v, want one with DeleteSourceBranch=true", enqueue.enqueueCalls)
+	}
+}
