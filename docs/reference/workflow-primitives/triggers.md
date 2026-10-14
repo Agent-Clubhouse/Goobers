@@ -64,6 +64,29 @@ triggers:
       ceiling: "30m"
 ```
 
+### Missed schedule occurrences
+
+`spec.scheduleCatchUp` applies to all schedules in the workflow:
+
+| Value | Behavior |
+| --- | --- |
+| Omitted or `coalesce` | One catch-up firing from occurrences in the preceding hour. |
+| `all` | Retain each nominal occurrence, discovering at most 100 per sweep. |
+
+```yaml
+spec:
+  scheduleCatchUp: all
+  triggers:
+    - type: schedule
+      schedule: "@every 30m"
+```
+
+`all` supports 1–1,000 authored schedule declarations and keeps interval phases
+and simultaneous occurrences across restarts. Admission limits still apply;
+paused or backed-off work stays queued. Policy edits affect future discovery,
+while accepted work keeps its captured definition. Execution order is not
+promised. See [durable scheduled starts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md).
+
 ## `backlog-item`
 
 Starts from provider backlog eligibility. This trigger does not claim an item;

@@ -10,7 +10,7 @@ import (
 
 // ScheduleCursor reads the durable workflow cursor, seeded once from old history.
 func (s *Sources) ScheduleCursor(ctx context.Context, entry localscheduler.WorkflowEntry, initial time.Time, legacy bool, observed time.Time) (time.Time, bool, error) {
-	revision, err := localscheduler.ScheduleRevision(entry.Schedules)
+	revision, err := entryScheduleRevision(entry)
 	if err != nil {
 		return time.Time{}, false, err
 	}
@@ -20,7 +20,7 @@ func (s *Sources) ScheduleCursor(ctx context.Context, entry localscheduler.Workf
 // AcceptSchedule atomically captures a coalesced firing and advances its cursor.
 // An adaptive-backoff skip records an empty batch with the same cursor boundary.
 func (s *Sources) AcceptSchedule(ctx context.Context, entry localscheduler.WorkflowEntry, before, after time.Time, fire bool) error {
-	revision, err := localscheduler.ScheduleRevision(entry.Schedules)
+	revision, err := entryScheduleRevision(entry)
 	if err != nil {
 		return err
 	}
