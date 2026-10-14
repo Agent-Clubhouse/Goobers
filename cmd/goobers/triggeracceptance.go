@@ -189,17 +189,17 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 		return pruneErr
 	}
 	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
-	records, err := s.queue.Pending(ctx, 100)
+	records, err := s.queue.PendingSweep(ctx, 100)
 	if err != nil {
 		return errors.Join(reconcileErr, err)
 	}
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := s.drainOne(ctx, record); err != nil {
 			return errors.Join(reconcileErr, err)
 		}
+		// One malformed or temporarily unavailable owner must not pin the
+		// rest of this inspection window. Its custody remains unchanged.
+		reconcileErr = errors.Join(reconcileErr, s.drainOne(ctx, record))
 	}
 	return reconcileErr
 }
@@ -256,7 +256,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 		var rejected *localscheduler.TriggerRejectedError
 		if errors.As(err, &rejected) {
 			reason = rejected.Reason
-			if rejected.Transient() {
+			if rejected.WaitableForQueue() {
 				return s.queue.Requeue(ctx, record.ID, reason)
 			}
 		}
