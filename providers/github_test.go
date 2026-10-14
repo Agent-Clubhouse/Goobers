@@ -2086,6 +2086,57 @@ func TestGitHubProviderRefCheckStatesUsesOneGraphQLRequest(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderRefCheckStatesKeepsRollupWhenReReadFails pins that the
+// #6817 re-read is best-effort: a ref whose checks cannot be re-read keeps
+// the rollup's failing verdict, as before, and does not fail the other refs.
+func TestGitHubProviderRefCheckStatesKeepsRollupWhenReReadFails(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"data": map[string]interface{}{"repository": map[string]interface{}{
+			"r0": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "FAILURE"}},
+			"r1": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "SUCCESS"}},
+		}}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/unreadable/status", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	states, err := provider.RefCheckStates(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, []string{"unreadable", "green"})
+	if err != nil {
+		t.Fatalf("RefCheckStates: %v, want the batch to survive one failed re-read", err)
+	}
+	if states["unreadable"] != CheckStateFailing || states["green"] != CheckStatePassing {
+		t.Fatalf("states = %v, want unreadable kept failing and green passing", states)
+	}
+}
+
+// TestOnlyNoVerdictPending pins the classification ci-poll and merge-pr
+// share (#6817): pending only because finished checks gave no verdict.
+func TestOnlyNoVerdictPending(t *testing.T) {
+	noVerdict := CheckDetail{Name: "build", State: CheckStatePending, NoVerdict: true}
+	running := CheckDetail{Name: "test", State: CheckStatePending}
+	pass := CheckDetail{Name: "lint", State: CheckStatePassing}
+	human := CheckDetail{Name: "reviewers", State: CheckStatePending, AwaitingHuman: true}
+	fail := CheckDetail{Name: "vet", State: CheckStateFailing}
+	for name, tc := range map[string]struct {
+		checks []CheckDetail
+		want   bool
+	}{
+		"no-verdict beside passes":        {[]CheckDetail{noVerdict, pass}, true},
+		"no-verdict beside a human wait":  {[]CheckDetail{noVerdict, human}, true},
+		"no-verdict beside a running one": {[]CheckDetail{noVerdict, running}, false},
+		"no-verdict beside a failure":     {[]CheckDetail{noVerdict, fail}, false},
+		"only passes":                     {[]CheckDetail{pass}, false},
+		"no checks":                       {nil, false},
+	} {
+		if got := OnlyNoVerdictPending(tc.checks); got != tc.want {
+			t.Errorf("%s: OnlyNoVerdictPending = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 // TestGitHubProviderRefCheckStatesOutageRollupIsPending covers #6817 on the
 // path pr-remediation selects candidates by: GitHub's rollup reports FAILURE
 // for a commit whose every check run was cancelled before it ran, and that

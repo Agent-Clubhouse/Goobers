@@ -225,6 +225,7 @@ func (p *ADOProvider) adoPolicyCheckDetail(ev adoPolicyEvaluation, kind adoPolic
 	case adoPolicyCI:
 		detail.URL = p.buildResultsURL(projectName, ev.Context.BuildID.String())
 		if ev.buildCanceled {
+			detail.NoVerdict = true
 			detail.Summary = "build canceled before a verdict; waiting for a rerun"
 		}
 	case adoPolicyReviewer:

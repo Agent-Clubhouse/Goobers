@@ -176,6 +176,43 @@ func TestRecordMergeRefusalSkipsPendingRequiredChecks(t *testing.T) {
 	}
 }
 
+// TestRecordMergeRefusalNoVerdictCI covers #6817: a refusal whose only reason
+// is CI that finished without a verdict (an outage cancelled it) is not a
+// stuck PR and must never demote it, since a demotion survives the rerun that
+// turns CI green. The same reason beside another refusal still counts.
+func TestRecordMergeRefusalNoVerdictCI(t *testing.T) {
+	noVerdict := ciNoVerdictReason + ": CI finished without a verdict (cancelled, never started or stale: build, test), waiting for CI to be rerun"
+	for name, tc := range map[string]struct {
+		reason     string
+		wantDemote bool
+	}{
+		"only no-verdict CI":         {reason: noVerdict},
+		"no-verdict CI and a draft":  {reason: noVerdict + "; pull request is a draft", wantDemote: true},
+		"another reason comes first": {reason: `verdict is "needs-changes", want pass; ` + noVerdict, wantDemote: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addOpenPR(84, "goobers/implementation/outage", "main", "sha-outage", "base1", false, nil, nil)
+			server.addIssue(84, "outage")
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+			t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "84")
+			t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-outage")
+			t.Setenv("GOOBERS_INPUT_REASON", tc.reason)
+			t.Setenv("GOOBERS_INPUT_DEMOTIONTHRESHOLD", "1")
+			t.Chdir(t.TempDir())
+
+			code, _, stderr := runArgs(t, "record-merge-refusal", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if demoted := issueHasLabel(server, 84, mergeDemotedLabel); demoted != tc.wantDemote {
+				t.Fatalf("demoted = %v, want %v", demoted, tc.wantDemote)
+			}
+		})
+	}
+}
+
 // TestRecordMergeRefusalResetsOnHeadAdvance proves a refusal at a NEW head resets
 // the counter — a PR whose head advanced (a remediation push) is a genuinely
 // fresh attempt, not a continuation of the stuck run.

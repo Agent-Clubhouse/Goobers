@@ -43,6 +43,11 @@ const (
 	// branch and recorded against the unchanged pull request head.
 	mergeConflictReason         = "merge-conflict"
 	requiredStatusPendingReason = "required-status-check-pending"
+	// ciNoVerdictReason (#6817) prefixes a refusal whose only CI blocker is
+	// checks that finished without a verdict (cancelled, never started,
+	// stale). Nothing is running and nothing in the code is proven wrong, so
+	// record-merge-refusal does not count it toward demotion.
+	ciNoVerdictReason = "ci-no-verdict"
 	// preMergeCheckFailedReason (#7132) prefixes a refusal whose configured
 	// preMergeCheck failed on the head merged onto the current base tip: the
 	// PR was green against a stale base and no longer builds against main.
@@ -515,6 +520,19 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 	return 0
 }
 
+// ciNotReadyReason says why CI blocks the merge. When the only blocker is
+// checks that finished without a verdict (#6817) it says so under
+// ciNoVerdictReason rather than calling CI pending, which reads as still
+// running. The text holds no "; ", the separator merge-pr joins reasons
+// with, so record-merge-refusal can tell a refusal that has no other reason.
+func ciNotReadyReason(poll providers.PullRequestPollResult) string {
+	if poll.CheckState == providers.CheckStatePending && providers.OnlyNoVerdictPending(poll.Checks) {
+		names := strings.ReplaceAll(strings.Join(providers.NoVerdictCheckNames(poll.Checks), ", "), ";", ",")
+		return fmt.Sprintf("%s: CI finished without a verdict (cancelled, never started or stale: %s), waiting for CI to be rerun", ciNoVerdictReason, names)
+	}
+	return fmt.Sprintf("CI is %q, want passing", poll.CheckState)
+}
+
 // liveConjunctReasons re-checks the merge conjuncts that depend only on the
 // locked, live poll: verdict, CI, draft and the SHA-pin.
 func liveConjunctReasons(ctx context.Context, dispatcher *providers.Dispatcher, repo providers.RepositoryRef, pullNumber, verdict, expectedHeadSHA, expectedBaseSHA string, poll providers.PullRequestPollResult) []string {
@@ -523,7 +541,7 @@ func liveConjunctReasons(ctx context.Context, dispatcher *providers.Dispatcher, 
 		reasons = append(reasons, fmt.Sprintf("verdict is %q, want pass", verdict))
 	}
 	if !ciReadyForMerge(poll) {
-		reasons = append(reasons, fmt.Sprintf("CI is %q, want passing", poll.CheckState))
+		reasons = append(reasons, ciNotReadyReason(poll))
 	}
 	if poll.Draft {
 		reasons = append(reasons, "pull request is a draft")

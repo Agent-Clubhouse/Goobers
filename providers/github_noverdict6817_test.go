@@ -72,7 +72,7 @@ func TestGitHubProviderOutageIsNotFailingCI(t *testing.T) {
 		t.Fatalf("poll CheckState = %q, want pending: never failing (no remediation), never passing (no merge)", poll.CheckState)
 	}
 	for _, check := range poll.Checks {
-		if check.State != CheckStatePending || check.Conclusion != "cancelled" {
+		if check.State != CheckStatePending || check.Conclusion != "cancelled" || !check.NoVerdict {
 			t.Fatalf("check %+v, want pending with its cancelled conclusion kept for diagnosis", check)
 		}
 	}

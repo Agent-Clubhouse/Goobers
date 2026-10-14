@@ -1126,12 +1126,11 @@ func (p *GitHubProvider) RefCheckState(ctx context.Context, repo RepositoryRef, 
 // GraphQL request.
 //
 // GitHub's rollup counts a cancelled, never-started or stale check run as a
-// FAILURE and cannot say which runs it counted. A failing rollup is therefore
-// re-read per ref through RefCheckState, which classifies each run as
-// checkDetails does: a run that ended without a verdict reads as pending
-// (#6817), and a cancelled run superseded by a newer one is dropped (#6360).
-// Only failing refs pay for that read, so a list whose CI is green or still
-// running stays one request.
+// FAILURE and cannot say which runs it counted, so a failing rollup is
+// re-read per ref (failingRollupState). Only failing refs pay for that read:
+// a list whose CI is green or still running stays one request, and during an
+// outage, when every ref is failing, the cost is one combined-status and one
+// check-runs read per ref.
 func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef, refs []string) (map[string]CheckState, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return nil, err
@@ -1177,9 +1176,9 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		case "SUCCESS":
 			states[ref] = CheckStatePassing
 		case "FAILURE", "ERROR":
-			state, err := p.RefCheckState(ctx, repo, ref)
+			state, err := p.failingRollupState(ctx, repo, ref)
 			if err != nil {
-				return nil, fmt.Errorf("resolve failing check rollup for %s: %w", ref, err)
+				return nil, err
 			}
 			states[ref] = state
 		default:
@@ -1187,6 +1186,28 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		}
 	}
 	return states, nil
+}
+
+// failingRollupState re-reads a ref whose GitHub rollup is FAILURE or ERROR
+// through RefCheckState, which classifies each run as checkDetails does: a
+// run that ended without a verdict reads as pending (#6817), and a cancelled
+// run superseded by a newer one is dropped (#6360).
+//
+// The re-read is best-effort, like the Azure DevOps build read
+// (markCanceledBuilds): when it fails, say for a credential that can read
+// the rollup but neither check-runs nor actions/runs, the ref keeps the
+// rollup's failing verdict, as before #6817, rather than failing the read
+// of every other ref in the batch. A failing verdict is never merged. Only
+// the caller's context ending is returned.
+func (p *GitHubProvider) failingRollupState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, error) {
+	state, err := p.RefCheckState(ctx, repo, ref)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err != nil {
+		return CheckStateFailing, nil
+	}
+	return state, nil
 }
 
 type resolvedCheckDetail struct {
@@ -1325,6 +1346,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 			}
 			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
 				Name: run.Name, State: state, Conclusion: run.Conclusion, URL: run.HTMLURL,
+				NoVerdict: state == CheckStatePending && githubRunEndedWithoutVerdict(run.Status, run.Conclusion),
 			}})
 		}
 		return details, nil
@@ -1335,6 +1357,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 			CheckDetail: CheckDetail{
 				Name: run.Name, State: state, Conclusion: run.Conclusion,
 				URL: run.HTMLURL, Summary: run.Output.Summary,
+				NoVerdict: githubRunEndedWithoutVerdict(run.Status, run.Conclusion),
 			},
 			checkRunID: run.ID,
 		})
@@ -1489,8 +1512,9 @@ func (p *GitHubProvider) actionsRunHasJob(ctx context.Context, repo RepositoryRe
 // for it. Any run that ended without a verdict (githubNoVerdictConclusion:
 // cancelled, startup_failure, stale) counts as cancelled here: it reads as
 // pending (#6817), and a newer run of the same check is the rerun it waits
-// for, so keeping it would hold the PR pending after CI has spoken. supersedes is consulted lazily, at most once per run, and only for
-// runs newer than a cancelled run of their group. Order is preserved.
+// for, so keeping it would hold the PR pending after CI has spoken.
+// supersedes is consulted lazily, at most once per run, and only for runs
+// newer than a cancelled run of their group. Order is preserved.
 func withoutSupersededCancelled[R any, K comparable](runs []R, describe func(R) (key K, id int64, conclusion string), supersedes func(R) (bool, error)) ([]R, error) {
 	verdicts := make(map[int]bool, len(runs))
 	canSupersede := func(i int) (bool, error) {
@@ -1788,6 +1812,14 @@ func normalizeCheckRunState(status, conclusion string) CheckState {
 // instead of driving remediation, which costs a person's look but never a
 // merge. The actions/runs fallback, where one run stands for a whole workflow
 // and its jobs are already readable, does look (actionsRunFailedJob).
+//
+// startup_failure is a trade-off too. GitHub also reports it for a workflow
+// definition error (an invalid workflow file, an unresolvable reusable
+// workflow or action, a disallowed permission), which a pull request that
+// edits .github/workflows can cause. Such a PR now waits for a person
+// instead of driving remediation; ci-poll reports it as no verdict and no
+// merge gate accepts it. On the actions/runs fallback a startup-failed run
+// has no jobs, so actionsRunFailedJob cannot turn it back into a failure.
 func githubNoVerdictConclusion(conclusion string) bool {
 	switch strings.ToLower(conclusion) {
 	case "cancelled", "startup_failure", "stale":

@@ -990,7 +990,7 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 			// it must never merge either: it reads as pending.
 			name:    "outage-cancelled CI",
 			mutate:  func(st *mergePRServerState, inputs map[string]string) { st.checkState = "cancelled" },
-			wantSub: `CI is "pending"`,
+			wantSub: ciNoVerdictReason + ": CI finished without a verdict (cancelled, never started or stale: make-ci)",
 		},
 		{
 			name:    "draft PR",

@@ -55,7 +55,7 @@ func failing(name, conclusion string) CheckDetail {
 // noVerdict is a run that ended without judging the code (#6817): it reads as
 // pending, never as failing.
 func noVerdict(name, conclusion string) CheckDetail {
-	return CheckDetail{Name: name, State: CheckStatePending, Conclusion: conclusion}
+	return CheckDetail{Name: name, State: CheckStatePending, Conclusion: conclusion, NoVerdict: true}
 }
 
 // TestGitHubProviderCheckDetailsDropsSupersededCancelledRun covers #6360: a

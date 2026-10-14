@@ -47,7 +47,7 @@ func TestADOCanceledBuildIsNotFailingCI(t *testing.T) {
 		t.Fatalf("CheckState = %q, want pending for a canceled build", poll.CheckState)
 	}
 	check := checkNamed(t, poll.Checks, "Build")
-	if check.State != CheckStatePending || check.Summary != "build canceled before a verdict; waiting for a rerun" {
+	if check.State != CheckStatePending || !check.NoVerdict || check.Summary != "build canceled before a verdict; waiting for a rerun" {
 		t.Fatalf("check = %+v, want pending and saying the build was canceled", check)
 	}
 

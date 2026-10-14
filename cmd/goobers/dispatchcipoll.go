@@ -237,6 +237,9 @@ func podCIPollFailure(runCtx, parent context.Context, err error, scrub func(stri
 			Retryable: providers.IsTransientError(err) || executor.IsCIPollInfrastructureError(err),
 		},
 	}
+	if code == executor.CIPollNoVerdictCode {
+		envelope.Summary = "ci-poll: CI finished without a verdict (#6817)"
+	}
 	if code == providers.ErrorCodeRateLimited {
 		envelope.Summary = "ci-poll was rejected by the provider's rate limit"
 		// THE HALF OF THE IN-PROCESS QUOTA OBSERVER A POD CAN STILL DELIVER.
