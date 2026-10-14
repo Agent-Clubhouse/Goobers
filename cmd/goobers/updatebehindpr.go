@@ -31,7 +31,12 @@ const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
 	"PR whose failing checks all failed on its base branch too, at its\n" +
 	"merge-base or at a base commit since, is red because its base was, so\n" +
 	"it is updated the same way. Other candidates are routed to full\n" +
-	"remediation. A run dispatched for one\n" +
+	"remediation, including a PR carrying goobers:needs-remediation that has\n" +
+	"human feedback no Goobers response has answered: this lane clears that\n" +
+	"label, and the feedback needs the agentic path. Comments are classified\n" +
+	"as pr-comment-watch classifies them, under the same identityMode\n" +
+	"(dedicated or shared; default dedicated) and excludeAuthors inputs; set\n" +
+	"them to pr-comment-watch's values. A run dispatched for one\n" +
 	"pull request (goobers run --pr, or a pull_request webhook delivery)\n" +
 	"selects that PR and no other; when the target is not selectable the\n" +
 	"stage reports no-work naming the reason instead of falling back to\n" +
@@ -71,6 +76,11 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	// pr.compare needed on ADO for this stage).
 	if repo.Provider == providers.ProviderADO {
 		return writeUpdateBehindNotApplicable(stdout, stderr, repo.Provider)
+	}
+	identity, err := readCommentIdentitySettings(repo.Provider)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
@@ -164,7 +174,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	}
 	candidate := *claimed
 	minSeverity := resolveMinSeverity(stderr)
-	action, err := updateBehindActionForPR(ctx, root, provider, repo, candidate, baseTips, behindByPR, minSeverity)
+	action, err := updateBehindActionForPR(ctx, root, provider, repo, candidate, baseTips, behindByPR, minSeverity, identity)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check PR #%d for API branch update", candidate.Number), err, "update-behind-result.json")
 	}
@@ -199,7 +209,26 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func updateBehindActionForPR(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
+// updateBehindNeedsAgent reports whether pr carries something only the
+// agentic path can answer: a substantive finding, or — on a PR carrying
+// needs-remediation — a human comment no Goobers response has answered, by the
+// rule pr-comment-watch routes on (#6494). The API-only lane clears that
+// label, and clearing it over unanswered feedback drops what pr-comment-watch
+// routed the PR for; the full path applies the declared remediate policy to it
+// instead. Comments are classified exactly as pr-comment-watch and rebase-pr
+// classify them, under the same identityMode and excludeAuthors inputs.
+func updateBehindNeedsAgent(root string, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment, login string, minSeverity apiv1.Severity, identity commentIdentitySettings) bool {
+	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(root, repo, pr.Number, comments, login), pr.Number, minSeverity) {
+		return true
+	}
+	if !hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+		return false
+	}
+	_, unanswered, _ := latestUnaddressedHumanComment(comments, newCommentClassifier(loginCommentIdentity(login), identity))
+	return unanswered
+}
+
+func updateBehindActionForPR(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity, identity commentIdentitySettings) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
 		inherited, err := failingChecksInheritedFromBase(ctx, provider, repo, pr, baseTips)
 		if err != nil || !inherited {
@@ -233,7 +262,7 @@ func updateBehindActionForPR(ctx context.Context, root string, provider remediat
 	if err != nil {
 		return updateBehindRouteFull, err
 	}
-	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(root, repo, pr.Number, comments, verdictAuthor), pr.Number, minSeverity) {
+	if updateBehindNeedsAgent(root, repo, pr, comments, verdictAuthor, minSeverity, identity) {
 		return updateBehindRouteFull, nil
 	}
 	if behind {

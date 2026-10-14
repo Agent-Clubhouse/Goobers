@@ -1238,6 +1238,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleProviderTopology(r)
 	// GitHub Enterprise Server is unsupported: a github ref takes no baseUrl (#6347).
 	ix.checkGaggleGitHubBaseURL(r)
+	// Comment-classifying stages must agree on who is human (#6494).
+	ix.checkCommentIdentityAgreement(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
