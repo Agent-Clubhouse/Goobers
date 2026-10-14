@@ -325,6 +325,28 @@ const (
 	// the host spending suspended (#5891). Its Runner payload carries
 	// suspendedFrom and suspendedTo as RFC 3339 timestamps.
 	RunnerAnnotationHostSuspended = "host.suspended"
+	// RunnerAnnotationBlockerCleared is the instance-journal record that a
+	// condition a run blocker reports was observed healthy again (#5404). Its
+	// Runner payload carries "code", the ErrorDetail code it clears;
+	// "observedAt" (RFC 3339), when the successful observation STARTED —
+	// a record without it clears nothing; and "scope": "instance" for a
+	// condition of the shared instance, or "run" for one of the run named by
+	// RunID only. A run error with that code (and, for "run", that run)
+	// recorded before observedAt is no longer a current blocker. Readers
+	// honour it only for codes they register as clearable this way
+	// (readservice's blocker clear-path registry), so the record cannot
+	// retract an arbitrary run failure.
+	RunnerAnnotationBlockerCleared = "blocker.cleared"
+	// ErrorCodeRecoveryObservationFailed is the run error recorded when a
+	// workspace cleanup succeeded but the shared recovery inventory could not
+	// be read afterwards to observe the state it retained.
+	ErrorCodeRecoveryObservationFailed = "recovery_observation_failed"
+	// ErrorCodeRecoveryObservationRunFailed is the run error recorded when a
+	// workspace cleanup succeeded and the inventory was readable, but the
+	// run's own retained state could not be observed or journaled: its own
+	// records, the observation-count and ownership checks, or the append into
+	// its journal.
+	ErrorCodeRecoveryObservationRunFailed = "recovery_observation_run_failed"
 	// RecoveryActionResumed records continuation of an interrupted stage.
 	RecoveryActionResumed = "resumed"
 	// RecoveryActionRetried records a new attempt after interruption.

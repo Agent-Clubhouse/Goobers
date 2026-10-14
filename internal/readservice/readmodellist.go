@@ -209,18 +209,7 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 			LegacyFailAmbiguous: facts.ReviewVerdict == "fail" && facts.ReviewReasonCode == "",
 		}
 	}
-	if facts.ReviewProblem != "" {
-		operator.PotentialBlockers = append(operator.PotentialBlockers, facts.ReviewProblem)
-	}
-	if operator.LatestError != nil {
-		operator.PotentialBlockers = append(operator.PotentialBlockers,
-			operator.LatestError.Code+": "+operator.LatestError.Message)
-	}
-	if operator.Review != nil && operator.Review.Verdict != "" &&
-		operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
-		operator.PotentialBlockers = append(operator.PotentialBlockers,
-			"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
-	}
+	operator.addRecordedBlockers(facts.ReviewProblem, facts.ReviewAt, facts.LatestErrorAt, observedAt)
 	return operator
 }
 

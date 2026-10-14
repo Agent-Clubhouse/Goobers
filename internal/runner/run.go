@@ -459,6 +459,13 @@ type Config struct {
 	// The returned integer is the effective inventory capacity used for the
 	// scan, and bounds the observation set without imposing a second policy.
 	RecoveryEvents func(context.Context, string) ([]journal.Event, int, error)
+	// RecoveryObserved receives the outcome of every post-cleanup recovery
+	// observation RecoveryEvents was asked for: nil when the retained state
+	// was observed and journaled, the observation failure otherwise, with the
+	// time the observation started. It is how a later success retracts an
+	// earlier recovery observation blocker (#5404); it must not block and
+	// must not fail the stage.
+	RecoveryObserved func(runID string, observedAt time.Time, err error)
 	// InstanceID is pinned into each new run, never inferred during replay.
 	InstanceID string
 	// NewDeterministic constructs this run's deterministic-task executor

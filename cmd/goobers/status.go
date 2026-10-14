@@ -1796,8 +1796,8 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		if r.Operator.Reliability != nil {
 			pf(stdout, "  reliability: %s\n", r.Operator.Reliability.StatusLine())
 		}
-		if len(r.Operator.PotentialBlockers) > 0 {
-			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
+		if blockers := r.Operator.BlockerLine(now); blockers != "" {
+			pf(stdout, "  blockers: %s\n", blockers)
 		}
 		// Explicitly disclaimed and rendered after blockers: this line is about
 		// what THIS status invocation could not check, not about the run (#3346).

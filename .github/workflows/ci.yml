@@ -2113,7 +2113,9 @@ jobs:
         # Immutable generations also require native archive, shared-lease,
         # retention and relative-path execution coverage (#5382).
         # The rollback runner must also open native drive-letter SQLite paths.
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./internal/safeio ./test/diagnosticsrollback
+        # Blocker clears are written to the instance journal that the read
+        # service folds, so the writer runs beside its reader (#5404).
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/blockerclear ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./internal/safeio ./test/diagnosticsrollback
 
       - name: Windows worktree and event stream
         env:
