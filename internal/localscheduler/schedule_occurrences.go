@@ -16,6 +16,9 @@ type OccurrenceSourceQueue interface {
 
 func (s *Scheduler) queueAllOccurrences(ctx context.Context, candidate *tickCandidate, now time.Time) (bool, bool) {
 	entry := candidate.entry
+	if len(entry.Schedules) == 0 {
+		return true, false
+	}
 	queue, ok := s.sourceQueue.(OccurrenceSourceQueue)
 	if !ok {
 		s.sourceQueueError(entry, errors.New("localscheduler: occurrence queue unavailable"))

@@ -950,6 +950,12 @@ type WorkflowSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="!self.exists(t, t.type == 'manual') || size(self) == 1",message="type=manual must be the only trigger"
 	Triggers []Trigger `json:"triggers" yaml:"triggers"`
+	// ScheduleCatchUp selects missed schedule handling. Omitted or coalesce
+	// captures one firing for the preceding hour. All retains every nominal
+	// occurrence, discovering at most 100 per sweep; admission still applies.
+	// +kubebuilder:validation:Enum=coalesce;all
+	// +optional
+	ScheduleCatchUp string `json:"scheduleCatchUp,omitempty" yaml:"scheduleCatchUp,omitempty"`
 	// Readiness bounds when a run may start (WF-011).
 	// +optional
 	Readiness ReadinessConditions `json:"readiness,omitempty" yaml:"readiness,omitempty"`

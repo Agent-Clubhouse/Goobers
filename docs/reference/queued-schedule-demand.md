@@ -9,7 +9,7 @@ available. Counts size workers, not item assignments or claims.
 ## Recovery and admission
 
 The fire, its configuration pins and schedule cursor are committed together.
-New discovery coalesces occurrences from the preceding hour and records that
+By default, new discovery coalesces occurrences from the preceding hour and records that
 window and occurrence count. Expired discoveries do not query the provider.
 This window never expires an already accepted or partially transferred obligation.
 An interrupted or failed observation leaves an unsized obligation for a later
@@ -17,7 +17,7 @@ poll. Once observed, restart and configuration reload preserve the original
 count without another provider read. A no-work observation closes the fire.
 Existing timeout fallback behavior can seal one worker.
 
-Later due firings coalesce into an outstanding obligation without replacing its
+With the default policy, later due firings coalesce into an outstanding obligation without replacing its
 configuration or count. Workers transfer in batches of at most 32, bounded by
 current workflow capacity and existing queued occupancy. The ledger checks both
 the ordinal interval and occupancy in the acceptance transaction. Concurrent
@@ -78,15 +78,9 @@ changing pins, scope, revision, cursor boundary or capture mode conflicts.
 Completed occurrences cannot be recreated behind the advanced cursor. Older
 binaries refuse the newer queue schema rather than silently dropping custody.
 
-This is internal storage support. The workflow authoring option for all missed
-occurrences is not enabled yet. Its ordered occurrence cursor, bounded
-100-occurrence discovery, schedule revision/config propagation and complete
-scheduler restart integration remain required before that option is exposed.
-The existing one-hour coalesced default remains in effect.
+### Independent discovery
 
-### Independent discovery runtime preparation
-
-The internal prepared-entry path can retain a separate nominal cursor for each
+With `spec.scheduleCatchUp: all`, the runtime retains a separate nominal cursor for each
 schedule declaration (maximum 1,000 declarations). One sweep captures at most 100
 occurrences, choosing the earliest nominal time and declaration order for ties.
 Each capture and position advance commit together; a failure leaves the next
@@ -100,11 +94,24 @@ initialized. Schedule revision changes reset future positions without changing
 already accepted starts or sizing obligations. Older binaries refuse the additive
 queue schema. Default capture fingerprints retain their prior representation.
 
-Public workflow authoring does not yet expose this option. The authoring, catalog,
-and daemon path require separate qualification
-before enabling an `all` policy. The default remains one-hour coalescing.
+Set `spec.scheduleCatchUp: all` to retain every missed nominal occurrence.
+Omission or `coalesce` preserves one-hour coalescing. Both policies continue to
+apply current admission limits; `all` can accumulate queued work during long
+outages. Discovery never captures future occurrences, and queue pressure leaves
+remaining occurrences pending at their durable positions.
+
+Changing policy resets future discovery at the time the edit is observed. It
+does not expand an old coalesced acceptance or replace already captured pins.
+Previously accepted sizing obligations retain their archived counter even when
+current authoring returns to ordinary scheduling. Sealed counts are not polled
+again.
 
 Independent occurrences acquire custody even during idle backoff. Their later
 admission matches the archived declaration to the current declaration identity,
 so reordering cannot apply a different schedule's backoff. A held occurrence keeps
 its original pins and reserved run ID and retries normal admission after backoff.
+
+While a configured workflow is paused, `all` still captures due occurrences but
+does not start them or poll sizing providers. Resumption uses current enablement
+and readiness with the original execution pins. Removing the workflow retains
+its outstanding custody for explicit intervention rather than deleting it.

@@ -261,3 +261,183 @@ func TestOccurrenceAdmissionRetainsBackedOffFireAndReservedIdentity(t *testing.T
 		t.Fatal(resumed, err)
 	}
 }
+
+func TestOccurrencePolicyChangeKeepsOldCoalescedCustodyAndResetsOnlyFutureDiscovery(t *testing.T) {
+	source, entry := sourceFixture(t)
+	base := time.Now().UTC().Truncate(time.Minute)
+	schedule, err := localscheduler.ParseSchedule("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Schedules = []localscheduler.Schedule{schedule}
+	if _, _, err = source.ScheduleCursor(t.Context(), entry, base, false, base); err != nil {
+		t.Fatal(err)
+	}
+	if err = source.AcceptSchedule(t.Context(), entry, base, base.Add(2*time.Minute), true); err != nil {
+		t.Fatal(err)
+	}
+	old, err := source.Queue.Pending(t.Context(), 10)
+	if err != nil || len(old) != 1 {
+		t.Fatal(old, err)
+	}
+	entry.ScheduleCatchUpAll = true
+	observed := base.Add(3 * time.Minute)
+	positions, legacy, err := source.ScheduleOccurrences(t.Context(), entry, base, false, observed)
+	if err != nil || legacy || len(positions) != 1 || !positions[0].Equal(observed) {
+		t.Fatal(positions, legacy, err)
+	}
+	if err = source.AcceptOccurrence(t.Context(), entry, 0, observed, observed.Add(time.Minute), observed.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	now, err := source.Queue.Pending(t.Context(), 10)
+	if err != nil || len(now) != 2 {
+		t.Fatal(now, err)
+	}
+	retained, err := source.Queue.Get(t.Context(), old[0].ID, "scheduler")
+	if err != nil || string(retained.Payload) != string(old[0].Payload) {
+		t.Fatal(retained, err)
+	}
+}
+
+func TestOccurrenceDemandSurvivesRemovalOfCurrentSizingPolicy(t *testing.T) {
+	for _, sealed := range []bool{false, true} {
+		t.Run(fmt.Sprint(sealed), func(t *testing.T) {
+			source, entry, counter, base := demandFixture(t)
+			entry.ScheduleCatchUpAll = true
+			captured := entry
+			source.Build = func(_ context.Context, target Target) (Prepared, error) {
+				if target.ConfigGeneration != captured.ConfigGeneration {
+					t.Fatal(target)
+				}
+				return Prepared{Entry: captured, Release: func() {}}, nil
+			}
+			positions, _, err := source.ScheduleOccurrences(t.Context(), entry, base, false, base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = source.AcceptOccurrence(t.Context(), entry, 0, positions[0], base.Add(time.Hour), base.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			records, err := source.Queue.ScheduleDemandPage(t.Context(), "", 100)
+			if err != nil || len(records) != 1 {
+				t.Fatal(records, err)
+			}
+			if sealed {
+				if err = source.ObserveDemand(t.Context(), records[0].ID, 2); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entry.ScheduleCatchUpAll = false
+			entry.ScheduleDemandCounter = nil
+			entry.ConfigGeneration = "edited"
+			log, _, err := journal.OpenInstanceLog(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = log.Close() }()
+			scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithSourceQueue(source))
+			if err = scheduler.ReconcileAll(nil, base.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			scheduler.Tick(t.Context(), base.Add(time.Hour))
+			pending, err := source.Queue.Pending(t.Context(), 10)
+			if err != nil || len(pending) != 2 {
+				t.Fatal("accepted demand stranded after policy edit", len(pending), err)
+			}
+			if (counter.calls == 0) != sealed {
+				t.Fatal("sealed count recounted or unsealed count not sized", counter.calls, sealed)
+			}
+			for _, record := range pending {
+				envelope, err := Parse(record.Payload)
+				if err != nil || envelope.Target.ConfigGeneration != captured.ConfigGeneration || envelope.Source.ScheduleDeclaration != 1 {
+					t.Fatal(envelope, err)
+				}
+			}
+		})
+	}
+}
+
+func TestOccurrenceDiscoveryWhilePausedRetainsPinsAndResumesWithCurrentPolicy(t *testing.T) {
+	source, entry := sourceFixture(t)
+	base := time.Now().UTC().Truncate(time.Minute)
+	entry.ScheduleCatchUpAll = true
+	entry.DisabledReason = "workflow paused"
+	schedule, err := localscheduler.ParseSchedule("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Schedules = []localscheduler.Schedule{schedule}
+	started := make(chan string, 2)
+	entry.Starter = scheduleStarterFunc(func(_ context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
+		started <- req.RunID
+		return localscheduler.StartResult{Phase: journal.PhaseCompleted}, nil
+	})
+	archived := entry
+	log, _, err := journal.OpenInstanceLog(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithSourceQueue(source))
+	if err = scheduler.ReconcileAll(nil, base); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Tick(t.Context(), base.Add(2*time.Minute))
+	pending, err := source.Queue.Pending(t.Context(), 10)
+	if err != nil || len(pending) != 2 {
+		t.Fatal("pause discarded discovery", len(pending), err)
+	}
+	service := &Service{Queue: source.Queue, Now: func() time.Time { return base.Add(2 * time.Minute) }, Scheduler: func() *localscheduler.Scheduler { return scheduler }, RunDirectory: func(context.Context, string) (string, error) { return "", nil }, Build: func(context.Context, Target) (Prepared, error) {
+		return Prepared{Entry: archived, Release: func() {}}, nil
+	}}
+	if err = service.Dispatch(t.Context(), t.Context(), pending[0]); err != nil {
+		t.Fatal(err)
+	}
+	held, err := source.Queue.Get(t.Context(), pending[0].ID, "scheduler")
+	if err != nil || held.State != triggerqueue.Accepted || !strings.HasPrefix(held.Reason, localscheduler.ReasonDisabled) {
+		t.Fatal(held, err)
+	}
+	entry.DisabledReason = ""
+	entry.ConfigGeneration = "enabled-generation"
+	scheduler = localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithSourceQueue(source))
+	if err = scheduler.ReconcileAll(nil, base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.Dispatch(t.Context(), t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Wait()
+	select {
+	case id := <-started:
+		if id != strings.TrimPrefix(held.ID, "trigger-") {
+			t.Fatal(id)
+		}
+	default:
+		t.Fatal("archived pause blocked current permission")
+	}
+}
+
+func TestOccurrencePauseCapturesDemandWithoutProviderSizing(t *testing.T) {
+	source, entry, counter, base := demandFixture(t)
+	entry.ScheduleCatchUpAll = true
+	entry.DisabledReason = "workflow paused"
+	log, _, err := journal.OpenInstanceLog(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithSourceQueue(source))
+	if err = scheduler.ReconcileAll(nil, base); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Tick(t.Context(), base.Add(2*time.Hour))
+	records, err := source.Queue.ScheduleDemandPage(t.Context(), "", 100)
+	if err != nil || len(records) != 2 || counter.calls != 0 {
+		t.Fatal(records, counter.calls, err)
+	}
+	for _, record := range records {
+		if record.Count != -1 {
+			t.Fatal("paused demand was sized", record)
+		}
+	}
+}

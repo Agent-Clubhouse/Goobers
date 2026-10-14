@@ -40,6 +40,12 @@ func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tick
 			candidate.scheduleRemaining = 0
 			candidate.schedulePollDue = false
 			candidate.scheduleDemand = false
+			// Accepted demand owns its archived sizing definition even after
+			// current authoring returns to an ordinary scheduled workflow.
+			if queue, ok := s.sourceQueue.(DemandSourceQueue); ok {
+				candidate.demandWake = true
+				s.loadQueuedScheduleDemand(ctx, queue, candidate)
+			}
 		}
 		return handled, advanced
 	}

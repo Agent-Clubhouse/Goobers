@@ -8,12 +8,12 @@ that definition. A queued receipt is not a running workflow.
 ## Timing and capacity
 
 The scheduler stores an evaluation cursor for each gaggle and workflow, bound
-to a revision of its normalized schedules and configured timezone. A schedule
+to a revision of its normalized schedules, configured timezone and catch-up policy. A schedule
 edit starts future evaluation at the first observation of that revision. Other
 workflow edits preserve the cursor. Previously accepted starts and partially
 transferred demand keep their original definitions; a stale revision cannot
 advance the new cursor. A due
-observation commits its start and advances that cursor in one transaction. Missed occurrences in the preceding hour coalesce into one catch-up start.
+observation commits its start and advances that cursor in one transaction. By default, missed occurrences in the preceding hour coalesce into one catch-up start.
 The captured source records the original evaluation span, eligible window and
 occurrence count. Older, newly discovered occurrences expire: an empty receipt
 and cursor advance prevent their resurrection after restart. Accepted starts
@@ -31,10 +31,25 @@ then pauses with the cursor unchanged until records expire; the next accepted
 observation coalesces only occurrences still within the one-hour window. This adapter does not
 provide configurable debounce or drop previously accepted starts.
 
-Adaptive idle backoff still applies. A suppressed observation commits an empty
+Adaptive idle backoff still applies. With the default coalesced policy, a suppressed observation commits an empty
 source receipt and advances the cursor, so it is not replayed as work after a
 restart. Successful dispatches keep the original schedule provenance and update
 idle backoff from their actual no-work result.
+
+## Retaining every occurrence
+
+Set `spec.scheduleCatchUp: all` to capture every due nominal occurrence, including
+those older than one hour. Discovery captures at most 100 occurrences per sweep
+and stores a separate position for each enabled schedule declaration. Equal times
+use declaration order for discovery, and mixed interval schedules retain their
+own phase. Execution order is not guaranteed. `coalesce` or omission preserves
+the default behavior above.
+
+Both ordinary and demand-sized schedules support this policy. Current admission,
+idle backoff and pause hold accepted occurrences without changing their pins or
+reserved run identity. Queue pressure leaves uncaptured occurrences pending.
+A policy edit resets future discovery at observation time and preserves accepted
+work. See [independent occurrence custody](queued-schedule-demand.md#independent-discovery).
 
 ## Restart and upgrade
 

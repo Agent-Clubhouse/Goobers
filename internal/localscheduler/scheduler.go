@@ -43,7 +43,7 @@ type WorkflowEntry struct {
 	Readiness        apiv1.ReadinessConditions
 	Schedules        []Schedule
 	// ScheduleCatchUpAll enables bounded independent discovery for a prepared entry.
-	// Public authoring remains disabled until the complete path is qualified.
+	// The daemon derives it from spec.scheduleCatchUp; omission keeps coalescing.
 	ScheduleCatchUpAll bool
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
@@ -1063,10 +1063,18 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	var evaluated []WorkflowEntry
 	defer func() { releaseScheduleDemands(allCandidates) }()
 	for _, entry := range entries {
-		if s.authCircuitOpen(entryIdentity(entry), now) {
-			continue
-		}
-		if skipPermanentRefusedEntry(entry) {
+		if s.authCircuitOpen(entryIdentity(entry), now) || skipPermanentRefusedEntry(entry) {
+			if entry.ScheduleCatchUpAll && s.sourceQueue != nil {
+				candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
+				// Discovery keeps custody while admission is held; do not poll
+				// providers or transfer workers from this blocked candidate.
+				candidate.scheduleRemaining = 0
+				candidate.schedulePollDue = false
+				candidate.scheduleDemand = false
+				candidate.queuedDemand = nil
+				candidate.stopped = true
+				allCandidates = append(allCandidates, candidate)
+			}
 			continue
 		}
 		candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
