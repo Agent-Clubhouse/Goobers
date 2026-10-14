@@ -171,7 +171,7 @@ func (s *Service) refuseDispatch(ctx context.Context, id string, err error) erro
 	ctx = cleanup
 	var rejected *localscheduler.TriggerRejectedError
 	if errors.As(err, &rejected) {
-		if rejected.Transient() {
+		if rejected.WaitableForQueue() {
 			return s.Queue.Requeue(ctx, id, rejected.Reason)
 		}
 		return s.Queue.Finish(ctx, id, triggerqueue.Rejected, "", rejected.Reason, s.Now())
