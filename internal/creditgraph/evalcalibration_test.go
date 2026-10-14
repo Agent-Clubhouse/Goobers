@@ -7,6 +7,7 @@ import (
 func calibrationSummary(bins ...AttributionEvalBin) *AttributionEvalSummary {
 	summary := &AttributionEvalSummary{
 		Schema: AttributionEvalSummarySchemaVersion, EvalSetVersion: "v1", EvalSetDigest: "sha256:abc",
+		Accuracy:    []AttributionEvalAccuracy{{Granularity: "domain", Correct: 1, Total: 2, Accuracy: 0.5}},
 		Calibration: AttributionEvalCalibration{Target: "domain", Bins: bins},
 	}
 	for _, bin := range bins {
@@ -64,14 +65,16 @@ func TestAttributionEvalSummaryValidate(t *testing.T) {
 		t.Fatalf("Validate() = %v, want nil", err)
 	}
 	for name, mutate := range map[string]func(*AttributionEvalSummary){
-		"schema":            func(s *AttributionEvalSummary) { s.Schema = "other" },
-		"digest":            func(s *AttributionEvalSummary) { s.EvalSetDigest = "" },
-		"unattributed":      func(s *AttributionEvalSummary) { s.Unattributed = 4 },
-		"target":            func(s *AttributionEvalSummary) { s.Calibration.Target = "" },
-		"non-domain target": func(s *AttributionEvalSummary) { s.Calibration.Target = "class" },
-		"correct > count":   func(s *AttributionEvalSummary) { s.Calibration.Bins[0].Correct = 3 },
-		"overlapping bins":  func(s *AttributionEvalSummary) { s.Calibration.Bins[1].Lower = 0.4 },
-		"binned count":      func(s *AttributionEvalSummary) { s.CaseCount = 5 },
+		"schema":                   func(s *AttributionEvalSummary) { s.Schema = "other" },
+		"digest":                   func(s *AttributionEvalSummary) { s.EvalSetDigest = "" },
+		"unattributed":             func(s *AttributionEvalSummary) { s.Unattributed = 4 },
+		"target":                   func(s *AttributionEvalSummary) { s.Calibration.Target = "" },
+		"non-domain target":        func(s *AttributionEvalSummary) { s.Calibration.Target = "class" },
+		"no accuracy":              func(s *AttributionEvalSummary) { s.Accuracy = nil },
+		"accuracy correct > total": func(s *AttributionEvalSummary) { s.Accuracy[0].Correct = 3 },
+		"correct > count":          func(s *AttributionEvalSummary) { s.Calibration.Bins[0].Correct = 3 },
+		"overlapping bins":         func(s *AttributionEvalSummary) { s.Calibration.Bins[1].Lower = 0.4 },
+		"binned count":             func(s *AttributionEvalSummary) { s.CaseCount = 5 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			summary := *calibrationSummary(evalBin(0, 0.5, 2, 1), evalBin(0.5, 1, 1, 1))

@@ -99,6 +99,9 @@ func (summary AttributionEvalSummary) Validate() error {
 		return fmt.Errorf("attribution eval summary case counts are inconsistent (%d cases, %d unattributed)",
 			summary.CaseCount, summary.Unattributed)
 	}
+	if err := validateEvalAccuracy(summary.Accuracy); err != nil {
+		return err
+	}
 	if summary.Calibration.Target != FilingCalibrationTarget {
 		return fmt.Errorf("attribution eval summary calibration target is %q, want %q",
 			summary.Calibration.Target, FilingCalibrationTarget)
@@ -166,4 +169,18 @@ func normalizeFilingThreshold(threshold FilingThreshold) FilingThreshold {
 		return DeriveFilingThreshold(nil)
 	}
 	return threshold
+}
+
+// validateEvalAccuracy requires at least one per-granularity result, each
+// named and with 0 <= correct <= total.
+func validateEvalAccuracy(accuracy []AttributionEvalAccuracy) error {
+	if len(accuracy) == 0 {
+		return errors.New("attribution eval summary needs per-granularity accuracy")
+	}
+	for index, item := range accuracy {
+		if strings.TrimSpace(item.Granularity) == "" || item.Correct < 0 || item.Correct > item.Total {
+			return fmt.Errorf("attribution eval summary accuracy %d is malformed", index)
+		}
+	}
+	return nil
 }
