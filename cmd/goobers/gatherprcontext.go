@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -353,7 +354,7 @@ func gatherPRContextClaimProgressable(
 			candidates = next
 		}
 		if claimed != nil {
-			if err := releasePRRemediationClaim(root); err != nil {
+			if err := releasePRRemediationClaim(root, claimrelease.NoWork.Because("pr_skipped", skipped[len(skipped)-1])); err != nil {
 				return failProviderStage(stderr, fmt.Sprintf("release skipped PR #%d's claim", claimed.Number), err, remediationBriefResultFile)
 			}
 		}

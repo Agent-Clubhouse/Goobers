@@ -1,6 +1,6 @@
 # #4421: structured claim-release reasons
 
-Growth: +35 non-test lines and +0 files in `cmd/goobers`.
+Growth: +36 non-test lines and +0 files in `cmd/goobers`.
 
 The claim ledger's release API now requires a reason
 (`internal/claimrelease`), so every production release call site in the
@@ -9,7 +9,7 @@ no release path can silently fall back to "no reason".
 
 ## Where the lines come from
 
-- **14 import lines.** Each command file that releases a claim now imports
+- **15 import lines.** Each command file that releases a claim now imports
   `internal/claimrelease`. Most call sites change in place and add no lines.
 - **`claimHolderReleaseReason`** (`claimlifecycle.go`, about 10 lines). It
   sends a terminal holder's release either to the run-journal derivation
