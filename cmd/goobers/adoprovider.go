@@ -146,29 +146,18 @@ func adoCredentialKindForScheme(scheme string) (string, error) {
 // provider is organization-scoped and the backlog project lives under the same
 // organization (and the same azure-cli/PAT auth), so organization, name, and
 // credentials stay the routed code repo's. On GitHub, where the code repo and
-// backlog coincide, and whenever no ADO backlog project is declared or the
-// gaggle can't be resolved, the routed repo is returned unchanged.
+// backlog coincide, and whenever no ADO backlog project is declared, the routed
+// repo is returned unchanged.
+//
+// The gaggle's settings come from stageGaggleBacklog: the instance config, or
+// in a stage pod the dispatcher's stamp. When they cannot be resolved the
+// routed repo is returned with a warning, but that is a defensive fallback
+// only: every Azure DevOps stage provider refuses to build in that case
+// (requireStageGaggleBacklog), so no work item call goes to the wrong project.
 func backlogRepoRefForStage(root string, routed providers.RepositoryRef) providers.RepositoryRef {
-	if routed.Provider != providers.ProviderADO {
-		return routed
-	}
-	gaggle := os.Getenv(executor.GaggleEnvVar)
-	if gaggle == "" {
-		return routed
-	}
-	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
-	if err != nil || report == nil || set == nil {
-		if project := strings.TrimSpace(os.Getenv(stageBacklogProjectEnvVar)); project != "" {
-			ref := routed
-			ref.Project = project
-			return ref
-		}
-		warnStageGaggleConfigUnavailable("the backlog project override", gaggle, err)
-		return routed
-	}
-	ref, err := providerconfig.ApplyBacklogProject(set, gaggle, routed)
+	ref, err := stageBacklogRepoRef(root, routed)
 	if err != nil {
-		warnBacklogProjectInvalid(gaggle, err)
+		warnStageGaggleBacklogUnresolved(err)
 	}
 	return ref
 }
@@ -182,36 +171,22 @@ func warnBacklogProjectInvalid(gaggle string, err error) {
 	pf(stageGaggleConfigWarnings, "warning: gaggle %q backlog project is invalid (%v); the routed repository is used\n", gaggle, err)
 }
 
-// stageBacklogProjectEnvVar names the ADO backlog project for a stage that
-// cannot read its gaggle's instance config (a Goobernetes or brokered stage
-// pod). A workflow declares it in the stage's run.env; it is consulted only
-// when the config is unavailable, so a readable config always wins.
-const stageBacklogProjectEnvVar = "GOOBERS_BACKLOG_PROJECT"
-
-// stageGaggleConfigWarnings is where warnStageGaggleConfigUnavailable writes;
-// a var so tests can capture it.
+// stageGaggleConfigWarnings is where the stage-side gaggle warnings write; a
+// var so tests can capture it.
 var stageGaggleConfigWarnings io.Writer = os.Stderr
 
-// stageGaggleConfigWarned remembers the settings already warned about, so a
-// stage that resolves the same setting many times warns once.
+// stageGaggleConfigWarned remembers the warnings already given, so a stage
+// that resolves the same setting many times warns once.
 var stageGaggleConfigWarned sync.Map
 
-// warnStageGaggleConfigUnavailable warns, once per process and setting, that
-// a stage names a gaggle (GOOBERS_GAGGLE) whose instance config it cannot
-// read, so setting silently falls back to its default. This is the case in a
-// brokered or Goobernetes stage pod, which carries no instance config: a
-// stricter backlog.doneStates, or a separate backlog project, is not applied
-// there.
-func warnStageGaggleConfigUnavailable(setting, gaggle string, err error) {
-	if _, warned := stageGaggleConfigWarned.LoadOrStore(setting, struct{}{}); warned {
+// warnStageGaggleBacklogUnresolved warns, once per process and reason, that
+// a stage's gaggle backlog settings could not be resolved (stageGaggleBacklog)
+// on a path that cannot fail the stage itself.
+func warnStageGaggleBacklogUnresolved(err error) {
+	if _, warned := stageGaggleConfigWarned.LoadOrStore(err.Error(), struct{}{}); warned {
 		return
 	}
-	reason := "no instance config here"
-	if err != nil {
-		reason = err.Error()
-	}
-	pf(stageGaggleConfigWarnings, "warning: gaggle %q config cannot be read in this stage (%s); %s is not applied and its default is used\n",
-		gaggle, reason, setting)
+	pf(stageGaggleConfigWarnings, "warning: %v\n", err)
 }
 
 // backlogRepoRefForGaggle is the daemon-side counterpart of
@@ -242,23 +217,19 @@ func backlogRepoRefForGaggle(l instance.Layout, routed providers.RepositoryRef) 
 }
 
 // applyGaggleDoneStates sets the ADO provider's predecessor done states from
-// the stage's gaggle backlog.doneStates (ADO-N32). It resolves the gaggle the
-// same way backlogRepoRefForStage does. When the gaggle, its config or the
-// setting cannot be resolved (for example in a stage pod, which has no
-// instance config), the provider keeps its default: the Resolved, Completed
-// and Removed categories. When a gaggle is named but its config cannot be
-// read, the stage warns on stderr rather than falling back silently.
-func applyGaggleDoneStates(root string, provider *providers.ADOProvider) {
-	gaggle := os.Getenv(executor.GaggleEnvVar)
-	if gaggle == "" {
-		return
-	}
-	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
-	if err != nil || report == nil || set == nil {
-		warnStageGaggleConfigUnavailable("backlog.doneStates", gaggle, err)
-		return
+// the stage's gaggle backlog.doneStates (ADO-N32), resolved by
+// stageGaggleBacklog: the instance config, or in a stage pod the dispatcher's
+// stamp (#5957). A gaggle that declares none keeps the default: the Resolved,
+// Completed and Removed categories. Settings that cannot be resolved are an
+// error, never the default: a stricter doneStates silently replaced by the
+// default counts a Resolved predecessor as done.
+func applyGaggleDoneStates(root string, provider *providers.ADOProvider) error {
+	gaggle, set, err := stageGaggleBacklog(root)
+	if err != nil || gaggle == "" {
+		return err
 	}
 	if states, ok := providerconfig.GaggleADODoneStates(set, gaggle); ok {
 		providers.WithADODoneStates(states)(provider)
 	}
+	return nil
 }

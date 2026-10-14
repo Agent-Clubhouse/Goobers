@@ -365,7 +365,10 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	env.issueProvider = issueProvider
 	env.ghIssueProvider = githubProviderForBacklogExtras(provider)
 	if ado := adoProviderForBacklogDefaults(provider); ado != nil {
-		applyGaggleDoneStates(env.root, ado)
+		if err := applyGaggleDoneStates(env.root, ado); err != nil {
+			pf(env.stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }

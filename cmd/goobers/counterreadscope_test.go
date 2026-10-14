@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -159,6 +160,9 @@ func TestStageADOReadCacheRequiresExplicitLaunchScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(executor.GaggleEnvVar, "own")
+	// A stage pod: no readable instance config, the gaggle backlog settings
+	// stamped by the dispatcher (#5957).
+	t.Setenv(dispatcher.GaggleBacklogEnv, "{}")
 	t.Setenv(executor.ConfigGenerationEnvVar, "pinned-run-generation")
 	t.Setenv(providersnapshot.EnvVar, "evaluation")
 	t.Setenv(executor.ProviderReadBindingEnvVar, "")
