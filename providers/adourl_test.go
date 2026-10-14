@@ -144,3 +144,71 @@ func TestParseADORemoteURL(t *testing.T) {
 		})
 	}
 }
+
+// TestIsADORemoteURLAgreesWithParserAnchoring pins #5960: the fail-closed
+// ADO classifier recognizes every host spelling ParseADORemoteURL anchors —
+// including the SSH hosts the old dev.azure.com/visualstudio.com check missed
+// — and nothing that is not anchored to an Azure DevOps host.
+func TestIsADORemoteURLAgreesWithParserAnchoring(t *testing.T) {
+	for _, remote := range []string{
+		"https://dev.azure.com/example-org/example-project/_git/example-repo",
+		"https://example-org.visualstudio.com/example-project/_git/example-repo",
+		"git@ssh.dev.azure.com:v3/example-org/example-project/example-repo",
+		"ssh://git@ssh.dev.azure.com/v3/example-org/example-project/example-repo",
+		"example-org@vs-ssh.visualstudio.com:v3/example-org/example-project/example-repo",
+		"ssh://example-org@vs-ssh.visualstudio.com/v3/example-org/example-project/example-repo",
+		"SSH://GIT@SSH.DEV.AZURE.COM/v3/example-org/example-project/example-repo",
+		// Anchored to an ADO host even though no full identity parses: still
+		// ADO, so an unroutable origin is refused rather than sent a GitHub token.
+		"https://dev.azure.com/example-org",
+		"ssh://git@ssh.dev.azure.com/extra/example-org/example-project/example-repo",
+	} {
+		if !IsADORemoteURL(remote) {
+			t.Errorf("IsADORemoteURL(%q) = false, want true", remote)
+		}
+	}
+	for _, remote := range []string{
+		"https://github.com/acme/web",
+		"git@github.com:acme/web.git",
+		"example-org/example-project/example-repo",
+		"/srv/acme/web",
+		"file:///srv/acme/web",
+		"https://dev.azure.com.example.invalid/example-org/example-project/_git/example-repo",
+		"",
+	} {
+		if IsADORemoteURL(remote) {
+			t.Errorf("IsADORemoteURL(%q) = true, want false", remote)
+		}
+	}
+}
+
+// TestParseADOPullRequestAPIURL pins the parser run --pr uses to verify an
+// API-form pull request URL by GUID (#5960).
+func TestParseADOPullRequestAPIURL(t *testing.T) {
+	const projectID, repositoryID = "11111111-2222-3333-4444-555555555555", "66666666-7777-8888-9999-000000000000"
+	for _, tc := range []struct {
+		raw                      string
+		org, project, repository string
+		number                   int
+		ok                       bool
+	}{
+		{"https://dev.azure.com/acme/" + projectID + "/_apis/git/repositories/" + repositoryID + "/pullRequests/42", "acme", projectID, repositoryID, 42, true},
+		{"https://dev.azure.com/acme/Example%20Service/_apis/git/repositories/web/pullrequests/7", "acme", "Example Service", "web", 7, true},
+		{"https://ACME.visualstudio.com/" + projectID + "/_apis/git/repositories/" + repositoryID + "/pullRequests/42", "acme", projectID, repositoryID, 42, true},
+		{"https://dev.azure.com/acme/platform/_git/web/pullrequest/42", "", "", "", 0, false},
+		{"https://dev.azure.com/acme/platform/_apis/git/repositories/web/pullRequests/abc", "", "", "", 0, false},
+		{"https://dev.azure.com/platform/_apis/git/repositories/web/pullRequests/42", "", "", "", 0, false},
+		{"https://example.invalid/acme/platform/_apis/git/repositories/web/pullRequests/42", "", "", "", 0, false},
+		{"https://a.b.visualstudio.com/platform/_apis/git/repositories/web/pullRequests/42", "", "", "", 0, false},
+		{"", "", "", "", 0, false},
+	} {
+		org, project, repository, number, ok := ParseADOPullRequestAPIURL(tc.raw)
+		if org != tc.org || project != tc.project || repository != tc.repository || number != tc.number || ok != tc.ok {
+			t.Errorf("ParseADOPullRequestAPIURL(%q) = (%q, %q, %q, %d, %v), want (%q, %q, %q, %d, %v)",
+				tc.raw, org, project, repository, number, ok, tc.org, tc.project, tc.repository, tc.number, tc.ok)
+		}
+	}
+	if !IsADOGUID(projectID) || !IsADOGUID("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE") || IsADOGUID("web") || IsADOGUID(projectID+"0") {
+		t.Fatal("IsADOGUID misclassifies")
+	}
+}

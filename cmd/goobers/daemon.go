@@ -655,7 +655,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		reportStartupProgress(input.StartupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(input.Config, workflowsWithoutInstructionRefusals(input.Definitions.Workflows, instructionRefusals), gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores, generation)
+	openPRRefresher, err := buildOpenPRRefresher(input.Config, workflowsWithoutInstructionRefusals(input.Definitions.Workflows, instructionRefusals), gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores, generation, input.ProviderQuota)
 	if err != nil {
 		return nil, err
 	}
