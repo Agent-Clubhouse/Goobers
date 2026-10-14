@@ -235,6 +235,12 @@ func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
 			f.mu.Unlock()
 			writeJSON(t, w, map[string]interface{}{"comments": comments})
 		case http.MethodPost:
+			// ADO-N27: claim and release breadcrumbs are attributed
+			// comments, and like every comment Goobers posts they render as
+			// Markdown.
+			if got := r.URL.Query().Get("format"); got != "markdown" {
+				t.Errorf("breadcrumb comment format = %q, want markdown (ADO-N27)", got)
+			}
 			var body map[string]string
 			decodeJSON(t, r, &body)
 			if f.raceWinner != "" {
@@ -395,6 +401,59 @@ func TestADOClaimFailsClosedWithoutIdentity(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.comments) != 0 {
 		t.Fatalf("claim wrote %d comment(s) without a resolved identity", len(fake.comments))
+	}
+}
+
+// releaseADOTestItem releases work item 42's claim for runID against server.
+func releaseADOTestItem(t *testing.T, server *httptest.Server, runID string) (WorkItem, error) {
+	t.Helper()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	return provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"},
+		ID:         "42",
+		RunID:      runID,
+	})
+}
+
+// TestADOReleaseFailsClosedWithoutIdentity pins ADO-N10 on the release side:
+// when the authenticated identity cannot be read, release errors instead of
+// scanning breadcrumbs unfiltered, and writes neither a release breadcrumb
+// nor a label change.
+func TestADOReleaseFailsClosedWithoutIdentity(t *testing.T) {
+	fake := &adoClaimFake{tags: LabelClaimed}
+	fake.seed(adoTestSelfID, claimBreadcrumb("run-owner"))
+	_, err := releaseADOTestItem(t, fake.server(t, false), "run-owner")
+	if err == nil || !strings.Contains(err.Error(), "resolve claim marker author") {
+		t.Fatalf("ReleaseWorkItemClaim error = %v, want identity resolution failure", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.comments) != 1 || len(fake.operations) != 0 || fake.patchAttempts != 0 {
+		t.Fatalf("release without a resolved identity wrote: comments=%d operations=%v patches=%d",
+			len(fake.comments), fake.operations, fake.patchAttempts)
+	}
+}
+
+// TestADOReleaseIgnoresClaimFromAnotherIdentity pins ADO-N10 on the release
+// side: a forged claim breadcrumb from another identity — posted first, so an
+// unfiltered scan would name it the winner — cannot hold our own claim
+// hostage, and our release still retires the epoch.
+func TestADOReleaseIgnoresClaimFromAnotherIdentity(t *testing.T) {
+	fake := &adoClaimFake{tags: LabelClaimed}
+	fake.seed(adoTestOtherID, claimBreadcrumb("run-forged"))
+	fake.seed(adoTestSelfID, claimBreadcrumb("run-owner"))
+	released, err := releaseADOTestItem(t, fake.server(t, true), "run-owner")
+	if err != nil {
+		t.Fatalf("ReleaseWorkItemClaim: %v", err)
+	}
+	if released.HasLabel(LabelClaimed) {
+		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
+	}
+	fake.mu.Lock()
+	operations := append([]string(nil), fake.operations...)
+	fake.mu.Unlock()
+	if strings.Join(operations, ",") != "release,label" {
+		t.Fatalf("release operations = %v, want [release label]", operations)
 	}
 }
 
@@ -651,14 +710,19 @@ func TestADOCreateWorkItemDefaultTypeFromRequirementCategory(t *testing.T) {
 		name        string
 		process     string
 		defaultType string
+		// referenceName is the type's internal name, which ADO returns
+		// alongside its display name and which must never reach a URL.
+		referenceName string
 	}{
-		{name: "basic", process: "Basic", defaultType: "Issue"},
-		{name: "agile", process: "Agile", defaultType: "User Story"},
-		{name: "scrum", process: "Scrum", defaultType: "Product Backlog Item"},
+		{name: "basic", process: "Basic", defaultType: "Issue", referenceName: "Microsoft.VSTS.WorkItemTypes.Issue"},
+		{name: "agile", process: "Agile", defaultType: "User Story", referenceName: "Microsoft.VSTS.WorkItemTypes.UserStory"},
+		{name: "scrum", process: "Scrum", defaultType: "Product Backlog Item", referenceName: "Microsoft.VSTS.WorkItemTypes.ProductBacklogItem"},
+		{name: "cmmi", process: "CMMI", defaultType: "Requirement", referenceName: "Microsoft.VSTS.WorkItemTypes.Requirement"},
 		{
-			name:        "inherited process renames the type",
-			process:     "Inherited from Agile",
-			defaultType: "Example Requirement",
+			name:          "inherited process renames the type",
+			process:       "Inherited from Agile",
+			defaultType:   "Example Requirement",
+			referenceName: "Custom.ExampleRequirement",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -668,9 +732,13 @@ func TestADOCreateWorkItemDefaultTypeFromRequirementCategory(t *testing.T) {
 				assertMethod(t, r, http.MethodGet)
 				categoryCalls++
 				writeJSON(t, w, map[string]interface{}{
-					"name":                "Requirement Category",
-					"referenceName":       "Microsoft.RequirementCategory",
-					"defaultWorkItemType": map[string]string{"name": tc.defaultType},
+					"name":          "Requirement Category",
+					"referenceName": "Microsoft.RequirementCategory",
+					"defaultWorkItemType": map[string]string{
+						"name":          tc.defaultType,
+						"referenceName": tc.referenceName,
+						"url":           "https://example.invalid/_apis/wit/workItemTypes/" + tc.referenceName,
+					},
 				})
 			})
 			// Registered as path prefixes rather than exact literal patterns:
@@ -712,7 +780,12 @@ func TestADOCreateWorkItemDefaultTypeFromRequirementCategory(t *testing.T) {
 					},
 				})
 			})
-			server := httptest.NewServer(mux)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.String(), tc.referenceName) {
+					t.Errorf("request %s %s carries the type's referenceName %q; types are addressed by name", r.Method, r.URL, tc.referenceName)
+				}
+				mux.ServeHTTP(w, r)
+			}))
 			defer server.Close()
 
 			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
