@@ -389,8 +389,10 @@ external component; the auditor's keyword rules can override it either way.
 accuracy, domain calibration bins) in
 `scheduler/backprop-audit/attribution-eval.json`. A summary calibrated against
 any other granularity is rejected, and publishing is refused with `-update`
-and after a regression. The telemetry stats API,
-which the portal reads, returns it as `attributionEval`. The fault auditor
+and after a regression. The telemetry stats API returns it as
+`attributionEval`, and the portal's Insight page shows it at instance scope as
+"Attribution accuracy" (per-granularity accuracy and populated calibration
+bins). The fault auditor
 derives its filing threshold from it: the upper bound of the highest populated
 calibration bin whose accuracy is below 0.8, else the lower bound of the lowest
 populated bin, never below the default 0.5 (used when nothing is published).
@@ -401,7 +403,7 @@ not a silent fallback to the default.
 
 Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
 command, building cases from real journals with human and fix-marker labels,
-a portal view of the eval, and counterfactual fault-injection generators.
+and counterfactual fault-injection generators.
 
 ## Why
 

@@ -333,7 +333,8 @@ report's `filingThreshold`. The threshold is 0.5 unless an attribution accuracy
 eval has been published to the instance (`go run ./test/attributioneval
 -publish=./instance` from a source checkout); then it is derived from the eval's
 measured calibration (`source: attribution-eval`) and the stats API also
-returns the eval summary as `attributionEval`. Only fileable findings start the
+returns the eval summary as `attributionEval`, which the portal's Insight page
+shows as "Attribution accuracy". Only fileable findings start the
 `telemetry-query` report cooldown. See
 [Attribution accuracy eval](../design/credit-graph.md#attribution-accuracy-eval).
 
