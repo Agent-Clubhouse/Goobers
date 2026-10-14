@@ -259,22 +259,49 @@ func (e *harnessPreflightFailures) Error() string {
 // environment as a dispatched run and the operator's harnessCommand override
 // (#2483); each preflight is bounded by harnessPreflightTimeout so a hung CLI
 // or network can't hang startup.
-// modelCredentialFor resolves the agent:model credential for ONE harness. The
-// preflight takes this instead of a single pre-resolved credential because a
-// harness-scoped grant (#5148) is only findable when the harness is known:
+// modelCredentialSource resolves the agent:model credential for ONE harness.
+// The preflight takes this instead of a single pre-resolved credential because
+// a harness-scoped grant (#5148) is only findable when the harness is known:
 // resolving once with an empty harness silently returns the unscoped grant, or
 // none, for every harness alike (#5163).
-type modelCredentialFor func(apiv1.Harness) (func(ctx context.Context) (string, error), error)
+type modelCredentialSource struct {
+	// resolve returns the harness's credential resolver.
+	resolve func(apiv1.Harness) (func(ctx context.Context) (string, error), error)
+	// identity names the grant that would back the harness, from
+	// configuration alone: it never resolves or mints a secret, so the probe
+	// backoff can be consulted before any credential work (#6017).
+	identity func(apiv1.Harness) string
+}
+
+// modelCredentialFor is the per-harness credential source; nil means none.
+type modelCredentialFor = *modelCredentialSource
 
 // harnessModelCredentialResolver adapts agentModelCredentialResolver — which
 // already understands harness-scoped grants — into the per-harness form the
 // preflight needs. Both the daemon and the worker wire it the same way, so
 // neither can drift back to resolving once with an empty harness (#5163).
 func harnessModelCredentialResolver(cfg *instance.Config, stores credentials.StoreResolver) modelCredentialFor {
-	return func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
-		resolve, _, err := agentModelCredentialResolver(cfg, stores, h)
-		return resolve, err
+	return &modelCredentialSource{
+		resolve: func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
+			resolve, _, err := agentModelCredentialResolver(cfg, stores, h)
+			return resolve, err
+		},
+		identity: func(h apiv1.Harness) string { return agentModelGrantIdentity(cfg, h) },
 	}
+}
+
+// agentModelGrantIdentity fingerprints the configured grant that backs h: its
+// token reference or GitHub App coordinates, never a resolved value. A
+// GitHub App grant mints a fresh installation token per resolution, so the
+// token value cannot identify it.
+func agentModelGrantIdentity(cfg *instance.Config, h apiv1.Harness) string {
+	grant, _ := agentModelGrant(cfg, h)
+	if grant == nil {
+		return "none"
+	}
+	encoded, _ := json.Marshal(grant)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:8])
 }
 
 func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, environment harness.EnvironmentConfig, harnessCommand map[string][]string, credentialFor modelCredentialFor) (harnessPreflightInfo, error) {
@@ -385,10 +412,10 @@ type harnessGroupOutcome struct {
 }
 
 // key identifies the group to the probe backoff: the same harness, options,
-// command, environment policy and model credential make the same sign-in
-// request of the same provider. credential is a fingerprint of the resolved
-// agent:model credential, so a reload that changes the grant or rotates the
-// token probes at once instead of waiting out the old credential's backoff.
+// command, environment policy and agent:model grant make the same sign-in
+// request of the same provider. credential is the grant's configured identity,
+// so a reload that changes the grant probes at once instead of waiting out the
+// old grant's backoff.
 func (p harnessGroupPreflight) key(credential string) string {
 	options, _ := json.Marshal(p.spec.HarnessOptions)
 	parts := []string{string(p.harness), string(options), credential,
@@ -397,19 +424,21 @@ func (p harnessGroupPreflight) key(credential string) string {
 }
 
 // run preflights the group unless a transient failure is still being waited
-// out, in which case it refuses with that failure without probing. A
-// transient failure (credentials.ErrTransientProvider: a rate-limited,
-// failing or unreachable provider) is backed off; any other outcome clears
-// the backoff, and a non-transient failure stays the permanent refusal it
-// always was.
+// out, in which case it refuses with that failure without probing — and
+// without resolving or minting any credential, since the backoff is keyed by
+// the grant's configured identity. A transient failure
+// (credentials.ErrTransientProvider: a rate-limited, failing or unreachable
+// provider, including while resolving the credential) is backed off; any
+// other outcome clears the backoff, and a non-transient failure stays the
+// permanent refusal it always was.
 func (p harnessGroupPreflight) run(ctx context.Context) harnessGroupOutcome {
-	modelCredential, fingerprint, err := p.modelCredential(ctx)
-	if err != nil {
-		return p.finish(p.key(""), harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its agent:model credential could not be resolved: %w", p.harness, err))
-	}
-	key := p.key(fingerprint)
+	key := p.key(p.credentialIdentity())
 	if wait, waiting := p.throttle.Pending(key); waiting {
 		return harnessGroupOutcome{reason: transientHarnessReason(wait.Cause, wait.RetryAt), retryAt: wait.RetryAt, key: key}
+	}
+	modelCredential, err := p.modelCredential()
+	if err != nil {
+		return p.finish(key, harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its agent:model credential could not be resolved: %w", p.harness, err))
 	}
 	info, err := p.check(ctx, modelCredential)
 	return p.finish(key, info, err)
@@ -429,26 +458,28 @@ func (p harnessGroupPreflight) finish(key string, info harness.PreflightInfo, er
 	return harnessGroupOutcome{reason: err.Error(), key: key}
 }
 
-// modelCredential resolves the group's agent:model credential once, returning
-// a resolver over that value for the adapter and its fingerprint for the
-// backoff key. A group with no configured credential (or Codex's ambient
-// ChatGPT session) fingerprints as "ambient".
-func (p harnessGroupPreflight) modelCredential(ctx context.Context) (func(context.Context) (string, error), string, error) {
-	if p.credentialFor == nil || (p.harness == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(p.spec.HarnessOptions)) {
-		return nil, "ambient", nil
+// usesModelCredential reports whether the group's preflight carries the
+// configured agent:model credential: not without a source, and not for
+// Codex's ambient ChatGPT session.
+func (p harnessGroupPreflight) usesModelCredential() bool {
+	return p.credentialFor != nil && (p.harness != apiv1.HarnessCodex || !harness.CodexUsesAmbientChatGPT(p.spec.HarnessOptions))
+}
+
+// credentialIdentity is the backoff key's credential component.
+func (p harnessGroupPreflight) credentialIdentity() string {
+	if !p.usesModelCredential() || p.credentialFor.identity == nil {
+		return "ambient"
 	}
-	resolve, err := p.credentialFor(p.harness)
-	if err != nil || resolve == nil {
-		return nil, "ambient", err
+	return p.credentialFor.identity(p.harness)
+}
+
+// modelCredential returns the group's agent:model credential resolver; the
+// adapter resolves it during the probe.
+func (p harnessGroupPreflight) modelCredential() (func(context.Context) (string, error), error) {
+	if !p.usesModelCredential() || p.credentialFor.resolve == nil {
+		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, harnessPreflightTimeout)
-	defer cancel()
-	token, err := resolve(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	sum := sha256.Sum256([]byte(token))
-	return func(context.Context) (string, error) { return token, nil }, hex.EncodeToString(sum[:8]), nil
+	return p.credentialFor.resolve(p.harness)
 }
 
 func (p harnessGroupPreflight) check(ctx context.Context, modelCredential func(context.Context) (string, error)) (harness.PreflightInfo, error) {

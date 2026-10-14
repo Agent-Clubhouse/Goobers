@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -69,7 +70,12 @@ type countingHarnessAdapters struct {
 func installCountingHarnessAdapters(t *testing.T, copilotErr error) *countingHarnessAdapters {
 	t.Helper()
 	adapters := &countingHarnessAdapters{copilotErr: copilotErr, probes: map[apiv1.Harness]int{}}
-	withHarnessAdapter(t, func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, credential func(context.Context) (string, error)) (harness.Adapter, error) {
+		if credential != nil {
+			if _, err := credential(context.Background()); err != nil {
+				return nil, err
+			}
+		}
 		adapters.mu.Lock()
 		defer adapters.mu.Unlock()
 		adapters.probes[h]++
@@ -342,32 +348,119 @@ func TestWorkerTransientHarnessRefusalCarriesRetryTime(t *testing.T) {
 	}
 }
 
-// TestHarnessBackoffIsKeyedByCredential: the backoff belongs to the credential
-// that was rate limited, so a reload that changes the agent:model grant or
-// rotates its token probes at once instead of waiting out the old backoff.
-func TestHarnessBackoffIsKeyedByCredential(t *testing.T) {
+// mintingCredential is a GitHub App-style agent:model source: every
+// resolution mints a fresh token, and failNext makes the next mint fail.
+type mintingCredential struct {
+	mu       sync.Mutex
+	mints    int
+	grant    string
+	failNext error
+}
+
+func (m *mintingCredential) source() *modelCredentialSource {
+	return &modelCredentialSource{
+		resolve: func(apiv1.Harness) (func(context.Context) (string, error), error) {
+			return func(context.Context) (string, error) {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				m.mints++
+				if err := m.failNext; err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("ghs_installation_token_%d", m.mints), nil
+			}, nil
+		},
+		identity: func(apiv1.Harness) string {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			return m.grant
+		},
+	}
+}
+
+func (m *mintingCredential) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mints
+}
+
+// TestHarnessBackoffHoldsForAMintingCredential is the regression for a backoff
+// keyed by the resolved token: a GitHub App grant mints a new installation
+// token on every resolution, so such a key never matched and every activity
+// both minted and probed. The key is the grant's configured identity, and the
+// backoff is consulted before anything is resolved.
+func TestHarnessBackoffHoldsForAMintingCredential(t *testing.T) {
 	withHarnessProbeThrottle(t)
 	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
 	goobers, workflows := transientPreflightFixture()
-	token := "token-a"
-	credentialFor := func(apiv1.Harness) (func(context.Context) (string, error), error) {
-		current := token
-		return func(context.Context) (string, error) { return current, nil }, nil
-	}
-	for range 2 {
-		if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err == nil {
+	app := &mintingCredential{grant: "app-1"}
+	for range 4 {
+		if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
 			t.Fatal("expected a refusal")
 		}
 	}
-	if got := adapters.count(apiv1.HarnessCopilot); got != 1 {
-		t.Fatalf("same credential probed %d times within its backoff, want 1", got)
+	if probes := adapters.count(apiv1.HarnessCopilot); probes != 1 {
+		t.Fatalf("copilot probed %d times within one backoff window, want 1", probes)
 	}
-	token = "token-b"
-	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err == nil {
+	// One mint per preflight of the healthy claude-code group (4) plus the
+	// single copilot probe; none for the backed-off copilot preflights.
+	if mints := app.count(); mints != 5 {
+		t.Fatalf("credential minted %d times, want 5 (4 healthy-harness probes + 1 copilot probe)", mints)
+	}
+}
+
+// TestHarnessBackoffBoundsTransientCredentialFailures: a credential whose
+// resolution fails transiently (the provider rate limits the token mint) is
+// backed off under the same grant key, not re-minted on every preflight.
+func TestHarnessBackoffBoundsTransientCredentialFailures(t *testing.T) {
+	withHarnessProbeThrottle(t)
+	adapters := installCountingHarnessAdapters(t, nil)
+	goobers, workflows := transientPreflightFixture()
+	app := &mintingCredential{grant: "app-1", failNext: rateLimitedPreflight(0)}
+	only := &modelCredentialSource{
+		resolve: func(h apiv1.Harness) (func(context.Context) (string, error), error) {
+			if h != apiv1.HarnessCopilot {
+				return nil, nil
+			}
+			return app.source().resolve(h)
+		},
+		identity: app.source().identity,
+	}
+	for range 3 {
+		_, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, only)
+		var failures *harnessPreflightFailures
+		if !errors.As(err, &failures) || failures.transientRefusal(copilotOnly) == nil {
+			t.Fatalf("error = %v, want a transient refusal", err)
+		}
+	}
+	if mints := app.count(); mints != 1 {
+		t.Fatalf("a transiently failing mint was retried %d times within its backoff, want 1", mints)
+	}
+	if probes := adapters.count(apiv1.HarnessCopilot); probes != 0 {
+		t.Fatalf("copilot probed %d times with no credential, want 0", probes)
+	}
+}
+
+// TestHarnessBackoffIsKeyedByGrant: a reload that changes the agent:model
+// grant probes at once instead of waiting out the old grant's backoff.
+func TestHarnessBackoffIsKeyedByGrant(t *testing.T) {
+	withHarnessProbeThrottle(t)
+	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
+	goobers, workflows := transientPreflightFixture()
+	app := &mintingCredential{grant: "app-1"}
+	for range 2 {
+		if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
+			t.Fatal("expected a refusal")
+		}
+	}
+	app.mu.Lock()
+	app.grant = "app-2"
+	app.mu.Unlock()
+	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
 		t.Fatal("expected a refusal")
 	}
 	if got := adapters.count(apiv1.HarnessCopilot); got != 2 {
-		t.Fatalf("a changed credential waited out the old one's backoff: %d probes, want 2", got)
+		t.Fatalf("a changed grant waited out the old one's backoff: %d probes, want 2", got)
 	}
 }
 
