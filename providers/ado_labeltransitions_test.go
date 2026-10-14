@@ -283,8 +283,8 @@ func TestADOLabelTransitionsWalkFailsClosedShortOfCurrentRevision(t *testing.T) 
 			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 			got, err := provider.ListWorkItemLabelTransitionsForItem(context.Background(),
 				RepositoryRef{Name: "repo", Project: "project"}, "42", LabelReady)
-			if !errors.Is(err, ErrLabelHistoryIncomplete) {
-				t.Fatalf("ListWorkItemLabelTransitionsForItem = %+v, %v; want ErrLabelHistoryIncomplete", got, err)
+			if !errors.Is(err, ErrLabelHistoryIncomplete) || !errors.Is(err, ErrLabelHistoryRevisionMismatch) {
+				t.Fatalf("ListWorkItemLabelTransitionsForItem = %+v, %v; want ErrLabelHistoryRevisionMismatch (an ErrLabelHistoryIncomplete)", got, err)
 			}
 			if !strings.Contains(err.Error(), "before its current revision") {
 				t.Fatalf("error = %v, want the revision mismatch named", err)

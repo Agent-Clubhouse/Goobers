@@ -249,6 +249,21 @@ func TestADOListWorkItemBlockersReportsEveryPredecessorWithItsState(t *testing.T
 	}
 }
 
+// TestADOListWorkItemBlockersStatusNeverContradictsState: a byType done-state
+// list can keep a Completed-category state blocking; the blocker then reads
+// open and in progress, never open and done.
+func TestADOListWorkItemBlockersStatusNeverContradictsState(t *testing.T) {
+	_, provider := newADOBlockerFixture(t, []int{41}, adoBlockerItem(41, "Bug", "Closed"))
+	WithADODoneStates(ADODoneStates{ByType: map[string][]string{"Bug": {"Verified"}}})(provider)
+	blockers, err := provider.ListWorkItemBlockers(context.Background(), adoBlockerRepo, "100")
+	if err != nil {
+		t.Fatalf("ListWorkItemBlockers: %v", err)
+	}
+	if len(blockers) != 1 || blockers[0].State != "open" || blockers[0].Status != WorkItemStatusInProgress {
+		t.Fatalf("blockers = %+v, want one open, in-progress blocker", blockers)
+	}
+}
+
 // TestADOListWorkItemBlockersAllDoneStillListsThem: an item whose only
 // predecessors are done is not blocked, but the list still names them —
 // "no blockers" and "every blocker closed" are different answers.

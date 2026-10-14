@@ -124,7 +124,7 @@ func (p *ADOProvider) walkWorkItemLabelUpdates(ctx context.Context, project, id,
 	// during the walk, and that newer history was read too. An earlier one
 	// means the server stopped answering before the history ended.
 	if lastRev < current {
-		return nil, fmt.Errorf("%w: ADO work item %s update history ends at revision %d, before its current revision %d", ErrLabelHistoryIncomplete, id, lastRev, current)
+		return nil, fmt.Errorf("%w: ADO work item %s update history ends at revision %d, before its current revision %d", ErrLabelHistoryRevisionMismatch, id, lastRev, current)
 	}
 	return transitions, nil
 }

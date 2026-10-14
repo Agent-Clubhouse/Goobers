@@ -1359,8 +1359,37 @@ func (session *backlogClaimSession) skipMalformedClaim(ctx context.Context, inde
 		return 1
 	}
 	session.forgetNewClaim(malformed.ID)
+	if errors.Is(cause, providers.ErrLabelHistoryRevisionMismatch) {
+		return session.reportRevisionMismatch(malformed.ID, index, cause)
+	}
 	pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, cause)
 	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	return 0
+}
+
+// adoRevisionMismatchAnnotation journals an ADO item skipped because its
+// update history ended before its current revision.
+const adoRevisionMismatchAnnotation = "backlog.ado-label-history-revision-mismatch"
+
+// reportRevisionMismatch skips an item exactly as skipMalformedClaim does,
+// but loudly (#5960). The ADO ready-age walk assumes one update per revision.
+// If that assumption is ever wrong, every ADO claim fails this way, so the
+// skip carries a stable error code on stderr and in the instance journal
+// instead of reading as one more malformed item.
+func (session *backlogClaimSession) reportRevisionMismatch(itemID string, index int, cause error) int {
+	pf(session.env.stderr, "error: [%s] skipping eligible item %s: its ADO update history ends before its current revision, which breaks the one-update-per-revision assumption ready ages rely on; if every ADO item reports this, file an issue: %v\n",
+		providers.ErrorCodeLabelHistoryRevisionMismatch, itemID, cause)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	if err := session.annotations.Append(journal.Event{
+		Type:     journal.EventRunnerAnnotation,
+		Workflow: session.workflow,
+		RunID:    session.runID,
+		Reason:   providers.ErrorCodeLabelHistoryRevisionMismatch,
+		Runner:   map[string]any{"annotation": adoRevisionMismatchAnnotation, "itemId": itemID, "errorCode": providers.ErrorCodeLabelHistoryRevisionMismatch},
+	}); err != nil {
+		pf(session.env.stderr, "error: journal %s for item %s: %v\n", providers.ErrorCodeLabelHistoryRevisionMismatch, itemID, err)
+		return 1
+	}
 	return 0
 }
 

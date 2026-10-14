@@ -192,8 +192,13 @@ func (p *ADOProvider) adoPredecessorBlocks(ctx context.Context, repo RepositoryR
 		// mapping, so an unusual category only loses the status detail.
 		status = WorkItemStatusInProgress
 	}
-	if !blocking {
+	switch {
+	case !blocking:
 		status = WorkItemStatusDone
+	case status == WorkItemStatusDone:
+		// A byType done-state list can keep a Completed/Removed state
+		// blocking; Status must not then contradict State "open".
+		status = WorkItemStatusInProgress
 	}
 	return blocking, status, nil
 }
