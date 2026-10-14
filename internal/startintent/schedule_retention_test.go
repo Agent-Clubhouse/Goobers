@@ -15,7 +15,7 @@ func TestDemandScheduleRetentionPagesUnobservedGenerationsAndRejectsCorruption(t
 	for i := range 101 {
 		entry.Workflow = fmt.Sprintf("worker-%03d", i)
 		entry.ConfigGeneration = fmt.Sprintf("generation-%03d", i)
-		if _, _, err := source.ScheduleCursor(t.Context(), entry, base, false); err != nil {
+		if _, _, err := source.ScheduleCursor(t.Context(), entry, base, false, base); err != nil {
 			t.Fatal(err)
 		}
 		if err := source.CaptureDemand(t.Context(), entry, base, base.Add(time.Minute)); err != nil {
@@ -31,10 +31,10 @@ func TestDemandScheduleRetentionPagesUnobservedGenerationsAndRejectsCorruption(t
 			t.Fatal("unobserved generation lost", i)
 		}
 	}
-	if _, _, err := source.Queue.SourceCursorWithLegacy(t.Context(), "corrupt", base, false); err != nil {
+	if _, _, err := source.Queue.SourceCursorRevision(t.Context(), "corrupt", "test", base, base, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.Queue.CaptureScheduleDemand(t.Context(), "corrupt", triggerqueue.SourceAdvance{Scope: "corrupt", Before: base, After: base.Add(time.Minute)}, []byte("corrupt envelope"), base); err != nil {
+	if err := source.Queue.CaptureScheduleDemand(t.Context(), "corrupt", triggerqueue.SourceAdvance{Scope: "corrupt", Revision: "test", Before: base, After: base.Add(time.Minute)}, []byte("corrupt envelope"), base); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RetainedGenerations(t.Context(), source.Queue); err == nil {
@@ -44,7 +44,7 @@ func TestDemandScheduleRetentionPagesUnobservedGenerationsAndRejectsCorruption(t
 
 func TestDemandScheduleCounterRequiresArchiveLease(t *testing.T) {
 	source, entry, _, base := demandFixture(t)
-	if _, _, err := source.ScheduleCursor(t.Context(), entry, base, false); err != nil {
+	if _, _, err := source.ScheduleCursor(t.Context(), entry, base, false, base); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.CaptureDemand(t.Context(), entry, base, base.Add(time.Hour)); err != nil {

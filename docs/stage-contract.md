@@ -407,6 +407,16 @@ Agentic reviewer gates receive the same emission surface on their gate span.
 Each `attrs` object may contain at most 125 entries. Malformed or oversized
 lines are counted and dropped without changing the stage or gate outcome.
 
+An agentic stage may also append Backprop claims to `backprop-claims.jsonl`
+(one `api/schemas/backprop-claim-v1.schema.json` object per line, at most 32
+per attempt), usually with `goobers telemetry claim`. The harness journals them
+as a `backprop-claims` runner annotation attributed to the stage attempt; they
+are report-only evidence, though a batch the runner cannot journal fails the
+attempt. Before an agentic stage starts, the runner writes the claims earlier
+stages journaled to `run-claims.json` in the same directory, which
+`goobers telemetry claims` prints. The Backprop guide
+(`docs/guides/backprop.md`) describes how claims are verified.
+
 ## Artifact passing (the A → B hand-off)
 
 Non-scalar data moves **only** by pointer:

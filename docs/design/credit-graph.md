@@ -146,6 +146,83 @@ workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
 bug, reopened issue, main CI breakage), user-provided checker commands, and
 feeding labels into per-run credit propagation (`attribution.json` itself).
 
+## Agent claims
+
+Agents inside an enrolled run can state what the journal cannot infer: who
+owned a piece of work, what they relied on, and whom they credit or blame.
+From inside an agentic stage an agent runs
+
+```sh
+goobers telemetry claim --kind=assignment|reliance|credit|blame \
+  (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) \
+  [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+```
+
+which appends one line (schema `goobers.dev/backprop/claim/v1`,
+`api/schemas/backprop-claim-v1.schema.json`) to `backprop-claims.jsonl` in the
+stage attempt's `GOOBERS_TELEMETRY_DIR`. When the agent exits, the harness
+journals the attempt's claims as one `runner.annotation` of kind
+`backprop-claims`. **The journal is the claim log**: it is run-scoped,
+append-only, and replayed in order. Gates (reviewer invocations) do not
+ingest claims.
+
+- **Writer attribution.** The runner, not the claim, names the writer: the
+  annotation's stage and attempt, and the stage's root nested agent when the
+  transcript names exactly one. A claim cannot assert who wrote it.
+- **Bounds.** An attempt records at most 32 claims, each line at most 8 KiB,
+  each statement at most 1024 bytes after sanitizing, and at most 8 evidence
+  links. Graph construction evaluates the first 256 claims of a run in journal
+  order. Lines refused at ingestion and claims past the run bound are counted
+  in `droppedClaims`, never silently discarded. The run bound is enforced at
+  read time because harness appenders cannot see other attempts' batches.
+- **Untrusted text.** Statements have invalid UTF-8, control characters, and
+  Unicode format characters (bidirectional overrides, zero-width characters)
+  removed and whitespace collapsed, both when written and again when the
+  graph reads the journal; stage and agent references must be short,
+  printable, and space-free; artifact references must be `sha256:` digests.
+  Unknown fields are refused, and `confidence` is required (an omitted value
+  is refused, not read as 0). Statements are also secret-scrubbed before they
+  are journaled.
+- **Durability.** A batch the runner cannot journal (no event appender, or a
+  failed append) fails the stage attempt; a recorded claim never vanishes.
+- **Reading earlier claims.** Before an agentic stage starts, the runner
+  snapshots the claims journaled earlier in the run into `run-claims.json` in
+  its `GOOBERS_TELEMETRY_DIR` (schema `goobers.dev/backprop/run-claims/v1`),
+  and `goobers telemetry claims` prints it. Each entry carries the claim, its
+  runner-attributed writer, and the `id` Build reports it under; entries are
+  re-validated and bounded like Build's input but not verified. A journal the
+  runner cannot read is written as an `error`, never as an empty list. A
+  dispatched (pod) worker has no local run journal, so its stages currently
+  get that error rather than earlier claims.
+
+**Verification.** Build evaluates each claim against only the records
+journaled *before* its batch. A claim is `verified` when all of these hold:
+
+1. The writing stage attempt recorded `stage.started`, and the writer agent,
+   if any, recorded a lifecycle.
+2. The target resolves to a recorded graph node (`stage:<stage>#<attempt>`,
+   `subagent:<id>`, or `evidence:<digest>`). An omitted target attempt means
+   the latest attempt started before the claim.
+3. A reliance, credit, or blame claim does not target the writer's own stage
+   attempt, agent, or artifact.
+4. A credit or blame claim has at least one evidence link, and every link
+   names an artifact recorded earlier or the `seq` of an earlier event.
+
+Verified claims are listed in the graph's `claims` with `writerNodeId` and
+`targetNodeId`. Every other claim is listed in `unverifiedClaims` with its
+`reasons` and no node IDs. **Claims never become nodes or edges**: traversal,
+shares, scores, uncertainties, confidences, and cause classes are identical
+with or without them. `attribution.json` carries the same three fields, and
+each verified `blame` claim is cited (as `agent claim <id> ...`) in the
+evidence of the cause findings for the stage attempt or node it targets. That
+citation is correlational: verification checks that the claim refers to real,
+earlier records, not that the statement is true. Reliance is not yet
+cross-checked against the context pointers the writer actually received.
+
+Not yet implemented (follow-ups under #7121): verifying claims in the in-run
+snapshot, weighting propagation by verified claims, and cross-checking
+reliance against stage inputs.
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and

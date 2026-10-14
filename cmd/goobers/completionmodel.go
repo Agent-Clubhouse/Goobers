@@ -631,6 +631,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},
+	"telemetry claim": {
+		{name: "kind", takesArg: true, desc: "Claim kind (assignment, reliance, credit, or blame)"},
+		{name: "stage", takesArg: true, desc: "Target stage name"},
+		{name: "attempt", takesArg: true, desc: "Target stage attempt"},
+		{name: "agent", takesArg: true, desc: "Target nested agent ID"},
+		{name: "artifact", takesArg: true, desc: "Target recorded artifact digest"},
+		{name: "statement", takesArg: true, desc: "What the claim asserts"},
+		{name: "evidence", takesArg: true, desc: "Supporting artifact digest or seq:N (repeatable)"},
+		{name: "confidence", takesArg: true, desc: "Writer confidence between 0 and 1"},
+	},
 	"journal redact": {
 		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
 		{name: "path", takesArg: true, desc: "Journal-relative blob path"},

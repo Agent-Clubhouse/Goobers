@@ -29,8 +29,8 @@ func TestSourceScheduleReopenExecutesCapturedStageOnce(t *testing.T) {
 	}
 	writeFileContent(t, path, workflow)
 	first := openSourceDaemonFixture(t, layout)
-	base := time.Now().UTC().Truncate(time.Minute).Add(-2 * time.Minute)
-	due := base.Add(time.Minute)
+	base := time.Now().UTC().Truncate(time.Minute).Add(-3 * time.Hour)
+	due := base.Add(3 * time.Hour)
 	if err := first.scheduler.ReconcileAll(nil, base); err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +43,9 @@ func TestSourceScheduleReopenExecutesCapturedStageOnce(t *testing.T) {
 	envelope, err := startintent.Parse(accepted.Payload)
 	if err != nil || envelope.Source == nil || !envelope.Source.ScheduledFrom.Equal(base) {
 		t.Fatal(envelope, err)
+	}
+	if !envelope.Source.ScheduleWindowFrom.Equal(due.Add(-time.Hour)) || envelope.Source.ScheduleFireCount != 60 {
+		t.Fatal("unbounded catch-up metadata", envelope.Source)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("execution preceded queue dispatch: %v", err)

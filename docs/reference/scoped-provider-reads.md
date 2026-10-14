@@ -43,7 +43,8 @@ late fills from provider requests still in flight when invalidation happened.
 
 ## Remaining work
 
-Declared ADO WIQL/batch read plans, provider cost and scope metrics, foreground
+Declared ADO WIQL/batch reads are covered by [shared ADO read plans](shared-ado-read-plans.md).
+Provider cost and scope metrics, foreground
 freshness, background reconciliation, event invalidation, provider-wide write fences,
 and the portal's separately authorized interactive binding are subsequent slices.
 This increment does not claim to centralize every read or complete the shared

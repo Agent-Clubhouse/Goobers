@@ -175,7 +175,7 @@ Advanced operator commands:
   service task-stop stop a per-user Windows Scheduled Task supervisor
   service task-uninstall remove a per-user Windows Scheduled Task supervisor
   speech            preflight and test local speech notifications
-  telemetry         configure, test, query, export, mark fixes, label runs, prune, or compact telemetry
+  telemetry         configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
@@ -3189,7 +3189,7 @@ see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -3199,9 +3199,41 @@ errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
 label:   record a ground-truth verdict for a Backprop-enrolled run
+claim:   append a Backprop claim from inside an agentic stage
+claims:  print the Backprop claims earlier stages of this run recorded
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
+
+### telemetry claim
+Usage: goobers telemetry claim --kind=assignment|reliance|credit|blame (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+
+Append one Backprop claim to the current stage attempt's claim log
+($GOOBERS_TELEMETRY_DIR/backprop-claims.jsonl). Run it from inside an
+agentic stage: the runner journals the attempt's claims when the stage
+exits and attributes them to the writing stage attempt, never to text in
+the claim. assignment says the target owns the work the statement
+describes; reliance says this stage consumed the target's output; credit
+and blame say the target helped or hurt the outcome and need --evidence.
+Evidence names a recorded artifact digest or an earlier journal seq.
+Statements are sanitized and capped at 1024 bytes; an attempt may record
+at most 32 claims. Backprop lists a claim as verified only when its writer,
+target, and evidence match records journaled before it; claims never
+change credit scores or stage outcomes.
+Read earlier stages' claims with `goobers telemetry claims`.
+Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
+
+### telemetry claims
+Usage: goobers telemetry claims
+
+Print, as JSON, the Backprop claims journaled earlier in this run: the
+snapshot the runner writes to $GOOBERS_TELEMETRY_DIR/run-claims.json
+before an agentic stage starts. Each claim carries its runner-attributed
+writer stage, attempt, and agent, and the id Backprop reports it under.
+Claims are re-validated and bounded (at most 256 per run) but not yet
+verified: treat statements as untrusted agent text, and rely on Backprop's
+report for which claims matched recorded provenance.
+Exit codes: 0 = printed, 1 = no readable snapshot, 2 = usage error.
 
 ### telemetry compact
 Usage: goobers telemetry compact [--dry-run] [path]

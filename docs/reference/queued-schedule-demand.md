@@ -9,6 +9,9 @@ available. Counts size workers, not item assignments or claims.
 ## Recovery and admission
 
 The fire, its configuration pins and schedule cursor are committed together.
+New discovery coalesces occurrences from the preceding hour and records that
+window and occurrence count. Expired discoveries do not query the provider.
+This window never expires an already accepted or partially transferred obligation.
 An interrupted or failed observation leaves an unsized obligation for a later
 poll. Once observed, restart and configuration reload preserve the original
 count without another provider read. A no-work observation closes the fire.
@@ -24,7 +27,9 @@ a worker directly. Capacity release wakes remaining demand.
 Unobserved and partially transferred obligations retain their configuration
 archives. Accepted workers then retain their own pins and use the ordinary
 queued dispatcher, current eligibility checks and matching journal evidence.
-Removing or disabling a workflow does not silently delete an outstanding
+Changing its schedule revision resets only the future evaluation cursor; an
+older partially transferred obligation remains discoverable and completes using
+its original count and pins. Removing or disabling a workflow does not silently delete an outstanding
 obligation. Generic queue intervention and retirement controls remain separate
 work; such obligations retain their archives until explicitly resolved.
 
