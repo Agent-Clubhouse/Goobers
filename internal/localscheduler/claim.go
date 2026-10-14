@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,18 +15,6 @@ import (
 )
 
 const forceReleaseActorCLI = "cli"
-
-// PullRequestItemIDPrefix marks a claim whose external ID names a pull
-// request ("pr/536") rather than a backlog work item ("536"). PR claims are
-// leases in this ledger only: no provider claim marker is ever written for
-// them, so they must never be resolved through a work-item API.
-const PullRequestItemIDPrefix = "pr/"
-
-// IsPullRequestItemID reports whether a claim's external ID names a pull
-// request rather than a backlog work item.
-func IsPullRequestItemID(id string) bool {
-	return strings.HasPrefix(id, PullRequestItemIDPrefix)
-}
 
 // ClaimKey identifies one provider item within a gaggle.
 type ClaimKey struct {

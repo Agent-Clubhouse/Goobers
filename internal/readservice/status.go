@@ -557,10 +557,13 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 
 // projectClaimLease records the run's lease status and returns the item ID
 // the lease names: the live (or expired) lease, else the most recently
-// released one, else "" when the run never held a claim.
+// released one, else "" when the run never held a claim. A run can hold
+// several leases (a work item plus its decomposition-target lease, a PR plus
+// its merge lock); a work-item lease is preferred, since it is the one with a
+// provider claim marker.
 func projectClaimLease(run *RunSummary, active, history []localscheduler.ClaimEntry, now time.Time) string {
 	if len(active) > 0 {
-		entry := active[0]
+		entry := preferWorkItemLease(active)
 		expires := entry.ExpiresAt
 		run.Operator.Claim.ExpiresAt = &expires
 		if entry.ExpiresAt.After(now) {
@@ -577,13 +580,32 @@ func projectClaimLease(run *RunSummary, active, history []localscheduler.ClaimEn
 		return ""
 	}
 	run.Operator.Claim.LeaseStatus = "released"
-	latest := history[0]
-	for _, entry := range history[1:] {
-		if claimEntryEndedAt(entry).After(claimEntryEndedAt(latest)) {
-			latest = entry
+	return latestReleasedLease(history).ItemID
+}
+
+// preferWorkItemLease returns the first work-item lease, else the first lease.
+func preferWorkItemLease(entries []localscheduler.ClaimEntry) localscheduler.ClaimEntry {
+	for _, entry := range entries {
+		if localscheduler.IsWorkItemClaimKey(entry.ItemID) {
+			return entry
 		}
 	}
-	return latest.ItemID
+	return entries[0]
+}
+
+// latestReleasedLease returns the most recently ended work-item lease, else
+// the most recently ended lease of any kind.
+func latestReleasedLease(history []localscheduler.ClaimEntry) localscheduler.ClaimEntry {
+	latest := history[0]
+	latestWorkItem := localscheduler.IsWorkItemClaimKey(latest.ItemID)
+	for _, entry := range history[1:] {
+		workItem := localscheduler.IsWorkItemClaimKey(entry.ItemID)
+		newer := claimEntryEndedAt(entry).After(claimEntryEndedAt(latest))
+		if (workItem && !latestWorkItem) || (workItem == latestWorkItem && newer) {
+			latest, latestWorkItem = entry, workItem
+		}
+	}
+	return latest
 }
 
 // claimEntryEndedAt orders released claim history: the release time when
@@ -602,15 +624,16 @@ func claimEntryEndedAt(entry localscheduler.ClaimEntry) time.Time {
 // The lease, not the display issue, decides what is verified: a merge-review
 // run holding "pr/536" can carry a real linked-issue number from its own
 // post-merge ref.touched events, and comparing the PR lease against that
-// issue's claimed label manufactured drift blockers.
+// issue's claimed label manufactured drift blockers. Such a run is therefore
+// not decorated with the linked issue's labels either.
 //
-// A pull-request claim ("pr/<n>", the merge-review / pr-remediation lease)
-// has no provider claim marker by contract — PR leases live in the local
-// ledger only — and its key is not a work-item id, so it is reported as
-// not-applicable without a provider lookup. Resolving it through the
-// work-item API failed on every provider (ADO rejects the non-numeric id;
-// GitHub 404s) and surfaced as a spurious "claim marker verification
-// unavailable" diagnostic (#6798).
+// A ledger-only lease (a PR claim "pr/<n>", an advisory review, a
+// decomposition target, a merge lock — localscheduler.IsWorkItemClaimKey) has
+// no provider claim marker by contract and its key is not a work-item id, so
+// it is reported as not-applicable without a provider lookup. Resolving it
+// through the work-item API failed on every provider (ADO rejects the
+// non-numeric id; GitHub 404s) and surfaced as a spurious "claim marker
+// verification unavailable" diagnostic (#6798).
 func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary, claimItemID string) {
 	issueNumber := ""
 	if run.Operator.Issue != nil {
@@ -618,12 +641,15 @@ func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary, 
 	}
 	itemID := claimItemID
 	if itemID == "" {
+		// No lease. A backlog worker's display number is its trigger ref —
+		// the workflow name — until its claim stage records the item, and
+		// there is nothing claimed to verify yet.
+		if issueNumber == "" || issueNumber == run.Workflow {
+			return
+		}
 		itemID = issueNumber
 	}
-	if itemID == "" {
-		return
-	}
-	if localscheduler.IsPullRequestItemID(itemID) {
+	if !localscheduler.IsWorkItemClaimKey(itemID) {
 		run.Operator.Claim.ProviderMarker = "not-applicable"
 		return
 	}

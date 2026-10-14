@@ -143,7 +143,7 @@ func InNamespace(entry Entry, gaggle, provider string) bool {
 
 // MergeLockItemPrefix namespaces the synthetic ledger item a merge lease is
 // taken on, so it can never collide with a work item or a PR claim.
-const MergeLockItemPrefix = "merge-lock/"
+const MergeLockItemPrefix = localscheduler.MergeLockItemIDPrefix
 
 // MergeLockKey is the synthetic claim key merge-pr's exclusive window is
 // leased on over the plane: one lease per repository, held by the run for
