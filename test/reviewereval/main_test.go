@@ -73,7 +73,7 @@ const (
 //   - fix2 corrects a line from the root commit (no culprit to name);
 //   - fix3 only adds lines (nothing to trace);
 //   - fix4 corrects intro2 but mostly changes a file intro2 never touched;
-//   - fix5 corrects lines from three different commits (ambiguous);
+//   - fix5 corrects one line from each of two commits (a tie: ambiguous);
 //   - fix6 corrects intro3's line after a pure reordering refactor.
 func newFixtureRepo(t *testing.T) *fixtureRepo {
 	t.Helper()
@@ -98,7 +98,7 @@ func newFixtureRepo(t *testing.T) *fixtureRepo {
 	repo.commit(t, "d1", "feat: one", map[string]string{"d.go": "package a\n\nvar one = 1\n"})
 	repo.commit(t, "d2", "feat: two", map[string]string{"d.go": "package a\n\nvar one = 1\nvar two = 2\n"})
 	repo.commit(t, "d3", "feat: three", map[string]string{"d.go": "package a\n\nvar one = 1\nvar two = 2\nvar three = 3\n"})
-	repo.commit(t, "fix5", "fix: collapse the values", map[string]string{"d.go": "package a\n\nvar all = 6\n"})
+	repo.commit(t, "fix5", "fix: collapse the values", map[string]string{"d.go": "package a\n\nvar one = 1\nvar all = 5\n"})
 	repo.commit(t, "intro3", "feat: E", map[string]string{"e.go": introE})
 	repo.commit(t, "refactor", "refactor: declare y first", map[string]string{"e.go": "package a\n\nfunc E() (int, int) {\n\ty := 2\n\tx := 1\n\treturn x, y\n}\n"})
 	repo.commit(t, "fix6", "fix: E starts at zero", map[string]string{"e.go": "package a\n\nfunc E() (int, int) {\n\ty := 2\n\tx := 0\n\treturn x, y\n}\n"})
@@ -309,6 +309,19 @@ func replayFixture(t *testing.T) (*fixtureRepo, dataset) {
 	return repo, set
 }
 
+// failingJudge answers the first finding of each case, then fails.
+type failingJudge struct{ calls int }
+
+func (judge *failingJudge) Name() string { return "failing" }
+
+func (judge *failingJudge) Judge(context.Context, judgeRequest) (judgeDecision, error) {
+	judge.calls++
+	if judge.calls%2 == 0 {
+		return judgeDecision{}, fmt.Errorf("judge unavailable")
+	}
+	return judgeDecision{Rationale: "unrelated", CostUSD: 0.2}, nil
+}
+
 type fakeJudge struct{ requests int }
 
 func (judge *fakeJudge) Name() string { return "fake" }
@@ -427,12 +440,25 @@ func TestReplayGuardrails(t *testing.T) {
 	}
 
 	failing := &fakeReviewer{t: t, repo: repo, answer: func(reviewRequest) reviewResult {
-		return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Synthesized: true}}
+		return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Synthesized: true}, CostUSD: 1}
 	}}
 	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, failing, matcher{},
-		replayOptions{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s", WorkDir: t.TempDir()})
-	if err != nil || report.Failed != 1 || report.Reviewed != 0 {
-		t.Fatalf("synthesized verdict report = %+v, %v; want the case failed, not scored", report, err)
+		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1.5, Seed: "s", WorkDir: t.TempDir()})
+	if err != nil || report.Failed != 2 || report.BudgetExhausted != 2 || report.Reviewed != 0 || report.TotalCostUSD != 2 {
+		t.Fatalf("synthesized verdict report = %+v, %v; want failed cases unscored but their spend capped by the budget", report, err)
+	}
+
+	judged := &fakeReviewer{t: t, repo: repo, answer: func(reviewRequest) reviewResult {
+		return reviewResult{CostUSD: 0.5, Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
+			{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go", Message: "untested"},
+			{Class: apiv1.FindingScopeCreep, Severity: apiv1.SeverityInfo, Location: "b.go", Message: "unrelated"},
+		}}}
+	}}
+	report, err = replay(context.Background(), set, gitReader{dir: repo.dir}, judged, matcher{judge: &failingJudge{}},
+		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1.4, Seed: "s", WorkDir: t.TempDir()})
+	if err != nil || report.Failed != 2 || report.BudgetExhausted != 2 || report.TotalCostUSD != 1.4 ||
+		len(report.Results[0].JudgeDecisions) != 1 || report.Results[0].JudgeCostUSD != 0.2 {
+		t.Fatalf("judge failure report = %+v, %v; want each case failed with review and judge spend counted", report, err)
 	}
 
 	for _, bad := range []replayOptions{
@@ -533,6 +559,17 @@ func TestCLIRequiresOptInAndPublishesComparison(t *testing.T) {
 	training.Split = splitTrain
 	if code := run(ctx, []string{"publish", "-report", writeReport(t, training), "-instance", t.TempDir()}, &stdout, &stderr); code != 1 {
 		t.Fatalf("publishing a training-split report exit %d, want 1", code)
+	}
+}
+
+func TestExtractTarSkipsGitDirAliases(t *testing.T) {
+	for name, want := range map[string]bool{
+		".git/hooks/post-commit": true, ".GIT/hooks/post-commit": true, ".git./config": true, "GIT~1/hooks/x": true,
+		"sub/.git": true, "a.go": false, ".github/workflows/ci.yml": false, "pkg/.gitignore": false,
+	} {
+		if got := namesGitDir(name); got != want {
+			t.Errorf("namesGitDir(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 

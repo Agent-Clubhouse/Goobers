@@ -55,12 +55,14 @@ func newReport(set dataset, options replayOptions, outOfDiff int, results []case
 		BudgetUSD: options.BudgetUSD, Sampled: len(results), OutOfDiff: outOfDiff,
 		SZZCalibration: calibrateSZZ(set, options.Split), Results: results,
 	}
+	// Spend on failed cases counts toward the total, so cost per bug is what
+	// each reviewed bug really cost.
 	total := 0.0
 	for _, result := range results {
+		total += result.CostUSD
 		switch result.Status {
 		case statusReviewed:
 			report.Reviewed++
-			total += result.CostUSD
 		case statusFailed:
 			report.Failed++
 		case statusBudgetExhausted:

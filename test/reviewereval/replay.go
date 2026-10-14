@@ -130,21 +130,28 @@ func replay(ctx context.Context, set dataset, live gitReader, review reviewer, m
 			continue
 		}
 		reviewed, err := replayCase(ctx, live, review, item, options, options.BudgetUSD-spent)
+		spent += reviewed.CostUSD
 		if err != nil {
-			result.Status, result.Error = statusFailed, err.Error()
+			result.Status, result.Error, result.CostUSD = statusFailed, err.Error(), round4(reviewed.CostUSD)
 			results = append(results, result)
 			continue
 		}
-		spent += reviewed.CostUSD
 		scored, err := match.score(ctx, item, reviewed)
+		spent += scored.JudgeCostUSD
 		if err != nil {
-			return evalReport{}, fmt.Errorf("score case %s: %w", item.ID, err)
+			result.Status, result.Error = statusFailed, fmt.Sprintf("score: %v", err)
+			result.CostUSD, result.JudgeCostUSD = scored.CostUSD, scored.JudgeCostUSD
+			result.JudgeDecisions = scored.JudgeDecisions
+			results = append(results, result)
+			continue
 		}
 		results = append(results, scored)
 	}
 	return newReport(set, options, outOfDiff, results), nil
 }
 
+// replayCase reconstructs and reviews one case. A review the harness rejects
+// still returns the cost the reviewer reported, so the budget counts it.
 func replayCase(ctx context.Context, live gitReader, review reviewer, item datasetCase, options replayOptions, budget float64) (reviewResult, error) {
 	dir, err := os.MkdirTemp(options.WorkDir, "reviewer-eval-")
 	if err != nil {
@@ -160,11 +167,11 @@ func replayCase(ctx context.Context, live gitReader, review reviewer, item datas
 	if err != nil {
 		return reviewResult{}, fmt.Errorf("review: %w", err)
 	}
-	if result.Verdict.Synthesized || result.Verdict.Decision == "" {
-		return reviewResult{}, errors.New("reviewer returned no reviewed verdict")
-	}
 	if !validCost(result.CostUSD) {
 		return reviewResult{}, fmt.Errorf("reviewer reported invalid cost %v", result.CostUSD)
+	}
+	if result.Verdict.Synthesized || result.Verdict.Decision == "" {
+		return reviewResult{CostUSD: result.CostUSD}, errors.New("reviewer returned no reviewed verdict")
 	}
 	return result, nil
 }
@@ -259,7 +266,7 @@ func extractTar(source io.Reader, dir string) error {
 			return err
 		}
 		name := filepath.FromSlash(header.Name)
-		if !filepath.IsLocal(name) || strings.HasPrefix(filepath.ToSlash(name), ".git/") || name == ".git" {
+		if !filepath.IsLocal(name) || namesGitDir(header.Name) {
 			continue
 		}
 		target := filepath.Join(dir, name)
@@ -282,6 +289,19 @@ func extractTar(source io.Reader, dir string) error {
 	}
 }
 
+// namesGitDir reports whether any component of an archive path could resolve
+// to a .git directory, including the aliases case-insensitive or Windows
+// filesystems accept (".GIT", ".git.", "GIT~1"), so an exported tree can never
+// write into the scratch repository's own .git and plant a hook.
+func namesGitDir(name string) bool {
+	for _, component := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
+		component = strings.TrimRight(component, ". ")
+		if strings.EqualFold(component, ".git") || strings.EqualFold(component, "git~1") {
+			return true
+		}
+	}
+	return false
+}
 func writeTarFile(reader io.Reader, target string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err

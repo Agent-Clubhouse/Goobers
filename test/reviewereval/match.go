@@ -41,9 +41,12 @@ type judgeRequest struct {
 	Finding           apiv1.Finding `json:"finding"`
 }
 
+// judgeDecision is a judge's answer and what producing it cost; judge spend
+// counts against the replay budget.
 type judgeDecision struct {
-	Match     bool   `json:"match"`
-	Rationale string `json:"rationale"`
+	Match     bool    `json:"match"`
+	Rationale string  `json:"rationale"`
+	CostUSD   float64 `json:"costUsd,omitempty"`
 }
 
 // judge is an optional semantic matcher, consulted only for findings whose
@@ -79,10 +82,11 @@ type findingResult struct {
 }
 
 type judgeRecord struct {
-	Finding   int    `json:"finding"`
-	Judge     string `json:"judge"`
-	Match     bool   `json:"match"`
-	Rationale string `json:"rationale"`
+	Finding   int     `json:"finding"`
+	Judge     string  `json:"judge"`
+	Match     bool    `json:"match"`
+	Rationale string  `json:"rationale"`
+	CostUSD   float64 `json:"costUsd,omitempty"`
 }
 
 // caseResult is one sampled case's outcome: the verdict the reviewer
@@ -97,6 +101,7 @@ type caseResult struct {
 	Findings          []findingResult `json:"findings,omitempty"`
 	Caught            bool            `json:"caught"`
 	CostUSD           float64         `json:"costUsd"`
+	JudgeCostUSD      float64         `json:"judgeCostUsd,omitempty"`
 	JudgeDecisions    []judgeRecord   `json:"judgeDecisions,omitempty"`
 }
 
@@ -106,6 +111,8 @@ type matcher struct {
 	judge judge
 }
 
+// score matches each finding to the case's bug. On a judge failure it returns
+// the partial result, whose JudgeCostUSD is what the judge already spent.
 func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewResult) (caseResult, error) {
 	verdict := reviewed.Verdict
 	result := caseResult{
@@ -128,11 +135,16 @@ func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewRes
 				CaseID: item.ID, FixCommit: item.FixCommit, FixSubject: item.FixSubject,
 				IntroducingCommit: item.IntroducingCommit, BugLines: item.BugLines, Finding: finding,
 			})
-			if err != nil {
-				return caseResult{}, fmt.Errorf("judge finding %d: %w", index, err)
+			if err == nil && !validCost(decision.CostUSD) {
+				err = fmt.Errorf("judge reported invalid cost %v", decision.CostUSD)
 			}
+			if err != nil {
+				return result, fmt.Errorf("judge finding %d: %w", index, err)
+			}
+			result.JudgeCostUSD += decision.CostUSD
+			result.CostUSD = round4(reviewed.CostUSD + result.JudgeCostUSD)
 			result.JudgeDecisions = append(result.JudgeDecisions, judgeRecord{
-				Finding: index, Judge: m.judge.Name(), Match: decision.Match, Rationale: decision.Rationale,
+				Finding: index, Judge: m.judge.Name(), Match: decision.Match, Rationale: decision.Rationale, CostUSD: decision.CostUSD,
 			})
 			if decision.Match {
 				scored.Match = matchJudge

@@ -468,7 +468,7 @@ commit holding the most traced lines is the introducing commit. A fix is
 dropped, by reason, when it deletes nothing (`no-traceable-lines`), when every
 line is filtered (`all-lines-filtered`), when the culprit is the root or a
 boundary commit (`root-commit`), or when the top candidate holds under half
-the traced lines (`ambiguous`). The dataset header records how many lines each
+the traced lines or ties with the runner-up (`ambiguous`). The dataset header records how many lines each
 filter removed and how many fixes each reason dropped, so filter impact is
 reported rather than hidden. A case whose fix mostly changes non-test files the
 introducing commit never touched is tagged `out-of-diff`: its cause lay outside
@@ -499,18 +499,19 @@ unreachable. The reviewer adapter runs in that repository with forge
 credentials stripped from its environment, receives the request (base and head
 SHAs, title, diff, remaining budget) as JSON on stdin, and prints the verdict
 and its cost. Nothing is posted to a pull request. A real review is always
-opt-in: replay refuses to run without both flags. Once the budget is spent,
-the remaining cases are recorded as `budget-exhausted`; a synthesized or failed
-review is recorded as `failed`. Neither counts toward recall.
+opt-in: replay refuses to run without both flags. The budget covers reviewer and judge
+spend, including spend on failed cases; once it is spent, the remaining cases
+are recorded as `budget-exhausted`. A synthesized or failed review, or a judge
+failure, is recorded as `failed` with its spend kept. Neither counts toward recall.
 
 A finding matches its case's bug when its location names a bug file and a line
 within three lines of a bug line. If `-judge-cmd` is given, a finding that does
-not overlap is sent to that semantic judge, and every judge decision and
-rationale is recorded in the report. The report (schema
+not overlap is sent to that semantic judge, and every judge decision,
+rationale, and cost is recorded in the report. The report (schema
 `goobers.dev/backprop/reviewer-eval-report/v1`) holds each case's verdict and
 scored findings, overall and per-finding-class recall (bugs caught over bugs
 reviewed) and precision (matching findings over all findings), and total cost
-and cost per bug.
+(failed cases included) and cost per bug.
 
 `compare -baseline=FILE -candidate=FILE` compares a candidate reviewer variant
 with the baseline. Both reports must come from the same frozen dataset (version

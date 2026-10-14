@@ -12,7 +12,8 @@ import (
 
 const (
 	// minCaseConfidence is the share of a fix's traced lines its top
-	// candidate must hold; below it the culprit is too ambiguous to score.
+	// candidate must hold; below it, or tied with the runner-up, the culprit is
+	// too ambiguous to score.
 	minCaseConfidence = 0.5
 	// maxRefactorRounds bounds how many consecutive pure-refactor commits one
 	// line is traced through.
@@ -243,7 +244,7 @@ func (b *builder) trace(ctx context.Context, fix fixCommit, filtered map[string]
 	if entriesBoundary(entries, top.Commit) {
 		return datasetCase{}, dropRootCommit, nil
 	}
-	if top.Confidence < minCaseConfidence {
+	if top.Confidence < minCaseConfidence || (len(candidates) > 1 && candidates[1].Lines == top.Lines) {
 		return datasetCase{}, dropAmbiguous, nil
 	}
 	item := datasetCase{
