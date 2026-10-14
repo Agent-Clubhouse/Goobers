@@ -1796,8 +1796,8 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		if r.Operator.Reliability != nil {
 			pf(stdout, "  reliability: %s\n", r.Operator.Reliability.StatusLine())
 		}
-		if len(r.Operator.PotentialBlockers) > 0 {
-			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
+		if blockers := statusBlockerText(r.Operator, now); blockers != "" {
+			pf(stdout, "  blockers: %s\n", blockers)
 		}
 		// Explicitly disclaimed and rendered after blockers: this line is about
 		// what THIS status invocation could not check, not about the run (#3346).
@@ -1806,6 +1806,25 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 				strings.Join(r.Operator.DiagnosticsLimitations, "; "))
 		}
 	}
+}
+
+// statusBlockerText renders each blocker once with when it was observed and
+// how long ago (#5404), so a blocker that stopped recurring reads as old
+// rather than as a current outage. A summary from a reader that predates
+// structured blockers falls back to the bare display text.
+func statusBlockerText(operator readservice.OperatorRunSummary, now time.Time) string {
+	if len(operator.Blockers) == 0 {
+		return strings.Join(operator.PotentialBlockers, "; ")
+	}
+	parts := make([]string, 0, len(operator.Blockers))
+	for _, blocker := range operator.Blockers {
+		observed := "observed at an unknown time"
+		if blocker.ObservedAt != nil {
+			observed = "observed " + blocker.ObservedAt.UTC().Format(time.RFC3339) + ", " + formatLastActivity(now, *blocker.ObservedAt)
+		}
+		parts = append(parts, blocker.Message+" ("+observed+")")
+	}
+	return strings.Join(parts, "; ")
 }
 
 func renderStatusReview(stdout io.Writer, review *readservice.OperatorReview) {

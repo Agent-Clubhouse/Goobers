@@ -376,6 +376,7 @@ func (s *Local) ListStatusRuns(ctx context.Context, options StatusRunOptions) ([
 	if err := s.decorateRunLineage(ctx, runs); err != nil {
 		return nil, err
 	}
+	s.decorateBlockerClears(ctx, runs)
 	return runs, nil
 }
 
@@ -543,14 +544,14 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 			if s.sources.LivenessTimeout > 0 &&
 				*runs[i].Operator.HeartbeatAgeMillis > s.sources.LivenessTimeout.Milliseconds() {
 				runs[i].Operator.Liveness = "stale"
-				runs[i].Operator.PotentialBlockers = append(
-					runs[i].Operator.PotentialBlockers,
-					"stage heartbeat is stale",
-				)
+				runs[i].Operator.addBlocker(OperatorBlocker{
+					Code: BlockerCodeHeartbeatStale, Source: BlockerSourceHeartbeat,
+					Message: "stage heartbeat is stale", ObservedAt: runs[i].Operator.LastHeartbeatAt,
+				}, now)
 			}
 		}
 		claimItemID := projectClaimLease(&runs[i], ledger.ForRunAll(runs[i].ID), ledger.HistoryForRun(runs[i].ID), now)
-		s.verifyProviderClaimMarker(ctx, &runs[i], claimItemID)
+		s.verifyProviderClaimMarker(ctx, &runs[i], claimItemID, now)
 	}
 	return nil
 }
@@ -634,7 +635,7 @@ func claimEntryEndedAt(entry localscheduler.ClaimEntry) time.Time {
 // through the work-item API failed on every provider (ADO rejects the
 // non-numeric id; GitHub 404s) and surfaced as a spurious "claim marker
 // verification unavailable" diagnostic (#6798).
-func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary, claimItemID string) {
+func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary, claimItemID string, now time.Time) {
 	issueNumber := ""
 	if run.Operator.Issue != nil {
 		issueNumber = run.Operator.Issue.Number
@@ -684,26 +685,26 @@ func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary, 
 	if run.Phase != journal.PhaseRunning {
 		return
 	}
-	reconcileProviderClaimMarker(run, item.HasLabel(providers.LabelClaimed))
+	reconcileProviderClaimMarker(run, item.HasLabel(providers.LabelClaimed), now)
 }
 
 // reconcileProviderClaimMarker classifies a running run's verified provider
 // marker against its lease, recording observed drift as a run blocker.
-func reconcileProviderClaimMarker(run *RunSummary, markerPresent bool) {
+func reconcileProviderClaimMarker(run *RunSummary, markerPresent bool, now time.Time) {
 	active := run.Operator.Claim.LeaseStatus == "active"
 	switch {
 	case !active && markerPresent:
 		run.Operator.Claim.ProviderMarker = "drift"
-		run.Operator.PotentialBlockers = append(
-			run.Operator.PotentialBlockers,
-			"provider claim marker exists without an active lease",
-		)
+		run.Operator.addBlocker(OperatorBlocker{
+			Code: BlockerCodeClaimMarkerDrift, Source: BlockerSourceClaim,
+			Message: "provider claim marker exists without an active lease", ObservedAt: &now,
+		}, now)
 	case active && !markerPresent:
 		run.Operator.Claim.ProviderMarker = "drift"
-		run.Operator.PotentialBlockers = append(
-			run.Operator.PotentialBlockers,
-			"active claim lease has no provider marker",
-		)
+		run.Operator.addBlocker(OperatorBlocker{
+			Code: BlockerCodeClaimMarkerDrift, Source: BlockerSourceClaim,
+			Message: "active claim lease has no provider marker", ObservedAt: &now,
+		}, now)
 	case active:
 		run.Operator.Claim.ProviderMarker = "verified"
 	default:

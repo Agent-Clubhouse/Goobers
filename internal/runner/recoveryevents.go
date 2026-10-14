@@ -10,7 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
-const recoveryObservationFailureCode = "recovery_observation_failed"
+const recoveryObservationFailureCode = journal.ErrorCodeRecoveryObservationFailed
 const recoveryObservationBatchSize = 128 // journal.AppendBatchIfAbsent's generic transaction ceiling
 
 // recoveryObservationError distinguishes a failure to observe already-retained
@@ -39,7 +39,14 @@ func (r *Runner) recordRecoveryAfterCleanup(ctx context.Context, log recoveryEve
 	if cleanupErr != nil {
 		return cleanupErr
 	}
-	if err := r.recordRecoveryEvents(context.WithoutCancel(ctx), log, runID); err != nil {
+	err := r.recordRecoveryEvents(context.WithoutCancel(ctx), log, runID)
+	// Report successes as well as failures: a recovery_observation_failed
+	// blocker is retracted only by evidence that a later observation of the
+	// same kind succeeded (#5404).
+	if r.cfg.RecoveryEvents != nil && r.cfg.RecoveryObserved != nil {
+		r.cfg.RecoveryObserved(runID, err)
+	}
+	if err != nil {
 		return &recoveryObservationError{err: err}
 	}
 	return nil

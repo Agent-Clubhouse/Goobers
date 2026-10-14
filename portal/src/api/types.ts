@@ -1042,6 +1042,16 @@ export interface LineageRun {
   phase?: RunPhase;
 }
 
+/** One run blocker with when its evidence was observed (#5404). `message` matches the potentialBlockers entry. */
+export interface OperatorBlocker {
+  code: string;
+  source: string;
+  message: string;
+  /** Absent when the observed time is unknown. */
+  observedAt?: string;
+  ageMillis?: number;
+}
+
 export interface OperatorRunSummary {
   issue?: { number: string; title?: string; url?: string; labels?: string[] };
   /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
@@ -1063,6 +1073,8 @@ export interface OperatorRunSummary {
   nextTransition?: string;
   /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** potentialBlockers with provenance and age, one per source and code, with cleared conditions removed (#5404); absent on older daemons. */
+  blockers?: OperatorBlocker[];
   /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
   diagnosticsLimitations?: string[];
   /** Implementation reliability projection (#5313); absent on older daemons. */

@@ -43,6 +43,9 @@ type instanceState struct {
 	workerDivergence      map[string]WorkerConfigDivergenceStatus
 	telemetryRetention    *TelemetryRetentionStatus
 	configReloadRejection *ConfigReloadRejectionStatus
+	// blockerClears is the newest blocker.cleared record per error code
+	// (#5404).
+	blockerClears map[string]time.Time
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -72,6 +75,7 @@ func (s *instanceState) apply(event journal.Event) {
 	s.applyConfigReload(event)
 	s.applyClusterCheck(event)
 	s.applyProviderAuthHealth(event)
+	s.applyBlockerCleared(event)
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -319,6 +323,7 @@ func (s instanceState) clone() instanceState {
 	clone.refusalOrder = append([]string(nil), s.refusalOrder...)
 	clone.refusals = maps.Clone(s.refusals)
 	clone.refillBlocked = maps.Clone(s.refillBlocked)
+	clone.blockerClears = maps.Clone(s.blockerClears)
 	clone.workerDivergenceOrder = append([]string(nil), s.workerDivergenceOrder...)
 	clone.workerDivergence = maps.Clone(s.workerDivergence)
 	return clone

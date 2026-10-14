@@ -174,6 +174,26 @@ alongside the earliest retention deadline, which is what distinguishes ordinary
 pressure from an inventory wedged behind a retain floor, and appends
 `+<n> overflow` when snapshots are being held at the ref tier described below.
 
+After every successful workspace cleanup the runner observes the recovery
+state that cleanup retained and copies it into the run's journal. When that
+observation fails, the run records a `recovery_observation_failed` error and
+`goobers status` lists it among the run's blockers, with when it was observed
+and how long ago (`(observed <time>, <age> ago)`; `blockers[].observedAt` and
+`ageMillis` in `--json`). The observation reads the shared inventory, and a
+run that has finished never observes again, so the blocker is retracted by
+*another* run's later successful observation: the daemon journals a
+`blocker.cleared` record in the instance log on the first successful
+observation of each process lifetime, on the first one after any failure it
+saw, and otherwise at most every fifteen minutes. A failure recorded after the
+newest such record stays listed, and a blocker whose observed time is unknown
+(a read-model row projected by an older build) is never treated as cleared. The
+recorded error itself stays in the run's journal and `latestError`; only its
+listing as a current blocker is retracted. Other run blockers clear the way
+they always have: a later error or review in the same run supersedes the
+earlier one, and stale-heartbeat and claim-drift blockers are recomputed on
+every read. Any other recorded error code has no automatic clear — it is the
+run's last recorded failure (#5404).
+
 A legitimately full inventory no longer refuses the cleanup. Capacity gates
 bundle publication, never worktree teardown. A snapshot's objects are written
 into the repository - for a linked worktree, the managed mirror - and pinned

@@ -15,7 +15,10 @@ import (
 // Advance when changed projection semantics require replay of unchanged
 // journals. Daemon startup re-projects every row older than this before it
 // attaches the store (EnsureReady).
-const currentProjectionVersion = 9
+//
+// 10: operator facts carry LatestErrorAt and ReviewAt, the observed-at times
+// of the blockers status derives from them (#5404).
+const currentProjectionVersion = 10
 
 // UpsertRun writes a projection in ONE transaction.
 //

@@ -325,6 +325,19 @@ const (
 	// the host spending suspended (#5891). Its Runner payload carries
 	// suspendedFrom and suspendedTo as RFC 3339 timestamps.
 	RunnerAnnotationHostSuspended = "host.suspended"
+	// RunnerAnnotationBlockerCleared is the instance-journal record that a
+	// condition a run blocker reports has been observed healthy again
+	// (#5404). Its Runner payload carries "code", the ErrorDetail code it
+	// clears; RunID names the run whose observation succeeded. A run error
+	// with that code observed before this event's Time is no longer a current
+	// blocker. Readers honour it only for codes they register as clearable
+	// this way (readservice's blocker clear-path registry), so the record
+	// cannot retract an arbitrary run failure.
+	RunnerAnnotationBlockerCleared = "blocker.cleared"
+	// ErrorCodeRecoveryObservationFailed is the run error recorded when a
+	// workspace cleanup succeeded but the retained recovery state it left
+	// could not be observed and journaled afterwards.
+	ErrorCodeRecoveryObservationFailed = "recovery_observation_failed"
 	// RecoveryActionResumed records continuation of an interrupted stage.
 	RecoveryActionResumed = "resumed"
 	// RecoveryActionRetried records a new attempt after interruption.

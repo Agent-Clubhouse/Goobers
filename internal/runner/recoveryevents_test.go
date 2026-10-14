@@ -62,6 +62,41 @@ func TestRecoveryObservationFailureIsNotWorktreeRemovalFailure(t *testing.T) {
 	}
 }
 
+// TestRecoveryObservationOutcomeIsReported: a later success is what retracts
+// a recovery_observation_failed blocker (#5404), so the runner must report
+// successes as well as failures — and nothing for a cleanup that failed before
+// any observation was attempted.
+func TestRecoveryObservationOutcomeIsReported(t *testing.T) {
+	type outcome struct {
+		runID string
+		err   error
+	}
+	var reported []outcome
+	observationFailure := errors.New("inventory unavailable")
+	var observeErr error
+	r := &Runner{cfg: Config{
+		RecoveryEvents: func(context.Context, string) ([]journal.Event, int, error) {
+			return nil, 500, observeErr
+		},
+		RecoveryObserved: func(runID string, err error) { reported = append(reported, outcome{runID, err}) },
+	}}
+	observeErr = observationFailure
+	if err := r.recordRecoveryAfterCleanup(t.Context(), nil, "first", nil); !errors.Is(err, observationFailure) {
+		t.Fatalf("failed observation = %v", err)
+	}
+	observeErr = nil
+	if err := r.recordRecoveryAfterCleanup(t.Context(), nil, "second", nil); err != nil {
+		t.Fatalf("successful observation = %v", err)
+	}
+	if err := r.recordRecoveryAfterCleanup(t.Context(), nil, "third", errors.New("remove worktree")); err == nil {
+		t.Fatal("removal failure was swallowed")
+	}
+	if len(reported) != 2 || reported[0].runID != "first" || !errors.Is(reported[0].err, observationFailure) ||
+		reported[1].runID != "second" || reported[1].err != nil {
+		t.Fatalf("reported outcomes = %+v", reported)
+	}
+}
+
 func TestTaskCleanupJournalsRecoveryObservationFailureSeparately(t *testing.T) {
 	log, err := journal.Create(t.TempDir(), journal.RunIdentity{RunID: "observation-journal", Workflow: "implementation", WorkflowVersion: 1, StartedAt: time.Now().UTC()}, nil)
 	if err != nil {
