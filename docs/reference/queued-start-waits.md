@@ -29,3 +29,42 @@ controls, or event/child-specific admission policy described in the event design
 [Bounded pending-start scans](pending-start-sweeps.md) advance through held starts
 and retain scan progress across daemon reopen, so a held prefix does not pin the
 next eligible window. Custody and normal admission remain separate from scanning.
+
+## Default manual admission deadline
+
+New ordinary manual starts capture a seven-day admission deadline with their
+first durable acceptance. This covers the normal pinned HTTP and standalone
+start paths. An exact retry keeps the original deadline, acceptance time, and
+reserved run identity; it cannot extend the waiting period.
+
+The deadline is checked by the existing admission owner. Expiry records a
+terminal rejection with the reason `accepted trigger expired before execution
+admission` only after proving the request has not launched. A matching journal
+wins over the clock. Unreadable evidence or an uncertain launch keeps custody,
+and the deadline does not cancel an already running workflow.
+
+Previously accepted receipts retain their original deadline, including an absent
+deadline. Explicit host deadlines, such as file-delegated admission limits, keep
+their existing meaning. Schedule demand, direct-engine starts, and children
+retain their existing source policies. Their expiry handling and the design's distinct public `expired`
+state remain separate work.
+
+## Signal and backlog admission deadlines
+
+New local signal and authenticated webhook deliveries, plus counted backlog and
+refill workers, capture a seven-day pending limit with their durable source
+acceptance. The original acceptance observation determines every member's
+deadline. A duplicate delivery or exact worker-observation retry retains the
+original recipients, pins, payloads, timestamp, and deadline across daemon reopen.
+A retry cannot renew an expired receipt.
+
+These starts use the same expiry owner as ordinary manual starts: proven-unlaunched
+work becomes a retained terminal rejection, while matching journal evidence wins
+and uncertain execution retains custody. Expiry does not stop an admitted run.
+A later distinct backlog observation is new work, subject to ordinary eligibility
+and pending-capacity limits; it does not rewrite the earlier observation.
+
+Existing accepted source receipts without a deadline keep that contract. Schedule
+fires and unsized schedule demand need a separate policy and inspectable expiry
+transition; this change does not impose signal/backlog limits on those owners,
+child workflows, or future generic event and human-session starts.
