@@ -46,11 +46,11 @@ The same operations are available to authorized agents through typed daemon oper
 ## 2. Original baseline and remaining gaps
 
 The table records the original main-branch baseline above. It is historical input
-to this design, not the current local delivery status. The stack now installs
+to this design, not a claim of delivery on main. The unmerged review snapshot installs
 per-gaggle human access, sequence-bound decisions, queued stage restarts, shared
 native agent sessions, source browsing and audited manual/session field edits.
 Needs-human resolution, selected-PR repair and post-turn receipt inspection are
-also installed in the local daemon, with current source authority and bounded effects.
+also present in that snapshot's local daemon, with source authority checks and bounded effects.
 See the [delivery ledger](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/hitl-advanced-workflows-tracking.md). No deployed
 end-to-end qualification is claimed.
 
@@ -99,7 +99,7 @@ permissions, while the instance enforces gaggle action/target limits and selects
 provider credentials. It preserves both the acting service and initiating human.
 Fleet grants replace duplicate local user membership only in that explicit mode;
 service-only credentials cannot satisfy a human approval. This addition is not
-implemented by the current stack. Its `HAW-AUTH-*` slices are prerequisites for
+implemented by the review snapshot. Its `HAW-AUTH-*` slices are prerequisites for
 advertising fleet writes. Direct-mode browser sign-in is also still a delivery
 gap; API token verification alone does not provide a portal login experience.
 
@@ -127,14 +127,14 @@ user membership is handled through the separately specified delegated path.
 The exact fleet-to-local authorization contract still requires the review in
 [#6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) before implementation.
 
-### 4.2 Existing direct-mode policy and credentials
+### 4.2 Direct-mode policy and reference implementation
 
-The policy and named credential vocabulary below is implemented alongside
-bounded shared sessions using an existing configured Goober and independently
+The unmerged review snapshot implements the policy and named credential vocabulary
+below alongside bounded shared sessions using an existing configured Goober and independently
 authorized typed source operations. See [interactive access](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/reference/interactive-access.md) for the current
 permissions route, source formats and implementation boundaries.
 
-The portal implements human-only local run inspection, occurrence-bound decisions,
+The snapshot portal implements human-only local run inspection, occurrence-bound decisions,
 saved shared guidance, queued affected-stage restart epochs and shared native
 sessions through the existing runner and journal services. Saved notes alone are
 not agent delivery. Engine intervention remains unsupported on this surface until
@@ -274,7 +274,7 @@ An open execution can consume the restart through its runner-owned command path.
 A settled execution requires an executable linked continuation with a new run identity,
 immutable source-terminal reference and equivalent provider/branch checks. Finish actual
 dispatch and recovery before exposing this action. The original continuation CLI
-was only a journal-preparation foundation; the local stack now installs queued
+was only a journal-preparation foundation; the unmerged review snapshot implements queued
 human epoch dispatch and recovery. Map parent observation to the accepted continuation
 explicitly; never rewrite an old child's successful/failed result or source journal.
 
@@ -316,7 +316,7 @@ Add contracts to the shared API registry and generated portal fixtures. Proposed
 | `GET/POST /api/v1/gaggles/{g}/sessions` | List/create a shared session. |
 | `GET /api/v1/gaggles/{g}/sessions/{s}` | Session summary and linked work; messages are separately paged. |
 | `GET/POST /api/v1/gaggles/{g}/sessions/{s}/messages` | Cursor history or durable ordered submission. |
-| `POST /api/v1/gaggles/{g}/sessions/{s}/close` | Implemented transport for typed close, with durable idempotency. Further interrupt/linked commands use separate typed operations; never arbitrary shell text. |
+| `POST /api/v1/gaggles/{g}/sessions/{s}/close` | Typed close, with durable idempotency. Further interrupt/linked commands use separate typed operations; never arbitrary shell text. |
 | `POST /api/v1/gaggles/{g}/operations` | Typed resolve, restart-stage, repair-PR or source-edit request. |
 | `GET /api/v1/gaggles/{g}/operations/{o}` | Durable accepted/running/applied/rejected/partial/unknown outcome and receipts. |
 
@@ -349,7 +349,8 @@ are explicitly unsupported. GitHub `createCommitOnBranch.expectedHeadOid` and AD
 that call; neither native primitive atomically compares PR-open status with branch update.
 Provider acknowledgement and a later exact commit observation remain distinct receipt
 facts. The shared command ledger, current execution lease and private session tools
-now connect to local daemon custody. The host holds `claims.lock`, an admission barrier
+connect to local daemon custody in the unmerged review snapshot. The host holds
+`claims.lock`, an admission barrier
 and sorted repository-manager locks through the bounded provider effect and receipt.
 Topology and manager membership come from one independently published immutable
 custody snapshot. Workflow-only reload waits for active repairs; changed-policy reload
@@ -457,7 +458,7 @@ documents at-least-once step producers, reinforcing the need to reconcile extern
 and supervised execution. These are product/source precedents, not dependencies or a claim
 that Goobers has been live-tested against those products.
 
-The implemented source selector uses named `instance.interactiveCredentials`, backed by
+The snapshot source selector uses named `instance.interactiveCredentials`, backed by
 existing token/auth sources. Initial shared sessions select an existing Goober
 and admit at most 32 open sessions per gaggle, four executing turns per gaggle and
 64 queued turns per session. See the shared-session reference for retention and
