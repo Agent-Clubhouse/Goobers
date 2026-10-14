@@ -160,6 +160,7 @@ func Build(source fs.FS, version, commit string) (Bundle, error) {
 		{"docs/feature-matrix.md", "docs/feature-matrix.md"},
 		{"docs/guides/codex-harness.md", "docs/guides/codex-harness.md"},
 		{"docs/guides/goobers-io-mcp.md", "docs/guides/goobers-io-mcp.md"},
+		{"docs/guides/harness-host-process-safety.md", "docs/guides/harness-host-process-safety.md"},
 		{"docs/guides/quickstart.md", "docs/guides/quickstart.md"},
 		{"docs/guides/stack-support.md", "docs/guides/stack-support.md"},
 		{"docs/guides/supervision.md", "docs/guides/supervision.md"},

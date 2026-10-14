@@ -134,6 +134,6 @@ Goobers does not add a deny for Copilot CLI stages. The Copilot CLI's own
 system prompt tells the model not to use `pkill`, `killall` or other
 name-based kills. That is an instruction, not something the CLI enforces. A
 `runner.harnessCommand` other than plain `copilot` must satisfy the
-[launcher contract](harness-launcher-contract.md), so you cannot add flags
+[launcher contract](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/harness-launcher-contract.md), so you cannot add flags
 there the way you can for claude-code. Run Copilot stages that need host
 isolation under the Linux sandbox. [#7394](https://github.com/Agent-Clubhouse/Goobers/issues/7394) tracks an enforced Copilot deny.
