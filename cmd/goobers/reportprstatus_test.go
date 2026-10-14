@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -369,9 +370,11 @@ func TestReportPRStatusResultWriteFailureDoesNotRepublish(t *testing.T) {
 
 	code, stdout, stderr := runArgs(t, "report-pr-status", root)
 	writeError := directoryWriteError(t, resultFile)
-	wantStderr := "error: write " + resultFile + ": " + writeError + "\n" +
-		"warning: write provider-stage result " + resultFile + ": write typed result: " + writeError + "\n"
-	if code != 1 || stdout != "" || stderr != wantStderr {
+	// The result is written atomically (temp file + platform replace), so the
+	// replace error's wording is platform-specific; pin only the stable framing.
+	wantStderr := regexp.MustCompile("^" + regexp.QuoteMeta("error: write "+resultFile+": ") + `[^\n]+\n` +
+		regexp.QuoteMeta("warning: write provider-stage result "+resultFile+": write typed result: "+writeError+"\n") + "$")
+	if code != 1 || stdout != "" || !wantStderr.MatchString(stderr) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if posts != 1 {

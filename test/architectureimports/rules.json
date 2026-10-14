@@ -94,6 +94,7 @@
       "decision": "accepted",
       "rationale": "PR-status owns request and result behavior and may reuse provider contracts without provider, credential, CLI, or runner construction.",
       "allowedDirect": [
+        "github.com/goobers/goobers/internal/platform/durability",
         "github.com/goobers/goobers/providers"
       ],
       "allowedTransitive": [

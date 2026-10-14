@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -100,6 +101,29 @@ func TestPublishForwardsRequestAndWritesExactResult(t *testing.T) {
 	const want = `{"prNumber":"77\"\n","state":"failing","statusGenre":"quality\u003c\u0026","statusId":"31","statusName":"review/\""}`
 	if string(data) != want {
 		t.Fatalf("result bytes = %s, want %s", data, want)
+	}
+	// Windows synthesizes mode bits, so the private-mode contract is
+	// asserted on Unix only.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(resultFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("result mode = %o, want 600", got)
+		}
+	}
+	// The atomic write leaves no temp file behind beside the result.
+	entries, err := os.ReadDir(filepath.Dir(resultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(resultFile) {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("result directory entries = %v, want only %s", names, filepath.Base(resultFile))
 	}
 }
 
