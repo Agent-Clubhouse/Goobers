@@ -792,6 +792,62 @@ minutes after that. It logs `goobers worker: error: worker deployment "goobers" 
 while the current version does not route to it, in either mode. It never exits
 over it.
 
+The same check is visible from the operator's tools (#6020). Both read the
+builds that polled the engine task queue (`engine.taskQueue`) in the last two
+minutes. They compare those builds with the deployment's routing as traffic
+shares: the current version gets 100% minus the ramp, and the ramping version
+gets the ramp percentage. The check works in both directions:
+
+- every version that receives a share needs a live worker;
+- every live build should receive a share, unless the deployment reports
+  its version as draining. A draining version was replaced by a newer
+  current or ramping version and keeps serving only its pinned workflows.
+  A build created in the deployment before the current versioned one counts
+  as replaced too, even if the server reports no drainage status.
+  Status shows it as `draining`, raises no warning, and never suggests
+  reverting to it while the current version has live workers.
+
+The worker's own log check applies the same rule.
+
+Neither tool changes the routing (#4084).
+
+- **`goobers status`.** On an instance with an `engine:` block, status prints
+  one of these lines:
+  - `Warning: engine routing stalled: ...` when no live worker serves any of
+    the traffic;
+  - `Warning: engine routing degraded: ...` when some traffic goes to a
+    version with no live worker, or a live build receives none (for example
+    an unpromoted rollout);
+  - `Engine routing: unknown (...)` when it cannot reach Temporal or sees no
+    live worker.
+
+  The warnings end with the commands that move traffic onto live workers:
+  `set-current-version`, or `set-ramping-version ... --delete` for a ramp
+  nobody serves. Status prints nothing when routing is healthy.
+
+  `status --json` carries the same verdict as `engineRouting`:
+  - `state`
+  - `currentVersion`, `rampingVersion` and `rampingPercentage`
+  - per-version `workers` with their `trafficPercent`
+  - `detail` and `remediation`
+
+  The probe dials the instance's engine frontend with a 5-second budget. Run
+  status where that frontend is reachable, for example in the daemon pod.
+  Instances without an engine are not probed. `status --api` does not serve
+  the verdict yet (#5985).
+- **`goobers doctor --k8s --instance <root>`.** This runs the
+  `temporal-worker-routing` check. It fails when no live worker serves any
+  traffic. It warns for a partial mismatch or an unreadable routing. It
+  passes when every share is served and every live build receives one. The
+  hint is the command to run. Use `--checks temporal-worker-routing` to run
+  it alone, and `--record-instance` to make its outcome a `Cluster check`
+  line in status.
+
+The poller listing can come from a single task-queue partition. On a queue
+with several partitions, a live worker may then be missed. That usually errs
+toward a warning (a routed version reported without a live worker). Only a
+missed, unpromoted build could go unreported.
+
 **Upgrading an instance that already ran versioned** (anything built from main
 between #4083 and #5950, including v0.5.0 betas): the worker now starts
 unversioned unless you opt in, and the deployment's current version still names

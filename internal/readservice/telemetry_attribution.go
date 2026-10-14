@@ -112,6 +112,13 @@ func storedFaultAudit(
 	if err != nil {
 		return creditgraph.FaultAuditReport{}, err
 	}
+	if config.Filing.Source == "" {
+		summary, err := ReadAttributionEval(root)
+		if err != nil {
+			return creditgraph.FaultAuditReport{}, err
+		}
+		config.Filing = creditgraph.DeriveFilingThreshold(summary)
+	}
 	if cooldown {
 		config.PreviousReports = mergeAuditTimes(previousReportsForScope(state.PreviousReports, query), config.PreviousReports)
 	}
@@ -142,6 +149,21 @@ func storedAttributionObservationsLimit(
 	reads readmodel.Reader,
 	query StoredAttributionQuery,
 	limit int,
+) ([]creditgraph.AttributionObservation, error) {
+	return scanAttributionObservations(ctx, root, reads, query, limit, storedAttributionObservation)
+}
+
+type attributionObserver func(
+	context.Context, instance.Layout, readmodel.RunRow,
+) (creditgraph.AttributionObservation, bool, error)
+
+func scanAttributionObservations(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	limit int,
+	observe attributionObserver,
 ) ([]creditgraph.AttributionObservation, error) {
 	if reads == nil || strings.TrimSpace(root) == "" {
 		return nil, nil
@@ -175,7 +197,7 @@ func storedAttributionObservationsLimit(
 				return observations, nil
 			}
 			terminalScanned++
-			observation, ok, err := storedAttributionObservation(ctx, layout, row)
+			observation, ok, err := observe(ctx, layout, row)
 			if err != nil {
 				return nil, err
 			}
@@ -337,19 +359,21 @@ func recordFaultAuditReports(
 	ctx context.Context, root string, query StoredAttributionQuery, now time.Time,
 	report creditgraph.FaultAuditReport, cooldown bool,
 ) error {
-	ids := make([]string, 0, len(report.ProductFindings)+len(report.ExternalFindings)+len(report.WorkflowFindings)+len(report.UnknownFindings))
-	for _, findings := range [][]creditgraph.FaultFinding{report.ProductFindings, report.ExternalFindings, report.WorkflowFindings, report.UnknownFindings} {
-		for _, finding := range findings {
-			ids = append(ids, finding.ID)
-		}
+	findings := make([]creditgraph.FaultFinding, 0, len(report.ProductFindings)+len(report.ExternalFindings)+len(report.WorkflowFindings)+len(report.UnknownFindings))
+	for _, group := range [][]creditgraph.FaultFinding{report.ProductFindings, report.ExternalFindings, report.WorkflowFindings, report.UnknownFindings} {
+		findings = append(findings, group...)
 	}
-	if len(ids) == 0 {
+	if len(findings) == 0 {
 		return nil
 	}
 	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
-		for _, id := range ids {
+		for _, finding := range findings {
+			id := finding.ID
 			key := faultAuditReportKey(query, id)
-			if cooldown {
+			// Only a fileable finding can be filed, so only it starts the
+			// cooldown; a finding below the threshold stays visible to the
+			// next filing pass in case it crosses it.
+			if cooldown && finding.Fileable {
 				state.PreviousReports[key] = now
 			}
 			if baseline := report.BaselineObservations[id]; len(baseline) > 0 {
@@ -510,6 +534,17 @@ func storedAttributionObservation(
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution record %q: %w", row.RunID, err)
 	}
+	return attributionObservationFromRecord(layout, row, runDir, record)
+}
+
+// attributionObservationFromRecord rebuilds the audit observation for one
+// run's attribution record from its persisted journal.
+func attributionObservationFromRecord(
+	layout instance.Layout,
+	row readmodel.RunRow,
+	runDir string,
+	record creditgraph.RunRecord,
+) (creditgraph.AttributionObservation, bool, error) {
 	observation := creditgraph.AttributionObservation{
 		RunID: record.RunID, Workflow: record.Workflow, EffectiveVersion: record.EffectiveVersion,
 		WorkflowDigest: record.WorkflowDigest,

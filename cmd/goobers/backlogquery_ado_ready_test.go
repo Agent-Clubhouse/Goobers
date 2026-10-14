@@ -53,12 +53,14 @@ func TestADOBacklogQueryClaimDerivesReadyAtFromTagHistory(t *testing.T) {
 		writeADOJSON(t, w, map[string]any{"value": []map[string]string{{"name": "Active", "category": "InProgress"}}})
 	})
 	mux.HandleFunc("/org/backlog/_apis/wit/workItems/42/updates", func(w http.ResponseWriter, _ *http.Request) {
+		// The history runs up to the item's current revision, as ADO's does:
+		// the walk fails closed on one that ends short of it (#5960).
 		writeADOJSON(t, w, map[string]any{"count": 2, "value": []map[string]any{
-			{"id": 1, "fields": map[string]any{
+			{"id": 1, "rev": 1, "fields": map[string]any{
 				"System.Tags":        map[string]any{"newValue": "goobers:approved"},
 				"System.ChangedDate": map[string]any{"newValue": readyAt.Add(-time.Hour).Format(time.RFC3339)},
 			}},
-			{"id": 2, "fields": map[string]any{
+			{"id": 2, "rev": revision, "fields": map[string]any{
 				"System.Tags":        map[string]any{"oldValue": "goobers:approved", "newValue": tags},
 				"System.ChangedDate": map[string]any{"newValue": readyAt.Format(time.RFC3339)},
 			}},

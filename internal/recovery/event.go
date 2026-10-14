@@ -15,7 +15,7 @@ func RetainedEvent(record Record) (journal.Event, error) {
 	// Either durability tier: an overflow record declares no archive, and
 	// refusing to journal it would make the tier's acknowledgement — the very
 	// thing that authorizes the cleanup — impossible to write (#5370).
-	if err := record.validateRestorable(); err != nil {
+	if err := record.ValidateRestorable(); err != nil {
 		return journal.Event{}, err
 	}
 	event := journal.Event{

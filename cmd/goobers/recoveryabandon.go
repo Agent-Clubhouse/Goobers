@@ -107,7 +107,7 @@ func recordRecoveryAbandonment(ctx context.Context, layout instance.Layout, read
 	if err != nil {
 		return err
 	}
-	if !terminalRunPhase(phase) {
+	if !phase.IsTerminal() {
 		return fmt.Errorf("recovery abandonment requires a terminal run")
 	}
 	current, err := readRecoveryEntryRecord(selected.RecordPath)

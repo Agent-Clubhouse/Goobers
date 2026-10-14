@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -112,7 +113,7 @@ func TestRepeatedProviderContentionIsTypedOwnershipDrift(t *testing.T) {
 	}); err != nil || !ok {
 		t.Fatalf("record provider contention: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(key, "ledger-owner"); err != nil {
+	if err := ledger.ReleaseScoped(key, "ledger-owner", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,7 +193,7 @@ func newLeaseLossSession(t *testing.T, now *time.Time) (*backlogClaimSession, *c
 func stealLease(ledger *claimsclient.File) func(context.Context, providers.ClaimWorkItemRequest) error {
 	return func(ctx context.Context, req providers.ClaimWorkItemRequest) error {
 		key := claimsclient.Key{ExternalID: req.ID}
-		if err := ledger.ReleaseScoped(ctx, key, req.RunID); err != nil {
+		if err := ledger.ReleaseScoped(ctx, key, req.RunID, claimrelease.Completed.Reason()); err != nil {
 			return err
 		}
 		if ok, _, err := ledger.ClaimScoped(ctx, key, "run-other", "curate", time.Hour); err != nil || !ok {

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 func TestClaimAndRelease(t *testing.T) {
@@ -32,7 +34,7 @@ func TestClaimAndRelease(t *testing.T) {
 		t.Fatalf("re-claim by the same run should succeed: ok=%v holder=%s err=%v", ok, holder, err)
 	}
 
-	if err := l.Release("issue-8", "run-a"); err != nil {
+	if err := l.Release("issue-8", "run-a", claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 	if _, held := l.Lookup("issue-8"); held {
@@ -152,7 +154,7 @@ func TestClaimHistorySurvivesReleaseAndReopen(t *testing.T) {
 	if ok, _, err := ledger.ClaimScoped(key, "run-history", "implement", time.Hour); err != nil || !ok {
 		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(key, "run-history"); err != nil {
+	if err := ledger.ReleaseScoped(key, "run-history", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,7 +185,7 @@ func TestClaimHistoryForTerminalRunAgesOut(t *testing.T) {
 		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
 	}
 	now = now.Add(time.Hour)
-	if err := ledger.ReleaseScoped(oldKey, "terminal-run"); err != nil {
+	if err := ledger.ReleaseScoped(oldKey, "terminal-run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,7 +243,7 @@ func TestClaimsAreIndependentAcrossGaggles(t *testing.T) {
 	if entry, ok := reopened.LookupScoped(beta); !ok || entry.RunID != "run-beta" {
 		t.Fatalf("beta lookup = %+v, %v", entry, ok)
 	}
-	if err := reopened.ReleaseScoped(alpha, "run-alpha"); err != nil {
+	if err := reopened.ReleaseScoped(alpha, "run-alpha", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := reopened.LookupScoped(alpha); ok {
@@ -422,7 +424,7 @@ func TestForRun(t *testing.T) {
 		t.Fatal("a different run should not resolve another run's claim")
 	}
 
-	if err := l.Release("issue-8", "run-a"); err != nil {
+	if err := l.Release("issue-8", "run-a", claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 	if _, ok := l.ForRun("run-a"); ok {
@@ -469,18 +471,18 @@ func TestReleaseIsIdempotentAndOwnerScoped(t *testing.T) {
 	}
 
 	// A release from a non-owner is a no-op — must not release someone else's claim.
-	if err := l.Release("item", "run-b"); err != nil {
+	if err := l.Release("item", "run-b", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if e, held := l.Lookup("item"); !held || e.RunID != "run-a" {
 		t.Fatalf("non-owner release must not affect the claim: %+v held=%v", e, held)
 	}
 
-	if err := l.Release("item", "run-a"); err != nil {
+	if err := l.Release("item", "run-a", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	// Double release is a no-op, not an error.
-	if err := l.Release("item", "run-a"); err != nil {
+	if err := l.Release("item", "run-a", claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("double release should be a no-op: %v", err)
 	}
 }
@@ -744,7 +746,7 @@ func TestReleasePersistFailureLeavesClaimHeld(t *testing.T) {
 	}
 
 	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
-	if err := l.Release("issue-51", "run-a"); err == nil {
+	if err := l.Release("issue-51", "run-a", claimrelease.Completed.Reason()); err == nil {
 		t.Fatal("expected a persist error on the failed release")
 	}
 
@@ -875,7 +877,7 @@ func TestHistorySnapshotOrdersEveryRetainedEntryNewestFirst(t *testing.T) {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
 	now = now.Add(time.Minute)
-	if err := ledger.ReleaseScoped(key("1"), "run-a"); err != nil {
+	if err := ledger.ReleaseScoped(key("1"), "run-a", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Minute)

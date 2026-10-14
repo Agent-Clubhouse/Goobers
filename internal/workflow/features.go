@@ -119,6 +119,7 @@ func AllFeatures() []Feature {
 		merge(feature)
 	}
 	features = append(features, childWorkflowFeatures()...)
+	features = append(features, fanOutFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
@@ -163,8 +164,12 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	if def.Spec.Backprop != nil {
 		features = append(features,
 			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+			binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 			binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		)
+		if def.Spec.Backprop.Granularity != "" {
+			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
 	}
 	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	return features, nil
@@ -232,7 +237,10 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 	if spec.Health != nil {
 		features = append(features, binaryLayerFeatureSince("gaggle.spec.health", "dev"))
 	}
-	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil {
+	if spec.Backprop != nil {
+		features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+	}
+	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil || spec.Backprop != nil {
 		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	}
 	return features, nil
@@ -243,12 +251,15 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 // changing a frozen interpreter's executable contract.
 func binaryLayerFeatures() []Feature {
 	return []Feature{
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeature("gaggle.spec.cost.enabled"),
 		binaryLayerFeature("gaggle.spec.enabled"),
 		binaryLayerFeatureSince("gaggle.spec.health", "dev"),
 		binaryLayerFeature("workflow.spec.enabled"),
 		binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}
 }
@@ -591,6 +602,7 @@ func featuresForV31Workflow(def Definition) ([]Feature, error) {
 		return nil, err
 	}
 	features = append(features, usedChildWorkflowFeatures(def)...)
+	features = append(features, usedFanOutFeatures(def)...)
 	used := map[FeatureID]struct{}{}
 	add := func(ids ...FeatureID) {
 		for _, id := range ids {

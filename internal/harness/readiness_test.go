@@ -18,6 +18,8 @@ type readinessTestRunner struct {
 	calls    [][]string
 	authErr  error
 	authExit int
+	// authOutput replaces the auth probe's default (secret-bearing) output.
+	authOutput string
 }
 
 func (r *readinessTestRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
@@ -41,7 +43,11 @@ func (r *readinessTestRunner) Run(ctx context.Context, req ProcessRequest) (Proc
 	if !reflect.DeepEqual(args, []string{"auth", "status"}) {
 		r.t.Fatalf("unsafe probe %v", args)
 	}
-	return ProcessResult{Transcript: []byte("token=opaque-secret ghp_abcdefghijklmnopqrstuvwx123456789012"), ExitCode: r.authExit}, r.authErr
+	output := "token=opaque-secret ghp_abcdefghijklmnopqrstuvwx123456789012"
+	if r.authOutput != "" {
+		output = r.authOutput
+	}
+	return ProcessResult{Transcript: []byte(output), ExitCode: r.authExit}, r.authErr
 }
 func readinessCode(report Readiness, code string) bool {
 	for _, check := range report.Checks {
@@ -57,18 +63,21 @@ func TestReadinessSafePreflightAndRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name string
-		err  error
-		exit int
-		code string
+		name   string
+		err    error
+		exit   int
+		output string
+		code   string
 	}{
-		{"ready", nil, 0, "harness_authentication_ready"},
-		{"auth", errors.New("opaque-secret"), 1, "harness_authentication_failed"},
-		{"transport", ErrTimeout, 1, "harness_transport_failed"},
-		{"cancel", context.Canceled, 1, "harness_probe_unobservable"},
+		{"ready", nil, 0, "", "harness_authentication_ready"},
+		{"auth", errors.New("opaque-secret"), 1, "", "harness_authentication_failed"},
+		{"transport", ErrTimeout, 1, "", "harness_transport_failed"},
+		{"cancel", context.Canceled, 1, "", "harness_probe_unobservable"},
+		// #6017: a rate-limited provider is not a failed sign-in.
+		{"provider-rate-limited", nil, 1, "opaque-secret: API rate limit exceeded (429)", "harness_probe_unobservable"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			runner := &readinessTestRunner{t: t, authErr: tt.err, authExit: tt.exit}
+			runner := &readinessTestRunner{t: t, authErr: tt.err, authExit: tt.exit, authOutput: tt.output}
 			adapter := &ClaudeAdapter{Command: []string{executable}, Runner: runner, ModelCredential: func(context.Context) (string, error) { t.Fatal("secret resolved"); return "", nil }}
 			report := ProbeReadiness(context.Background(), adapter, apiv1.GooberSpec{}, false)
 			if report.Version != "1.2.3" || !readinessCode(report, tt.code) || !readinessCode(report, "harness_headless_unobservable") {

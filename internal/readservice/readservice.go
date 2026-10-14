@@ -148,6 +148,8 @@ type LocalSources struct {
 	Telemetry   *rollup.DB
 	// ChildHistory is optional live custody access with no write methods.
 	ChildHistory ChildHistorySource
+	// ChildPublications inspects bounded local effect custody without provider IO.
+	ChildPublications ChildPublicationSource
 	// ReadModel is the portal run read model (read.db). Optional: when absent,
 	// offline readers and rollback mode use the journal-derived paths.
 	// A Reader, deliberately not a *readmodel.Store. §3.1's separation is

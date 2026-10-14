@@ -67,7 +67,7 @@ func (e *Executor) Reconcile(ctx context.Context, request Request, retained Reta
 
 func verifyRetainedContract(r Request, retained RetainedAttempt, c Contract) error {
 	a := retained.Input.Attempt
-	if !reflect.DeepEqual(r.Identity, c.Identity) || !reflect.DeepEqual(r.Ceiling, c.Ceiling) || !r.StartedAt.Equal(c.StartedAt) || c.Stage != a.Stage || c.Attempt != a.Number || c.PodAttempt != a.PodAttempt || c.KitDigest != a.KitDigest {
+	if r.ChildBranch != c.ChildBranch || r.ParentBranch != c.ParentBranch || !reflect.DeepEqual(r.ParentOrigin, c.ParentOrigin) || !reflect.DeepEqual(r.Identity, c.Identity) || !reflect.DeepEqual(r.Ceiling, c.Ceiling) || !r.StartedAt.Equal(c.StartedAt) || c.Stage != a.Stage || c.Attempt != a.Number || c.PodAttempt != a.PodAttempt || c.KitDigest != a.KitDigest {
 		return errors.New("retained contract source binding mismatch")
 	}
 	if (c.Workspace == nil) != (retained.HostSnapshot == nil) || (r.Workspace == nil) != (retained.HostSnapshot == nil) {

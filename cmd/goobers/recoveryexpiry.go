@@ -283,7 +283,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 // from before recoveryContentlessJustification was folded in above it.
 func recoverySweepLandedHeads(ctx context.Context, setup *schedulerSetup, reader *journal.Reader, runDir string, record recovery.Record) ([]recovery.LandedHead, error) {
 	phase, err := reader.PhaseBounded(ctx)
-	if err != nil || !terminalRunPhase(phase) {
+	if err != nil || !phase.IsTerminal() {
 		return nil, err
 	}
 	project, err := recoveryConfiguredProject(setup.Config, record.RepositoryKey)
@@ -372,7 +372,7 @@ func recoveryRetirementEligible(reader *journal.Reader, record recovery.Record, 
 	if err != nil {
 		return false, err
 	}
-	if !terminalRunPhase(journal.PhaseFromEvents(events)) {
+	if !journal.PhaseFromEvents(events).IsTerminal() {
 		return false, nil
 	}
 	if len(operatorEvents) > 0 {

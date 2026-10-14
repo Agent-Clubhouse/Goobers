@@ -69,14 +69,21 @@ type TelemetryCollectionProfileDescriptor struct {
 // reference. Structured journal bodies remain JSON; profiles never base64-wrap
 // workflows, credentials, prompts, or arbitrary payloads.
 type TelemetryCollectionProfileContract struct {
-	Schema                    string                                 `json:"schema"`
-	ObservabilitySchema       string                                 `json:"observabilitySchema"`
-	DefaultProfile            TelemetryCollectionProfile             `json:"defaultProfile"`
-	ProfileField              string                                 `json:"profileField"`
-	StructuredPayloadEncoding string                                 `json:"structuredPayloadEncoding"`
-	CorrelationFields         []string                               `json:"correlationFields"`
-	ConsentGatedIdentity      []string                               `json:"consentGatedIdentity"`
-	Profiles                  []TelemetryCollectionProfileDescriptor `json:"profiles"`
+	Schema                    string                     `json:"schema"`
+	ObservabilitySchema       string                     `json:"observabilitySchema"`
+	DefaultProfile            TelemetryCollectionProfile `json:"defaultProfile"`
+	ProfileField              string                     `json:"profileField"`
+	StructuredPayloadEncoding string                     `json:"structuredPayloadEncoding"`
+	CorrelationFields         []string                   `json:"correlationFields"`
+	ConsentGatedIdentity      []string                   `json:"consentGatedIdentity"`
+	// ConsentGatedPathRoots lists the home-directory roots that profiles
+	// without host/account identity replace with ConsentGatedPathPlaceholder
+	// in every exported string and object key (journal bodies, error text,
+	// span status and attributes) where the root begins an absolute path. The
+	// rest of each path is retained.
+	ConsentGatedPathRoots       []string                               `json:"consentGatedPathRoots"`
+	ConsentGatedPathPlaceholder string                                 `json:"consentGatedPathPlaceholder"`
+	Profiles                    []TelemetryCollectionProfileDescriptor `json:"profiles"`
 }
 
 // TelemetryCollectionProfiles returns the ordered v1 collection contract.
@@ -111,7 +118,12 @@ func TelemetryCollectionContract() TelemetryCollectionProfileContract {
 			"goobers.trigger.kind", "goobers.run.id", "goobers.stage", "goobers.attempt.n",
 			"trace_id", "span_id", "goobers.telemetry.record_id",
 		},
-		ConsentGatedIdentity: []string{"machineName", "accountName", "ai.device.id", "ai.cloud.roleInstance"},
-		Profiles:             TelemetryCollectionProfiles(),
+		ConsentGatedIdentity: []string{"machineName", "accountName", "instanceRoot", "ai.device.id", "ai.cloud.roleInstance"},
+		ConsentGatedPathRoots: []string{
+			"/Users/<account>", "/home/<account>", "/var/home/<account>", "/mnt/<drive>/Users/<account>",
+			`<drive>:\Users\<account>`, `\\<host>\<share>\Users\<account>`, "daemon account home directory",
+		},
+		ConsentGatedPathPlaceholder: "<home>",
+		Profiles:                    TelemetryCollectionProfiles(),
 	}
 }

@@ -84,7 +84,7 @@ func (a childAttemptCustody) active(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	event, err := childPodStarted(a.reader, a.contract.Stage, a.contract.Attempt, a.review)
+	event, err := childPodStarted(a.reader, a.contract.Stage, a.contract.Attempt, a.review, a.contract.ChildBranch)
 	if err != nil {
 		return err
 	}
@@ -118,6 +118,16 @@ type generatedBlobPlane struct {
 func (p generatedBlobPlane) Describe() string { return "generated-attempt-blob-plane" }
 func (p generatedBlobPlane) store(ctx context.Context) (blobstore.Store, error) {
 	principal, ok := httpapi.PrincipalFromContext(ctx)
+	if ok && principal.Issuer == httpapi.WorkflowParentPrincipalIssuer {
+		a, err := p.service.parentAttempt(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := a.custody(ctx); err != nil {
+			return nil, err
+		}
+		return a.blobs, nil
+	}
 	if !ok || principal.Issuer != httpapi.GeneratedChildPrincipalIssuer {
 		return p.base, nil
 	}

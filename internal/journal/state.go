@@ -68,19 +68,34 @@ type State struct {
 // event, applied here to the single-document state.json (#2054).
 func (st State) KnownSchema() bool { return st.Schema == StateSchema }
 
-// BranchCursor is one parallel branch's resume position.
+// BranchCursor is one parallel branch's or map item's resume position.
 type BranchCursor struct {
 	// Branch is the numeric branch id (from 1; 0 is the run's root branch, and
 	// the root's position is State.MachineState rather than a cursor here).
 	Branch int `json:"branch"`
-	// Name is the declared branch name.
+	// Name is the declared branch name, or a map item's roster identity.
 	Name string `json:"name"`
-	// Parallel is the parallel state this branch belongs to.
+	// Parallel is the fan-out state (parallel or map) this branch belongs to.
 	Parallel string `json:"parallel"`
+	// ItemIdentity and ItemDigest identify the frozen roster item a map
+	// branch runs. Both are empty for a static parallel branch.
+	ItemIdentity string `json:"itemIdentity,omitempty"`
+	ItemDigest   string `json:"itemDigest,omitempty"`
 	// MachineState is the state this branch resumes at. Empty once the branch
 	// has settled.
 	MachineState string `json:"machineState,omitempty"`
 	// Status is the branch's terminal status once it has settled; empty while
 	// the branch is still running.
 	Status BranchStatus `json:"status,omitempty"`
+}
+
+// IsTerminal reports whether p is a terminal run phase. PhaseRunning and
+// unrecognised phases are not terminal.
+func (p RunPhase) IsTerminal() bool {
+	switch p {
+	case PhaseCompleted, PhaseFailed, PhaseAborted, PhaseEscalated:
+		return true
+	default:
+		return false
+	}
 }

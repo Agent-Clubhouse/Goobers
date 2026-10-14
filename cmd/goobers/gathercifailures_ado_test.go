@@ -41,15 +41,9 @@ func fakeADOCIFailuresServer(t *testing.T, repo providers.RepositoryRef, head st
 		if r.Method != http.MethodGet {
 			t.Errorf("evaluations request method = %s, want GET", r.Method)
 		}
-		policy := func(typeID, name, status string) map[string]any {
-			return map[string]any{"status": status, "configuration": map[string]any{
-				"isEnabled": true, "isBlocking": true,
-				"type": map[string]string{"id": typeID, "displayName": name},
-			}}
-		}
-		evaluations := []any{policy("fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", "Minimum number of reviewers", "queued")}
+		evaluations := []any{adoBlockingPolicyEvaluation(adoTestPolicyTypeMinimumReviewers, "Minimum number of reviewers", "queued")}
 		if buildRejected {
-			build := policy("0609b952-1397-4640-95ec-e00a01b2c241", "Build", "rejected")
+			build := adoBlockingPolicyEvaluation(adoTestPolicyTypeBuild, "Build", "rejected")
 			build["context"] = map[string]any{"buildId": 314}
 			evaluations = append([]any{build}, evaluations...)
 		}
@@ -135,7 +129,9 @@ func TestGatherCIFailuresOnADOWritesPolicyEvidence(t *testing.T) {
 	}
 	check := got.GatherCIFailures.Checks[0]
 	wantURL := serverURL + "/" + repo.Owner + "/" + repo.Project + "/_build/results?buildId=314"
-	if check.Name != "Build" || check.Conclusion != "rejected" || check.URL != wantURL {
+	// An unnamed build policy is labelled by its type and configuration id
+	// (adoBlockingPolicyEvaluation's id 5), as ADO always returns one.
+	if check.Name != "Build #5" || check.Conclusion != "rejected" || check.URL != wantURL {
 		t.Errorf("check = %#v, want the rejected build with URL %s", check, wantURL)
 	}
 	if strings.Contains(check.Summary, "STALE") {

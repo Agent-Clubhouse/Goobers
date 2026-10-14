@@ -46,7 +46,8 @@ export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
 export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
-export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output";
+/** "skipped": a selective parallel's frozen selection did not choose this optional branch; it never started. */
+export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output" | "skipped";
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
@@ -669,6 +670,8 @@ export interface WorkflowSafetyDetails {
 export interface RepoRef {
   provider: Provider;
   owner: string;
+  /** Azure DevOps project; omitted for GitHub and Gitea. */
+  project?: string;
   name: string;
   branch?: string;
   connectionRef?: string;
@@ -809,7 +812,7 @@ export interface WorkflowSummary {
   owners: GooberReference[];
   stageCount: number;
   definition: WorkflowDefinition;
-  backprop?: { enabled: boolean; version?: string };
+  backprop?: { enabled: boolean; mode?: "off" | "shadow" | "active"; version?: string };
   warnings: ValidationWarning[];
 }
 
@@ -1040,8 +1043,18 @@ export interface LineageRun {
   phase?: RunPhase;
 }
 
+/** One run blocker with when its evidence was observed (#5404). `message` matches the potentialBlockers entry. */
+export interface OperatorBlocker {
+  code: string;
+  source: string;
+  message: string;
+  /** Absent when the observed time is unknown. */
+  observedAt?: string;
+  ageMillis?: number;
+}
+
 export interface OperatorRunSummary {
-  issue?: { number: string; title?: string; labels?: string[] };
+  issue?: { number: string; title?: string; url?: string; labels?: string[] };
   /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
   displayTitle?: string;
   currentStage?: string;
@@ -1061,8 +1074,57 @@ export interface OperatorRunSummary {
   nextTransition?: string;
   /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** potentialBlockers with provenance and age, one per source and code, with cleared conditions removed (#5404); absent on older daemons. */
+  blockers?: OperatorBlocker[];
   /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
   diagnosticsLimitations?: string[];
+  /** Implementation reliability projection (#5313); absent on older daemons. */
+  reliability?: RunReliability;
+}
+
+/** A retry target's consumed/remaining count; null counts are unknown, never zero. */
+export interface ReliabilityBudget {
+  kind: string;
+  consumed: number | null;
+  remaining: number | null;
+  evidence: "journal" | "pinnedDefinition" | "terminalCause" | "unknown";
+}
+
+/** Implementation reliability state; missing evidence is reported as "unknown". */
+export interface RunReliability {
+  state: string;
+  currentStage?: string;
+  currentAttempt?: number;
+  failure: { classification: string; evidenceRule: string; code?: string };
+  budgets: ReliabilityBudget[];
+  latestVerdict: string;
+  acceptance: { state: string; digest?: string };
+  retained: {
+    branch?: string;
+    branchSha?: string;
+    pullRequest?: { provider: string; kind: string; id: string; url?: string };
+    /** "draft" or "ready" when reported by the opening stage, otherwise "unknown". */
+    pullRequestDraft?: string;
+    recoveryRunId?: string;
+  };
+  nextAction: string;
+  humanInterventionReason?: string;
+}
+
+export interface ChildPublicationItem {
+  action: "branch" | "pr";
+  state: "prepared" | "effect_pending" | "confirmed";
+  head: string;
+  base: string;
+  commit: string;
+  pullRequestUrl: string;
+  pullRequestNumber: number;
+  needsHuman: boolean;
+}
+
+export interface ChildPublicationHistory {
+  status: "recorded" | "unavailable" | "expired";
+  items: ChildPublicationItem[];
 }
 
 export interface ChildHistoryItem {
@@ -1077,6 +1139,7 @@ export interface ChildHistoryItem {
   acknowledgedAt?: string;
   expiredAt?: string;
   cancellationRequested: boolean;
+  publication?: ChildPublicationHistory;
 }
 
 export interface ChildHistoryPage {
@@ -1341,7 +1404,7 @@ export interface RunEvent {
   branchName?: string;
   /** The branch's terminal status; set on branch.finished. */
   branchStatus?: BranchStatus;
-  /** The branch completeness record; set on parallel.finished, one entry per declared branch. */
+  /** The branch completeness record; set on parallel.started/finished, one entry per declared branch (skipped branches included). */
   completeness?: BranchOutcome[];
   raw?: JsonValue;
 }
@@ -1352,6 +1415,8 @@ export interface BranchOutcome {
   name: string;
   status: BranchStatus;
   artifacts: number;
+  /** Selective parallels only: the selection's reason for a selected branch, or why a skipped branch did not run. */
+  reason?: string;
 }
 
 export interface ExternalRef {
@@ -1594,6 +1659,35 @@ export interface TelemetryStatsResult {
   readyPool: TelemetryReadyPool;
   trend?: TelemetryTrendBucket[];
   trendPrevious?: TelemetryTrendBucket;
+  /** The instance's published Backprop attribution accuracy eval, when one exists. */
+  attributionEval?: AttributionEvalSummary;
+}
+
+export interface AttributionEvalSummary {
+  schema: string;
+  evalSetVersion: string;
+  evalSetDigest: string;
+  caseCount: number;
+  unattributed: number;
+  accuracy: {
+    granularity: string;
+    correct: number;
+    total: number;
+    accuracy: number;
+  }[];
+  calibration: {
+    target: string;
+    brierScore: number;
+    expectedCalibrationError: number;
+    bins: {
+      lower: number;
+      upper: number;
+      count: number;
+      correct: number;
+      meanConfidence: number;
+      accuracy: number;
+    }[];
+  };
 }
 
 export interface GraphAnalytics {

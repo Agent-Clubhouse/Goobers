@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blockerclear"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/gooberassets"
@@ -21,6 +22,9 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/parallelworkspace"
+	"github.com/goobers/goobers/internal/parallelworkspace/spec"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -289,9 +293,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
+		RecoveryObserved: blockerclear.Reporter(l.SchedulerDir()),
 		RunControls:      cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
-			exec, err := buildDeterministicExecutor(deterministicExecutorInput{
+			exec, err := buildAutomationDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
@@ -304,18 +309,17 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
-			exec, err := buildAgenticExecutor(agenticExecutorInput{
-				GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
-				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
-				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
-				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
-				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
-				ChildWorkflows: childWorkflowAccessFor(instanceRoot, reg),
-			})
-			if err != nil {
-				return nil, err
+			ordinary := func() (invoke.Goober, error) {
+				return buildAgenticExecutor(agenticExecutorInput{
+					GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
+					HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
+					Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
+					SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
+					GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
+					ChildWorkflows: childWorkflowAccessFor(instanceRoot, reg),
+				})
 			}
-			return claimFencedGoober{Goober: exec, start: executionFence}, nil
+			return bindParentRouting(instanceRoot, gooberName, rec, ordinary, assetsByGoober[gooberName] != nil, executionFence)
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a
@@ -394,6 +398,25 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	}
 	cfg.IssueOwnershipAssignees = input.IssueOwnershipAssignees
 	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
+	cloneURL := cfg.RepoCloneURL
+	if cloneURL == nil {
+		cloneURL = runner.DefaultRepoCloneURL
+	}
+	archives := parentArchiveRestorer{layout: input.Layout, config: input.Config, worktrees: cfg.Worktrees, cloneURL: cloneURL, scrubber: input.SharedRegistry}
+	forkSources := parallelworkspace.Service{Worktrees: cfg.Worktrees, CloneURL: cloneURL, Policy: func(workspace string) (recovery.SnapshotPolicy, error) {
+		return childSnapshotPolicy(workspace, input.Layout.Root, input.Config)
+	}}
+	cfg.PrepareParentForkSource = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.Request, previous *spec.Source) (spec.Source, error) {
+		return forkSources.Prepare(ctx, rec, request, previous)
+	}
+	cfg.PrepareParentForkResult = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.ResultRequest, previous *spec.Source) (spec.Source, error) {
+		return forkSources.Result(ctx, rec, request, previous)
+	}
+	cfg.JoinParentFork = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.JoinRequest) error {
+		return forkSources.Join(ctx, rec, request)
+	}
+	cfg.RestoreParentArchive = archives.restore
+	cfg.RetireParentWorkspaces = archives.retire
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {

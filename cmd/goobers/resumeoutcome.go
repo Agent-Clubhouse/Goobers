@@ -212,3 +212,17 @@ func (c terminalFinalization) finalize(log *journal.InstanceLog) error {
 	}
 	return nil
 }
+
+// The child queue owns physical stop/join and exclusive journal handoff.
+// Generic Resume could append a new stage before the original pod returns,
+// invalidating its exact-attempt output authority and stranding custody.
+// Keep reconciled capacity until resumeOwnedChild transfers it.
+func (o *resumeOutcome) deferGeneratedChildToQueue(id journal.RunIdentity, progress resumeProgressFunc) bool {
+	if id.Child == nil {
+		return false
+	}
+	o.Reattached = append(o.Reattached, id.RunID)
+	o.updateBlockingCandidate("reattached", "defer generated child to custody queue")
+	o.report(progress)
+	return true
+}

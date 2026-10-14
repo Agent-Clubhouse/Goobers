@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
@@ -146,7 +147,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		// instead of reconstructing ownership from the gaggle's static
 		// project or cfg.Repos[0].
 		if recordErr := recordItemRepository(annotations, runID, item.ID, itemKindIssue, repo); recordErr != nil {
-			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
+			if releaseErr := ledger.ReleaseScoped(ctx, key, runID, claimrelease.Abandoned.Because("select_source_failed", recordErr.Error())); releaseErr != nil {
 				pf(stderr, "error: release claim %s after repository-identity record failure: %v\n", item.ID, releaseErr)
 			}
 			return failProviderStage(stderr, "record repository identity", recordErr, "selection.json")
@@ -154,7 +155,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 
 		digest, digestErr := decomposition.IssueSnapshotDigest(item.ID, item.Title, item.BodyWithAcceptanceCriteria(), decompositionDigestLabels(item.Labels), item.State)
 		if digestErr != nil {
-			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
+			if releaseErr := ledger.ReleaseScoped(ctx, key, runID, claimrelease.Abandoned.Because("select_source_failed", digestErr.Error())); releaseErr != nil {
 				pf(stderr, "error: release claim %s after digest failure: %v\n", item.ID, releaseErr)
 			}
 			return failProviderStage(stderr, "compute issue snapshot digest", digestErr, "selection.json")
@@ -177,7 +178,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		// the revision and conflicts at publish.
 		observedRevision := ""
 		if live, liveErr := issueProvider.GetWorkItem(ctx, repo, item.ID); liveErr != nil {
-			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
+			if releaseErr := ledger.ReleaseScoped(ctx, key, runID, claimrelease.Abandoned.Because("select_source_failed", liveErr.Error())); releaseErr != nil {
 				pf(stderr, "error: release claim %s after post-claim revision read failure: %v\n", item.ID, releaseErr)
 			}
 			return failProviderStage(stderr, fmt.Sprintf("read post-claim revision of parent %s", item.ID), liveErr, "selection.json")
@@ -202,7 +203,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 
 		data, marshalErr := json.Marshal(selection)
 		if marshalErr != nil {
-			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
+			if releaseErr := ledger.ReleaseScoped(ctx, key, runID, claimrelease.Abandoned.Because("select_source_failed", marshalErr.Error())); releaseErr != nil {
 				pf(stderr, "error: release claim %s after marshal failure: %v\n", item.ID, releaseErr)
 			}
 			pf(stderr, "error: marshal selection: %v\n", marshalErr)
@@ -210,7 +211,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		}
 		resultFile := providerInput("resultFile", "selection.json")
 		if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
+			if releaseErr := ledger.ReleaseScoped(ctx, key, runID, claimrelease.Abandoned.Because("select_source_failed", err.Error())); releaseErr != nil {
 				pf(stderr, "error: release claim %s after write failure: %v\n", item.ID, releaseErr)
 			}
 			pf(stderr, "error: write %s: %v\n", resultFile, err)

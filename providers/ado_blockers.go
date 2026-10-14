@@ -107,27 +107,29 @@ func containsFold(values []string, want string) bool {
 // HasOpenWorkItemBlocker reports whether an ADO work item has a predecessor
 // that is not in a done state (backlog.blockers).
 func (p *ADOProvider) HasOpenWorkItemBlocker(ctx context.Context, repo RepositoryRef, id string) (bool, error) {
-	blockers, err := p.openADOPredecessors(ctx, repo, id)
+	blockers, err := p.ListWorkItemBlockers(ctx, repo, id)
 	if err != nil {
 		return false, err
 	}
-	return len(blockers) > 0, nil
+	for _, blocker := range blockers {
+		if blocker.State == "open" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-// ListWorkItemBlockers returns the predecessors of an ADO work item that
-// still block it. Unlike GitHub's list, a predecessor in a done state is left
-// out, and each one returned is reported with State "open" whatever its
-// native category, because "still blocking" is what the caller asks about.
+// ListWorkItemBlockers returns every predecessor of an ADO work item with its
+// real blocking state, matching GitHub's list (#5960): State is "open" for a
+// predecessor that still blocks and "closed" for one in a done state
+// (backlog.doneStates, so a Resolved Bug reads "closed" by default even
+// though its state category maps to an open work item elsewhere). Callers
+// that only care about live blockers filter on "open", as
+// HasOpenWorkItemBlocker does. A predecessor the batch omits (deleted, or
+// unreadable by this identity) is reported "open": its state cannot be
+// checked, so the answer fails closed exactly as it did before the check
+// existed.
 func (p *ADOProvider) ListWorkItemBlockers(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
-	return p.openADOPredecessors(ctx, repo, id)
-}
-
-// openADOPredecessors reads the item's Dependency-Reverse relations,
-// hydrates the predecessors in one workitemsbatch call per 200 ids, and
-// returns the ones that still block. A predecessor the batch omits (deleted,
-// or unreadable by this identity) still blocks: its state cannot be checked,
-// so the answer fails closed exactly as it did before the check existed.
-func (p *ADOProvider) openADOPredecessors(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
 	item, err := p.getRawWorkItem(ctx, repo, id)
 	if err != nil {
 		return nil, err
@@ -144,30 +146,31 @@ func (p *ADOProvider) openADOPredecessors(ctx context.Context, repo RepositoryRe
 	for _, predecessor := range hydrated {
 		byID[predecessor.ID] = predecessor
 	}
-	var open []WorkItem
+	blockers := make([]WorkItem, 0, len(ids))
 	for _, predecessorID := range ids {
 		predecessor, ok := byID[predecessorID]
 		if !ok {
-			open = append(open, WorkItem{Provider: ProviderADO, ID: strconv.Itoa(predecessorID), State: "open"})
+			blockers = append(blockers, WorkItem{Provider: ProviderADO, ID: strconv.Itoa(predecessorID), State: "open"})
 			continue
 		}
-		blocking, err := p.adoPredecessorBlocks(ctx, repo, predecessor)
+		blocking, status, err := p.adoPredecessorBlocks(ctx, repo, predecessor)
 		if err != nil {
 			return nil, fmt.Errorf("predecessor %d of ADO work item %s: %w", predecessorID, id, err)
 		}
+		state := "closed"
 		if blocking {
-			mapped := mapADOWorkItemState(predecessor, "open", WorkItemStatusInProgress)
-			open = append(open, mapped)
+			state = "open"
 		}
+		blockers = append(blockers, mapADOWorkItemState(predecessor, state, status))
 	}
-	return open, nil
+	return blockers, nil
 }
 
 // adoPredecessorBlocks reports whether one hydrated predecessor is still
-// outside the configured done states. Its state categories are read for its
-// own project, which a cross-project link can make differ from the
-// successor's.
-func (p *ADOProvider) adoPredecessorBlocks(ctx context.Context, repo RepositoryRef, predecessor adoWorkItem) (bool, error) {
+// outside the configured done states, and the work-item status its state
+// category maps to. Its state categories are read for its own project, which
+// a cross-project link can make differ from the successor's.
+func (p *ADOProvider) adoPredecessorBlocks(ctx context.Context, repo RepositoryRef, predecessor adoWorkItem) (bool, WorkItemStatus, error) {
 	itemType := stringField(predecessor.Fields, "System.WorkItemType")
 	state := stringField(predecessor.Fields, "System.State")
 	stateRepo := repo
@@ -176,13 +179,28 @@ func (p *ADOProvider) adoPredecessorBlocks(ctx context.Context, repo RepositoryR
 	}
 	states, err := p.adoWorkItemStateCategories(ctx, stateRepo, itemType)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	definition, found := findADOWorkItemState(states, state)
 	if !found {
-		return false, fmt.Errorf("ADO work item type %q has unknown state %q", itemType, state)
+		return false, "", fmt.Errorf("ADO work item type %q has unknown state %q", itemType, state)
 	}
-	return !p.doneStates.done(itemType, definition.Name, definition.Category), nil
+	blocking := !p.doneStates.done(itemType, definition.Name, definition.Category)
+	_, status, err := commonADOStateCategory(definition.Category)
+	if err != nil {
+		// The blocking verdict comes from the done states, not the common
+		// mapping, so an unusual category only loses the status detail.
+		status = WorkItemStatusInProgress
+	}
+	switch {
+	case !blocking:
+		status = WorkItemStatusDone
+	case status == WorkItemStatusDone:
+		// A byType done-state list can keep a Completed/Removed state
+		// blocking; Status must not then contradict State "open".
+		status = WorkItemStatusInProgress
+	}
+	return blocking, status, nil
 }
 
 // adoPredecessorIDs returns the distinct predecessor ids of a work item's

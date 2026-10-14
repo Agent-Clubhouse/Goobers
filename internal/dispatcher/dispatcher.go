@@ -202,6 +202,15 @@ type Config struct {
 	// stamping; the pod resolves the actual secret through the credential
 	// plane instead, exactly as every other pod capability does.
 	ExternalTelemetryConnectors map[string]externaltelemetry.ConnectorConfig
+	// GaggleBacklogs is each configured gaggle's backlog settings as the
+	// pod-side CLI decodes them (the backlog provider, project, labels and
+	// doneStates an Azure DevOps stage applies), already encoded, keyed by gaggle name — threaded at
+	// wiring (workerdispatch.go) exactly like BotLogins and for the same
+	// reason: this process can read the instance config and a stage pod
+	// cannot (#5957). Only the attempt's own gaggle's entry is stamped, as
+	// GaggleBacklogEnv. A gaggle with no entry is stamped EMPTY, which the pod
+	// reads as "not resolved" and refuses rather than defaulting.
+	GaggleBacklogs map[string]string
 	// TmpfsSizeLimit overrides the tmp:ephemeral volume's default size
 	// (DefaultTmpfsSizeLimit, or DefaultDiskTmpSizeLimit when TmpDiskBacked);
 	// zero uses the default.
@@ -328,6 +337,8 @@ func (c Config) linuxScheduleToStart() time.Duration {
 // Attempt is one stage attempt to dispatch: the identity, requirement, and
 // budget facts the pod spec is a pure function of.
 type Attempt struct {
+	// WorkflowParent selects a separately authenticated contained-parent contract.
+	WorkflowParent bool
 	// ChildExecutionDigest binds an isolated generated-child execution contract.
 	// Only the trusted child adapter sets it; ordinary dispatch is unchanged.
 	ChildExecutionDigest string

@@ -474,3 +474,34 @@ spec:
 `)
 	writeFile(t, dir, "instructions.md", "# "+name+"\n")
 }
+
+func TestCopyTreePreservesModeAndRejectsSymlinks(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "run.sh"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "out")
+	if err := copyTree(src, dst, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dst, "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("mode = %v, want 0755", info.Mode().Perm())
+	}
+
+	outside := t.TempDir()
+	for name, target := range map[string]string{"filelink": filepath.Join(src, "run.sh"), "dirlink": outside} {
+		link := filepath.Join(src, name)
+		if err := os.Symlink(target, link); err != nil {
+			t.Skip("symlinks unsupported:", err)
+		}
+		err := copyTree(src, filepath.Join(t.TempDir(), "out"), nil)
+		if err == nil || !strings.Contains(err.Error(), "is a symlink") {
+			t.Fatalf("%s: err = %v, want symlink error", name, err)
+		}
+		_ = os.Remove(link)
+	}
+}

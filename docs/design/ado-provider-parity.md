@@ -62,8 +62,8 @@ code path byte-identical.
 
 ADO stage branches build the provider through the shared stage seam
 (`newProviderForStage` → `newADOProviderForStage`) from the credential delivered for the
-capability the stage declared, in the daemon-stated `GOOBERS_REPO_AUTH_SCHEME`
-(ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
+capability the stage declared, in the daemon-stated
+`GOOBERS_CREDENTIAL_SCHEME_<capability>`, falling back to `GOOBERS_REPO_AUTH_SCHEME` (#5957; ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
 `provider:pr:write` for pull-request work, `github:issues:*` for work items, `repo:push` for
 Git, `github:pr:merge` (or a declared `ado:pr:complete`) for completion. Every auth kind —
 PAT, Azure CLI, workload identity, managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
@@ -152,6 +152,19 @@ ADO PRs support native labels. Two routing markers ride there — and only there
 hazard. Writes go through `AddPullRequestLabels` (ADO takes one label per POST, so one call
 per name), reads through `PullRequestLabelNames`, and clears through
 `RemovePullRequestLabel`.
+
+Failing CI is the one remediation signal that is not a label, and the list call carries
+no CI state. `gather-pr-context` therefore reads the blocking-policy evaluations
+(`HasPullRequestCIFailures`, the ADO-N22 classification `gather-ci-failures` reports) for
+each eligible PR that read could promote — not already `goobers:needs-remediation`, not
+parked `goobers:merge-escalated`, not claimed by another run — at most
+`adoRemediationCIProbeLimit` per cycle (#6482). The window rotates: a persisted cursor
+(`pr-remediation-ci-probe-<sha256>.json`, one per gaggle and repository) records where the
+last window ended, so a larger open set is read in full over successive cycles. A targeted
+run (`--pr N`) reads PR N alone, outside the bound. Each probe is the PR detail read and
+its evaluations, plus one build read per rejected build policy once cancelled-build
+classification applies (#6817). A red build-validation policy then makes the PR a strong
+remediation candidate on its own, rather than only after merge-review demotes it.
 
 ### 4.3 The three ADO PR-label API quirks
 
@@ -279,8 +292,10 @@ concrete GitHub provider and stay nil / gated off on ADO. ADO `PollPullRequest` 
 `Labels`, `CommentsSince`, `MergeableState`, and `HeadRepository` empty, with deliberate
 consequences: the label opt-out conjuncts never fire (the ADO merge path carries no PR
 opt-out labels); the advisory-check bypass never applies, so the decision falls through to
-the conservative `CheckState == Passing` gate (correct and safe); and branch cleanup is
-skipped (no head-repository to act on). The merge-commit message on ADO is assembled
+the conservative `CheckState == Passing` gate (correct and safe); and the shared branch
+cleanup is skipped (no head-repository to act on). ADO source-branch cleanup instead rides
+the completion request, with a post-merge backstop that deletes a source branch ADO left
+behind (#5957). The merge-commit message on ADO is assembled
 directly from the PR title plus the body's closing references, rather than from a verdict
 comment.
 
@@ -401,8 +416,9 @@ review-thread stages and without the `github:pr:write` grant. The read is GET-on
 
 The stage runs only when the brief's `hasFailingCI` is `true`. ADO's pull-request list
 carries no CI state, so `gather-pr-context` reads the selected pull request's evidence with
-the same classification through `HasPullRequestCIFailures` (two GETs: the pull request and its policy evaluations, no build reads;
-a failed read fails the stage) before it writes the brief. `hasFailingCI` is `true` exactly
+the same classification through `HasPullRequestCIFailures` (two GETs: the pull request and its policy evaluations,
+plus one build read per rejected build policy to tell a canceled build from a failed one (#6817), and no timeline
+or log reads; a failed pull request or evaluations read fails the stage) before it writes the brief. `hasFailingCI` is `true` exactly
 when that evidence is non-empty, so the brief and the gathered checks never disagree: a
 rejected comment-resolution or work-item-linking policy alone leaves it `false`. When it is
 `true`, `rebase-pr`'s failing-CI cause becomes reachable on ADO. The other candidates are
@@ -413,7 +429,7 @@ not read, so the fifo selection is unchanged.
 | Source | The pull request's policy evaluations, classified by type id as in §11.1. |
 | Reported | Enabled, blocking build, status and unclassified policies whose evaluation is `rejected` or `broken`. Name: the policy type plus the build policy's `settings.displayName` or the status policy's `statusGenre/statusName`, else the configuration id (`Build #27`). |
 | Human-only policies | Neither stage receives the CI-poll gate's `humanPolicyConfigurationIds`, so a rejected blocking policy a loop declares human-only (merge strategy, proof-of-presence) still counts as failing CI here and is reported under its policy type. |
-| Not reported | Reviewer, comment-resolution and work-item-linking policies (a wait on a human or on threads, never CI), advisory (non-blocking) policies, and `approved`, `queued`, `running` or `notApplicable` evaluations. |
+| Not reported | Reviewer, comment-resolution and work-item-linking policies (a wait on a human or on threads, never CI), advisory (non-blocking) policies, `approved`, `queued`, `running` or `notApplicable` evaluations, and a build policy rejected for a build whose result is `canceled` (#6817: no verdict on the code, so CI is pending, not failing). |
 | Link | The build results page from `context.buildId` (`{org}/{project}/_build/results?buildId=N`), or of the build found for the policy (below); none when no build is found. |
 | Build (#5652) | A build policy's build is `context.buildId`, else the latest build of `settings.buildDefinitionId` for `refs/pull/<id>/merge`. A status policy's build is the one its latest matching pull request status links to (`targetUrl` a `_build/results?buildId=N` page of this host and organization). Any other status, and any unclassified policy, is graded `unsupported` with the reason. A build of another repository (`repository.id`) or pull request (`triggerInfo.pr.number`) is rejected (`failed`) and nothing of it is read; a build of another head (`triggerInfo.pr.sourceSha`) is reported but graded `stale`. |
 | Logs, annotations (#5652) | From `builds/{id}/timeline`: each failed job's failed tasks (the job itself when no task failed; other failed records when no job failed), each task's error issues (warnings when it has none) as annotations with `sourcepath`/`linenumber`, then an excerpt of the task's log tail (`builds/{id}/logs/{logId}`, ranged by the `builds/{id}/logs` line count), ending at its last `##[error]` line, timestamps stripped, split into annotations of at most 1000 bytes so ci-poll's 1 KiB message bound does not cut them. Bounds (`ADOCIEvidenceBounds`): 3 failed jobs, 3 failed tasks per job, 5 issues per step, 200 log lines, 3000 excerpt bytes. |
@@ -433,7 +449,8 @@ Published test results (`_apis/test`) are not yet read (#5652 follow-up).
 - **Empty poll fields on ADO.** `PollPullRequest` leaves `Labels`, `CommentsSince`,
   `MergeableState`, and `HeadRepository` empty. Each empty field has a deliberate,
   documented consequence (§6.3): opt-out conjuncts inert, advisory bypass inert (conservative
-  gate wins), branch cleanup skipped.
+  gate wins), shared branch cleanup skipped (ADO's own source-branch cleanup and its backstop
+  replace it).
 - **advisoryMode misfire.** The ADO run-branch namespace must be present in the gaggle's
   head prefixes, or a goobers-authored ADO PR is misclassified and never merges (§6.1).
 - **Identity strings differ by surface.** The stable key is the identity GUID
@@ -512,7 +529,7 @@ set:
 |---|---|
 | PRL-045 / PRL-064 | Queue eviction and timeout do not label the PR or seed the reconciliation ledger. |
 | PRL-040 | Landing authority is `github:pr:merge` on ADO too; `ado:pr:complete` is optional and, when declared, is the credential completion uses (ADO-N2, `ado-parity-dsl-2-0.md` §3.3). |
-| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25) and no open pull request targets the source branch. A stacked branch is kept and reported as `branchCleanup: skipped-stacked`, as on GitHub. The stacked check runs when the landing is requested, so a PR stacked later on an auto-complete-armed branch is not seen. |
+| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25) and no open pull request targets the source branch. A stacked branch is kept and reported as `branchCleanup: skipped-stacked`, as on GitHub. Because ADO does not always honour the flag, the stage that observes the merge (`merge-pr` for a direct completion, `merge-queue-poll` for auto-complete) backs it up with the same grant: it confirms the source ref is gone and otherwise deletes it with a ref update conditional on the merged head (#5957). A branch that moved off the merged head is kept and reported as `skipped-moved`; a branch another open pull request targets at that point is kept as `skipped-stacked`. Not covered: an auto-complete that lands after `merge-queue-poll` timed out gets no backstop, because `reconcile-post-merge` does no ADO branch cleanup and an ADO timeout does not seed the reconciliation ledger (PRL-045/064). |
 | PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
 | PRL-082 | Resolved — the ADO stage provider does wire the mutation recorder (`cmd/goobers/stageprovider.go`'s `newProviderForStage`); this row is retained only to record that the earlier "not ADO" annotation was stale. |
 
@@ -586,6 +603,7 @@ not.
 |---|---|---|
 | Build, status | `queued` / `running` | CI pending |
 | Build, status | `rejected` / `broken` | CI failing. The check links the build from `context.buildId`. |
+| Build | `rejected`, and the build in `context.buildId` has result `canceled` | CI pending, "build canceled before a verdict; waiting for a rerun" (#6817). A canceled build (no agent assigned, a pipeline canceled) says nothing about the code, so it never triggers CI remediation and never passes a merge gate. One build read per rejected build policy; when that read fails (no build read access, a deleted build) the rejection stands as CI failing. |
 | Minimum reviewers, required reviewers | not `approved` | A wait on a human (`CheckDetail.AwaitingHuman`). Never CI pending or failing, and never a remediation trigger. |
 | Comment requirements | `rejected` | Pending, "unresolved comment threads". Never CI failing: the threads route to `gather-review-threads`. |
 | Work item linking | `rejected` | Pending, "no linked work item". Never CI failing: `open-pr`'s `workItemRefs` carry the link. |

@@ -2,6 +2,7 @@ package instanceannotations
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -135,5 +136,117 @@ func TestRetentionOwnershipRejectsAmbiguousOrIncompleteRepository(t *testing.T) 
 	fold.apply([]journal.Event{changed, event})
 	if fold.itemReposByRun["run"]["17"].Repository.Provider != "" {
 		t.Fatal("ambiguous historical ownership authorized")
+	}
+}
+
+func worktreeEvent(runID, id, status string) journal.Event {
+	return journal.Event{Type: journal.EventRunnerAnnotation, RunID: runID, Runner: map[string]any{
+		"annotation": "worktree", "worktreeID": id, "worktreeStatus": status,
+	}}
+}
+
+func TestApplyWorktreeStateIgnoresIncompleteEvents(t *testing.T) {
+	fold := &Fold{}
+	noStatus := worktreeEvent("run", "wt", "")
+	noID := worktreeEvent("run", "", "retained")
+	badTypes := journal.Event{RunID: "run", Runner: map[string]any{"worktreeID": 7, "worktreeStatus": "retained"}}
+	noRun := worktreeEvent("", "wt", "retained")
+	noKey := journal.Event{RunID: "run", Runner: map[string]any{"worktreeStatus": "retained"}}
+	fold.apply([]journal.Event{noStatus, noID, badTypes, noRun, noKey})
+	if fold.worktreeStates != nil {
+		t.Fatalf("incomplete events recorded: %v", fold.worktreeStates)
+	}
+}
+
+func TestWorktreeStateReturnsLatestDispositionPerRun(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	dir := layout.SchedulerDir()
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		worktreeEvent("run-1", "wt", "retained"),
+		worktreeEvent("run-2", "wt", "retained"),
+		worktreeEvent("run-1", "wt", "terminal"),
+	} {
+		if err := log.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fold := new(Fold)
+	for _, tc := range []struct{ run, id, want string }{
+		{"run-1", "wt", "terminal"},
+		{"run-2", "wt", "retained"},
+		{"run-1", "other", ""},
+		{"run-3", "wt", ""},
+	} {
+		got, err := fold.WorktreeState(dir, tc.run, tc.id)
+		if err != nil || got != tc.want {
+			t.Fatalf("WorktreeState(%q, %q) = %q, %v; want %q", tc.run, tc.id, got, err, tc.want)
+		}
+	}
+}
+
+func TestWorktreeStateAbsentJournalIsEmpty(t *testing.T) {
+	got, err := new(Fold).WorktreeState(t.TempDir()+"/missing", "run", "wt")
+	if err != nil || got != "" {
+		t.Fatalf("WorktreeState = %q, %v; want empty", got, err)
+	}
+}
+
+func TestFoldReadErrorsAreReturned(t *testing.T) {
+	// A malformed journal identity file fails the read on every platform. (A
+	// path under a regular file does not: Windows reports it as not-exist.)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".instance-journal-id"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fold := new(Fold)
+	if _, err := fold.WorktreeState(dir, "run", "wt"); err == nil {
+		t.Fatal("WorktreeState: expected error")
+	}
+	if _, err := fold.AllItemRepositories(dir, "run"); err == nil {
+		t.Fatal("AllItemRepositories: expected error")
+	}
+}
+
+func TestAllItemRepositoriesStrictOwnershipView(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	dir := layout.SchedulerDir()
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "owner", Name: "repo"}
+	complete := itemRepoAnnotationEvent("run", "1", repo)
+	complete.Runner["repositoryKey"] = repo.CanonicalKey()
+	legacy := itemRepoAnnotationEvent("run", "2", repo)
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{complete, legacy} {
+		if err := log.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fold := new(Fold)
+	got, err := fold.AllItemRepositories(dir, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["1"].Repository != repo || got["2"] != (ItemRepository{}) {
+		t.Fatalf("strict view = %+v", got)
+	}
+	got["1"] = ItemRepository{}
+	again, _ := fold.AllItemRepositories(dir, "run")
+	if again["1"].Repository != repo {
+		t.Fatal("returned map aliases fold state")
+	}
+	if none, err := fold.AllItemRepositories(dir, "other"); err != nil || len(none) != 0 {
+		t.Fatalf("unknown run = %+v, %v", none, err)
 	}
 }

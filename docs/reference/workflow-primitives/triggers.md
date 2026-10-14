@@ -52,6 +52,8 @@ Starts when a cron or supported interval expression becomes due.
 | `idleBackoff.ceiling` | no | Positive Go duration not below `floor`; defaults to `15m`. |
 
 Multiple schedule triggers are allowed. The scheduler fires when any is due.
+Plain schedules use [durable queued acceptance](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md);
+readiness limits apply when the accepted firing is dispatched.
 
 ```yaml
 triggers:
@@ -62,11 +64,36 @@ triggers:
       ceiling: "30m"
 ```
 
+### Missed schedule occurrences
+
+`spec.scheduleCatchUp` applies to all schedules in the workflow:
+
+| Value | Behavior |
+| --- | --- |
+| Omitted or `coalesce` | One catch-up firing from occurrences in the preceding hour. |
+| `all` | Retain each nominal occurrence, discovering at most 100 per sweep. |
+
+```yaml
+spec:
+  scheduleCatchUp: all
+  triggers:
+    - type: schedule
+      schedule: "@every 30m"
+```
+
+`all` supports 1–1,000 authored schedule declarations and keeps interval phases
+and simultaneous occurrences across restarts. Admission limits still apply;
+paused or backed-off work stays queued. Policy edits affect future discovery,
+while accepted work keeps its captured definition. Execution order is not
+promised. See [durable scheduled starts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md).
+
 ## `backlog-item`
 
 Starts from provider backlog eligibility. This trigger does not claim an item;
 an autonomous consumer normally begins with a deterministic
-`goobers backlog-query --claim` task.
+`goobers backlog-query --claim` task. Counted worker starts use
+[durable queued acceptance](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-counted-workers.md), including accounting
+for workers already queued while waiting for capacity.
 
 | Parameter | Required | Description |
 | --- | --- | --- |

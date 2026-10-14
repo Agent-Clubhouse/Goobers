@@ -53,33 +53,18 @@ func captureParallelBranchBinding(result *parallelBranchResult, initial, current
 }
 
 func cancelQueuedParallelBranches(
-	jr *journal.Run,
 	par *parallelExec,
-	p apiv1.Parallel,
 	queue []int,
 	next *int,
 	outcomes []*parallelBranchResult,
 	baseCompleted stageOutputs,
 	branchEvents parallelBranchEventIndex,
 	in StartInput,
+	settle func(parallelBranchResult) error,
 ) error {
 	for *next < len(queue) {
 		index := queue[*next]
 		branch := par.branchSnapshot(index)
-		cursors := par.settleBranch(
-			branch.id, journal.BranchCancelled, branch.artifacts, branch.pointers,
-			branch.produced, branch.failed, branch.noOutput,
-		)
-		jr.SetBranchCursors(cursors)
-		if err := jr.Append(journal.Event{
-			Type:         journal.EventBranchFinished,
-			Branch:       branch.id,
-			Parallel:     p.Name,
-			BranchName:   branch.name,
-			BranchStatus: journal.BranchCancelled,
-		}); err != nil {
-			return err
-		}
 		outcomes[index] = &parallelBranchResult{
 			index:     index,
 			status:    journal.BranchCancelled,
@@ -89,6 +74,9 @@ func cancelQueuedParallelBranches(
 			produced:  branch.produced,
 			failed:    branch.failed,
 			noOutput:  branch.noOutput,
+		}
+		if err := settle(*outcomes[index]); err != nil {
+			return err
 		}
 		*next = *next + 1
 	}

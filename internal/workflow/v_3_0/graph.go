@@ -8,7 +8,7 @@ import (
 )
 
 func buildGraph(def Definition) model.Graph {
-	nodes := make([]model.GraphNode, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
+	nodes := make([]model.GraphNode, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels)+len(def.Spec.Maps))
 	edges := make([]model.GraphEdge, 0, graphEdgeCount(def.Spec))
 	joinTargets := graphJoinTargets(def)
 
@@ -72,11 +72,33 @@ func buildGraph(def Definition) model.Graph {
 		}
 	}
 
+	nodes, edges = appendMapGraph(def, nodes, edges)
+
 	return model.Graph{
 		Start: def.Spec.Start,
 		Nodes: nodes,
 		Edges: edges,
 	}
+}
+
+// appendMapGraph projects DSL 3.1 map states: one fan-out edge to the mapped
+// task (its per-item instances are runtime data, not graph structure) and the
+// failure edge. The mapped task's @join edge resolves to the map's join
+// through graphJoinTargets, exactly like a parallel branch terminal.
+func appendMapGraph(def Definition, nodes []model.GraphNode, edges []model.GraphEdge) ([]model.GraphNode, []model.GraphEdge) {
+	for _, fanOut := range def.Spec.Maps {
+		nodes = append(nodes, model.GraphNode{ID: fanOut.Name, Kind: model.GraphNodeMap})
+		edges = append(edges, model.GraphEdge{Source: fanOut.Name, Target: fanOut.Task})
+		if fanOut.OnFailure != "" {
+			edges = append(edges, model.GraphEdge{
+				Source:   fanOut.Name,
+				Target:   fanOut.OnFailure,
+				Outcome:  "branch-failed",
+				Terminal: graphTerminal(fanOut.OnFailure),
+			})
+		}
+	}
+	return nodes, edges
 }
 
 func graphEdgeCount(spec apiv1.WorkflowSpec) int {
@@ -87,6 +109,12 @@ func graphEdgeCount(spec apiv1.WorkflowSpec) int {
 	for _, parallel := range spec.Parallels {
 		count += len(parallel.Branches)
 		if parallel.OnFailure != "" {
+			count++
+		}
+	}
+	for _, fanOut := range spec.Maps {
+		count++
+		if fanOut.OnFailure != "" {
 			count++
 		}
 	}
@@ -116,6 +144,12 @@ func newGraphStateIndex(def Definition) graphStateIndex {
 			states[parallel.Name] = append(states[parallel.Name], parallel.OnFailure)
 		}
 	}
+	for _, fanOut := range def.Spec.Maps {
+		states[fanOut.Name] = []string{fanOut.Task, fanOut.Join}
+		if fanOut.OnFailure != "" {
+			states[fanOut.Name] = append(states[fanOut.Name], fanOut.OnFailure)
+		}
+	}
 	return graphStateIndex{states: states}
 }
 
@@ -136,6 +170,11 @@ func graphJoinTargets(def Definition) map[string]string {
 			for _, terminal := range joinTerminalStates(index, branch.Start) {
 				targets[terminal] = parallel.Join
 			}
+		}
+	}
+	for _, fanOut := range def.Spec.Maps {
+		for _, terminal := range joinTerminalStates(index, fanOut.Task) {
+			targets[terminal] = fanOut.Join
 		}
 	}
 	return targets

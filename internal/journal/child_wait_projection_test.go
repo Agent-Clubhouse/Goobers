@@ -107,13 +107,56 @@ func TestChildWaitProjectionRefusesInvalidDeclaredOwners(t *testing.T) {
 	}
 }
 
-func TestChildWaitReadProjectionDoesNotEnableParallelRuntimeAdmission(t *testing.T) {
+// This private preparation already supports bound branch execution internally;
+// public workflow starts and parallel child queue admission remain gated.
+func TestChildWaitProjectionAgreesWithPreparedParallelRuntime(t *testing.T) {
 	events, wait, _ := parallelWaitFixture()
 	projected, err := ProjectChildWaits(events[:3])
 	if err != nil || len(projected.Waits) != 1 {
 		t.Fatal(projected, err)
 	}
-	if _, err := DecodeChildWaitHeader(wait, events[1]); err == nil {
-		t.Fatal("read projection widened serial runtime admission")
+	header, err := DecodeChildWaitHeader(wait, events[1])
+	if err != nil || header.Request != projected.Waits[wait.Branch].Header.Request {
+		t.Fatal("projection and prepared branch custody differ", err)
+	}
+}
+
+// A map visit declares its item branches as custody owners from the frozen
+// roster, exactly as parallel.started declares its branches, so a child wait
+// elsewhere in the run never mistakes item history for unfiltered branch
+// history.
+func TestChildWaitProjectionDeclaresMapItemOwners(t *testing.T) {
+	roster := &MapRoster{Items: []MapItem{{Identity: "a"}, {Identity: "b"}}}
+	p := newChildWaitProjector()
+	for _, event := range []Event{
+		{Type: EventMapStarted, Parallel: "items", MapRoster: roster},
+		{Type: EventBranchStarted, Branch: 1, Parallel: "items"},
+		{Type: EventBranchFinished, Branch: 1, Parallel: "items"},
+	} {
+		if err := p.consume(event); err != nil {
+			t.Fatalf("consume %s: %v", event.Type, err)
+		}
+	}
+	if got := p.projection(); got.Parallel != "items" || !reflect.DeepEqual(got.RunnableBranches, []int{2}) {
+		t.Fatalf("projection = %+v, want map items with item 2 runnable", got)
+	}
+	if err := p.consume(Event{Type: EventStageStarted, Branch: 3, Stage: "item"}); err == nil {
+		t.Fatal("a stage outside the frozen roster was accepted")
+	}
+	if err := p.consume(Event{Type: EventMapFinished, Parallel: "items"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.projection(); got.Parallel != "" || !reflect.DeepEqual(got.RunnableBranches, []int{0}) {
+		t.Fatalf("projection after map.finished = %+v, want the root owner back", got)
+	}
+	empty := newChildWaitProjector()
+	if err := empty.consume(Event{Type: EventMapStarted, Parallel: "items", MapRoster: &MapRoster{Items: []MapItem{}}}); err != nil {
+		t.Fatalf("empty roster refused: %v", err)
+	}
+	if got := empty.projection(); len(got.RunnableBranches) != 0 {
+		t.Fatalf("empty roster declared owners %v", got.RunnableBranches)
+	}
+	if err := newChildWaitProjector().consume(Event{Type: EventMapStarted, Parallel: "items"}); err == nil {
+		t.Fatal("a map.started without a roster was accepted")
 	}
 }

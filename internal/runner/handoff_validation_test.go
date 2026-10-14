@@ -515,7 +515,7 @@ func TestInvalidHandoffReplayPrunesBranchPointers(t *testing.T) {
 	if got := countStageArtifactPointers(reconstructPointers(events, machine), "produce"); got != 0 {
 		t.Fatalf("reconstructed branch produce pointers = %d, want 0", got)
 	}
-	par, _ := pendingParallel(events, machine)
+	par, _, _ := pendingParallel(events, machine)
 	if par == nil {
 		t.Fatal("pendingParallel returned nil")
 	}
@@ -650,7 +650,7 @@ func TestProducerPublicationSchemasLoadsOnlySchemaBoundJSONSlots(t *testing.T) {
 		{Name: "notes", MediaType: "text/markdown", SchemaPath: "schemas/notes.schema.json"},
 		{Name: "raw", MediaType: "application/json"},
 	}}
-	if got, err := producerPublicationSchemas(task, nil); err != nil || got != nil {
+	if got, err := producerPublicationSchemas(nil, task, nil); err != nil || got != nil {
 		t.Fatalf("nil loader: got %v, %v", got, err)
 	}
 	var loaded []string
@@ -658,7 +658,7 @@ func TestProducerPublicationSchemasLoadsOnlySchemaBoundJSONSlots(t *testing.T) {
 		loaded = append(loaded, schemaPath)
 		return testHandoffSchemaLoader(t)(schemaPath)
 	}
-	got, err := producerPublicationSchemas(task, load)
+	got, err := producerPublicationSchemas(nil, task, load)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +666,7 @@ func TestProducerPublicationSchemasLoadsOnlySchemaBoundJSONSlots(t *testing.T) {
 		t.Fatalf("schemas = %v, loaded = %v", got, loaded)
 	}
 	failing := func(string) (*handoffcheck.Schema, error) { return nil, os.ErrNotExist }
-	if _, err := producerPublicationSchemas(task, failing); err == nil || !strings.Contains(err.Error(), `slot "report"`) {
+	if _, err := producerPublicationSchemas(nil, task, failing); err == nil || !strings.Contains(err.Error(), `slot "report"`) {
 		t.Fatalf("loader error = %v", err)
 	}
 }

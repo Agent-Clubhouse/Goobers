@@ -43,8 +43,14 @@ func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invoc
 	if tf.t.ChildWorkflows == nil || r.cfg.ChildHandoff == nil {
 		return invocation.Invoke(ctx, env)
 	}
-	if len(tf.in.Machine.Def.Spec.Parallels) != 0 || tf.in.pinnedWorkspace != nil || workspace.worktree == nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: child handoff currently requires a serial parent with a managed repository workspace")
+	if tf.in.pinnedWorkspace != nil || workspace == nil || workspace.worktree == nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: child handoff requires a managed repository workspace")
+	}
+	if err := verifyParallelHandoffWorkspace(ctx, tf, workspace); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	if err := holdContainedParentWorkspace(ctx, tf, workspace, env); err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	owned, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -126,7 +132,7 @@ func (r *Runner) continueChildWait(ctx context.Context, tf *taskFrame, attempt i
 		}
 		return err
 	}
-	suspension, err := r.cfg.ChildParentCapacity.SuspendChildParent(ctx, tf.in.RunID)
+	suspension, err := r.suspendChildBranch(ctx, tf, record.Request)
 	if err != nil {
 		return err
 	}
@@ -142,15 +148,16 @@ func (r *Runner) continueChildWait(ctx context.Context, tf *taskFrame, attempt i
 	if err != nil {
 		return err
 	}
-	if err := resumeChildCapacity(ctx, suspension, tf, attempt, class); err != nil {
+	continued := func() error {
+		return tf.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: tf.t.Name, Attempt: attempt, AttemptClass: class, Runner: map[string]any{"kind": ChildContinuedKind, "requestId": record.Request.RequestID, "context": pointer}})
+	}
+	// Publish continued while the aggregate capacity owner is locked: a sibling
+	// must not suspend the run between reacquisition and durable continuation.
+	resumer := &childBranchContinuation{suspension: suspension, continued: continued}
+	if err := resumeChildCapacity(ctx, resumer, tf, attempt, class); err != nil {
 		if ctx.Err() != nil {
 			return errors.Join(errChildWaitDrain, ctx.Err())
 		}
-		return err
-	}
-	// Only a reacquired parent may close the marker. A crash before this event
-	// remains parked; a crash afterwards restores the retained checkout.
-	if err := tf.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: tf.t.Name, Attempt: attempt, AttemptClass: class, Runner: map[string]any{"kind": ChildContinuedKind, "requestId": record.Request.RequestID, "context": pointer}}); err != nil {
 		return err
 	}
 	return restoreChildContext(tf, record, pointer, workspace)
@@ -201,6 +208,9 @@ func finishChildStageCustody(ctx context.Context, tf *taskFrame) error {
 		return nil
 	}
 	workspace := tf.heldChildWorkspace
+	if workspace.parentContribution {
+		return nil
+	}
 	if err := workspace.worktree.ReleaseChildHold(ctx); err != nil {
 		return err
 	}
@@ -262,7 +272,7 @@ func recordChildCompletion(tf *taskFrame, attempt int, class journal.AttemptClas
 
 func admitTaskIntegrity(tf taskFrame) error {
 	jr, in, t := tf.jr, tf.in, tf.t
-	upstream, upstreamResult, completed, fanIn := tf.upstream, tf.upstreamResult, tf.completed, tf.fanIn
+	upstream := tf.upstream
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
 	// ValidateInputIntegrity; inputsFrom values are bare scalars whose only
@@ -272,8 +282,7 @@ func admitTaskIntegrity(tf taskFrame) error {
 	// producer's provider-authored text through inputsFrom (TBH-4).
 	integrityErr := apiv1.ValidateInputIntegrity(in.Item, upstream, t.MinimumIntegrity)
 	if integrityErr == nil {
-		integrityErr = apiv1.ValidateResolvedInputIntegrity(
-			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn), t.MinimumIntegrity)
+		integrityErr = apiv1.ValidateResolvedInputIntegrity(taskInputGrades(tf), t.MinimumIntegrity)
 	}
 	if err := integrityErr; err != nil {
 		admission := &apiv1.IntegrityAdmissionError{}

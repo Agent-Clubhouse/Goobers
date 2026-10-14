@@ -30,6 +30,9 @@ type adoWatchPR struct {
 	head    string
 	labels  map[string]string // label id -> name
 	threads []map[string]any
+	// autoComplete is an armed auto-complete, served on the PR detail and
+	// cleared by a PATCH (#6134's disarm).
+	autoComplete bool
 }
 
 type fakeADOCommentWatch struct {
@@ -145,6 +148,10 @@ func (f *fakeADOCommentWatch) servePR(w http.ResponseWriter, r *http.Request, re
 	t := f.t
 	number, _ := strconv.Atoi(rest[0])
 	pr := f.prs[number]
+	if pr != nil && len(rest) == 1 {
+		f.serveDetail(w, r, rest[0], pr)
+		return
+	}
 	if pr == nil || len(rest) < 2 {
 		t.Errorf("unexpected PR request: %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
@@ -177,6 +184,20 @@ func (f *fakeADOCommentWatch) servePR(w http.ResponseWriter, r *http.Request, re
 		t.Errorf("unexpected PR request: %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// serveDetail serves the PR detail CancelAutoComplete reads and its PATCH.
+func (f *fakeADOCommentWatch) serveDetail(w http.ResponseWriter, r *http.Request, number string, pr *adoWatchPR) {
+	if r.Method == http.MethodPatch {
+		pr.autoComplete = false
+		f.writes = append(f.writes, "disarm:"+number)
+	}
+	id, _ := strconv.Atoi(number)
+	detail := map[string]any{"pullRequestId": id, "status": "active"}
+	if pr.autoComplete {
+		detail["autoCompleteSetBy"] = map[string]string{"id": adoWatchSelfID}
+	}
+	writeJSONResp(f.t, w, detail)
 }
 
 func (f *fakeADOCommentWatch) writeLabels(w http.ResponseWriter, pr *adoWatchPR) {
@@ -231,7 +252,7 @@ func TestPRCommentWatchADOSameIdentityUnmarkedCommentIsHuman(t *testing.T) {
 		t.Fatalf("PR 7 labels = %v, want [%s]", got, needsRemediationLabel)
 	}
 	result := readCommentWatchResult(t, dir)
-	if result.Labeled != 1 || result.IdentityMode != prCommentWatchIdentityShared || result.BotID != adoWatchSelfID {
+	if result.Labeled != 1 || result.IdentityMode != commentIdentityShared || result.BotID != adoWatchSelfID {
 		t.Fatalf("result = %+v, want labeled 1 in shared mode as %s", result, adoWatchSelfID)
 	}
 	if entry := result.PRs[0]; entry.CommentAuthorID != adoWatchSelfID || entry.CommentCreatedAt != "2026-09-01T10:05:00Z" {
@@ -417,7 +438,7 @@ func TestPRCommentWatchADOIdentityIsTheIDNotTheName(t *testing.T) {
 					adoWatchThread(2, adoWatchComment(1, tc.author, "unmarked", 5)),
 				}
 			})
-			t.Setenv(executor.InputEnvVar("identityMode"), prCommentWatchIdentityDedicated)
+			t.Setenv(executor.InputEnvVar("identityMode"), commentIdentityDedicated)
 			runADOCommentWatch(t, root)
 			if routed := len(fake.takeWrites()) > 0; routed != tc.routed {
 				t.Fatalf("routed = %v, want %v", routed, tc.routed)

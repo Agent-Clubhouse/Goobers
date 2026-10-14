@@ -31,17 +31,18 @@ type ChildHistoryPage struct {
 // ChildHistoryItem intentionally omits artifact references, proposal bytes and
 // credentials. CancellationRequested alone is never proof of stopped work.
 type ChildHistoryItem struct {
-	ChildID               string                  `json:"childId"`
-	RunID                 string                  `json:"runId"`
-	StageOccurrence       string                  `json:"stageOccurrence"`
-	InvocationKey         string                  `json:"invocationKey"`
-	State                 triggerqueue.ChildState `json:"state"`
-	AcceptedAt            time.Time               `json:"acceptedAt"`
-	UpdatedAt             time.Time               `json:"updatedAt"`
-	TerminalAt            *time.Time              `json:"terminalAt,omitempty"`
-	AcknowledgedAt        *time.Time              `json:"acknowledgedAt,omitempty"`
-	ExpiredAt             *time.Time              `json:"expiredAt,omitempty"`
-	CancellationRequested bool                    `json:"cancellationRequested"`
+	ChildID               string                   `json:"childId"`
+	RunID                 string                   `json:"runId"`
+	StageOccurrence       string                   `json:"stageOccurrence"`
+	InvocationKey         string                   `json:"invocationKey"`
+	State                 triggerqueue.ChildState  `json:"state"`
+	AcceptedAt            time.Time                `json:"acceptedAt"`
+	UpdatedAt             time.Time                `json:"updatedAt"`
+	TerminalAt            *time.Time               `json:"terminalAt,omitempty"`
+	AcknowledgedAt        *time.Time               `json:"acknowledgedAt,omitempty"`
+	ExpiredAt             *time.Time               `json:"expiredAt,omitempty"`
+	CancellationRequested bool                     `json:"cancellationRequested"`
+	Publication           *ChildPublicationHistory `json:"publication,omitempty"`
 }
 
 const childHistoryPageSize = 50
@@ -86,7 +87,11 @@ func (s *Local) RunChildren(ctx context.Context, runID, cursor string) (ChildHis
 			out.NextCursor = encodeCursor(pageCursor{Collection: "run-children", Scope: scope, After: records[i-1].ChildID})
 			break
 		}
-		out.Items = append(out.Items, ChildHistoryItem{ChildID: record.ChildID, RunID: record.RunID, StageOccurrence: record.Identity.StageOccurrence, InvocationKey: record.Identity.InvocationKey, State: record.State, AcceptedAt: record.AcceptedAt, UpdatedAt: record.UpdatedAt, TerminalAt: childHistoryTime(record.TerminalAt), AcknowledgedAt: childHistoryTime(record.AcknowledgedAt), ExpiredAt: childHistoryTime(record.TombstonedAt), CancellationRequested: record.CancellationRequested})
+		publication, err := s.childPublications(ctx, record)
+		if err != nil {
+			return ChildHistoryPage{}, err
+		}
+		out.Items = append(out.Items, ChildHistoryItem{ChildID: record.ChildID, RunID: record.RunID, StageOccurrence: record.Identity.StageOccurrence, InvocationKey: record.Identity.InvocationKey, State: record.State, AcceptedAt: record.AcceptedAt, UpdatedAt: record.UpdatedAt, TerminalAt: childHistoryTime(record.TerminalAt), AcknowledgedAt: childHistoryTime(record.AcknowledgedAt), ExpiredAt: childHistoryTime(record.TombstonedAt), CancellationRequested: record.CancellationRequested, Publication: publication})
 	}
 	return annotated[ChildHistoryPage](ctx, s, out), nil
 }

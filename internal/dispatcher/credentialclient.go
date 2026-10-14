@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/daemonclient"
+	"github.com/goobers/goobers/internal/decisiongate"
 )
 
 // defaultCredentialTimeout bounds a resolve. Short on purpose: credentials are
@@ -53,6 +54,19 @@ type MintedCredential struct {
 	// (httpapi.MintedCredential), nil when its source states none. The pod
 	// delivers it to the stage beside the value (#5905).
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	// Scheme is the Azure DevOps authorization scheme the plane stated for
+	// Value (httpapi.MintedCredential), empty when the response's
+	// RepoAuthScheme applies (#5957).
+	Scheme string `json:"scheme,omitempty"`
+}
+
+// SchemeOr returns the scheme stated for this credential, or fallback (the
+// response's RepoAuthScheme) when none was stated.
+func (c MintedCredential) SchemeOr(fallback string) string {
+	if c.Scheme != "" {
+		return c.Scheme
+	}
+	return fallback
 }
 
 // CredentialResolution is one resolve answer: the minted credentials, plus
@@ -63,9 +77,18 @@ type MintedCredential struct {
 // Grant is the stage credential-refresh grant the plane minted when the
 // request asked for one and the stage qualifies (Goobers#6120); nil otherwise.
 type CredentialResolution struct {
-	Credentials    []MintedCredential
-	RepoAuthScheme string
-	Grant          *CredentialGrant
+	Credentials           []MintedCredential
+	RepoAuthScheme        string
+	Grant                 *CredentialGrant
+	PublicationLeakScreen *PublicationLeakScreen
+}
+
+// PublicationLeakScreen mirrors httpapi.PublicationLeakScreenDelivery.
+type PublicationLeakScreen struct {
+	Settings decisiongate.Settings `json:"settings"`
+	BaseURL  string                `json:"baseUrl"`
+	APIKey   string                `json:"apiKey"`
+	Model    string                `json:"model"`
 }
 
 // CredentialGrant mirrors httpapi.CredentialGrantDelivery.
@@ -249,9 +272,10 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 		return CredentialResolution{}, retryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
 	}
 	var decoded struct {
-		Credentials    []MintedCredential `json:"credentials"`
-		RepoAuthScheme string             `json:"repoAuthScheme"`
-		Grant          *CredentialGrant   `json:"grant"`
+		Credentials           []MintedCredential     `json:"credentials"`
+		RepoAuthScheme        string                 `json:"repoAuthScheme"`
+		Grant                 *CredentialGrant       `json:"grant"`
+		PublicationLeakScreen *PublicationLeakScreen `json:"publicationLeakScreen"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		return CredentialResolution{}, false, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
@@ -264,7 +288,10 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 			return CredentialResolution{}, false, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
 		}
 	}
-	return CredentialResolution{Credentials: decoded.Credentials, RepoAuthScheme: decoded.RepoAuthScheme, Grant: decoded.Grant}, false, nil
+	return CredentialResolution{
+		Credentials: decoded.Credentials, RepoAuthScheme: decoded.RepoAuthScheme,
+		Grant: decoded.Grant, PublicationLeakScreen: decoded.PublicationLeakScreen,
+	}, false, nil
 }
 
 // defaultCredentialRefreshDeadline bounds a mid-stage refresh's retries. It is

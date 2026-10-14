@@ -40,8 +40,18 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"queue-result.json). An eviction or timeout applies\n" +
 	"goobers:needs-remediation plus an explanatory comment before reporting\n" +
 	"its queueOutcome — a failure to apply that trail is a stage failure,\n" +
-	"not a swallowed warning. A live goobers:no-merge-review opt-out dequeues\n" +
-	"the pull request and reports skipped without remediation. Exit codes:\n" +
+	"not a swallowed warning. A live goobers:no-merge-review or run-aborted\n" +
+	"opt-out, or a route to remediation that removed goobers:merge-ready,\n" +
+	"withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the\n" +
+	"armed auto-complete) and reports skipped without remediation. Each poll\n" +
+	"of a still-queued pull request also runs merge-pr's unanswered-human-\n" +
+	"feedback check (#6134; blockUnansweredFeedback, identityMode,\n" +
+	"verdictAuthor (merge-pr's, bound via inputsFrom) and\n" +
+	"excludeAuthors as on merge-pr, default on): open human review feedback\n" +
+	"that no Goobers response has acknowledged withdraws the pull request,\n" +
+	"removes goobers:merge-ready and routes it to remediation with the\n" +
+	"unanswered-human-feedback reason. A feedback read that fails keeps it\n" +
+	"queued and is retried on the next poll. Exit codes:\n" +
 	"0 = evaluated (merged, evicted, skipped, or still-pending-timeout —\n" +
 	"see the result file's queueOutcome field),\n" +
 	"1 = business error (missing capability/config,\n" +
@@ -125,7 +135,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	return runMergeQueuePollCore(repo, githubMergeQueuePollTransport{provider: provider, root: root}, stdout, stderr)
+	return runMergeQueuePollCore(repo, githubMergeQueuePollTransport{provider: provider, root: root, repo: repo}, stdout, stderr)
 }
 
 // mergeQueuePollTransport isolates forge-native queue behavior. The core owns
@@ -139,11 +149,15 @@ type mergeQueuePollTransport interface {
 	RecordTimeout(providers.RepositoryRef, string) error
 	ConfirmAbsentEntry() bool
 	SupportsOptOutDequeue() bool
+	// Withdrawal decides each poll whether the watched PR is withdrawn from
+	// landing, unanswered human feedback included (#6134).
+	Withdrawal() queueWithdrawal
 }
 
 type githubMergeQueuePollTransport struct {
 	provider *providers.GitHubProvider
 	root     string
+	repo     providers.RepositoryRef
 }
 
 func (t githubMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
@@ -174,6 +188,18 @@ func (t githubMergeQueuePollTransport) RecordTimeout(repo providers.RepositoryRe
 
 func (githubMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return true }
 func (githubMergeQueuePollTransport) SupportsOptOutDequeue() bool { return true }
+
+func (t githubMergeQueuePollTransport) Withdrawal() queueWithdrawal {
+	return queueWithdrawal{
+		gate: newMergeFeedbackGate(t.repo, t.provider, providerInput("verdictAuthor", ""), false),
+		// The refusal routing labels and comments with the stage's
+		// github:issues:write credential, the one eviction routing uses.
+		provider: func() (remediationProvider, error) {
+			return newMergeReviewRemediationProvider(t.root, t.repo,
+				withStageProviderCapability(capability.GitHubIssuesWrite), withStageProviderMutations("pr"))
+		},
+	}
+}
 
 func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePollTransport, stdout, stderr io.Writer) int {
 
@@ -214,7 +240,10 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 	// Length of the current unbroken streak of absent reads; reset by any
 	// conclusive non-absent read.
 	absentStreak := 0
-	optedOut := false
+	// withdrawn names the label that withdrew the PR from landing ("" while
+	// it is still landing).
+	withdrawn := ""
+	withdrawal := transport.Withdrawal()
 	for attempt := 0; ; attempt++ {
 		result, pollErr := transport.Poll(ctx, repo, pullNumber)
 		if pollErr != nil && !providers.IsTransientError(pollErr) {
@@ -225,11 +254,12 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 			// dequeued the instant its originating run is cancelled mid-flight,
 			// same as an operator applying goobers:no-merge-review — the queue
 			// is a second merge authority and must not land a PR merge-pr would
-			// now refuse.
-			if transport.SupportsOptOutDequeue() && hasAnyLabel(result.Labels, []string{noMergeReviewLabel, abortedRunLabel}) {
-				optedOut = true
+			// now refuse. #6134: so must a PR pr-comment-watch routed to
+			// remediation for human feedback that arrived while it was queued.
+			if withdrawn == "" && transport.SupportsOptOutDequeue() {
+				withdrawn = withdrawal.reason(ctx, pullNumber, result, stderr)
 			}
-			if optedOut {
+			if withdrawn != "" {
 				switch result.State {
 				case providers.MergeQueueEntryMerged:
 					return transport.Merge(ctx, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
@@ -237,16 +267,16 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 					entrySeen = true
 					absentStreak = 0
 					if err := transport.Dequeue(ctx, repo, pullNumber, result.PullRequestNodeID); err == nil {
-						return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
+						return withdrawal.skipped(ctx, repo, pullNumber, withdrawn, resultFile, stdout, stderr)
 					} else {
 						pf(stderr, "warning: dequeue opted-out pull request #%s: %v; continuing to monitor and retry\n", pullNumber, err)
 					}
 				case providers.MergeQueueEntryEvicted:
-					return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
+					return withdrawal.skipped(ctx, repo, pullNumber, withdrawn, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryAbsent:
 					absentStreak++
 					if (entrySeen || !time.Now().Before(graceUntil)) && absentStreak >= mergeQueueAbsenceConfirmPolls {
-						return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
+						return withdrawal.skipped(ctx, repo, pullNumber, withdrawn, resultFile, stdout, stderr)
 					}
 					pf(stdout, "pr #%s opted out but its merge queue entry is not visible; waiting to dequeue or confirm absence\n", pullNumber)
 				}
@@ -285,7 +315,7 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 			}
 		}
 		if time.Now().After(deadline) {
-			if optedOut {
+			if withdrawn != "" {
 				// Removal was never confirmed, so the entry may still be queued
 				// and may still merge after this watcher exits. Record it for
 				// post-merge reconciliation before reporting the failure:
@@ -317,13 +347,33 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 	}
 }
 
-func mergeQueuePollSkipped(pullNumber, resultFile string, stdout, stderr io.Writer) int {
-	reason := fmt.Sprintf("pull request #%s is labeled %s and was removed from merge-review landing", pullNumber, noMergeReviewLabel)
+// mergeQueueWithdrawLabel returns the label that withdraws a queued pull
+// request from landing, or "" while it should keep landing: the operator
+// opt-out, a cancelled originating run (#2238), or a route to remediation
+// that took the PR out of landing (#6134: pr-comment-watch and
+// record-merge-refusal remove goobers:merge-ready when they route human
+// feedback). needs-remediation alongside merge-ready is not a withdrawal:
+// post-merge's sibling fan-out labels a queued sibling that merely overlaps a
+// landed PR's files, and the queue's own combined build is what settles that.
+func mergeQueueWithdrawLabel(labels []string) string {
+	for _, label := range []string{noMergeReviewLabel, abortedRunLabel} {
+		if hasAnyLabel(labels, []string{label}) {
+			return label
+		}
+	}
+	if hasAnyLabel(labels, []string{needsRemediationLabel}) && !hasAnyLabel(labels, []string{mergeReadyLabel}) {
+		return needsRemediationLabel
+	}
+	return ""
+}
+
+func mergeQueuePollSkipped(pullNumber, label, resultFile string, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("pull request #%s is labeled %s and was removed from merge-review landing", pullNumber, label)
 	if err := writeQueueResult(resultFile, pullNumber, mergeReviewOptOutOutcome, "", nil, reason); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "merge queue skipped pr #%s after %s opt-out\n", pullNumber, noMergeReviewLabel)
+	pf(stdout, "merge queue skipped pr #%s: withdrawn by %s\n", pullNumber, label)
 	return 0
 }
 
@@ -525,20 +575,23 @@ func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
 // decider≠executor; SEC-053).
 //
 // PERIPHERAL GitHub side effects are documented no-ops on ADO:
-//   - opt-out dequeue (DequeuePullRequest, §1d:166): no ADO equivalent — the
-//     "queue" is ADO's own auto-complete, not a separate merge authority to
-//     dequeue from. ADO PollMergeQueueEntry does populate Labels, but there is
-//     nothing to dequeue, so no opt-out handling runs here.
+//   - opt-out dequeue (DequeuePullRequest, §1d:166): the "queue" is ADO's own
+//     auto-complete, so withdrawing a PR (an opt-out label, or a route to
+//     remediation off merge-ready, #6134) cancels the armed auto-complete.
 //   - eviction/timeout remediation (§1d:294-324, §8): GitHub routes an evicted
 //     or timed-out PR to pr-remediation via UpdateWorkItem(ID: prNumber,
 //     AddLabels…). On ADO that numeric PR id addresses wit/workitems/{id},
 //     mutating an unrelated work item — the PR-as-work-item hazard — so the
 //     outcome is recorded to the result file WITHOUT any work-item write.
-//   - branch cleanup (§1d:66): ADO PollPullRequest never reports
-//     HeadRepository, so cleanupMergedBranch cannot run; skipped.
 //
-// Wiring the ADO remediation-routing and branch-cleanup follow-ups is deferred
-// to the ADO merge epic (CONF-3 #2076).
+// Branch cleanup does not use cleanupMergedBranch: ADO PollPullRequest never
+// reports HeadRepository. A merged pull request instead gets the ADO
+// source-branch backstop (stageADOSourceBranchBackstop, #5957) when the stage
+// holds github:branch:delete: Azure DevOps was asked to delete the branch at
+// completion, and the backstop removes it when ADO did not.
+//
+// Wiring the ADO remediation-routing follow-up is deferred to the ADO merge
+// epic (CONF-3 #2076).
 func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
 	// Completion authority is distinct from PR-write authority. The provider
 	// is built from the credential delivered for the landing capability
@@ -555,7 +608,7 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		return 1
 	}
 	dispatcher := providers.NewDispatcher(adoProvider)
-	return runMergeQueuePollCore(repo, &adoMergeQueuePollTransport{provider: dispatcher, stdout: stdout}, stdout, stderr)
+	return runMergeQueuePollCore(repo, &adoMergeQueuePollTransport{provider: dispatcher, root: root, canceller: adoProvider, repo: repo, stdout: stdout}, stdout, stderr)
 }
 
 // adoMergeQueuePollTransport remembers whether the latest pending read was
@@ -564,8 +617,14 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 // bare timeout. The core loop stays provider-neutral.
 type adoMergeQueuePollTransport struct {
 	provider      providers.MergeQueuePoller
+	root          string
+	canceller     adoAutoCompleteCanceller
+	repo          providers.RepositoryRef
 	stdout        io.Writer
 	awaitingHuman bool
+	// merged is the read that reported the pull request merged: its source
+	// branch and merged head feed the source-branch backstop.
+	merged providers.PollMergeQueueEntryResult
 }
 
 func (t *adoMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
@@ -578,11 +637,15 @@ func (t *adoMergeQueuePollTransport) Poll(ctx context.Context, repo providers.Re
 		pf(t.stdout, "pr #%s: auto-complete armed, awaiting human approval\n", pullNumber)
 	}
 	t.awaitingHuman = awaiting
+	if result.State == providers.MergeQueueEntryMerged {
+		t.merged = result
+	}
 	return result, nil
 }
 
-func (adoMergeQueuePollTransport) Merge(_ context.Context, _ providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
-	return mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile, stdout, stderr)
+func (t *adoMergeQueuePollTransport) Merge(ctx context.Context, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+	cleanup := stageADOSourceBranchBackstop(ctx, t.root, repo, t.merged.HeadBranch, t.merged.HeadSHA)
+	return mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile, cleanup, stdout, stderr)
 }
 
 func (adoMergeQueuePollTransport) Evict(_ context.Context, _ providers.RepositoryRef, pullNumber, resultFile string, stdout, stderr io.Writer) int {
@@ -596,8 +659,20 @@ func (t *adoMergeQueuePollTransport) Timeout(_ context.Context, _ providers.Repo
 	return mergeQueuePollTimedOutADO(pullNumber, timeout, resultFile, stdout, stderr)
 }
 
-func (adoMergeQueuePollTransport) Dequeue(context.Context, providers.RepositoryRef, string, string) error {
-	return fmt.Errorf("azure devops does not support merge queue dequeue")
+// Dequeue withdraws the landing by cancelling the armed auto-complete (#6134):
+// ADO's "queue" is that auto-complete, and without a cancel a withdrawn PR
+// would still complete the moment its policies settle.
+func (t *adoMergeQueuePollTransport) Dequeue(ctx context.Context, repo providers.RepositoryRef, pullNumber, _ string) error {
+	if t.canceller == nil {
+		return fmt.Errorf("azure devops provider cannot cancel auto-complete")
+	}
+	_, err := t.canceller.CancelAutoComplete(ctx, repo, pullNumber)
+	return err
+}
+
+// adoAutoCompleteCanceller is the ADO landing withdrawal.
+type adoAutoCompleteCanceller interface {
+	CancelAutoComplete(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.AutoCompleteCancel, error)
 }
 
 func (adoMergeQueuePollTransport) RecordTimeout(providers.RepositoryRef, string) error {
@@ -605,20 +680,39 @@ func (adoMergeQueuePollTransport) RecordTimeout(providers.RepositoryRef, string)
 }
 
 func (adoMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return false }
-func (adoMergeQueuePollTransport) SupportsOptOutDequeue() bool { return false }
+func (adoMergeQueuePollTransport) SupportsOptOutDequeue() bool { return true }
+
+func (t *adoMergeQueuePollTransport) Withdrawal() queueWithdrawal {
+	var gateProvider providers.Provider
+	provider, ok := t.canceller.(*providers.ADOProvider)
+	if ok && provider != nil {
+		gateProvider = provider
+	}
+	return queueWithdrawal{
+		gate: newMergeFeedbackGate(t.repo, gateProvider, providerInput("verdictAuthor", ""), false),
+		// Pull-request labels and threads with the landing credential, never
+		// the work item that shares the PR's number.
+		provider: func() (remediationProvider, error) {
+			if provider == nil {
+				return nil, fmt.Errorf("azure devops provider unavailable")
+			}
+			return mergeReviewADOProvider{ADOProvider: provider}, nil
+		},
+	}
+}
 
 // mergeQueuePollMergedADO reports an ADO-completed pull request as merged. The
-// merged determination itself is the CORE land action and is written unchanged;
-// branch cleanup (cleanupMergedBranch, the GitHub concrete-*GitHubProvider
-// helper) is a documented no-op on ADO because ADO PollPullRequest never
-// reports HeadRepository (merge-wiring-plan §1d/§8), so it is skipped rather
-// than run against a nil head repository.
-func mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
-	if err := writeQueueResult(resultFile, pullNumber, "merged", mergeSHA, nil, ""); err != nil {
+// merged determination itself is the CORE land action and is written unchanged.
+// cleanup is the source-branch backstop's outcome (stageADOSourceBranchBackstop),
+// nil when the stage holds no github:branch:delete grant; it never changes the
+// merged outcome or the exit code (PRL-072: a cleanup failure is a warning).
+func mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile string, cleanup *mergeBranchCleanup, stdout, stderr io.Writer) int {
+	printMergedBranchCleanup(stdout, stderr, "merge queue merged pr #"+pullNumber, cleanup)
+	if err := writeQueueResult(resultFile, pullNumber, "merged", mergeSHA, cleanup, ""); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "merge queue merged pr #%s (%s); branch cleanup deferred on ado\n", pullNumber, mergeSHA)
+	pf(stdout, "merge queue merged pr #%s (%s)\n", pullNumber, mergeSHA)
 	return 0
 }
 

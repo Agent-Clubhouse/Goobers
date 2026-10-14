@@ -4,51 +4,24 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
-
-// Identity modes for pr-comment-watch. dedicated: Goobers runs as its own
-// bot identity, so an unmarked comment by that identity is still Goobers'.
-// shared: Goobers runs as a person's own identity (on Azure DevOps, typically
-// the operator's own az login), so only a Goobers marker tells its comments
-// apart and an unmarked comment by that identity is the person's.
-const (
-	prCommentWatchIdentityDedicated = "dedicated"
-	prCommentWatchIdentityShared    = "shared"
-)
-
-// defaultPRCommentWatchIdentityMode is shared on Azure DevOps, whose
-// recommended local authentication is the operator's own identity, and
-// dedicated elsewhere, where a bot account has always been required.
-func defaultPRCommentWatchIdentityMode(kind providers.ProviderKind) string {
-	if kind == providers.ProviderADO {
-		return prCommentWatchIdentityShared
-	}
-	return prCommentWatchIdentityDedicated
-}
-
-// prCommentWatchIdentity is the identity the stage's credential authenticates
-// as. key is what comment authors are compared against: the login on GitHub
-// and Gitea, the immutable identity id on Azure DevOps (byID), where display
-// names are neither stable nor unique.
-type prCommentWatchIdentity struct {
-	login string
-	key   string
-	byID  bool
-}
 
 // prCommentWatchForge is one provider's arm of the watcher: resolve the
 // credential's identity, list the open PRs (labels ride the summary), read one
 // PR's comments oldest-first, and route a PR to remediation while clearing the
 // park labels it carries.
 type prCommentWatchForge interface {
-	identity(context.Context) (prCommentWatchIdentity, error)
+	identity(context.Context) (commentIdentity, error)
 	listPullRequests(ctx context.Context, base string) ([]providers.PullRequestSummary, error)
-	listComments(context.Context, providers.PullRequestSummary) ([]providers.Comment, error)
+	listComments(context.Context, providers.PullRequestSummary, commentClassifier) ([]providers.Comment, error)
 	route(ctx context.Context, pr providers.PullRequestSummary, clear []string) error
+	// disarm cancels a landing armed on pr (goobers:merge-ready) before the
+	// PR is routed for fresh human feedback (#6134). disarmed is true only
+	// when this stage actually cancelled something.
+	disarm(ctx context.Context, pr providers.PullRequestSummary) (disarmed bool, err error)
 }
 
 // newPRCommentWatchForge builds the provider arm through the shared
@@ -106,12 +79,12 @@ type issueLabelCommentWatch struct {
 	repo     providers.RepositoryRef
 }
 
-func (w issueLabelCommentWatch) identity(ctx context.Context) (prCommentWatchIdentity, error) {
+func (w issueLabelCommentWatch) identity(ctx context.Context) (commentIdentity, error) {
 	login, err := w.provider.AuthenticatedLogin(ctx)
 	if err != nil {
-		return prCommentWatchIdentity{}, err
+		return commentIdentity{}, err
 	}
-	return prCommentWatchIdentity{login: login, key: login}, nil
+	return loginCommentIdentity(login), nil
 }
 
 func (w issueLabelCommentWatch) listPullRequests(ctx context.Context, base string) ([]providers.PullRequestSummary, error) {
@@ -122,7 +95,7 @@ func (w issueLabelCommentWatch) listPullRequests(ctx context.Context, base strin
 	})
 }
 
-func (w issueLabelCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary) ([]providers.Comment, error) {
+func (w issueLabelCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary, _ commentClassifier) ([]providers.Comment, error) {
 	return w.provider.ListComments(ctx, w.repo, strconv.Itoa(pr.Number))
 }
 
@@ -139,6 +112,14 @@ func (w issueLabelCommentWatch) route(ctx context.Context, pr providers.PullRequ
 	return err
 }
 
+// disarm is a no-op here: GitHub's merge queue is the only landing Goobers
+// arms, and dequeuing takes the merge authority this stage does not hold.
+// queue-watch, which holds it while the PR is queued, dequeues a PR that
+// gains goobers:needs-remediation (the route below).
+func (issueLabelCommentWatch) disarm(context.Context, providers.PullRequestSummary) (bool, error) {
+	return false, nil
+}
+
 // adoPRCommentWatchProvider is the Azure DevOps surface: the PR list (labels
 // via includeLabels), every live comment across general and file threads, the
 // credential's identity by immutable id, and the native PR-label endpoints —
@@ -150,6 +131,8 @@ type adoPRCommentWatchProvider interface {
 	AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error)
 	AddPullRequestLabels(ctx context.Context, repo providers.RepositoryRef, pullID string, names []string) error
 	RemovePullRequestLabel(ctx context.Context, repo providers.RepositoryRef, pullID, name string) error
+	CancelAutoComplete(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.AutoCompleteCancel, error)
+	ListPullRequestFeedbackThreads(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.PullRequestFeedbackThread, error)
 }
 
 type adoCommentWatch struct {
@@ -157,24 +140,39 @@ type adoCommentWatch struct {
 	repo     providers.RepositoryRef
 }
 
-func (w adoCommentWatch) identity(ctx context.Context) (prCommentWatchIdentity, error) {
+func (w adoCommentWatch) identity(ctx context.Context) (commentIdentity, error) {
 	self, err := w.provider.AuthenticatedIdentity(ctx)
 	if err != nil {
-		return prCommentWatchIdentity{}, err
+		return commentIdentity{}, err
 	}
-	login := self.UniqueName
-	if login == "" {
-		login = self.DisplayName
-	}
-	return prCommentWatchIdentity{login: login, key: self.ID, byID: true}, nil
+	return adoCommentIdentity(self), nil
 }
 
 func (w adoCommentWatch) listPullRequests(ctx context.Context, base string) ([]providers.PullRequestSummary, error) {
 	return w.provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: w.repo, Base: base, SkipCheckState: true})
 }
 
-func (w adoCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary) ([]providers.Comment, error) {
-	return w.provider.ListPullRequestFeedbackComments(ctx, w.repo, strconv.Itoa(pr.Number))
+// listComments reads every live thread comment. For a PR that is landing
+// (goobers:merge-ready) it reads the OPEN feedback only, as merge-pr's gate
+// does: a reviewer who resolved their own thread must not cancel an armed
+// auto-complete over feedback the gate would not refuse on.
+func (w adoCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary, classifier commentClassifier) ([]providers.Comment, error) {
+	pullID := strconv.Itoa(pr.Number)
+	if !hasAnyLabel(pr.Labels, []string{mergeReadyLabel}) {
+		return w.provider.ListPullRequestFeedbackComments(ctx, w.repo, pullID)
+	}
+	threads, err := w.provider.ListPullRequestFeedbackThreads(ctx, w.repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	return openFeedbackComments(nil, adoFeedbackThreads(threads), classifier), nil
+}
+
+// disarm cancels the pull request's armed auto-complete: ADO would otherwise
+// complete it the moment its pending policies settle, over the feedback.
+func (w adoCommentWatch) disarm(ctx context.Context, pr providers.PullRequestSummary) (bool, error) {
+	outcome, err := w.provider.CancelAutoComplete(ctx, w.repo, strconv.Itoa(pr.Number))
+	return outcome == providers.AutoCompleteCancelled, err
 }
 
 // route clears the carried park labels, then adds needs-remediation. ADO has
@@ -191,82 +189,4 @@ func (w adoCommentWatch) route(ctx context.Context, pr providers.PullRequestSumm
 		}
 	}
 	return w.provider.AddPullRequestLabels(ctx, w.repo, pullID, []string{needsRemediationLabel})
-}
-
-// prCommentOrigin is who a comment speaks for in the watermark.
-type prCommentOrigin int
-
-const (
-	prCommentFromHuman prCommentOrigin = iota
-	prCommentFromGoobers
-	prCommentFromAutomation
-)
-
-// prCommentClassifier decides each comment's origin. The rule, in order:
-//
-//  1. A comment carrying a Goobers marker on a line of its own, outside a
-//     quote, is Goobers' own, whoever the author is.
-//  2. In dedicated mode, an unmarked comment whose author is the credential's
-//     own identity is Goobers' own too.
-//  3. A Bot-typed author (GitHub) or one named in excludeAuthors is third-party
-//     automation and takes part in neither watermark.
-//  4. Everything else is human — including, in shared mode, an unmarked
-//     comment by the credential's own identity.
-type prCommentClassifier struct {
-	selfKey        string
-	byID           bool
-	dedicated      bool
-	excludeAuthors map[string]bool
-}
-
-func newPRCommentClassifier(self prCommentWatchIdentity, settings prCommentWatchSettings) prCommentClassifier {
-	return prCommentClassifier{
-		selfKey:        self.key,
-		byID:           self.byID,
-		dedicated:      settings.identityMode == prCommentWatchIdentityDedicated,
-		excludeAuthors: settings.excludeAuthors,
-	}
-}
-
-func (c prCommentClassifier) origin(comment providers.Comment) prCommentOrigin {
-	if goobersMarkedComment(comment.Body) {
-		return prCommentFromGoobers
-	}
-	author := comment.Author
-	if c.byID {
-		author = comment.AuthorID
-	}
-	if c.dedicated && author != "" && strings.EqualFold(author, c.selfKey) {
-		return prCommentFromGoobers
-	}
-	if strings.EqualFold(comment.AuthorType, "bot") || c.excludeAuthors[strings.ToLower(author)] {
-		return prCommentFromAutomation
-	}
-	return prCommentFromHuman
-}
-
-// goobersMarkedComment reports whether body carries a marker only Goobers
-// writes: a valid attribution footer (providers.ParseAttribution) or a
-// review-thread response marker, each on a line of its own. Quoted lines are
-// ignored first, so a person quoting a Goobers comment in a reply is still a
-// person.
-func goobersMarkedComment(body string) bool {
-	lines := strings.Split(body, "\n")
-	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, ">") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, reviewThreadResponseMarkerPrefix) {
-			return true
-		}
-		kept = append(kept, line)
-	}
-	unquoted := strings.Join(kept, "\n")
-	if !strings.Contains(unquoted, "\n"+providers.AttributionMarkerPrefix) && !strings.HasPrefix(unquoted, providers.AttributionMarkerPrefix) {
-		return false
-	}
-	_, ok, err := providers.ParseAttribution(unquoted)
-	return ok && err == nil
 }

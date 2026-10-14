@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
@@ -141,9 +142,24 @@ func InNamespace(entry Entry, gaggle, provider string) bool {
 	return entry.Gaggle == gaggle && entry.Provider == provider
 }
 
-// MergeLockItemPrefix namespaces the synthetic ledger item a merge lease is
-// taken on, so it can never collide with a work item or a PR claim.
-const MergeLockItemPrefix = "merge-lock/"
+// Ledger-only claim namespaces, re-exported for the stages that mint them
+// through this client. localscheduler.IsWorkItemClaimKey knows every one, so
+// the status claim projection never resolves them as work items (#6798).
+const (
+	// MergeLockItemPrefix namespaces the synthetic ledger item a merge lease
+	// is taken on, so it can never collide with a work item or a PR claim.
+	MergeLockItemPrefix = localscheduler.MergeLockItemIDPrefix
+	// PullRequestItemPrefix namespaces PR claims ("pr/536").
+	PullRequestItemPrefix = localscheduler.PullRequestItemIDPrefix
+	// AdvisoryPRItemPrefix namespaces advisory PR review claims.
+	AdvisoryPRItemPrefix = localscheduler.AdvisoryPRItemIDPrefix
+	// DecompositionTargetItemPrefix namespaces publish-batch target leases.
+	DecompositionTargetItemPrefix = localscheduler.DecompositionTargetItemIDPrefix
+)
+
+// MergeLockReleaseCode is the release code recorded when merge-pr hands its
+// exclusive window back.
+const MergeLockReleaseCode = "merge_window_closed"
 
 // MergeLockKey is the synthetic claim key merge-pr's exclusive window is
 // leased on over the plane: one lease per repository, held by the run for
@@ -169,11 +185,14 @@ type Ledger interface {
 	// with the holder's run id is a refusal, not an error; an idempotent
 	// re-claim by the same run renews — ClaimLedger.ClaimScoped's contract.
 	ClaimScoped(ctx context.Context, key Key, runID, workflow string, lease time.Duration) (ok bool, holder string, err error)
-	// ReleaseScoped surrenders key if runID holds it; releasing a claim not
-	// held is a no-op — the ledger's idempotency contract.
-	ReleaseScoped(ctx context.Context, key Key, runID string) error
-	// ReleaseAllForRun surrenders every claim runID holds and reports them.
-	ReleaseAllForRun(ctx context.Context, runID string) ([]Entry, error)
+	// ReleaseScoped surrenders key if runID holds it, recording reason as why
+	// ownership ended; releasing a claim not held is a no-op — the ledger's
+	// idempotency contract, which also keeps a retry from recording a second,
+	// contradictory reason.
+	ReleaseScoped(ctx context.Context, key Key, runID string, reason claimrelease.Reason) error
+	// ReleaseAllForRun surrenders every claim runID holds with reason and
+	// reports them.
+	ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) ([]Entry, error)
 	// ForRunAll returns every entry runID currently holds, ordered by item ID.
 	ForRunAll(ctx context.Context, runID string) ([]Entry, error)
 	// ListNamespace reads the gaggle/provider namespace: current holders

@@ -623,7 +623,11 @@ func adoNeedsChangesMux(t *testing.T, repo providers.RepositoryRef, prNumber int
 		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 	})
 	mux.HandleFunc(pr+"/iterations", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{map[string]int{"id": 1}}})
+		// The latest iteration carries the reviewed head: the non-pass status
+		// is pinned to it (#4199).
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{map[string]interface{}{
+			"id": 1, "sourceRefCommit": map[string]string{"commitId": headSHA},
+		}}})
 	})
 	mux.HandleFunc(pr+"/iterations/1/changes", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{

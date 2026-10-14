@@ -20,19 +20,28 @@ back runs. The contract and its limits are specified in the
 
 ## Preview status
 
-Backprop is a **preview** feature (`workflow.spec.backprop.enabled` and
-`workflow.spec.backprop.version` in the [feature matrix](../feature-matrix.md)).
+Backprop is a **preview** feature (`workflow.spec.backprop.enabled`,
+`workflow.spec.backprop.mode`, `workflow.spec.backprop.version`,
+`workflow.spec.backprop.granularity`, and `gaggle.spec.backprop.mode` in the
+[feature matrix](../feature-matrix.md)).
 Today:
 
-- Enrollment is **per workflow** only. There is no gaggle-wide switch and no
-  shadow mode over unenrolled workflows yet.
-- Attribution is computed **once, at run end**. There are no per-stage
-  checkpoints.
+- Active enrollment is **per workflow** only. A gaggle can observe its
+  workflows in shadow mode, but it cannot enroll them.
+- Attribution is computed **once, at run end** by default. Opting into
+  `granularity: stage` also writes read-only per-stage checkpoints (see
+  [Per-stage checkpoints](#per-stage-checkpoints)) for active runs only; shadow
+  runs write no checkpoints. Stage records do not yet inform later stages, and
+  the portal does not show them.
 - Learning uses the run journal plus any ground-truth labels you record by
   hand with `goobers telemetry label` (see
   [Label run outcomes](#label-run-outcomes-ground-truth)). Automatic label
   sources (for example, "this merged PR was later reverted") are not
   available yet.
+- Agents can record typed claims with `goobers telemetry claim` (see
+  [Agent claims](#agent-claims)). Claims are evidence only: they are listed in
+  `attribution.json` and cited on cause findings, but never change credit.
+  Later stages read earlier claims with `goobers telemetry claims`.
 - Cohorts and fault-audit findings are JSON only: the daemon's telemetry stats
   read API and `goobers telemetry-query`. The `goobers telemetry stats` CLI
   (text or `--json`) reads only the local rollup and does not include them.
@@ -61,10 +70,13 @@ spec:
     version: v1
 ```
 
-- `enabled` and `version` are both required. `v1` is the only supported
-  attribution contract.
-- Omitting `backprop`, or setting `enabled: false`, performs no attribution
-  work.
+- `version` is required, together with `enabled` or `mode`. `v1` is the only
+  supported attribution contract.
+- `enabled: true` is the same as `mode: active`. `enabled: true` is rejected
+  alongside `mode: off` or `mode: shadow`. To try Backprop without enrolling,
+  see [Observe a workflow in shadow mode](#observe-a-workflow-in-shadow-mode).
+- Omitting `backprop`, or setting `enabled: false` or `mode: off`, performs no
+  attribution work.
 - The preview acknowledgement belongs on each Workflow. A Manifest-level
   annotation is deprecated and does not authorize anything.
 - A workflow pinned to an older `dslVersion` that declares `backprop` fails
@@ -82,10 +94,81 @@ goobers status ./instance
 ```
 
 The workflow summary in `goobers status` prints
-`backprop: enabled (v1)` beneath each enrolled workflow.
+`backprop: active (v1)` (or `backprop: shadow (v1)`) beneath each
+participating workflow.
 
 Only runs that **start** after enrollment are attributed. Runs that finished
 earlier are not backfilled.
+
+## Observe a workflow in shadow mode
+
+Shadow mode runs the same post-run analysis without enrolling the workflow:
+
+```yaml
+spec:
+  backprop:
+    mode: shadow
+    version: v1
+```
+
+Shadow runs do no attribution work when they finish, so run completion and
+scheduling are unaffected, and they write no `attribution.json`. Their
+analysis is computed from the run journal when you request the comparison
+report. The fault audit, finding filing, cohorts, and `goobers trace` read only
+`attribution.json`, so shadow output never files findings or affects gates.
+`goobers status` prints
+`backprop: shadow (v1)` and the portal workflow page shows **Shadow (v1)**.
+
+### Observe a whole gaggle without editing its workflows
+
+To observe existing workflows without editing or redeploying them, set the
+shadow override on their Gaggle:
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: goobers
+spec:
+  backprop:
+    mode: shadow   # off | shadow
+```
+
+Each workflow's effective mode is resolved in this order:
+
+1. The workflow's own `backprop.mode`, if set. `mode: off` opts a workflow out
+   of its gaggle's override.
+2. The workflow's `backprop.enabled: true` (active).
+3. The gaggle's `backprop.mode`.
+4. Otherwise, off.
+
+The override can only produce shadow mode, never active, so it never files
+findings. Override-observed runs write nothing at run end. Their analysis is
+computed from the run journal when you request the comparison report, and
+`goobers status` and the portal show them as `shadow (v1)`.
+
+### Compare shadow findings with what happened
+
+```sh
+goobers telemetry shadow ./instance
+goobers telemetry shadow --json --gaggle=goobers ./instance
+```
+
+The report lists each shadow run (from a workflow's `mode: shadow` or a
+gaggle override) with its actual phase. It then lists the findings the active
+fault audit would have filed: domain, recommended owner and action, the actual
+phases of the runs behind each finding, and whether the active audit also
+filed it. Like the active audit, it uses the instance's filing threshold, so
+findings that are not fileable are left out. The report is read-only. It records no filing, cooldown, or
+verification state, and no gate, filing pass, or default portal view reads it.
+
+### Promote
+
+To promote, inspect the comparison report, then change the
+workflow to `mode: active`. Only runs that start after promotion enter the
+fault audit; earlier shadow runs are never backfilled. Set `mode: shadow`
+or `mode: off` to demote. See
+[Shadow mode](../design/credit-graph.md#shadow-mode) for the design.
 
 ## Read one run's attribution
 
@@ -125,6 +208,66 @@ fields are at `attribution.attribution.contributions` and
 `attribution.attribution.causes`.
 
 `goobers trace --api=<url>` (a remote trace) does not include attribution.
+
+## Per-stage checkpoints
+
+By default (`granularity: run`, or omitted) attribution happens only at run
+end. To also checkpoint after every stage, opt in (preview):
+
+```yaml
+spec:
+  backprop:
+    enabled: true
+    version: v1
+    granularity: stage
+```
+
+While the run is still going, the daemon writes `attribution-stages.json` beside
+the run journal, with one record per finished stage attempt. A record holds:
+
+- the stage, attempt, branch, and terminal status;
+- the journal range it covers (`fromSequence`..`throughSequence`), a
+  `segmentDigest` of those events, and a `recordDigest` of the record itself;
+- the attempt's inputs (input snapshots and consumed artifacts), outputs,
+  declared result artifacts, and gate verdicts;
+- **provisional** contributions, causes, and evidence for that stage, computed
+  over the journal so far. The run outcome is not known yet, so these values are
+  hints only.
+
+Each record's journal segment is also saved under `attribution-segments/`,
+named by its `segmentDigest`. For stage-granular runs this roughly doubles the
+on-disk size of the journal.
+
+Checkpoints are best effort, bounded, and asynchronous. The daemon queues them
+off the stage-transition path, and a failed checkpoint is logged
+(`backprop_stage_checkpoint_failed`) without ever blocking or failing a stage.
+Once the run finishes, no more checkpoints are written until it is resumed or
+rerun. Checkpoints and the
+end-of-run record are published under one per-run lock (`attribution.lock`), so
+a checkpoint never lands after `attribution.json` was composed.
+
+At run end, `attribution.json` is composed from the saved stage segments plus
+any journal events that came after the last checkpoint. Its `stageComposition`
+field gives the number of checkpoints used. A conformance test guarantees that
+the composed record equals the record from a run-end-only analysis of the same
+journal. Before composing, Goobers verifies the checkpoints against this run's
+journal (run ID, ranges, digests, and each record rebuilt from the journal,
+provisional attribution included) and checks each saved segment
+against its digest. If anything fails verification, the whole journal is
+analyzed instead, and `stageComposition.error` says why.
+
+`goobers trace --summary` prints one line per checkpoint, and
+`goobers trace --json` includes the records under `stageAttribution`. Trace
+first verifies the checkpoints against the journal; if they do not verify, it
+prints `backprop stages: unverified (<reason>)` (`stageAttributionError` in
+JSON) instead of the records:
+
+```text
+backprop: complete (v1)
+backprop stages: 2 checkpoint(s)
+  plan#1 success (seq 1-6)
+  implement#1 failure (seq 7-12)
+```
 
 ## Read cohort attribution and fault-audit findings
 
@@ -178,13 +321,33 @@ Both surfaces return two Backprop fields:
   | `productReliabilityFindings` | Goobers runtime (daemon, worktree, scheduler, journal, claims, admission, publication, recovery, shared CI). Must recur across unrelated workflows. |
   | `externalFindings` | Harness, model, provider, credentials, network, filesystem, operating system. Must recur across unrelated workflows. |
   | `workflowFindings` | The workflow definition. Must be localized to one workflow, EffectiveVersion, and node path. |
-  | `mixedOrUnknownFindings` | Anything sparse (fewer than three runs), missing provenance, contradictory, or not crossing the required boundary. |
+  | `mixedOrUnknownFindings` | Anything sparse (fewer than three runs), missing provenance, contradictory, or not crossing the required boundary. Also an `environment` failure whose stage recorded no error code naming its component. |
+
+  A cause's failure class decides its owner first: instruction, interpretation,
+  tool-choice, routing, and topology causes belong to the workflow definition,
+  and a model that produced no output is external. For other causes, the
+  stage's recorded error code decides, but only a code whose emitter names the
+  owner. Catch-all codes such as `provider_error` decide nothing. Component
+  words in the cause text count only when neither decides; stage, agent, and
+  tool names never count. Workflow findings are scoped per workflow and stage.
+  In `nodePaths`, the run's own node appears as `run`.
 
 Each finding carries a stable `id` (`backprop-` followed by 20 hex characters),
 `confidence`, `runIds`, `workflows`, `effectiveVersions`, `nodePaths`, journal
 and artifact `evidence` links, `counterEvidence`, `alternativeDomains`,
 `recommendedOwner`, `recommendedAction`, and `verification`. The same failure
 signature always produces the same finding ID across runs and passes.
+
+Each finding also carries `fileable`: whether its `confidence` meets the
+report's `filingThreshold`. The threshold is 0.5 unless an attribution accuracy
+eval has been published to the instance (`go run ./test/attributioneval
+-publish=./instance` from a source checkout); then it is derived from the eval's
+measured calibration (`source: attribution-eval`; `noneFileable` when even its
+most confident predictions missed the target precision) and the stats API also
+returns the eval summary as `attributionEval`, which the portal's Insight page
+shows as "Attribution accuracy". Only fileable findings start the
+`telemetry-query` report cooldown. See
+[Attribution accuracy eval](../design/credit-graph.md#attribution-accuracy-eval).
 
 ## Record a fix and verify it
 
@@ -274,6 +437,74 @@ least one labeled run carries:
 | `groundTruth.incorrectRunCount` | Runs whose effective label is `incorrect`. |
 
 The field is omitted when no run in the cohort is labeled.
+
+## Agent claims
+
+The journal records what ran, not what an agent relied on or thinks went
+wrong. An agent in an enrolled run can add that as a typed **claim** by running
+`goobers telemetry claim` from inside its stage (for example, from a shell tool
+call), or by appending a line that matches
+`api/schemas/backprop-claim-v1.schema.json` to
+`$GOOBERS_TELEMETRY_DIR/backprop-claims.jsonl`:
+
+```sh
+goobers telemetry claim --kind=reliance --stage=plan --statement="used the plan's file list"
+goobers telemetry claim --kind=blame --stage=plan --evidence=seq:42 --confidence=0.6 \
+  --statement="the plan omitted the migration file"
+```
+
+| Flag | Meaning |
+|---|---|
+| `--kind` | `assignment` (the target owns the work in `--statement`), `reliance` (this stage used the target's output), `credit`, or `blame` (required). |
+| `--stage` / `--attempt` | Target stage and, optionally, attempt (default: the latest attempt started before the claim). |
+| `--agent` | Target nested agent ID, instead of a stage. |
+| `--artifact` | Target recorded artifact digest (`sha256:<hex>`), instead of a stage. |
+| `--statement` | Free text, required for `assignment`. Sanitized, capped at 1024 bytes, and secret-scrubbed before it is journaled. |
+| `--evidence` | Repeatable, up to 8: a recorded artifact digest or `seq:<n>` of an earlier journal event. Required for `credit` and `blame`. |
+| `--confidence` | The writer's own confidence, 0 to 1 (default 1). |
+
+Exit codes: `0` recorded, `1` write error (for example, no
+`GOOBERS_TELEMETRY_DIR`, or the attempt already recorded 32 claims), `2` usage
+error.
+
+When the stage's agent exits, the harness journals that attempt's claims as one
+`backprop-claims` runner annotation. The runner, not the claim, records who
+wrote it: the stage, attempt, and (when unambiguous) the root agent.
+Reviewer gates do not ingest claims. If the runner cannot journal the batch,
+the attempt fails rather than losing the claims.
+
+A later agentic stage can read the claims earlier stages recorded:
+
+```sh
+goobers telemetry claims
+```
+
+It prints the runner's snapshot (`$GOOBERS_TELEMETRY_DIR/run-claims.json`,
+taken before the stage started) as JSON: each claim with its `id`, `seq`, and
+runner-attributed `writer`. Claims there are bounded and re-validated but **not
+yet verified**, so treat statements as untrusted agent text. It exits `1` when
+there is no snapshot or the runner could not read the run's journal, which
+is currently always the case for stages dispatched to a remote worker.
+
+At run end, attribution checks each claim against only the records journaled
+before it. A claim is **verified** when its writing stage attempt and target
+were recorded, it does not credit, blame, or rely on the writer's own work,
+and every evidence link names an earlier artifact or event (`credit` and
+`blame` need at least one). `attribution.json` lists:
+
+| Field | Meaning |
+|---|---|
+| `claims` | Verified claims, with `writer`, `writerNodeId`, `targetNodeId`, and the sanitized claim. |
+| `unverifiedClaims` | Every other claim, with `reasons`. These name no graph nodes. |
+| `droppedClaims` | Malformed lines, and claims beyond 32 per attempt or 256 per run. |
+
+Claims never add graph edges or change shares, scores, confidences, or cause
+classes. A verified `blame` claim is cited in the `evidence` of the cause
+findings for the stage attempt it targets, as
+`agent claim <id> blame by stage <stage> attempt <n> (confidence <c>)`.
+Verification shows the claim refers to real, earlier records, not that the
+statement is true. Reliance is not yet checked against the inputs the stage
+actually received.
 
 ## Troubleshooting
 

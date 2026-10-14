@@ -220,8 +220,15 @@ func TestCrossProviderIssueTextTopologyB(t *testing.T) {
 	if reviews[0].verdict.Summary != "closes the gap from #11" || reviews[0].verdict.Findings[0].Message != "revisit #13" {
 		t.Fatalf("the caller's verdict was mutated: %+v", reviews[0].verdict)
 	}
-	same := formatStructuredPRBody("42", "#42", "Follow-up to #10", "", "", "sha256:abc", reviews, nil, nil)
-	for _, n := range []string{"10", "11", "12", "13"} {
+	// So is the local-ci output embedded under Testing, after HTML escaping
+	// leaves its entities alone.
+	ci := &prBodyCI{status: "passed", output: "PASS case #14\nit's ok\n"}
+	body = formatStructuredPRBody("42", ref, "Add the widget", "", "", "sha256:abc", nil, nil, ci)
+	if strings.Contains(body, "#14") || !strings.Contains(body, "PASS case "+topologyBIssueURL+"14\nit&#39;s ok") {
+		t.Fatalf("structured (b) body embeds local-ci output with a bare #14:\n%s", body)
+	}
+	same := formatStructuredPRBody("42", "#42", "Follow-up to #10", "", "", "sha256:abc", reviews, nil, ci)
+	for _, n := range []string{"10", "11", "12", "13", "14"} {
 		if !strings.Contains(same, "#"+n) {
 			t.Fatalf("same-provider body lost #%s:\n%s", n, same)
 		}

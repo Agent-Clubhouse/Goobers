@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -182,6 +183,11 @@ type gaggleSeams struct {
 	// build re-preflights the failed harness instead of pinning a transient
 	// failure for the life of the snapshot (#5949).
 	harnessRefusals map[localscheduler.WorkflowIdentity]string
+	// harnessRetryAt names, among harnessRefusals, the workflows whose every
+	// harness failure was a transient provider failure, with when the
+	// harness may next be probed (#6017). Their refusal carries that time so
+	// the engine does not retry the stage, and so re-probe, before then.
+	harnessRetryAt map[localscheduler.WorkflowIdentity]time.Time
 }
 
 // degraded reports whether some workflow's harness failed this kit's
@@ -206,7 +212,11 @@ func (g *gaggleSeams) refuseUnavailableHarness(env apiv1.InvocationEnvelope) err
 	if !refused {
 		return nil
 	}
-	return invoke.InfrastructureFailure(fmt.Errorf("worker: harness preflight: workflow %q (gaggle %q): %s", identity.Workflow, identity.Gaggle, reason))
+	err := fmt.Errorf("worker: harness preflight: workflow %q (gaggle %q): %s", identity.Workflow, identity.Gaggle, reason)
+	if retryAt, transient := g.harnessRetryAt[identity]; transient {
+		return invoke.InfrastructureFailureUntil(err, retryAt)
+	}
+	return invoke.InfrastructureFailure(err)
 }
 
 // newWorkerSeams loads an instance from root and prepares per-gaggle executor
@@ -314,7 +324,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
 	}
-	harnessInfo, harnessRefusals, err := preflightWorkerHarnesses(cfg, set, goobers, stores)
+	harnessInfo, harnessRefusals, harnessRetryAt, err := preflightWorkerHarnesses(cfg, set, goobers, stores)
 	if err != nil {
 		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
@@ -371,7 +381,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		return nil, fmt.Errorf("worker: buildRunnerConfig returned no worktree manager for gaggle %q", gaggle)
 	}
 	return &builtGaggleSeams{
-		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr, harnessRefusals: harnessRefusals},
+		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr, harnessRefusals: harnessRefusals, harnessRetryAt: harnessRetryAt},
 		fingerprint: fingerprint,
 	}, nil
 }
@@ -381,17 +391,24 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 // as the daemon scopes it (#5163): the worker used to fail the WHOLE kit, so
 // one workflow's transient harness failure (a rate-limited sign-in check)
 // failed every unrelated workflow's activity that triggered the build
-// (#5949). Any other preflight error still fails the build closed.
-func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
-	info, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
+// (#5949). Any other preflight error still fails the build closed. retryAt
+// holds the refused workflows whose refusal is wholly transient (#6017).
+func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (info harnessPreflightInfo, refusals map[localscheduler.WorkflowIdentity]string, retryAt map[localscheduler.WorkflowIdentity]time.Time, err error) {
+	info, err = preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
 	if err == nil {
-		return info, nil, nil
+		return info, nil, nil, nil
 	}
 	var failures *harnessPreflightFailures
 	if !errors.As(err, &failures) || len(failures.Refusals) == 0 {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return info, maps.Clone(failures.Refusals), nil
+	retryAt = make(map[localscheduler.WorkflowIdentity]time.Time)
+	for identity := range failures.Refusals {
+		if refusal := failures.transientRefusal(identity); refusal != nil {
+			retryAt[identity] = refusal.retryAt
+		}
+	}
+	return info, maps.Clone(failures.Refusals), retryAt, nil
 }
 
 // recorderFor returns the artifact recorder and secret registrar for one run.

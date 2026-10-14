@@ -75,6 +75,13 @@ func goneTargetSharedRepository(manager *worktree.Manager, target worktree.Clean
 	return shared, nil
 }
 
+// CleanupTargetGone proves that a checkout is missing or contains no
+// recoverable files. It does not publish the required cleanup handoff.
+func CleanupTargetGone(path string) (bool, error) {
+	state, err := goneCheckoutState(path)
+	return state != "", err
+}
+
 // goneCheckoutState reports why the checkout at path holds nothing a capture
 // could read: "missing" when the directory is gone, "empty" when it remains
 // with no entries, or with only a .git file whose admin directory was pruned.

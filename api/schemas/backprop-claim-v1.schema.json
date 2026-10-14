@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/backprop-claim-v1.schema.json",
+  "title": "Backprop claim",
+  "description": "One line of a stage attempt's backprop-claims.jsonl (goobers.dev/backprop/claim/v1). A claim is the writing agent's statement, attributed by the runner to the writing stage attempt; it is never authorization or graph structure. Runtime additionally strips control and Unicode format characters from the statement, bounds an encoded line to 8 KiB, and keeps at most 32 claims per stage attempt and 256 per run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "target", "confidence"],
+  "properties": {
+    "kind": {"enum": ["assignment", "reliance", "credit", "blame"], "description": "Claim type: the target owns described work (assignment), the writer consumed the target's output (reliance), or the target helped (credit) or hurt (blame) the outcome."},
+    "target": {"$ref": "#/$defs/target", "description": "The one stage, nested agent, or recorded artifact the claim is about."},
+    "statement": {"type": "string", "maxLength": 1024, "description": "Untrusted free text explaining the claim; required for assignments, sanitized on write and read."},
+    "evidence": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/evidence"}, "description": "Journal records supporting the claim; credit and blame claims need at least one to be verified."},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "The writer's own confidence in the claim; reported, never used to weight credit."}
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^\\S+$", "description": "Workflow stage name."},
+        "attempt": {"type": "integer", "minimum": 1, "description": "Stage attempt; omitted means the latest attempt recorded before the claim."},
+        "agent": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^\\S+$", "description": "Journaled nested agent ID."},
+        "artifact": {"$ref": "#/$defs/digest", "description": "Content digest of a recorded artifact."}
+      },
+      "oneOf": [
+        {"required": ["stage"], "not": {"anyOf": [{"required": ["agent"]}, {"required": ["artifact"]}]}},
+        {"required": ["agent"], "not": {"anyOf": [{"required": ["stage"]}, {"required": ["artifact"]}, {"required": ["attempt"]}]}},
+        {"required": ["artifact"], "not": {"anyOf": [{"required": ["stage"]}, {"required": ["agent"]}, {"required": ["attempt"]}]}}
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {"$ref": "#/$defs/digest", "description": "Content digest of a recorded artifact supporting the claim."},
+        "seq": {"type": "integer", "minimum": 1, "description": "Sequence number of an earlier journal event supporting the claim."}
+      },
+      "oneOf": [
+        {"required": ["artifact"], "not": {"required": ["seq"]}},
+        {"required": ["seq"], "not": {"required": ["artifact"]}}
+      ]
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "A sha256 content digest."}
+  }
+}

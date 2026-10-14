@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -60,13 +61,37 @@ func TestClassifyProviderError_BranchPolicyProtectedPush(t *testing.T) {
 
 // TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush is the
 // pushBranchWithRetry acceptance case: a real bare origin whose pre-receive
-// hook rejects every push with ADO's TF402455 text. Because that rejection
-// also contains pushrejection.IsRace's own "failed to push some refs" marker, a
-// regression that checked pushrejection.IsRace first (or omitted the policy check
-// entirely) would fetch, rebase, and push again — driving the hook a second
-// time. The hook counts its own invocations, so this asserts exactly one.
+// hook rejects every push with ADO's TF402455 text. That rejection ends in
+// git's generic "failed to push some refs" trailer, so a regression that read
+// the trailer as a ref race ahead of the policy classification would fetch,
+// rebase, and push again — driving the hook a second time. The run branch
+// already exists on origin (seeded before the hook is installed), so that
+// rebase would succeed and the retry really would push again; on a
+// never-pushed branch the rebase fails first ("couldn't find remote ref") and
+// the retry never reaches a second push, which would let the count pass
+// vacuously. The hook counts its own invocations, so this asserts exactly one.
 func TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to reproduce ADO's push rejection")
+	}
+	const branch = "goobers/implementation/run-n26"
 	origin := initBareOrigin(t)
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "run-n26",
+		BaseRef: "main",
+		Branch:  branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+	runGitT(t, wt.Path, "push", origin, "HEAD:refs/heads/"+branch)
 
 	counterFile := filepath.Join(t.TempDir(), "attempts")
 	hookScript := "#!/bin/sh\n" +
@@ -79,21 +104,6 @@ func TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush(t *testing.T) {
 		t.Fatalf("write pre-receive hook: %v", err)
 	}
 
-	mgr, err := worktree.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
-		RepoURL: origin,
-		RunID:   "run-n26",
-		BaseRef: "main",
-		Branch:  "goobers/implementation/run-n26",
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-
 	if err := os.WriteFile(filepath.Join(wt.Path, "change.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("write change: %v", err)
 	}
@@ -101,7 +111,7 @@ func TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush(t *testing.T) {
 	runGitT(t, wt.Path, "commit", "-m", "implement")
 
 	var stderr bytes.Buffer
-	pushErr := pushBranchWithRetry(wt.Path, "goobers/implementation/run-n26", nil, &stderr)
+	pushErr := pushBranchWithRetry(wt.Path, branch, nil, &stderr)
 	if pushErr == nil {
 		t.Fatal("pushBranchWithRetry: err = nil, want a policy-protected push error")
 	}

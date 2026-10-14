@@ -32,7 +32,8 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"Host a Temporal worker for the tier-3 engine (experimental): connect to the\n" +
 	"configured Temporal frontend, register the engine workflow and activities,\n" +
 	"and serve the named task queue(s) until SIGTERM/SIGINT, then drain — stop\n" +
-	"polling and let in-flight activities finish within --drain-timeout.\n\n" +
+	"polling and let in-flight activities finish within --drain-timeout.\n" +
+	"Child dispatch cleanup can take up to 5 additional minutes before exit.\n\n" +
 	"The tier-3 engine is not on the local (V0) execution path; this command is\n" +
 	"the deployable worker shape for the cloud ladder. Automated gate checks and\n" +
 	"workspace provisioning (git worktrees + scratch dirs under --work-root) are\n" +

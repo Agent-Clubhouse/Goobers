@@ -112,8 +112,11 @@ func (p *ADOProvider) ListPullRequestThreadComments(ctx context.Context, repo Re
 	}
 	comments := make([]Comment, 0)
 	for _, thread := range threads {
+		if thread.IsDeleted {
+			continue
+		}
 		for _, comment := range thread.Comments {
-			if strings.EqualFold(comment.CommentType, "system") {
+			if comment.IsDeleted || strings.EqualFold(comment.CommentType, "system") {
 				continue
 			}
 			comments = append(comments, mapADOPullRequestThreadComment(pullID, thread.ID, comment))

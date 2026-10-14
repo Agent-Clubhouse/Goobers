@@ -284,21 +284,35 @@ type FaultFinding struct {
 	RecommendedOwner   string                    `json:"recommendedOwner"`
 	RecommendedAction  string                    `json:"recommendedAction"`
 	Verification       string                    `json:"verification"`
+	Fileable           bool                      `json:"fileable"`
+}
+
+// FilingThreshold is the minimum finding confidence the fault auditor treats
+// as fileable and where it came from (a published attribution eval, or the
+// default).
+type FilingThreshold struct {
+	Confidence        float64 `json:"confidence"`
+	NoneFileable      bool    `json:"noneFileable,omitempty"`
+	Source            string  `json:"source"`
+	CalibrationTarget string  `json:"calibrationTarget,omitempty"`
+	EvalSetVersion    string  `json:"evalSetVersion,omitempty"`
+	EvalSetDigest     string  `json:"evalSetDigest,omitempty"`
 }
 
 // FaultAuditReport groups fault findings by ownership boundary.
 type FaultAuditReport struct {
-	Schema              string         `json:"schema"`
-	Mode                string         `json:"mode"`
-	Since               time.Time      `json:"since"`
-	Until               time.Time      `json:"until"`
-	ObservationsScanned int            `json:"observationsScanned"`
-	ProductFindings     []FaultFinding `json:"productReliabilityFindings,omitempty"`
-	ExternalFindings    []FaultFinding `json:"externalFindings,omitempty"`
-	WorkflowFindings    []FaultFinding `json:"workflowFindings,omitempty"`
-	UnknownFindings     []FaultFinding `json:"mixedOrUnknownFindings,omitempty"`
-	Suppressed          int            `json:"suppressed"`
-	Truncated           bool           `json:"truncated,omitempty"`
+	Schema              string           `json:"schema"`
+	Mode                string           `json:"mode"`
+	Since               time.Time        `json:"since"`
+	Until               time.Time        `json:"until"`
+	ObservationsScanned int              `json:"observationsScanned"`
+	ProductFindings     []FaultFinding   `json:"productReliabilityFindings,omitempty"`
+	ExternalFindings    []FaultFinding   `json:"externalFindings,omitempty"`
+	WorkflowFindings    []FaultFinding   `json:"workflowFindings,omitempty"`
+	UnknownFindings     []FaultFinding   `json:"mixedOrUnknownFindings,omitempty"`
+	Suppressed          int              `json:"suppressed"`
+	Truncated           bool             `json:"truncated,omitempty"`
+	FilingThreshold     *FilingThreshold `json:"filingThreshold,omitempty"`
 }
 
 // DefectAggregateResponse is the plane's answer.

@@ -311,7 +311,9 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
 	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
 	"stage needs a harness that fails its startup check is still refused, while\n" +
-	"other workflows keep running.\n\n" +
+	"other workflows keep running. A check that failed only because the model\n" +
+	"provider was rate limiting or unreachable is re-run with backoff, and the\n" +
+	"workflow is admitted again once it passes.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +
@@ -358,12 +360,7 @@ func daemonTriggerSweep(
 	options triggerSweepOptions,
 ) func() error {
 	return func() error {
-		var sweepErr error
-		if options == (triggerSweepOptions{}) {
-			sweepErr = sweepPendingTriggers(ctx, l.SchedulerDir(), log, sched, time.Now)
-		} else {
-			sweepErr = sweepPendingTriggersWithOptions(ctx, l.SchedulerDir(), log, sched, time.Now, options)
-		}
+		sweepErr := sweepPendingTriggersWithAdmission(ctx, l.SchedulerDir(), log, sched, time.Now, options, durableTriggers.delegatedAdmission())
 		err := errors.Join(durableTriggers.Drain(ctx), sweepErr)
 		return recordTriggerSweepProgress(heartbeat, err, time.Now())
 	}
@@ -953,6 +950,7 @@ func (u *upSession) startServices() int {
 		// of the divergence it exists to remove).
 		ReadModel:                    u.setup.ReadModel,
 		ChildHistory:                 u.readChildHistory,
+		ChildPublications:            u.readChildPublications,
 		RetentionStats:               u.setup.RetentionStats,
 		InstanceLogStats:             u.setup.InstanceLog.Stats,
 		StorageHealthStats:           u.storageGate.Stats,
@@ -1054,6 +1052,9 @@ func (u *upSession) configureAPI() int {
 	}
 	defer func() { _ = u.durableTriggers.queue.Close() }()
 	attachChildGenerationPins(u.setup.Generations, u.durableTriggers.queue)
+	if err := u.setup.installOrdinaryStarts(u.l, u.durableTriggers); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize ordinary start custody", err)
+	}
 	defer func() { _ = u.cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
@@ -1233,6 +1234,17 @@ func (u *upSession) activateAPI() int {
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	}
+	if instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) && (u.setup.Config.API.Auth == nil || u.setup.Config.API.Auth.OIDC == nil) {
+		// Local administrators remain anonymous. Signed machine callers retain their
+		// exact principal and route restrictions even on a loopback-only daemon.
+		chained, err := podauth.NewAuthenticator(podVerifier, httpapi.NullAuthenticator{})
+		if err != nil {
+			return reportDaemonStartupError(u.stderr, "initialize local pod authentication", err)
+		}
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
+		u.apiAuthorizer = httpapi.LocalAdminWithScopedPrincipals()
+	}
+
 	handler, err := httpapi.NewHandler(u.reads, u.apiAuthorizer, u.apiLog, u.apiHandlerOpts...)
 	if err != nil {
 		pf(u.stderr, "error: initialize HTTP API: %v\n", err)
@@ -1800,18 +1812,14 @@ func (u *upSession) startMaintenance() int {
 				} else {
 					claimRenewErrors.report(probeErr)
 				}
-				released, err := u.recoverExpiredClaims(now)
+				// Each reaped lease is journaled by the ledger itself as its own
+				// claim.released boundary carrying stall-swept (#4421), so the
+				// sweep adds no aggregate claim.released of its own.
+				_, err := u.recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
 					claimSweepErrors.report(nil)
 				} else {
 					claimSweepErrors.report(err)
-				}
-				if err == nil && len(released) > 0 {
-					u.setup.InstanceLog.AppendBestEffort(journal.Event{
-						Type:   journal.EventClaimReleased,
-						Reason: fmt.Sprintf("periodic recovery released %d expired claim(s)", len(released)),
-						Runner: map[string]any{"releasedClaims": len(released)},
-					})
 				}
 			}
 		}
@@ -2603,7 +2611,7 @@ func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
 	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID string) (bool, error) {
 		phase, found, err := retainedWorktreePhase(owners, worktreeID, "")
-		return found && terminalRunPhase(phase), err
+		return found && phase.IsTerminal(), err
 	}
 }
 

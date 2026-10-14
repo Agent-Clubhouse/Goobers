@@ -30,6 +30,7 @@ import { StatusBadge } from "../ui/StatusBadge";
 import { useWorkflowDetail } from "../workflowDetailData";
 import { useInsightStats } from "../insightData";
 import { distinctTriggerRef, runWorkTitle } from "../operationalData";
+import { RunWorkTitle, workItemHref } from "../components/RunWorkTitle";
 import { formatTriggers } from "./WorkflowsPage";
 
 export function WorkflowPage({
@@ -197,7 +198,7 @@ function WorkflowDetailWorkspace({
             <div>
               <dt>Backprop</dt>
               <dd>
-                {workflow.backprop?.enabled ? `Enabled (${workflow.backprop.version})` : "Disabled"}
+                {backpropLabel(workflow.backprop)}
               </dd>
             </div>
             <div>
@@ -244,6 +245,13 @@ function WorkflowDetailWorkspace({
       <RecentRuns runs={runs} workflow={workflow} />
     </div>
   );
+}
+
+function backpropLabel(backprop: WorkflowDetail["backprop"]): string {
+  const mode = backprop?.mode ?? (backprop?.enabled ? "active" : "off");
+  if (mode === "active") return `Active (${backprop?.version})`;
+  if (mode === "shadow") return `Shadow (${backprop?.version})`;
+  return "Disabled";
 }
 
 function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
@@ -372,11 +380,15 @@ function WorkflowRunRow({ run }: { run: RunSummary }) {
   const workTitle = runWorkTitle(run, " · ");
   const triggerRef = distinctTriggerRef(run);
   return (
-    <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
+    <DataRow
+      href={routeHash({ page: "run", id: run.id })}
+      interactiveChildren={Boolean(workItemHref(run))}
+      label={`Open run ${run.id}`}
+    >
       <span className="row-primary">
         {workTitle ? (
           <span className="row-title" title={workTitle}>
-            {workTitle}
+            <RunWorkTitle run={run} separator=" · " />
           </span>
         ) : (
           <span className="row-title mono">{run.id}</span>

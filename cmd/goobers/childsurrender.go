@@ -53,7 +53,7 @@ func validateContainedSurrender(ctx context.Context, contract childpod.Contract,
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return errors.New("child surrender must contain one document")
 	}
-	if out.Validate() != nil || out.ChildWorkspaceDigest == "" || !out.RecoveryAcknowledged || out.WorkspaceDelta != "" || out.WorkspaceDeltaUnchanged || out.WorkspaceDeltaBase != "" || out.WorkspaceDeltaTip != "" || len(out.Mutations) != 0 || len(out.MutationIssues) != 0 || out.Result.WorkspaceRevision != nil || !containedOutputGrade(out.Result.Integrity) || !validContainedVerdict(out, review) {
+	if out.Validate() != nil || out.ChildWorkspaceDigest == "" || !out.RecoveryAcknowledged || out.WorkspaceDelta != "" || out.WorkspaceDeltaUnchanged || out.WorkspaceDeltaBase != "" || out.WorkspaceDeltaTip != "" || out.WorkspaceHeadMoved || len(out.Mutations) != 0 || len(out.MutationIssues) != 0 || out.Result.WorkspaceRevision != nil || !containedOutputGrade(out.Result.Integrity) || !validContainedVerdict(out, review) {
 		return errors.New("child surrender exceeds contained execution authority")
 	}
 	raw, err := blobs.GetBounded(ctx, out.ChildWorkspaceDigest, childpod.MaxContractBytes)

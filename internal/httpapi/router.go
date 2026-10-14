@@ -83,6 +83,8 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
+	// WorkflowParent binds a contained parent to its separately signed contract.
+	WorkflowParent *WorkflowParentPrincipal
 	// GeneratedChild is populated only by the signed generated-worker authenticator.
 	GeneratedChild *GeneratedChildPrincipal
 	// ChildWorkflow is populated only by the stage-grant authenticator.
@@ -434,6 +436,9 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if principal.Issuer == WorkflowParentPrincipalIssuer {
+			return authorizeWorkflowParent(request, principal)
+		}
 		if principal.Issuer == GeneratedChildPrincipalIssuer {
 			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
 				return errors.New("generated child contract unavailable")
@@ -652,6 +657,7 @@ type handlerConfig struct {
 	gaggleBundles             GaggleBundleService
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
+	workflowParentExecution   ChildExecutionObserver
 	triggers                  TriggerService
 	escalations               EscalationService
 	cancels                   CancelService
@@ -662,11 +668,16 @@ type handlerConfig struct {
 	operatorMessages          OperatorMessageService
 	credentials               CredentialService
 	generatedChildCredentials CredentialService
+	workflowParentCredentials CredentialService
 	blobs                     blobstore.Store
 	generatedChildBlobs       blobstore.Store
+	workflowParentBlobs       blobstore.Store
 	recovery                  RecoveryService
 	surrenders                SurrenderService
 	generatedChildSurrenders  SurrenderService
+	workflowParentSurrenders  SurrenderService
+	workflowParentJournal     JournalService
+	workflowParentAccess      ChildWorkflowAccessService
 	state                     StateService
 	telemetryDefects          TelemetryDefectAggregateService
 	podRunGaggle              func(context.Context, string) (string, error)
@@ -1314,7 +1325,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
-	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, errorLog)
+	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, config.workflowParentBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{
 		http.MethodGet: apicontract.RouteRunRecovery, http.MethodPost: apicontract.RouteRunRecoveryPublish,
 	}, map[apicontract.RouteID]http.HandlerFunc{
@@ -1616,4 +1627,17 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 // agreeing to.
 type ConfigDigest struct {
 	Digest string `json:"digest"`
+}
+
+func authorizeWorkflowParent(request *http.Request, principal Principal) error {
+	if principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+		return errors.New("contained parent contract unavailable")
+	}
+	if request.Method == http.MethodPost && (request.URL.Path == apicontract.CredentialResolvePath || request.URL.Path == apicontract.ClaimListPath || surrenderPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) {
+		return nil
+	}
+	if (request.Method == http.MethodPost || request.Method == http.MethodDelete) && parentAccessPath(request.URL.Path) {
+		return nil
+	}
+	return authorizeWorkerBlob(request)
 }

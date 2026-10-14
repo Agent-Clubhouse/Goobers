@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -173,6 +172,10 @@ type ShellExecutor struct {
 	AppliedConfigDigest string
 	// ConfigDirectory is the immutable config-as-code tree selected for CLI stages.
 	ConfigDirectory string
+	// AutomationReadCache explicitly enables shared provider reads for ordinary
+	// automation CLI stages. Human/unknown executors leave this false; a gaggle
+	// or archived generation alone never grants an automation cache partition.
+	AutomationReadCache bool
 	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
 	// command token before exec. Deterministic stages declare their command as
 	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
@@ -289,6 +292,13 @@ type ShellExecutor struct {
 	// to a stage pod. Empty for every other provider, and by default, which
 	// stamps nothing.
 	RepoAuthScheme string
+	// CredentialSchemes is the scheme of each credential key whose source
+	// states its own (#5957): a credentials: entry's personal access token is
+	// "basic" even when RepoAuthScheme is "bearer". Whenever RepoAuthScheme is
+	// stamped, each materialized credential with an entry here also gets
+	// CredentialSchemeEnvVar; one without uses RepoAuthScheme. The credential
+	// plane states the same per-credential scheme to a stage pod.
+	CredentialSchemes map[string]string
 	// CredentialGrants mints the stage credential-refresh grant a
 	// goobers-CLI stage with an expiring credential receives (Goobers#6120,
 	// appendCredentialGrant). Nil — every caller but the daemon's own local
@@ -836,18 +846,18 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// (command[0] names the wrapper) but needs the same context its nested invocation does.
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
 	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
+	stageEnv, materialized, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
-	stageEnv = append(stageEnv, commandEnv...)
+	stageEnv = e.providerReadEnvironment(append(stageEnv, commandEnv...), env, injectRunContext)
 	if injectRunContext {
 		stageEnv = append(stageEnv, e.runContextEnv(ctx, env)...)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
-	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext)
+	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext, materialized, registry)
 	stageEnv, revokeGrant := e.appendCredentialGrant(stageEnv, env, injectRunContext, resolvedTimeout.Duration, registry)
 	defer revokeGrant()
 	if implicitResultFile != "" {
@@ -1735,13 +1745,18 @@ func (d *diagBuffer) Bytes() []byte {
 // appendRepoEnv appends the scheduler-routed repository variables a goobers
 // CLI stage reads (GOOBERS_REPO_PROVIDER and its siblings) when
 // injectRunContext is set, and RepoAuthSchemeEnvVar when the executor knows
-// the scheme of its Azure DevOps grants and the stage received at least one
-// of its declared GOOBERS_CRED_<capability> variables. The scheme follows the
-// credentials, not the CLI gate, so a local stage gets it on the same rule a
-// stage pod does (stageCredentialEnv in cmd/goobers/dispatchexec.go).
-// Extracted from Run for the same complexity-gate reason as runContextEnv
-// below.
-func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnvelope, injectRunContext bool) []string {
+// the scheme of its Azure DevOps grants and at least one declared credential
+// was materialized (materialized, from buildStageEnv). Each materialized
+// credential then also gets its own CredentialSchemeEnvVar (#5957). The
+// scheme follows the credentials the executor delivered, not the CLI gate and
+// not whatever GOOBERS_CRED_* the merged env happens to carry, so a local
+// stage gets it on the same rule a stage pod does (stageCredentialEnv in
+// cmd/goobers/dispatchexec.go). Extracted from Run for the same
+// complexity-gate reason as runContextEnv below.
+//
+// registry receives the Azure DevOps header forms of the materialized
+// credentials (registerADOCredentialForms).
+func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnvelope, injectRunContext bool, materialized []string, registry credentials.SecretRegistrar) []string {
 	repo := env.RepoRef
 	if injectRunContext && repo.Provider != "" {
 		stageEnv = append(stageEnv,
@@ -1753,22 +1768,47 @@ func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnv
 			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+repo.Project)
 		}
 	}
-	if e.RepoAuthScheme != "" && receivedCredential(stageEnv, env.Capabilities) {
-		stageEnv = append(stageEnv, RepoAuthSchemeEnvVar+"="+e.RepoAuthScheme)
+	if e.RepoAuthScheme == "" || len(materialized) == 0 {
+		return stageEnv
+	}
+	e.registerADOCredentialForms(stageEnv, materialized, registry)
+	stageEnv = append(stageEnv, RepoAuthSchemeEnvVar+"="+e.RepoAuthScheme)
+	for _, capability := range materialized {
+		if scheme := e.CredentialSchemes[capability]; scheme != "" {
+			stageEnv = append(stageEnv, CredentialSchemeEnvVar(capability)+"="+scheme)
+		}
 	}
 	return stageEnv
 }
 
-// receivedCredential reports whether stageEnv carries the GOOBERS_CRED_
-// variable of at least one declared capability.
-func receivedCredential(stageEnv, declared []string) bool {
-	for _, capability := range declared {
+// registerADOCredentialForms registers, for an Azure DevOps executor, every
+// form in which each materialized credential is sent in its own scheme
+// (providers.ADOCredential.ScrubForms): the bare base64 Basic value has no
+// "Basic " prefix for the pattern net to key on. The injector registered only
+// the raw value, so without this a credentials: PAT sent as Basic leaked its
+// encoded form locally while a stage pod redacted it (podStageScrubber).
+func (e *ShellExecutor) registerADOCredentialForms(stageEnv, materialized []string, registry credentials.SecretRegistrar) {
+	if e.RepoAuthScheme == "" || registry == nil {
+		return
+	}
+	for _, capability := range materialized {
+		scheme := e.CredentialSchemes[capability]
+		if scheme == "" {
+			scheme = e.RepoAuthScheme
+		}
+		kind := providers.ADOCredentialKindPAT
+		if strings.EqualFold(scheme, "bearer") {
+			kind = providers.ADOCredentialKindBearer
+		}
 		prefix := CredentialEnvVar(capability) + "="
-		if slices.ContainsFunc(stageEnv, func(entry string) bool { return strings.HasPrefix(entry, prefix) }) {
-			return true
+		for _, entry := range stageEnv {
+			if token, ok := strings.CutPrefix(entry, prefix); ok && token != "" {
+				for _, form := range (providers.ADOCredential{Kind: kind, Secret: token}).ScrubForms() {
+					registry.Register([]byte(form))
+				}
+			}
 		}
 	}
-	return false
 }
 
 // runContextEnv is the run-identity block injected into a stage that opts into

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -137,7 +138,7 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 				return PublishedBatch{}, err
 			}
 		}
-		if err := p.releaseClaim(ctx, parent.ID); err != nil {
+		if err := p.releaseClaim(ctx, parent.ID, publishedReason); err != nil {
 			return PublishedBatch{}, err
 		}
 		return PublishedBatch{PlanDigest: digest, Children: children}, nil
@@ -299,7 +300,7 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 	}); err != nil {
 		return PublishedBatch{}, err
 	}
-	if err := p.releaseClaim(ctx, parent.ID); err != nil {
+	if err := p.releaseClaim(ctx, parent.ID, publishedReason); err != nil {
 		return PublishedBatch{}, err
 	}
 	return PublishedBatch{PlanDigest: digest, Children: children}, nil
@@ -341,11 +342,15 @@ func (p Publisher) ensureParentPrepared(ctx context.Context, parent providers.Wo
 	return parent, nil
 }
 
-func (p Publisher) releaseClaim(ctx context.Context, parentID string) error {
+// publishedReason ends the parent's claim once its children are published.
+var publishedReason = claimrelease.Completed.Because("decomposition_published", "")
+
+func (p Publisher) releaseClaim(ctx context.Context, parentID string, reason claimrelease.Reason) error {
 	_, err := p.Provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
 		Repository: p.Repo,
 		ID:         parentID,
 		RunID:      p.RunID,
+		Reason:     reason,
 	})
 	return err
 }
@@ -368,7 +373,7 @@ func (p Publisher) parkParent(ctx context.Context, parentID string) error {
 			return err
 		}
 	}
-	return p.releaseClaim(ctx, parent.ID)
+	return p.releaseClaim(ctx, parent.ID, claimrelease.Escalated.Because("decomposition_parked", "parent parked for human review"))
 }
 
 // IsPublicationConflict reports whether publication stopped on a deterministic

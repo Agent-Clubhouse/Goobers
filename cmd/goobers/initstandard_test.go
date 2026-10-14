@@ -127,6 +127,35 @@ func TestInitStandardADOValidatesStrict(t *testing.T) {
 	}
 }
 
+// TestInitStandardGitHubMergeReviewValidatesStrict is the GitHub counterpart:
+// merge-review is offered on GitHub too, its pull-request, review, merge and
+// branch-delete capabilities are granted the pull-request token, and the
+// scaffold passes validate --strict.
+func TestInitStandardGitHubMergeReviewValidatesStrict(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "github")
+	code, stdout, stderr := runArgs(t, "init", "--template=standard", "--repo=example-org/example-repo",
+		"--workflows=backlog-curation,implementation,merge-review", "--pr-ci", root)
+	if code != 0 {
+		t.Fatalf("GitHub init code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runArgs(t, "validate", "--strict", root); code != 0 {
+		t.Fatalf("validate --strict on the GitHub merge-review scaffold code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted := map[string]string{}
+	for _, credential := range cfg.Credentials {
+		granted[credential.Capability] = credential.Token.Env
+	}
+	for _, want := range []string{"provider:pr:write", "github:pr:write", "github:pr:review", "github:pr:merge", "github:branch:delete"} {
+		if granted[want] != "GOOBERS_GITHUB_PR_TOKEN" {
+			t.Errorf("%s granted %q, want GOOBERS_GITHUB_PR_TOKEN (credentials: %+v)", want, granted[want], cfg.Credentials)
+		}
+	}
+}
+
 // TestInitStandardOpenPRWorkItemsWriteIsADOOnly pins the scaffold contract
 // for open-pr's native work-item link: on Azure DevOps every scaffolded stage
 // that runs the built-in open-pr declares ado:work-items:write (without it
@@ -362,6 +391,7 @@ func TestInitStandardWorkflowValidation(t *testing.T) {
 	valid := [][]string{
 		{"--workflows=work-nomination"},
 		{"--workflows=implementation", "--pr-ci"},
+		{"--workflows=merge-review"},
 	}
 	for _, extra := range valid {
 		t.Run("valid "+strings.Join(extra, " "), func(t *testing.T) {
@@ -378,7 +408,6 @@ func TestInitStandardWorkflowValidation(t *testing.T) {
 		{"--workflows=work-nomination", `--ci-command=["npm"]`, "--required-capabilities=node@24"},
 		{"--workflows=work-nomination", "--issue-scope=assigned"},
 		{"--provider=ado", "--repo=acme/widgets"},
-		{"--repo=acme/widgets", "--workflows=merge-review"},
 		{"--provider=ado", "--workflows=backlog-curation", "--repo-auth-kind=azure-cli", "--repo-token-env=MY_PAT"},
 	}
 	for _, extra := range invalid {

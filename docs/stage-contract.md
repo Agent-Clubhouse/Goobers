@@ -161,6 +161,7 @@ One key is interpreted only by the **read model** and never changes execution:
 | Output | Effect |
 |---|---|
 | `displayTitle` | The run's canonical human-readable title, published by a stage once it has claimed work (for example `Investigate #123: Example incident title`). A `success` `stage.finished` carrying it is projected into `operator.displayTitle` on every run list and detail response, and clients render it verbatim instead of reconstructing one. The latest well-formed value wins, so a retried claim stage may refine it. Values that are not strings, are blank after trimming, contain control characters (including newlines), or exceed 300 characters are ignored — never truncated — and do not replace an earlier valid title. Absent, clients fall back to `operator.issue` (`#number · title`) or the run ID. |
+| `url` | Optional source-system URL emitted alongside the first claimed `id` + `title`. A successful stage's absolute HTTP(S) URL without credentials or control characters (maximum 2048 bytes) is projected into `operator.issue.url`. Missing, malformed, or failed-stage URLs are omitted. The portal links the exact `#number` in run titles without changing their text or the row's run-detail navigation. The URL must identify that claimed item, not another item created by a later stage. |
 
 ## How a stage gets its input
 
@@ -302,18 +303,40 @@ the other repository capabilities have a credential for `azure-cli`,
 `workload-identity`, `managed-identity` and `pat` alike. With an Azure DevOps
 credential the stage also receives the non-secret `GOOBERS_REPO_AUTH_SCHEME`
 (`basic` for a PAT, `bearer` for an Entra token), so it builds the right
-Authorization header without inferring it from the token. The rule is the same
-for a local stage and a stage pod: a deterministic stage that received at least
-one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
-receive it. An Entra token also carries its `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`.
+Authorization header without inferring it from the token. A delivered
+credential whose source states its own scheme also carries it as the non-secret
+`GOOBERS_CREDENTIAL_SCHEME_<CAPABILITY>` (#5957): a capability backed by the
+repository's credential has the repository's scheme, and one backed by a
+`credentials:` entry or a token-based `daemonIdentity` is a personal access
+token, `basic`, even when the repository's scheme is `bearer`. A stage sends each value in its own
+capability's scheme and falls back to `GOOBERS_REPO_AUTH_SCHEME`. Like the
+expiry, the name is outside the `GOOBERS_CRED_` prefix because the value is
+not a secret. The rule is the same for a local stage and a stage pod: a
+deterministic stage that received at least one `GOOBERS_CRED_<CAPABILITY>` from
+the daemon also receives the schemes, counted from the credentials the daemon
+delivered. A `GOOBERS_CRED_<CAPABILITY>` a workflow sets by hand in `run.env`
+earns no scheme. Agentic stages do not receive them. An Entra token also
+carries its `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`.
 See "Where the credential resolves" in `docs/guides/ado-authentication.md`.
+
+A stage pod has no instance config, so the dispatcher also stamps every
+goobers-CLI stage with its gaggle's backlog settings as the non-secret
+`GOOBERS_GAGGLE_BACKLOG` (JSON: the backlog `provider`, `project`, `labels`
+and `doneStates`; #5957). Like `GOOBERS_PROVIDER_BOT_LOGIN` it is run identity:
+stamped for every CLI stage, kept only by CLI stages, and refused when a
+workflow's `env:` names it. The stamp wins over any config the stage can read.
+An Azure DevOps stage that names a gaggle (`GOOBERS_GAGGLE`) and cannot resolve
+these settings, because there is no stamp and no readable config, or the
+stamp is empty or malformed, fails before it touches the backlog rather than
+falling back to the code repository's project and the default `doneStates`.
 
 A built-in stage command authenticates only with what it was delivered, on
 every provider. On Azure DevOps a declared `github:*` capability selects the
 credential for the same operation on the provider the stage routes to
 (pull-request work from `github:pr:write`, backlog work items from
 `github:issues:*`, pushes from `repo:push`), and the command builds its
-connection from that capability's `GOOBERS_CRED_<CAPABILITY>` and
+connection from that capability's `GOOBERS_CRED_<CAPABILITY>` and its
+`GOOBERS_CREDENTIAL_SCHEME_<CAPABILITY>`, falling back to
 `GOOBERS_REPO_AUTH_SCHEME`. It never reads `repos[].auth` from `instance.yaml`,
 so an undeclared capability means no credential on Azure DevOps too, and the
 command runs the same in a stage pod, which has no instance config. A
@@ -405,6 +428,16 @@ and events are attached to the stage span and flow through the journal rollup.
 Agentic reviewer gates receive the same emission surface on their gate span.
 Each `attrs` object may contain at most 125 entries. Malformed or oversized
 lines are counted and dropped without changing the stage or gate outcome.
+
+An agentic stage may also append Backprop claims to `backprop-claims.jsonl`
+(one `api/schemas/backprop-claim-v1.schema.json` object per line, at most 32
+per attempt), usually with `goobers telemetry claim`. The harness journals them
+as a `backprop-claims` runner annotation attributed to the stage attempt; they
+are report-only evidence, though a batch the runner cannot journal fails the
+attempt. Before an agentic stage starts, the runner writes the claims earlier
+stages journaled to `run-claims.json` in the same directory, which
+`goobers telemetry claims` prints. The Backprop guide
+(`docs/guides/backprop.md`) describes how claims are verified.
 
 ## Artifact passing (the A → B hand-off)
 
@@ -998,6 +1031,40 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > (#3364) — at attempt budgets of 1, the prior classification converted
 > transient infrastructure weather into permanent-looking work failures.
 >
+> **A pull request head that moved under the run is superseded, not failed
+> (#6019):** when a run has rebound its workspace to a pull request's own head
+> (`workspaceBranch`, #392) and someone pushes to that PR while the run works,
+> the next pod that checks the branch out refuses to land the run's workspace
+> delta — landing it would discard their push (#5948). The pod types that
+> refusal only when it can prove the branch moved: every delta produced on a
+> rebound branch carries the commit its producer's checkout started from
+> (`refs/goobers/workspace-delta-origin` in the bundle), and the refusal is
+> `workspace_head_moved` only when the receiving checkout is at a different
+> commit. A divergence on an unmoved head — the run rewriting the PR's own
+> history, as a conflict-resolved rebase or an amend does — and a delta with
+> no recorded origin keep `workspace_provision_failed`, so the failure and
+> budget accounting still bound them. The pod runtime attests the code in its
+> surrender (`workspaceHeadMoved`); the engine renames an unattested
+> `workspace_head_moved` from any stage's own result, so no stage can claim
+> this exit. Whether the attested refusal comes from a task stage or from an
+> agentic gate's reviewer pod, the engine ends the run **completed** at that
+> stage or gate (not a first-stage no-work tick: `NoWork` drives scheduler
+> idle backoff, and this run did work), before any `Next` gate, `continueOnError` or branch
+> routing applies, and journals an `error` event carrying the code there. The
+> terminal handlers read that marker (and pr-claim's `stale_selection`
+> no-work, the same situation detected at a stage boundary) and leave the
+> claimed pull request's failure streak and no-work streak exactly as they
+> were — a run they cannot classify (an unreadable journal) leaves them alone
+> too. The remediation attempt the run's checkpoint charged is refunded unless
+> the run had already published its own work, and consecutive superseded
+> cycles are bounded: the third parks the PR did-not-converge for a human. Terminal finalization
+> releases the claim like any other run's, so the next cycle selects the PR at
+> its new head. The code classifies as `item-judgment`. Only pod placement
+> emits it: the local runner carries no workspace delta between stages, and
+> the worker's mirror fetches a rebound branch once per run, so neither
+> observes the push at a stage boundary (pr-claim's revision guards cover
+> them).
+>
 > **Reviewer sibling (#415):** at an agentic review gate whose subject is an
 > **agentic** stage, a run branch with **no committed change (an empty diff)**
 > fast-`fail`s on the first review — resolving the gate's own `fail` branch —
@@ -1082,6 +1149,36 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > tool/permission arguments for every Copilot session are recorded at
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
+
+> **A deadline you did not reach is not a timeout (#5871).** Only the runtime
+> observes a stage's execution deadline; it records it as an
+> `execution-deadline.v1` annotation, and a session that really runs out of
+> time ends as a harness timeout, not as a completion. A `failure` or
+> `blocked` result whose `error.code` claims the stage's own execution window
+> ran out — `EXECUTION_WINDOW_EXHAUSTED`, or the runner's own
+> `run_duration_exceeded` verdict — returned while less than half of the
+> stage's window had elapsed (measured from the first turn's start to its
+> deadline, so a completion-repair turn's shorter leftover budget never makes
+> a late claim look early) is rewritten to a retryable
+> `failure` with `error.code: PREMATURE_EXHAUSTION_CLAIM`. Its `error.message`
+> states the elapsed time, the window, the deadline and the time that
+> remained; for every artifact-backed context input, whether the goobers-io
+> receipts show it fully read, partially read (lines covered of total),
+> searched but never read, or not inspected, plus the inspection call count
+> and whether `list_inputs` was called; and the goobers-io readiness state.
+> Your original code, message and summary are kept in the message, and
+> `outputs.agentErrorCode`, `outputs.executionDeadline`,
+> `outputs.executionWindowSeconds`, `outputs.executionElapsedSeconds`,
+> `outputs.goobersIOInspectionCalls`, `outputs.goobersIOReadiness` and
+> `outputs.inputsNotFullyInspected` carry the same evidence. Nothing the claim
+> reported is accepted and the stage still fails; the code classifies as
+> `validation`, never `timeout`, and like a missing declared artifact it
+> spends the stage's `retry.maxAttempts` budget. An inner timeout you observed
+> while doing the work (a test suite, a provider call) is a finding about the
+> work: report it under its own code (a bare `timeout` included) and it is
+> left alone. If the input you
+> need is large, page through it with `read_input` line ranges until you have
+> read all of it; do not stop early on the assumption that time has run out.
 
 > **A missing capability is a system defect, not a block (#2197).** `blocked`
 > means a per-item business/content decision or an unmet per-item dependency,

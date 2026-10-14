@@ -213,6 +213,9 @@ func copyTree(src, dst string, skip map[string]bool) error {
 			}
 			return nil
 		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("configuration path %s is a symlink", path)
+		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
@@ -221,11 +224,18 @@ func copyTree(src, dst string, skip map[string]bool) error {
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("configuration path %s is not a regular file", path)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
+		mode := fs.FileMode(0o644)
+		if info, infoErr := d.Info(); infoErr == nil {
+			mode = info.Mode().Perm()
+		}
+		return os.WriteFile(target, data, mode)
 	})
 }
 

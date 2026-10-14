@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -48,14 +49,14 @@ func (l *ClaimLedger) ClaimSharedScoped(ctx context.Context, store sharedclaim.S
 // acknowledges its owner-scoped release or a fresh validated read proves that
 // incarnation is already gone. A successor is never released. An uncertain ACK
 // retains custody for reconciliation after restart.
-func (l *ClaimLedger) ReleaseCoordinatedShared(ctx context.Context, store sharedclaim.Store, remoteKey string, key ClaimKey, owner sharedclaim.Owner) error {
+func (l *ClaimLedger) ReleaseCoordinatedShared(ctx context.Context, store sharedclaim.Store, remoteKey string, key ClaimKey, owner sharedclaim.Owner, reason claimrelease.Reason) error {
 	if _, err := key.storageKey(); err != nil {
 		return err
 	}
 	if err := releaseSharedCustody(ctx, store, remoteKey, owner); err != nil {
 		return err
 	}
-	return l.ReleaseSharedScoped(key, owner)
+	return l.ReleaseSharedScoped(key, owner, reason)
 }
 
 func releaseSharedCustody(ctx context.Context, store sharedclaim.Store, remoteKey string, owner sharedclaim.Owner) error {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -506,6 +507,7 @@ func TestADOQuotaObservationUnknownWithoutHeaders(t *testing.T) {
 // acceptance criterion: X-RateLimit-Delay on an otherwise-successful response
 // is surfaced as a diagnostic "delayed" rate-limit event, with no retry.
 func TestADORateLimitDelayHeaderSurfacesDiagnosticEvent(t *testing.T) {
+	var workItemRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/workitemtypes/") {
 			writeJSON(t, w, map[string]any{"value": []map[string]string{
@@ -513,6 +515,7 @@ func TestADORateLimitDelayHeaderSurfacesDiagnosticEvent(t *testing.T) {
 			}})
 			return
 		}
+		workItemRequests.Add(1)
 		w.Header().Set("X-RateLimit-Delay", "1.5")
 		w.Header().Set("X-RateLimit-Remaining", "199997")
 		w.Header().Set("X-RateLimit-Reset", "1784210000")
@@ -548,6 +551,62 @@ func TestADORateLimitDelayHeaderSurfacesDiagnosticEvent(t *testing.T) {
 	}
 	if !event.RemainingKnown || event.Remaining != 199997 {
 		t.Fatalf("event remaining = %#v, want known 199997", event)
+	}
+	// Diagnostic only: the delayed response is the answer, never a retry.
+	if got := workItemRequests.Load(); got != 1 {
+		t.Fatalf("work-item requests = %d, want exactly 1 (X-RateLimit-Delay must not trigger a retry)", got)
+	}
+	if rate.count() != 1 {
+		t.Fatalf("rate-limit events = %#v, want exactly one delayed event", rate.events)
+	}
+}
+
+// TestADORateLimitDelayHeaderRejectsNonFiniteAndOverflowingValues pins
+// #5960: ParseFloat accepts "NaN", "Inf" and "1e300", and converting any of
+// them to a time.Duration is undefined or overflows into a nonsensical
+// delay_ms. Such a header is not a delay and must surface no event at all.
+func TestADORateLimitDelayHeaderRejectsNonFiniteAndOverflowingValues(t *testing.T) {
+	for _, raw := range []string{"NaN", "nan", "Inf", "+Inf", "-Inf", "Infinity", "1e300", "9223372037", "0", "-1", "1e-12", "soon"} {
+		t.Run(raw, func(t *testing.T) {
+			if delay, ok := adoRateLimitDelay(raw); ok {
+				t.Fatalf("adoRateLimitDelay(%q) = %s, true; want rejected", raw, delay)
+			}
+			var workItemRequests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "/workitemtypes/") {
+					writeJSON(t, w, map[string]any{"value": []map[string]string{{"name": "Active", "category": "InProgress"}}})
+					return
+				}
+				workItemRequests.Add(1)
+				w.Header().Set("X-RateLimit-Delay", raw)
+				writeJSON(t, w, map[string]any{"id": 42, "fields": map[string]any{
+					"System.WorkItemType": "Issue", "System.Title": "malformed-delay", "System.State": "Active",
+				}})
+			}))
+			defer server.Close()
+
+			rate := &recordingObserver{}
+			provider := NewADOProvider("org", "project", "token",
+				func(p *ADOProvider) { p.BaseURL = server.URL },
+				WithADORateLimitObserver(rate),
+			)
+			if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project"}, "42"); err != nil {
+				t.Fatalf("GetWorkItem() error = %v", err)
+			}
+			if rate.count() != 0 {
+				t.Fatalf("rate-limit events = %#v, want none for X-RateLimit-Delay=%q", rate.events, raw)
+			}
+			if got := workItemRequests.Load(); got != 1 {
+				t.Fatalf("work-item requests = %d, want exactly 1", got)
+			}
+		})
+	}
+	// Ordinary fractional and large-but-representable delays still parse.
+	if delay, ok := adoRateLimitDelay("0.25"); !ok || delay != 250*time.Millisecond {
+		t.Fatalf("adoRateLimitDelay(0.25) = %s, %v; want 250ms, true", delay, ok)
+	}
+	if delay, ok := adoRateLimitDelay("86400"); !ok || delay != 24*time.Hour {
+		t.Fatalf("adoRateLimitDelay(86400) = %s, %v; want 24h, true", delay, ok)
 	}
 }
 

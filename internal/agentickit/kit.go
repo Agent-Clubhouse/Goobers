@@ -32,6 +32,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Grant mirrors credentials.Grant as data. Restated rather than imported so
@@ -82,6 +83,9 @@ type Kit struct {
 	Goobers map[string]apiv1.GooberSpec `json:"goobers"`
 	// Instructions are each goober's system instructions.
 	Instructions map[string]string `json:"instructions"`
+	// SkillPackages are the selected Goober's resolved, captured skill bytes.
+	// They share the kit's content identity; no pod reads the instance config.
+	SkillPackages map[string][]workflow.SkillFile `json:"skillPackages,omitempty"`
 	// Assets are each goober's asset bundle, materialised into the workspace
 	// before invocation.
 	Assets map[string]*gooberassets.WireBundle `json:"assets,omitempty"`

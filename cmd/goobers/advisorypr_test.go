@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/stateclient"
@@ -152,7 +153,7 @@ func TestAdvisorySelectionIncludesOldHumanBotAndDraftAndSkipPersists(t *testing.
 		t.Fatal(err)
 	}
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: server.owner, Name: server.repo}
-	if err := ledger.ReleaseScoped(t.Context(), advisoryClaimKey(repo, "architecture", 1), "advisory-run-1"); err != nil {
+	if err := ledger.ReleaseScoped(t.Context(), advisoryClaimKey(repo, "architecture", 1), "advisory-run-1", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(executor.InputEnvVar("reviewType"), "architecture")
@@ -251,7 +252,7 @@ func TestAdvisoryConcurrentSelectionAndStaleHeadRemainPrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: server.owner, Name: server.repo}
-	if err := ledger.ReleaseScoped(t.Context(), advisoryClaimKey(repo, "architecture", 5), "advisory-run-1"); err != nil {
+	if err := ledger.ReleaseScoped(t.Context(), advisoryClaimKey(repo, "architecture", 5), "advisory-run-1", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	// A later run can select the new head because stale findings did not

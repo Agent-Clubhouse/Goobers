@@ -210,7 +210,7 @@ func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, option
 	}
 	loginResult, err := c.runner().Run(ctx, ProcessRequest{Command: loginCommand, Env: env, MaxTranscriptBytes: maxPreflightDiagnosticBytes})
 	if err != nil || loginResult.ExitCode != 0 {
-		return PreflightInfo{}, preflightProbeError("harness: codex: login status", loginResult, err, "sign in with ChatGPT using `codex login`; ambient ChatGPT mode requires a verified local session")
+		return PreflightInfo{}, authProbeFailure("harness: codex: login status", loginResult, err, "sign in with ChatGPT using `codex login`; ambient ChatGPT mode requires a verified local session")
 	}
 	if !strings.Contains(strings.ToLower(string(loginResult.Transcript)), "logged in using chatgpt") {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: ambient-chatgpt requires `codex login status` to report ChatGPT authentication; API-key, logged-out, or ambiguous status is refused")

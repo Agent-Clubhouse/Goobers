@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -202,7 +203,7 @@ func TestRunRunContinueReclaimsRetainedSourceClaims(t *testing.T) {
 	if ok, _, err := ledger.ClaimScoped(key, sourceID, machine.Def.Name, time.Hour); err != nil || !ok {
 		t.Fatalf("seed source claim: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(key, sourceID); err != nil {
+	if err := ledger.ReleaseScoped(key, sourceID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("release source claim: %v", err)
 	}
 
@@ -274,7 +275,7 @@ func TestRunRunContinueRefusesWhenRetainedSourceClaimsWereReclaimedElsewhere(t *
 	if ok, _, err := ledger.ClaimScoped(key, sourceID, machine.Def.Name, time.Hour); err != nil || !ok {
 		t.Fatalf("seed source claim: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(key, sourceID); err != nil {
+	if err := ledger.ReleaseScoped(key, sourceID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("release source claim: %v", err)
 	}
 	if ok, _, err := ledger.ClaimScoped(key, "other-run", machine.Def.Name, time.Hour); err != nil || !ok {
@@ -351,7 +352,7 @@ func TestRunRunContinueRejectsClosedRetainedClaimBeforeCreatingContinuation(t *t
 	if ok, _, err := ledger.ClaimScoped(key, sourceID, machine.Def.Name, time.Hour); err != nil || !ok {
 		t.Fatalf("seed source claim: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(key, sourceID); err != nil {
+	if err := ledger.ReleaseScoped(key, sourceID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("release source claim: %v", err)
 	}
 
@@ -715,7 +716,7 @@ func seedReleasedContinuationClaim(t *testing.T, root, sourceID, workflowName, e
 	if ok, _, err := ledger.ClaimScoped(key, sourceID, workflowName, time.Hour); err != nil || !ok {
 		t.Fatalf("seed source claim: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(key, sourceID); err != nil {
+	if err := ledger.ReleaseScoped(key, sourceID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("release source claim: %v", err)
 	}
 }

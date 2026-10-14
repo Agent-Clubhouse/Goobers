@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // agentickitwriter.go is the worker half of the agentic claim check.
@@ -199,6 +200,7 @@ func (w agenticKitWriter) buildSnapshotKit(l instance.Layout, snapshot *workerCo
 		Mode:                 mode,
 		Goobers:              scoped,
 		Instructions:         instructions,
+		SkillPackages:        workflow.ResolvedSkillFiles(spec, snapshot.skillPackages[env.Gaggle]),
 		Assets:               assets,
 		EnvCapabilities:      envCapabilities,
 		Grants:               wireGrants,

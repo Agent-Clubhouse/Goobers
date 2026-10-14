@@ -394,6 +394,10 @@ func (s escalationNotifyState) VoidRemediationCharge(ctx context.Context, poster
 	return voidRemediationChargeForRun(ctx, poster, s.layout, runID)
 }
 
+func (s escalationNotifyState) SettleSupersededRun(ctx context.Context, poster gate.Commenter, runID, finalState string) (bool, error) {
+	return settleSupersededRun(ctx, poster, s.layout, runID, finalState)
+}
+
 func (s escalationNotifyState) SettleNoWorkStreak(ctx context.Context, poster gate.Commenter, runID, finalState, runURL string) error {
 	return settleNoWorkStreak(ctx, poster, s.layout, runID, finalState, runURL)
 }

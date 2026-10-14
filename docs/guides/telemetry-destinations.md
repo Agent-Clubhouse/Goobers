@@ -39,7 +39,7 @@ shared scrubber and never rendered in configuration, status, or local journals.
 | Kind | Endpoint and authentication | Signals | Buffering |
 | --- | --- | --- | --- |
 | `otlp-grpc` | Explicit `endpoint`; optional `headers` containing TokenRefs; per-destination `tls` | Run/stage/scheduler traces, native metrics, and committed journal logs by default. `journalLogs: false` disables only that destination's journal logs. | Independent bounded memory queues; no durable disk replay. |
-| `azuremonitor` | `connection` TokenRef selects the Application Insights resource and ingestion endpoint | Existing `collectionProfile`: `health` exports whitelisted diagnostics; `journal` adds committed journals; `standard` adds traces; `diagnostic` additionally permits host/account identity. | Independent bounded disk replay for traces, journals, and diagnostics, enabled by default. |
+| `azuremonitor` | `connection` TokenRef selects the Application Insights resource and ingestion endpoint | Existing `collectionProfile`: `health` exports whitelisted diagnostics; `journal` adds committed journals; `standard` adds traces; `diagnostic` additionally permits host/account identity, including `instanceRoot` and home-directory paths that other profiles withhold ([details](azure-monitor.md#account-paths)). | Independent bounded disk replay for traces, journals, and diagnostics, enabled by default. |
 
 A named OTLP destination never enables diagnostic export. The separately
 configured `telemetry.diagnostics.otlp` block remains the explicit diagnostic

@@ -297,6 +297,9 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 // a reserved prefix fail closed instead of reaching human authentication.
 func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	token := bearerToken(request)
+	if strings.HasPrefix(token, WorkflowParentPodPrefix) {
+		return a.authenticateWorkflowParentPod(token)
+	}
 	if strings.HasPrefix(token, childPodTokenPrefix) {
 		return a.authenticateChildPod(token)
 	}
@@ -358,4 +361,14 @@ func bearerToken(request *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(authorization[len(prefix):])
+}
+
+// authenticateWith resolves the configured verifier to the interface V a token
+// form needs; a verifier lacking it fails closed with an explanatory error.
+func authenticateWith[V any](a *Authenticator, authenticate func(V) (*httpapi.Principal, error)) (*httpapi.Principal, error) {
+	v, ok := a.verifier.(V)
+	if !ok {
+		return nil, fmt.Errorf("%w: verifier %T does not support this token type", ErrUnknownToken, a.verifier)
+	}
+	return authenticate(v)
 }

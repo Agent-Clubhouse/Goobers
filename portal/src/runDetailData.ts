@@ -1,5 +1,6 @@
 import { MalformedResponseError } from "./api/errors";
 import type {
+  BranchOutcome,
   BranchStatus,
   DaemonClient,
   ErrorCause,
@@ -865,6 +866,8 @@ export type BranchState = "running" | BranchStatus;
 export interface BranchStateEntry {
   state: BranchState;
   seq: number;
+  /** Why a selective parallel skipped the branch; set only for "skipped". */
+  reason?: string;
 }
 
 // deriveBranchStates is deriveNodeStates'/deriveTraversedEdges' per-branch
@@ -880,7 +883,19 @@ export function deriveBranchStates(
     if (event.seq > selectedSeq) {
       break;
     }
-    if (event.type === "branch.started" && event.branchName) {
+    if (event.type === "parallel.started") {
+      // A selective parallel records its skipped branches once, on its
+      // start event: they never emit branch.started or branch.finished.
+      for (const branch of event.completeness ?? []) {
+        if (branch.status === "skipped") {
+          states.set(branch.name, branch.reason
+            ? { state: "skipped", seq: event.seq, reason: branch.reason }
+            : { state: "skipped", seq: event.seq });
+        } else {
+          states.delete(branch.name);
+        }
+      }
+    } else if (event.type === "branch.started" && event.branchName) {
       states.set(event.branchName, { state: "running", seq: event.seq });
     } else if (event.type === "branch.finished" && event.branchName && event.branchStatus) {
       states.set(event.branchName, { state: event.branchStatus, seq: event.seq });
@@ -906,7 +921,13 @@ export function branchStateLabel(state: BranchState): string {
       return "Cancelled";
     case "no-output":
       return "No output";
+    case "skipped":
+      return "Skipped";
   }
+}
+
+function describeBranchOutcome(branch: BranchOutcome): string {
+  return branch.reason ? `${branch.name} (${branch.reason})` : branch.name;
 }
 
 export function eventHeading(event: RunEvent): string {
@@ -1025,8 +1046,14 @@ export function eventSummary(
       const stage = node ? `${humanize(node)} attempt` : "The attempt";
       return `${stage} executed on runner ${runner}${where ? ` (${where})` : ""}.`;
     }
-    case "parallel.started":
-      return event.parallel ? `Parallel ${event.parallel} started.` : "A parallel state started.";
+    case "parallel.started": {
+      const label = event.parallel ? `Parallel ${event.parallel} started` : "A parallel state started";
+      const skipped = (event.completeness ?? []).filter((branch) => branch.status === "skipped");
+      if (skipped.length === 0) {
+        return `${label}.`;
+      }
+      return `${label} — skipped ${skipped.map(describeBranchOutcome).join(", ")}.`;
+    }
     case "branch.started":
       return event.branchName ? `Branch ${event.branchName} started.` : "A branch started.";
     case "branch.finished":
@@ -1042,9 +1069,14 @@ export function eventSummary(
         return `${label} finished.`;
       }
       const succeeded = event.completeness.filter((branch) => branch.status === "succeeded").length;
+      const skipped = event.completeness.filter((branch) => branch.status === "skipped").length;
       const detail = event.completeness
-        .map((branch) => `${branch.name}: ${branch.status}`)
+        .map((branch) => `${branch.name}: ${branch.status}${branch.reason ? ` (${branch.reason})` : ""}`)
         .join(", ");
+      if (skipped > 0) {
+        const ran = event.completeness.length - skipped;
+        return `${label} finished — ${succeeded}/${ran} selected branches succeeded, ${skipped} skipped (${detail}).`;
+      }
       return `${label} finished — ${succeeded}/${event.completeness.length} branches succeeded (${detail}).`;
     }
     case "agent.lifecycle": {

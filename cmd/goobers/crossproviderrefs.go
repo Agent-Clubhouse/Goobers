@@ -89,10 +89,11 @@ func mergeCommitClosingRefs(body string, repo, backlog providers.RepositoryRef) 
 // "&#39;"), "/" (a URL fragment) or "#" (a Markdown heading).
 var bareIssueRefPattern = regexp.MustCompile(`(^|[^\w&/#])#(\d+)\b`)
 
-// crossProviderIssueText prepares backlog issue text that open-pr embeds in a
-// pull request description (the acceptance criteria). issueRef is what
-// prIssueReference returned for issueID. On a same-provider gaggle that is
-// "#<id>" and text is returned unchanged. In topology (b) it is the issue's
+// crossProviderIssueText prepares text that open-pr embeds in a pull request
+// description: the issue's title and acceptance criteria, the reviewer's
+// verdict text and the local-ci output. issueRef is what prIssueReference
+// returned for issueID. On a same-provider gaggle that is "#<id>" and text is
+// returned unchanged. In topology (b) it is the issue's
 // URL, and every bare "#<n>" in text, which the backlog provider reads as its
 // own issue n, is rewritten to that issue's URL, so the Azure DevOps
 // description never names ADO work item n.

@@ -64,67 +64,38 @@ type ChildWaitHeader struct {
 	InfrastructureFailures int32               `json:"infrastructureFailures"`
 }
 
-// PendingChildWait projects the latest valid serial suspension from host events.
+// PendingChildWait returns a single pending branch for callers with a filtered
+// branch history. Callers owning a whole parallel must select an exact branch.
 func PendingChildWait(events []Event) (*ChildWaitHeader, Event, error) {
-	var pending *ChildWaitHeader
-	var started, marker Event
-	for _, event := range events {
-		switch event.Type {
-		case EventStageStarted:
-			if pending != nil {
-				return nil, marker, fmt.Errorf("runner: child wait has an unacknowledged replacement attempt")
-			}
-			started = event
-		case EventStageFinished, EventRunFinished:
-			pending = nil
-		case EventRunnerAnnotation:
-			kind, _ := event.Runner["kind"].(string)
-			if kind == ChildContinuedKind && pending != nil {
-				if event.Runner["requestId"] != pending.Request.RequestID || event.Stage != marker.Stage || event.Attempt != marker.Attempt {
-					return nil, marker, fmt.Errorf("runner: child continuation does not match its wait")
-				}
-				pending = nil
-			}
-			if kind != ChildWaitKind {
-				continue
-			}
-			record, err := DecodeChildWaitHeader(event, started)
-			if err != nil {
-				return nil, marker, err
-			}
-			if pending != nil && pending.Request.RequestID != record.Request.RequestID {
-				return nil, marker, fmt.Errorf("runner: overlapping child waits")
-			}
-			pending, marker = record, event
-		}
+	projection, err := ProjectChildWaits(events)
+	if err != nil {
+		return nil, Event{}, err
 	}
-	return pending, marker, nil
+	if len(projection.Waits) > 1 {
+		return nil, Event{}, fmt.Errorf("runner: child wait requires an exact branch")
+	}
+	for _, wait := range projection.Waits {
+		return &wait.Header, wait.Marker, nil
+	}
+	return nil, Event{}, nil
 }
 
-// ParkedOnChild releases no capacity for a malformed or unmatched wait marker.
+// ParkedOnChild releases capacity only when every declared unfinished branch
+// waits. Queued siblings and gaps between stages remain runnable.
 func ParkedOnChild(events []Event) bool {
-	pending, _, err := PendingChildWait(events)
-	return err == nil && pending != nil
+	projection, err := ProjectChildWaits(events)
+	return err == nil && projection.Parked()
 }
 
 // DecodeChildWaitHeader verifies a bounded wait against its durable started event.
 func DecodeChildWaitHeader(event, started Event) (*ChildWaitHeader, error) {
-	if event.Branch != 0 {
-		return nil, fmt.Errorf("runner: child wait is not bound to a serial stage attempt")
-	}
-	return decodeBoundChildWaitHeader(event, started)
-}
-
-// decodeBoundChildWaitHeader also supports read-only projection of branch waits.
-// Runtime admission retains its existing serial-only boundary above.
-func decodeBoundChildWaitHeader(event, started Event) (*ChildWaitHeader, error) {
 	data, err := json.Marshal(event.Runner["childWait"])
 	if err != nil || len(data) > MaxChildWaitBytes {
 		return nil, fmt.Errorf("runner: invalid child wait record")
 	}
 	var record ChildWaitHeader
 	if err := json.Unmarshal(data, &record); err != nil || record.Version != 1 || event.Stage != started.Stage || event.Attempt != started.Attempt || event.Branch != started.Branch || record.PolicyAttempts < 0 || record.InfrastructureFailures < 0 || record.ParentRunID != record.Request.ParentRunID {
-		return nil, fmt.Errorf("runner: child wait is not bound to a serial stage attempt")
+		return nil, fmt.Errorf("runner: child wait is not bound to its branch stage attempt")
 	}
 	origin, err := ChildWorkflowOriginForEvent(record.ParentRunID, started)
 	if err != nil {

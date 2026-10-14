@@ -262,6 +262,9 @@ spec:
         # selectedHeadSha (the echoed SHA-pin) keys the demotion by head.
         - reason
         - selectedHeadSha
+        # #6134: echoed so queue-watch binds the same "self" for its
+        # per-poll unanswered-feedback check.
+        - verdictAuthor
       next: merge-opt-out-gate
 
     - name: queue-watch
@@ -275,6 +278,9 @@ spec:
       timeoutSeconds: 1800
       inputsFrom:
         pullNumber: selectedNumber
+        # #6134: merge-pr echoes the identity Goobers posts as, so queue-watch's
+        # per-poll feedback check classifies "self" exactly as merge-pr did.
+        verdictAuthor: verdictAuthor
       inputs:
         resultFile: "queue-result.json"
         # A merge queue runs a full combined build against the projected

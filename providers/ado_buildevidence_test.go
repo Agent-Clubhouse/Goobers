@@ -537,27 +537,37 @@ func TestADOLogExcerptHelpers(t *testing.T) {
 	}
 }
 
-// gather-pr-context's hasFailingCI read agrees with the evidence read but
-// never touches a build.
-func TestADOHasPullRequestCIFailuresReadsNoBuilds(t *testing.T) {
+// gather-pr-context's hasFailingCI read agrees with the evidence read. It
+// reads the build behind a rejected build policy, to tell a canceled build
+// from a failed one (#6817), but never its timeline or logs.
+func TestADOHasPullRequestCIFailuresReadsNoTimelineOrLogs(t *testing.T) {
 	for name, tc := range map[string]struct {
-		evals []map[string]interface{}
-		want  bool
+		evals         []map[string]interface{}
+		buildResult   string
+		want          bool
+		wantBuildRead bool
 	}{
-		"rejected build": {[]map[string]interface{}{buildPolicy("rejected", 314)}, true},
-		"only non-CI":    {[]map[string]interface{}{typedPolicy(adoPolicyTypeCommentRequirements, "Comment requirements", "rejected")}, false},
+		"rejected build":    {[]map[string]interface{}{buildPolicy("rejected", 314)}, "failed", true, true},
+		"canceled build":    {[]map[string]interface{}{buildPolicy("rejected", 314)}, "canceled", false, true},
+		"only non-CI":       {[]map[string]interface{}{typedPolicy(adoPolicyTypeCommentRequirements, "Comment requirements", "rejected")}, "failed", false, false},
+		"approved build":    {[]map[string]interface{}{buildPolicy("approved", 314)}, "canceled", false, false},
+		"broken build gate": {[]map[string]interface{}{buildPolicy("broken", 314)}, "canceled", true, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := rejectedBuildFake(t, "head-sha", 6)
 			f.evaluations = tc.evals
+			f.builds["314"]["result"] = tc.buildResult
 			provider, done := f.serve()
 			defer done()
 			got, err := provider.HasPullRequestCIFailures(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "42")
 			if err != nil || got != tc.want {
 				t.Fatalf("HasPullRequestCIFailures = %v, %v; want %v", got, err, tc.want)
 			}
-			if r := f.requested("/org/project/_apis/build/builds/314"); r != nil {
-				t.Errorf("read %s, want no build read", r.URL.Path)
+			if read := f.count("/org/project/_apis/build/builds/314") > 0; read != tc.wantBuildRead {
+				t.Errorf("build read = %v, want %v", read, tc.wantBuildRead)
+			}
+			if r := f.requested("/org/project/_apis/build/builds/314/timeline"); r != nil {
+				t.Errorf("read %s, want no timeline read", r.URL.Path)
 			}
 			if failures := f.collect(t, provider); (len(failures) > 0) != tc.want {
 				t.Errorf("PullRequestCIFailures = %+v, disagrees with HasPullRequestCIFailures", failures)

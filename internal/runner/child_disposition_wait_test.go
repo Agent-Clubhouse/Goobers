@@ -34,8 +34,8 @@ func TestChildDispositionPreparationCanContinueButPublishedPlanStaysParked(t *te
 	for _, published := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unplanned", true: "published"}[published], func(t *testing.T) {
 			r, run, frame, events, _ := recordedChildWait(t)
-			request, _, err := ParkedChildRequest(events)
-			if err != nil {
+			request, _, parked, err := ParkedChildRequestForOrigin(events, *frame.childOrigin)
+			if err != nil || !parked {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(t.Context())
