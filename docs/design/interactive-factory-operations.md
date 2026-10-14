@@ -26,12 +26,15 @@ The same operations are available to authorized agents through typed daemon oper
   the initiating browser disconnects. Every human message retains its own attribution.
 - V1 permits multiple authorized users to contribute sequentially to the same session.
   Presence, simultaneous conversation presentation, and full group-chat UX are future work.
-- An optional gaggle interactive-access block selects provider credentials, allowed
-  actions/targets, and direct human grants or explicitly configured fleet delegation.
-  Omission disables interactive writes
+- Where Fleet runs, Fleet owns human identity and enterprise sign-in; the Goobers
+  dashboard/API behind it is a trusted admin surface that does not authenticate humans.
+  Standalone deployments keep today's trusted local/admin posture. See section 4.1.
+- An optional gaggle interactive-access block selects provider credentials and allowed
+  actions/targets. Omission disables interactive writes
   and session creation; existing read-only monitoring remains available under its policy.
 - Provider operations use the configured gaggle interactive execution credentials.
-  Goobers records the initiating human; the browser never supplies a provider token.
+  Goobers records the initiating human as the deployment asserts it; the browser never
+  supplies a provider token.
 - A Goober profile or additional instructions may customize interactive assistance.
   Neither configuration nor conversation text implicitly grants additional authority.
 - Authorized edits may update backlog items directly. Repository changes are proposed
@@ -64,7 +67,7 @@ end-to-end qualification is claimed.
 | [`internal/engine/operator_message.go`](../../internal/engine/operator_message.go) | Temporal stores bounded receipt references; content and credentials remain outside workflow history. Preserve that boundary. |
 | [`portal/src/App.tsx`](../../portal/src/App.tsx) | Approve/override/rerun UI handlers remain stubs; capability presence alone must not imply an implemented action. |
 | [`internal/readservice/workitems.go`](../../internal/readservice/workitems.go) | Recorded provider-action history and related PRs; full provider-backed backlog browsing is owned by the workbench design. |
-| [`internal/httpapi/router.go`](../../internal/httpapi/router.go) | Human roles are instance-scoped; add gaggle viewer/operator authorization. |
+| [`internal/httpapi/router.go`](../../internal/httpapi/router.go) | Loopback is tier-1 local trust and optional OIDC roles are instance-scoped; record Fleet-asserted principals and enforce the gaggle action/target ceiling without adding a user directory (section 4.1). |
 | [`api/v1alpha1/common.go`](../../api/v1alpha1/common.go) | Existing `connectionRef` does not select runtime credentials; implement selection before exposing an interactive credential reference. |
 
 Keep compatible parts of [Human-in-the-loop](human-in-the-loop.md). Its historical
@@ -91,43 +94,58 @@ repository/backlog as required by the workbench design, never in a private sessi
 
 ## 4. Interactive access and execution policy
 
-### 4.1 Direct and fleet authentication
+### 4.1 Deployment authority model
 
-The proposed [fleet delegation contract](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/design/fleet-delegated-authentication.md) adds
-an explicit fleet mode: an external service owns sign-in and per-user gaggle
-permissions, while the instance enforces gaggle action/target limits and selects
-provider credentials. It preserves both the acting service and initiating human.
-Fleet grants replace duplicate local user membership only in that explicit mode;
-service-only credentials cannot satisfy a human approval. This addition is not
-implemented by the review snapshot. Its `HAW-AUTH-*` slices are prerequisites for
-advertising fleet writes. Direct-mode browser sign-in is also still a delivery
-gap; API token verification alone does not provide a portal login experience.
+Decided 2026-10-14. This section is the HITL authority contract; the other sections
+of this design apply it and do not add a second human-authentication path.
 
+**Fleet-managed deployments (authoritative where Fleet runs).** Fleet owns human
+identity, enterprise sign-in (Entra/MSAL and related enterprise flows), sessions,
+user membership and per-user gaggle permissions. The Goobers dashboard/API behind
+Fleet is a trusted admin surface. Goobers holds no user directory, runs no
+OIDC/MSAL flow, needs no second Entra application and does not authenticate
+humans. This matches existing Goobers operations that carry no per-user auth
+check, such as starting a configured workflow.
 
-### Review clarification: Fleet identity and provider credentials
+Where HITL needs attribution or a consent-class approval (a human grant for one
+specific effect, such as a gate approval or override), it arrives as a
+Fleet-asserted fact: an opaque principal reference plus whatever grant or
+attestation Fleet supplies. Goobers does not verify the human behind it. It:
 
-Fleet deployments keep Entra/MSAL/MISE and user membership in Fleet. The Agent
-validates Fleet delegation and forwards only allowed requests to the trusted local
-daemon. Goobers does not require a second Entra application, user directory, or
-per-user provider token for this mode. The Fleet follow-up defines the protected
-local provenance and per-gaggle capability boundary; that extension remains draft.
+- records the reference and grant verbatim with the accepted command, decision or
+  session message, for audit and display;
+- binds them to the exact gaggle, action, target, occurrence and idempotency key;
+- checks them against the gaggle's action/target ceiling, which Fleet decisions
+  never widen; and
+- refuses a consent-class action that arrives without an asserted human principal
+  and grant for that effect. A service-only request never satisfies a human
+  approval, and Goobers never fabricates an actor.
 
-The credential selection below answers a different question: which existing
-server-owned GitHub/ADO identity may perform an interactive provider operation?
-It is explicit opt-in for portal/agent-session writes, reusing the current secret
-resolver and permitting the same underlying credential as ordinary gaggle work.
-It does not move human login into the daemon or create a separate secret vault.
-The project owner requested this selection so interactive operations can have
-different provider authority from unattended workflow execution when desired.
+Goobers still owns the gaggle action/target ceiling, provider credential selection,
+PR/merge policy, human-gate occurrence binding, idempotency and audit records.
+Delivering asserted facts from Fleet to the daemon is a Fleet transport concern
+specified in draft [#6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865).
+HITL depends on it only to receive those facts intact. Fleet's existing
+service-level connection authentication is not human authentication by Goobers.
 
-Existing trusted-local CLI/daemon operations, including starting configured
-workflows, are not retrofitted with fleet login by this proposal. The explicit
-local human-role examples below apply to direct authenticated deployments; Fleet
-user membership is handled through the separately specified delegated path.
-The exact fleet-to-local authorization contract still requires the review in
-[#6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) before implementation.
+**Standalone (non-Fleet) deployments.** The default posture stays as today: a
+trusted local/admin surface (tier-1 loopback local trust, or the existing
+instance-role OIDC seam). Actions are attributed to the local actor the way
+existing mutations stamp actors. A direct browser sign-in path with per-gaggle
+human grants (`HAW-AUTH-009`) may be designed and delivered later as a separate,
+optional track. It is not a prerequisite for HITL and must not shape the Fleet-path
+contracts above. Headless Fleet workload identity (`HAW-AUTH-010`) is also a later,
+separate track.
 
-### 4.2 Direct-mode policy and reference implementation
+**Provider credentials are a separate question.** The selection below decides which
+existing server-owned GitHub/ADO identity performs an interactive provider operation.
+It is not a user credential. It is explicit opt-in for portal/agent-session writes,
+reuses the current secret resolver and may name the same credential as ordinary
+gaggle work. It does not move human login into the daemon or create a separate
+secret vault. The project owner requested this selection so interactive operations
+can have different provider authority from unattended workflow execution when desired.
+
+### 4.2 Gaggle policy and reference implementation
 
 The unmerged review snapshot implements the policy and named credential vocabulary
 below alongside bounded shared sessions using an existing configured Goober and independently
@@ -151,10 +169,12 @@ spec:
           credentialRef: team-code-author
     actions: [backlog.read, backlog.edit, backlog.resolve, repository.read,
               run.intervene, run.restartStage, pr.repair, source.proposeChange]
+    sourceWrites: {mode: pull-request}
+    # Only on the optional standalone sign-in path (HAW-AUTH-009); omitted when
+    # Fleet manages identity and in the default trusted local/admin posture.
     humans:
       viewers: [{issuer: https://identity.example, group: product-readers}]
       operators: [{issuer: https://identity.example, group: product-operators}]
-    sourceWrites: {mode: pull-request}
 ```
 
 References resolve server-owned credential bindings backed by the existing instance
@@ -168,16 +188,20 @@ Omission never silently inherits credentials or enables interaction. Cross-provi
 and backlog bindings resolve independently; missing one cannot fall back to another.
 Targets resolve to configured gaggle bindings, not arbitrary URLs submitted by a client.
 
-In direct mode, human authorization and provider permission are independent checks:
-`authenticated principal ∩ gaggle grant ∩ allowed action/target ∩ execution capability`.
+Human attribution and provider permission are independent checks. Effective authority is:
+
+- Fleet-managed: `Fleet-asserted principal and grant ∩ allowed action/target ∩ execution capability`;
+- default standalone: `trusted local admin ∩ allowed action/target ∩ execution capability`;
+- optional standalone sign-in: `authenticated principal ∩ gaggle grant ∩ allowed action/target ∩ execution capability`.
+
 The provider enforces its own credential permissions as the final boundary. A powerful
 provider token does not enable actions omitted from the interactive policy.
-An operator implies a viewer for that gaggle. Grants match issuer plus stable subject or
-verified group identifier; display names are never identifiers. Instance administrators
-manage policy; gaggle viewer/operator grants must be explicit, including for administrators.
-An instance administrator does not automatically gain wider provider-backed visibility.
+Instance administrators manage this policy; Fleet and delegated callers cannot edit it.
 Preserving existing read-only monitoring does not grant new provider-backed workbench reads.
-The established local authenticated principal may be granted explicitly in solo mode.
+On the optional sign-in path only, an operator implies a viewer for that gaggle; grants
+match issuer plus stable subject or verified group identifier, never display names; and
+gaggle viewer/operator grants must be explicit, including for instance administrators,
+who do not automatically gain wider provider-backed visibility.
 
 Policy changes affect new commands immediately. Recheck policy before each provider
 effect, queued command dispatch, and credential refresh. Revocation stops new effects;
@@ -196,8 +220,8 @@ Session state is `idle`, `queued`, `running`, `awaiting-human`, `cancel-requeste
 Sessions are never keyed to a browser connection, websocket ID, or process PID.
 
 Persist accepted messages in an append-only session ledger before returning success.
-Each record carries session sequence, message ID, actor kind, authenticated principal
-when human, agent identity when generated, timestamp, purpose and scrubbed content/ref.
+Each record carries session sequence, message ID, actor kind, attributed principal when
+human (section 4.1), agent identity when generated, timestamp, purpose and scrubbed content/ref.
 An agent action records the originating human message/command and execution identity;
 it must not impersonate that human as the author of an agent-generated message.
 Two humans may submit concurrently: one sequencer assigns durable order and executes
@@ -371,7 +395,8 @@ have distinct typed results and do not degrade into success-shaped responses.
 ## 10. Evidence, bounds, credentials and provider cache
 
 Keep three records: immutable human/agent decisions, conversation evidence, and operational
-diagnostics. An action record includes actor/principal, execution credential reference,
+diagnostics. An action record includes actor/principal and any Fleet-supplied grant
+reference, execution credential reference,
 policy digest, target/revision, originating message, reason, attempt/epoch, result and receipt.
 No provider secrets, raw authorization headers, or secret-bearing idempotency keys enter
 logs, telemetry or Temporal payloads. Scrub before durable acceptance, not only rendering.
@@ -415,8 +440,9 @@ Update portal/runtime requirements that restrict interaction once this design is
 
 Meaningful tests cover: two humans' ordered messages; disconnect/reconnect; daemon crash
 before/after admission and dispatch; duplicates with same/different payload; lease recovery;
-credential revocation; explicit administrator grants, cross-gaggle denial and cached-data
-isolation; partial provider writes; rejection of repository direct-write bypasses;
+credential revocation; Fleet-asserted attribution recorded verbatim, consent-class actions
+refused without an asserted human grant, cross-gaggle denial and cached-data isolation;
+partial provider writes; rejection of repository direct-write bypasses;
 restart allowance epochs and moved PR heads; stale human-gate occurrences; child human wait,
 resolution, slot release/reacquisition, cancellation cascade and old-hold expiry; retention
 bounds and secret scrubbing.
@@ -432,7 +458,7 @@ integration gates. Source/API tests alone do not justify claiming a live provide
 | Task | Deliverable and acceptance boundary |
 | --- | --- |
 | HAW-HITL-001 | Versioned policy/session/operation/attention contracts; schemas reject ambiguous credentials, unknown actions and unbounded payloads; old fixtures stay valid. |
-| HAW-HITL-002 | Resolve explicit credentials and gaggle human grants; prove denied cross-gaggle reads/writes, no fallback, policy narrowing and no secret exposure. Depends on 001. |
+| HAW-HITL-002 | Resolve explicit credentials, the gaggle action/target ceiling and attribution per section 4.1; prove denied cross-gaggle reads/writes, no fallback, policy narrowing, Fleet-asserted grants recorded and scope-checked without local user authentication, and no secret exposure. Standalone per-user grants belong to HAW-AUTH-009. Depends on 001. |
 | HAW-HITL-003 | Durable session ledger, ordering and admission; concurrent writers, idempotency, paging, restart and capacity tests reconstruct every accepted input. Depends on 001–002. |
 | HAW-HITL-004 | Session execution coordinator and harness continuation/reconstruction; disconnect survives, one turn executes, uncertain dispatch reconciles, context is bounded. Depends on 003. |
 | HAW-HITL-005 | Canonical attention/resolution projection; distinguish pending gates, terminal holds, settled history, provider parks and personal dismissals. Depends on 001. |
@@ -440,7 +466,7 @@ integration gates. Source/API tests alone do not justify claiming a live provide
 | HAW-HITL-007 | Restart-stage allowance epochs and context; local conformance proves reset scope, cumulative history, interrupt settlement and provider/head checks. Depends on 001–002. |
 | HAW-HITL-008 | Temporal restart/executable continuation and occurrence-bound human gates; replay, duplicate decisions and settled execution cases pass. Depends on 007. |
 | HAW-HITL-009 | Integrate child waits and attention; parent releases its active slot while waiting, reacquires it to resume, follows accepted continuation, and reports cascading cancellation and family settlement accurately. Depends on 005/008 and child-workflow contract. |
-| HAW-HITL-010 | Portal shared sessions, attention and run/PR actions; role/capability-driven controls call common services and render acknowledgements/outcomes. Depends on 004–009 and the selected deployment's authentication acceptance: HAW-AUTH-001–008 for fleet mode, HAW-AUTH-009 for direct browser sign-in. |
+| HAW-HITL-010 | Portal shared sessions, attention and run/PR actions; role/capability-driven controls call common services and render acknowledgements/outcomes. Depends on 004–009 and, for Fleet-managed deployments (qualified first), the Fleet-path HAW-AUTH-001–008 tasks as accepted from #6865. Default standalone needs no new authentication; HAW-AUTH-009 (optional standalone sign-in) and HAW-AUTH-010 (headless Fleet) are not prerequisites. |
 | HAW-HITL-011 | CLI/agent-tool parity, end-to-end local/Temporal and provider fixtures; cross-surface vectors prove identical audit and authority semantics. Depends on 006–010. |
 | HAW-HITL-012 | Operator docs, migrations/rollback and release gates; generated contracts/indexes current, opt-in deployment exercised and unsupported adapter modes documented. Depends on 011. |
 
@@ -463,5 +489,6 @@ existing token/auth sources. Initial shared sessions select an existing Goober
 and admit at most 32 open sessions per gaggle, four executing turns per gaggle and
 64 queued turns per session. See the shared-session reference for retention and
 current runtime bounds; more extensive persona configuration is later scope.
-These choices do not reopen explicit per-gaggle grants, PR-only repository changes,
+These choices do not reopen the section 4.1 authority model, explicit per-gaggle
+action/target ceilings, PR-only repository changes,
 cascading child cancellation, shared sessions, source ownership or human attribution.
