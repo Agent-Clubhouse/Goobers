@@ -22,10 +22,7 @@ func recoveryRunEvents(layout instance.Layout) func(context.Context, string) ([]
 		// the observation count against, and it is still the operator's.
 		entries, _, limit, err := observeRecoveryInventory(ctx, layout)
 		if err != nil {
-			// The shared inventory, not this run's records: journaled as
-			// recovery_observation_failed, which another run's later
-			// successful observation can show cleared (#5404). Everything
-			// below is this run's own and is not marked.
+			// The shared inventory, not this run's records (#5404).
 			return nil, limit, &runner.RecoveryInventoryError{Err: err}
 		}
 		var events []journal.Event

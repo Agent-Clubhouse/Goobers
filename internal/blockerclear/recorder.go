@@ -1,21 +1,24 @@
-package main
+// Package blockerclear journals the evidence that retracts run blockers whose
+// condition has since been observed healthy (#5404): blocker.cleared records in
+// the instance journal, which the read service folds to stop listing a blocker
+// recorded before them.
+package blockerclear
 
 import (
 	"sync"
 	"time"
 
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 )
 
-// recoveryObservationRefresh bounds how long a recovery_observation_failed
+// Refresh bounds how long a recovery_observation_failed
 // blocker recorded by ANOTHER process (a foreground `goobers run`, a worker)
 // can outlive the condition while this process keeps observing successfully.
 // Failures this process sees itself are cleared by its very next success.
-const recoveryObservationRefresh = 15 * time.Minute
+const Refresh = 15 * time.Minute
 
-// recoveryObservationRecorder journals the evidence that retracts recovery
+// Recorder journals the evidence that retracts recovery
 // observation run blockers (#5404).
 //
 // A failed post-cleanup observation is recorded in the run's own journal and
@@ -32,7 +35,7 @@ const recoveryObservationRefresh = 15 * time.Minute
 //     an "instance" clear is written on the first success of a process (so a
 //     blocker from an earlier daemon lifetime is cleared by the next one), on
 //     the first success after an inventory failure this process saw, and
-//     otherwise at most once per recoveryObservationRefresh.
+//     otherwise at most once per Refresh.
 //   - recovery_observation_run_failed: the run's own records, its count or
 //     ownership checks, or its journal append failed. Another run's success
 //     proves nothing about those, so a "run" clear is written only when the
@@ -42,7 +45,7 @@ const recoveryObservationRefresh = 15 * time.Minute
 // Failures are never written here — the run journal already holds them — so a
 // missed or failed write only leaves a blocker visible longer; it can never
 // hide one.
-type recoveryObservationRecorder struct {
+type Recorder struct {
 	schedulerDir string
 	now          func() time.Time
 	refresh      time.Duration
@@ -60,32 +63,36 @@ type recoveryObservationRecorder struct {
 	failedRuns        map[string]time.Time
 }
 
-func newRecoveryObservationRecorder(schedulerDir string, now func() time.Time) *recoveryObservationRecorder {
+// NewRecorder returns a Recorder writing to the instance journal in
+// schedulerDir. A nil now uses time.Now. Each Recorder is one process
+// lifetime's view; production code uses Reporter.
+func NewRecorder(schedulerDir string, now func() time.Time) *Recorder {
 	if now == nil {
 		now = time.Now
 	}
-	return &recoveryObservationRecorder{
+	return &Recorder{
 		schedulerDir: schedulerDir,
 		now:          now,
-		refresh:      recoveryObservationRefresh,
+		refresh:      Refresh,
 		failedRuns:   make(map[string]time.Time),
 	}
 }
 
-// recoveryObservationRecorders keeps one recorder per instance per process, so
-// the per-gaggle runners a daemon composes (and recomposes on reload) share
-// one notion of "already cleared in this lifetime".
-var recoveryObservationRecorders sync.Map
+// recorders keeps one Recorder per instance per process, so the per-gaggle
+// runners a daemon composes (and recomposes on reload) share one notion of
+// "already cleared in this lifetime".
+var recorders sync.Map
 
-// recoveryObservationReporter is the runner.Config.RecoveryObserved hook for
-// the instance at l.
-func recoveryObservationReporter(l instance.Layout) func(string, time.Time, error) {
-	dir := l.SchedulerDir()
-	recorder, _ := recoveryObservationRecorders.LoadOrStore(dir, newRecoveryObservationRecorder(dir, nil))
-	return recorder.(*recoveryObservationRecorder).observe
+// Reporter is the runner.Config.RecoveryObserved hook for the instance whose
+// instance journal lives in schedulerDir.
+func Reporter(schedulerDir string) func(string, time.Time, error) {
+	recorder, _ := recorders.LoadOrStore(schedulerDir, NewRecorder(schedulerDir, nil))
+	return recorder.(*Recorder).Observe
 }
 
-func (r *recoveryObservationRecorder) observe(runID string, observedAt time.Time, err error) {
+// Observe records one post-cleanup observation outcome of run runID, started
+// at observedAt, and journals any clear it makes due.
+func (r *Recorder) Observe(runID string, observedAt time.Time, err error) {
 	claim := r.claimWrites(runID, observedAt, err)
 	if !claim.instance && !claim.run {
 		return
@@ -125,7 +132,7 @@ type clearClaim struct {
 // claimWrites decides under the lock which clears this outcome must journal,
 // so the journal write itself happens without holding it: the instance-log
 // lock can take a while, and the hook runs on a stage's cleanup path.
-func (r *recoveryObservationRecorder) claimWrites(runID string, observedAt time.Time, err error) clearClaim {
+func (r *Recorder) claimWrites(runID string, observedAt time.Time, err error) clearClaim {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {

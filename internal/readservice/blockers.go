@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -76,7 +77,7 @@ const (
 // run's later successful observation reads the same inventory, so it shows
 // the condition cleared. The daemon journals an instance clear on the first
 // success of each process lifetime, on the first success after an inventory
-// failure it saw, and periodically (cmd/goobers blockerclear.go).
+// failure it saw, and periodically (internal/blockerclear).
 //
 // recovery_observation_run_failed (run): the inventory was readable but this
 // run's own records, its count or ownership checks, or its journal append
@@ -264,4 +265,24 @@ func eventTimePointer(event journal.Event) *time.Time {
 	}
 	at := event.Time
 	return &at
+}
+
+// BlockerLine renders each blocker once with when it was observed and how long
+// before now (#5404), so a blocker that stopped recurring reads as old rather
+// than as a current outage. A summary from a reader that predates structured
+// blockers falls back to the bare display text.
+func (o OperatorRunSummary) BlockerLine(now time.Time) string {
+	if len(o.Blockers) == 0 {
+		return strings.Join(o.PotentialBlockers, "; ")
+	}
+	parts := make([]string, 0, len(o.Blockers))
+	for _, blocker := range o.Blockers {
+		observed := "observed at an unknown time"
+		if blocker.ObservedAt != nil {
+			age := max(now.Sub(*blocker.ObservedAt), 0)
+			observed = "observed " + blocker.ObservedAt.UTC().Format(time.RFC3339) + ", " + age.Truncate(time.Second).String() + " ago"
+		}
+		parts = append(parts, blocker.Message+" ("+observed+")")
+	}
+	return strings.Join(parts, "; ")
 }
