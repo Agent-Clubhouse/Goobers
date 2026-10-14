@@ -188,6 +188,15 @@ type parallelGateTerminal struct {
 	lastResult apiv1.ResultEnvelope
 }
 
+// parallelVisit is one entry into a parallel: its declaration, the execution
+// state a resume rebuilt (nil for a fresh visit), and the selection a fresh
+// selective visit froze (nil otherwise).
+type parallelVisit struct {
+	spec      apiv1.Parallel
+	existing  *parallelExec
+	selection *journal.ParallelSelection
+}
+
 type concurrentParallelResult struct {
 	target            string
 	runJoin           bool
@@ -252,8 +261,7 @@ func (r *Runner) runConcurrentParallel(
 	ctx context.Context,
 	jr *journal.Run,
 	in StartInput,
-	p apiv1.Parallel,
-	par *parallelExec,
+	visit parallelVisit,
 	basePointers []apiv1.ContextPointer,
 	baseLastStage string,
 	baseLastResult apiv1.ResultEnvelope,
@@ -265,18 +273,10 @@ func (r *Runner) runConcurrentParallel(
 	// Concurrent workers always use explicit branch journals. Keeping the run
 	// default at root prevents manager and terminal events from inheriting the
 	// last active branch after a resume.
-	jr.SetBranch(0)
-	jr.SetMachineState(p.Name)
-	if par == nil {
-		par = newParallelExec(p)
-		jr.SetBranchCursors(par.cursors())
-		if err := jr.Append(journal.Event{
-			Type:         journal.EventParallelStarted,
-			Parallel:     p.Name,
-			Completeness: par.completeness(),
-		}); err != nil {
-			return concurrentParallelResult{}, err
-		}
+	p := visit.spec
+	par, err := beginConcurrentParallel(jr, visit)
+	if err != nil {
+		return concurrentParallelResult{}, err
 	}
 
 	rd, err := journal.OpenRead(jr.Dir())
@@ -313,6 +313,10 @@ func (r *Runner) runConcurrentParallel(
 	for i := range p.Branches {
 		branch := par.branchSnapshot(i)
 		history := branchEvents.events(branch.id)
+		if branch.status == journal.BranchSkipped {
+			// Never started: no outcome, slot, workspace or fork.
+			continue
+		}
 		if branch.settled {
 			var err error
 			var terminalTarget string
@@ -445,6 +449,25 @@ func (r *Runner) runConcurrentParallel(
 		workspaceRevision: workspaceRevision,
 		repoRef:           repoRef,
 	}, nil
+}
+
+// beginConcurrentParallel returns the visit's execution state, journaling
+// parallel.started (with any frozen selection) for a fresh visit.
+func beginConcurrentParallel(jr *journal.Run, visit parallelVisit) (*parallelExec, error) {
+	jr.SetBranch(0)
+	jr.SetMachineState(visit.spec.Name)
+	if visit.existing != nil {
+		return visit.existing, nil
+	}
+	par := newParallelExec(visit.spec)
+	par.applySelection(visit.selection)
+	jr.SetBranchCursors(par.cursors())
+	return par, jr.Append(journal.Event{
+		Type:         journal.EventParallelStarted,
+		Parallel:     visit.spec.Name,
+		Completeness: par.completeness(),
+		Selection:    visit.selection,
+	})
 }
 
 func newParallelGateEvaluator(r *Runner, in StartInput, branchJournal gate.Journal, history []journal.Event, visitedStages map[string]bool) *gate.Evaluator {

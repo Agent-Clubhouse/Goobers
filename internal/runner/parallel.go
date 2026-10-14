@@ -28,6 +28,10 @@ type branchState struct {
 	timedOut  bool
 	started   bool
 	settled   bool
+	// reason is the selective-parallel reason recorded on this branch's
+	// completeness entry: the selection's reason for a selected optional
+	// branch, or why a skipped branch did not run. Empty otherwise.
+	reason string
 	// startedAt is when the branch's first stage began, reconstructed from
 	// its EventBranchStarted on resume rather than reset to "now" — a
 	// resumed branch gets its REMAINING budget, not a fresh one. Zero when
@@ -334,7 +338,7 @@ func (p *parallelExec) completeness() []journal.BranchOutcome {
 			status = journal.BranchCancelled
 		}
 		out = append(out, journal.BranchOutcome{
-			Branch: b.id, Name: b.name, Status: status, Artifacts: b.artifacts,
+			Branch: b.id, Name: b.name, Status: status, Artifacts: b.artifacts, Reason: b.reason,
 		})
 	}
 	return out

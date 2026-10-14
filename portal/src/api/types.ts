@@ -46,7 +46,8 @@ export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
 export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
-export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output";
+/** "skipped": a selective parallel's frozen selection did not choose this optional branch; it never started. */
+export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output" | "skipped";
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
@@ -1403,7 +1404,7 @@ export interface RunEvent {
   branchName?: string;
   /** The branch's terminal status; set on branch.finished. */
   branchStatus?: BranchStatus;
-  /** The branch completeness record; set on parallel.finished, one entry per declared branch. */
+  /** The branch completeness record; set on parallel.started/finished, one entry per declared branch (skipped branches included). */
   completeness?: BranchOutcome[];
   raw?: JsonValue;
 }
@@ -1414,6 +1415,8 @@ export interface BranchOutcome {
   name: string;
   status: BranchStatus;
   artifacts: number;
+  /** Selective parallels only: the selection's reason for a selected branch, or why a skipped branch did not run. */
+  reason?: string;
 }
 
 export interface ExternalRef {

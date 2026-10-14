@@ -67,6 +67,9 @@ type NormativeEvent struct {
 	BranchName   string
 	BranchStatus BranchStatus
 	Completeness string
+	// Selection flattens a selective parallel's frozen selection (empty for
+	// every other event). Reasons and the producer visit are excluded.
+	Selection string
 
 	// ExternalRef* project ExternalRef's normative identity (Provider, Kind,
 	// ID); URL is dropped. All empty when the source event has no ExternalRef.
@@ -118,6 +121,7 @@ func projectNormative(e Event) NormativeEvent {
 		Parallel:  e.Parallel, BranchName: e.BranchName,
 		BranchStatus:      e.BranchStatus,
 		Completeness:      encodeCompleteness(e.Completeness),
+		Selection:         encodeSelection(e.Selection),
 		Outputs:           encodeOutputs(e.Outputs),
 		WorkspaceRevision: encodeWorkspaceRevision(e.WorkspaceRevision),
 	}
@@ -206,6 +210,19 @@ func encodeCompleteness(record []BranchOutcome) string {
 	return strings.Join(parts, ",")
 }
 
+// encodeSelection flattens a frozen selection into a stable string. Selected
+// names keep their recorded (branch-id) order. Reasons are human-facing and
+// the producer visit is a runner-local journal sequence, so neither is part
+// of the comparison.
+func encodeSelection(selection *ParallelSelection) string {
+	if selection == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s.%s@%d:%s@%s:[%s]",
+		selection.Source.Task, selection.Source.Slot, selection.Source.Attempt,
+		selection.SourceDigest, selection.Integrity, strings.Join(selection.Selected, ","))
+}
+
 // ConformanceBranches groups a normative view by branch id, preserving
 // within-branch order.
 //
@@ -239,14 +256,20 @@ func isContextManifestArtifact(e Event) bool {
 func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
+	// A selection renders only when present, so every event that cannot
+	// carry one keeps its exact pre-selection rendering.
+	selection := ""
+	if ne.Selection != "" {
+		selection = "|selection=" + ne.Selection
+	}
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|action=%s|decision=%s|rationale=%s|addendum=%s|gate=%s|verdict=%s|target=%s|complete=%t|escalated=%t|status=%s|disposition=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s|workspaceRevision=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|action=%s|decision=%s|rationale=%s|addendum=%s|gate=%s|verdict=%s|target=%s|complete=%t|escalated=%t|status=%s|disposition=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s|workspaceRevision=%s%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
 		ne.Actor, ne.Action, ne.Decision, ne.Rationale, ne.InstructionAddendum,
 		ne.Gate, ne.Verdict, ne.Target, ne.Complete, ne.Escalated, ne.Status, ne.Disposition,
 		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.RefIntegrity, ne.Artifacts,
 		ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
-		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs, ne.WorkspaceRevision,
+		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs, ne.WorkspaceRevision, selection,
 	)
 }
 

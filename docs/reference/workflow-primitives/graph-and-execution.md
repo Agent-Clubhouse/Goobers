@@ -252,9 +252,12 @@ are not permitted inside parallel branches.
 Both require the `goobers.dev/allow-preview-features: "true"` workflow
 annotation and are rejected under DSL 2.0 and 3.0.
 
-**They validate, but no runtime executes them yet.** The local runner and the
-engine walk both refuse them at run start with a typed unsupported-feature
-error. A selective parallel never runs as a plain parallel.
+**Runtime support.** The local runner executes selective parallels. Maps
+validate, but no runtime executes them yet. The engine walk refuses both at
+run start with a typed unsupported-feature error, and the local runner
+refuses maps, and selective parallels whose branches can start child
+workflows, the same way. A refused selective parallel never runs as a plain
+parallel.
 
 Both read a source document the same way:
 
@@ -286,6 +289,47 @@ parallels:
       - { name: baseline, start: review-baseline }
       - { name: security, start: review-security, optional: true }
 ```
+
+The source document names the optional branches to run, each with an
+optional reason of at most 512 bytes:
+
+```json
+{ "schemaVersion": 1, "branches": [{ "name": "security", "reason": "touches internal/auth" }] }
+```
+
+At run time the parallel behaves as follows:
+
+- **Freezing.** Before any branch starts, the runner reads the slot from the
+  producer's most recent recorded attempt. It checks the media type, the byte
+  size before decoding (1 MiB, or the slot's smaller `maxSize`) and the closed
+  envelope, and rejects unknown or duplicate branch names. It then writes the
+  normalized selection into `parallel.started` as
+  `selection: {source, sourceDigest, integrity, selected[], reasons{}}`.
+  Naming a non-optional branch has no effect. An empty `branches` array runs
+  only the non-optional branches.
+- **Invalid source.** A document that fails these checks fails the parallel
+  with error code `fanout_source_invalid` before `parallel.started`. The run
+  follows the parallel's `onFailure`, or `@abort` when none is declared. It
+  never fans out to an empty set.
+- **Skipped branches.** An unselected optional branch gets the terminal status
+  `skipped` in the completeness record, with a `reason`. It never starts: it
+  gets no `branch.started`, stage, workspace, concurrency slot or branch
+  timeout. Branch ids stay in declaration order whatever the selection.
+- **Failure policies ignore skipped branches.** `fail_fast` cancels only
+  selected branches that have not started. `all_or_nothing` succeeds when
+  every selected branch succeeds. The join runs exactly once, even when every
+  branch is skipped, and its `branchCompleteness` input lists skipped branches
+  with their reasons. A branch-qualified reference to a skipped branch resolves
+  as absent, the same as for a branch with no output.
+- **Resume.** Resume and rerun rebuild the skip set from the recorded
+  `parallel.started` only. They never rerun or reread the producer. A journal
+  whose recorded selection conflicts with itself, with the pinned definition,
+  or with later branch events is refused with error code
+  `workflow_integrity`. A human rerun of a stage in a skipped branch is
+  refused the same way.
+- **Selection integrity** is recorded for audit. The selection is control
+  data and is never delivered to a branch as input. `optional: true` is the
+  author's statement that skipping that branch is acceptable.
 
 A **map** runs one declared task once per roster item:
 

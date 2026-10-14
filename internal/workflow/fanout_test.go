@@ -381,3 +381,16 @@ func TestRefuseUnsupportedFanOutIsTyped(t *testing.T) {
 		t.Fatalf("plain parallel refused: %v", err)
 	}
 }
+
+// TestRefuseUnsupportedLocalFanOutLiftsSelection pins FAN-2 (#7383): the local
+// runner executes selective parallels, so only maps remain refused there. The
+// engine keeps refusing both through RefuseUnsupportedFanOut.
+func TestRefuseUnsupportedLocalFanOutLiftsSelection(t *testing.T) {
+	if err := RefuseUnsupportedLocalFanOut(selectiveParallelDefinition().Spec); err != nil {
+		t.Fatalf("selective parallel refused locally: %v", err)
+	}
+	var typed *UnsupportedFanOutError
+	if err := RefuseUnsupportedLocalFanOut(mapDefinition().Spec); !errors.Is(err, ErrMapUnsupported) || !errors.As(err, &typed) || typed.State != "run-shards" {
+		t.Fatalf("map local refusal = %v, want typed ErrMapUnsupported", err)
+	}
+}

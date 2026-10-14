@@ -546,6 +546,12 @@ type Event struct {
 	// report?" is answerable from the journal alone. Normative — it, and not
 	// the interleaving, is what a parallel means.
 	Completeness []BranchOutcome `json:"completeness,omitempty"`
+	// Selection is the frozen selection of a DSL 3.1 selective parallel, set
+	// only on that parallel's parallel.started. It is the durable source of
+	// truth for which optional branches run in this visit: resume rebuilds
+	// the skip set from it and never consults the producer again. Absent for
+	// every non-selective parallel. Normative except Reasons and Source.Visit.
+	Selection *ParallelSelection `json:"selection,omitempty"`
 
 	// --- instance-journal payload (scheduler/events.jsonl only; not used in a
 	// run's own events.jsonl, since a run event's identity is implicit from its
@@ -607,6 +613,12 @@ const (
 	// other four statuses could not express: a join must be able to tell "ran
 	// and found nothing" from "ran and produced findings".
 	BranchNoOutput BranchStatus = "no-output"
+	// BranchSkipped means a selective parallel's frozen selection did not
+	// choose this optional branch. The branch never started: no
+	// branch.started, stage, workspace, fork, child or concurrency slot. It
+	// is distinct from no-output ("ran and produced nothing") and cancelled
+	// ("chosen, then stopped"), and failure policies never count it.
+	BranchSkipped BranchStatus = "skipped"
 )
 
 // BranchOutcome is one entry in a parallel's completeness record.
@@ -621,6 +633,45 @@ type BranchOutcome struct {
 	// distinguish a branch that settled empty from one that produced work
 	// without resolving every pointer.
 	Artifacts int `json:"artifacts"`
+	// Reason is the optional human-facing explanation a selective parallel
+	// records: the selection document's reason for a selected optional
+	// branch, or why a skipped branch did not run. Displayed, never compared
+	// by conformance.
+	Reason string `json:"reason,omitempty"`
+}
+
+// ParallelSelection is the frozen, normalized selection a selective parallel
+// writes to parallel.started before any branch starts (design
+// plan-driven-dynamic-fan-out.md §4.2, §5.3).
+type ParallelSelection struct {
+	// Source is the journal-bound producer attempt the document came from.
+	Source SelectionSource `json:"source"`
+	// SourceDigest is the digest of the frozen source document.
+	SourceDigest string `json:"sourceDigest"`
+	// Integrity is the source artifact's integrity, recorded for audit. The
+	// selection is control data and is never delivered as branch input.
+	Integrity apiv1.Integrity `json:"integrity"`
+	// Selected names the selected OPTIONAL branches in branch-id (declaration)
+	// order. Non-optional branches always run and are never listed. An empty
+	// list means only the non-optional branches run.
+	Selected []string `json:"selected"`
+	// Reasons carries the document's optional reason per selected branch.
+	// Human-facing and excluded from conformance.
+	Reasons map[string]string `json:"reasons,omitempty"`
+}
+
+// SelectionSource identifies the producer slot and recorded attempt a
+// selection was frozen from.
+type SelectionSource struct {
+	// Task is the producing task.
+	Task string `json:"task"`
+	// Slot is the producer's DSL 3.1 artifact slot.
+	Slot string `json:"slot"`
+	// Visit is the producer's artifact publication visit (a journal
+	// sequence). Runner-local provenance, excluded from conformance.
+	Visit uint64 `json:"visit"`
+	// Attempt is the producer attempt that published the document.
+	Attempt int32 `json:"attempt"`
 }
 
 // ExternalRef identifies an external reference the run touched — an issue or PR

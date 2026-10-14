@@ -120,12 +120,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, err
 		}
-		activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
-		if activeParallel != nil {
-			jr.SetBranchCursors(activeParallel.cursors())
-			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
-				jr.SetBranch(owner.id)
-			}
+		activeParallel, parallelStart, err := rerunParallelScope(jr, seedEvents, in.Machine, in.Stage)
+		if err != nil {
+			return Result{}, err
 		}
 		item, err := resumeItem(rd, id)
 		if err != nil {
@@ -233,6 +230,29 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 // falling back to current() only if resolution can't place it at all
 // (defensive; should not happen given compile-time rule 1's disjoint branch
 // subgraphs).
+// rerunParallelScope rebuilds the parallel a rerun target belongs to and
+// points the journal at the owning branch. A recorded selective visit is
+// verified first, and a rerun into a branch its frozen selection skipped is
+// refused: both are typed workflow_integrity failures.
+func rerunParallelScope(jr *journal.Run, seedEvents []journal.Event, machine *workflow.Machine, stage string) (*parallelExec, int, error) {
+	if err := verifyRecordedSelections(seedEvents, machine); err != nil {
+		return nil, -1, err
+	}
+	activeParallel, parallelStart := pendingParallel(seedEvents, machine)
+	if activeParallel == nil {
+		return nil, parallelStart, nil
+	}
+	owner := rerunOwnerBranch(activeParallel, machine, stage)
+	if err := refuseSkippedBranchRerun(activeParallel, owner); err != nil {
+		return nil, -1, err
+	}
+	jr.SetBranchCursors(activeParallel.cursors())
+	if owner != nil {
+		jr.SetBranch(owner.id)
+	}
+	return activeParallel, parallelStart, nil
+}
+
 func rerunOwnerBranch(activeParallel *parallelExec, machine *workflow.Machine, stage string) *branchState {
 	owner := activeParallel.current()
 	if name := branchOwningState(machine, activeParallel.spec, stage); name != "" {
