@@ -1130,6 +1130,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.scheduleCatchUp",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.start",
       "stability": "ga",
       "sinceVersion": "dev"

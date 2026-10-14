@@ -184,6 +184,7 @@ workflow.spec.runControls                                2.0          ga        
 workflow.spec.runControls.maxRepasses                    2.0          ga               supported        dev
 workflow.spec.runControls.maxRunDuration                 2.0          ga               supported        dev
 workflow.spec.runControls.stalledRunTimeout              2.0          ga               supported        dev
+workflow.spec.scheduleCatchUp                            2.0          ga               supported        dev
 workflow.spec.start                                      2.0          ga               supported        dev
 workflow.spec.tasks                                      2.0          ga               supported        dev
 workflow.spec.triggers                                   2.0          ga               supported        dev
@@ -399,6 +400,7 @@ workflow.spec.runControls                                3.0          ga        
 workflow.spec.runControls.maxRepasses                    3.0          ga               preview          dev
 workflow.spec.runControls.maxRunDuration                 3.0          ga               preview          dev
 workflow.spec.runControls.stalledRunTimeout              3.0          ga               preview          dev
+workflow.spec.scheduleCatchUp                            3.0          ga               preview          dev
 workflow.spec.start                                      3.0          ga               preview          dev
 workflow.spec.tasks                                      3.0          ga               preview          dev
 workflow.spec.triggers                                   3.0          ga               preview          dev
@@ -628,6 +630,7 @@ workflow.spec.runControls                                3.1          ga        
 workflow.spec.runControls.maxRepasses                    3.1          ga               preview          dev
 workflow.spec.runControls.maxRunDuration                 3.1          ga               preview          dev
 workflow.spec.runControls.stalledRunTimeout              3.1          ga               preview          dev
+workflow.spec.scheduleCatchUp                            3.1          ga               preview          dev
 workflow.spec.start                                      3.1          ga               preview          dev
 workflow.spec.tasks                                      3.1          ga               preview          dev
 workflow.spec.triggers                                   3.1          ga               preview          dev
@@ -638,4 +641,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-638 feature/version row(s)
+641 feature/version row(s)

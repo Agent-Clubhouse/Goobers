@@ -85,7 +85,7 @@ spec:
 and simultaneous occurrences across restarts. Admission limits still apply;
 paused or backed-off work stays queued. Policy edits affect future discovery,
 while accepted work keeps its captured definition. Execution order is not
-promised. See [durable scheduled starts](../queued-scheduled-starts.md).
+promised. See [durable scheduled starts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md).
 
 ## `backlog-item`
 
