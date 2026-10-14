@@ -20,6 +20,8 @@ var wantClaudeHostSafetyArgs = []string{
 	"Bash(/usr/bin/killall:*)",
 	"Bash(/bin/pkill:*)",
 	"Bash(/bin/killall:*)",
+	"Bash(/usr/bin/env pkill:*)",
+	"Bash(/usr/bin/env killall:*)",
 }
 
 func TestClaudeHostSafetyArgsPinned(t *testing.T) {

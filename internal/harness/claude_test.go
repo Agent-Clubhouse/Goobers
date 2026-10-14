@@ -311,6 +311,7 @@ func TestBuildClaudeArgvResolvesAutomaticModel(t *testing.T) {
 				"Bash(pkill:*)", "Bash(killall:*)",
 				"Bash(/usr/bin/pkill:*)", "Bash(/usr/bin/killall:*)",
 				"Bash(/bin/pkill:*)", "Bash(/bin/killall:*)",
+				"Bash(/usr/bin/env pkill:*)", "Bash(/usr/bin/env killall:*)",
 			}
 			if model == "claude-sonnet-5" {
 				want = append(want, "--model", model)

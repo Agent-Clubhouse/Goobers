@@ -121,14 +121,18 @@ var defaultClaudeExtraArgs = []string{
 // isolated CLAUDE_CONFIG_DIR means no deny rule or hook the operator keeps in
 // ~/.claude can intervene, so the adapter supplies its own.
 //
-// Claude Code matches a Bash rule against the command name as written, after
-// splitting compound commands and stripping wrappers such as env and xargs,
-// so the bare names cover `x; pkill ...`, `env pkill ...` and
-// `... | xargs pkill`; an absolute path is a different name and needs its own
-// rule. This is a guard against a known footgun, not a sandbox: a command
-// built at runtime (sh -c "$cmd", a script file) or `kill $(pgrep ...)` is not
-// expressible as a prefix rule. Only a PID-namespaced or signal-scoped sandbox
-// closes those.
+// Claude Code matches a Bash rule against the command name as written. It
+// splits compound commands and looks through a fixed set of bare wrappers, so
+// the bare-name rules also deny `x; pkill ...`, `x && pkill ...`, `env pkill`,
+// `sudo pkill`, `command`/`nohup`/`timeout`/`nice`/`time`/`exec pkill`,
+// `FOO=1 pkill`, subshells and groups, and `... | xargs pkill`. An absolute
+// path is a different name, so /usr/bin/env and the absolute pkill/killall
+// paths need their own rules. This is a guard against a known footgun, not a
+// sandbox. Shapes that still get through (verified live, Claude Code
+// 2.1.292): any `sh -c`/`bash -c` wrapper, even a literal one; `eval`;
+// `xargs -I{}`; `find -exec`; `$(command -v pkill)`; a relative `./pkill`;
+// absolute paths not listed here; and `kill $(pgrep ...)`. Only a
+// PID-namespaced or signal-scoped sandbox closes those.
 var claudeDeniedNameKillRules = []string{
 	"Bash(pkill:*)",
 	"Bash(killall:*)",
@@ -136,6 +140,8 @@ var claudeDeniedNameKillRules = []string{
 	"Bash(/usr/bin/killall:*)",
 	"Bash(/bin/pkill:*)",
 	"Bash(/bin/killall:*)",
+	"Bash(/usr/bin/env pkill:*)",
+	"Bash(/usr/bin/env killall:*)",
 }
 
 // claudeHostSafetyArgs returns the --disallowedTools flag carrying
