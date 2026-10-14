@@ -1,7 +1,6 @@
 package podauth
 
 import (
-	"crypto/subtle"
 	"encoding/base64"
 	"strings"
 	"time"
@@ -45,7 +44,7 @@ func (s *SignedKey) verifyChildPod(token string) (string, string, error) {
 	return s.verifyContractPod(token, childPodTokenPrefix, childPodMACDomain)
 }
 func (s *SignedKey) verifyContractPod(token, prefix, domain string) (string, string, error) {
-	payload, err := s.verifyCustodyMAC(token, prefix, domain)
+	payload, err := s.verifyMAC(token, prefix, domain)
 	if err != nil {
 		return "", "", err
 	}
@@ -61,40 +60,27 @@ func (s *SignedKey) verifyContractPod(token, prefix, domain string) (string, str
 	return runID, string(digest), err
 }
 
-func (s *SignedKey) verifyCustodyMAC(token, prefix, domain string) (string, error) {
-	rest, ok := strings.CutPrefix(token, prefix)
-	idx := strings.LastIndex(rest, ".")
-	if !ok || idx <= 0 || idx == len(rest)-1 {
-		return "", ErrMalformedToken
-	}
-	payload, mac := rest[:idx], rest[idx+1:]
-	if subtle.ConstantTimeCompare([]byte(mac), []byte(s.sign(domain+payload))) != 1 {
-		return "", ErrUnknownToken
-	}
-	return payload, nil
-}
-
 func (s *SignedKey) parseCustodyPayload(payload string) (string, error) {
 	runID, scopes, expires, err := parseSignedPayload(payload)
 	if err != nil || len(scopes) != 0 {
 		return "", ErrMalformedToken
 	}
-	if !time.Unix(expires, 0).After(s.now()) {
+	if !s.unexpired(expires) {
 		return "", ErrUnknownToken
 	}
 	return runID, nil
 }
 
+type childPodVerifier interface {
+	verifyChildPod(string) (string, string, error)
+}
+
 func (a *Authenticator) authenticateChildPod(token string) (*httpapi.Principal, error) {
-	verifier, ok := a.verifier.(interface {
-		verifyChildPod(string) (string, string, error)
+	return authenticateWith(a, func(v childPodVerifier) (*httpapi.Principal, error) {
+		runID, digest, err := v.verifyChildPod(token)
+		if err != nil {
+			return nil, err
+		}
+		return &httpapi.Principal{Subject: "run:" + runID, Issuer: httpapi.GeneratedChildPrincipalIssuer, GeneratedChild: &httpapi.GeneratedChildPrincipal{ContractDigest: digest}}, nil
 	})
-	if !ok {
-		return nil, ErrUnknownToken
-	}
-	runID, digest, err := verifier.verifyChildPod(token)
-	if err != nil {
-		return nil, err
-	}
-	return &httpapi.Principal{Subject: "run:" + runID, Issuer: httpapi.GeneratedChildPrincipalIssuer, GeneratedChild: &httpapi.GeneratedChildPrincipal{ContractDigest: digest}}, nil
 }
