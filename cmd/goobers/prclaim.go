@@ -9,14 +9,10 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
-// pullRequestClaimPrefix is the ledger's PR claim namespace; the read side
-// (status/portal claim projection) recognises the same prefix, so both
-// reference one definition.
-const pullRequestClaimPrefix = localscheduler.PullRequestItemIDPrefix
+const pullRequestClaimPrefix = claimsclient.PullRequestItemPrefix
 
 func pullRequestClaimKey(number int) string {
 	return pullRequestClaimPrefix + strconv.Itoa(number)

@@ -141,9 +141,20 @@ func InNamespace(entry Entry, gaggle, provider string) bool {
 	return entry.Gaggle == gaggle && entry.Provider == provider
 }
 
-// MergeLockItemPrefix namespaces the synthetic ledger item a merge lease is
-// taken on, so it can never collide with a work item or a PR claim.
-const MergeLockItemPrefix = localscheduler.MergeLockItemIDPrefix
+// Ledger-only claim namespaces, re-exported for the stages that mint them
+// through this client. localscheduler.IsWorkItemClaimKey knows every one, so
+// the status claim projection never resolves them as work items (#6798).
+const (
+	// MergeLockItemPrefix namespaces the synthetic ledger item a merge lease
+	// is taken on, so it can never collide with a work item or a PR claim.
+	MergeLockItemPrefix = localscheduler.MergeLockItemIDPrefix
+	// PullRequestItemPrefix namespaces PR claims ("pr/536").
+	PullRequestItemPrefix = localscheduler.PullRequestItemIDPrefix
+	// AdvisoryPRItemPrefix namespaces advisory PR review claims.
+	AdvisoryPRItemPrefix = localscheduler.AdvisoryPRItemIDPrefix
+	// DecompositionTargetItemPrefix namespaces publish-batch target leases.
+	DecompositionTargetItemPrefix = localscheduler.DecompositionTargetItemIDPrefix
+)
 
 // MergeLockKey is the synthetic claim key merge-pr's exclusive window is
 // leased on over the plane: one lease per repository, held by the run for

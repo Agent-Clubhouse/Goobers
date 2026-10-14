@@ -23,7 +23,6 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -175,7 +174,7 @@ func runAdvisoryPRReset(args []string, stdout, stderr io.Writer) int {
 func advisoryClaimKey(repo providers.RepositoryRef, reviewType string, number int) claimsclient.Key {
 	return claimsclient.Key{
 		Gaggle: providerGaggle(), Provider: string(providers.ProviderGitHub),
-		ExternalID: localscheduler.AdvisoryPRItemIDPrefix + advisoryScope(repo) + "/" + reviewType + "/" + strconv.Itoa(number),
+		ExternalID: claimsclient.AdvisoryPRItemPrefix + advisoryScope(repo) + "/" + reviewType + "/" + strconv.Itoa(number),
 	}
 }
 

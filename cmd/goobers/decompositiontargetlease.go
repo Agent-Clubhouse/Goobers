@@ -7,7 +7,6 @@ import (
 
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -33,7 +32,7 @@ const (
 // autonomous attempt already found technically correct, just without
 // surviving regression coverage for it.
 func decompositionTargetLeaseExternalID(itemID string) string {
-	return localscheduler.DecompositionTargetItemIDPrefix + itemID
+	return claimsclient.DecompositionTargetItemPrefix + itemID
 }
 
 // claimsPlaneTargetLeaser implements decomposition.TargetLeaser on the
