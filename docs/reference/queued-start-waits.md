@@ -45,6 +45,26 @@ and the deadline does not cancel an already running workflow.
 
 Previously accepted receipts retain their original deadline, including an absent
 deadline. Explicit host deadlines, such as file-delegated admission limits, keep
-their existing meaning. This default does not add expiry to scheduler signals,
-schedule demand, direct-engine starts, or children. Those source policies and
-the design's distinct public `expired` state remain separate work.
+their existing meaning. Schedule demand, direct-engine starts, and children
+retain their existing source policies. Their expiry handling and the design's distinct public `expired`
+state remain separate work.
+
+## Signal and backlog admission deadlines
+
+New local signal and authenticated webhook deliveries, plus counted backlog and
+refill workers, capture a seven-day pending limit with their durable source
+acceptance. The original acceptance observation determines every member's
+deadline. A duplicate delivery or exact worker-observation retry retains the
+original recipients, pins, payloads, timestamp, and deadline across daemon reopen.
+A retry cannot renew an expired receipt.
+
+These starts use the same expiry owner as ordinary manual starts: proven-unlaunched
+work becomes a retained terminal rejection, while matching journal evidence wins
+and uncertain execution retains custody. Expiry does not stop an admitted run.
+A later distinct backlog observation is new work, subject to ordinary eligibility
+and pending-capacity limits; it does not rewrite the earlier observation.
+
+Existing accepted source receipts without a deadline keep that contract. Schedule
+fires and unsized schedule demand need a separate policy and inspectable expiry
+transition; this change does not impose signal/backlog limits on those owners,
+child workflows, or future generic event and human-session starts.

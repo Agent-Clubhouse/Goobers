@@ -28,7 +28,7 @@ type Service struct {
 	Now          func() time.Time
 }
 
-// DefaultPendingAge bounds admission for newly accepted ordinary manual starts.
+// DefaultPendingAge bounds admission for new manual, signal, and backlog starts.
 // It does not limit a run after execution has started.
 const DefaultPendingAge = 7 * 24 * time.Hour
 
