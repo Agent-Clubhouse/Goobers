@@ -49,6 +49,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/goobers/goobers/internal/sqlitebusy"
+	"github.com/goobers/goobers/internal/sqliteschema"
 	"github.com/goobers/goobers/internal/sqliteuri"
 )
 
@@ -120,47 +121,7 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) migrateOnce(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
-		return fmt.Errorf("create schema_meta: %w", err)
-	}
-	version, err := schemaVersionTx(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if version > len(migrations) {
-		return fmt.Errorf("store schema version %d is newer than this build supports (%d)",
-			version, len(migrations))
-	}
-	for i := version; i < len(migrations); i++ {
-		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
-			return fmt.Errorf("apply migration %d: %w", i+1, err)
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM schema_meta`); err != nil {
-			return fmt.Errorf("reset schema_meta after migration %d: %w", i+1, err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
-			return fmt.Errorf("record schema version %d: %w", i+1, err)
-		}
-	}
-	return tx.Commit()
-}
-
-func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
-	var version int
-	err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read schema version: %w", err)
-	}
-	return version, nil
+	return sqliteschema.Migrate(ctx, s.db, "intake", migrations)
 }
 
 // Path reports the file backing this store.
