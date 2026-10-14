@@ -309,6 +309,8 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"}},
 		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeShadow, Version: "v1"}, wantErr: `backprop.enabled=true contradicts backprop.mode="shadow"`},
 		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeActive, Version: "v1"}},
+		// The shape gaggle-default materialization pins (#7120).
+		{config: apiv1.ResolveBackprop(nil, &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive, Granularity: apiv1.BackpropGranularityStage})},
 		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}},
 		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeOff, Version: "v1"}, wantErr: "contradicts backprop.mode"},
 		{config: apiv1.BackpropConfig{Mode: "observe", Version: "v1"}, wantErr: `backprop.mode "observe" must be off, shadow, or active`},

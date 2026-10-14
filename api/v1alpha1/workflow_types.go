@@ -1115,18 +1115,42 @@ func (c *BackpropConfig) EffectiveMode() BackpropMode {
 	return BackpropModeOff
 }
 
-// ResolveBackpropMode applies Backprop precedence for one workflow: an
-// explicit workflow mode (including off, which opts out of any override),
-// then legacy enabled=true (active), then the gaggle override, then off. The
-// gaggle override can only resolve to shadow.
-func ResolveBackpropMode(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropMode {
+// DefaultBackpropVersion is the attribution contract a workflow inherits from
+// gaggle defaults that do not pin a version.
+const DefaultBackpropVersion = "v1"
+
+// ResolveBackprop applies Backprop precedence for one workflow and returns
+// the effective config with Mode always set. A workflow that declares its own
+// mode (including off, the explicit opt-out) or legacy enabled=true keeps its
+// own mode and version and inherits only an omitted granularity. Otherwise the
+// gaggle mode applies, and the workflow's own version and granularity win over
+// the gaggle's (version default v1). With neither, the mode is off.
+func ResolveBackprop(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropConfig {
 	if workflow != nil && (workflow.Mode != "" || workflow.Enabled) {
-		return workflow.EffectiveMode()
+		resolved := *workflow
+		resolved.Mode = workflow.EffectiveMode()
+		if resolved.Version == "" {
+			resolved.Version = gaggle.version()
+		}
+		if resolved.Granularity == "" && gaggle != nil {
+			resolved.Granularity = gaggle.Granularity
+		}
+		return resolved
 	}
-	if gaggle != nil && gaggle.Mode == BackpropModeShadow {
-		return BackpropModeShadow
+	if gaggle == nil || (gaggle.Mode != BackpropModeShadow && gaggle.Mode != BackpropModeActive) {
+		return BackpropConfig{Mode: BackpropModeOff}
 	}
-	return BackpropModeOff
+	resolved := BackpropConfig{
+		Enabled: gaggle.Mode == BackpropModeActive, Mode: gaggle.Mode,
+		Version: gaggle.version(), Granularity: gaggle.Granularity,
+	}
+	if workflow != nil && workflow.Version != "" {
+		resolved.Version = workflow.Version
+	}
+	if workflow != nil && workflow.Granularity != "" {
+		resolved.Granularity = workflow.Granularity
+	}
+	return resolved
 }
 
 // BranchFailurePolicy declares what a parallel does when one of its branches

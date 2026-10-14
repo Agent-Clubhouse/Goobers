@@ -887,23 +887,24 @@ func (s *Local) workflowSummary(
 		Owners:      owners,
 		StageCount:  len(graph.Nodes),
 		Definition:  WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
-		Backprop:    WorkflowBackpropFor(def.Spec.Backprop, gaggleBackprop(inventory, def.Spec.Gaggle)),
+		Backprop:    WorkflowBackpropFor(def.Spec.Backprop, instance.InheritedGaggleBackprop(def, gaggleBackprop(inventory, def.Spec.Gaggle))),
 		Warnings:    workflowWarnings(inventory, def),
 	}
 }
 
 // WorkflowBackpropFor projects a workflow's Backprop config, resolved against
-// its gaggle's override, onto the read surface. A workflow with neither
-// reports no mode.
-func WorkflowBackpropFor(config *apiv1.BackpropConfig, override *apiv1.GaggleBackprop) WorkflowBackprop {
-	mode := apiv1.ResolveBackpropMode(config, override)
-	if config == nil {
-		if mode == apiv1.BackpropModeOff {
-			return WorkflowBackprop{}
-		}
-		return WorkflowBackprop{Mode: string(mode), Version: "v1"}
+// the gaggle defaults it inherits, onto the read surface. A workflow with
+// neither reports no mode.
+func WorkflowBackpropFor(config *apiv1.BackpropConfig, inherited *apiv1.GaggleBackprop) WorkflowBackprop {
+	resolved := apiv1.ResolveBackprop(config, inherited)
+	if config == nil && resolved.Mode == apiv1.BackpropModeOff {
+		return WorkflowBackprop{}
 	}
-	return WorkflowBackprop{Enabled: mode == apiv1.BackpropModeActive, Mode: string(mode), Version: config.Version}
+	version := resolved.Version
+	if version == "" && config != nil {
+		version = config.Version
+	}
+	return WorkflowBackprop{Enabled: resolved.Mode == apiv1.BackpropModeActive, Mode: string(resolved.Mode), Version: version}
 }
 
 func gaggleBackprop(inventory *inventoryProjection, name string) *apiv1.GaggleBackprop {

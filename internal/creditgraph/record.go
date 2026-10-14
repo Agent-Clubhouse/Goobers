@@ -477,8 +477,8 @@ func spanDigest(nodeID string) string {
 	return nodeID[at+1 : hash]
 }
 
-// resolvedBackprop applies apiv1.ResolveBackpropMode to the run's trusted
-// pinned workflow and an optional gaggle override. The returned config's Mode
+// resolvedBackprop applies apiv1.ResolveBackprop to the run's trusted
+// pinned workflow and an optional gaggle default. The returned config's Mode
 // is the resolved mode.
 func resolvedBackprop(
 	reader *journal.Reader,
@@ -506,23 +506,12 @@ func resolvedBackprop(
 	if err := json.Unmarshal(data, &definition); err != nil {
 		return apiv1.BackpropConfig{}, false, fmt.Errorf("decode pinned workflow definition: %w", err)
 	}
-	mode := apiv1.ResolveBackpropMode(definition.Spec.Backprop, override)
-	if mode != apiv1.BackpropModeActive && mode != apiv1.BackpropModeShadow {
+	config := apiv1.ResolveBackprop(definition.Spec.Backprop, override)
+	if config.Mode != apiv1.BackpropModeActive && config.Mode != apiv1.BackpropModeShadow {
 		return apiv1.BackpropConfig{}, false, nil
-	}
-	config := apiv1.BackpropConfig{Mode: mode, Version: defaultBackpropVersion}
-	if definition.Spec.Backprop != nil {
-		config.Granularity = definition.Spec.Backprop.Granularity
-		if definition.Spec.Backprop.Version != "" {
-			config.Version = definition.Spec.Backprop.Version
-		}
 	}
 	return config, true, nil
 }
-
-// defaultBackpropVersion is the contract a gaggle override observes a workflow
-// under when the workflow declares no Backprop config of its own.
-const defaultBackpropVersion = "v1"
 
 // RunEnrolled reports whether a run's trusted pinned workflow resolves to
 // active Backprop without performing attribution. Shadow runs are not

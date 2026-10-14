@@ -89,6 +89,8 @@ func TestObserveShadowRunHonorsGaggleOverridePrecedence(t *testing.T) {
 		{name: "active is not shadowed", backprop: map[string]any{"mode": "active", "version": "v1"}, override: shadowOverride},
 		{name: "legacy enabled is not shadowed", backprop: map[string]any{"enabled": true, "version": "v1"}, override: shadowOverride},
 		{name: "workflow shadow", backprop: map[string]any{"mode": "shadow", "version": "v1"}, wantObserved: true},
+		{name: "gaggle active default is not shadow", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive}},
+		{name: "workflow shadow beats gaggle active", backprop: map[string]any{"mode": "shadow", "version": "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive}, wantObserved: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			run, runDir := recordTestRun(t, test.backprop)

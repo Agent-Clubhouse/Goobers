@@ -101,8 +101,7 @@ func childStageCatalog(cfg *instance.Config, source *instance.ConfigSet, parent 
 	if err != nil {
 		return childworkflow.AdmissionContext{}, nil, err
 	}
-	instance.ApplyGaggleCICommand(selected)
-	instance.ApplyGaggleOutboxMirror(selected)
+	instance.ApplyGaggleDefaults(selected)
 	input, err := childworkflow.ConfiguredAdmission(parent, backend, cfg, selected, admitChildValidationGoobers)
 	if err != nil {
 		return childworkflow.AdmissionContext{}, nil, err

@@ -22,12 +22,15 @@ back runs. The contract and its limits are specified in the
 
 Backprop is a **preview** feature (`workflow.spec.backprop.enabled`,
 `workflow.spec.backprop.mode`, `workflow.spec.backprop.version`,
-`workflow.spec.backprop.granularity`, and `gaggle.spec.backprop.mode` in the
+`workflow.spec.backprop.granularity`, `gaggle.spec.backprop.mode`,
+`gaggle.spec.backprop.version`, and `gaggle.spec.backprop.granularity` in the
 [feature matrix](../feature-matrix.md)).
 Today:
 
-- Active enrollment is **per workflow** only. A gaggle can observe its
-  workflows in shadow mode, but it cannot enroll them.
+- A gaggle can set Backprop defaults that its workflows inherit, including
+  active enrollment (see
+  [Set Backprop defaults for a whole gaggle](#set-backprop-defaults-for-a-whole-gaggle)).
+  Ground-truth label sources are still per run; they are not inherited.
 - Attribution is computed **once, at run end** by default. Opting into
   `granularity: stage` also writes read-only per-stage checkpoints (see
   [Per-stage checkpoints](#per-stage-checkpoints)) for active runs only; shadow
@@ -75,8 +78,10 @@ spec:
 - `enabled: true` is the same as `mode: active`. `enabled: true` is rejected
   alongside `mode: off` or `mode: shadow`. To try Backprop without enrolling,
   see [Observe a workflow in shadow mode](#observe-a-workflow-in-shadow-mode).
-- Omitting `backprop`, or setting `enabled: false` or `mode: off`, performs no
-  attribution work.
+- `mode: off` performs no attribution work. Omitting `backprop`, or setting
+  `enabled: false` without a mode, performs none unless the workflow's gaggle
+  sets a default (see
+  [Set Backprop defaults for a whole gaggle](#set-backprop-defaults-for-a-whole-gaggle)).
 - The preview acknowledgement belongs on each Workflow. A Manifest-level
   annotation is deprecated and does not authorize anything.
 - A workflow pinned to an older `dslVersion` that declares `backprop` fails
@@ -119,10 +124,10 @@ report. The fault audit, finding filing, cohorts, and `goobers trace` read only
 `goobers status` prints
 `backprop: shadow (v1)` and the portal workflow page shows **Shadow (v1)**.
 
-### Observe a whole gaggle without editing its workflows
+### Set Backprop defaults for a whole gaggle
 
-To observe existing workflows without editing or redeploying them, set the
-shadow override on their Gaggle:
+To enroll or observe existing workflows without editing each one, set
+Backprop defaults on their Gaggle:
 
 ```yaml
 apiVersion: goobers.dev/v1alpha1
@@ -131,21 +136,37 @@ metadata:
   name: goobers
 spec:
   backprop:
-    mode: shadow   # off | shadow
+    mode: active        # off | shadow | active
+    version: v1         # optional; defaults to v1
+    granularity: stage  # optional; run | stage
 ```
 
-Each workflow's effective mode is resolved in this order:
+Each workflow's effective config is resolved in this order:
 
 1. The workflow's own `backprop.mode`, if set. `mode: off` opts a workflow out
-   of its gaggle's override.
+   of its gaggle's defaults; `mode: shadow` keeps it in shadow under an active
+   gaggle.
 2. The workflow's `backprop.enabled: true` (active).
 3. The gaggle's `backprop.mode`.
 4. Otherwise, off.
 
-The override can only produce shadow mode, never active, so it never files
-findings. Override-observed runs write nothing at run end. Their analysis is
-computed from the run journal when you request the comparison report, and
-`goobers status` and the portal show them as `shadow (v1)`.
+`backprop.enabled: false` without a `mode` does not opt out; it inherits the
+gaggle default. A workflow that keeps its own mode still inherits the gaggle's
+`granularity` when it does not set one, and the gaggle's `version` when it
+does not pin one.
+
+An **active** gaggle default reaches only workflows that can compile Backprop:
+`dslVersion` `"3.0"` or later and the workflow's own
+`goobers.dev/allow-preview-features: "true"` annotation. Other workflows are
+left as they are and `goobers status` shows them as off. For an eligible
+workflow, the inherited config is written into the workflow definition the
+daemon loads, so the definition each run pins records exactly what that run
+was attributed under. Only runs that start after the change are attributed.
+
+A **shadow** gaggle default reaches every workflow, whatever its DSL version.
+It is resolved when you request the comparison report, writes nothing at run
+end, and never files findings. `goobers status` and the portal show
+override-observed workflows as `shadow (v1)`.
 
 ### Compare shadow findings with what happened
 
@@ -336,6 +357,41 @@ Each finding carries a stable `id` (`backprop-` followed by 20 hex characters),
 and artifact `evidence` links, `counterEvidence`, `alternativeDomains`,
 `recommendedOwner`, `recommendedAction`, and `verification`. The same failure
 signature always produces the same finding ID across runs and passes.
+
+## Read a gaggle-wide report
+
+`goobers telemetry gaggle` summarizes one gaggle's active Backprop records
+across all its workflows:
+
+```sh
+goobers telemetry gaggle --gaggle=goobers ./instance
+goobers telemetry gaggle --gaggle=goobers --json --since=2026-10-01T00:00:00Z ./instance
+```
+
+The window covers runs started in `[--since, --until)`. `--until` defaults to
+now and `--since` to seven days earlier. The report includes:
+
+- **Per-workflow credit and blame share.** Each complete record counts as one
+  unit: credit when its outcome was positive, blame otherwise. Each share is
+  the workflow's units divided by the gaggle's total. Insufficient-evidence and
+  failed records are counted but carry no share.
+- **Per-stage credit and blame share.** Each record's stage contributions are
+  normalized to one unit before pooling, so long runs do not outweigh short
+  ones.
+- **Top recurring findings.** Up to ten cause classes that recurred at the
+  same workflow stage in at least two runs.
+- **Trend.** For each workflow, runs, failure rate, and blame share compared
+  with the previous window of the same length.
+- **Cross-workflow links.** An edge from an earlier run to a later run, built
+  only from an identifier both runs recorded: the same external reference
+  (provider, kind, and ID; URLs are never compared) touched by runs of
+  different workflows, or a recorded run continuation. Each workflow's
+  `downstreamFailures` counts failed runs of other workflows linked after its
+  runs. Nothing is inferred from timing or similarity.
+
+The report is read-only, never reads shadow records, and caps each window at
+500 records. When the cap or scan budget is reached, `truncated` is set and the
+text output prints a note.
 
 ## Record a fix and verify it
 

@@ -544,8 +544,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		return nil, err
 	}
 	// Resolve gaggle CI commands on every compilation path.
-	instance.ApplyGaggleCICommand(input.Definitions)
-	instance.ApplyGaggleOutboxMirror(input.Definitions)
+	instance.ApplyGaggleDefaults(input.Definitions)
 	goobers := goobersByName(input.Definitions)
 	if err := validateStoredCopilotAuthBoundaries(input.Config, input.Definitions, goobers); err != nil {
 		return nil, err

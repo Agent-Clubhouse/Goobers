@@ -75,7 +75,17 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.backprop.granularity",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backprop.version",
       "stability": "ga",
       "sinceVersion": "dev"
     },

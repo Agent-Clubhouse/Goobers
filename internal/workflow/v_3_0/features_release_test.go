@@ -50,7 +50,9 @@ var binaryLayerFeatureIDs = map[FeatureID]struct{}{
 	"workflow.spec.backprop.enabled":     {},
 	"workflow.spec.backprop.granularity": {},
 	"workflow.spec.backprop.mode":        {},
+	"gaggle.spec.backprop.granularity":   {},
 	"gaggle.spec.backprop.mode":          {},
+	"gaggle.spec.backprop.version":       {},
 	"workflow.spec.backprop.version":     {},
 }
 
