@@ -349,6 +349,13 @@ shows as "Attribution accuracy". Only fileable findings start the
 `telemetry-query` report cooldown. See
 [Attribution accuracy eval](../design/credit-graph.md#attribution-accuracy-eval).
 
+To measure merge-review itself, build an R-SZZ dataset of past bug fixes and
+replay the reviewer on the commits that introduced them
+(`go run ./test/reviewereval build`, then `replay` and `compare`). Publishing
+the eval split's result (`compare -publish=./instance` or `publish`) makes the
+stats API return its recall, precision, and cost per bug as `reviewerEval`. See
+[Reviewer recall eval](../design/credit-graph.md#reviewer-recall-eval-r-szz).
+
 ## Record a fix and verify it
 
 When you deploy a fix for a finding, record it:

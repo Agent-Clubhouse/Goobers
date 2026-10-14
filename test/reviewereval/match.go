@@ -1,0 +1,201 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"path"
+	"regexp"
+	"strconv"
+	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+)
+
+const (
+	// lineTolerance is how many lines a finding's location may sit from a
+	// bug line and still overlap it.
+	lineTolerance = 3
+
+	matchLineOverlap = "line-overlap"
+	matchJudge       = "judge"
+
+	// classUnclassified groups findings that carry no finding class.
+	classUnclassified = "unclassified"
+)
+
+// Case result statuses.
+const (
+	statusReviewed        = "reviewed"
+	statusFailed          = "failed"
+	statusBudgetExhausted = "budget-exhausted"
+)
+
+// judgeRequest asks a semantic judge whether one finding describes the bug a
+// later fix addressed.
+type judgeRequest struct {
+	CaseID            string        `json:"caseId"`
+	FixCommit         string        `json:"fixCommit"`
+	FixSubject        string        `json:"fixSubject"`
+	IntroducingCommit string        `json:"introducingCommit"`
+	BugLines          []fileLines   `json:"bugLines"`
+	Finding           apiv1.Finding `json:"finding"`
+}
+
+type judgeDecision struct {
+	Match     bool   `json:"match"`
+	Rationale string `json:"rationale"`
+}
+
+// judge is an optional semantic matcher, consulted only for findings whose
+// location does not overlap a bug line. Every decision is recorded in the
+// report for audit.
+type judge interface {
+	Name() string
+	Judge(ctx context.Context, request judgeRequest) (judgeDecision, error)
+}
+
+// commandJudge is an operator-supplied adapter command: it receives a
+// judgeRequest as JSON on stdin and prints a judgeDecision as JSON.
+type commandJudge struct {
+	argv []string
+}
+
+func (judge commandJudge) Name() string {
+	return "command:" + path.Base(strings.ReplaceAll(judge.argv[0], `\`, "/"))
+}
+
+func (judge commandJudge) Judge(ctx context.Context, request judgeRequest) (judgeDecision, error) {
+	var decision judgeDecision
+	err := runAdapter(ctx, judge.argv, "", request, &decision)
+	return decision, err
+}
+
+type findingResult struct {
+	Class             string `json:"class"`
+	Severity          string `json:"severity"`
+	Location          string `json:"location,omitempty"`
+	LearningSignature string `json:"learningSignature,omitempty"`
+	Match             string `json:"match,omitempty"`
+}
+
+type judgeRecord struct {
+	Finding   int    `json:"finding"`
+	Judge     string `json:"judge"`
+	Match     bool   `json:"match"`
+	Rationale string `json:"rationale"`
+}
+
+// caseResult is one sampled case's outcome: the verdict the reviewer
+// returned, how each finding was scored, and whether the bug was caught.
+type caseResult struct {
+	CaseID            string          `json:"caseId"`
+	FixCommit         string          `json:"fixCommit"`
+	IntroducingCommit string          `json:"introducingCommit"`
+	Status            string          `json:"status"`
+	Error             string          `json:"error,omitempty"`
+	Verdict           *apiv1.Verdict  `json:"verdict,omitempty"`
+	Findings          []findingResult `json:"findings,omitempty"`
+	Caught            bool            `json:"caught"`
+	CostUSD           float64         `json:"costUsd"`
+	JudgeDecisions    []judgeRecord   `json:"judgeDecisions,omitempty"`
+}
+
+// matcher decides which findings match a case's bug: by location overlap
+// with the lines the fix touched, then, if configured, by a semantic judge.
+type matcher struct {
+	judge judge
+}
+
+func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewResult) (caseResult, error) {
+	verdict := reviewed.Verdict
+	result := caseResult{
+		CaseID: item.ID, FixCommit: item.FixCommit, IntroducingCommit: item.IntroducingCommit,
+		Status: statusReviewed, Verdict: &verdict, Findings: []findingResult{}, CostUSD: round4(reviewed.CostUSD),
+	}
+	for index, finding := range verdict.Findings {
+		scored := findingResult{
+			Class: string(finding.Class), Severity: string(finding.Severity), Location: finding.Location,
+			LearningSignature: finding.LearningSignature,
+		}
+		if scored.Class == "" {
+			scored.Class = classUnclassified
+		}
+		switch {
+		case overlapsBug(finding.Location, item.BugLines):
+			scored.Match = matchLineOverlap
+		case m.judge != nil:
+			decision, err := m.judge.Judge(ctx, judgeRequest{
+				CaseID: item.ID, FixCommit: item.FixCommit, FixSubject: item.FixSubject,
+				IntroducingCommit: item.IntroducingCommit, BugLines: item.BugLines, Finding: finding,
+			})
+			if err != nil {
+				return caseResult{}, fmt.Errorf("judge finding %d: %w", index, err)
+			}
+			result.JudgeDecisions = append(result.JudgeDecisions, judgeRecord{
+				Finding: index, Judge: m.judge.Name(), Match: decision.Match, Rationale: decision.Rationale,
+			})
+			if decision.Match {
+				scored.Match = matchJudge
+			}
+		}
+		result.Caught = result.Caught || scored.Match != ""
+		result.Findings = append(result.Findings, scored)
+	}
+	return result, nil
+}
+
+var (
+	colonLocation  = regexp.MustCompile(`^(.+?):(\d+)(?:[-:](\d+))?$`)
+	anchorLocation = regexp.MustCompile(`^(.+?)#L(\d+)(?:-L?(\d+))?$`)
+)
+
+// parseLocation reads a finding location such as "path", "path:42",
+// "path:42-50", or "path#L42-L50". Start is 0 when no line is given.
+func parseLocation(location string) (file string, start, end int) {
+	location = strings.TrimSpace(location)
+	if cut := strings.IndexAny(location, " \t"); cut >= 0 {
+		location = location[:cut]
+	}
+	match := anchorLocation.FindStringSubmatch(location)
+	if match == nil {
+		match = colonLocation.FindStringSubmatch(location)
+	}
+	if match == nil {
+		return normalizePath(location), 0, 0
+	}
+	start, _ = strconv.Atoi(match[2])
+	end, _ = strconv.Atoi(match[3])
+	if end < start {
+		end = start
+	}
+	return normalizePath(match[1]), start, end
+}
+
+func normalizePath(file string) string {
+	file = strings.ReplaceAll(file, `\`, "/")
+	for _, prefix := range []string{"./", "a/", "b/"} {
+		file = strings.TrimPrefix(file, prefix)
+	}
+	return file
+}
+
+// overlapsBug reports whether a location names a bug file and a line within
+// lineTolerance of one of its bug lines. A location without a line never
+// overlaps: naming the file alone is left to the judge.
+func overlapsBug(location string, bugs []fileLines) bool {
+	file, start, end := parseLocation(location)
+	if start == 0 {
+		return false
+	}
+	for _, bug := range bugs {
+		if normalizePath(bug.Path) != file {
+			continue
+		}
+		for _, line := range bug.Lines {
+			if line >= start-lineTolerance && line <= end+lineTolerance {
+				return true
+			}
+		}
+	}
+	return false
+}

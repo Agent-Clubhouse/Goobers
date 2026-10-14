@@ -114,10 +114,14 @@ type TelemetryStatsResult struct {
 	// AttributionEval is the instance's published attribution accuracy eval,
 	// whose calibration sets FaultAudit's filing threshold; nil when none has
 	// been published.
-	AttributionEval  *creditgraph.AttributionEvalSummary `json:"attributionEval,omitempty"`
-	CausalCredit     []readmodel.CausalNodeCredit        `json:"causalCredit"`
-	GraphAnalytics   *readmodel.GraphAnalytics           `json:"graphAnalytics,omitempty"`
-	PromotionSignals []PromotionSignal                   `json:"promotionSignals,omitempty"`
+	AttributionEval *creditgraph.AttributionEvalSummary `json:"attributionEval,omitempty"`
+	// ReviewerEval is the instance's published merge-review recall and
+	// precision eval on bugs traced to their offending change (#7112); nil
+	// when none has been published.
+	ReviewerEval     *creditgraph.ReviewerEvalSummary `json:"reviewerEval,omitempty"`
+	CausalCredit     []readmodel.CausalNodeCredit     `json:"causalCredit"`
+	GraphAnalytics   *readmodel.GraphAnalytics        `json:"graphAnalytics,omitempty"`
+	PromotionSignals []PromotionSignal                `json:"promotionSignals,omitempty"`
 	// PromotionCandidates is the machine-filtered input for automated
 	// promotion. Correlational fallbacks remain visible in PromotionSignals
 	// but never cross this boundary.
@@ -1091,6 +1095,9 @@ func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req Telemetr
 		return err
 	}
 	result.AttributionEval = summary
+	if result.ReviewerEval, err = ReadReviewerEval(s.sources.Layout.Root); err != nil {
+		return err
+	}
 	audit, err := PreviewStoredFaultAudit(ctx, s.sources.Layout.Root, s.sources.ReadModel, query, creditgraph.FaultAuditConfig{
 		Filing: creditgraph.DeriveFilingThreshold(summary),
 	})
