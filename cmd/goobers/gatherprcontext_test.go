@@ -691,9 +691,9 @@ func TestHandleGatherPRContextUnchangedDigestReparkDoesNotSpendGeneration(t *tes
 
 	t.Setenv("GOOBERS_RUN_ID", "run-4174-repark")
 	t.Chdir(checkout)
-	handled, code := handleGatherPRContextUnchangedDigest(instanceRoot, adapter, t.Context(), pr, nil, os.Stdout, os.Stderr)
-	if !handled || code != 0 {
-		t.Fatalf("handled = %v, code = %d, want a handled repark", handled, code)
+	skip, code := handleGatherPRContextUnchangedDigest(instanceRoot, adapter, t.Context(), pr, nil, os.Stdout, os.Stderr)
+	if skip == "" || code != 0 {
+		t.Fatalf("skip = %q, code = %d, want a repark that skips the PR this cycle", skip, code)
 	}
 	if parkedBody == "" {
 		t.Fatal("park was never called — want a re-park on the second unchanged-digest tick")
@@ -983,9 +983,9 @@ func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
 }
 
 // TestSelectRemediationPRPriority is #596's headline acceptance:
-// selectRemediationCandidates orders needs-remediation before failing CI and
-// returns both strong tiers so concurrent runs can claim through the whole
-// eligible set. It only falls back to a crowned lander behind its base when
+// selectRemediationCandidates returns every PR with either strong signal
+// (needs-remediation or failing CI), oldest first across both (#6482), so
+// concurrent runs can claim through the whole eligible set. It only falls back to a crowned lander behind its base when
 // neither stronger signal is present anywhere in the PR set.
 func TestSelectRemediationPRPriority(t *testing.T) {
 	tests := []struct {
@@ -1023,14 +1023,17 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 			wantPriority: remediationPriorityFailingCI,
 		},
 		{
-			name: "needs remediation precedes failing CI and behind base",
+			// #6482: the two strong signals share one oldest-first order —
+			// an older failing-CI PR is not starved behind a newer
+			// needs-remediation PR — and both still precede behind-base.
+			name: "needs remediation and failing CI share FIFO order ahead of behind base",
 			prs: []providers.PullRequestSummary{
 				{Number: 10},
 				{Number: 20, CheckState: providers.CheckStateFailing},
 				{Number: 30, Labels: []string{needsRemediationLabel}},
 			},
 			behind:       map[int]bool{10: true},
-			wantNumbers:  []int{30, 20},
+			wantNumbers:  []int{20, 30},
 			wantPriority: remediationPriorityNeedsRemediation,
 		},
 		{
