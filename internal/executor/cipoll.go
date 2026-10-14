@@ -580,6 +580,11 @@ func addCIPollCarry(outcome apiv1.ResultEnvelope, cfg CIPollConfig) apiv1.Result
 // registered its checks yet. Holding for one poll interval lets the next poll
 // re-read the PR head: a moved head or a newer run reports its own state, and
 // a cancellation that persists on an unchanged head still fails.
+//
+// Since #6817 the shipped providers report a check that ended without a
+// verdict (cancelled included) as pending, not failing, so ci-poll waits on
+// it like any running check. This guard remains for a poller that still
+// reports a cancelled check as failing.
 type cancelledFailureGuard struct {
 	held bool
 	head string

@@ -135,6 +135,15 @@ Reads the `ciStatus` output emitted by a `ci-poll` stage.
 **Outcomes:** `pass`, `fail`, `timeout`. A `ciStatus` value of `timeout`
 always produces the distinct `timeout` outcome.
 
+A check that ended without a verdict on the code counts as `pending`, never
+`failing`: a GitHub check or workflow run concluded `cancelled`,
+`startup_failure` or `stale`, or an Azure DevOps build policy rejected for a
+build whose result is `canceled`. A CI-provider outage that cancels jobs
+before they run therefore never routes to CI remediation; `ci-poll` keeps
+waiting for a rerun or a new push, and no merge gate accepts it (#6817). On
+the GitHub `actions/runs` fallback a cancelled workflow run still fails when
+one of its jobs failed.
+
 ### `land-outcome`
 
 Reads the `landOutcome` output emitted by `merge-pr`.

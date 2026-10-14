@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1355,9 +1356,26 @@ func TestGitHubProviderCIFailuresIncludesAnnotationsWithoutFetchingLogs(t *testi
 	}
 }
 
-func TestNormalizeCheckRunStateStartupFailure(t *testing.T) {
-	if got := normalizeCheckRunState("completed", "startup_failure"); got != CheckStateFailing {
-		t.Fatalf("normalizeCheckRunState() = %q, want %q", got, CheckStateFailing)
+// TestNormalizeCheckRunStateNoVerdictIsPending pins #6817: a run that ended
+// without judging the code (cancelled, never started, stale) reads as
+// pending, so it never drives failing-CI remediation and never passes a merge
+// gate, while a real failure still fails.
+func TestNormalizeCheckRunStateNoVerdictIsPending(t *testing.T) {
+	for conclusion, want := range map[string]CheckState{
+		"cancelled":       CheckStatePending,
+		"CANCELLED":       CheckStatePending,
+		"startup_failure": CheckStatePending,
+		"stale":           CheckStatePending,
+		"failure":         CheckStateFailing,
+		"timed_out":       CheckStateFailing,
+		"action_required": CheckStateFailing,
+		"success":         CheckStatePassing,
+		"neutral":         CheckStatePassing,
+		"skipped":         CheckStatePassing,
+	} {
+		if got := normalizeCheckRunState("completed", conclusion); got != want {
+			t.Errorf("normalizeCheckRunState(completed, %q) = %q, want %q", conclusion, got, want)
+		}
 	}
 }
 
@@ -1520,6 +1538,8 @@ func TestGitHubProviderCancelPendingChecksStopsWhenHeadMoved(t *testing.T) {
 // provider-level acceptance for the mechanical-retry rerun call: only the
 // actions runs at headSHA whose conclusion is a genuine failure get a
 // rerun-failed-jobs POST — a passing, pending, or unrelated-head run must not.
+// A run that ended without a verdict (cancelled, #6817) reads as pending, not
+// failing, but a rerun is what it waits for, so it is rerun too.
 func TestGitHubProviderRerunFailedChecksOnlyRerunsFailedRuns(t *testing.T) {
 	var reran []string
 	mux := http.NewServeMux()
@@ -1533,13 +1553,16 @@ func TestGitHubProviderRerunFailedChecksOnlyRerunsFailedRuns(t *testing.T) {
 			{"id": 202, "status": "completed", "conclusion": "success", "head_sha": "reviewed"},
 			{"id": 203, "status": "in_progress", "head_sha": "reviewed"},
 			{"id": 204, "status": "completed", "conclusion": "failure", "head_sha": "newer"},
+			{"id": 205, "status": "completed", "conclusion": "cancelled", "head_sha": "reviewed"},
 		}})
 	})
-	mux.HandleFunc("/repos/acme/app/actions/runs/201/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		reran = append(reran, "201")
-		w.WriteHeader(http.StatusCreated)
-	})
+	for _, id := range []string{"201", "205"} {
+		mux.HandleFunc("/repos/acme/app/actions/runs/"+id+"/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) {
+			assertMethod(t, r, http.MethodPost)
+			reran = append(reran, id)
+			w.WriteHeader(http.StatusCreated)
+		})
+	}
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -1548,8 +1571,8 @@ func TestGitHubProviderRerunFailedChecksOnlyRerunsFailedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RerunFailedChecks: %v", err)
 	}
-	if !reflect.DeepEqual(reran, []string{"201"}) {
-		t.Fatalf("rerun requests = %v, want exactly [201]", reran)
+	if !reflect.DeepEqual(reran, []string{"201", "205"}) {
+		t.Fatalf("rerun requests = %v, want exactly [201 205]", reran)
 	}
 }
 
@@ -1998,35 +2021,97 @@ func TestGitHubProviderRefCheckState(t *testing.T) {
 	}
 }
 
-func TestGitHubProviderRefCheckStatesUsesOneGraphQLRequest(t *testing.T) {
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if r.URL.Path != "/graphql" {
-			t.Fatalf("request path = %q, want /graphql", r.URL.Path)
+// refCheckStatesServer answers one GraphQL rollup request with rollups (keyed
+// by alias) and the REST check reads of each ref in checkRuns. It counts
+// requests per path.
+func refCheckStatesServer(t *testing.T, rollups map[string]interface{}, checkRuns map[string][]map[string]interface{}) (*httptest.Server, map[string]int) {
+	t.Helper()
+	var mu sync.Mutex
+	calls := map[string]int{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls["/graphql"]++
+		mu.Unlock()
+		writeJSON(t, w, map[string]interface{}{"data": map[string]interface{}{"repository": rollups}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/{ref}/status", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls[r.URL.Path]++
+		mu.Unlock()
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/{ref}/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls[r.URL.Path]++
+		mu.Unlock()
+		runs, ok := checkRuns[r.PathValue("ref")]
+		if !ok {
+			t.Errorf("unexpected check-runs read for %s", r.PathValue("ref"))
 		}
-		writeJSON(t, w, map[string]interface{}{
-			"data": map[string]interface{}{
-				"repository": map[string]interface{}{
-					"r0": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "SUCCESS"}},
-					"r1": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "FAILURE"}},
-					"r2": map[string]interface{}{"statusCheckRollup": nil},
-				},
-			},
-		})
-	}))
-	defer server.Close()
+		writeJSON(t, w, map[string]interface{}{"check_runs": runs})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server, calls
+}
+
+func TestGitHubProviderRefCheckStatesUsesOneGraphQLRequest(t *testing.T) {
+	server, calls := refCheckStatesServer(t, map[string]interface{}{
+		"r0": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "SUCCESS"}},
+		"r1": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "FAILURE"}},
+		"r2": map[string]interface{}{"statusCheckRollup": nil},
+		"r3": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "PENDING"}},
+	}, map[string][]map[string]interface{}{
+		"bbb222": {checkRunFixture(1, "test", actionsAppID, "completed", "failure")},
+	})
 
 	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
-	states, err := provider.RefCheckStates(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, []string{"aaa111", "bbb222", "ccc333"})
+	states, err := provider.RefCheckStates(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, []string{"aaa111", "bbb222", "ccc333", "ddd444"})
 	if err != nil {
 		t.Fatalf("RefCheckStates: %v", err)
 	}
-	if calls != 1 {
-		t.Fatalf("GraphQL calls = %d, want 1", calls)
+	if calls["/graphql"] != 1 {
+		t.Fatalf("GraphQL calls = %d, want 1", calls["/graphql"])
 	}
-	if states["aaa111"] != CheckStatePassing || states["bbb222"] != CheckStateFailing || states["ccc333"] != CheckStatePassing {
-		t.Fatalf("states = %v, want passing, failing, passing (no rollup is unblocked)", states)
+	// Only the failing rollup is re-read (#6817); green, absent and pending
+	// rollups stay one request.
+	want := map[string]int{"/graphql": 1, "/repos/acme/app/commits/bbb222/status": 1, "/repos/acme/app/commits/bbb222/check-runs": 1}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("requests = %v, want %v", calls, want)
+	}
+	wantStates := map[string]CheckState{"aaa111": CheckStatePassing, "bbb222": CheckStateFailing, "ccc333": CheckStatePassing, "ddd444": CheckStatePending}
+	if !reflect.DeepEqual(states, wantStates) {
+		t.Fatalf("states = %v, want %v (no rollup is unblocked)", states, wantStates)
+	}
+}
+
+// TestGitHubProviderRefCheckStatesOutageRollupIsPending covers #6817 on the
+// path pr-remediation selects candidates by: GitHub's rollup reports FAILURE
+// for a commit whose every check run was cancelled before it ran, and that
+// must not read as failing CI.
+func TestGitHubProviderRefCheckStatesOutageRollupIsPending(t *testing.T) {
+	server, _ := refCheckStatesServer(t, map[string]interface{}{
+		"r0": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "FAILURE"}},
+		"r1": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "FAILURE"}},
+	}, map[string][]map[string]interface{}{
+		"outage": {
+			checkRunFixture(1, "build", actionsAppID, "completed", "cancelled"),
+			checkRunFixture(2, "test", actionsAppID, "completed", "cancelled"),
+		},
+		"broken": {
+			checkRunFixture(3, "build", actionsAppID, "completed", "cancelled"),
+			checkRunFixture(4, "test", actionsAppID, "completed", "failure"),
+		},
+	})
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	states, err := provider.RefCheckStates(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, []string{"outage", "broken"})
+	if err != nil {
+		t.Fatalf("RefCheckStates: %v", err)
+	}
+	if states["outage"] != CheckStatePending || states["broken"] != CheckStateFailing {
+		t.Fatalf("states = %v, want outage pending and broken failing", states)
 	}
 }
 

@@ -92,10 +92,57 @@ func adoEvaluationSatisfied(ev adoPolicyEvaluation) bool {
 }
 
 // adoEvaluationState maps one evaluation to a check state. Broken blocking
-// policies fail closed regardless of policy kind.
+// policies fail closed regardless of policy kind. A build policy rejected
+// because its build was canceled (markCanceledBuilds) is pending: the build
+// gave no verdict on the code (#6817), so it must neither drive CI
+// remediation nor pass a merge gate.
 func adoEvaluationState(ev adoPolicyEvaluation, _ adoPolicyKind) CheckState {
+	if ev.buildCanceled {
+		return CheckStatePending
+	}
 	return adoPolicyCheckState(ev.Status)
 }
+
+// markCanceledBuilds reads the build behind each enabled, blocking build
+// policy rejected for a build it names (context.buildId), and marks the
+// evaluation when that build's result is canceled (#6817). ADO rejects a
+// build policy whose build was canceled as it rejects one whose build failed,
+// so only the build tells a CI-provider outage (agents never assigned, a
+// pipeline canceled) from code that fails its checks.
+//
+// Like the GitHub check-run path it does not read the timeline to ask whether
+// the canceled build ran steps first: a build canceled at its job timeout
+// waits for a rerun rather than driving remediation, which costs a person's
+// look but never a merge.
+//
+// The read is best-effort: a credential without build read access, a build
+// retention has deleted, or any other failed read leaves the evaluation's own
+// verdict standing, exactly as before this read existed. Only the caller's
+// context ending is returned. It costs one GET per rejected build policy, so
+// a pull request with no rejected build policy pays nothing.
+func (p *ADOProvider) markCanceledBuilds(ctx context.Context, projectName string, evals []adoPolicyEvaluation) error {
+	for i := range evals {
+		ev := &evals[i]
+		buildID := ev.Context.BuildID.String()
+		if buildID == "" || !adoEvaluationBlocks(*ev) || !strings.EqualFold(ev.Status, "rejected") ||
+			!strings.EqualFold(strings.TrimSpace(ev.Configuration.Type.ID), adoPolicyTypeBuild) {
+			continue
+		}
+		var build adoBuild
+		endpoint, err := p.buildURL(projectName, nil, buildID)
+		if err == nil {
+			err = p.do(ctx, http.MethodGet, endpoint, nil, &build)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		ev.buildCanceled = err == nil && strings.EqualFold(build.Result, adoBuildResultCanceled)
+	}
+	return nil
+}
+
+// adoBuildResultCanceled is the build result of a canceled Azure DevOps build.
+const adoBuildResultCanceled = "canceled"
 
 // adoPolicyGate reduces the gating evaluations of one pull request to a
 // single CI state.
@@ -177,6 +224,9 @@ func (p *ADOProvider) adoPolicyCheckDetail(ev adoPolicyEvaluation, kind adoPolic
 	switch kind {
 	case adoPolicyCI:
 		detail.URL = p.buildResultsURL(projectName, ev.Context.BuildID.String())
+		if ev.buildCanceled {
+			detail.Summary = "build canceled before a verdict; waiting for a rerun"
+		}
 	case adoPolicyReviewer:
 		if state != CheckStatePassing {
 			detail.State = CheckStatePending
