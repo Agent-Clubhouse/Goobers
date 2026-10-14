@@ -184,6 +184,7 @@ workflow.spec.runControls                             2.0          ga           
 workflow.spec.runControls.maxRepasses                 2.0          ga               supported        dev
 workflow.spec.runControls.maxRunDuration              2.0          ga               supported        dev
 workflow.spec.runControls.stalledRunTimeout           2.0          ga               supported        dev
+workflow.spec.scheduleCatchUp                         2.0          ga               supported        dev
 workflow.spec.start                                   2.0          ga               supported        dev
 workflow.spec.tasks                                   2.0          ga               supported        dev
 workflow.spec.triggers                                2.0          ga               supported        dev
@@ -194,4 +195,4 @@ workflow.terminal.abort                               2.0          ga           
 workflow.terminal.complete                            2.0          ga               supported        dev
 workflow.terminal.escalate                            2.0          ga               supported        dev
 
-194 feature/version row(s)
+195 feature/version row(s)

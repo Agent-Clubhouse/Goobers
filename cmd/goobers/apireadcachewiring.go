@@ -30,3 +30,10 @@ func invalidateCurrentProviderSnapshot(root string) error {
 func stageReadScope() apireadcache.Scope {
 	return apireadcache.Scope{Gaggle: os.Getenv(executor.GaggleEnvVar), Binding: os.Getenv(executor.ProviderReadBindingEnvVar), Generation: os.Getenv(executor.ProviderReadGenerationEnvVar)}
 }
+
+// Uncached stage reads remain live, but their confirmed writes still invalidate
+// already scoped readers in this gaggle. Apply after provider construction so
+// the original transport defaults and quota-gate ownership remain unchanged.
+func configureStageGitHubMutationCache(root string, provider *providers.GitHubProvider) {
+	provider.Client = apireadcache.MutationClient(layoutFor(root).SchedulerDir(), stageReadScope(), providers.ProviderGitHub, provider.Client)
+}

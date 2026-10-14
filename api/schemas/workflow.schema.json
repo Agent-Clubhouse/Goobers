@@ -41,6 +41,11 @@
             }
           ]
         },
+        "scheduleCatchUp": {
+          "type": "string",
+          "enum": ["coalesce", "all"],
+          "description": "Missed schedule policy. Omitted or coalesce captures one firing from the preceding hour. All durably retains each nominal occurrence, discovering at most 100 per sweep with normal admission and idle backoff. Requires 1..1000 schedule declarations. Does not promise execution ordering."
+        },
         "readiness": {
           "type": "object",
           "description": "Admission limits that bound when runs may start. maxChainDepth is reserved and is not currently enforced.",

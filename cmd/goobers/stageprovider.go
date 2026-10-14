@@ -434,7 +434,9 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	if cfg.cached {
 		return newCachedGitHubProvider(cfg.root, token, opts...), nil
 	}
-	return newGitHubProvider(token, opts...), nil
+	provider := newGitHubProvider(token, opts...)
+	configureStageGitHubMutationCache(cfg.root, provider)
+	return provider, nil
 }
 
 // stageGitHubTokenSource resolves the GitHub provider's token per request from

@@ -736,6 +736,7 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string][]string{"labels": plan.Add}, nil); err != nil {
 			return err
 		}
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
 	}
 	for _, label := range plan.Remove {
 		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "labels", label)
@@ -745,6 +746,8 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 		if err := doStatus(ctx, p, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
 			return err
 		}
+		// A missing label is also a confirmed absence; refresh prior list views.
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
 	}
 	return nil
 }

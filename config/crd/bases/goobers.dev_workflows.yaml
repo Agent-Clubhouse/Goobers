@@ -623,6 +623,15 @@ spec:
                     minLength: 1
                     type: string
                 type: object
+              scheduleCatchUp:
+                description: |-
+                  ScheduleCatchUp selects missed schedule handling. Omitted or coalesce
+                  captures one firing for the preceding hour. All retains every nominal
+                  occurrence, discovering at most 100 per sweep; admission still applies.
+                enum:
+                - coalesce
+                - all
+                type: string
               start:
                 description: Start is the name of the first state (task or gate) of
                   the machine.

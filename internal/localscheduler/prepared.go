@@ -20,6 +20,7 @@ func (s *Scheduler) PreparedEntry(prepared WorkflowEntry) (WorkflowEntry, error)
 	if reason, refused := s.permanentDispatchRefusal(current); refused {
 		return WorkflowEntry{}, &TriggerRejectedError{Workflow: prepared.Workflow, Reason: reason}
 	}
+	prepared.DisabledReason = current.DisabledReason
 	prepared.Readiness = current.Readiness
 	prepared.ProviderAuth = current.ProviderAuth
 	return prepared, nil

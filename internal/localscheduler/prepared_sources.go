@@ -14,6 +14,9 @@ import (
 
 // Validate checks the closed source provenance retained by the host.
 func (source SourceTrigger) Validate() error {
+	if err := source.validateScheduleDeclaration(); err != nil {
+		return err
+	}
 	if err := source.validateScheduleWindow(); err != nil {
 		return err
 	}
@@ -83,14 +86,25 @@ func (s *Scheduler) dispatchPreparedSource(executionCtx context.Context, entry W
 			reason = "webhook delivery: " + strings.TrimPrefix(source.Signal, "github-webhook:")
 		}
 	} else {
-		if len(entry.Schedules) == 0 || len(current.Schedules) == 0 {
-			return "", errors.New("localscheduler: queued schedule no longer configured")
+		// The accepted source is validated against its archived declaration.
+		// Current workflow eligibility still applies; removing future triggers
+		// does not revoke a fire that already has durable custody.
+		if len(entry.Schedules) == 0 {
+			return "", errors.New("localscheduler: queued schedule has no archived declaration")
 		}
 		window, err := source.scheduleEvaluation(entry.Schedules)
 		if err != nil {
 			return "", err
 		}
 		indexes = window.Indexes
+		if source.ScheduleDeclaration > 0 {
+			indexes, err = s.occurrenceAdmissionIndexes(entry, current, source.ScheduleDeclaration, now)
+			if err != nil {
+				return "", err
+			}
+			// Backoff follows current declarations; execution pins remain archived.
+			entry.ScheduleBackoffs = current.ScheduleBackoffs
+		}
 		tick := window.Tick
 		reason = fireReason(tick, journal.TriggerSchedule)
 		if entry.PollFallbackCause != "" {

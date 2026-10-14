@@ -42,6 +42,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/goobers/goobers/internal/apireadstore"
@@ -122,13 +123,15 @@ func (e apiReadCacheEntry) response(req *http.Request) *http.Response {
 
 // apiReadCache is a fail-open conditional-GET (ETag) HTTPClient decorator.
 type apiReadCache struct {
-	partition    string
-	provider     providers.ProviderKind
-	inner        providers.HTTPClient
-	schedulerDir string
-	snapshotID   string
-	lockBudget   time.Duration
-	quotaGate    providers.QuotaRequestGate
+	mutationScope       string
+	mutationUnavailable atomic.Bool
+	partition           string
+	provider            providers.ProviderKind
+	inner               providers.HTTPClient
+	schedulerDir        string
+	snapshotID          string
+	lockBudget          time.Duration
+	quotaGate           providers.QuotaRequestGate
 
 	mu  sync.Mutex
 	mem map[string]apiReadCacheEntry // bounded process-local responses
@@ -223,6 +226,9 @@ func InvalidateSnapshot(schedulerDir, snapshotID string) error {
 // Do implements providers.HTTPClient. GETs and explicitly declared ADO list
 // reads may share responses; other methods stay on the normal transport path.
 func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
+	if c != nil && c.mutationUnavailable.Load() {
+		return c.do(req)
+	}
 	if c != nil && c.schedulerDir != "" && c.partition != "" && c.provider == providers.ProviderADO {
 		if digest, ok := providers.ADOReadPlanDigest(req); ok {
 			return c.readADOPlan(req, digest)
@@ -237,7 +243,11 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 	}
 	key := apiReadCacheKey(req)
 	if c.partition != "" {
-		key = scopedRequestKey(c.partition+"\x00"+string(c.provider), req)
+		var err error
+		key, err = c.scopedReadKey(req)
+		if err != nil {
+			return c.do(req)
+		}
 	}
 	if c.snapshotID != "" && c.listRequest(req) {
 		snapshotKey, err := c.snapshotReadKey(key)
