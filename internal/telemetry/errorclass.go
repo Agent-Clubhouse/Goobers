@@ -137,6 +137,12 @@ const (
 	// done, would reintroduce removed code). A correct refusal is a terminal
 	// deliverable about the item, never a work failure.
 	ErrCodeIssueNotApplicable = "ISSUE_NOT_APPLICABLE"
+	// ErrCodeWorkspaceHeadMoved is a pod's refusal to land a run's workspace
+	// delta on a pull request head that moved under the run (#6019, owned by
+	// internal/runner.WorkspaceHeadMovedErrorCode). The item moved, not the
+	// work failing: it is a judgment about the item's current state, never a
+	// strike against it.
+	ErrCodeWorkspaceHeadMoved = "workspace_head_moved"
 )
 
 var wellKnownErrorCodes = map[string]ErrorClass{
@@ -162,6 +168,7 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeCredentialUnavailable: ErrorClassInfra,
 	ErrCodeRunCanceled:           ErrorClassOperator,
 	ErrCodeIssueNotApplicable:    ErrorClassItemJudgment,
+	ErrCodeWorkspaceHeadMoved:    ErrorClassItemJudgment,
 	// The run's evidence contract, not the work: the claim did not hold up
 	// against what the journal says its upstream produced.
 	ErrCodeNoWorkUnsubstantiated: ErrorClassValidation,

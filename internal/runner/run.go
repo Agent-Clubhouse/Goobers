@@ -1383,6 +1383,19 @@ type resumeRetryAccounting struct {
 // that can drift (the #624 shared-constant pattern).
 const BaseSyncConflictErrorCode = "base_sync_conflict"
 
+// WorkspaceHeadMovedErrorCode is the stage-failure code a pod reports when
+// the workspace-delta ancestry guard refuses to land this run's delta because
+// the branch the run REBOUND its workspace to (a pull request's own head,
+// #392) moved under the run: someone pushed to the PR while the run was
+// working (#5948). The refusal is correct — landing the delta would discard
+// that push — but it is not a failure of the run's work: the subject moved,
+// so the work is moot. The engine ends such a run completed (superseded),
+// never failed, and the terminal handlers neither charge nor credit the
+// claimed item for it (#6019). Exported for the same reason
+// BaseSyncConflictErrorCode is (the #624 shared-constant pattern): the pod
+// entrypoint writes it and the engine routes on it.
+const WorkspaceHeadMovedErrorCode = "workspace_head_moved"
+
 // RetryDecisionKind and RetryFailureClassKey are the runner.annotation shape
 // routeRetryDecision writes when a gate's fail branch re-enters an
 // already-completed stage, and priorRepassCause reads back to tell an
