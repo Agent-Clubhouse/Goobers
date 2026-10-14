@@ -38,13 +38,14 @@ responses do not enter the cache. Existing 512-entry and storage limits remain.
 
 Snapshot invalidation affects only its gaggle/binding/generation partition. A
 reused wrapper checks the shared store before replay, so its in-memory copy cannot
-hide completed invalidation. This does not yet add a write-generation fence for
-a provider request that was still in flight when invalidation happened.
+hide completed invalidation. The later [snapshot generation slice](provider-read-invalidation.md) also fences
+late fills from provider requests still in flight when invalidation happened.
 
 ## Remaining work
 
-Declared ADO WIQL/batch read plans, provider cost and scope metrics, foreground
-freshness, background reconciliation, event invalidation, in-flight write fences,
+Declared ADO WIQL/batch reads are covered by [shared ADO read plans](shared-ado-read-plans.md).
+Provider cost and scope metrics, foreground
+freshness, background reconciliation, event invalidation, provider-wide write fences,
 and the portal's separately authorized interactive binding are subsequent slices.
 This increment does not claim to centralize every read or complete the shared
 provider-read workstream.
