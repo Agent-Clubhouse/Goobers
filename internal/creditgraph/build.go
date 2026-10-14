@@ -83,6 +83,7 @@ func Build(input Input) (*Graph, error) {
 	b.addEvidence(input.Events)
 	b.addEvaluators(input.Events)
 	b.reportUnresolvedToolCalls()
+	b.addClaims(input.Events)
 	return b.graph, nil
 }
 

@@ -105,10 +105,22 @@ func TestOccurrenceDemandMigrationPreservesPartlyTransferredCoalescedFire(t *tes
 	if _, err = db.Exec(`INSERT INTO schedule_demands(scope,id,payload,observed_count,queued,accepted_ns) VALUES('scope','old',?,3,1,?)`, []byte("original pins"), base.Add(-time.Hour).UnixNano()); err != nil {
 		t.Fatal(err)
 	}
+	// The preceding queue-fairness release may already have reserved a
+	// window. Upgrading demand custody must preserve that progress too.
+	if _, err = db.Exec(`INSERT INTO triggers(id,key,actor,payload,state,accepted_ns) VALUES('held','held','actor',?,'accepted',1),('later','later','actor',?,'accepted',2)`, []byte("held pins"), []byte("later pins")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE pending_start_sweep SET accepted_ns=1,last_id='held' WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	s := openTestStore(t, path)
+	window, err := s.PendingSweep(t.Context(), 100)
+	if err != nil || len(window) != 1 || window[0].ID != "later" || string(window[0].Payload) != "later pins" {
+		t.Fatal("migration reset sweep progress or changed queued custody", window, err)
+	}
 	next := occurrenceCapture("separate", base)
 	if err = s.CaptureScheduleDemand(t.Context(), next); err != nil {
 		t.Fatal(err)
