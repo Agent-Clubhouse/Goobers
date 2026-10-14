@@ -257,9 +257,9 @@ func stageReplayCases() []stageReplayCase {
 			// place on a retry. The native review is a vote apply-verdict
 			// re-submits on every run; it is never read back, so it is budgeted
 			// rather than counted as an artifact. The goobers/merge-review
-			// commit status (#4199) is likewise re-posted: a commit status is
-			// per-commit state whose latest post per context wins, so a retry
-			// replaces it rather than duplicating anything.
+			// commit status (#4199) is posted once: a retry reads the same
+			// state and description standing on the head and posts nothing,
+			// so re-reviews never pile up toward GitHub's per-context cap.
 			stage: "apply-verdict", provider: providers.ProviderGitHub,
 			setup: replayApplyVerdictGitHub,
 			first: map[string]int{
@@ -268,7 +268,6 @@ func stageReplayCases() []stageReplayCase {
 			},
 			replay: map[string]int{
 				replayGitHubCommentEdit: 1, replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1, replayGitHubReviewCreate: 1,
-				replayGitHubStatusCreate: 1,
 			},
 			creates: []string{replayGitHubCommentCreate},
 		},

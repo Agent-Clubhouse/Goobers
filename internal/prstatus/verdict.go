@@ -50,13 +50,24 @@ func VerdictState(decision string) (providers.CheckState, error) {
 
 // VerdictDescription renders the status description: the decision and the
 // reviewed base, then a one-line summary. Providers bound its length.
+//
+// The description is bounded to DescriptionLimit runes here rather than by
+// each provider, so the description a provider stores is exactly the one
+// rendered, and an unchanged verdict can be recognized and not re-posted.
 func VerdictDescription(decision, baseSHA, summary string) string {
 	description := fmt.Sprintf("%s for base %s", decision, strings.TrimSpace(baseSHA))
 	if line := strings.Join(strings.Fields(summary), " "); line != "" {
 		description += ": " + line
 	}
+	if runes := []rune(description); len(runes) > DescriptionLimit {
+		description = string(runes[:DescriptionLimit-1]) + "…"
+	}
 	return description
 }
+
+// DescriptionLimit is the longest verdict status description: GitHub's
+// commit-status bound, the tightest of the supported providers.
+const DescriptionLimit = 140
 
 // VerdictStatusRequest builds the status publishing decision for the pull
 // request at headSHA, reviewed against baseSHA.
@@ -149,24 +160,69 @@ func VerdictSummary(summary, rationale string) string {
 	return line
 }
 
-// PublishVerdict posts a verdict status through publisher. A provider that
-// cannot publish statuses, or a credential refused the status write,
-// degrades to the returned warning rather than failing the verdict: the same
-// identity publishes every verdict status, so one that cannot write statuses
-// never published a pass either, and a required check without any status
-// already blocks natively. Any other failure is returned, so a verdict is
-// never reported published while its status is missing.
-func PublishVerdict(ctx context.Context, publisher any, req providers.PullRequestStatusRequest) (warning string, err error) {
+// VerdictPublication reports what PublishVerdict or WithdrawVerdict did when
+// it returned no error.
+type VerdictPublication struct {
+	// Warning, when set, says why the status was not published and the
+	// verdict is therefore not enforced by the provider's merge policy.
+	Warning string
+	// Unchanged means nothing needed posting: the same state and
+	// description already stand on the head, or (withdrawal) no verdict
+	// status stands there at all.
+	Unchanged bool
+}
+
+// PublishVerdict posts a verdict status through publisher.
+//
+// It is idempotent: when the publisher can read the head's standing verdict
+// status and it already has this state and description, nothing is posted.
+// A head re-reviewed every tick would otherwise accumulate a status per run
+// until GitHub's per-context cap refused the next one.
+//
+// A provider that cannot publish statuses, a credential refused the status
+// write, or a commit at the per-context status cap degrades to a warning
+// rather than failing the verdict: the same identity publishes every verdict
+// status, so one that cannot write statuses never published a pass either,
+// and a required check without any status already blocks natively. Any other
+// failure is returned, so a verdict is never reported published while its
+// status is missing.
+func PublishVerdict(ctx context.Context, publisher any, req providers.PullRequestStatusRequest) (VerdictPublication, error) {
+	return publishVerdict(ctx, publisher, req, false)
+}
+
+// WithdrawVerdict posts req (a StaleVerdictStatusRequest) only when a verdict
+// status stands on the head: a head with no verdict status needs no
+// withdrawal, and a pending status there would only add noise on a
+// repository that does not require the check. When the standing status
+// cannot be read it is withdrawn anyway, which can only block.
+func WithdrawVerdict(ctx context.Context, publisher any, req providers.PullRequestStatusRequest) (VerdictPublication, error) {
+	return publishVerdict(ctx, publisher, req, true)
+}
+
+func publishVerdict(ctx context.Context, publisher any, req providers.PullRequestStatusRequest, onlyIfStanding bool) (VerdictPublication, error) {
 	statusContext := req.Genre + "/" + req.Name
 	statusPublisher, ok := publisher.(providers.PullRequestStatusPublisher)
 	if !ok {
-		return fmt.Sprintf("provider cannot publish the %s status, so this verdict is not enforced by the repository's merge policy", statusContext), nil
+		return VerdictPublication{Warning: fmt.Sprintf("provider cannot publish the %s status, so this verdict is not enforced by the repository's merge policy", statusContext)}, nil
+	}
+	if reader, ok := publisher.(providers.MergeReviewStatusReader); ok && statusContext == providers.MergeReviewStatusContext {
+		if current, err := reader.MergeReviewStatus(ctx, req.Repository, req.HeadSHA); err == nil {
+			if current == nil && onlyIfStanding {
+				return VerdictPublication{Unchanged: true}, nil
+			}
+			if current != nil && current.State == req.State && current.Summary == req.Description {
+				return VerdictPublication{Unchanged: true}, nil
+			}
+		}
 	}
 	if _, err := statusPublisher.PublishPullRequestStatus(ctx, req); err != nil {
-		if providers.IsStatusPublishDeniedError(err) {
-			return fmt.Sprintf("the review credential may not write commit statuses, so %s was not published and this verdict is not enforced by the repository's merge policy; grant it Commit statuses: Read and write (#4199): %v", statusContext, err), nil
+		switch {
+		case providers.IsStatusPublishDeniedError(err):
+			return VerdictPublication{Warning: fmt.Sprintf("the review credential may not write commit statuses, so %s was not published and this verdict is not enforced by the repository's merge policy; grant it Commit statuses: Read and write (#4199): %v", statusContext, err)}, nil
+		case providers.IsStatusLimitError(err):
+			return VerdictPublication{Warning: fmt.Sprintf("head %s has reached the provider's cap on %s statuses, so this verdict was not published and the latest accepted status still stands: %v", req.HeadSHA, statusContext, err)}, nil
 		}
-		return "", fmt.Errorf("publish %s status: %w", statusContext, err)
+		return VerdictPublication{}, fmt.Errorf("publish %s status: %w", statusContext, err)
 	}
-	return "", nil
+	return VerdictPublication{}, nil
 }

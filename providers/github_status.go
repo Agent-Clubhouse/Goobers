@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -73,6 +74,35 @@ func (p *GitHubProvider) PublishPullRequestStatus(ctx context.Context, req PullR
 	return PullRequestStatusResult{ID: out.ID}, nil
 }
 
+// MergeReviewStatus reads the merge-review verdict status standing on ref
+// (the latest one GitHub's combined status reports for that context), or nil
+// when there is none (#4199).
+func (p *GitHubProvider) MergeReviewStatus(ctx context.Context, repo RepositoryRef, ref string) (*CheckDetail, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
+	if err != nil {
+		return nil, err
+	}
+	var verdict *CheckDetail
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var combined githubCombinedStatus
+		if err := json.Unmarshal(page, &combined); err != nil {
+			return fmt.Errorf("decode combined status page: %w", err)
+		}
+		for _, status := range combined.Statuses {
+			if found, ok := mergeReviewStatusDetail(status.Context, status.State, status.Description, status.TargetURL); ok {
+				verdict = found
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return verdict, nil
+}
+
 func githubStatusState(state CheckState) string {
 	switch state {
 	case CheckStatePassing:
@@ -82,6 +112,17 @@ func githubStatusState(state CheckState) string {
 	default:
 		return "pending"
 	}
+}
+
+// IsStatusLimitError reports whether GitHub refused a commit status because
+// the commit already carries the most statuses one context may have (1000).
+// Re-publishing an unchanged verdict is skipped, so reaching the cap means a
+// head re-reviewed with a changing verdict a thousand times; the standing
+// status is still the latest one the provider accepted.
+func IsStatusLimitError(err error) bool {
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) && responseErr.statusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(strings.ToLower(responseErr.body), "maximum number of statuses")
 }
 
 // IsStatusPublishDeniedError reports whether a provider refused to publish a

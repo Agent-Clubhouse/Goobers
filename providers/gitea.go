@@ -744,6 +744,19 @@ func (p *GiteaProvider) combinedCheckStateAndVerdict(ctx context.Context, repo R
 	}
 }
 
+// MergeReviewStatus reads the merge-review verdict status standing on ref,
+// or nil when there is none (#4199).
+func (p *GiteaProvider) MergeReviewStatus(ctx context.Context, repo RepositoryRef, ref string) (*CheckDetail, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	_, _, verdict, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	return verdict, err
+}
+
 // ClosePullRequest closes a Gitea pull request, detecting merged-vs-closed, and
 // optionally leaves a comment.
 func (p *GiteaProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {

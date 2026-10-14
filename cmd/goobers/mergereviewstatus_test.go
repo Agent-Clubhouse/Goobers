@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,6 +192,70 @@ func TestApplyVerdictWithdrawsStandingVerdictStatusWhenBaseMoved(t *testing.T) {
 	}
 }
 
+// TestApplyVerdictWithdrawsNothingWhenNoVerdictStands: a void review of a head
+// that carries no verdict status posts no pending status there.
+func TestApplyVerdictWithdrawsNothingWhenNoVerdictStands(t *testing.T) {
+	root, server := setupMergeReviewStatusRun(t, apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "ready"},
+		"reviewed-head", "moved-base")
+
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 0 || !strings.Contains(stdout, "verdict void") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q; want a voided verdict", code, stdout, stderr)
+	}
+	if statuses := server.postedStatuses(); len(statuses) != 0 {
+		t.Fatalf("statuses = %+v, want none: there was no verdict to withdraw", statuses)
+	}
+}
+
+// TestPublishADONonPassVerdictStaysUnpinnedWhenTheHeadMoved: on Azure DevOps
+// a non-pass status is posted on the latest iteration even when a push
+// landed after the review. A failure can only block, and the next review of
+// that iteration replaces it; pinning would leave an earlier pass standing on
+// a status policy without reset-on-push.
+func TestPublishADONonPassVerdictStaysUnpinnedWhenTheHeadMoved(t *testing.T) {
+	var state, description string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pullrequests/359/iterations"):
+			_, _ = w.Write([]byte(`{"value":[{"id":1,"sourceRefCommit":{"commitId":"reviewed-head"}},{"id":2,"sourceRefCommit":{"commitId":"pushed-after-review"}}]}`))
+		case strings.HasSuffix(r.URL.Path, "/pullrequests/359/iterations/2/statuses"):
+			var body struct{ State, Description string }
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			state, description = body.State, body.Description
+			_, _ = w.Write([]byte(`{"id":7}`))
+		case strings.HasSuffix(r.URL.Path, "/labels"):
+			if r.Method == http.MethodGet {
+				_, _ = w.Write([]byte(`{"value":[]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"label"}`))
+		case strings.HasSuffix(r.URL.Path, "/threads"):
+			_, _ = w.Write([]byte(`{"id":11,"comments":[{"id":1,"content":"posted","author":{"displayName":"goober"},"publishedDate":"2026-08-09T00:00:00Z"}]}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = server.URL })
+	verdict := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "Fix the bound.", HeadSHA: "reviewed-head", BaseSHA: "reviewed-base"}
+	resultFile := filepath.Join(t.TempDir(), "result.json")
+	var stdout, stderr bytes.Buffer
+	code := publishADONonPassVerdict(context.Background(), "", provider,
+		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}, 359,
+		providers.PullRequestSummary{Number: 359, HeadSHA: "reviewed-head", BaseSHA: "reviewed-base"},
+		verdict, resultFile, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if state != "failed" || !strings.HasPrefix(description, "needs-changes for base reviewed-base") {
+		t.Fatalf("status = %q %q, want a failed status on the latest iteration recording the base", state, description)
+	}
+	if result := readVerdictResult(t, resultFile); result["decision"] != "needs-changes" {
+		t.Fatalf("result = %+v, want the verdict published, not voided", result)
+	}
+}
+
 // TestApplyVerdictNeverPublishesOnAMovedHead: a verdict for an older head never
 // touches the new head, which carries no verdict status until reviewed.
 func TestApplyVerdictNeverPublishesOnAMovedHead(t *testing.T) {
@@ -258,6 +323,10 @@ func TestVerdictRecordPublishesGiteaCommitStatus(t *testing.T) {
 			t.Errorf("decode status: %v", err)
 		}
 		writeFakeJSON(w, map[string]int{"id": 3})
+	})
+	// No verdict status stands yet, so the publish is not skipped.
+	mux.HandleFunc("/api/v1/repos/your-org/your-repo/commits/reviewed-head/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
 	})
 	mux.HandleFunc("/", fake.serve)
 	server := httptest.NewServer(mux)

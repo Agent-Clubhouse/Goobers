@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -1156,7 +1155,7 @@ func withdrawStandingVerdict(ctx context.Context, root string, provider remediat
 	publisher, err := newVerdictStatusPublisher(root, repo)
 	if err == nil {
 		req := prstatus.StaleVerdictStatusRequest(repo, strconv.Itoa(number), current.HeadSHA, current.BaseSHA, reason, current.URL)
-		err = publishVerdictStatus(ctx, publisher, req, io.Discard, stderr)
+		err = publishVerdictStatus(ctx, publisher, req, true, io.Discard, stderr)
 	}
 	if err != nil {
 		pf(stderr, "warning: could not withdraw PR #%d's %s status: %v\n", number, providers.MergeReviewStatusContext, err)
@@ -1199,7 +1198,7 @@ func (r verdictRecord) publish(ctx context.Context, comment string, posted apiv1
 	if err != nil {
 		return err
 	}
-	return publishVerdictStatus(ctx, r.statusPublisher, req, stdout, stderr)
+	return publishVerdictStatus(ctx, r.statusPublisher, req, false, stdout, stderr)
 }
 
 // targetURL links the status to the sticky verdict comment when one already
@@ -1213,15 +1212,21 @@ func (r verdictRecord) targetURL() string {
 	return r.current.URL
 }
 
-// publishVerdictStatus posts a verdict status through prstatus.PublishVerdict,
-// reporting a degraded publication as a warning.
-func publishVerdictStatus(ctx context.Context, publisher any, req providers.PullRequestStatusRequest, stdout, stderr io.Writer) error {
-	warning, err := prstatus.PublishVerdict(ctx, publisher, req)
+// publishVerdictStatus posts (or, withdrawing, retracts) a verdict status
+// through prstatus, reporting a degraded publication as a warning.
+func publishVerdictStatus(ctx context.Context, publisher any, req providers.PullRequestStatusRequest, withdraw bool, stdout, stderr io.Writer) error {
+	publish := prstatus.PublishVerdict
+	if withdraw {
+		publish = prstatus.WithdrawVerdict
+	}
+	result, err := publish(ctx, publisher, req)
 	switch {
 	case err != nil:
 		return err
-	case warning != "":
-		pf(stderr, "warning: %s\n", warning)
+	case result.Warning != "":
+		pf(stderr, "warning: %s\n", result.Warning)
+	case result.Unchanged:
+		pf(stdout, "%s/%s on %s is already current\n", req.Genre, req.Name, req.HeadSHA)
 	default:
 		pf(stdout, "published %s/%s = %s on %s\n", req.Genre, req.Name, req.State, req.HeadSHA)
 	}
@@ -1745,8 +1750,8 @@ func publishADOPassVerdict(
 		// GitHub/Gitea verdict status carries (#4199).
 		Description: prstatus.VerdictDescription(string(apiv1.VerdictPass), current.BaseSHA, prstatus.VerdictSummary(verdict.Summary, verdict.Rationale)),
 		// Pin to the reviewed head: a push after the pin check must not
-		// inherit this pass on ADO's latest iteration. The non-pass path is
-		// pinned the same way.
+		// inherit this pass on ADO's latest iteration. The non-pass path stays
+		// unpinned, since a failing status on a newer head only blocks.
 		HeadSHA: current.HeadSHA,
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
@@ -1788,8 +1793,8 @@ func publishADOPassVerdict(
 //     needs-changes/fail split — the remediation label below is the routing
 //     signal, exactly as GitHub carries it in verdictLabel. A defer fails
 //     too: without an ADO sibling election it routes to remediation below.
-//     The status is pinned to the reviewed head and its description records
-//     the reviewed base (#4199).
+//     The status is posted unpinned on the latest iteration (a failure can
+//     only block) and its description records the reviewed base (#4199).
 //  2. The goobers:needs-remediation PR label, written via the native ADO
 //     PR-labels endpoint (AddPullRequestLabels), NEVER UpdateWorkItem(ID: PR#).
 //     ListPullRequests already surfaces ADO PR labels, so pr-remediation's
@@ -1817,9 +1822,11 @@ func publishADONonPassVerdict(
 	stdout, stderr io.Writer,
 ) int {
 	pullID := strconv.Itoa(selectedNumber)
-	// Pinned to the reviewed head like the pass (#4199): a verdict for an
-	// older head never lands on a newer iteration. A head that moved after
-	// the pin check voids the verdict instead; the new head is re-reviewed.
+	// Deliberately unpinned, unlike the pass: a failing status can only
+	// block, so posting it on the latest iteration is fail-closed even when a
+	// push landed after the pin check, and the next review of that iteration
+	// replaces it. Pinning would instead leave an earlier iteration's pass as
+	// the latest goobers/validation status on a policy without reset-on-push.
 	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
 		Repository:  repo,
 		PullID:      pullID,
@@ -1827,13 +1834,7 @@ func publishADONonPassVerdict(
 		Name:        "validation",
 		State:       providers.CheckStateFailing,
 		Description: prstatus.VerdictDescription(string(verdict.Decision), current.BaseSHA, prstatus.VerdictSummary(verdict.Summary, verdict.Rationale)),
-		HeadSHA:     current.HeadSHA,
 	}); err != nil {
-		var moved providers.PullRequestHeadMovedError
-		if errors.As(err, &moved) {
-			pf(stdout, "verdict void for PR #%d: %v — skipping, will re-review next cycle\n", selectedNumber, moved)
-			return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", moved.Error(), stderr)
-		}
 		return failProviderStage(stderr, fmt.Sprintf("publish %s verdict status for PR #%d", verdict.Decision, selectedNumber), err, resultFile)
 	}
 	// Route the label by decision, mirroring the GitHub verdictLabel contract

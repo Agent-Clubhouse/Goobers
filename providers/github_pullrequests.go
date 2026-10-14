@@ -1128,10 +1128,15 @@ func (p *GitHubProvider) RefCheckState(ctx context.Context, repo RepositoryRef, 
 //
 // GitHub's rollup counts a cancelled, never-started or stale check run as a
 // FAILURE and cannot say which runs it counted, so a failing rollup is
-// re-read per ref (failingRollupState). Only failing refs pay for that read:
+// re-read per ref (rereadRollupState). Only failing refs pay for that read:
 // a list whose CI is green or still running stays one request, and during an
 // outage, when every ref is failing, the cost is one combined-status and one
 // check-runs read per ref.
+//
+// The rollup also counts the goobers/merge-review verdict status (#4199),
+// which is not CI. Each ref's verdict context is read in the same query, and
+// a PENDING rollup is re-read only when that context is itself pending (a
+// defer or a withdrawn verdict), so green CI never reads as running.
 func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef, refs []string) (map[string]CheckState, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return nil, err
@@ -1147,7 +1152,7 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		variable := fmt.Sprintf("ref%d", i)
 		alias := fmt.Sprintf("r%d", i)
 		fmt.Fprintf(&definitions, ",$%s:String!", variable)
-		fmt.Fprintf(&fields, "%s:object(expression:$%s){... on Commit{statusCheckRollup{state}}}", alias, variable)
+		fmt.Fprintf(&fields, "%s:object(expression:$%s){... on Commit{statusCheckRollup{state} status{context(name:%q){state}}}}", alias, variable, MergeReviewStatusContext)
 		variables[variable] = ref
 	}
 	query := fmt.Sprintf(
@@ -1159,6 +1164,11 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 			StatusCheckRollup *struct {
 				State string `json:"state"`
 			} `json:"statusCheckRollup"`
+			Status *struct {
+				Context *struct {
+					State string `json:"state"`
+				} `json:"context"`
+			} `json:"status"`
 		} `json:"repository"`
 	}
 	if err := p.graphql(ctx, query, variables, &response); err != nil {
@@ -1177,36 +1187,46 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		case "SUCCESS":
 			states[ref] = CheckStatePassing
 		case "FAILURE", "ERROR":
-			state, err := p.failingRollupState(ctx, repo, ref)
+			state, err := p.rereadRollupState(ctx, repo, ref, CheckStateFailing)
 			if err != nil {
 				return nil, err
 			}
 			states[ref] = state
 		default:
-			states[ref] = CheckStatePending
+			if result.Status == nil || result.Status.Context == nil || result.Status.Context.State != "PENDING" {
+				states[ref] = CheckStatePending
+				continue
+			}
+			state, err := p.rereadRollupState(ctx, repo, ref, CheckStatePending)
+			if err != nil {
+				return nil, err
+			}
+			states[ref] = state
 		}
 	}
 	return states, nil
 }
 
-// failingRollupState re-reads a ref whose GitHub rollup is FAILURE or ERROR
-// through RefCheckState, which classifies each run as checkDetails does: a
-// run that ended without a verdict reads as pending (#6817), and a cancelled
-// run superseded by a newer one is dropped (#6360).
+// rereadRollupState re-reads a ref whose GitHub rollup is FAILURE or ERROR,
+// or PENDING with a pending merge-review verdict status, through
+// RefCheckState, which classifies each run as checkDetails does: a run that
+// ended without a verdict reads as pending (#6817), a cancelled run
+// superseded by a newer one is dropped (#6360), and the verdict status is
+// not CI (#4199).
 //
 // The re-read is best-effort, like the Azure DevOps build read
 // (markCanceledBuilds): when it fails, say for a credential that can read
 // the rollup but neither check-runs nor actions/runs, the ref keeps the
-// rollup's failing verdict, as before #6817, rather than failing the read
-// of every other ref in the batch. A failing verdict is never merged. Only
-// the caller's context ending is returned.
-func (p *GitHubProvider) failingRollupState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, error) {
+// rollup's own verdict (fallback), as before #6817, rather than failing the
+// read of every other ref in the batch. A failing verdict is never merged.
+// Only the caller's context ending is returned.
+func (p *GitHubProvider) rereadRollupState(ctx context.Context, repo RepositoryRef, ref string, fallback CheckState) (CheckState, error) {
 	state, err := p.RefCheckState(ctx, repo, ref)
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
 	if err != nil {
-		return CheckStateFailing, nil
+		return fallback, nil
 	}
 	return state, nil
 }

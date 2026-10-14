@@ -3,6 +3,8 @@ package prstatus
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -112,25 +114,115 @@ func TestStaleVerdictStatusRequestIsPendingOnTheSameHead(t *testing.T) {
 	}
 }
 
+// readingPublisher is a status publisher that can also read the verdict
+// status standing on the head, as GitHub and Gitea can.
+type readingPublisher struct {
+	standing *providers.CheckDetail
+	posted   []providers.PullRequestStatusRequest
+}
+
+func (p *readingPublisher) PublishPullRequestStatus(_ context.Context, req providers.PullRequestStatusRequest) (providers.PullRequestStatusResult, error) {
+	p.posted = append(p.posted, req)
+	return providers.PullRequestStatusResult{ID: len(p.posted)}, nil
+}
+
+func (p *readingPublisher) MergeReviewStatus(context.Context, providers.RepositoryRef, string) (*providers.CheckDetail, error) {
+	return p.standing, nil
+}
+
 // TestPublishVerdictDegradesOnlyAMissingGrant: a provider without the status
-// surface warns; any failure other than a refused grant is returned, so the
-// verdict is never reported published without its status.
+// surface warns; any failure other than a refused grant or the status cap is
+// returned, so the verdict is never reported published without its status.
 func TestPublishVerdictDegradesOnlyAMissingGrant(t *testing.T) {
 	req := providers.PullRequestStatusRequest{Genre: "goobers", Name: "merge-review", HeadSHA: "head"}
-	if warning, err := PublishVerdict(context.Background(), struct{}{}, req); err != nil || warning == "" {
-		t.Fatalf("non-publisher: warning %q, err %v; want a warning", warning, err)
+	if result, err := PublishVerdict(context.Background(), struct{}{}, req); err != nil || result.Warning == "" {
+		t.Fatalf("non-publisher: %+v, err %v; want a warning", result, err)
 	}
 	ok := testPublisher{publish: func(context.Context, providers.PullRequestStatusRequest) (providers.PullRequestStatusResult, error) {
 		return providers.PullRequestStatusResult{ID: 1}, nil
 	}}
-	if warning, err := PublishVerdict(context.Background(), ok, req); err != nil || warning != "" {
-		t.Fatalf("published: warning %q, err %v; want neither", warning, err)
+	if result, err := PublishVerdict(context.Background(), ok, req); err != nil || result != (VerdictPublication{}) {
+		t.Fatalf("published: %+v, err %v; want a plain publication", result, err)
 	}
 	transient := testPublisher{publish: func(context.Context, providers.PullRequestStatusRequest) (providers.PullRequestStatusResult, error) {
 		return providers.PullRequestStatusResult{}, errors.New("connection reset")
 	}}
 	if _, err := PublishVerdict(context.Background(), transient, req); err == nil || !strings.Contains(err.Error(), "goobers/merge-review") {
 		t.Fatalf("transient failure: err %v, want it returned naming the context", err)
+	}
+}
+
+// TestPublishVerdictSkipsAnUnchangedVerdict: a head re-reviewed every tick
+// must not accumulate a status per run toward GitHub's per-context cap.
+func TestPublishVerdictSkipsAnUnchangedVerdict(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	req, err := VerdictStatusRequest(repo, "9", "pass", "head", "base", "ready", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := &readingPublisher{standing: &providers.CheckDetail{
+		Name: providers.MergeReviewStatusContext, State: req.State, Summary: req.Description,
+	}}
+	if result, err := PublishVerdict(context.Background(), same, req); err != nil || !result.Unchanged || len(same.posted) != 0 {
+		t.Fatalf("unchanged verdict: %+v, err %v, posted %d; want nothing posted", result, err, len(same.posted))
+	}
+	changed := &readingPublisher{standing: &providers.CheckDetail{
+		Name: providers.MergeReviewStatusContext, State: providers.CheckStateFailing,
+		Summary: VerdictDescription("needs-changes", "base", "fix"),
+	}}
+	if result, err := PublishVerdict(context.Background(), changed, req); err != nil || result.Unchanged || len(changed.posted) != 1 {
+		t.Fatalf("changed verdict: %+v, err %v, posted %d; want one post", result, err, len(changed.posted))
+	}
+}
+
+// TestWithdrawVerdictOnlyWithdrawsAStandingVerdict: a head with no verdict
+// status gets no pending stale status.
+func TestWithdrawVerdictOnlyWithdrawsAStandingVerdict(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	req := StaleVerdictStatusRequest(repo, "9", "head", "new-base", "PR base moved", "")
+	none := &readingPublisher{}
+	if result, err := WithdrawVerdict(context.Background(), none, req); err != nil || !result.Unchanged || len(none.posted) != 0 {
+		t.Fatalf("no standing verdict: %+v, err %v, posted %d; want nothing posted", result, err, len(none.posted))
+	}
+	standing := &readingPublisher{standing: &providers.CheckDetail{
+		Name: providers.MergeReviewStatusContext, State: providers.CheckStatePassing,
+		Summary: VerdictDescription("pass", "old-base", "ready"),
+	}}
+	if result, err := WithdrawVerdict(context.Background(), standing, req); err != nil || result.Unchanged || len(standing.posted) != 1 {
+		t.Fatalf("standing pass: %+v, err %v, posted %d; want it withdrawn", result, err, len(standing.posted))
+	}
+}
+
+// TestPublishVerdictDegradesAtTheStatusCap: GitHub's per-context status cap is
+// a warning, not a stage failure that recurs on every later review.
+func TestPublishVerdictDegradesAtTheStatusCap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"state":"success","statuses":[]}`))
+			return
+		}
+		http.Error(w, `{"message":"Validation Failed","errors":[{"resource":"Status","code":"custom","message":"This SHA and context has reached the maximum number of statuses."}]}`, http.StatusUnprocessableEntity)
+	}))
+	t.Cleanup(server.Close)
+	github := providers.NewGitHubProvider("token", func(p *providers.GitHubProvider) { p.BaseURL = server.URL })
+	req, err := VerdictStatusRequest(providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}, "9", "pass", "head", "base", "ready", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := PublishVerdict(context.Background(), github, req)
+	if err != nil || !strings.Contains(result.Warning, "cap") {
+		t.Fatalf("status cap: %+v, err %v; want a warning", result, err)
+	}
+}
+
+func TestVerdictDescriptionIsBounded(t *testing.T) {
+	description := VerdictDescription("needs-changes", strings.Repeat("a", 40), strings.Repeat("é", 300))
+	if n := len([]rune(description)); n != DescriptionLimit {
+		t.Fatalf("description is %d runes, want %d", n, DescriptionLimit)
+	}
+	if _, base, ok := ParseVerdictDescription(description); !ok || base != strings.Repeat("a", 40) {
+		t.Fatalf("a bounded description must keep its base: %q", description)
 	}
 }
 

@@ -26,7 +26,11 @@ and complete these fields before generating the token:
    selected workflow. The getting-started quickstart needs **Contents: Read
    and write**, **Issues: Read and write**, and **Pull requests: Read and
    write**. Add **Actions: Read-only** and **Commit statuses: Read-only** for
-   workflows that only poll hosted CI. Use **Actions: Read and write** when
+   workflows that only poll hosted CI. Use **Commit statuses: Read and write**
+   on the token that backs `github:pr:review` when `merge-review` runs, so it
+   can publish the `goobers/merge-review` verdict status (see
+   [Enforce the merge-review verdict as a required check](merge-review-verdict-status.md)).
+   Use **Actions: Read and write** when
    `merge-review` is configured to cancel obsolete pending runs after a
    non-pass verdict, or when a `ci-poll` stage sets
    `retryFailedChecksMaxAttempts` to rerun failed checks (the shipped
@@ -486,7 +490,9 @@ expose a Checks permission. Grant the App the union of what the selected
 workflows' capabilities need: Contents (Read and write
 for `repo:push`, Read-only for clone-only), Issues (Read and write), Pull
 requests (Read and write), Checks + Commit statuses (Read-only, for
-`ci-poll`), and Actions (Read and write when a `ci-poll` stage sets
+`ci-poll`; Commit statuses **Read and write** when the App backs
+`github:pr:review` for `merge-review`, which publishes the
+`goobers/merge-review` verdict status), and Actions (Read and write when a `ci-poll` stage sets
 `retryFailedChecksMaxAttempts` or a stage declares `provider:ci:cancel`).
 Install it on **only the target repositories**.
 

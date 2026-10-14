@@ -222,3 +222,66 @@ func assertVerdictKeptOutOfCI(t *testing.T, poll PullRequestPollResult) {
 		t.Fatalf("VerdictStatus = %+v, want %+v", poll.VerdictStatus, want)
 	}
 }
+
+// TestGitHubRefCheckStatesDoesNotReadAPendingVerdictAsCI: the GraphQL rollup
+// counts the verdict status, so a pending verdict (a defer, or a withdrawn
+// verdict) over green CI reads as PENDING. That ref is re-read without the
+// verdict; a pending rollup with no pending verdict stays one request.
+func TestGitHubRefCheckStatesDoesNotReadAPendingVerdictAsCI(t *testing.T) {
+	server, calls := refCheckStatesServer(t, map[string]interface{}{
+		"r0": map[string]interface{}{
+			"statusCheckRollup": map[string]string{"state": "PENDING"},
+			"status":            map[string]interface{}{"context": map[string]string{"state": "PENDING"}},
+		},
+		"r1": map[string]interface{}{
+			"statusCheckRollup": map[string]string{"state": "PENDING"},
+			"status":            map[string]interface{}{"context": nil},
+		},
+	}, map[string][]map[string]interface{}{
+		"aaa111": {checkRunFixture(1, "test", actionsAppID, "completed", "success")},
+	})
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	states, err := provider.RefCheckStates(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, []string{"aaa111", "bbb222"})
+	if err != nil {
+		t.Fatalf("RefCheckStates: %v", err)
+	}
+	if states["aaa111"] != CheckStatePassing || states["bbb222"] != CheckStatePending {
+		t.Fatalf("states = %v, want green CI under a pending verdict passing and real pending CI pending", states)
+	}
+	if calls["/repos/acme/app/commits/bbb222/check-runs"] != 0 {
+		t.Fatalf("requests = %v: a pending rollup without a pending verdict must not be re-read", calls)
+	}
+}
+
+func TestGitHubMergeReviewStatusReadsTheStandingVerdict(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/head/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{
+			{"context": "ci", "state": "success"},
+			{"context": MergeReviewStatusContext, "state": "pending", "description": "defer for base b: wait"},
+		}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/bare/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{{"context": "ci", "state": "success"}}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+
+	got, err := provider.MergeReviewStatus(context.Background(), repo, "head")
+	if err != nil || got == nil || got.State != CheckStatePending || got.Summary != "defer for base b: wait" {
+		t.Fatalf("MergeReviewStatus = %+v, %v", got, err)
+	}
+	if got, err := provider.MergeReviewStatus(context.Background(), repo, "bare"); err != nil || got != nil {
+		t.Fatalf("MergeReviewStatus(bare) = %+v, %v; want none", got, err)
+	}
+}
+
+func TestIsStatusLimitError(t *testing.T) {
+	limit := &providerResponseError{statusCode: http.StatusUnprocessableEntity, body: `{"errors":[{"message":"This SHA and context has reached the maximum number of statuses."}]}`}
+	other := &providerResponseError{statusCode: http.StatusUnprocessableEntity, body: `{"message":"No commit found for SHA: x"}`}
+	if !IsStatusLimitError(limit) || IsStatusLimitError(other) {
+		t.Fatal("only the per-context status cap is a limit error")
+	}
+}
