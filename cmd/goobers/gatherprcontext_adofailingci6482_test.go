@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -204,6 +205,49 @@ func TestAdvanceADOCIProbeWindowPersistsTheCursor(t *testing.T) {
 // it — and its brief routes to CI remediation. Its policy evaluations are read
 // once per cycle, not again for the selected PR.
 func TestGatherPRContextADOSelectsUnlabelledFailingBuild(t *testing.T) {
+	code, stdout, stderr, briefPath, evaluations := runADOUnlabelledBuildCycle(t, "failed")
+	if code != 0 {
+		t.Fatalf("gather-pr-context (ADO): code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(briefPath)
+	if err != nil {
+		t.Fatalf("read brief: %v (stdout %q)", err, stdout)
+	}
+	var brief apiv1.RemediationBrief
+	if err := json.Unmarshal(data, &brief); err != nil {
+		t.Fatalf("decode brief %s: %v", data, err)
+	}
+	if brief.SelectedNumber != "359" || brief.HasFailingCI != "true" {
+		t.Fatalf("brief selected #%s hasFailingCI=%s, want #359 with failing CI: an unlabelled red build must be remediated", brief.SelectedNumber, brief.HasFailingCI)
+	}
+	if evaluations != 1 {
+		t.Fatalf("policy evaluations read %d times, want once: the selection probe already established the selected PR's CI state", evaluations)
+	}
+}
+
+// TestGatherPRContextADOIgnoresUnlabelledCanceledBuild pins the interaction
+// with #6817 (#7402): a rejected build policy whose build was CANCELED is no
+// verdict, so the discovery probe — which reads CI through the same
+// HasPullRequestCIFailures classification — must not promote the PR. An
+// infrastructure cancellation never drives agentic remediation.
+func TestGatherPRContextADOIgnoresUnlabelledCanceledBuild(t *testing.T) {
+	code, stdout, stderr, briefPath, _ := runADOUnlabelledBuildCycle(t, "canceled")
+	if code != 0 {
+		t.Fatalf("gather-pr-context (ADO): code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want no-work: a canceled build is not failing CI", stdout)
+	}
+	assertNoWorkProviderStageResult(t, briefPath)
+}
+
+// runADOUnlabelledBuildCycle runs one scheduled ADO gather-pr-context cycle
+// over a single unlabelled goober PR whose blocking build policy is rejected
+// and whose build finished with buildResult. It returns the stage's exit,
+// output, the result-file path and how many times policy evaluations were
+// read.
+func runADOUnlabelledBuildCycle(t *testing.T, buildResult string) (int, string, string, string, int) {
+	t.Helper()
 	const (
 		prBranch = "goobers/impl/run-ado-362"
 		prNumber = 359
@@ -244,6 +288,9 @@ func TestGatherPRContextADOSelectsUnlabelledFailingBuild(t *testing.T) {
 		mux.ServeHTTP(w, r)
 	})
 	handleADOSelectedPRRejectedBuild(t, mux, repo, prNumber, headSHA, baseSHA)
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/build/builds/314", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{"id": 314, "result": buildResult, "status": "completed"})
+	})
 	mux.HandleFunc("/"+repo.Owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
 			"authenticatedUser": map[string]string{"id": "merge-review-bot-guid", "providerDisplayName": login},
@@ -276,21 +323,5 @@ func TestGatherPRContextADOSelectsUnlabelledFailingBuild(t *testing.T) {
 	t.Chdir(wt.Path)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", root)
-	if code != 0 {
-		t.Fatalf("gather-pr-context (ADO): code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
-	}
-	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
-	if err != nil {
-		t.Fatalf("read brief: %v (stdout %q)", err, stdout)
-	}
-	var brief apiv1.RemediationBrief
-	if err := json.Unmarshal(data, &brief); err != nil {
-		t.Fatalf("decode brief %s: %v", data, err)
-	}
-	if brief.SelectedNumber != strconv.Itoa(prNumber) || brief.HasFailingCI != "true" {
-		t.Fatalf("brief selected #%s hasFailingCI=%s, want #%d with failing CI: an unlabelled red build must be remediated", brief.SelectedNumber, brief.HasFailingCI, prNumber)
-	}
-	if evaluations != 1 {
-		t.Fatalf("policy evaluations read %d times, want once: the selection probe already established the selected PR's CI state", evaluations)
-	}
+	return code, stdout, stderr, filepath.Join(wt.Path, remediationBriefResultFile), evaluations
 }
