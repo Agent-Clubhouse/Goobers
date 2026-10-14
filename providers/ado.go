@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -805,15 +806,7 @@ func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
 // reported as unknown (ok=false), never as a remaining value of 0 (ADO-N40):
 // callers must not confuse "no header" with "quota exhausted".
 func adoRemainingHeader(resp *http.Response) (remaining int, ok bool) {
-	raw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining"))
-	if raw == "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return 0, false
-	}
-	return n, true
+	return parseRemainingHeader(resp.Header.Get("X-RateLimit-Remaining"))
 }
 
 func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
@@ -855,14 +848,14 @@ func (p *ADOProvider) observeRateLimitDelay(ctx context.Context, resp *http.Resp
 	if raw == "" {
 		return
 	}
-	seconds, err := strconv.ParseFloat(raw, 64)
-	if err != nil || seconds <= 0 {
+	delay, ok := adoRateLimitDelay(raw)
+	if !ok {
 		return
 	}
 	ev := RateLimitEvent{
 		Provider: ProviderADO,
 		Scope:    rateLimitScope(endpoint),
-		Delay:    time.Duration(seconds * float64(time.Second)),
+		Delay:    delay,
 		Outcome:  RateLimitOutcomeDelayed,
 		Endpoint: endpoint,
 		Status:   resp.StatusCode,
@@ -872,6 +865,27 @@ func (p *ADOProvider) observeRateLimitDelay(ctx context.Context, resp *http.Resp
 		ev.RemainingKnown = true
 	}
 	p.observeRateLimit(ctx, ev)
+}
+
+// adoRateLimitDelay parses X-RateLimit-Delay, a (possibly fractional) count
+// of seconds. Anything that is not a finite positive number of seconds that a
+// time.Duration can represent is rejected rather than coerced: ParseFloat
+// accepts "NaN", "Inf" and "1e300", and converting any of those to a Duration
+// is undefined or overflows into a nonsensical delay_ms in the stage sidecar
+// (#5960). The bound is the same one retryAfterDelay applies to Retry-After.
+func adoRateLimitDelay(raw string) (time.Duration, bool) {
+	seconds, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 {
+		return 0, false
+	}
+	if seconds >= float64(maxDurationSeconds) {
+		return 0, false
+	}
+	delay := time.Duration(seconds * float64(time.Second))
+	if delay <= 0 {
+		return 0, false
+	}
+	return delay, true
 }
 
 type adoPatchOperation struct {

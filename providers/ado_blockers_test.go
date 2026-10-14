@@ -214,28 +214,59 @@ func TestNormalizeADODoneStatesMergesCaseDuplicateTypes(t *testing.T) {
 	}
 }
 
-// TestADOListWorkItemBlockersNamesOnlyOpenPredecessors pins the exclusion
-// reason's input: only predecessors that still block are returned, each
-// reported open, and a predecessor the batch omits still blocks.
-func TestADOListWorkItemBlockersNamesOnlyOpenPredecessors(t *testing.T) {
-	_, provider := newADOBlockerFixture(t, []int{41, 42, 43, 44, 42},
+// TestADOListWorkItemBlockersReportsEveryPredecessorWithItsState pins
+// #5960's blockers contract, matching GitHub's: every predecessor is returned
+// once, in relation order, with State "open" while it still blocks and
+// "closed" once it is in a done state. A Resolved Bug is done by default, so
+// it reads closed; a User Story's Resolved state is InProgress, so it reads
+// open; a predecessor the batch omits still blocks.
+func TestADOListWorkItemBlockersReportsEveryPredecessorWithItsState(t *testing.T) {
+	_, provider := newADOBlockerFixture(t, []int{41, 42, 43, 44, 45, 42},
 		adoBlockerItem(41, "Bug", "Closed"),
 		adoBlockerItem(42, "Bug", "Active"),
 		adoBlockerItem(43, "User Story", "Resolved"),
+		adoBlockerItem(45, "Bug", "Resolved"),
 	)
 	blockers, err := provider.ListWorkItemBlockers(context.Background(), adoBlockerRepo, "100")
 	if err != nil {
 		t.Fatalf("ListWorkItemBlockers: %v", err)
 	}
-	var ids []string
+	var got []string
 	for _, blocker := range blockers {
-		if blocker.State != "open" {
-			t.Errorf("blocker %s state = %q, want open", blocker.ID, blocker.State)
-		}
-		ids = append(ids, blocker.ID)
+		got = append(got, blocker.ID+"="+blocker.State)
 	}
-	if got, want := strings.Join(ids, ","), "42,43,44"; got != want {
-		t.Fatalf("blockers = %s, want %s (closed 41 left out, 44 omitted by the batch still blocks)", got, want)
+	want := "41=closed,42=open,43=open,44=open,45=closed"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("blockers = %s, want %s", strings.Join(got, ","), want)
+	}
+	if blockers[0].Status != WorkItemStatusDone || blockers[4].Status != WorkItemStatusDone {
+		t.Fatalf("done predecessors status = %q/%q, want done", blockers[0].Status, blockers[4].Status)
+	}
+
+	blocked, err := provider.HasOpenWorkItemBlocker(context.Background(), adoBlockerRepo, "100")
+	if err != nil || !blocked {
+		t.Fatalf("HasOpenWorkItemBlocker = %v, %v; want true, nil", blocked, err)
+	}
+}
+
+// TestADOListWorkItemBlockersAllDoneStillListsThem: an item whose only
+// predecessors are done is not blocked, but the list still names them —
+// "no blockers" and "every blocker closed" are different answers.
+func TestADOListWorkItemBlockersAllDoneStillListsThem(t *testing.T) {
+	_, provider := newADOBlockerFixture(t, []int{41, 45},
+		adoBlockerItem(41, "Bug", "Closed"),
+		adoBlockerItem(45, "User Story", "Removed"),
+	)
+	blockers, err := provider.ListWorkItemBlockers(context.Background(), adoBlockerRepo, "100")
+	if err != nil {
+		t.Fatalf("ListWorkItemBlockers: %v", err)
+	}
+	if len(blockers) != 2 || blockers[0].State != "closed" || blockers[1].State != "closed" {
+		t.Fatalf("blockers = %#v, want both predecessors reported closed", blockers)
+	}
+	blocked, err := provider.HasOpenWorkItemBlocker(context.Background(), adoBlockerRepo, "100")
+	if err != nil || blocked {
+		t.Fatalf("HasOpenWorkItemBlocker = %v, %v; want false, nil", blocked, err)
 	}
 }
 

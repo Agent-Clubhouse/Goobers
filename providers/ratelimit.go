@@ -17,6 +17,10 @@ const (
 	// Server clocks and reset windows can be slightly ahead of the client.
 	rateLimitResetSlack     = 2 * time.Second
 	defaultRateLimitMaxWait = 5 * time.Minute
+	// maxDurationSeconds is the largest whole number of seconds a
+	// time.Duration can hold; server-directed delays beyond it are rejected
+	// rather than allowed to overflow.
+	maxDurationSeconds = (1<<63 - 1) / int64(time.Second)
 )
 
 // AsRateLimitError recovers a typed rate-limit error from err, provider-
@@ -51,9 +55,7 @@ func AsRateLimitError(err error) (*RateLimitError, bool) {
 		RemainingRaw:  responseErr.rateLimitRemaining,
 		ResetRaw:      responseErr.rateLimitReset,
 	}
-	if remaining, convErr := strconv.Atoi(responseErr.rateLimitRemaining); convErr == nil {
-		limit.Remaining = remaining
-	}
+	limit.Remaining, limit.RemainingKnown = parseRemainingHeader(responseErr.rateLimitRemaining)
 	now := time.Now().UTC()
 	if seconds, convErr := strconv.ParseInt(responseErr.rateLimitReset, 10, 64); convErr == nil && seconds > 0 {
 		limit.Reset = time.Unix(seconds, 0).UTC()
@@ -66,12 +68,26 @@ func AsRateLimitError(err error) (*RateLimitError, bool) {
 	return limit, true
 }
 
+// parseRemainingHeader parses an X-RateLimit-Remaining value. Absent,
+// malformed or negative values are reported as unknown (ok=false), never as a
+// genuine remaining count of 0.
+func parseRemainingHeader(raw string) (remaining int, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 func retryAfterDelay(value string, now time.Time) (time.Duration, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0, false
 	}
-	const maxDurationSeconds = (1<<63 - 1) / int64(time.Second)
 	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 && seconds <= maxDurationSeconds {
 		return time.Duration(seconds) * time.Second, true
 	}
