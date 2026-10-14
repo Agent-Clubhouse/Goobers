@@ -55,6 +55,7 @@ function connections(gaggle: Gaggle): GaggleConnections {
         repository: {
           provider: gaggle.project.provider,
           owner: gaggle.project.owner,
+          project: gaggle.project.project,
           name: gaggle.project.name,
         },
         accessMode: "read-write",

@@ -444,3 +444,27 @@ func TestBuildStageEnvLetsADeclaredGOMAXPROCSWinOverTheAmbientOne(t *testing.T) 
 			procenv.GOMAXPROCS, declared, ambient)
 	}
 }
+
+// TestBuildStageEnvRefusesTheGaggleBacklogStamp: a local stage cannot author
+// its gaggle's backlog settings (#5957). The CLI trusts GOOBERS_GAGGLE_BACKLOG
+// over the instance config because only the dispatcher sets it, so a
+// workflow's declared env naming it is refused, as a stage pod refuses it,
+// and the operator passthrough never carries the daemon's own value.
+func TestBuildStageEnvRefusesTheGaggleBacklogStamp(t *testing.T) {
+	_, err := buildStageEnv(context.Background(), nil, nil, nil, "run", "gaggle", "wf", "", "", "", true, nil,
+		map[string]string{GaggleBacklogEnvVar: `{"project":"attacker"}`}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), GaggleBacklogEnvVar) {
+		t.Fatalf("buildStageEnv error = %v, want a refusal naming %s", err, GaggleBacklogEnvVar)
+	}
+
+	t.Setenv(GaggleBacklogEnvVar, `{"project":"from-the-daemon-environment"}`)
+	env, err := buildStageEnv(context.Background(), nil, nil, nil, "run", "gaggle", "wf", "", "", "", true, nil, nil, []string{GaggleBacklogEnvVar}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, GaggleBacklogEnvVar+"=") {
+			t.Fatalf("env carries %q through the operator passthrough", entry)
+		}
+	}
+}

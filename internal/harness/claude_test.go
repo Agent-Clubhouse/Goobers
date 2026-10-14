@@ -305,7 +305,14 @@ func TestBuildClaudeArgvResolvesAutomaticModel(t *testing.T) {
 				t.Fatal(err)
 			}
 			argv, sessionArg := buildClaudeArgv([]string{"claude"}, defaultClaudeExtraArgs, model, "high", "session-1")
-			want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"}
+			want := []string{
+				"claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions",
+				"--disallowedTools",
+				"Bash(pkill:*)", "Bash(killall:*)",
+				"Bash(/usr/bin/pkill:*)", "Bash(/usr/bin/killall:*)",
+				"Bash(/bin/pkill:*)", "Bash(/bin/killall:*)",
+				"Bash(/usr/bin/env pkill:*)", "Bash(/usr/bin/env killall:*)",
+			}
 			if model == "claude-sonnet-5" {
 				want = append(want, "--model", model)
 			}

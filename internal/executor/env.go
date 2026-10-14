@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"sort"
@@ -136,6 +137,13 @@ const (
 	// configuration files to a pod.
 	NeedsHumanAssigneeEnvVar = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
 
+	// GaggleBacklogEnvVar is the gaggle backlog settings stamp the dispatcher
+	// puts on a goobers-CLI stage pod (dispatcher.GaggleBacklogEnv, #5957).
+	// The CLI trusts it over any config it can read, so only the dispatcher
+	// may set it: the local executor never stamps it, refuses a declared
+	// environment that names it, and drops it from the operator passthrough.
+	GaggleBacklogEnvVar = "GOOBERS_GAGGLE_BACKLOG"
+
 	// AdditionalReposEnvVar carries the comma-separated names of the gaggle's
 	// read-only reference-repo checkouts (MGV-11 #1286) available to this stage,
 	// so a stage can discover which GOOBERS_ADDITIONAL_REPO_* vars are set.
@@ -198,7 +206,7 @@ func baseEnv(extra []string) []string {
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
 func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, error) {
-	env := baseEnv(extraEnvAllowlist)
+	env := baseEnv(withoutDispatcherStamps(extraEnvAllowlist))
 	keys := make([]string, 0, len(declaredEnv))
 	for key := range declaredEnv {
 		keys = append(keys, key)
@@ -208,6 +216,12 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		value := declaredEnv[key]
 		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, '\x00') {
 			return nil, errors.New("executor: declared environment contains an invalid name or value")
+		}
+		if key == GaggleBacklogEnvVar {
+			// A stage pod refuses the same override (dispatcher
+			// refuseControlEnvOverrides): a workflow must not author its
+			// gaggle's backlog settings.
+			return nil, fmt.Errorf("executor: declared environment may not set %s: it carries the gaggle's backlog settings, which only the dispatcher stamps", GaggleBacklogEnvVar)
 		}
 		env = append(env, key+"="+value)
 	}
@@ -284,6 +298,19 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		env = appendCredentialExpiry(env, set, capability)
 	}
 	return env, nil
+}
+
+// withoutDispatcherStamps drops dispatcher-owned stamps from the operator's
+// passthrough list, so the daemon's own environment cannot hand a local stage
+// a value only the dispatcher may set.
+func withoutDispatcherStamps(names []string) []string {
+	kept := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != GaggleBacklogEnvVar {
+			kept = append(kept, name)
+		}
+	}
+	return kept
 }
 
 // appendCredentialExpiry appends CredentialExpiryEnvVar for capability when

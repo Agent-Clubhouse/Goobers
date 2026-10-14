@@ -365,7 +365,10 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	env.issueProvider = issueProvider
 	env.ghIssueProvider = githubProviderForBacklogExtras(provider)
 	if ado := adoProviderForBacklogDefaults(provider); ado != nil {
-		applyGaggleDoneStates(env.root, ado)
+		if err := applyGaggleDoneStates(env.root, ado); err != nil {
+			pf(env.stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }
@@ -1359,8 +1362,37 @@ func (session *backlogClaimSession) skipMalformedClaim(ctx context.Context, inde
 		return 1
 	}
 	session.forgetNewClaim(malformed.ID)
+	if errors.Is(cause, providers.ErrLabelHistoryRevisionMismatch) {
+		return session.reportRevisionMismatch(malformed.ID, index, cause)
+	}
 	pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, cause)
 	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	return 0
+}
+
+// adoRevisionMismatchAnnotation journals an ADO item skipped because its
+// update history ended before its current revision.
+const adoRevisionMismatchAnnotation = "backlog.ado-label-history-revision-mismatch"
+
+// reportRevisionMismatch skips an item exactly as skipMalformedClaim does,
+// but loudly (#5960). The ADO ready-age walk assumes one update per revision.
+// If that assumption is ever wrong, every ADO claim fails this way, so the
+// skip carries a stable error code on stderr and in the instance journal
+// instead of reading as one more malformed item.
+func (session *backlogClaimSession) reportRevisionMismatch(itemID string, index int, cause error) int {
+	pf(session.env.stderr, "error: [%s] skipping eligible item %s: its ADO update history ends before its current revision, which breaks the one-update-per-revision assumption ready ages rely on; if every ADO item reports this, file an issue: %v\n",
+		providers.ErrorCodeLabelHistoryRevisionMismatch, itemID, cause)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	if err := session.annotations.Append(journal.Event{
+		Type:     journal.EventRunnerAnnotation,
+		Workflow: session.workflow,
+		RunID:    session.runID,
+		Reason:   providers.ErrorCodeLabelHistoryRevisionMismatch,
+		Runner:   map[string]any{"annotation": adoRevisionMismatchAnnotation, "itemId": itemID, "errorCode": providers.ErrorCodeLabelHistoryRevisionMismatch},
+	}); err != nil {
+		pf(session.env.stderr, "error: journal %s for item %s: %v\n", providers.ErrorCodeLabelHistoryRevisionMismatch, itemID, err)
+		return 1
+	}
 	return 0
 }
 
@@ -2895,7 +2927,7 @@ func filterDeclaredDependencyEligibilityDebug(
 			filtered = append(filtered, item)
 			continue
 		}
-		blocked, err := dispatcher.HasOpenWorkItemBlocker(ctx, repo, item.ID)
+		blocked, reason, err := nativeDependencyVerdict(ctx, dispatcher, provider, repo, item.ID)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("check item %s: %v", item.ID, err))
 			if excluded != nil {
@@ -2908,7 +2940,7 @@ func filterDeclaredDependencyEligibilityDebug(
 			continue
 		}
 		if excluded != nil {
-			excluded(item, nativeDependencyExclusionReason(ctx, provider, repo, item))
+			excluded(item, reason)
 		}
 	}
 	return filtered, warnings
@@ -2918,19 +2950,36 @@ type workItemBlockerLister interface {
 	ListWorkItemBlockers(context.Context, providers.RepositoryRef, string) ([]providers.WorkItem, error)
 }
 
-func nativeDependencyExclusionReason(
+// nativeDependencyGenericReason is the exclusion reason when the provider
+// can say an item is blocked but not by what.
+const nativeDependencyGenericReason = "native issue dependencies include an open blocker"
+
+// nativeDependencyVerdict decides whether a work item has an open native
+// blocker and, if so, the exclusion reason naming the blockers — from ONE
+// provider read (#5960). A provider that lists its blockers is asked once and
+// both answers come from that list; asking HasOpenWorkItemBlocker first and
+// listing afterwards read an excluded item's dependencies twice (on ADO, the
+// successor, the predecessor batch and their state categories, all twice).
+// A blocker with no state counts as open, failing closed.
+//
+// backlog.blockers still governs either path: an undeclared capability goes
+// through the Dispatcher and fails closed with ErrUnsupported (CONF-5,
+// #2078), and a provider that cannot list is asked only the yes/no question.
+func nativeDependencyVerdict(
 	ctx context.Context,
+	dispatcher *providers.Dispatcher,
 	provider backlogIssueProvider,
 	repo providers.RepositoryRef,
-	item providers.WorkItem,
-) string {
+	id string,
+) (bool, string, error) {
 	lister, ok := provider.(workItemBlockerLister)
-	if !ok {
-		return "native issue dependencies include an open blocker"
+	if !ok || !dispatcher.Capabilities().Has(providers.CapBacklogBlockers) {
+		blocked, err := dispatcher.HasOpenWorkItemBlocker(ctx, repo, id)
+		return blocked, nativeDependencyGenericReason, err
 	}
-	blockers, err := lister.ListWorkItemBlockers(ctx, repo, item.ID)
+	blockers, err := lister.ListWorkItemBlockers(ctx, repo, id)
 	if err != nil {
-		return "native issue dependencies include an open blocker"
+		return false, "", err
 	}
 	ids := make([]string, 0, len(blockers))
 	for _, blocker := range blockers {
@@ -2939,10 +2988,10 @@ func nativeDependencyExclusionReason(
 		}
 	}
 	if len(ids) == 0 {
-		return "native issue dependencies include an open blocker"
+		return false, "", nil
 	}
 	sort.Strings(ids)
-	return fmt.Sprintf("native issue dependencies include open blocker(s): %s", strings.Join(ids, ","))
+	return true, fmt.Sprintf("native issue dependencies include open blocker(s): %s", strings.Join(ids, ",")), nil
 }
 
 // openPRIssueNumbers returns the set of issue numbers already referenced by

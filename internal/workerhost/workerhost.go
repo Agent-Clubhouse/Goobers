@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/temporaldial"
+	"github.com/goobers/goobers/internal/workerrouting"
 )
 
 // ErrAbandonedWork reports a drain that expired with activities still in
@@ -93,7 +94,7 @@ type Host struct {
 	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
 	// describeRouting and its cadence back the #5950 routing health check.
-	describeRouting        func(ctx context.Context, c client.Client) (client.WorkerDeploymentRoutingConfig, error)
+	describeRouting        func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
 	routingDelay           time.Duration
 	routingInterval        time.Duration
 	childSettlementTimeout time.Duration
@@ -124,7 +125,7 @@ func New(cfg Config) (*Host, error) {
 		bootstrap.RegisterEngine(w, c, cfg.Deps)
 		return w
 	}
-	h.describeRouting = describeDeploymentRouting
+	h.describeRouting = workerrouting.DescribeRouting
 	h.routingDelay = routingCheckDelay
 	h.routingInterval = routingCheckInterval
 	h.childSettlementTimeout = ChildSettlementTimeout

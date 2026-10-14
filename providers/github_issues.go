@@ -62,6 +62,10 @@ type RateLimitError struct {
 	Endpoint  string
 	Status    int
 	Remaining int
+	// RemainingKnown is true only when the remaining-quota header was present
+	// and parsed; Remaining is meaningless otherwise, and Error() then says
+	// "remaining unknown" rather than misreporting an exhausted quota (#5960).
+	RemainingKnown bool
 	// Reset is when GitHub says the quota window rolls over — zero when the
 	// response carried no X-RateLimit-Reset header.
 	Reset time.Time
@@ -82,7 +86,11 @@ func (e *RateLimitError) Error() string {
 	if provider == "" {
 		provider = "provider"
 	}
-	msg := fmt.Sprintf("%s rate limited (%s): %s: status %d, remaining %d", provider, ErrorCodeRateLimited, e.Endpoint, e.Status, e.Remaining)
+	remaining := "remaining unknown"
+	if e.RemainingKnown {
+		remaining = fmt.Sprintf("remaining %d", e.Remaining)
+	}
+	msg := fmt.Sprintf("%s rate limited (%s): %s: status %d, %s", provider, ErrorCodeRateLimited, e.Endpoint, e.Status, remaining)
 	if !e.Reset.IsZero() {
 		msg += ", resets at " + e.Reset.UTC().Format(time.RFC3339)
 	}
@@ -93,15 +101,16 @@ func (e *RateLimitError) Error() string {
 // record rateLimitPlan produced for telemetry.
 func rateLimitErrorFrom(ev RateLimitEvent) *RateLimitError {
 	return &RateLimitError{
-		Provider:      ev.Provider,
-		Endpoint:      ev.Endpoint,
-		Status:        ev.Status,
-		Remaining:     ev.Remaining,
-		Reset:         ev.Reset,
-		Secondary:     ev.Secondary,
-		RetryAfterRaw: ev.RetryAfterRaw,
-		RemainingRaw:  ev.RemainingRaw,
-		ResetRaw:      ev.ResetRaw,
+		Provider:       ev.Provider,
+		Endpoint:       ev.Endpoint,
+		Status:         ev.Status,
+		Remaining:      ev.Remaining,
+		RemainingKnown: ev.RemainingKnown,
+		Reset:          ev.Reset,
+		Secondary:      ev.Secondary,
+		RetryAfterRaw:  ev.RetryAfterRaw,
+		RemainingRaw:   ev.RemainingRaw,
+		ResetRaw:       ev.ResetRaw,
 	}
 }
 
@@ -157,9 +166,7 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 	}
 	if rem := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")); rem != "" {
 		ev.RemainingRaw = rem
-		if n, err := strconv.Atoi(rem); err == nil {
-			ev.Remaining = n
-		}
+		ev.Remaining, ev.RemainingKnown = parseRemainingHeader(rem)
 	}
 	if reset := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")); reset != "" {
 		ev.ResetRaw = reset
@@ -736,6 +743,7 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string][]string{"labels": plan.Add}, nil); err != nil {
 			return err
 		}
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
 	}
 	for _, label := range plan.Remove {
 		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "labels", label)
@@ -745,6 +753,8 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 		if err := doStatus(ctx, p, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
 			return err
 		}
+		// A missing label is also a confirmed absence; refresh prior list views.
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
 	}
 	return nil
 }

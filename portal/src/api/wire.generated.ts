@@ -986,7 +986,18 @@ export const goWireFixtures = {
             "leaseStatus": "released",
             "providerMarker": "recorded"
           },
-          "potentialBlockers": [],
+          "potentialBlockers": [
+            "review escalate: reviewer requested a human decision"
+          ],
+          "blockers": [
+            {
+              "code": "review_not_passed",
+              "source": "review",
+              "message": "review escalate: reviewer requested a human decision",
+              "observedAt": "2026-07-18T12:36:56Z",
+              "ageMillis": 60000
+            }
+          ],
           "reliability": {
             "state": "escalated",
             "currentStage": "review",
@@ -1143,7 +1154,18 @@ export const goWireFixtures = {
         "leaseStatus": "released",
         "providerMarker": "recorded"
       },
-      "potentialBlockers": [],
+      "potentialBlockers": [
+        "review escalate: reviewer requested a human decision"
+      ],
+      "blockers": [
+        {
+          "code": "review_not_passed",
+          "source": "review",
+          "message": "review escalate: reviewer requested a human decision",
+          "observedAt": "2026-07-18T12:36:56Z",
+          "ageMillis": 60000
+        }
+      ],
       "reliability": {
         "state": "escalated",
         "currentStage": "review",

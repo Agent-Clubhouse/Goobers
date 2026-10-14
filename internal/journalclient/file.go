@@ -550,7 +550,7 @@ func (f *FileCrossRun) BranchOwnership(ctx context.Context, req BranchOwnershipR
 	var terminalAt time.Time
 	for _, event := range events {
 		if event.Type == journal.EventRefTouched && event.ExternalRef != nil &&
-			event.ExternalRef.Provider == "github" && event.ExternalRef.Kind == "branch" && event.ExternalRef.ID == req.Branch {
+			event.ExternalRef.Kind == "branch" && event.ExternalRef.ID == req.Branch {
 			owned = true
 		}
 		if event.Type == journal.EventRunFinished {

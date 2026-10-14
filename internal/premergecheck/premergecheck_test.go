@@ -2,11 +2,15 @@ package premergecheck
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/testgit"
 )
@@ -192,5 +196,60 @@ func TestParseCommandsSkipsBlankAndCommentLines(t *testing.T) {
 	got := ParseCommands("\n# compile\ngo build ./...\r\n  go vet -tags integration ./...  \n")
 	if len(got) != 2 || strings.Join(got[0], " ") != "go build ./..." || strings.Join(got[1], " ") != "go vet -tags integration ./..." {
 		t.Fatalf("ParseCommands = %q", got)
+	}
+}
+
+func TestTailKeepsValidUTF8AtBoundary(t *testing.T) {
+	output := "€" + strings.Repeat("a", maxOutputTail-1)
+	got := tail(output)
+	if !utf8.ValidString(got) {
+		t.Fatalf("tail produced invalid UTF-8: %q", got[:8])
+	}
+	if want := "…" + strings.Repeat("a", maxOutputTail-1); got != want {
+		t.Fatalf("tail = %d bytes, want continuation bytes dropped", len(got))
+	}
+}
+
+func TestTailWriterKeepsLastBytes(t *testing.T) {
+	w := &tailWriter{limit: 8}
+	for i := 0; i < 100; i++ {
+		_, _ = w.Write([]byte("abcd"))
+	}
+	_, _ = w.Write([]byte("wxyz1"))
+	if got := w.String(); got != "bcdwxyz1" {
+		t.Fatalf("tail = %q", got)
+	}
+}
+
+func TestRunCommandBoundsOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh")
+	}
+	out, err := runCommand(context.Background(), t.TempDir(), os.Environ(),
+		[]string{"sh", "-c", "i=0; while [ $i -lt 2000 ]; do echo 0123456789abcdef0123456789abcdef; i=$((i+1)); done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > 2*maxOutputTail {
+		t.Fatalf("output len %d exceeds bound", len(out))
+	}
+}
+
+func TestRunCommandCancelKillsGrandchildHoldingPipe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := runCommand(ctx, t.TempDir(), os.Environ(), []string{"sh", "-c", "sleep 30 & sleep 30"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if d := time.Since(start); d > 4*time.Second {
+		t.Fatalf("took %v after cancellation", d)
 	}
 }

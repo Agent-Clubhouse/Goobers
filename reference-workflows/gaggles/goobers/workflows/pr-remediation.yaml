@@ -299,6 +299,13 @@ spec:
         kind: "ci-poll"
         retryFailedChecksMaxAttempts: "1"
         retryFailedChecksBackoffSeconds: "30s"
+        # #6817: CI that finished without a verdict (cancelled, never
+        # started, stale) and stays that way after the rerun is reported as
+        # ciStatus=pending, not as a stage failure, so remediation-checkpoint
+        # still fixes the PR's other causes and the no-verdict checks reach
+        # the agent as ci-checks.json evidence. Failing the stage would end
+        # every cycle here, uncharged, and reselect the same PR forever.
+        noVerdict: "continue"
         carryOutputs: "selectedNumber,head,remediationCauses,conflict,conflictLocations,attemptedHeadSha,rebaseBaseSha,policyExcluded,policyExcludedReason"
       inputsFrom:
         prNumber: selectedNumber

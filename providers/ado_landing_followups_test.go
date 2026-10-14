@@ -94,6 +94,34 @@ func TestADOProviderDetectMergePolicyDefaultBranchScope(t *testing.T) {
 	}
 }
 
+// TestADOIdentitiesBaseURL pins where reviewer identity lookups go: on the
+// dev.azure.com topology the identities API lives on the separate
+// vssps.dev.azure.com host, and every other BaseURL (an on-prem server, a
+// look-alike host, a test double) is reused as-is.
+func TestADOIdentitiesBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, baseURL, want string
+	}{
+		{"cloud", "https://dev.azure.com", "https://vssps.dev.azure.com"},
+		{"cloud with trailing slash", "https://dev.azure.com/", "https://vssps.dev.azure.com"},
+		{"cloud host in another case", "https://Dev.Azure.com", "https://vssps.Dev.Azure.com"},
+		{"cloud with explicit port", "https://dev.azure.com:443", "https://vssps.dev.azure.com:443"},
+		{"on-prem server", "https://ado.example.com/tfs", "https://ado.example.com/tfs"},
+		{"look-alike host", "https://notdev.azure.com", "https://notdev.azure.com"},
+		{"subdomain of the cloud host", "https://org.dev.azure.com", "https://org.dev.azure.com"},
+		{"legacy visualstudio.com host", "https://org.visualstudio.com", "https://org.visualstudio.com"},
+		{"test double", "http://127.0.0.1:41234", "http://127.0.0.1:41234"},
+		{"unparseable", "://bad", "://bad"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = tc.baseURL })
+			if got := p.identitiesBaseURL(); got != tc.want {
+				t.Fatalf("identitiesBaseURL(%q) = %q, want %q", tc.baseURL, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestADOProviderRequestReviewRefusesAmbiguousAndPartial proves RequestReview
 // never guesses between several matching identities, and resolves every
 // reviewer before adding any: one reviewer that fails leaves the pull request

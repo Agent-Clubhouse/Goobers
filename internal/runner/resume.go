@@ -193,7 +193,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	in.Target = strings.TrimSpace(in.Target)
@@ -381,7 +381,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if res, refused, verr := r.verifyResumePin(jr, &in, rd, id); refused || verr != nil {
 		return res, verr
 	}
-	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	if err := resetRetryBackoffOnResume(jr, events); err != nil {
@@ -397,12 +397,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err := validateHumanResumeDecision(in, humanProgress); err != nil {
 		return Result{}, err
 	}
-	rerun, seedEvents, err := pendingRerun(events, in.Machine)
+	rerun, seedEvents, err := resumeSeedEvents(events, in.Machine)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: restore pending stage rerun for run %q: %w", in.RunID, err)
-	}
-	if rerun == nil {
-		seedEvents = events
 	}
 
 	f, err := r.newResumeFrame(ctx, jr, rd, in, id, registrar, events, seedEvents, rerun, humanProgress)
@@ -677,6 +674,24 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 	return nil
 }
 
+// resumeSeedEvents selects the events a resume reconstructs from — the
+// pending rerun's seed, or the whole journal — and refuses them when a
+// recorded selective-parallel visit conflicts (a typed workflow_integrity
+// failure, never repaired by rerunning the source task).
+func resumeSeedEvents(events []journal.Event, machine *workflow.Machine) (*rerunContext, []journal.Event, error) {
+	rerun, seedEvents, err := pendingRerun(events, machine)
+	if err != nil {
+		return nil, nil, err
+	}
+	if rerun == nil {
+		seedEvents = events
+	}
+	if err := verifyRecordedSelections(seedEvents, machine); err != nil {
+		return nil, nil, err
+	}
+	return rerun, seedEvents, nil
+}
+
 // newResumeFrame reconstructs the walk-local state a live run only ever holds
 // in memory — pointers accumulated so far (#107) and the last finished stage's
 // result (#108), the subject a resumed gate needs. Both are exactly what a live
@@ -693,7 +708,10 @@ func (r *Runner) newResumeFrame(
 	jr *journal.Run, rd *journal.Reader, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
 ) (*resumeFrame, error) {
-	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
+	activeParallel, parallelStart, err := pendingParallel(seedEvents, in.Machine)
+	if err != nil {
+		return nil, fmt.Errorf("runner: resume run %q: %w", in.RunID, err)
+	}
 	pointerEvents := seedEvents
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
@@ -727,6 +745,7 @@ func (r *Runner) newResumeFrame(
 		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
 	}
 	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+	ws.fanOutResults = reconstructFanOutResults(in.RunID, seedEvents, in.Machine)
 	ws.visitedStages = stageVisitSeed(seedEvents)
 	ws.parallel = activeParallel
 	ws.fanIn = pendingFanIn(seedEvents, in.Machine)
@@ -814,6 +833,9 @@ func (f *resumeFrame) resolveStartState(rd *journal.Reader, machine *workflow.Ma
 	if ws.parallel != nil {
 		current := ws.parallel.current()
 		switch {
+		case current == nil && ws.parallel.runnable() == 0:
+			// The frozen selection skipped every branch; only the join remains.
+			startState = workflow.TargetJoin
 		case current == nil:
 			return "", fmt.Errorf("runner: restore active parallel %q: no current branch", ws.parallel.spec.Name)
 		case current.settled:
@@ -1566,44 +1588,26 @@ func runnerUint64(value any) uint64 {
 }
 
 // pendingParallel rebuilds the in-memory execution state for the latest
-// parallel.started that has not reached parallel.finished. A run.resumed event
-// starts a new run segment, so prior branch state must not cross that boundary;
-// run.finished alone does not, because RerunStage can reopen the branch.
-func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parallelExec, int) {
-	start := -1
-	for i, event := range events {
-		switch event.Type {
-		case journal.EventParallelStarted:
-			start = i
-		case journal.EventParallelFinished:
-			if start >= 0 && event.Parallel == events[start].Parallel {
-				start = -1
-			}
-		case journal.EventRunResumed:
-			if event.Target == workflow.TargetJoin {
-				if parallel, _, ok := interventionParallelContext(events[:i], machine, event.Gate); ok {
-					for candidate := i - 1; candidate >= 0; candidate-- {
-						if events[candidate].Type == journal.EventParallelStarted &&
-							events[candidate].Parallel == parallel {
-							start = candidate
-							break
-						}
-					}
-				}
-			} else {
-				start = -1
-			}
-		}
+// fan-out visit — a parallel.started or map.started — that has not reached its
+// finish event (design plan-driven-dynamic-fan-out.md §8). findPendingFanOut
+// locates the visit and verifies every map visit strictly; the branch set is
+// rebuilt from the start event alone, then branch lifecycle and stage events
+// are applied by numeric branch id. A map visit whose records are missing,
+// extra, duplicated or conflicting returns a typed workflow_integrity error.
+func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parallelExec, int, error) {
+	pending, err := findPendingFanOut(events, machine)
+	if err != nil {
+		return nil, -1, err
 	}
-	if start < 0 {
-		return nil, -1
+	if pending.start < 0 {
+		return nil, -1, nil
 	}
-
-	spec, ok := machine.Parallel(events[start].Parallel)
-	if !ok {
-		return nil, -1
+	start := pending.start
+	par := pending.exec(events, machine)
+	if par == nil {
+		return nil, -1, nil
 	}
-	par := newParallelExec(spec)
+	spec := par.spec
 	branchByID := func(id int) (*branchState, int) {
 		for i, branch := range par.branches {
 			if branch.id == id {
@@ -1752,7 +1756,7 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			}
 		}
 	}
-	return par, start
+	return par, start, nil
 }
 
 func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {
@@ -1889,6 +1893,7 @@ func fanInFromFinished(spec apiv1.Parallel, event journal.Event) *parallelExec {
 		}
 		branch.status = outcome.Status
 		branch.artifacts = outcome.Artifacts
+		branch.reason = outcome.Reason
 		branch.settled = true
 	}
 	return fanIn
@@ -2341,7 +2346,7 @@ func resumeItem(rd *journal.Reader, id journal.RunIdentity) (*apiv1.BacklogItem,
 // ownership of malformed/missing-journal diagnostics and terminalization.
 func (r *Runner) admitChildWorkflowResume(ctx context.Context, machine *workflow.Machine, dir string) error {
 	if machine != nil {
-		return r.admitParentExecution(ctx, machine)
+		return r.admitExecution(ctx, machine)
 	}
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
@@ -2355,5 +2360,5 @@ func (r *Runner) admitChildWorkflowResume(ctx context.Context, machine *workflow
 	if err != nil {
 		return nil
 	}
-	return r.admitParentExecution(ctx, machine)
+	return r.admitExecution(ctx, machine)
 }

@@ -91,25 +91,44 @@ func (p *ADOProvider) CreatePullRequest(ctx context.Context, req PullRequestRequ
 	return p.adoPullRequestResult(req.Repository, out), nil
 }
 
+// adoPullRequestResult maps a pull request this provider just created or
+// updated in repo. Only here may the URL fall back to the caller's repository
+// (createdPullRequestWebURL): the request was addressed to repo, so the
+// pull request is known to live there.
 func (p *ADOProvider) adoPullRequestResult(repo RepositoryRef, pr adoPullRequest) PullRequestResult {
 	draft := pr.IsDraft
-	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: p.pullRequestWebURL(repo, pr), Draft: &draft}
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: p.createdPullRequestWebURL(repo, pr), Draft: &draft}
 }
 
 // pullRequestWebURL resolves the browser-navigable URL for a pull request
-// (ADO-N39). ADO's API responses only sometimes populate _links.web.href; when
-// it's empty the raw pr.URL is an _apis/git/... endpoint that 404s in a
-// browser and, worse, is indistinguishable in shape from any other
-// repository's PR — a config that targets repo A could silently be satisfied
-// by a PR in repo B. Building the browser URL from the server-returned
-// repository/project identity keeps a cross-repository PR's URL failing the
-// caller's repository match instead of passing an opaque API URL through.
-func (p *ADOProvider) pullRequestWebURL(repo RepositoryRef, pr adoPullRequest) string {
+// read back from the server (ADO-N39). ADO's API responses only sometimes
+// populate _links.web.href; when it's empty the browser URL is built from the
+// server-returned repository/project identity, so a cross-repository PR's URL
+// fails the caller's repository match (run.go) instead of passing.
+//
+// With neither, the raw pr.URL (an _apis/git/... endpoint, possibly empty)
+// is returned unchanged. It must never be synthesized from the caller's own
+// repository here (#5960): on a read path that would assert the very
+// identity the caller is about to check, turning run.go's fail-closed
+// repository match into a tautology. The raw form names the server's
+// repository (often by GUID), which the caller can verify or reject.
+func (p *ADOProvider) pullRequestWebURL(pr adoPullRequest) string {
 	if pr.Links.Web.Href != "" {
 		return pr.Links.Web.Href
 	}
 	if pr.Repository.Name != "" && pr.Repository.Project.Name != "" {
 		return p.webURL(pr.Repository.Project.Name, "_git", pr.Repository.Name, "pullrequest", strconv.Itoa(pr.PullRequestID))
+	}
+	return pr.URL
+}
+
+// createdPullRequestWebURL is pullRequestWebURL for the OpenPullRequest
+// create/update paths, which alone may fall back to the caller's repository:
+// the write was addressed to that repository, so naming it is a fact, not an
+// assumption.
+func (p *ADOProvider) createdPullRequestWebURL(repo RepositoryRef, pr adoPullRequest) string {
+	if pr.Links.Web.Href != "" || (pr.Repository.Name != "" && pr.Repository.Project.Name != "") {
+		return p.pullRequestWebURL(pr)
 	}
 	return p.entityWebURL(repo, "pr", strconv.Itoa(pr.PullRequestID))
 }
@@ -167,6 +186,7 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		if err := p.do(ctx, http.MethodPut, endpoint, map[string]int{"vote": 0}, nil); err != nil {
 			return err
 		}
+		observeProviderMutation(ctx, p.Client, ProviderADO)
 	}
 	return nil
 }
@@ -216,7 +236,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
 		Body:               pr.Description,
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
-		URL:                p.pullRequestWebURL(req.Repository, pr.adoPullRequest),
+		URL:                p.pullRequestWebURL(pr.adoPullRequest),
 		Integrity:          apiintegrity.Unapproved,
 	}
 	projectName := pr.Repository.Project.Name
@@ -286,6 +306,9 @@ func (p *ADOProvider) policyEvaluations(ctx context.Context, projectName, projec
 func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, projectID, pullID string, humanOnly map[string]bool) (CheckState, []CheckDetail, error) {
 	evals, err := p.policyEvaluations(ctx, projectName, projectID, pullID)
 	if err != nil {
+		return "", nil, err
+	}
+	if err := p.markCanceledBuilds(ctx, projectName, evals); err != nil {
 		return "", nil, err
 	}
 	state, checks := p.reducePolicyEvaluations(evals, projectName, humanOnly)
@@ -522,7 +545,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		out = append(out, PullRequestSummary{
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
-			URL:                p.pullRequestWebURL(req.Repository, pr),
+			URL:                p.pullRequestWebURL(pr),
 			Title:              pr.Title,
 			Author:             author,
 			RequestedReviewers: requestedReviewers,
@@ -729,6 +752,10 @@ type adoPolicyEvaluation struct {
 	Context struct {
 		BuildID json.Number `json:"buildId"`
 	} `json:"context"`
+	// buildCanceled is never decoded: markCanceledBuilds sets it when the
+	// build a rejected build policy evaluated was canceled, which is no
+	// verdict on the code (#6817).
+	buildCanceled bool
 }
 
 // stringSet builds a lookup set from a slice, ignoring empty entries.

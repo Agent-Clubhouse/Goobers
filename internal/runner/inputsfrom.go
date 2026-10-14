@@ -149,7 +149,7 @@ func resolveBranchInput(value string, machine *workflow.Machine, completed stage
 	switch branch.status {
 	case journal.BranchFailed, journal.BranchTimedOut, journal.BranchCancelled:
 		return nil, false, true, true
-	case journal.BranchNoOutput:
+	case journal.BranchNoOutput, journal.BranchSkipped:
 		return nil, false, true, true
 	}
 	if ref.stage == "" {

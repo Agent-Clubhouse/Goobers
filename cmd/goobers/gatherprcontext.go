@@ -292,71 +292,208 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 	if err != nil {
 		return failGatherPRAdapter(stderr, err)
 	}
-	selected, done, code := gatherPRContextSelectCandidate(gatherPRContextCandidateSelection{root: root, repo: repo, base: base, headPrefix: prefix, target: target, listed: listed, eligible: eligible, blockedDependents: blocked, hasPinnedCandidate: pinned, eligibleInput: prs, heldBranches: held, supportsBehindBaseFallback: a.features.siblingBlocking, behindBase: a.behindBase}, stdout, stderr)
+	ranking, done, code := gatherPRContextRankCandidates(gatherPRContextCandidateSelection{root: root, repo: repo, base: base, headPrefix: prefix, target: target, listed: listed, eligible: eligible, blockedDependents: blocked, hasPinnedCandidate: pinned, eligibleInput: prs, heldBranches: held, supportsBehindBaseFallback: a.features.siblingBlocking, behindBase: a.behindBase}, stdout, stderr)
 	if done {
 		return code
 	}
+	return gatherPRContextClaimProgressable(ctx, root, repo, a, ranking, stdout, stderr)
+}
+
+// gatherPRContextClaimProgressable claims candidates in ranked order and
+// gathers context for the first one that can make progress this cycle.
+//
+// #6482: a claimed PR whose diff is unchanged since its last recorded
+// escalation (including one this run visibly parks) cannot progress, but it
+// used to end the WHOLE cycle as no-work — so a parked PR at the front of the
+// order burned every scheduled run while the PRs behind it waited. It is now
+// skipped: its park bookkeeping still happens exactly as before, this run's
+// claim on it is surrendered, and the claim protocol moves on to the next
+// candidate. When every strong candidate this run could claim was skipped,
+// the behind-base fallback is consulted exactly as if no strong candidate
+// had existed (ranking.fallback), so a stuck PR cannot suppress that tier
+// either. The cycle reports no-work only when nothing claimable could
+// progress, naming each skip.
+func gatherPRContextClaimProgressable(
+	ctx context.Context,
+	root string,
+	repo providers.RepositoryRef,
+	a gatherPRContextAdapter,
+	ranking gatherPRContextRanking,
+	stdout, stderr io.Writer,
+) int {
+	candidates, fallback := ranking.candidates, ranking.fallback
+	var skipped []string
+	for {
+		claimed, err := claimEligiblePullRequestInOrder(root, repo, candidates)
+		if err != nil {
+			pf(stderr, "error: claim eligible PR: %v\n", err)
+			return 1
+		}
+		if claimed != nil {
+			candidates = remediationCandidatesAfter(candidates, claimed.Number)
+			gathered, skip, code := gatherPRContextForCandidate(ctx, root, repo, a, *claimed, stdout, stderr)
+			if code != 0 {
+				return code
+			}
+			if skip == "" {
+				return writeGatherPRContextResult(gathered.pr, gathered.behind, gathered.verdict, gathered.comments, stdout, stderr)
+			}
+			skipped = append(skipped, skip)
+			pf(stdout, "skipping PR #%d this cycle: %s\n", claimed.Number, skip)
+		}
+		if claimed == nil || len(candidates) == 0 {
+			next, err := takeRemediationFallback(&fallback, skipped)
+			if err != nil {
+				pf(stderr, "error: determine behind-base fallback after skipping every strong candidate: %v\n", err)
+				return 1
+			}
+			if len(next) == 0 {
+				return writeNoWorkResult(stdout, stderr, gatherPRContextExhaustedReason(skipped, claimed == nil))
+			}
+			candidates = next
+		}
+		if claimed != nil {
+			if err := releasePRRemediationClaim(root); err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("release skipped PR #%d's claim", claimed.Number), err, remediationBriefResultFile)
+			}
+		}
+	}
+}
+
+// gatherPRContextRanking is the claim order gather-pr-context tries, plus the
+// behind-base fallback it consults when every strong candidate it could claim
+// turned out unable to progress (nil when there is none to consult: the
+// ranked set already IS the fallback tier, the lane cannot supply one, or the
+// run is targeted or pinned to one PR).
+type gatherPRContextRanking struct {
+	candidates []providers.PullRequestSummary
+	fallback   func() ([]providers.PullRequestSummary, error)
+}
+
+// takeRemediationFallback hands out the behind-base fallback at most once,
+// and only after a skip: a strong tier exhausted by OTHER runs' claims is
+// being worked, which is exactly when the fallback must stay suppressed.
+func takeRemediationFallback(fallback *func() ([]providers.PullRequestSummary, error), skipped []string) ([]providers.PullRequestSummary, error) {
+	if len(skipped) == 0 || *fallback == nil {
+		return nil, nil
+	}
+	next := *fallback
+	*fallback = nil
+	return next()
+}
+
+// gatherPRContextExhaustedReason is the no-work reason once the claim protocol
+// has nothing more to try: the skips this run made, if any, then — when the
+// claim ledger is why it stopped — the claims that held the rest.
+func gatherPRContextExhaustedReason(skipped []string, heldElsewhere bool) string {
+	const claimedElsewhere = "every eligible PR is already claimed by another run"
+	switch {
+	case len(skipped) == 0:
+		return claimedElsewhere
+	case !heldElsewhere:
+		return strings.Join(skipped, "; ")
+	}
+	return strings.Join(skipped, "; ") + "; every other eligible PR is already claimed by another run"
+}
+
+// remediationCandidatesAfter drops the candidates the claim protocol has
+// already passed over: everything up to and including number. Those ahead of
+// it were held by other runs when this run tried them.
+func remediationCandidatesAfter(candidates []providers.PullRequestSummary, number int) []providers.PullRequestSummary {
+	for i, candidate := range candidates {
+		if candidate.Number == number {
+			return candidates[i+1:]
+		}
+	}
+	return nil
+}
+
+type gatheredPRContext struct {
+	pr       providers.PullRequestSummary
+	behind   bool
+	verdict  *apiv1.Verdict
+	comments []providers.Comment
+}
+
+// gatherPRContextForCandidate checks out the claimed PR and loads its context.
+// A non-empty skip reason means the PR cannot make progress this cycle; a
+// non-zero code is a stage failure.
+func gatherPRContextForCandidate(
+	ctx context.Context,
+	root string,
+	repo providers.RepositoryRef,
+	a gatherPRContextAdapter,
+	selected providers.PullRequestSummary,
+	stdout, stderr io.Writer,
+) (gatheredPRContext, string, int) {
 	if a.features.checkState {
 		if err := a.resolveCheck(ctx, &selected); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
+			return gatheredPRContext{}, "", failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
 		}
 	}
 	if _, err := checkoutExistingBranchWithAuth(ctx, ".", selected.Head, a.gitAuth); err != nil {
 		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selected.Number, selected.Head, err)
-		return 1
+		return gatheredPRContext{}, "", 1
 	}
 	behind, err := isBehindBase(".", selected.BaseSHA)
 	if err != nil {
 		pf(stderr, "error: check base ancestry for PR #%d: %v\n", selected.Number, err)
-		return 1
+		return gatheredPRContext{}, "", 1
 	}
 	comments, err := a.comments(ctx, strconv.Itoa(selected.Number))
 	if err != nil {
-		return failProviderStage(stderr, a.commentOperation(selected.Number), err, remediationBriefResultFile)
+		return gatheredPRContext{}, "", failProviderStage(stderr, a.commentOperation(selected.Number), err, remediationBriefResultFile)
 	}
 	author, err := a.login(ctx)
 	if err != nil {
-		return failProviderStage(stderr, "resolve merge-review verdict author", err, remediationBriefResultFile)
+		return gatheredPRContext{}, "", failProviderStage(stderr, "resolve merge-review verdict author", err, remediationBriefResultFile)
 	}
-	if handled, code := handleGatherPRContextUnchangedDigest(root, a, ctx, selected, comments, stdout, stderr); handled {
-		return code
+	if skip, code := handleGatherPRContextUnchangedDigest(root, a, ctx, selected, comments, stdout, stderr); skip != "" || code != 0 {
+		return gatheredPRContext{}, skip, code
 	}
-	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(root, repo, selected.Number, comments, author), comments, stdout, stderr)
+	return gatheredPRContext{pr: selected, behind: behind, verdict: gatherPRVerdict(root, repo, selected.Number, comments, author), comments: comments}, "", 0
 }
+
 func gatherPRContextPullRequests(ctx context.Context, a gatherPRContextAdapter, repo providers.RepositoryRef, base, prefix string, target remediationTarget) ([]providers.PullRequestSummary, error) {
 	return remediationPullRequestCandidates(ctx, repo, base, prefix, target, a.list, a.get)
 }
-func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (bool, int) {
+
+// handleGatherPRContextUnchangedDigest returns a non-empty skip reason when
+// pr's diff is unchanged since its last recorded escalation, so remediation
+// cannot progress on it this cycle — parking it visibly once the unchanged
+// digest has been observed remediationNoopLimit times. A non-zero code is a
+// stage failure. The caller decides what a skip means for the cycle (#6482).
+func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (string, int) {
 	state, prior, ok := latestRemediationStateForPR(pr.Body, comments)
 	if !ok || !state.Escalated || state.LastDiffDigest == "" {
-		return false, 0
+		return "", 0
 	}
 	digest, err := diffDigest(".", pr.BaseSHA)
 	if err != nil {
 		pf(stderr, "error: compute diff digest for PR #%d: %v\n", pr.Number, err)
-		return true, 1
+		return "", 1
 	}
 	if digest != state.LastDiffDigest {
-		return false, 0
+		return "", 0
 	}
 	l := layoutFor(root)
 	record, reset, err := recordGatherPRContextDigestNoop(l, pr.Number, remediationNoopSignature{HeadSHA: pr.HeadSHA, DiffDigest: digest}, os.Getenv(executor.RunIDEnvVar), hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}))
 	if err != nil {
 		pf(stderr, "error: record unchanged remediation digest for PR #%d: %v\n", pr.Number, err)
-		return true, 1
+		return "", 1
 	}
 	if reset {
 		pf(stdout, "PR #%d: escalation cleared by an operator — bypassing the unchanged-digest guard for a fresh remediation attempt\n", pr.Number)
-		return false, 0
+		return "", 0
 	}
 	if record.Attempts < remediationNoopLimit {
-		return true, writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle", pr.Number, digest))
+		return fmt.Sprintf("PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle", pr.Number, digest), 0
 	}
 	base := pr.BaseSHA
 	if a.features.liveBaseTip {
 		base, err = a.baseTip(ctx, pr.Base)
 		if err != nil {
-			return true, failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", pr.Base, pr.Number), err, remediationBriefResultFile)
+			return "", failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", pr.Base, pr.Number), err, remediationBriefResultFile)
 		}
 	}
 	state.Cycles++
@@ -380,7 +517,7 @@ func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter,
 	// infra-fault path, reached here by a different route (#4174).
 	state.NoopGuardRepark = true
 	if err := a.park(ctx, pr, prior, renderRemediationComment(state)); err != nil {
-		return true, failGatherPRAdapter(stderr, err)
+		return "", failGatherPRAdapter(stderr, err)
 	}
 	gaggle := l.Gaggle()
 	if gaggle == "" {
@@ -388,9 +525,9 @@ func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter,
 	}
 	if err := markRemediationNoopParked(l, remediationNoopKey(gaggle, pr.Number)); err != nil {
 		pf(stderr, "error: mark unchanged-digest PR #%d parked: %v\n", pr.Number, err)
-		return true, 1
+		return "", 1
 	}
-	return true, writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d was visibly parked after %d unchanged-digest runs", pr.Number, record.Attempts))
+	return fmt.Sprintf("PR #%d was visibly parked after %d unchanged-digest runs", pr.Number, record.Attempts), 0
 }
 
 // writeGatherPRContextResult preserves the versioned brief contract after a
@@ -540,13 +677,15 @@ type gatherPRContextCandidateSelection struct {
 	behindBase                 func(providers.PullRequestSummary) (bool, error)
 }
 
-// gatherPRContextSelectCandidate applies the shared candidate ranking, target
-// narrowing, and claim protocol after the provider-specific eligibility pass.
-func gatherPRContextSelectCandidate(
+// gatherPRContextRankCandidates applies the shared candidate ranking and
+// target narrowing after the provider-specific eligibility pass, returning the
+// candidates in the order the claim protocol must try them.
+func gatherPRContextRankCandidates(
 	selection gatherPRContextCandidateSelection,
 	stdout, stderr io.Writer,
-) (providers.PullRequestSummary, bool, int) {
+) (gatherPRContextRanking, bool, int) {
 	candidates := selection.eligible
+	var fallback func() ([]providers.PullRequestSummary, error)
 	var refusal string
 	if !selection.hasPinnedCandidate {
 		filtered := selection.eligible
@@ -558,17 +697,21 @@ func gatherPRContextSelectCandidate(
 			time.Now(),
 		)
 		if err != nil {
-			return providers.PullRequestSummary{}, true, failProviderStage(
+			return gatherPRContextRanking{}, true, failProviderStage(
 				stderr, "filter claimed remediation candidates", err, remediationBriefResultFile,
 			)
 		}
 		if selection.supportsBehindBaseFallback {
-			candidates, _, err = selectRemediationCandidates(
+			var best remediationPriority
+			candidates, best, err = selectRemediationCandidates(
 				unclaimed, selection.blockedDependents, selection.behindBase,
 			)
 			if err != nil {
 				pf(stderr, "error: determine remediation eligibility: %v\n", err)
-				return providers.PullRequestSummary{}, true, 1
+				return gatherPRContextRanking{}, true, 1
+			}
+			if best > remediationPriorityBehindBase && !selection.target.targeted {
+				fallback = skippedStrongTierFallback(unclaimed, candidates, selection.blockedDependents, selection.behindBase)
 			}
 		} else {
 			// No ADO sibling-election evidence exists, so it cannot supply the
@@ -593,7 +736,7 @@ func gatherPRContextSelectCandidate(
 		)
 	}
 	if refusal != "" {
-		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, refusal)
+		return gatherPRContextRanking{}, true, writeNoWorkResult(stdout, stderr, refusal)
 	}
 	if len(candidates) == 0 {
 		// #3098: a run that arrived here with a pinned candidate did not fail to
@@ -602,21 +745,38 @@ func gatherPRContextSelectCandidate(
 		// reason reads as an idle tick, which is how a lost handoff stayed
 		// invisible across two consecutive runs while failing CI went unfixed.
 		if selection.hasPinnedCandidate {
-			return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr,
+			return gatherPRContextRanking{}, true, writeNoWorkResult(stdout, stderr,
 				pinnedHandoffLossReason(selection.eligibleInput, selection.heldBranches))
 		}
-		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
+		return gatherPRContextRanking{}, true, writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
+	return gatherPRContextRanking{candidates: candidates, fallback: fallback}, false, 0
+}
 
-	claimed, err := claimEligiblePullRequestInOrder(selection.root, selection.repo, candidates)
-	if err != nil {
-		pf(stderr, "error: claim eligible PR: %v\n", err)
-		return providers.PullRequestSummary{}, true, 1
+// skippedStrongTierFallback is the behind-base tier as selectRemediationCandidates
+// would have computed it had none of strong been present (#6482): what lets a
+// crowned or solitary lander behind its base still be updated on a cycle whose
+// every strong candidate was unable to progress. Solitude is judged over the
+// whole unclaimed lane, as it always is — a lane holding a stuck PR and one
+// other does not make that other PR solitary.
+func skippedStrongTierFallback(
+	unclaimed, strong []providers.PullRequestSummary,
+	blockedDependents map[int]int,
+	behindBase func(providers.PullRequestSummary) (bool, error),
+) func() ([]providers.PullRequestSummary, error) {
+	return func() ([]providers.PullRequestSummary, error) {
+		inStrongTier := make(map[int]bool, len(strong))
+		for _, pr := range strong {
+			inStrongTier[pr.Number] = true
+		}
+		rest := make([]providers.PullRequestSummary, 0, len(unclaimed))
+		for _, pr := range unclaimed {
+			if !inStrongTier[pr.Number] {
+				rest = append(rest, pr)
+			}
+		}
+		return behindBaseRemediationCandidates(rest, blockedDependents, behindBase, len(unclaimed) == 1)
 	}
-	if claimed == nil {
-		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
-	}
-	return *claimed, false, 0
 }
 
 // gatherPRVerdict reads the PR's authoritative remediation-verdict
@@ -717,11 +877,12 @@ func shouldParkRemediation(pr providers.PullRequestSummary, blockedState blocked
 	return !hasAnyLabel(pr.Labels, []string{needsRemediationLabel})
 }
 
-// remediationPriorityFor classifies a single PR's remediation urgency,
-// independent of its peers — needs-remediation outranks failing CI, and
-// neither implies anything about whether the PR is merely behind its base
-// (that's a fallback tier, checked only when nothing clears these two: see
-// selectRemediationCandidates). Escalation exclusion is NOT this function's
+// remediationPriorityFor classifies a single PR's remediation signal,
+// independent of its peers — a needs-remediation label or failing CI is a
+// strong signal (the two share one oldest-first order: see
+// strongRemediationCandidates), and neither implies anything about whether the
+// PR is merely behind its base (that's a fallback tier, checked only when
+// nothing clears these two: see selectRemediationCandidates). Escalation exclusion is NOT this function's
 // concern: runGatherPRContext's self-heal-aware escalationStillBlocks
 // (#716) pre-filters prs before selectRemediationCandidates ever sees them,
 // so every pr reaching here has already cleared that check — a static
@@ -777,10 +938,11 @@ func resolveRemediationCheckStates(ctx context.Context, provider remediationProv
 }
 
 // selectRemediationCandidates returns every open PR carrying a strong
-// remediation signal, ordered by tier (needs-remediation, then failing CI) and
-// PR number. Offering all tiers to the claim ledger lets concurrent runs fall
-// through when stronger candidates are already claimed instead of leaving
-// lower-tier eligible work idle.
+// remediation signal (needs-remediation or failing CI), oldest PR first — see
+// strongRemediationCandidates for why the two strong signals share one FIFO
+// order rather than ranking as separate tiers. Offering every strong candidate
+// to the claim ledger lets concurrent runs fall through when earlier
+// candidates are already claimed instead of leaving eligible work idle.
 //
 // Only when no PR clears either strong tier does a lander merely behind its
 // base become eligible, and then only if it is either crowned or alone. A crown
@@ -805,7 +967,20 @@ func selectRemediationCandidates(prs []providers.PullRequestSummary, blockedDepe
 		return candidates, best, nil
 	}
 
-	solitary := len(prs) == 1
+	candidates, err := behindBaseRemediationCandidates(prs, blockedDependents, behindBase, len(prs) == 1)
+	if err != nil {
+		return nil, remediationPriorityNone, err
+	}
+	if len(candidates) > 0 {
+		best = remediationPriorityBehindBase
+	}
+	return candidates, best, nil
+}
+
+// behindBaseRemediationCandidates is the fallback tier: every crowned lander
+// (or the lane's solitary PR) in prs that is behind its base, oldest first.
+func behindBaseRemediationCandidates(prs []providers.PullRequestSummary, blockedDependents map[int]int, behindBase func(providers.PullRequestSummary) (bool, error), solitary bool) ([]providers.PullRequestSummary, error) {
+	var candidates []providers.PullRequestSummary
 	for _, pr := range prs {
 		// Same rationale as remediationPriorityFor: escalation exclusion
 		// already happened upstream (self-heal-aware), so no re-check here.
@@ -814,46 +989,51 @@ func selectRemediationCandidates(prs []providers.PullRequestSummary, blockedDepe
 		}
 		behind, err := behindBase(pr)
 		if err != nil {
-			return nil, remediationPriorityNone, err
+			return nil, err
 		}
 		if behind {
 			candidates = append(candidates, pr)
 		}
 	}
-	if len(candidates) > 0 {
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].Number < candidates[j].Number
-		})
-		best = remediationPriorityBehindBase
-	}
-	return candidates, best, nil
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Number < candidates[j].Number
+	})
+	return candidates, nil
 }
 
 func strongRemediationCandidates(prs []providers.PullRequestSummary) ([]providers.PullRequestSummary, remediationPriority) {
-	byPriority := map[remediationPriority][]providers.PullRequestSummary{}
+	var candidates []providers.PullRequestSummary
 	best := remediationPriorityNone
 	for _, pr := range prs {
 		priority := remediationPriorityFor(pr)
 		if priority == remediationPriorityNone {
 			continue
 		}
-		byPriority[priority] = append(byPriority[priority], pr)
-		if priority > best {
-			best = priority
-		}
+		candidates = append(candidates, pr)
+		best = max(best, priority)
 	}
-	for _, priority := range []remediationPriority{
-		remediationPriorityNeedsRemediation,
-		remediationPriorityFailingCI,
-	} {
-		tier := byPriority[priority]
-		sort.Slice(tier, func(i, j int) bool {
-			return tier[i].Number < tier[j].Number
-		})
-		byPriority[priority] = tier
-	}
-	candidates := append([]providers.PullRequestSummary(nil), byPriority[remediationPriorityNeedsRemediation]...)
-	candidates = append(candidates, byPriority[remediationPriorityFailingCI]...)
+	// #6482: needs-remediation and failing CI share ONE oldest-first (lowest
+	// PR number) order. They used to be two strict tiers — every
+	// needs-remediation PR ahead of every failing-CI PR — so any steady supply
+	// of needs-remediation PRs (pr-comment-watch adds them on its own) pushed a
+	// PR whose build went red behind it indefinitely: each cycle remediated the
+	// head of the needs-remediation tier and the failing-CI tier never reached
+	// the front. Under one FIFO order a PR waits only behind OLDER open PRs'
+	// remediation turns — ordered by PR age, not by how long the signal has
+	// been present. PR numbers only grow, so a stream of newly opened PRs can
+	// never overtake it. An older PR can re-enter ahead of it when it picks
+	// up a signal again (a new comment relabelled by pr-comment-watch, a
+	// merge-queue eviction, a merge-review demotion, post-merge triage), but
+	// there are finitely many older open PRs and each re-entry needs such an
+	// outside event, so the wait stays bounded in practice — deterministic,
+	// with no clock or durable state. Both signals already
+	// block merge equally (merge-review refuses either), so neither has a
+	// claim to starve the other. The behind-base fallback is still a separate,
+	// weaker tier: selectRemediationCandidates reaches it only when no strong
+	// candidate exists.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Number < candidates[j].Number
+	})
 	return candidates, best
 }
 
@@ -913,7 +1093,7 @@ const remediationAlgorithmFIFO = "fifo"
 // incidental behaviour. FIFO is the only value accepted today; an unknown value
 // warns and is treated as fifo (never a hard failure — mirrors resolveMinSeverity
 // and resolveElectionPolicy). Honouring it is a no-op on the selection path,
-// which already orders same-tier candidates by ascending PR number.
+// which already orders strong candidates by ascending PR number.
 func validateRemediationAlgorithm(stderr io.Writer) {
 	if raw := providerInput("remediationAlgorithm", remediationAlgorithmFIFO); raw != remediationAlgorithmFIFO {
 		pf(stderr, "warning: remediationAlgorithm %q is not supported (only %q); using %q\n",

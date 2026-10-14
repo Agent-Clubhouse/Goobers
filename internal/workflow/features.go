@@ -119,6 +119,7 @@ func AllFeatures() []Feature {
 		merge(feature)
 	}
 	features = append(features, childWorkflowFeatures()...)
+	features = append(features, fanOutFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
@@ -601,6 +602,7 @@ func featuresForV31Workflow(def Definition) ([]Feature, error) {
 		return nil, err
 	}
 	features = append(features, usedChildWorkflowFeatures(def)...)
+	features = append(features, usedFanOutFeatures(def)...)
 	used := map[FeatureID]struct{}{}
 	add := func(ids ...FeatureID) {
 		for _, id := range ids {

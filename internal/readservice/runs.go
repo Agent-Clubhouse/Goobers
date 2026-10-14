@@ -252,6 +252,11 @@ type OperatorRunSummary struct {
 	// PotentialBlockers is strictly about the RUN: things impeding this run's
 	// own progress. Never put a read-side capability gap here (#3346).
 	PotentialBlockers []string `json:"potentialBlockers"`
+	// Blockers is PotentialBlockers with provenance — code, source, observed
+	// time and age — at most one per (source, code), with blockers whose
+	// condition has since been observed cleared already removed (#5404).
+	// PotentialBlockers is kept as its display text for older consumers.
+	Blockers []OperatorBlocker `json:"blockers,omitempty"`
 	// DiagnosticsLimitations records what THIS read invocation could not
 	// establish — a missing credential, an unreachable provider — as opposed to
 	// anything wrong with the run. A `goobers status` run without
@@ -1740,6 +1745,8 @@ func summarizeRunForStage(
 		operator.Issue = &OperatorIssue{Number: run.identity.Trigger.Ref}
 	}
 	var lastHeartbeat time.Time
+	var latestErrorAt, reviewAt *time.Time
+	var reviewProblem string
 	providerClaimRecorded := false
 	claimedIssueFound := false
 	seenStages := make(map[string]struct{})
@@ -1777,6 +1784,7 @@ func summarizeRunForStage(
 		if event.Error != nil {
 			detail := *event.Error
 			operator.LatestError = &detail
+			latestErrorAt = eventTimePointer(event)
 		}
 		switch event.Type {
 		case journal.EventStageHeartbeat:
@@ -1812,16 +1820,15 @@ func summarizeRunForStage(
 				continue
 			}
 			review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
+			reviewAt, reviewProblem = eventTimePointer(event), "" // only the latest review counts (#5404)
 			if event.Ref != nil {
 				data, err := run.reader.ArtifactBytes(*event.Ref)
 				if err != nil {
-					operator.PotentialBlockers = append(operator.PotentialBlockers,
-						fmt.Sprintf("review rationale unavailable: %v", err))
+					reviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
 				} else {
 					var verdict apiv1.Verdict
 					if err := json.Unmarshal(data, &verdict); err != nil {
-						operator.PotentialBlockers = append(operator.PotentialBlockers,
-							fmt.Sprintf("review rationale is invalid: %v", err))
+						reviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
 					} else {
 						populateOperatorReview(review, verdict)
 					}
@@ -1915,15 +1922,7 @@ func summarizeRunForStage(
 			operator.NextTransition = "finish " + currentStage
 		}
 	}
-	if operator.LatestError != nil {
-		operator.PotentialBlockers = append(operator.PotentialBlockers,
-			operator.LatestError.Code+": "+operator.LatestError.Message)
-	}
-	if operator.Review != nil && operator.Review.Verdict != "" &&
-		operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
-		operator.PotentialBlockers = append(operator.PotentialBlockers,
-			"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
-	}
+	operator.addRecordedBlockers(reviewProblem, reviewAt, latestErrorAt, observedAt)
 	durationEnd := observedAt
 	if finishedAt != nil {
 		durationEnd = *finishedAt
@@ -3221,6 +3220,7 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if err := s.decorateRunLineage(ctx, out.Runs); err != nil {
 		return RunList{}, err
 	}
+	s.decorateBlockerClears(ctx, out.Runs)
 	return annotated[RunList](ctx, s, out), nil
 }
 
@@ -3245,6 +3245,7 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err := s.decorateRunLineage(ctx, summaries); err != nil {
 		return RunDetail{}, err
 	}
+	s.decorateBlockerClears(ctx, summaries)
 	if !s.readModelReads {
 		lineage, err := s.offlineRunLineage(ctx, summaries[0])
 		if err != nil {

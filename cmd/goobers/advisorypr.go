@@ -174,7 +174,7 @@ func runAdvisoryPRReset(args []string, stdout, stderr io.Writer) int {
 func advisoryClaimKey(repo providers.RepositoryRef, reviewType string, number int) claimsclient.Key {
 	return claimsclient.Key{
 		Gaggle: providerGaggle(), Provider: string(providers.ProviderGitHub),
-		ExternalID: "advisory-pr/" + advisoryScope(repo) + "/" + reviewType + "/" + strconv.Itoa(number),
+		ExternalID: claimsclient.AdvisoryPRItemPrefix + advisoryScope(repo) + "/" + reviewType + "/" + strconv.Itoa(number),
 	}
 }
 

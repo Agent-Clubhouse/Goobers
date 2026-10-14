@@ -17,3 +17,17 @@ func File(path string) string {
 	}
 	return "file://" + (&url.URL{Path: slashed}).EscapedPath()
 }
+
+// FromPath resolves path to an absolute file URI. It returns "" for an empty
+// path, a path carrying query syntax (which a DSN suffix cannot be appended
+// to), or a path that cannot be made absolute.
+func FromPath(path string) string {
+	if path == "" || strings.Contains(path, "?") {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	return File(abs)
+}

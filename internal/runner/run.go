@@ -459,6 +459,13 @@ type Config struct {
 	// The returned integer is the effective inventory capacity used for the
 	// scan, and bounds the observation set without imposing a second policy.
 	RecoveryEvents func(context.Context, string) ([]journal.Event, int, error)
+	// RecoveryObserved receives the outcome of every post-cleanup recovery
+	// observation RecoveryEvents was asked for: nil when the retained state
+	// was observed and journaled, the observation failure otherwise, with the
+	// time the observation started. It is how a later success retracts an
+	// earlier recovery observation blocker (#5404); it must not block and
+	// must not fail the stage.
+	RecoveryObserved func(runID string, observedAt time.Time, err error)
 	// InstanceID is pinned into each new run, never inferred during replay.
 	InstanceID string
 	// NewDeterministic constructs this run's deterministic-task executor
@@ -1061,7 +1068,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	effectiveControls, err := r.resolveRunControls(&in.RunControls)
@@ -1423,7 +1430,10 @@ type walkState struct {
 	// completed contains every completed stage's journaled Outputs, so a
 	// stage-qualified inputsFrom reference can reach past the immediately
 	// preceding stage (#562).
-	completed            stageOutputs
+	completed stageOutputs
+	// fanOutResults holds mapped (DSL 3.1 map) results per branch occurrence;
+	// completed cannot, because a map repeats one stage name (§6.3).
+	fanOutResults        *fanOutResults
 	parallel             *parallelExec
 	parallelRootPointers []apiv1.ContextPointer
 	fanIn                *parallelExec
@@ -1483,6 +1493,7 @@ func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state str
 		reg:           reg,
 		state:         state,
 		completed:     stageOutputs{},
+		fanOutResults: newFanOutResults(),
 		visitedStages: map[string]bool{},
 	}
 }
@@ -1531,7 +1542,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	// past the failure that parked it.
 	r.releaseBaselineParks(ctx, ws)
 	ws.gateEval = r.newWalkGateEvaluator(ws)
-	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
+	runConcurrent := func(p apiv1.Parallel, existing *parallelExec, selection *journal.ParallelSelection) (Result, bool, error) {
 		if err := validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))
 			return res, true, failErr
@@ -1541,7 +1552,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			return res, true, failErr
 		}
 		outcome, err := r.runConcurrentParallel(
-			ctx, ws.jr, ws.in, p, existing, ws.pointers, ws.lastStage, ws.lastResult,
+			ctx, ws.jr, ws.in, parallelVisit{spec: p, existing: existing, selection: selection}, ws.pointers, ws.lastStage, ws.lastResult,
 			ws.completed, ws.workspaceBranch, ws.reg, &ws.stepBudget,
 		)
 		ws.steps = int(ws.stepBudget.Load())
@@ -1599,7 +1610,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		return Result{}, false, nil
 	}
 	if ws.parallel != nil && parallelUsesDispatcher(ws.in.Machine, ws.parallel.spec) {
-		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel)
+		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel, nil)
 		if done || err != nil {
 			return result, err
 		}
@@ -1641,7 +1652,9 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			}
 			settling := ws.parallel.current()
 			status := ws.parallel.currentStatus()
-			if !settling.settled {
+			// A selective parallel whose selection skipped every branch
+			// reaches its join with no current branch: nothing to settle.
+			if settling != nil && !settling.settled {
 				if err := ws.jr.Append(journal.Event{
 					Type: journal.EventBranchFinished, Branch: settling.id,
 					Parallel: ws.parallel.spec.Name, BranchName: settling.name,
@@ -1719,39 +1732,10 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 
 		// Entering a parallel: fan out into its declared branches.
 		if p, ok := ws.in.Machine.Parallel(ws.state); ok {
-			if err := supportedFailurePolicy(p.FailurePolicy); err != nil {
-				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
-					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
+			result, done, err := r.enterParallel(ctx, ws, p, runConcurrent)
+			if done || err != nil {
+				return result, err
 			}
-			if parallelUsesDispatcher(ws.in.Machine, p) {
-				result, done, err := runConcurrent(p, nil)
-				if done || err != nil {
-					return result, err
-				}
-				continue
-			}
-			ws.parallel = newParallelExec(p)
-			ws.fanIn = nil
-			ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
-			ws.jr.SetMachineState(ws.state)
-			if err := ws.jr.Append(journal.Event{
-				Type: journal.EventParallelStarted, Parallel: p.Name,
-				Completeness: ws.parallel.completeness(),
-			}); err != nil {
-				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
-			}
-			first := ws.parallel.current()
-			ws.jr.SetBranchCursors(ws.parallel.cursors())
-			if err := ws.jr.Append(journal.Event{
-				Type: journal.EventBranchStarted, Branch: first.id,
-				Parallel: p.Name, BranchName: first.name, Stage: first.start,
-			}); err != nil {
-				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
-			}
-			first.started = true
-			first.startedAt = time.Now()
-			ws.jr.SetBranch(first.id)
-			ws.state = first.start
 			continue
 		}
 

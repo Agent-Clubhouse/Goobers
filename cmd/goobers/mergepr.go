@@ -43,6 +43,11 @@ const (
 	// branch and recorded against the unchanged pull request head.
 	mergeConflictReason         = "merge-conflict"
 	requiredStatusPendingReason = "required-status-check-pending"
+	// ciNoVerdictReason (#6817) prefixes a refusal whose only CI blocker is
+	// checks that finished without a verdict (cancelled, never started,
+	// stale). Nothing is running and nothing in the code is proven wrong, so
+	// record-merge-refusal does not count it toward demotion.
+	ciNoVerdictReason = "ci-no-verdict"
 	// preMergeCheckFailedReason (#7132) prefixes a refusal whose configured
 	// preMergeCheck failed on the head merged onto the current base tip: the
 	// PR was green against a stale base and no longer builds against main.
@@ -79,10 +84,11 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"shell on the PR head merged onto the CURRENT base branch tip — a\n" +
 	"failure refuses the merge as pre-merge-check-failed), resultFile\n" +
 	"(default merge-result.json). Successful merges\n" +
-	"also report headBranch and branchCleanup (deleted, skipped-stacked, or\n" +
-	"failed). Exit codes: 0 = evaluated (merged or not — see the result\n" +
-	"file's \"merged\" field), 1 = business error (missing capability/config,\n" +
-	"malformed inputs, provider failure), 2 = usage/IO error.\n"
+	"also report headBranch and branchCleanup (deleted, skipped-stacked,\n" +
+	"skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated\n" +
+	"(merged or not — see the result file's \"merged\" field), 1 = business\n" +
+	"error (missing capability/config, malformed inputs, provider failure),\n" +
+	"2 = usage/IO error.\n"
 
 // ciReadyForMerge reports whether the PR's CI permits a merge. A non-passing
 // aggregate CheckState normally blocks — but the check-state this codebase
@@ -502,7 +508,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		return 1
 	}
 
-	cleanup := reportMergedBranchCleanup(ctx, root, isADO, adoCleanup, landResult, poll, prProvider, pullNumber, stdout, stderr)
+	var cleanup *mergeBranchCleanup
+	if isADO {
+		cleanup = reportADOMergedBranchCleanup(ctx, root, repo, adoCleanup, landResult, poll, pullNumber, stdout, stderr)
+	} else {
+		cleanup = reportMergedBranchCleanup(ctx, root, landResult, poll, prProvider, pullNumber, stdout, stderr)
+	}
 	if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, landResult, nil, cleanup); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -515,6 +526,19 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 	return 0
 }
 
+// ciNotReadyReason says why CI blocks the merge. When the only blocker is
+// checks that finished without a verdict (#6817) it says so under
+// ciNoVerdictReason rather than calling CI pending, which reads as still
+// running. The text holds no "; ", the separator merge-pr joins reasons
+// with, so record-merge-refusal can tell a refusal that has no other reason.
+func ciNotReadyReason(poll providers.PullRequestPollResult) string {
+	if poll.CheckState == providers.CheckStatePending && providers.OnlyNoVerdictPending(poll.Checks) {
+		names := strings.ReplaceAll(strings.Join(providers.NoVerdictCheckNames(poll.Checks), ", "), ";", ",")
+		return fmt.Sprintf("%s: CI finished without a verdict (cancelled, never started or stale: %s), waiting for CI to be rerun", ciNoVerdictReason, names)
+	}
+	return fmt.Sprintf("CI is %q, want passing", poll.CheckState)
+}
+
 // liveConjunctReasons re-checks the merge conjuncts that depend only on the
 // locked, live poll: verdict, CI, draft and the SHA-pin.
 func liveConjunctReasons(ctx context.Context, dispatcher *providers.Dispatcher, repo providers.RepositoryRef, pullNumber, verdict, expectedHeadSHA, expectedBaseSHA string, poll providers.PullRequestPollResult) []string {
@@ -523,7 +547,7 @@ func liveConjunctReasons(ctx context.Context, dispatcher *providers.Dispatcher, 
 		reasons = append(reasons, fmt.Sprintf("verdict is %q, want pass", verdict))
 	}
 	if !ciReadyForMerge(poll) {
-		reasons = append(reasons, fmt.Sprintf("CI is %q, want passing", poll.CheckState))
+		reasons = append(reasons, ciNotReadyReason(poll))
 	}
 	if poll.Draft {
 		reasons = append(reasons, "pull request is a draft")
@@ -841,10 +865,11 @@ func adoVerdictPinMatches(verdict apiv1.Verdict, poll providers.PullRequestPollR
 
 // adoDeleteSourceBranchGranted reports whether the pull request landing on
 // ADO (isADO) should ask for source-branch cleanup on the same completion
-// PATCH (ADO-N25). ADO has no separate post-merge DeleteBranch call — its
-// PollPullRequest never populates HeadRepository, so cleanupMergedBranch
-// stays unreachable for it — so cleanup must ride the landing call itself,
-// gated on the same grant GitHub's cleanup requires (github:branch:delete).
+// PATCH (ADO-N25). ADO's PollPullRequest never populates HeadRepository, so
+// cleanupMergedBranch stays unreachable for it: cleanup rides the landing
+// call itself, gated on the same grant GitHub's cleanup requires
+// (github:branch:delete), and stageADOSourceBranchBackstop removes a branch
+// ADO left behind once the merge is observed (#5957).
 // It uses the presence-check idiom landingAuthority already uses: a
 // resolvable providerToken means the stage declared the capability, without
 // spending its credential.
@@ -894,27 +919,48 @@ func adoCompletionDeletesSourceBranch(ctx context.Context, lister stackedPullReq
 	return true
 }
 
-// reportMergedBranchCleanup performs and reports post-landing branch cleanup.
-// ADO deletes the source branch through completionOptions.deleteSourceBranch
-// and its PollPullRequest does not populate HeadRepository, so the shared
-// provider-neutral cleanup path stays limited to GitHub and Gitea; on ADO only
-// a deletion adoCompletionDeletesSourceBranch withheld (adoCleanup) is
-// reported.
+// reportMergedBranchCleanup performs and reports post-landing branch cleanup
+// on GitHub and Gitea. Azure DevOps goes through reportADOMergedBranchCleanup:
+// its PollPullRequest does not populate HeadRepository, so this shared,
+// provider-neutral path cannot run there.
 func reportMergedBranchCleanup(
 	ctx context.Context,
 	root string,
-	isADO bool,
-	adoCleanup *mergeBranchCleanup,
 	landResult mergepolicy.Result,
 	poll providers.PullRequestPollResult,
 	prProvider mergeProvider,
 	pullNumber string,
 	stdout, stderr io.Writer,
 ) *mergeBranchCleanup {
-	if isADO {
-		if adoCleanup != nil && adoCleanup.Error != "" {
+	if landResult.Outcome != mergepolicy.OutcomeMerged {
+		return nil
+	}
+	outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
+	printMergedBranchCleanup(stdout, stderr, "merged pr #"+pullNumber, &outcome)
+	return &outcome
+}
+
+// reportADOMergedBranchCleanup reports Azure DevOps source-branch cleanup.
+// ADO deletes the source branch through completionOptions.deleteSourceBranch,
+// so a deletion adoCompletionDeletesSourceBranch withheld (adoCleanup) is only
+// reported. When the deletion was requested and the pull request is now
+// merged, the backstop confirms the branch is gone and removes it if ADO left
+// it (#5957). An auto-complete that has not landed yet is backed up later, by
+// merge-queue-poll, when it observes the merge.
+func reportADOMergedBranchCleanup(
+	ctx context.Context,
+	root string,
+	repo providers.RepositoryRef,
+	adoCleanup *mergeBranchCleanup,
+	landResult mergepolicy.Result,
+	poll providers.PullRequestPollResult,
+	pullNumber string,
+	stdout, stderr io.Writer,
+) *mergeBranchCleanup {
+	if adoCleanup != nil {
+		if adoCleanup.Error != "" {
 			pf(stderr, "warning: pr #%s landing keeps its source branch: %s\n", pullNumber, adoCleanup.Error)
-		} else if adoCleanup != nil {
+		} else {
 			pf(stdout, "branch cleanup %s (%s)\n", adoCleanup.Status, adoCleanup.HeadBranch)
 		}
 		return adoCleanup
@@ -922,13 +968,46 @@ func reportMergedBranchCleanup(
 	if landResult.Outcome != mergepolicy.OutcomeMerged {
 		return nil
 	}
-	outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
-	if outcome.Error != "" {
-		pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
-	} else {
+	outcome := stageADOSourceBranchBackstop(ctx, root, repo, poll.HeadBranch, poll.HeadSHA)
+	printMergedBranchCleanup(stdout, stderr, "merged pr #"+pullNumber, outcome)
+	return outcome
+}
+
+// stageADOSourceBranchBackstop runs ADOProvider.CleanupMergedSourceBranch
+// for a stage that observed an ADO merge, with the provider built from the
+// credential delivered for github:branch:delete (recording its delete as
+// kind="branch"). It returns nil, and does nothing, when the stage does not
+// hold that grant: such a stage never asked Azure DevOps to delete the branch
+// either (adoDeleteSourceBranchGranted), so there is nothing to back up.
+func stageADOSourceBranchBackstop(ctx context.Context, root string, repo providers.RepositoryRef, headBranch, mergedHeadSHA string) *mergeBranchCleanup {
+	if !adoDeleteSourceBranchGranted(true) {
+		return nil
+	}
+	out := &mergeBranchCleanup{HeadBranch: headBranch, Status: "failed"}
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubBranchDelete), withStageProviderMutations("branch"))
+	if err == nil {
+		var status providers.MergedBranchCleanupStatus
+		status, err = provider.CleanupMergedSourceBranch(ctx, repo, headBranch, mergedHeadSHA)
+		out.Status = string(status)
+	}
+	if err != nil {
+		out.Status, out.Error = "failed", err.Error()
+	}
+	return out
+}
+
+// printMergedBranchCleanup reports a cleanup outcome: a failure is a warning
+// on an already-successful merge, never a merge failure (PRL-072). subject
+// names the merge, e.g. "merged pr #12". A nil outcome reports nothing.
+func printMergedBranchCleanup(stdout, stderr io.Writer, subject string, outcome *mergeBranchCleanup) {
+	switch {
+	case outcome == nil:
+	case outcome.Error != "":
+		pf(stderr, "warning: %s but branch cleanup failed: %s\n", subject, outcome.Error)
+	default:
 		pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
 	}
-	return &outcome
 }
 
 type mergeBranchCleanup struct {

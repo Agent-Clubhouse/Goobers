@@ -19,8 +19,11 @@ func TestJournalEventMirrorFieldSet(t *testing.T) {
 		"action", "agent", "branchName", "branchStatus", "complete", "completeness",
 		"decision", "disposition", "gaggle", "instructionAddendum", "integrity",
 		"minimumIntegrity", "notificationReceipt", "notificationRequest",
+		// DSL 3.1 map durability (#7384): roster and item identity are
+		// conformance/resume payload, not rollup dimensions.
+		"mapItemDigest", "mapItemIdentity", "mapRoster",
 		"operatorMessageAcknowledgement", "operatorMessageOutcome", "operatorMessageRequest",
-		"parallel", "peerMessage", "progress", "rationale", "skipCount",
+		"parallel", "peerMessage", "progress", "rationale", "selection", "skipCount",
 		// Run terminal causes are exposed by readservice; rollups still consume
 		// the existing status and error fields, without a terminal-cause column.
 		"terminalCause",

@@ -29,12 +29,18 @@ type DemandSourceQueue interface {
 }
 
 func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tickCandidate, now time.Time) (bool, bool) {
+	if len(candidate.entry.Schedules) == 0 {
+		return s.queueAbsentSchedules(ctx, candidate, now)
+	}
+	if candidate.entry.ScheduleCatchUpAll {
+		if handled, advanced := s.queueAllOccurrences(ctx, candidate, now); handled {
+			return handled, advanced
+		}
+	}
 	if candidate.entry.ScheduleDemandCounter == nil {
 		handled, advanced := s.queuePlainSchedule(ctx, candidate.entry, now)
 		if handled {
-			candidate.scheduleRemaining = 0
-			candidate.schedulePollDue = false
-			candidate.scheduleDemand = false
+			s.prepareRetainedScheduleDemand(ctx, candidate)
 		}
 		return handled, advanced
 	}
@@ -102,6 +108,37 @@ func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tick
 	return true, !before.Equal(state.LastEval)
 }
 
+// A host can fence a removed schedule revision without allocating a cursor for
+// every workflow that has never had scheduled sources.
+type scheduleAbsenceSourceQueue interface {
+	ObserveScheduleAbsence(context.Context, WorkflowEntry, time.Time) error
+}
+
+func (s *Scheduler) queueAbsentSchedules(ctx context.Context, candidate *tickCandidate, now time.Time) (bool, bool) {
+	if queue, ok := s.sourceQueue.(scheduleAbsenceSourceQueue); ok {
+		if err := queue.ObserveScheduleAbsence(ctx, candidate.entry, now); err != nil {
+			s.sourceQueueError(candidate.entry, err)
+		}
+	}
+	return s.prepareRetainedScheduleDemand(ctx, candidate), false
+}
+
+// prepareRetainedScheduleDemand reads accepted custody independently of the
+// current trigger declarations or sizing policy. Removing future schedules does
+// not abandon already accepted fires or change their archived definitions.
+func (s *Scheduler) prepareRetainedScheduleDemand(ctx context.Context, candidate *tickCandidate) bool {
+	candidate.scheduleRemaining = 0
+	candidate.schedulePollDue = false
+	candidate.scheduleDemand = false
+	queue, ok := s.sourceQueue.(DemandSourceQueue)
+	if !ok {
+		return false
+	}
+	candidate.demandWake = true
+	s.loadQueuedScheduleDemand(ctx, queue, candidate)
+	return true
+}
+
 func (s *Scheduler) loadQueuedScheduleDemand(ctx context.Context, queue DemandSourceQueue, candidate *tickCandidate) {
 	demand, release, err := queue.LoadDemand(ctx, candidate.entry)
 	if err != nil {
@@ -123,7 +160,11 @@ func (s *Scheduler) loadQueuedScheduleDemand(ctx context.Context, queue DemandSo
 		candidate.entry.ScheduleDemandCounter = demand.Pinned.ScheduleDemandCounter
 	}
 	candidate.queuedDemand = demand
-	candidate.schedule = Tick(TriggerState{Workflow: candidate.entry.Workflow, Schedules: candidate.entry.Schedules, LastEval: demand.Source.ScheduledFrom}, demand.Source.ScheduledAt)
+	if demand.Source.ScheduleDeclaration > 0 {
+		candidate.schedule = TickResult{Fire: true, MissedTicks: 1, LastEval: demand.Source.ScheduledAt}
+	} else {
+		candidate.schedule = Tick(TriggerState{Workflow: candidate.entry.Workflow, Schedules: candidate.entry.Schedules, LastEval: demand.Source.ScheduledFrom}, demand.Source.ScheduledAt)
+	}
 	candidate.scheduleEnqueuedAt = demand.Source.ScheduledAt
 	candidate.scheduleRemaining = max(0, demand.Count-demand.Queued)
 	candidate.scheduleDemand = true
@@ -205,7 +246,7 @@ func (s *Scheduler) queueDemandCandidate(ctx context.Context, queue DemandSource
 func (s *Scheduler) updateDemandWake(candidates []*tickCandidate) {
 	pending := false
 	for _, candidate := range candidates {
-		pending = pending || candidate.demandWake
+		pending = pending || candidate.demandWake || candidate.catchUpWake
 	}
 	s.mu.Lock()
 	s.durableScheduleDemand = pending

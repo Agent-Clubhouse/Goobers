@@ -23,7 +23,9 @@
 //     minimum reviewers, the goobers-live/live-write status, and "Require a
 //     merge strategy" (the policy classification the write leg reads, #6106).
 //   - The #4602 fixture work item, tagged goobers-fixture. The drift leg
-//     resolves it by title and tag, and recreates it if it is closed.
+//     resolves the oldest open one by title and tag, and recreates it if it
+//     is closed; this tool likewise looks only at open items, so a closed or
+//     removed fixture reads as missing rather than present.
 //   - The spec fixture pair the read-only leg reads (#6125, #6191, #6194): an
 //     ancestry parent (-parent-type, default Feature) with a description, and
 //     its child of the project's requirement type (or -spec-type) with an
@@ -114,7 +116,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		_, _ = fmt.Fprintf(stderr, "%s is required; the token is never accepted as a flag\n", tokenEnvironment)
 		return 2
 	}
-	c := &client{http: httpClient, organizationURL: strings.TrimRight(cfg.organizationURL, "/"), project: cfg.project, auth: basicAuth(token)}
+	c := &client{http: httpClient, organizationURL: strings.TrimRight(cfg.organizationURL, "/"), project: cfg.project, auth: basicAuth(token), token: token}
 	if err := provision(ctx, c, cfg, stdout); err != nil {
 		_, _ = fmt.Fprintln(stderr, "adolive:", err)
 		return 1
@@ -205,7 +207,8 @@ func printf(out io.Writer, format string, args ...any) {
 
 // printFixtureNote reports the drift leg's fixture. It needs no variable: the
 // workflow resolves the oldest open fixture by title and tag and recreates it
-// when none is open. This tool's lookup ignores state, so #id may be closed.
+// when none is open. This tool's lookup is limited to open items the same way
+// (findFixture), so #id is the item the workflow will read.
 func printFixtureNote(out io.Writer, id int) {
 	if id == 0 {
 		printf(out, "  (provider fixture: no variable; the drift workflow creates it on its next run)\n")
@@ -443,6 +446,9 @@ type client struct {
 	organizationURL string
 	project         string
 	auth            string
+	// token is the PAT itself, for the fixture lookup that runs through the
+	// ADO provider; never printed.
+	token string
 }
 
 func (c *client) endpoint(query url.Values, elems ...string) (string, error) {
@@ -588,13 +594,31 @@ func (c *client) createPolicy(ctx context.Context, typeID string, settings map[s
 	return created, err
 }
 
-// findFixture returns the lowest-numbered work item carrying the fixture title
-// and tag.
+// findFixture returns the work item the fixture-drift workflow reads: the
+// oldest open item carrying the fixture title and tag (#4602), or found=false
+// when every such item was closed or removed. It is the drift workflow's own
+// lookup (providerfixture.FindOpenADOFixture), so "open" is decided the same
+// way, by each item's state category rather than by state name, and a process
+// that renames its Completed states still agrees with the workflow.
 func (c *client) findFixture(ctx context.Context) (int, bool, error) {
-	return c.findWorkItem(ctx, fixtureTitle, fixtureTag)
+	id, found, err := providerfixture.FindOpenADOFixture(ctx, providerfixture.ADOFixtureConfig{
+		OrganizationURL: c.organizationURL,
+		Project:         c.project,
+		Token:           c.token,
+		Client:          c.http,
+	})
+	if err != nil || !found {
+		return 0, false, err
+	}
+	number, err := strconv.Atoi(id)
+	if err != nil {
+		return 0, false, fmt.Errorf("fixture work item id %q is not a number", id)
+	}
+	return number, true, nil
 }
 
-// findWorkItem returns the lowest-numbered work item with title and tag.
+// findWorkItem returns the lowest-numbered work item with title and tag, in
+// any state.
 func (c *client) findWorkItem(ctx context.Context, title, tag string) (int, bool, error) {
 	endpoint, err := c.endpoint(url.Values{"$top": []string{"1"}}, "wit", "wiql")
 	if err != nil {

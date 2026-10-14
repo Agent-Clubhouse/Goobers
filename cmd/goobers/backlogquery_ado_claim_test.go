@@ -48,8 +48,10 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 		}}})
 	})
 	mux.HandleFunc("/org/backlog/_apis/wit/workItems/42/updates", func(w http.ResponseWriter, r *http.Request) {
+		// The history runs up to the item's current revision, as ADO's does:
+		// the walk fails closed on one that ends short of it (#5960).
 		writeADOJSON(t, w, map[string]any{"count": 1, "value": []map[string]any{
-			{"id": 1, "fields": map[string]any{
+			{"id": 1, "rev": revision, "fields": map[string]any{
 				"System.Tags":        map[string]any{"oldValue": "goobers:approved", "newValue": tags},
 				"System.ChangedDate": map[string]any{"newValue": readyAt.Format(time.RFC3339)},
 			}},

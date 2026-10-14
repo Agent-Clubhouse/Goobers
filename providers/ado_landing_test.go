@@ -583,14 +583,21 @@ func TestADOProviderPollMergeQueueEntryStates(t *testing.T) {
 		response  map[string]interface{}
 		wantState MergeQueueEntryState
 		wantSHA   string
+		// wantHead and wantHeadSHA are the source branch and merged head a
+		// merged read carries for the source-branch backstop (#5957).
+		wantHead    string
+		wantHeadSHA string
 	}{
 		{
 			name: "completed is merged",
 			response: map[string]interface{}{
 				"pullRequestId": 42, "status": "completed",
-				"lastMergeCommit": map[string]string{"commitId": "merged1"},
+				"lastMergeCommit":       map[string]string{"commitId": "merged1"},
+				"sourceRefName":         "refs/heads/goobers/implementation/run-1",
+				"lastMergeSourceCommit": map[string]string{"commitId": "head1"},
 			},
 			wantState: MergeQueueEntryMerged, wantSHA: "merged1",
+			wantHead: "goobers/implementation/run-1", wantHeadSHA: "head1",
 		},
 		{
 			name: "active with auto-complete armed is pending",
@@ -650,6 +657,9 @@ func TestADOProviderPollMergeQueueEntryStates(t *testing.T) {
 			}
 			if result.MergeSHA != tc.wantSHA {
 				t.Fatalf("MergeSHA = %q, want %q", result.MergeSHA, tc.wantSHA)
+			}
+			if result.HeadBranch != tc.wantHead || result.HeadSHA != tc.wantHeadSHA {
+				t.Fatalf("head = %q@%q, want %q@%q", result.HeadBranch, result.HeadSHA, tc.wantHead, tc.wantHeadSHA)
 			}
 		})
 	}

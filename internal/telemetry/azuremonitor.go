@@ -82,6 +82,9 @@ type azureMonitorClient struct {
 	httpClient         *http.Client
 	defaultTags        contracts.ContextTags
 	replay             *azureReplaySpool
+	// hostIdentity records the destination's explicit diagnostic-profile
+	// consent. The zero value withholds identity, including account paths.
+	hostIdentity bool
 }
 
 // azureMonitorSpanExporter adapts the existing OTel span pipeline to the
@@ -126,6 +129,7 @@ func newAzureMonitorClient(connectionString string, httpClient *http.Client, inc
 		ingestionURL:       connection.ingestionURL,
 		httpClient:         httpClient,
 		defaultTags:        tags,
+		hostIdentity:       includeHostIdentity,
 	}
 	spool, err := newAzureReplaySpool(replay, client.sendPayload)
 	if err != nil {
@@ -168,7 +172,7 @@ func (c *azureMonitorClient) export(ctx context.Context, items []appinsights.Tel
 }
 
 func (c *azureMonitorClient) sendPayload(ctx context.Context, raw []byte) error {
-	projected, err := azureJournalHealthPayload(raw)
+	projected, err := azureExportPayload(raw, c.hostIdentity)
 	if err != nil {
 		return &azureMonitorMalformedError{cause: err}
 	}

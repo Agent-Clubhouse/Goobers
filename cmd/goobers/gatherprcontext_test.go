@@ -26,14 +26,18 @@ import (
 // gather-pr-context's tests: one open PR, its check state, and a fixed set of
 // comments (one of which may carry an embedded verdict-json payload).
 type gatherPRContextServer struct {
-	owner, repo         string
-	authenticatedLogin  string
-	prNumber            int
-	head, base          string
-	headSHA             string
-	baseSHA             string
-	body                string
-	checkState          string
+	owner, repo        string
+	authenticatedLogin string
+	prNumber           int
+	head, base         string
+	headSHA            string
+	baseSHA            string
+	body               string
+	checkState         string
+	// checkRuns, when set, are the selected head's check runs: its rollup
+	// reports FAILURE (GitHub counts a cancelled run as one) and it has no
+	// legacy statuses, so only the runs themselves say what failed (#6817).
+	checkRuns           []map[string]interface{}
 	labels              []string
 	comments            []map[string]interface{}
 	includeUnselected   bool
@@ -141,12 +145,16 @@ func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
 		state := "SUCCESS"
-		if s.checkState == "failure" {
+		if s.checkState == "failure" || s.checkRuns != nil {
 			state = "FAILURE"
 		}
 		serveBulkCheckStates(t, w, r, &s.graphQLCalls, map[string]string{s.headSHA: state})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
+		if s.checkRuns != nil {
+			writeFakeJSON(w, map[string]interface{}{"state": "pending", "statuses": []interface{}{}})
+			return
+		}
 		state := s.checkState
 		if state == "" {
 			state = "success"
@@ -159,7 +167,11 @@ func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+		runs := s.checkRuns
+		if runs == nil {
+			runs = []map[string]interface{}{}
+		}
+		writeFakeJSON(w, map[string]interface{}{"check_runs": runs})
 	})
 	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/status", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
@@ -679,9 +691,9 @@ func TestHandleGatherPRContextUnchangedDigestReparkDoesNotSpendGeneration(t *tes
 
 	t.Setenv("GOOBERS_RUN_ID", "run-4174-repark")
 	t.Chdir(checkout)
-	handled, code := handleGatherPRContextUnchangedDigest(instanceRoot, adapter, t.Context(), pr, nil, os.Stdout, os.Stderr)
-	if !handled || code != 0 {
-		t.Fatalf("handled = %v, code = %d, want a handled repark", handled, code)
+	skip, code := handleGatherPRContextUnchangedDigest(instanceRoot, adapter, t.Context(), pr, nil, os.Stdout, os.Stderr)
+	if skip == "" || code != 0 {
+		t.Fatalf("skip = %q, code = %d, want a repark that skips the PR this cycle", skip, code)
 	}
 	if parkedBody == "" {
 		t.Fatal("park was never called — want a re-park on the second unchanged-digest tick")
@@ -971,9 +983,9 @@ func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
 }
 
 // TestSelectRemediationPRPriority is #596's headline acceptance:
-// selectRemediationCandidates orders needs-remediation before failing CI and
-// returns both strong tiers so concurrent runs can claim through the whole
-// eligible set. It only falls back to a crowned lander behind its base when
+// selectRemediationCandidates returns every PR with either strong signal
+// (needs-remediation or failing CI), oldest first across both (#6482), so
+// concurrent runs can claim through the whole eligible set. It only falls back to a crowned lander behind its base when
 // neither stronger signal is present anywhere in the PR set.
 func TestSelectRemediationPRPriority(t *testing.T) {
 	tests := []struct {
@@ -1011,14 +1023,17 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 			wantPriority: remediationPriorityFailingCI,
 		},
 		{
-			name: "needs remediation precedes failing CI and behind base",
+			// #6482: the two strong signals share one oldest-first order —
+			// an older failing-CI PR is not starved behind a newer
+			// needs-remediation PR — and both still precede behind-base.
+			name: "needs remediation and failing CI share FIFO order ahead of behind base",
 			prs: []providers.PullRequestSummary{
 				{Number: 10},
 				{Number: 20, CheckState: providers.CheckStateFailing},
 				{Number: 30, Labels: []string{needsRemediationLabel}},
 			},
 			behind:       map[int]bool{10: true},
-			wantNumbers:  []int{30, 20},
+			wantNumbers:  []int{20, 30},
 			wantPriority: remediationPriorityNeedsRemediation,
 		},
 		{

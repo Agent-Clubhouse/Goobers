@@ -655,7 +655,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		reportStartupProgress(input.StartupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(input.Config, workflowsWithoutInstructionRefusals(input.Definitions.Workflows, instructionRefusals), gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores, generation)
+	openPRRefresher, err := buildOpenPRRefresher(input.Config, workflowsWithoutInstructionRefusals(input.Definitions.Workflows, instructionRefusals), gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores, generation, input.ProviderQuota)
 	if err != nil {
 		return nil, err
 	}
@@ -804,6 +804,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			Gaggle:              wf.Spec.Gaggle,
 			Readiness:           wf.Spec.Readiness,
 			Schedules:           scheds,
+			ScheduleCatchUpAll:  wf.Spec.ScheduleCatchUp == "all",
 			ScheduleBackoffs:    scheduleBackoffs,
 			WebhookBackoff:      webhookBackoff,
 			Signals:             sigs,
@@ -847,7 +848,8 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			// Engine-selected entries enforce capabilities per pinned stage.
 			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
 			DisabledReason:       resolveDisabledReason(gagglesByName[wf.Spec.Gaggle], wf),
-			HarnessRefusal:       harnessRefusals[identity], // Broken harnesses refuse only their dependent workflows (#5163).
+			HarnessRefusal:       harnessRefusals.reason(identity),  // Broken harnesses refuse only their dependent workflows (#5163).
+			HarnessRecheck:       harnessRefusals.recheck(identity), // A transient refusal clears once the provider recovers (#6017).
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's
@@ -896,7 +898,7 @@ func preflightSchedulerHarnessesWithProgress(
 	goobers map[string]apiv1.GooberSpec,
 	stores credentials.StoreResolver,
 	startupProgress func(string),
-) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+) (harnessPreflightInfo, *harnessPreflightFailures, error) {
 	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
 	started := time.Now()
 	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
@@ -1048,6 +1050,7 @@ func instructionRefusalWorkflowEntry(
 		Gaggle:               wf.Spec.Gaggle,
 		Readiness:            wf.Spec.Readiness,
 		Schedules:            schedules,
+		ScheduleCatchUpAll:   wf.Spec.ScheduleCatchUp == "all",
 		ScheduleBackoffs:     scheduleBackoffs,
 		WebhookBackoff:       webhookBackoff,
 		Signals:              signals,

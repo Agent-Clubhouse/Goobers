@@ -30,6 +30,55 @@ and index; existing response data is retained. Older binaries refuse this newer
 cache schema and therefore use their ordinary live provider path. No authoritative
 workflow or backlog data is migrated.
 
-This provides fencing for explicit snapshot invalidation. It does not add new
-write hooks, event-driven invalidation, a provider-wide freshness guarantee, or
-interactive authorization. Those remain separate workstream requirements.
+The explicit snapshot API above refreshes one evaluation partition. The provider
+write hooks below extend it with a gaggle/provider mutation generation.
+
+## Refresh after provider writes
+
+Scoped provider clients additionally resolve a shared mutation generation for
+one gaggle and provider before each eligible GET or declared ADO read plan. A
+confirmed write rotates this generation. This fences both evaluation snapshots
+and base conditional entries, including responses still in flight in another
+process. Later reads cannot send validators from the prior generation. A caller
+already in flight may still receive its response.
+
+Mutation generations span credential bindings and retained configuration versions
+within the same gaggle/provider: a write can change what either binding reads.
+Response bodies remain separately partitioned by binding, configuration,
+credentials, endpoint and representation. Other gaggles and providers keep their
+snapshots. Invalidation is deliberately broader than a repository or item; this
+slice does not add a dependency index.
+
+The provider reports effects independently of its optional run-journal recorder.
+Existing issue, PR, comment, review, claim, CI and repository effects use those
+hooks; native GitHub parent/blocker links, repository-label creation, partial
+label edits, ADO branch/commit operations, reviewer requests and work-item comment
+and patch helpers also report successful effects. Merge and queue operations
+retain their existing acknowledgment, intent and receipt requirements. A receipt
+failure after an acknowledged write still refreshes reads without changing the
+reported write/receipt outcome. Rejected operations do not report a successful
+effect; confirmed absence after label removal can also refresh a stale list.
+
+The stage provider factory also attaches mutation reporting to GitHub clients
+that deliberately bypass read caching. Their reads still use the original live
+transport; successful writes invalidate scoped readers in the same gaggle.
+The wrapper preserves existing transport observers and provider quota ownership.
+Git push-service discovery recovers the configured TLS transport through either
+wrapper, while retaining its own no-redirect/no-cookie policy and live reads.
+It requires the same explicit launch scope and never invents a gaggle for an
+unscoped client.
+
+This is based on provider operation semantics, not HTTP verbs. ADO WIQL, batch
+hydration and permission queries use POST without invalidating reads; GitHub
+GraphQL queries likewise do not imply a write. Unscoped transports and writes
+outside these provider methods do not acquire a gaggle identity automatically.
+
+Invalidation uses the same bounded disposable generation store and introduces no
+new database schema. It stores neither write bodies nor credentials. If saving
+invalidation fails, the writing wrapper permanently bypasses shared reuse and the
+successful provider result is preserved. Other processes may retain their
+existing evaluation snapshots until normal refresh or expiry in this failure
+case. There is no atomic transaction with GitHub/ADO, and an ambiguous external
+write whose success cannot be confirmed has no global freshness guarantee.
+External edits, generic events, interactive permission checks and live provider
+performance qualification remain separate work.

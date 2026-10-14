@@ -283,6 +283,25 @@ credentials:
       env: GOOBERS_COPILOT_TOKEN     # Copilot Requests: read-only; no repo access
 ```
 
+Guided setup and `goobers init --template=standard` write a similar shape for
+GitHub: the pull-request token backs `provider:pr:write` (not `github:pr:write`)
+for implementation and backlog-curation, and the push token backs `repo:push`.
+When `merge-review` is selected they also grant the pull-request token
+(`GOOBERS_GITHUB_PR_TOKEN`, `--pr-token-env`) to `github:pr:write`,
+`github:pr:review`, `github:pr:merge` and `github:branch:delete`, so every
+capability merge-review declares has a write-capable grant; `github:issues:write`
+stays on the issues token. That token then needs **Pull requests: Read and
+write** and **Contents: Read and write** (merging and deleting the merged
+branch). Because it is also the identity that opens the pull requests, GitHub
+refuses its native approve/request-changes review, and merge-review publishes
+the verdict through its comment and label handoff instead. To get native
+reviews, point the `github:pr:review` entry at a second identity's token.
+Only merge-review's stages declare `github:pr:merge`, but the secret itself is
+shared: implementation's and backlog-curation's pull-request stages now hold a
+token that can merge and delete branches. For separation at the credential
+level, point the `github:pr:merge` and `github:branch:delete` entries at a
+separate token that only merge-review uses.
+
 Each `credentials:` entry sources one capability from its own token ref; an
 entry for a capability the repo token would otherwise back **overrides** it (so
 an issues-only stage never receives a token carrying code or PR authority).
@@ -342,6 +361,8 @@ variable, which carries the Gitea repository token. An MCP server is different: 
 the credential, so a `capability:` reference that does not fit the run's
 provider fails the stage before the harness starts, and the error names the
 server and the reference. Give such a server a `kind: byo` credential instead.
+`goobers validate` reports such a reference ahead of the first run (MCP002),
+naming the goober, the server and the gaggle whose provider it does not fit.
 
 ### Mixed-harness instances: scoping `agent:model` per harness
 

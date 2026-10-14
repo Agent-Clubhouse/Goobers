@@ -391,6 +391,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/fanout",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/fieldpredicate",
       "coverage": "none",
       "category": "not-selected",
@@ -500,6 +506,12 @@
     },
     {
       "package": "internal/iossimulator",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/jcs",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -1007,6 +1019,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/workerrouting",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Portable Temporal routing assessment over a fake deployment client; no Windows-specific seam. Runs on the Linux unit shards only."
     },
     {
       "package": "internal/workflow/internal/model",

@@ -835,9 +835,12 @@ like a pasted token is rejected.
 Use owner/repository for GitHub, or organization/project/repository (or a
 dev.azure.com URL) for Azure DevOps. Initialize ADO instances with
 --template=standard --provider=ado first; init defaults the repository to
-azure-cli authentication. Connect records PAT authentication for ADO, reading
-GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or
-managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.
+azure-cli authentication. Connect keeps the repository's existing credential
+source (azure-cli, workload-identity, managed-identity, or a PAT's own token
+reference) unless --token-env is given explicitly; then it records PAT
+authentication reading that variable (GOOBERS_ADO_TOKEN is the ADO default).
+A kept source that names no token variable skips the token reachability
+check (run validate --check-repos) and --seed authenticates through it.
 Connect never changes an existing provider.
 See docs/guides/ado-authentication.md for other authentication modes.
 
@@ -1000,6 +1003,7 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
   temporal-namespace required* §2/§4  configured Temporal namespace is registered
+  temporal-worker-routing required* §2/§4 worker deployment routes tasks to live engine workers
   registry           optional  §1     registry reachable (host-side sanity)
 
   apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint
@@ -1050,6 +1054,13 @@ by a denied attempt from an in-cluster negative control, never by doctor
 
 --temporal-codec reports per-instance opt-in and strict mode without probing keys.
 --k8s --instance <root> applies the instance Temporal TLS and payload codec.
+
+temporal-worker-routing compares the "goobers" worker deployment's current and
+ramping traffic shares with the builds polling the engine task queue
+(engine.taskQueue with --instance, else goobers-engine). It fails when no live
+worker serves any share, warns when a share has no live worker, a live build
+that is not draining gets none, or routing cannot be read, and hints the
+Temporal CLI command to run. It never changes the routing itself.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -1817,8 +1828,9 @@ select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
 with their three canonical personas by default. Use --workflows to select
-implementation, backlog-curation, merge-review (Azure DevOps only), and/or
-work-nomination.
+implementation, backlog-curation, merge-review, and/or work-nomination. On
+GitHub, merge-review's pull-request, review, merge and branch-delete
+capabilities use the --pr-token-env token.
 --repo accepts a GitHub owner/name or Azure DevOps identity; --branch
 defaults to main.
 Implementation requires either --pr-ci or an explicit --ci-command JSON argv
@@ -1964,10 +1976,11 @@ issues), preMergeCheck (optional; one command per line, run without a
 shell on the PR head merged onto the CURRENT base branch tip — a
 failure refuses the merge as pre-merge-check-failed), resultFile
 (default merge-result.json). Successful merges
-also report headBranch and branchCleanup (deleted, skipped-stacked, or
-failed). Exit codes: 0 = evaluated (merged or not — see the result
-file's "merged" field), 1 = business error (missing capability/config,
-malformed inputs, provider failure), 2 = usage/IO error.
+also report headBranch and branchCleanup (deleted, skipped-stacked,
+skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
+(merged or not — see the result file's "merged" field), 1 = business
+error (missing capability/config, malformed inputs, provider failure),
+2 = usage/IO error.
 
 ### merge-queue-poll
 Usage: goobers merge-queue-poll [path]
@@ -3161,6 +3174,9 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
 source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+With an engine configured, it checks that the Temporal worker deployment routes tasks to the
+live engine workers and warns with the set-current-version command when it does not, or says
+unknown when Temporal cannot be read (JSON: engineRouting).
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
 Manual-only workflows are summarized by default; use --all or --workflow to show
@@ -3450,7 +3466,9 @@ Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
 It does not skip the harness admission preflight: a workflow whose agentic
 stage needs a harness that fails its startup check is still refused, while
-other workflows keep running.
+other workflows keep running. A check that failed only because the model
+provider was rate limiting or unreachable is re-run with backoff, and the
+workflow is admitted again once it passes.
 
 A Git workflowSource continuously reconciles its tracked ref. Local Git
 ref changes wake the loop immediately; periodic fetch-and-compare polling

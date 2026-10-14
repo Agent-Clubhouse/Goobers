@@ -46,7 +46,8 @@ export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
 export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
-export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output";
+/** "skipped": a selective parallel's frozen selection did not choose this optional branch; it never started. */
+export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output" | "skipped";
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
@@ -669,6 +670,8 @@ export interface WorkflowSafetyDetails {
 export interface RepoRef {
   provider: Provider;
   owner: string;
+  /** Azure DevOps project; omitted for GitHub and Gitea. */
+  project?: string;
   name: string;
   branch?: string;
   connectionRef?: string;
@@ -1040,6 +1043,16 @@ export interface LineageRun {
   phase?: RunPhase;
 }
 
+/** One run blocker with when its evidence was observed (#5404). `message` matches the potentialBlockers entry. */
+export interface OperatorBlocker {
+  code: string;
+  source: string;
+  message: string;
+  /** Absent when the observed time is unknown. */
+  observedAt?: string;
+  ageMillis?: number;
+}
+
 export interface OperatorRunSummary {
   issue?: { number: string; title?: string; url?: string; labels?: string[] };
   /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
@@ -1061,6 +1074,8 @@ export interface OperatorRunSummary {
   nextTransition?: string;
   /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** potentialBlockers with provenance and age, one per source and code, with cleared conditions removed (#5404); absent on older daemons. */
+  blockers?: OperatorBlocker[];
   /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
   diagnosticsLimitations?: string[];
   /** Implementation reliability projection (#5313); absent on older daemons. */
@@ -1389,7 +1404,7 @@ export interface RunEvent {
   branchName?: string;
   /** The branch's terminal status; set on branch.finished. */
   branchStatus?: BranchStatus;
-  /** The branch completeness record; set on parallel.finished, one entry per declared branch. */
+  /** The branch completeness record; set on parallel.started/finished, one entry per declared branch (skipped branches included). */
   completeness?: BranchOutcome[];
   raw?: JsonValue;
 }
@@ -1400,6 +1415,8 @@ export interface BranchOutcome {
   name: string;
   status: BranchStatus;
   artifacts: number;
+  /** Selective parallels only: the selection's reason for a selected branch, or why a skipped branch did not run. */
+  reason?: string;
 }
 
 export interface ExternalRef {

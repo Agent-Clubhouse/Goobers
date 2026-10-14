@@ -188,6 +188,7 @@ func TestRuntimePreflightControlPlanePlacementUnobservable(t *testing.T) {
 	}}
 	facts, err := runtimePreflightStageRunnerFacts(
 		cfg,
+		apiv1.GaggleSpec{},
 		workflow.Definition{Name: "implement", Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{Name: "review"}}}},
 		requirements,
 		cfg.PlacementInventory(runnersolve.HostOS()),
@@ -222,6 +223,7 @@ func TestRuntimePreflightControlPlaneUnsatRemainsUnsupported(t *testing.T) {
 	}}
 	facts, err := runtimePreflightStageRunnerFacts(
 		cfg,
+		apiv1.GaggleSpec{},
 		workflow.Definition{Name: "implement", Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{Name: "review"}}}},
 		requirements,
 		cfg.PlacementInventory(runnersolve.HostOS()),
@@ -600,5 +602,42 @@ func rewriteRuntimePreflightYAML(t *testing.T, path string, value any) {
 	}
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// `goobers preflight` reports the runner the run-start pin chooses: for a
+// topology (b) gaggle that is an eligible self runner, which
+// bootstrap.SelectStageRunner prefers over a Linux pod; every other gaggle
+// keeps dispatcher.SelectRunner's Linux preference.
+func TestRuntimePreflightTopologyBReportsSelfSelection(t *testing.T) {
+	cfg := &instance.Config{Runners: []instance.RunnerEntry{
+		{Name: "local", Host: instance.RunnerHostSelfName},
+		{Name: "linux-pool", Host: "ghcr.io/example/goobers-runner:latest",
+			Provides: instance.RunnerProvides{OS: instance.RunnerOSLinux}},
+	}}
+	project, backlog := topologyBProjectAndBacklog()
+	requirements := []runnersolve.StageRequirement{{Stage: "query-backlog"}}
+	def := workflow.Definition{Name: "implement", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{Name: "query-backlog"}}}}
+	for _, tc := range []struct {
+		name    string
+		backlog apiv1.BacklogRef
+		want    string
+	}{
+		{"topology (b)", backlog, "local"},
+		{"same-provider backlog", apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: topologyBCodeProject}, "linux-pool"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A Windows host OS keeps the self spec off Linux, so only the
+			// topology (b) preference can select it.
+			facts, err := runtimePreflightStageRunnerFacts(cfg, apiv1.GaggleSpec{Project: project, Backlog: tc.backlog},
+				def, requirements, cfg.PlacementInventory("windows"))
+			if err != nil {
+				t.Fatalf("runtimePreflightStageRunnerFacts: %v", err)
+			}
+			fact := facts["query-backlog"]
+			if fact.Outcome != "selected" || fact.Selected == nil || fact.Selected.Name != tc.want {
+				t.Fatalf("runner fact = %+v, want %s selected", fact, tc.want)
+			}
+		})
 	}
 }

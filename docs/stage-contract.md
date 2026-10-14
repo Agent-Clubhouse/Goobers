@@ -309,6 +309,17 @@ one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
 receive it. An Entra token also carries its `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`.
 See "Where the credential resolves" in `docs/guides/ado-authentication.md`.
 
+A stage pod has no instance config, so the dispatcher also stamps every
+goobers-CLI stage with its gaggle's backlog settings as the non-secret
+`GOOBERS_GAGGLE_BACKLOG` (JSON: the backlog `provider`, `project`, `labels`
+and `doneStates`; #5957). Like `GOOBERS_PROVIDER_BOT_LOGIN` it is run identity:
+stamped for every CLI stage, kept only by CLI stages, and refused when a
+workflow's `env:` names it. The stamp wins over any config the stage can read.
+An Azure DevOps stage that names a gaggle (`GOOBERS_GAGGLE`) and cannot resolve
+these settings, because there is no stamp and no readable config, or the
+stamp is empty or malformed, fails before it touches the backlog rather than
+falling back to the code repository's project and the default `doneStates`.
+
 A built-in stage command authenticates only with what it was delivered, on
 every provider. On Azure DevOps a declared `github:*` capability selects the
 credential for the same operation on the provider the stage routes to

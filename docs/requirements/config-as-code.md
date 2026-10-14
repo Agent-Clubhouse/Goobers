@@ -122,6 +122,38 @@ is delivered to a running instance at each deployment tier.
   watch/reload delivery (Workflow CD, `../design/workflow-cd.md` WCD-5). *(All
   tiers)*
 
+### Proposed composition contract (not shipped)
+
+The draft apply-time gaggle reference design (`docs/design/apply-time-gaggle-references.md`)
+addresses `CFG-Q3` and #3578. The following are proposed acceptance requirements,
+not claims that current binaries accept reference or macro syntax:
+
+- **CFG-030 (proposed MUST):** A reviewed config source MAY enroll a whole
+  gaggle from an explicitly authorized repository subtree without copying
+  ownership of its definitions. References MUST resolve before runtime
+  validation/admission into regular, immutable files, never execution-time
+  filesystem links.
+- **CFG-031 (proposed MUST):** Locked references MUST reproduce a reviewed
+  commit/dependency/binding graph. Apply MUST NOT silently advance pins.
+  Tracked delivery MUST be explicit, observe dependency changes independently
+  of the root revision, and preserve last-known-good on rejection.
+- **CFG-032 (proposed MUST):** Parameters and skill/instruction substitution
+  MUST be typed or explicitly declared, bounded, deterministic and non-recursive.
+  Resolution MUST NOT execute package code, look up secret values, or expand
+  arbitrary template expressions.
+- **CFG-033 (proposed MUST):** Source read authority MUST remain provisioning
+  owned and separate from product write authority. Resolved references MUST
+  satisfy destination authorization, isolation, supported DSL and placement
+  constraints before activation.
+- **CFG-034 (proposed MUST):** Every admitted run MUST retain the resolved
+  generation and secret-free source/dependency provenance. Cloud execution
+  MUST consume that pin rather than independently resolve a source or fall
+  back to a stale boot seed.
+- **CFG-035 (proposed MUST):** Reference enrollment MUST distinguish adopting
+  definitions from relocating durable instance state. Cloud cutover MUST
+  prevent duplicate scheduler authority and preserve a verified rollback
+  path; definition reload MUST NOT be advertised as live engine migration.
+
 ## Relationships
 
 - Defines → **Instance**, **Gaggle**, **Goober**, **Workflow**, **Task**, **Gate**.
@@ -136,8 +168,10 @@ is delivered to a running instance at each deployment tier.
   actual YAML shape; the tier-3 CRDs wrap the same schema).
 - **CFG-Q2:** *(build-time design)* Reference folder layout for the config directory
   (and the tier-3 `infra` repo).
-- **CFG-Q3:** *(build-time design)* Definition composition/reuse mechanism (shared
-  fragments — `GBO-004`, `WF-005`).
+- **CFG-Q3:** *(under design review)* Definition composition/reuse mechanism
+  (shared fragments — `GBO-004`, `WF-005`). Proposed contract:
+  `docs/design/apply-time-gaggle-references.md`,
+  tracked by #3572/#3578. Not resolved or implemented merely by writing the proposal.
 - **CFG-Q4:** ~~Secrets in config~~ **Resolved (updated):** secrets are **references,
   never stored** (`CFG-009`) — env/file refs at tiers 1–2, **Key Vault references**
   as the tier-3 drop-in (`SEC-010`, `ARCHITECTURE.md §9–§10`).

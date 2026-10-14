@@ -383,9 +383,21 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
 
 ### Remediation loop
 
-- **PRL-050 (MUST, Shipped):** `pr-remediation` MUST select by descending
-  cause priority — labeled `needs-remediation`, then failing CI, then merely
-  behind-base — in the shared claim namespace (PRL-002). A clean, behind-base,
+- **PRL-050 (MUST, Shipped):** `pr-remediation` MUST select from two tiers in
+  the shared claim namespace (PRL-002): the strong tier — labeled
+  `needs-remediation` or failing CI — and, only when no strong candidate
+  exists, the merely behind-base fallback. Within the strong tier the two
+  signals share ONE oldest-first order (lowest PR number first — PR age, not
+  how long the signal has been present), so a PR with either signal waits
+  only behind older open PRs' remediation turns; a steady supply of newer
+  `needs-remediation` PRs cannot starve a failing-CI PR (#6482). A claimed
+  candidate that cannot progress this cycle — its diff unchanged since its
+  last recorded escalation, including the run that visibly parks it — MUST be
+  skipped with its claim released, and selection MUST continue with the next
+  candidate. When every strong candidate the run could claim was skipped, the
+  behind-base fallback MUST be consulted as if no strong candidate existed.
+  The cycle is no-work only when nothing claimable could progress, and its
+  reason names each skip. A clean, behind-base,
   finding-free candidate SHOULD be completed through the provider's
   update-branch API without provisioning a worktree (#720); everything else
   enters full remediation. A PR carrying `goobers:needs-human` MUST be excluded
@@ -528,7 +540,11 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   `deleteSourceBranch` flag rather than this cleanup path, and `merge-pr` skips
   the shared cleanup for ADO by construction. #2061. The flag honours the same
   stacked exception: it is withheld (`branchCleanup: skipped-stacked`) when an
-  open PR targets the source branch when the landing is requested. The landing stage still
+  open PR targets the source branch when the landing is requested. ADO does not
+  always honour the flag, so the stage that observes the merge backs it up:
+  it confirms the source ref is gone and otherwise deletes it with a ref update
+  conditional on the merged head, keeping a branch that moved
+  (`skipped-moved`) or that a stacked PR now targets (#5957). The landing stage still
   declares `github:branch:delete` on ADO, and completes with `github:pr:merge`
   or a declared `ado:pr:complete` per PRL-040.)* After an actual merge
   (direct or queue-reported), the merged head branch MUST be deleted unless

@@ -43,7 +43,7 @@ func (s *Store) SourceCursorRevision(ctx context.Context, scope, revision string
 		_, err = tx.ExecContext(ctx, `UPDATE source_start_cursors SET revision=? WHERE scope=?`, revision, scope)
 	default:
 		ns, pending = observed.UnixNano(), false
-		_, err = tx.ExecContext(ctx, `UPDATE source_start_cursors SET revision=?,cursor_ns=?,legacy_pending=0 WHERE scope=?`, revision, ns, scope)
+		_, err = tx.ExecContext(ctx, `UPDATE source_start_cursors SET revision=?,cursor_ns=?,legacy_pending=0,occurrence_cursors=NULL WHERE scope=?`, revision, ns, scope)
 	}
 	if err != nil {
 		return time.Time{}, false, err

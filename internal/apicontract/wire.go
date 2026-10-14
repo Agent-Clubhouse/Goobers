@@ -400,7 +400,7 @@ func newWireFixtures() wireFixtures {
 			WorkspaceBranchSHA:    "abc123",
 			HistoricalRepassCount: 2,
 		},
-		Operator: wireOperatorRunSummary(),
+		Operator: wireOperatorRunSummary(finishedAt),
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -1039,7 +1039,8 @@ func intPointer(value int) *int {
 
 // wireOperatorRunSummary is the run-summary fixture's operator projection,
 // including the #5313 reliability projection.
-func wireOperatorRunSummary() readservice.OperatorRunSummary {
+func wireOperatorRunSummary(reviewedAt time.Time) readservice.OperatorRunSummary {
+	reviewAge := int64(60000)
 	return readservice.OperatorRunSummary{
 		Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", URL: "https://example.test/issues/673", Labels: []string{providers.LabelNeedsHuman}},
 		DisplayTitle:      "Implement #673: Improve operator status",
@@ -1048,7 +1049,12 @@ func wireOperatorRunSummary() readservice.OperatorRunSummary {
 		Trajectory:        "terminal",
 		Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
 		NextTransition:    "",
-		PotentialBlockers: []string{},
+		PotentialBlockers: []string{"review escalate: reviewer requested a human decision"},
+		Blockers: []readservice.OperatorBlocker{{
+			Code: readservice.BlockerCodeReviewNotPassed, Source: readservice.BlockerSourceReview,
+			Message:    "review escalate: reviewer requested a human decision",
+			ObservedAt: &reviewedAt, AgeMillis: &reviewAge,
+		}},
 		Reliability: &readservice.RunReliability{
 			State:        string(journal.PhaseEscalated),
 			CurrentStage: "review",

@@ -275,7 +275,7 @@ func TestTerminalBranchDeleteProviderRoutesByRepoKind(t *testing.T) {
 	t.Cleanup(func() { newGiteaTerminalBranchDeleter = previousGitea })
 
 	cfg := giteaTerminalConfig("https://gitea.example.test")
-	deleter, err := newTerminalBranchDeleteProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("gitea-pat"))
+	deleter, err := newTerminalBranchDeleteProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("gitea-pat"), journal.NewRegistryScrubber())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestTerminalBranchDeleteProviderKeepsGitHubArm(t *testing.T) {
 	t.Cleanup(func() { newTerminalBranchDeleter = previousGitHub })
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "app"}}}
-	deleter, err := newTerminalBranchDeleteProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("ghp-token"))
+	deleter, err := newTerminalBranchDeleteProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("ghp-token"), journal.NewRegistryScrubber())
 	if err != nil {
 		t.Fatal(err)
 	}

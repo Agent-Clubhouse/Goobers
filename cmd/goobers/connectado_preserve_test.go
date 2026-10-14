@@ -26,7 +26,7 @@ func TestConnectADOPreservesRepositoryTuning(t *testing.T) {
 				repo.Name = "previous"
 			}
 			cfg := &instance.Config{Repos: []instance.RepoRef{repo}}
-			changed, err := connectRewriteADOInstanceConfig(cfg, connectOptions{ado: &connectADORepo{Organization: "org", Project: "boards", Repository: "web"}, tokenEnv: "NEW_TOKEN", replace: mode != "placeholder"})
+			changed, err := connectRewriteADOInstanceConfig(cfg, connectOptions{ado: &connectADORepo{Organization: "org", Project: "boards", Repository: "web"}, tokenEnv: "NEW_TOKEN", explicitTokenEnv: true, replace: mode != "placeholder"})
 			if err != nil || !changed {
 				t.Fatalf("rewrite: changed=%v err=%v", changed, err)
 			}

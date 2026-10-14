@@ -69,6 +69,7 @@
         "github.com/goobers/goobers/api/v1alpha1",
         "github.com/goobers/goobers/internal/diagnostics/featureusage",
         "github.com/goobers/goobers/internal/fieldpredicate",
+        "github.com/goobers/goobers/internal/jcs",
         "github.com/goobers/goobers/internal/journal",
         "github.com/goobers/goobers/internal/labelpredicate",
         "github.com/goobers/goobers/internal/lifecycle",
@@ -94,6 +95,7 @@
       "decision": "accepted",
       "rationale": "PR-status owns request and result behavior and may reuse provider contracts without provider, credential, CLI, or runner construction.",
       "allowedDirect": [
+        "github.com/goobers/goobers/internal/platform/durability",
         "github.com/goobers/goobers/providers"
       ],
       "allowedTransitive": [
@@ -101,6 +103,7 @@
         "github.com/goobers/goobers/api/v1alpha1",
         "github.com/goobers/goobers/internal/diagnostics/featureusage",
         "github.com/goobers/goobers/internal/fieldpredicate",
+        "github.com/goobers/goobers/internal/jcs",
         "github.com/goobers/goobers/internal/journal",
         "github.com/goobers/goobers/internal/labelpredicate",
         "github.com/goobers/goobers/internal/lifecycle",

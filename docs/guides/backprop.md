@@ -321,7 +321,16 @@ Both surfaces return two Backprop fields:
   | `productReliabilityFindings` | Goobers runtime (daemon, worktree, scheduler, journal, claims, admission, publication, recovery, shared CI). Must recur across unrelated workflows. |
   | `externalFindings` | Harness, model, provider, credentials, network, filesystem, operating system. Must recur across unrelated workflows. |
   | `workflowFindings` | The workflow definition. Must be localized to one workflow, EffectiveVersion, and node path. |
-  | `mixedOrUnknownFindings` | Anything sparse (fewer than three runs), missing provenance, contradictory, or not crossing the required boundary. |
+  | `mixedOrUnknownFindings` | Anything sparse (fewer than three runs), missing provenance, contradictory, or not crossing the required boundary. Also an `environment` failure whose stage recorded no error code naming its component. |
+
+  A cause's failure class decides its owner first: instruction, interpretation,
+  tool-choice, routing, and topology causes belong to the workflow definition,
+  and a model that produced no output is external. For other causes, the
+  stage's recorded error code decides, but only a code whose emitter names the
+  owner. Catch-all codes such as `provider_error` decide nothing. Component
+  words in the cause text count only when neither decides; stage, agent, and
+  tool names never count. Workflow findings are scoped per workflow and stage.
+  In `nodePaths`, the run's own node appears as `run`.
 
 Each finding carries a stable `id` (`backprop-` followed by 20 hex characters),
 `confidence`, `runIds`, `workflows`, `effectiveVersions`, `nodePaths`, journal

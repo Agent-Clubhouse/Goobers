@@ -245,6 +245,119 @@ Successful branch paths end at `@join`; a branch may instead terminate the run
 through `@abort` or `@escalate`. Human gates and writable repository workspaces
 are not permitted inside parallel branches.
 
+## Selective parallels and maps (DSL 3.1 preview)
+
+`dslVersion: "3.1"` adds two preview fan-out constructs, specified in
+[the conditional and plan-driven fan-out design](../../design/plan-driven-dynamic-fan-out.md).
+Both require the `goobers.dev/allow-preview-features: "true"` workflow
+annotation and are rejected under DSL 2.0 and 3.0.
+
+**Runtime support.** The local runner executes selective parallels. Maps
+validate, but no runtime executes them yet. The engine walk refuses both at
+run start with a typed unsupported-feature error, and the local runner
+refuses maps, and selective parallels whose branches can start child
+workflows, the same way. A refused selective parallel never runs as a plain
+parallel.
+
+Both read a source document the same way:
+
+```yaml
+source:
+  task: plan          # a task that runs before the fan-out on every path
+  slot: assignments   # an application/json artifactSlots entry on that task
+```
+
+The source slot's `maxSize`, when declared, must be at most 1 MiB. When the
+slot declares no `schemaPath`, its effective schema is the shipped envelope
+(`api/schemas/fanout-selection.schema.json` or
+`api/schemas/fanout-roster.schema.json`), so a malformed document is rejected
+when the producer calls `publish_output`.
+
+A **selective parallel** adds `selection` to a static parallel and marks the
+branches it may skip `optional: true`. Non-optional branches always run.
+`selection` without an optional branch, and an optional branch without
+`selection`, are both rejected.
+
+```yaml
+parallels:
+  - name: review
+    failurePolicy: continue_on_error
+    join: collate
+    selection:
+      source: { task: triage, slot: lenses }
+    branches:
+      - { name: baseline, start: review-baseline }
+      - { name: security, start: review-security, optional: true }
+```
+
+The source document names the optional branches to run, each with an
+optional reason of at most 512 bytes:
+
+```json
+{ "schemaVersion": 1, "branches": [{ "name": "security", "reason": "touches internal/auth" }] }
+```
+
+At run time the parallel behaves as follows:
+
+- **Freezing.** Before any branch starts, the runner reads the slot from the
+  producer's most recent recorded attempt. It checks the media type, the byte
+  size before decoding (1 MiB, or the slot's smaller `maxSize`) and the closed
+  envelope, and rejects unknown or duplicate branch names. It then writes the
+  normalized selection into `parallel.started` as
+  `selection: {source, sourceDigest, integrity, selected[], reasons{}}`.
+  Naming a non-optional branch has no effect. An empty `branches` array runs
+  only the non-optional branches.
+- **Invalid source.** A document that fails these checks fails the parallel
+  with error code `fanout_source_invalid` before `parallel.started`. The run
+  follows the parallel's `onFailure`, or `@abort` when none is declared. It
+  never fans out to an empty set.
+- **Skipped branches.** An unselected optional branch gets the terminal status
+  `skipped` in the completeness record, with a `reason`. It never starts: it
+  gets no `branch.started`, stage, workspace, concurrency slot or branch
+  timeout. Branch ids stay in declaration order whatever the selection.
+- **Failure policies ignore skipped branches.** `fail_fast` cancels only
+  selected branches that have not started. `all_or_nothing` succeeds when
+  every selected branch succeeds. The join runs exactly once, even when every
+  branch is skipped, and its `branchCompleteness` input lists skipped branches
+  with their reasons. A branch-qualified reference to a skipped branch resolves
+  as absent, the same as for a branch with no output.
+- **Resume.** Resume and rerun rebuild the skip set from the recorded
+  `parallel.started` only. They never rerun or reread the producer. A journal
+  whose recorded selection conflicts with itself, with the pinned definition,
+  or with later branch events is refused with error code
+  `workflow_integrity`. A human rerun of a stage in a skipped branch is
+  refused the same way.
+- **Selection integrity** is recorded for audit. The selection is control
+  data and is never delivered to a branch as input. `optional: true` is the
+  author's statement that skipping that branch is acceptable.
+
+A **map** runs one declared task once per roster item:
+
+```yaml
+maps:
+  - name: run-shards
+    source: { task: plan, slot: shards }
+    task: run-shard
+    bindings: { shard: item, shardIdentity: identity }
+    failurePolicy: continue_on_error
+    itemTimeoutSeconds: 1800
+    maxConcurrent: 4
+    join: collate
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | yes | State name addressable by workflow transitions. It must not collide with any task, gate, parallel or map. |
+| `source` | yes | The roster source (see above). |
+| `task` | yes | The mapped task. Only this map may enter it. It must end at `@join`, `@abort` or `@escalate`, use a `scratch` or `repo-readonly` workspace, and must not declare `childWorkflows`. |
+| `bindings` | no | Invocation input names bound to `item`, `identity` or `digest`. A name must not collide with the task's `inputs` or `inputsFrom`. |
+| `failurePolicy`, `join`, `onFailure` | as for parallels | Static parallel rules apply. |
+| `itemTimeoutSeconds` | no | Per-item budget. The mapped task's `timeoutSeconds` must not exceed it. |
+| `maxConcurrent` | no | 1 to 32; defaults to 1. |
+
+A map may not be nested in a parallel branch, and a map's task may not be a
+parallel or map.
+
 ## Run-control primitives
 
 Run controls may be declared at instance, gaggle, or workflow scope, with the
@@ -252,7 +365,7 @@ narrower scope overriding the broader one.
 
 | Field | Description |
 | --- | --- |
-| `maxRepasses` | Bounds how often gates may route back to an already completed stage. A non-human gate may override it. |
+| `maxRepasses` | Bounds how often a run may be routed back to the same already completed stage. The count is cumulative per target stage, charged by automated and agentic gate outcomes that route back to it and by producer retries after an invalid handoff. Only policy outcomes (anything other than `pass`, `infra`, or `timeout`) are charged: a `pass` branch into a completed stage is a forward step, `infra` and `timeout` outcomes spend their own retry and polling budgets, and human-gate decisions are never charged. A non-human gate may override it. |
 | `stalledRunTimeout` | Positive Go duration after which a silent running journal is escalated. |
 | `maxRunDuration` | Positive Go duration bounding active execution time: run age less time the host spent suspended and durable child waits. Empty disables this bound. |
 

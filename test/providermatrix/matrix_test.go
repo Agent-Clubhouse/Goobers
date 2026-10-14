@@ -54,12 +54,16 @@ var expectedFailures = map[finding]string{}
 func TestShippedWorkflowsCompileOnEveryProvider(t *testing.T) {
 	t.Parallel()
 	var findings []finding
+	loadFailed := map[subjectColumn]bool{}
 	for _, subject := range matrixSubjects(t) {
 		for _, provider := range matrixProviders {
 			dir := subject.build(t, provider)
-			subjectFindings, workflows := compileSubject(t, subject.name, provider, dir)
+			subjectFindings, workflows, loaded := compileSubject(t, subject.name, provider, dir)
 			if workflows == 0 && len(subjectFindings) == 0 {
 				t.Fatalf("%s on %s loaded no workflows; the gate would pass vacuously", subject.name, provider)
+			}
+			if !loaded {
+				loadFailed[subjectColumn{subject.name, provider}] = true
 			}
 			t.Logf("%s on %s: %d workflow(s), %d finding(s)", subject.name, provider, workflows, len(subjectFindings))
 			findings = append(findings, subjectFindings...)
@@ -75,9 +79,27 @@ func TestShippedWorkflowsCompileOnEveryProvider(t *testing.T) {
 		t.Errorf("unexpected compile-matrix failure: %s (fix it, or add an expectedFailures entry naming the item that fixes it)", f)
 	}
 	for _, f := range stale {
-		t.Errorf("expected failure no longer occurs: %s (%s); delete its expectedFailures entry in the PR that fixed it",
-			f, expectedFailures[f])
+		t.Error(staleEntryMessage(f, expectedFailures[f], loadFailed))
 	}
+}
+
+// subjectColumn is one subject validated on one provider.
+type subjectColumn struct {
+	subject  string
+	provider apiv1.Provider
+}
+
+// staleEntryMessage reports an expected failure that did not occur. A CONF-6
+// (capability) entry for a subject whose load failed was never evaluated —
+// compileSubject runs CONF-6 only on a tree that loads — so it is not stale:
+// the advice there is to fix the load failure, never to delete the entry.
+func staleEntryMessage(f finding, reason string, loadFailed map[subjectColumn]bool) string {
+	if strings.HasPrefix(f.Diagnostic, capabilityDiagnosticPrefix) && loadFailed[subjectColumn{f.Subject, f.Provider}] {
+		return fmt.Sprintf("expected failure not observed: %s (%s); CONF-6 not evaluated: load failed for %s on %s. "+
+			"Fix that subject's validation findings first; do not delete this entry until CONF-6 runs and passes",
+			f, reason, f.Subject, f.Provider)
+	}
+	return fmt.Sprintf("expected failure no longer occurs: %s (%s); delete its expectedFailures entry in the PR that fixed it", f, reason)
 }
 
 // reconcileFindings compares the asserted providers' findings against the
@@ -120,24 +142,28 @@ func sortFindings(findings []finding) {
 
 // compileSubject runs full config validation (api/validate schema, semantics,
 // policy actions and manifest admission, through the production loader) and
-// then CONF-6 for every workflow, returning each failure and the number of
-// workflows loaded.
-func compileSubject(t *testing.T, subject string, provider apiv1.Provider, dir string) ([]finding, int) {
+// then CONF-6 for every workflow, returning each failure, the number of
+// workflows loaded, and whether the tree loaded at all (CONF-6 runs only when
+// it did).
+func compileSubject(t *testing.T, subject string, provider apiv1.Provider, dir string) ([]finding, int, bool) {
 	t.Helper()
 	set, report, err := instance.LoadConfigDir(dir)
 	if err != nil {
-		return reportFindings(subject, provider, report, err), 0
+		return reportFindings(subject, provider, report, err), 0, false
 	}
 	var findings []finding
 	for _, problem := range instance.ProviderCapabilityProblems(set) {
 		findings = append(findings, finding{
 			Subject: subject, Provider: provider,
 			Object:     problem.Gaggle + "/" + problem.Workflow,
-			Diagnostic: "capability " + string(problem.Capability),
+			Diagnostic: capabilityDiagnosticPrefix + string(problem.Capability),
 		})
 	}
-	return findings, len(set.Workflows)
+	return findings, len(set.Workflows), true
 }
+
+// capabilityDiagnosticPrefix marks a CONF-6 (provider capability) finding.
+const capabilityDiagnosticPrefix = "capability "
 
 // reportFindings turns a failed load into one finding per error-severity
 // issue, keyed by the issue's code (or message when it has none).
@@ -192,7 +218,15 @@ func matrixSubjects(t *testing.T) []matrixSubject {
 	subjects := []matrixSubject{
 		shippedTreeSubject("reference-workflows", filepath.Join(root, "reference-workflows")),
 		shippedTreeSubject("config-examples", filepath.Join(root, "config-examples")),
+		shippedTreeSubject("examples/ios-simulator", filepath.Join(root, "examples", "ios-simulator")),
 	}
+	// The trees `goobers init` embeds and seeds (internal/instance's
+	// starterFS), read from their checked-in source.
+	for _, template := range []string{"starter", "quickstart-v1", "demo"} {
+		subjects = append(subjects, shippedTreeSubject("init/"+template, filepath.Join(root, "internal", "instance", template)))
+	}
+	subjects = append(subjects, standaloneWorkflowSubject("examples/hello-world",
+		filepath.Join(root, "internal", "instance", "starter"), "example", filepath.Join(root, "examples", "hello-world.yaml")))
 	for _, variant := range scaffoldVariants {
 		subjects = append(subjects, scaffoldSubject(variant))
 	}
@@ -209,6 +243,30 @@ func shippedTreeSubject(name, source string) matrixSubject {
 			t.Fatalf("copy %s: %v", source, err)
 		}
 		rewriteGaggles(t, dir, provider)
+		return dir
+	}}
+}
+
+// standaloneWorkflowSubject validates a shipped workflow file that has no
+// instance tree of its own: it is dropped into gaggle's workflows in a copy
+// of host, the tree whose gaggle it names, and that tree as a whole is
+// compiled.
+func standaloneWorkflowSubject(name, host, gaggle, workflow string) matrixSubject {
+	hostSubject := shippedTreeSubject(name, host)
+	return matrixSubject{name: name, build: func(t *testing.T, provider apiv1.Provider) string {
+		t.Helper()
+		dir := hostSubject.build(t, provider)
+		raw, err := os.ReadFile(workflow)
+		if err != nil {
+			t.Fatalf("read %s: %v", workflow, err)
+		}
+		target := filepath.Join(dir, "gaggles", gaggle, "workflows", filepath.Base(workflow))
+		if _, err := os.Stat(target); err == nil {
+			t.Fatalf("%s already exists in %s; the subject would not add %s", target, host, workflow)
+		}
+		if err := os.WriteFile(target, raw, 0o600); err != nil {
+			t.Fatalf("write %s: %v", target, err)
+		}
 		return dir
 	}}
 }
@@ -310,6 +368,29 @@ func TestExpectedFailuresNameTheirFixingItem(t *testing.T) {
 		}
 		if !isAsserted(f.Provider) {
 			t.Errorf("expectedFailures[%s] is for report-only provider %s; Gitea results are never asserted", f, f.Provider)
+		}
+	}
+}
+
+// TestStaleEntryMessageNamesASkippedCONF6: when a subject fails to load,
+// CONF-6 never runs for it, so its capability entries go unobserved without
+// being fixed. The gate must say so rather than advise deleting them.
+func TestStaleEntryMessageNamesASkippedCONF6(t *testing.T) {
+	t.Parallel()
+	capability := finding{Subject: "s", Provider: apiv1.ProviderADO, Object: "g/w", Diagnostic: capabilityDiagnosticPrefix + "pr.merge"}
+	validation := finding{Subject: "s", Provider: apiv1.ProviderADO, Object: "g/w", Diagnostic: "validate WF001"}
+	failed := map[subjectColumn]bool{{"s", apiv1.ProviderADO}: true}
+
+	skipped := staleEntryMessage(capability, "ADO-N1", failed)
+	if !strings.Contains(skipped, "CONF-6 not evaluated: load failed") || strings.Contains(skipped, "delete its expectedFailures entry") {
+		t.Errorf("capability entry on a subject that failed to load: %q; want the CONF-6-not-evaluated note and no delete advice", skipped)
+	}
+	for name, msg := range map[string]string{
+		"capability entry on a subject that loaded":         staleEntryMessage(capability, "ADO-N1", map[subjectColumn]bool{{"s", apiv1.ProviderGitHub}: true}),
+		"validation entry on a subject that failed to load": staleEntryMessage(validation, "ADO-N1", failed),
+	} {
+		if !strings.Contains(msg, "delete its expectedFailures entry") || strings.Contains(msg, "CONF-6 not evaluated") {
+			t.Errorf("%s: %q; want the delete advice", name, msg)
 		}
 	}
 }

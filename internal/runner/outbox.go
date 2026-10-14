@@ -347,9 +347,9 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 			// must not be silently pruned from exported outbox payloads.
 			opts.SkipHiddenDirs = false
 			walkErr := mcpio.WalkFiles(full, func(p string, d fs.DirEntry) error {
-				rel, err := filepath.Rel(resolvedRoot, p)
-				if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-					return fmt.Errorf("resolve outbox file %q relative to workspace: %w", p, err)
+				rel, err := outboxRelPath(resolvedRoot, p)
+				if err != nil {
+					return err
 				}
 				fi, err := d.Info()
 				if err != nil {
@@ -377,6 +377,20 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 		files = append(files, journal.OutboxFile{RelPath: candidate.relPath, Data: data})
 	}
 	return files, nil
+}
+
+// outboxRelPath returns p relative to the resolved workspace root, failing
+// when p cannot be expressed relative to it or climbs out of it. The escape
+// case has no underlying error to wrap, so it reports its own (#7242).
+func outboxRelPath(resolvedRoot, p string) (string, error) {
+	rel, err := filepath.Rel(resolvedRoot, p)
+	if err != nil {
+		return "", fmt.Errorf("resolve outbox file %q relative to workspace: %w", p, err)
+	}
+	if _, err := pathutil.IsLexicallyContained("", rel); err != nil {
+		return "", fmt.Errorf("outbox file %q is outside the workspace: %w", p, err)
+	}
+	return rel, nil
 }
 
 func newOutboxLimitError(candidates []outboxCandidate, totalBytes int64) *outboxLimitError {

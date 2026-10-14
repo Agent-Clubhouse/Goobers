@@ -12,7 +12,7 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-const pullRequestClaimPrefix = "pr/"
+const pullRequestClaimPrefix = claimsclient.PullRequestItemPrefix
 
 func pullRequestClaimKey(number int) string {
 	return pullRequestClaimPrefix + strconv.Itoa(number)

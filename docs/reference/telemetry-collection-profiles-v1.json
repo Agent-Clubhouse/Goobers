@@ -22,9 +22,20 @@
   "consentGatedIdentity": [
     "machineName",
     "accountName",
+    "instanceRoot",
     "ai.device.id",
     "ai.cloud.roleInstance"
   ],
+  "consentGatedPathRoots": [
+    "/Users/\u003caccount\u003e",
+    "/home/\u003caccount\u003e",
+    "/var/home/\u003caccount\u003e",
+    "/mnt/\u003cdrive\u003e/Users/\u003caccount\u003e",
+    "\u003cdrive\u003e:\\Users\\\u003caccount\u003e",
+    "\\\\\u003chost\u003e\\\u003cshare\u003e\\Users\\\u003caccount\u003e",
+    "daemon account home directory"
+  ],
+  "consentGatedPathPlaceholder": "\u003chome\u003e",
   "profiles": [
     {
       "name": "health",

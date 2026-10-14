@@ -105,10 +105,15 @@ func TestADOPlanConcurrentProviderListsShareExactSnapshotAndBatchMembership(t *t
 	dir := t.TempDir()
 	scope := Scope{Gaggle: "team", Binding: "automation:backlog", Generation: "generation-a"}
 	fixture := &adoPlanFixture{}
+	// Assert sharing independently of a loaded runner's one-second fail-open
+	// budget. TestADOPlanSnapshotContentionUsesProductionLockBudget covers that
+	// production fallback with a deliberately held provider response.
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			items, info, err := adoPlanRead(t.Context(), adoPlanProvider(dir, "evaluation", scope, "token", fixture))
+			p := adoPlanProvider(dir, "evaluation", scope, "token", fixture)
+			p.Client.(*apiReadCache).lockBudget = time.Minute
+			items, info, err := adoPlanRead(t.Context(), p)
 			assertADOPlanItems(t, items, info, err)
 		})
 	}
@@ -191,6 +196,9 @@ func TestADOPlanInteractiveOverlapSharesButLaterRefreshIsLive(t *testing.T) {
 	for range 8 {
 		wg.Go(func() {
 			p := adoPlanProvider(dir, "", scope, "token", fixture)
+			// This test checks overlap/refresh identity; the production timeout
+			// has a separate controlled-contention test.
+			p.Client.(*apiReadCache).lockBudget = time.Minute
 			inner := p.Client
 			p.Client = scopedTransport(func(req *http.Request) (*http.Response, error) {
 				if strings.HasSuffix(req.URL.Path, "/wiql") {

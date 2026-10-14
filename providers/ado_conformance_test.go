@@ -13,6 +13,12 @@ import (
 // with whatever follows the colon up to the end of the value expression.
 var adoVoteKeyPattern = regexp.MustCompile(`"vote"\s*:\s*([^,}\n]*)`)
 
+// adoVoteFieldPattern matches a vote written through a Go field instead of a
+// JSON map key: a struct-literal `Vote: v` or an assignment `x.Vote = v`
+// (never a comparison such as `x.Vote == 0` or `x.Vote >= 5`), with the
+// value expression that follows.
+var adoVoteFieldPattern = regexp.MustCompile(`(?:\bVote\s*:|\.Vote\s*=)\s*([^=,;}\n][^,;}\n]*)`)
+
 // adoVoteZeroPattern is the only vote value Goobers may write: 0, "no vote".
 var adoVoteZeroPattern = regexp.MustCompile(`^0\s*$`)
 
@@ -69,7 +75,9 @@ func scanADOPolicyConformance(path, src string) (violations []string, zero int) 
 		if adoVoteTagPattern.MatchString(line) {
 			continue
 		}
-		for _, m := range adoVoteKeyPattern.FindAllStringSubmatch(line, -1) {
+		matches := adoVoteKeyPattern.FindAllStringSubmatch(line, -1)
+		matches = append(matches, adoVoteFieldPattern.FindAllStringSubmatch(line, -1)...)
+		for _, m := range matches {
 			if adoVoteZeroPattern.MatchString(m[1]) {
 				zero++
 				continue
@@ -89,6 +97,13 @@ func TestADOPolicyConformanceScanDetectsViolations(t *testing.T) {
 		"bypass reason": `opts.BypassReason = "x"`,
 		"approve vote":  `map[string]int{"vote": 10}`,
 		"dynamic vote":  `map[string]int{"vote": v}`,
+		// A typed request body writes the vote through its Go field, never
+		// spelling the "vote" JSON key at the call site.
+		"struct-literal approve vote": `body := adoReviewerVote{ID: id, Vote: 10}`,
+		"struct-literal reject vote":  `adoReviewerVote{Vote: -10}`,
+		"struct-literal dynamic vote": `adoReviewerVote{Vote: vote}`,
+		"multi-line struct literal":   `		Vote:   5,`,
+		"field assignment":            `reviewer.Vote = 10`,
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -97,7 +112,17 @@ func TestADOPolicyConformanceScanDetectsViolations(t *testing.T) {
 			}
 		})
 	}
-	for _, src := range []string{`map[string]int{"vote": 0}`, "Vote int `json:\"vote\"`"} {
+	for _, src := range []string{
+		`map[string]int{"vote": 0}`,
+		"Vote int `json:\"vote\"`",
+		`adoReviewerVote{ID: id, Vote: 0}`,
+		`reviewer.Vote = 0`,
+		// Reads are not writes.
+		`if reviewer.Vote == 0 {`,
+		`case r.Vote < 0:`,
+		`case r.Vote >= 5:`,
+		`if r.Vote != 0 {`,
+	} {
 		violations, _ := scanADOPolicyConformance("probe.go", src)
 		if len(violations) != 0 {
 			t.Fatalf("scanner rejected permitted %q: %v", src, violations)

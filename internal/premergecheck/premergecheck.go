@@ -10,7 +10,6 @@
 package premergecheck
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +17,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // Outcome classifies what a check concluded about the merge result.
@@ -212,14 +216,56 @@ func merge(ctx context.Context, req Request, dir string) (bool, string, error) {
 	return false, "", fmt.Errorf("premergecheck: merge %s: %w: %s", req.HeadSHA, err, out)
 }
 
+const commandKillWait = 5 * time.Second
+
+// tailWriter keeps only the last limit bytes written to it.
+type tailWriter struct {
+	mu    sync.Mutex
+	limit int
+	buf   []byte
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	if over := len(w.buf) - w.limit; over > 0 {
+		w.buf = append(w.buf[:0], w.buf[over:]...)
+	}
+	return len(p), nil
+}
+
+func (w *tailWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return string(w.buf)
+}
+
+// runCommand runs the command in its own process tree and kills the whole tree
+// when ctx ends, so a grandchild holding the output pipe cannot keep the merge
+// lock held past cancellation. Output is bounded to a tail.
 func runCommand(ctx context.Context, dir string, env, command []string) (string, error) {
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = dir
 	cmd.Env = env
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
+	out := &tailWriter{limit: 2 * maxOutputTail}
+	cmd.Stdout = out
+	cmd.Stderr = out
+	cmd.WaitDelay = commandKillWait
+	tree, err := proc.Start(cmd)
+	if err != nil {
+		return "", err
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	outcome := proc.WaitOrKill(ctx, tree, waitDone, proc.WaitOptions{KillWait: commandKillWait})
+	err = outcome.Err
+	if outcome.GaveUp {
+		err = errors.New("command did not exit after kill")
+	}
+	if cerr := context.Cause(ctx); cerr != nil && (outcome.TimedOut || outcome.Canceled) {
+		err = errors.Join(cerr, err)
+	}
 	return out.String(), err
 }
 
@@ -233,5 +279,9 @@ func tail(output string) string {
 	if len(output) <= maxOutputTail {
 		return output
 	}
-	return "…" + output[len(output)-maxOutputTail:]
+	cut := len(output) - maxOutputTail
+	for cut < len(output) && !utf8.RuneStart(output[cut]) {
+		cut++
+	}
+	return "…" + output[cut:]
 }
