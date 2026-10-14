@@ -1009,6 +1009,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/workerrouting",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Portable Temporal routing assessment over a fake deployment client; no Windows-specific seam. Runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/workflow/internal/model",
       "coverage": "none",
       "category": "not-selected",
