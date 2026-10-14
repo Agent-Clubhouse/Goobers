@@ -567,66 +567,80 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 		case len(history) > 0:
 			runs[i].Operator.Claim.LeaseStatus = "released"
 		}
-		markerVerified := false
-		markerPresent := false
-		if s.sources.WorkItemLookup != nil &&
-			(runs[i].Phase == journal.PhaseRunning ||
-				runs[i].Phase == journal.PhaseFailed ||
-				runs[i].Phase == journal.PhaseEscalated) &&
-			runs[i].Operator.Issue != nil &&
-			runs[i].Operator.Issue.Number != "" {
-			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
-			if err != nil {
-				limitation := "provider work item lookup unavailable: " + err.Error()
-				if runs[i].Phase == journal.PhaseRunning {
-					// The reader could not verify the marker; the run itself is
-					// unaffected. This belongs to the diagnostics-limitations
-					// channel, never to the run's blockers (#3346) — a
-					// credential-less `goobers status` reported two healthy runs as
-					// blocked and nearly triggered an investigation into them.
-					runs[i].Operator.Claim.ProviderMarker = "unavailable"
-					limitation = "provider claim marker verification unavailable: " + err.Error()
-				}
-				runs[i].Operator.DiagnosticsLimitations = append(
-					runs[i].Operator.DiagnosticsLimitations,
-					limitation,
-				)
-				continue
-			}
-			if runs[i].Operator.Issue.Title == "" {
-				runs[i].Operator.Issue.Title = item.Title
-			}
-			runs[i].Operator.Issue.Labels = append([]string(nil), item.Labels...)
-			if runs[i].Phase == journal.PhaseRunning {
-				markerVerified = true
-				markerPresent = item.HasLabel(providers.LabelClaimed)
-			}
-		}
-		if markerVerified &&
-			runs[i].Operator.Claim.LeaseStatus != "active" &&
-			markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "drift"
-			runs[i].Operator.PotentialBlockers = append(
-				runs[i].Operator.PotentialBlockers,
-				"provider claim marker exists without an active lease",
-			)
-		} else if markerVerified &&
-			runs[i].Operator.Claim.LeaseStatus == "active" &&
-			!markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "drift"
-			runs[i].Operator.PotentialBlockers = append(
-				runs[i].Operator.PotentialBlockers,
-				"active claim lease has no provider marker",
-			)
-		} else if markerVerified &&
-			runs[i].Operator.Claim.LeaseStatus == "active" &&
-			markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "verified"
-		} else if markerVerified && !markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "not-present"
-		}
+		s.verifyProviderClaimMarker(ctx, &runs[i])
 	}
 	return nil
+}
+
+// verifyProviderClaimMarker compares a run's claim lease with the provider's
+// claim marker on the linked work item. A pull-request claim ("pr/<n>", the
+// merge-review / pr-remediation lease) has no provider claim marker by
+// contract — PR leases live in the local ledger only — and its key is not a
+// work-item id, so it is reported as not-applicable without a provider
+// lookup. Resolving it through the work-item API failed on every provider
+// (ADO rejects the non-numeric id; GitHub 404s) and surfaced as a spurious
+// "claim marker verification unavailable" diagnostic (#6798).
+func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary) {
+	if run.Operator.Issue == nil || run.Operator.Issue.Number == "" {
+		return
+	}
+	if localscheduler.IsPullRequestItemID(run.Operator.Issue.Number) {
+		run.Operator.Claim.ProviderMarker = "not-applicable"
+		return
+	}
+	if s.sources.WorkItemLookup == nil ||
+		(run.Phase != journal.PhaseRunning &&
+			run.Phase != journal.PhaseFailed &&
+			run.Phase != journal.PhaseEscalated) {
+		return
+	}
+	item, err := s.sources.WorkItemLookup(ctx, run.Gaggle, run.Operator.Issue.Number)
+	if err != nil {
+		limitation := "provider work item lookup unavailable: " + err.Error()
+		if run.Phase == journal.PhaseRunning {
+			// The reader could not verify the marker; the run itself is
+			// unaffected. This belongs to the diagnostics-limitations
+			// channel, never to the run's blockers (#3346) — a
+			// credential-less `goobers status` reported two healthy runs as
+			// blocked and nearly triggered an investigation into them.
+			run.Operator.Claim.ProviderMarker = "unavailable"
+			limitation = "provider claim marker verification unavailable: " + err.Error()
+		}
+		run.Operator.DiagnosticsLimitations = append(run.Operator.DiagnosticsLimitations, limitation)
+		return
+	}
+	if run.Operator.Issue.Title == "" {
+		run.Operator.Issue.Title = item.Title
+	}
+	run.Operator.Issue.Labels = append([]string(nil), item.Labels...)
+	if run.Phase != journal.PhaseRunning {
+		return
+	}
+	reconcileProviderClaimMarker(run, item.HasLabel(providers.LabelClaimed))
+}
+
+// reconcileProviderClaimMarker classifies a running run's verified provider
+// marker against its lease, recording observed drift as a run blocker.
+func reconcileProviderClaimMarker(run *RunSummary, markerPresent bool) {
+	active := run.Operator.Claim.LeaseStatus == "active"
+	switch {
+	case !active && markerPresent:
+		run.Operator.Claim.ProviderMarker = "drift"
+		run.Operator.PotentialBlockers = append(
+			run.Operator.PotentialBlockers,
+			"provider claim marker exists without an active lease",
+		)
+	case active && !markerPresent:
+		run.Operator.Claim.ProviderMarker = "drift"
+		run.Operator.PotentialBlockers = append(
+			run.Operator.PotentialBlockers,
+			"active claim lease has no provider marker",
+		)
+	case active:
+		run.Operator.Claim.ProviderMarker = "verified"
+	default:
+		run.Operator.Claim.ProviderMarker = "not-present"
+	}
 }
 
 // TimeToFirstPR merges the retained lifetime milestone with the successful-init

@@ -571,6 +571,101 @@ func TestDecorateOperatorClaimsReportsRealMarkerDriftAsBlocker(t *testing.T) {
 	}
 }
 
+// TestDecorateOperatorClaimsSkipsPullRequestClaims pins #6798: a merge-review
+// or pr-remediation run's claim ("pr/<n>") is a ledger-only lease with no
+// provider claim marker, and its key is not a work-item id. It must be
+// reported as not-applicable without a work-item lookup — handing "pr/<n>" to
+// the work-item API failed (ADO: "work item id must be a positive integer")
+// and surfaced as a spurious diagnostics limitation — while work-item claims
+// in the same pass are still verified.
+func TestDecorateOperatorClaimsSkipsPullRequestClaims(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 20, 3, 15, 0, 0, time.UTC)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range []struct{ runID, itemID, workflow string }{
+		{"run-pr", "pr/536", "merge-review"},
+		{"run-issue", "3344", "implementation"},
+	} {
+		ok, _, err := ledger.ClaimScoped(
+			localscheduler.ClaimKey{Gaggle: "goobers", Provider: "ado", ExternalID: claim.itemID},
+			claim.runID, claim.workflow, time.Hour,
+		)
+		if err != nil || !ok {
+			t.Fatalf("claim %s = %v, %v", claim.itemID, ok, err)
+		}
+	}
+	var looked []string
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(_ context.Context, _, itemID string) (providers.WorkItem, error) {
+			looked = append(looked, itemID)
+			if itemID != "3344" {
+				return providers.WorkItem{}, errors.New("ADO work item id must be a positive integer")
+			}
+			return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
+		},
+	}}
+	runs := []RunSummary{
+		{
+			// No issue of its own: the projection fills it from the active
+			// ledger entry, as for a live merge-review run.
+			ID: "run-pr", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+				PotentialBlockers: []string{},
+			},
+		},
+		{
+			ID: "run-pr-failed", Gaggle: "goobers", Phase: journal.PhaseFailed,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "pr/537"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+			},
+		},
+		{
+			ID: "run-issue", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "3344"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+	}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(looked) != 1 || looked[0] != "3344" {
+		t.Fatalf("work-item lookups = %v, want only the work-item claim", looked)
+	}
+	for _, run := range runs[:2] {
+		got := run.Operator
+		if got.Issue == nil || !localscheduler.IsPullRequestItemID(got.Issue.Number) {
+			t.Fatalf("run %s issue = %+v, want the PR claim key", run.ID, got.Issue)
+		}
+		if got.Claim.ProviderMarker != "not-applicable" {
+			t.Fatalf("run %s provider marker = %q, want not-applicable", run.ID, got.Claim.ProviderMarker)
+		}
+		if len(got.DiagnosticsLimitations) != 0 || len(got.PotentialBlockers) != 0 {
+			t.Fatalf("run %s diagnostics = %+v, blockers = %+v, want none for a PR claim",
+				run.ID, got.DiagnosticsLimitations, got.PotentialBlockers)
+		}
+	}
+	if got := runs[0].Operator.Claim.LeaseStatus; got != "active" {
+		t.Fatalf("PR lease status = %q, want the lease still reported active", got)
+	}
+	if got := runs[2].Operator.Claim; got.LeaseStatus != "active" || got.ProviderMarker != "verified" {
+		t.Fatalf("work-item claim = %+v, want verified", got)
+	}
+}
+
 func TestParseProviderQuotaResumeTime(t *testing.T) {
 	resetAt := time.Date(2026, 7, 17, 4, 0, 0, 0, time.UTC)
 	reason := localscheduler.ReasonProviderQuota + ": resumes at " + resetAt.Format(time.RFC3339)
