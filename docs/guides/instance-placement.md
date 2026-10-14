@@ -259,6 +259,27 @@ workflow identities and disjoint backlog routing, but neither requires another
 placement model. Create another outside instance root when a repository needs
 its own isolation boundary, not because of the repository count.
 
+### Cloud adoption and external references
+
+Moving execution to cloud does not inherently require moving desired-state
+ownership into a central workforce repository. A dedicated instance can use
+an existing compatible Git config source. Today, however, `workflowSource`
+selects one root repository: it has no remote subtree selector or multi-source
+include syntax. Existing shared instances need a complete configuration source
+containing their enrolled gaggles.
+
+[Apply-time gaggle references](../design/apply-time-gaggle-references.md)
+proposes enrollment by a small logical reference to a product-owned gaggle
+subtree, including pinned skills/instructions. It is a draft, not a supported
+`reference.yaml` command/config contract. Config materialization rejects
+filesystem symlinks; do not use them as a cloud sharing mechanism.
+
+Definition adoption is separate from state migration. Keep the old instance
+and history until cutover is verified, and do not run two schedulers against
+the same backlog without an explicit coordination boundary. The
+[cold host-move runbook](move-local-instance.md) covers tiers 1–2, not active
+local-to-Temporal conversion or importing one instance's state into another.
+
 ## Credential and trust checklist
 
 Placement complements the capability model; it does not replace it:
