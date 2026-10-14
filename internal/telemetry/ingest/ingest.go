@@ -12,6 +12,7 @@ import (
 	"context"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel/intake"
@@ -122,6 +123,27 @@ func RunIntakeObserverContext(watermarks *intake.Store, log *journal.InstanceLog
 		if err := watermarks.Observed(ctx, runID, seq); err != nil {
 			LogFailure(log, runID, "read_model_intake_failed", err)
 		}
+	}
+}
+
+// RunObserversContext is the per-run journal append observer the daemon
+// installs: the read-model intake watermark, then the Backprop stage
+// checkpointer (#7118). The checkpointer only enqueues the run; stage
+// checkpoints are written by its own worker, so neither observer adds latency
+// to a stage transition and neither failure reaches the run.
+func RunObserversContext(watermarks *intake.Store, l instance.Layout, log *journal.InstanceLog) func(context.Context, string, uint64) {
+	intakeObserver := RunIntakeObserverContext(watermarks, log)
+	if l.Root == "" {
+		return intakeObserver
+	}
+	checkpoints := creditgraph.NewStageCheckpointer(l.FindRunDir, func(runID string, err error) {
+		LogFailure(log, runID, "backprop_stage_checkpoint_failed", err)
+	})
+	return func(ctx context.Context, runID string, seq uint64) {
+		if intakeObserver != nil {
+			intakeObserver(ctx, runID, seq)
+		}
+		checkpoints.Observe(ctx, runID, seq)
 	}
 }
 

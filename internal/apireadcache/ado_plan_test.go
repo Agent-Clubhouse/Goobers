@@ -166,17 +166,26 @@ func TestADOPlanInteractiveOverlapSharesButLaterRefreshIsLive(t *testing.T) {
 	dir := t.TempDir()
 	scope := Scope{Gaggle: "team", Binding: "interactive:planning", Generation: "generation-a"}
 	var enteredWIQL, enteredBatch atomic.Int32
+	wiqlStarted := adoReadSequence.Load()
+	var batchStarted atomic.Uint64
+	var batchOnce sync.Once
 	fixture := &adoPlanFixture{before: func(req *http.Request) error {
 		var entered *atomic.Int32
+		var started uint64
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/wiql"):
-			entered = &enteredWIQL
+			entered, started = &enteredWIQL, wiqlStarted
 		case strings.HasSuffix(req.URL.Path, "/workitemsbatch"):
-			entered = &enteredBatch
+			entered, started = &enteredBatch, batchStarted.Load()
 		default:
 			return nil
 		}
-		return waitADOPlanCondition(req.Context(), func() bool { return entered.Load() >= 8 })
+		// Counting the wrapper alone is insufficient: its last caller can
+		// be descheduled before entering readADOPlan. Keep the first response
+		// blocked until all eight reads acquired their monotonic start fence.
+		return waitADOPlanCondition(req.Context(), func() bool {
+			return entered.Load() >= 8 && adoReadSequence.Load()-started >= 8
+		})
 	}}
 	var wg sync.WaitGroup
 	for range 8 {
@@ -187,6 +196,7 @@ func TestADOPlanInteractiveOverlapSharesButLaterRefreshIsLive(t *testing.T) {
 				if strings.HasSuffix(req.URL.Path, "/wiql") {
 					enteredWIQL.Add(1)
 				} else if strings.HasSuffix(req.URL.Path, "/workitemsbatch") {
+					batchOnce.Do(func() { batchStarted.Store(adoReadSequence.Load()) })
 					enteredBatch.Add(1)
 				}
 				return inner.Do(req)
@@ -259,6 +269,5 @@ func waitADOPlanCondition(ctx context.Context, ready func() bool) error {
 		case <-ticker.C:
 		}
 	}
-	// Let the last caller enter the cache before the transport finishes.
 	return nil
 }

@@ -67,6 +67,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		},
 		"WorkflowSpec.Backprop": {
 			"workflow.spec.backprop.enabled",
+			"workflow.spec.backprop.granularity",
 			"workflow.spec.backprop.version",
 		},
 		"WorkflowSpec.OutboxMirrorPath": {"workflow.spec.outboxMirrorPath"},
