@@ -63,3 +63,52 @@ func azureJournalHealthEnvelope(line []byte) ([]byte, error) {
 	envelope["data"], _ = json.Marshal(data)
 	return json.Marshal(envelope)
 }
+
+// azureExportPayload is the single HTTP-boundary projection for every Azure
+// Monitor signal (journal Logs, diagnostics and trace spans), fresh or
+// replayed from a spool written by an older release. Without identity consent
+// (every collection profile except diagnostic) it also withholds account
+// paths (#6770). Retained journals and spool files are never edited.
+func azureExportPayload(raw []byte, hostIdentity bool) ([]byte, error) {
+	projected, err := azureJournalHealthPayload(raw)
+	if err != nil || hostIdentity {
+		return projected, err
+	}
+	return azureAccountPathPayload(projected, processAccountPaths())
+}
+
+var errAzureAccountPathEnvelope = errors.New("withhold Azure Monitor account paths: invalid envelope")
+
+// azureAccountPathPayload drops instanceRoot fields and replaces home-directory
+// roots in every string of every envelope line (message bodies, properties,
+// span status text). Lines without a candidate stay byte-for-byte unchanged.
+func azureAccountPathPayload(raw []byte, scrub accountPathScrubber) ([]byte, error) {
+	lines := bytes.Split(raw, []byte{'\n'})
+	changed := false
+	for i, line := range lines {
+		if len(bytes.TrimSpace(line)) == 0 || !scrub.candidate(line) {
+			continue
+		}
+		// A malformed candidate fails closed with a fixed, data-free error: the
+		// batch stays pending rather than sending a line that was not inspected.
+		if !json.Valid(line) {
+			return nil, errAzureAccountPathEnvelope
+		}
+		envelope, err := decodeJSONNumbers(line)
+		if err != nil {
+			return nil, errAzureAccountPathEnvelope
+		}
+		projected, ok := scrub.value(envelope)
+		if !ok {
+			continue
+		}
+		if lines[i], err = json.Marshal(projected); err != nil {
+			return nil, errAzureAccountPathEnvelope
+		}
+		changed = true
+	}
+	if !changed {
+		return raw, nil
+	}
+	return bytes.Join(lines, []byte{'\n'}), nil
+}
