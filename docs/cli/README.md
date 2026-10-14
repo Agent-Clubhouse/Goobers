@@ -3438,10 +3438,13 @@ newest comment with goobers:needs-remediation, so pr-remediation updates
 that PR in place. A PR parked for a human (needs-human / merge-escalated)
 is un-parked when a fresh human comment lands: the park label is cleared
 and needs-remediation added, since the human the PR was parked for has
-now weighed in. A PR that is landing (goobers:merge-ready) is scanned too:
-fresh human feedback first disarms its armed landing — on Azure DevOps it
-cancels the auto-complete; on GitHub queue-watch dequeues the PR once it
-carries needs-remediation — then removes merge-ready and routes it.
+now weighed in. With blockUnansweredFeedback "true" (declare policy
+action disarm-landing) a PR that is landing (goobers:merge-ready) is
+scanned too, by its open feedback: fresh human feedback first disarms
+its armed landing — on Azure DevOps it cancels the auto-complete; on
+GitHub queue-watch withdraws the queued PR once it is routed — then
+removes merge-ready and routes it. Default false: landing PRs are
+skipped, as before; set it false to merge over comments.
 Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
 general comments and review-thread replies both count; deleted comments
 and system threads (votes, pushes, policy status) never do.

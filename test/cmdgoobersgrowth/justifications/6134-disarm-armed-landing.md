@@ -1,7 +1,7 @@
 # #6134 follow-up: disarm an armed landing on fresh human feedback
 
 This PR is stacked on #6494 and on the #6134 gate. Its own growth in
-`cmd/goobers` is small: about +60 non-test lines and no new files.
+`cmd/goobers` is small: about +120 net non-test lines and no new files.
 
 ## Why the growth belongs in the command package
 

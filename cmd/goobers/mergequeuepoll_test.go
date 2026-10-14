@@ -895,19 +895,32 @@ type adoPRDetailState struct {
 	sourceRef string
 	headSHA   string
 	refs      *fakeADORefs
+	// labels are served on the detail; a PATCH clears autoComplete (the
+	// withdrawal's auto-complete cancel, #6134) and counts in cancels.
+	labels  []string
+	cancels int
 }
 
 func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *adoPRDetailState) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	prPath := "/" + owner + "/" + project + "/_apis/git/repositories/" + name + "/pullrequests/9"
-	mux.HandleFunc(prPath, func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(prPath, func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.detailCalls++
+		if r.Method == http.MethodPatch {
+			st.autoComplete = false
+			st.cancels++
+		}
+		labels := make([]map[string]string, 0, len(st.labels))
+		for _, label := range st.labels {
+			labels = append(labels, map[string]string{"name": label})
+		}
 		body := map[string]interface{}{
 			"pullRequestId":   9,
 			"status":          st.status,
 			"lastMergeCommit": map[string]string{"commitId": st.mergeCommit},
+			"labels":          labels,
 		}
 		if st.autoComplete {
 			body["autoCompleteSetBy"] = map[string]string{"uniqueName": "goobers"}

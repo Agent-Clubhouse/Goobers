@@ -56,6 +56,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"comment-on-issue":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"create-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"delete-branch":            {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},
+	"disarm-landing":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"demote-pr":                {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"edit-issue":               {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"escalate-pr":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
@@ -176,6 +177,11 @@ var commandArgumentPolicyActionInputs = map[string]map[string]string{
 // inputsFrom binding for the input is dynamic and prescribes every action
 // the input can enable, failing closed like the argument-input table above.
 var commandInputPolicyActions = map[string]map[string]map[string][]string{
+	// #6134: pr-comment-watch scans landing PRs and cancels an armed Azure
+	// DevOps auto-complete only when this is explicitly enabled.
+	"pr-comment-watch": {
+		"blockUnansweredFeedback": {"true": {"disarm-landing"}},
+	},
 	"file-issues": {
 		"autoApprove": {"deterministic-only": {"approve-issue"}},
 	},

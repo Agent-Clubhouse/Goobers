@@ -390,14 +390,24 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   - Gitea reports no review-thread resolution, and a dismissed Gitea review keeps
     its state. So on Gitea every review comment counts until it is answered.
     This over-blocks; it never under-blocks.
-  - An armed landing is disarmed when feedback arrives after it was armed.
-    `pr-comment-watch` scans `goobers:merge-ready` PRs. On fresh human feedback
-    it cancels an armed Azure DevOps auto-complete, and only then removes
-    `merge-ready` and routes the PR to `goobers:needs-remediation`. On GitHub,
-    `queue-watch` (which holds the merge authority while the PR is queued)
-    dequeues a PR that gains `needs-remediation`. Residual: a GitHub queue entry
-    that outlives `queue-watch`'s poll window is not dequeued by
-    `pr-comment-watch`, which does not hold the merge authority.
+  - An armed landing can be withdrawn when feedback arrives after it was armed.
+    - `queue-watch` withdraws a PR it is watching that carries an opt-out label,
+      or that was routed to remediation off landing (`goobers:needs-remediation`
+      without `goobers:merge-ready`). On GitHub it dequeues the PR; on Azure
+      DevOps it cancels the auto-complete. A `needs-remediation` label next to
+      `merge-ready` (post-merge's overlap fan-out) is not a withdrawal.
+    - With `blockUnansweredFeedback: "true"` and the `disarm-landing` policy
+      action, `pr-comment-watch` scans `merge-ready` PRs by their open
+      feedback. On fresh human feedback it cancels an armed Azure DevOps
+      auto-complete, and only then removes `merge-ready` and routes the PR. A PR
+      that completed first is reported, not routed. This is opt-in because it
+      is a new mutation; by default landing PRs are skipped.
+    - Residuals:
+      - On GitHub, `pr-comment-watch` reads issue comments only.
+      - A GitHub queue can land in the window between the routing label and
+        queue-watch's next poll.
+      - A queue entry or auto-complete that outlives queue-watch's poll window
+        is withdrawn only by `pr-comment-watch` on Azure DevOps.
   - Feedback that cannot be read in full fails closed as
     `human-feedback-unverifiable`.
   - The check is on by default; `blockUnansweredFeedback: "false"` opts out for

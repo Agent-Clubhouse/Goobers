@@ -45,6 +45,7 @@ off to a task.
 | `comment-on-issue` | `github:issues:write` | Publish an issue comment. |
 | `create-issue` | `github:issues:write` | Create an issue. |
 | `delete-branch` | `github:branch:delete` | Delete a remote branch after its lifecycle permits cleanup. |
+| `disarm-landing` | `github:issues:write` | Withdraw a landing PR from landing on fresh human feedback: cancel its armed Azure DevOps auto-complete (with the stage's `github:pr:write` credential there), remove `goobers:merge-ready` and route it to remediation. |
 | `demote-pr` | `github:pr:write` | Remove a PR from landing priority. |
 | `edit-issue` | `github:issues:write` | Edit issue content or metadata. |
 | `escalate-pr` | `github:pr:write` | Mark a PR for human escalation. |
@@ -87,6 +88,7 @@ Some command modes change the required action set:
 | `backlog-health` feedback mode | `update-issue` |
 | `reconcile-branches --delete` or `inputs.deleteBranches: "true"` | `delete-branch` |
 | `file-issues` with `inputs.autoApprove: "deterministic-only"` | `approve-issue` in addition to its normal publication actions |
+| `pr-comment-watch` with `inputs.blockUnansweredFeedback: "true"` | `disarm-landing` in addition to `label-issue` |
 | `file-issues --check` | No mutation actions |
 | `respond-to-findings --check` | No mutation actions |
 

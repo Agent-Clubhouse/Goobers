@@ -183,7 +183,7 @@ var inputSchemas = map[string][]Input{
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
 	"pr-comment-watch": schema(
-		stringsIn("base", "identityMode"), integersIn("maxPullRequests"),
+		stringsIn("base", "identityMode"), integersIn("maxPullRequests"), booleansIn("blockUnansweredFeedback"),
 		stringListsIn("excludeAuthors", "excludeLabels", "headPrefixes", "unparkLabels"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
