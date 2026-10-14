@@ -669,6 +669,8 @@ export interface WorkflowSafetyDetails {
 export interface RepoRef {
   provider: Provider;
   owner: string;
+  /** Azure DevOps project; omitted for GitHub and Gitea. */
+  project?: string;
   name: string;
   branch?: string;
   connectionRef?: string;

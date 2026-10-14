@@ -17,6 +17,7 @@ import { GaggleWorkflowExplorer } from "../components/GaggleWorkflowExplorer";
 import { DisclosureSection } from "../components/DisclosureSection";
 import { ScopePivot } from "../components/ScopePivot";
 import { providerName } from "../runDetailData";
+import { repositoryPath } from "../repositoryIdentity";
 import {
   incompleteRunPhasesMessage,
   useGaggleActivity,
@@ -121,7 +122,7 @@ function GaggleTopology({
         className="gaggle-detail-heading"
         description={
           <>
-            {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
+            {gaggle.name} · {repositoryPath(gaggle.project)}
           </>
         }
         fullWidth
