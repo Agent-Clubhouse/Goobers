@@ -140,12 +140,82 @@ var preflightHarnesses = preflightAgenticHarnesses
 type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 
 // harnessPreflightFailures is deliberately workflow-scoped. The daemon can
-// turn these failures into permanent admission refusals while continuing to
-// serve workflows that do not depend on the broken harness. Callers that have
+// turn these failures into admission refusals while continuing to serve
+// workflows that do not depend on the broken harness; a refusal is permanent
+// for the configuration unless every failure behind it was a transient
+// provider failure, which is re-probed with backoff (#6017). Callers that have
 // no sibling-workflow boundary (the engine worker) may still treat the error
 // as fatal at their own, narrower scope.
 type harnessPreflightFailures struct {
 	Refusals map[localscheduler.WorkflowIdentity]string
+	// transient holds, per refused workflow, the transiently failed harness
+	// groups behind its refusal (#6017). A workflow with any permanent
+	// harness refusal has no entry: its refusal is permanent as a whole.
+	transient map[localscheduler.WorkflowIdentity]*transientHarnessRefusal
+	permanent map[localscheduler.WorkflowIdentity]bool
+}
+
+// transientHarnessRefusal is the transient part of one workflow's refusal.
+type transientHarnessRefusal struct {
+	retryAt time.Time
+	recheck harnessWorkflowRecheck
+}
+
+// addRefusal records group's failure against every workflow it refuses.
+func (e *harnessPreflightFailures) addRefusal(group []harnessUse, outcome harnessGroupOutcome, recheck *harnessGroupRecheck) {
+	if e.transient == nil {
+		e.transient = make(map[localscheduler.WorkflowIdentity]*transientHarnessRefusal)
+	}
+	if e.permanent == nil {
+		e.permanent = make(map[localscheduler.WorkflowIdentity]bool)
+	}
+	for _, use := range group {
+		e.Refusals[use.identity] = appendHarnessRefusal(e.Refusals[use.identity], fmt.Sprintf("stage %q %s", use.stage, outcome.reason))
+		if outcome.retryAt.IsZero() {
+			e.permanent[use.identity] = true
+			continue
+		}
+		refusal := e.transient[use.identity]
+		if refusal == nil {
+			refusal = &transientHarnessRefusal{}
+			e.transient[use.identity] = refusal
+		}
+		refusal.retryAt = latestTime(refusal.retryAt, outcome.retryAt)
+		refusal.recheck.uses = append(refusal.recheck.uses, harnessRecheckUse{stage: use.stage, group: recheck})
+	}
+}
+
+// transientRefusal returns identity's refusal when every harness failure
+// behind it was transient, else nil.
+func (e *harnessPreflightFailures) transientRefusal(identity localscheduler.WorkflowIdentity) *transientHarnessRefusal {
+	if e == nil || e.permanent[identity] {
+		return nil
+	}
+	return e.transient[identity]
+}
+
+// recheck is identity's localscheduler.HarnessRecheck: nil unless its
+// refusal is wholly transient.
+func (e *harnessPreflightFailures) recheck(identity localscheduler.WorkflowIdentity) localscheduler.HarnessRecheck {
+	if refusal := e.transientRefusal(identity); refusal != nil {
+		return &refusal.recheck
+	}
+	return nil
+}
+
+// reason is identity's refusal text; "" when it is not refused.
+func (e *harnessPreflightFailures) reason(identity localscheduler.WorkflowIdentity) string {
+	if e == nil {
+		return ""
+	}
+	return e.Refusals[identity]
+}
+
+func latestTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 type harnessUse struct {
@@ -211,7 +281,20 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 	failures := &harnessPreflightFailures{Refusals: make(map[localscheduler.WorkflowIdentity]string)}
 	for _, h := range order {
 		for _, group := range groupHarnessUses(uses[h]) {
-			preflightHarnessGroup(h, group, environment, harnessCommand, credentialFor, info, failures)
+			preflight := harnessGroupPreflight{
+				harness: h, spec: group[0].spec, environment: environment, harnessCommand: harnessCommand,
+				credentialFor: credentialFor, throttle: harnessProbeThrottle,
+			}
+			outcome := preflight.run()
+			if outcome.reason == "" {
+				info[h] = outcome.info
+				continue
+			}
+			var recheck *harnessGroupRecheck
+			if !outcome.retryAt.IsZero() {
+				recheck = newHarnessGroupRecheck(preflight, outcome.reason)
+			}
+			failures.addRefusal(group, outcome, recheck)
 		}
 	}
 	if len(failures.Refusals) > 0 {
@@ -277,42 +360,81 @@ func groupHarnessUses(uses []harnessUse) [][]harnessUse {
 	return result
 }
 
-func preflightHarnessGroup(
-	h apiv1.Harness,
-	group []harnessUse,
-	environment harness.EnvironmentConfig,
-	harnessCommand map[string][]string,
-	credentialFor modelCredentialFor,
-	info harnessPreflightInfo,
-	failures *harnessPreflightFailures,
-) {
-	spec := group[0].spec
+// harnessGroupPreflight is everything one harness group's preflight needs,
+// kept together so a transient failure can re-run the identical check later
+// (#6017).
+type harnessGroupPreflight struct {
+	harness        apiv1.Harness
+	spec           apiv1.GooberSpec
+	environment    harness.EnvironmentConfig
+	harnessCommand map[string][]string
+	credentialFor  modelCredentialFor
+	throttle       *harnessProbeBackoff
+}
+
+// harnessGroupOutcome is one group's preflight result: info when usable, else
+// the refusal reason, with retryAt set exactly when the failure was transient.
+type harnessGroupOutcome struct {
+	info    harness.PreflightInfo
+	reason  string
+	retryAt time.Time
+}
+
+// key identifies the group to the probe backoff: the same harness, options and
+// command make the same sign-in request of the same provider.
+func (p harnessGroupPreflight) key() string {
+	options, _ := json.Marshal(p.spec.HarnessOptions)
+	return strings.Join(append([]string{string(p.harness), string(options)}, p.harnessCommand[string(p.harness)]...), "\x00")
+}
+
+// run preflights the group unless a transient failure is still being waited
+// out, in which case it refuses with that failure without probing. A
+// transient failure (credentials.ErrTransientProvider: a rate-limited,
+// failing or unreachable provider) is backed off; any other outcome clears
+// the backoff, and a non-transient failure stays the permanent refusal it
+// always was.
+func (p harnessGroupPreflight) run() harnessGroupOutcome {
+	key := p.key()
+	if wait, waiting := p.throttle.pending(key); waiting {
+		return harnessGroupOutcome{reason: transientHarnessReason(wait.cause, wait.retryAt), retryAt: wait.retryAt}
+	}
+	info, err := p.check()
+	if err == nil {
+		p.throttle.clear(key)
+		return harnessGroupOutcome{info: info}
+	}
+	if errors.Is(err, credentials.ErrTransientProvider) {
+		retryAt := p.throttle.record(key, err)
+		return harnessGroupOutcome{reason: transientHarnessReason(err, retryAt), retryAt: retryAt}
+	}
+	p.throttle.clear(key)
+	return harnessGroupOutcome{reason: err.Error()}
+}
+
+func (p harnessGroupPreflight) check() (harness.PreflightInfo, error) {
+	h := p.harness
 	var modelCredential func(ctx context.Context) (string, error)
-	if credentialFor != nil && (h != apiv1.HarnessCodex || !harness.CodexUsesAmbientChatGPT(spec.HarnessOptions)) {
-		resolved, err := credentialFor(h)
+	if p.credentialFor != nil && (h != apiv1.HarnessCodex || !harness.CodexUsesAmbientChatGPT(p.spec.HarnessOptions)) {
+		resolved, err := p.credentialFor(h)
 		if err != nil {
-			refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, but its agent:model credential could not be resolved: %v", h, err))
-			return
+			return harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its agent:model credential could not be resolved: %w", h, err)
 		}
 		modelCredential = resolved
 	}
-	adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
+	adapter, err := harnessAdapterFor(h, p.environment, p.harnessCommand, modelCredential)
 	if err != nil {
-		refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, but its adapter could not be configured: %v", h, err))
-		return
+		return harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its adapter could not be configured: %w", h, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
 	defer cancel()
-	result, err := preflightAdapterConfig(ctx, adapter, spec)
+	result, err := preflightAdapterConfig(ctx, adapter, p.spec)
 	if err != nil {
-		refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, whose startup preflight failed: %v", h, err))
-		return
+		return harness.PreflightInfo{}, fmt.Errorf("requires harness %q, whose startup preflight failed: %w", h, err)
 	}
 	if result.Version == "" {
-		refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, whose startup preflight returned no version", h))
-		return
+		return harness.PreflightInfo{}, fmt.Errorf("requires harness %q, whose startup preflight returned no version", h)
 	}
-	info[h] = result
+	return result, nil
 }
 
 func preflightAdapterConfig(ctx context.Context, adapter harness.Adapter, spec apiv1.GooberSpec) (harness.PreflightInfo, error) {
@@ -322,12 +444,6 @@ func preflightAdapterConfig(ctx context.Context, adapter harness.Adapter, spec a
 		return configPreflighter.PreflightConfig(ctx, spec.Model, spec.HarnessOptions)
 	}
 	return adapter.Preflight(ctx)
-}
-
-func refuseHarnessGroup(failures *harnessPreflightFailures, group []harnessUse, reason string) {
-	for _, use := range group {
-		failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q %s", use.stage, reason))
-	}
 }
 
 func appendHarnessRefusal(existing, next string) string {
@@ -340,6 +456,9 @@ func appendHarnessRefusal(existing, next string) string {
 // preflightDaemonHarnesses converts the shared preflight's structured error
 // into daemon admission state. Keeping that policy at this boundary lets the
 // worker continue treating the same error as fatal at its own narrower scope.
+// The returned failures are nil when every harness is usable; a refusal whose
+// every cause was transient carries a recheck that re-admits the workflow once
+// the provider recovers (#6017).
 func preflightDaemonHarnesses(
 	goobers map[string]apiv1.GooberSpec,
 	workflows []apiv1.Workflow,
@@ -347,27 +466,23 @@ func preflightDaemonHarnesses(
 	harnessCommand map[string][]string,
 	credentialFor modelCredentialFor,
 	warnings io.Writer,
-) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+) (harnessPreflightInfo, *harnessPreflightFailures, error) {
 	info, err := preflightHarnesses(goobers, workflows, environment, harnessCommand, credentialFor)
-	refusals := make(map[localscheduler.WorkflowIdentity]string)
 	if err == nil {
-		return info, refusals, nil
+		return info, nil, nil
 	}
 	var failures *harnessPreflightFailures
 	if !errors.As(err, &failures) {
 		return nil, nil, err
 	}
-	for identity, reason := range failures.Refusals {
-		refusals[identity] = reason
-	}
-	for _, identity := range sortedWorkflowIdentities(refusals) {
+	for _, identity := range sortedWorkflowIdentities(failures.Refusals) {
 		_, _ = fmt.Fprintf(warnings, "warning: workflow %q (gaggle %q) is refused because a required harness is unavailable: %s\n",
-			identity.Workflow, identity.Gaggle, refusals[identity])
+			identity.Workflow, identity.Gaggle, failures.Refusals[identity])
 	}
-	return info, refusals, nil
+	return info, failures, nil
 }
 
-func preflightSchedulerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+func preflightSchedulerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, *harnessPreflightFailures, error) {
 	return preflightDaemonHarnesses(
 		goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
 		harnessModelCredentialResolver(cfg, stores), os.Stderr,

@@ -100,10 +100,16 @@ type WorkflowEntry struct {
 	// byte-identical to previous releases.
 	PlacementRefusal string
 	// HarnessRefusal, when non-empty, marks only this workflow unavailable
-	// because a harness it references failed startup preflight. It is a
-	// permanent condition for the current configuration/startup snapshot;
-	// sibling workflows remain eligible (#5163).
+	// because a harness it references failed startup preflight. Without a
+	// HarnessRecheck it is a permanent condition for the current
+	// configuration/startup snapshot; sibling workflows remain eligible
+	// (#5163).
 	HarnessRefusal string
+	// HarnessRecheck, when set, marks HarnessRefusal as transient: the
+	// harness's sign-in probe failed because the provider could not answer
+	// (#6017). The scheduler asks it for the current refusal instead, and the
+	// workflow becomes eligible again once it reports none.
+	HarnessRecheck HarnessRecheck
 	// DisabledReason, when non-empty, marks this workflow or its gaggle
 	// disabled by spec.enabled=false (#5200): refused before admission with
 	// this named diagnostic, while in-flight runs finish normally.
@@ -1063,7 +1069,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	var evaluated []WorkflowEntry
 	defer func() { releaseScheduleDemands(allCandidates) }()
 	for _, entry := range entries {
-		if s.authCircuitOpen(entryIdentity(entry), now) || skipPermanentRefusedEntry(entry) {
+		if s.authCircuitOpen(entryIdentity(entry), now) || skipRefusedEntry(entry, now) {
 			if entry.ScheduleCatchUpAll && s.sourceQueue != nil {
 				candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
 				// Discovery keeps custody while admission is held; do not poll
@@ -1344,12 +1350,29 @@ func (s *Scheduler) queueSnapshot(kind string, identity WorkflowIdentity) (queue
 	}
 }
 
-func skipPermanentRefusedEntry(entry WorkflowEntry) bool {
+func skipRefusedEntry(entry WorkflowEntry, now time.Time) bool {
 	// Disabled workflows/gaggles (#5200), broken harness dependencies (#5163),
-	// and startup placement refusals (#2860) are permanent until config changes.
+	// and startup placement refusals (#2860) are permanent until config changes;
+	// a transient harness refusal (#6017) lasts until its recheck clears it.
 	// Skip them silently so they do not spend polls or flood the journal;
 	// explicit triggers still receive a named refusal through dispatch.
-	return entry.DisabledReason != "" || entry.HarnessRefusal != "" || entry.PlacementRefusal != ""
+	return entry.DisabledReason != "" || currentHarnessRefusal(entry, now) != "" || entry.PlacementRefusal != ""
+}
+
+// HarnessRecheck re-evaluates a startup harness refusal that was transient
+// (#6017). HarnessRefusal returns the refusal that holds at now, or "" once
+// the harness is usable again. It is consulted on every scheduler pass, so it
+// must answer without blocking; any re-probe it starts runs in the background.
+type HarnessRecheck interface {
+	HarnessRefusal(now time.Time) string
+}
+
+// currentHarnessRefusal is entry's harness refusal at now.
+func currentHarnessRefusal(entry WorkflowEntry, now time.Time) string {
+	if entry.HarnessRefusal == "" || entry.HarnessRecheck == nil {
+		return entry.HarnessRefusal
+	}
+	return entry.HarnessRecheck.HarnessRefusal(now)
 }
 
 func (s *Scheduler) orderedGaggles(gaggles []string) []string {
@@ -2857,12 +2880,15 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	return runID, true, ""
 }
 
+// permanentDispatchRefusal reports a refusal that holds for entry's whole
+// configuration. A transient harness refusal (#6017) is reported here too,
+// while it lasts: retrying the trigger cannot clear it, only its recheck can.
 func (s *Scheduler) permanentDispatchRefusal(entry WorkflowEntry) (string, bool) {
 	if entry.DisabledReason != "" {
 		return ReasonDisabled + ": " + entry.DisabledReason, true
 	}
-	if entry.HarnessRefusal != "" {
-		return ReasonHarnessUnavailable + ": " + entry.HarnessRefusal, true
+	if refusal := currentHarnessRefusal(entry, s.now()); refusal != "" {
+		return ReasonHarnessUnavailable + ": " + refusal, true
 	}
 	if entry.PlacementRefusal != "" {
 		return ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal, true

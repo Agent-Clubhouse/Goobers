@@ -848,7 +848,8 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			// Engine-selected entries enforce capabilities per pinned stage.
 			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
 			DisabledReason:       resolveDisabledReason(gagglesByName[wf.Spec.Gaggle], wf),
-			HarnessRefusal:       harnessRefusals[identity], // Broken harnesses refuse only their dependent workflows (#5163).
+			HarnessRefusal:       harnessRefusals.reason(identity),  // Broken harnesses refuse only their dependent workflows (#5163).
+			HarnessRecheck:       harnessRefusals.recheck(identity), // A transient refusal clears once the provider recovers (#6017).
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's
@@ -897,7 +898,7 @@ func preflightSchedulerHarnessesWithProgress(
 	goobers map[string]apiv1.GooberSpec,
 	stores credentials.StoreResolver,
 	startupProgress func(string),
-) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+) (harnessPreflightInfo, *harnessPreflightFailures, error) {
 	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
 	started := time.Now()
 	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)

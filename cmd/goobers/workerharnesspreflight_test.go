@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
@@ -95,6 +96,48 @@ func TestWorkerScopesHarnessPreflightFailureToDependentWorkflow(t *testing.T) {
 	}
 	if snapshot := seams.snapshot.Load(); snapshot == nil || snapshot.gaggles[pinGaggle] == nil || snapshot.gaggles[pinGaggle].seams.degraded() {
 		t.Fatal("a healthy kit was not cached after the harness recovered")
+	}
+}
+
+// TestWorkerDoesNotReprobeARateLimitedHarnessOnEveryActivity is #6017 at the
+// worker: a degraded kit is rebuilt on every activity (#5949), and each
+// rebuild used to re-run the sign-in probe against the provider that had
+// just rate limited it. The probe now runs once per backoff window; every
+// refusal in between is a retryable infrastructure failure carrying the next
+// probe time, so the engine's retry waits for it rather than charging the run.
+func TestWorkerDoesNotReprobeARateLimitedHarnessOnEveryActivity(t *testing.T) {
+	root := initDemo(t)
+	clock := withHarnessProbeThrottle(t)
+	previous := preflightHarnesses
+	preflightHarnesses = preflightAgenticHarnesses
+	t.Cleanup(func() { preflightHarnesses = previous })
+	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
+	seams := workerReloadSeams(t, root)
+
+	dependent := apiv1.InvocationEnvelope{RunID: "dependent-run", Gaggle: pinGaggle, WorkflowID: pinWorkflow, TaskID: "dependent-run:implement", Goober: "missing-goober"}
+	wantRetryAt := clock.Now().Add(harnessProbeBackoffInitial)
+	for activity := range 3 {
+		_, err := seams.Agentic().Invoke(context.Background(), dependent)
+		retryAt, ok := invoke.InfrastructureRetryAt(err)
+		if !invoke.IsInfrastructureFailure(err) || !ok || !retryAt.Equal(wantRetryAt) || !strings.Contains(err.Error(), "API rate limit exceeded") {
+			t.Fatalf("activity %d: %v (retryAt %s, %t), want an infrastructure failure retrying at %s", activity, err, retryAt, ok, wantRetryAt)
+		}
+		clock.Advance(10 * time.Second)
+	}
+	if got := adapters.count(apiv1.HarnessCopilot); got != 1 {
+		t.Fatalf("the rate-limited sign-in probe ran %d times across 3 activities, want 1", got)
+	}
+
+	// After the backoff the next activity re-probes, and a recovered harness
+	// is served.
+	adapters.set(nil, nil)
+	clock.Advance(harnessProbeBackoffInitial)
+	_, err := seams.Agentic().Invoke(context.Background(), dependent)
+	if err == nil || invoke.IsInfrastructureFailure(err) || !strings.Contains(err.Error(), `goober "missing-goober" not found in config`) {
+		t.Fatalf("recovered harness still refused: %v", err)
+	}
+	if got := adapters.count(apiv1.HarnessCopilot); got != 2 {
+		t.Fatalf("sign-in probes after the backoff = %d, want 2", got)
 	}
 }
 

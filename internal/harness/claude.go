@@ -300,7 +300,7 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 	})
 	if err != nil || res.ExitCode != 0 {
-		return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
+		return PreflightInfo{}, authProbeFailure(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
 	}
 	return PreflightInfo{Version: version}, nil
 }
