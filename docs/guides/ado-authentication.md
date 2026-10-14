@@ -10,7 +10,12 @@ with `workload-identity`, `managed-identity` or `pat` to choose another source;
 only `pat` records a token variable, `GOOBERS_ADO_TOKEN`. Passing
 `--repo-token-env=NAME` without `--repo-auth-kind` selects `pat` reading `NAME`;
 with any other kind it is refused, because only `pat` reads a token variable.
-`goobers connect` records PAT authentication.
+`goobers connect` keeps the repository's existing credential source: an
+`azure-cli`, `workload-identity` or `managed-identity` block, or a PAT's own
+token reference. It records PAT authentication reading the `--token-env`
+variable only when `--token-env` is given explicitly (or the entry has no
+source at all). With `--replace`, an explicit `--token-env` switches an already
+connected repository to that PAT variable.
 
 ## Local interactive authentication
 
