@@ -43,8 +43,11 @@ func TestNativeApprovalIsDismissedAndNewHeadIsReviewed(t *testing.T) {
 		t.Fatalf("verdict result = %+v, want a pass pinned to head-one/base-one", result)
 	}
 	facts := readMutationFacts(t, firstReviewDir)
-	if len(facts) != 1 || facts[0].Kind != "pr" || facts[0].ID != "10" || facts[0].Operation != "review" {
-		t.Fatalf("mutation facts = %+v, want one native review fact for PR #10", facts)
+	// The native review, then the goobers/merge-review verdict status on the
+	// reviewed head (#4199).
+	if len(facts) != 2 || facts[0].Kind != "pr" || facts[0].ID != "10" || facts[0].Operation != "review" ||
+		facts[1].Operation != "status" || facts[1].ID != "head-one" {
+		t.Fatalf("mutation facts = %+v, want the native review fact for PR #10 and the verdict status fact on head-one", facts)
 	}
 
 	server.setPRHead(prNumber, "head-two", nil)

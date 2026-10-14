@@ -592,7 +592,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	checkState, checks, err := p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
+	checkState, checks, verdictStatus, err := p.combinedCheckStateAndVerdict(ctx, req.Repository, pr.Head.SHA)
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
@@ -605,6 +605,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 	result.RequestedChanges = requestedChanges
 	result.CheckState = checkState
 	result.Checks = checks
+	result.VerdictStatus = verdictStatus
 	result.CommentsSince = comments
 	return result, nil
 }
@@ -692,20 +693,33 @@ func (p *GiteaProvider) reviewDecision(ctx context.Context, repo RepositoryRef, 
 // to a normalized CheckState plus per-check detail. An empty statuses list is
 // treated as passing, following the GitHub convention.
 func (p *GiteaProvider) combinedCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, error) {
+	state, details, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	return state, details, err
+}
+
+// combinedCheckStateAndVerdict is combinedCheckState plus the merge-review
+// verdict status (#4199), which is reported apart from CI: it is Goobers' own
+// review decision, so it never makes the CI state failing or pending.
+func (p *GiteaProvider) combinedCheckStateAndVerdict(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, *CheckDetail, error) {
 	if ref == "" {
-		return CheckStatePending, nil, nil
+		return CheckStatePending, nil, nil, nil
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	var combined giteaCombinedStatus
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &combined); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	details := make([]CheckDetail, 0, len(combined.Statuses))
+	var verdict *CheckDetail
 	failing, pending := false, false
 	for _, status := range combined.Statuses {
+		if found, ok := mergeReviewStatusDetail(status.Context, status.Status, status.Description, status.TargetURL); ok {
+			verdict = found
+			continue
+		}
 		state := normalizeCombinedStatusState(status.Status)
 		details = append(details, CheckDetail{
 			Name: status.Context, State: state, Conclusion: status.Status,
@@ -720,13 +734,13 @@ func (p *GiteaProvider) combinedCheckState(ctx context.Context, repo RepositoryR
 	}
 	switch {
 	case failing:
-		return CheckStateFailing, details, nil
+		return CheckStateFailing, details, verdict, nil
 	case len(details) == 0:
-		return CheckStatePassing, details, nil
+		return CheckStatePassing, details, verdict, nil
 	case pending:
-		return CheckStatePending, details, nil
+		return CheckStatePending, details, verdict, nil
 	default:
-		return CheckStatePassing, details, nil
+		return CheckStatePassing, details, verdict, nil
 	}
 }
 

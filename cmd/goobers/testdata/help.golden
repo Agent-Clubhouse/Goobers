@@ -384,9 +384,15 @@ cross-check its optional SHA echo against the deterministic review
 pin, re-check that pin against the PR's current head/base, and — if
 still valid — publish the verdict. Managed PRs receive a native GitHub
 review plus the PR-comment handoff; non-pass verdicts also receive a
-remediation label. advisoryMode=true publishes only the non-blocking
-comment, without closing, labeling, electing, or merging the PR. A
-stale SHA pin voids the verdict: no comment, no label, exit 0 (this
+remediation label. Every published verdict also sets the
+goobers/merge-review commit status on the reviewed head (success for
+pass, failure for needs-changes/fail/escalate, pending for defer; the
+description records the reviewed base), which a required status check
+enforces on every merge path (#4199). advisoryMode=true publishes only
+the non-blocking comment, without closing, labeling, electing, or
+merging the PR. A stale SHA pin voids the verdict: no new verdict, the
+standing comment is marked stale, and a standing verdict status on the
+unchanged head turns pending; exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
 selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
@@ -1963,6 +1969,9 @@ Merge a pull request, but only when every independent conjunct holds:
 verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's
 live head/base, and — for a sibling-overlap PR — completed single-lander
 election evidence (elected:true, #1071) — never a bare self-approval.
+When the live head carries the goobers/merge-review verdict status
+(GitHub, Gitea), it must be a pass recorded for the pinned base: a
+failure, a pending, or a pass for another base refuses the merge.
 Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,
 all required; in the shipped merge-review workflow, headSha/baseSha
 come from gather-sibling-context's selectedHeadSha/selectedBaseSha,

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/prstatus"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -479,9 +481,15 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 	"pin, re-check that pin against the PR's current head/base, and — if\n" +
 	"still valid — publish the verdict. Managed PRs receive a native GitHub\n" +
 	"review plus the PR-comment handoff; non-pass verdicts also receive a\n" +
-	"remediation label. advisoryMode=true publishes only the non-blocking\n" +
-	"comment, without closing, labeling, electing, or merging the PR. A\n" +
-	"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n" +
+	"remediation label. Every published verdict also sets the\n" +
+	"goobers/merge-review commit status on the reviewed head (success for\n" +
+	"pass, failure for needs-changes/fail/escalate, pending for defer; the\n" +
+	"description records the reviewed base), which a required status check\n" +
+	"enforces on every merge path (#4199). advisoryMode=true publishes only\n" +
+	"the non-blocking comment, without closing, labeling, electing, or\n" +
+	"merging the PR. A stale SHA pin voids the verdict: no new verdict, the\n" +
+	"standing comment is marked stale, and a standing verdict status on the\n" +
+	"unchanged head turns pending; exit 0 (this\n" +
 	"cycle's work is simply moot, not an error — merge-review re-reviews\n" +
 	"next tick). Requires selectedNumber, selectedHeadSha, and\n" +
 	"selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or\n" +
@@ -652,11 +660,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// source: remediation can tell "no current review" from "these findings
 		// still stand". Best-effort — a comment write must never turn a moot
 		// verdict into a stage failure, since the re-review next cycle is what
-		// actually resolves this.
+		// actually resolves this. The native verdict status is withdrawn the
+		// same way (#4199).
 		if providerRouted {
-			if cerr := markMergeReviewVerdictStale(ctx, prProvider, repo, selectedNumber, reason); cerr != nil {
-				pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
-			}
+			withdrawStandingVerdict(ctx, root, prProvider, repo, selectedNumber, selectedHeadSHA, current, reason, stderr)
 		}
 		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
@@ -948,8 +955,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
+	record := verdictRecord{provider: prProvider, statusPublisher: reviewProvider, repo: repo, number: selectedNumber, author: verdictAuthor, current: current, standing: statusComments}
 	if posted.Decision == apiv1.VerdictPass {
-		if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		if err := record.publish(ctx, comment, posted, stdout, stderr); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
 		releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
@@ -969,7 +977,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
-	if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+	if err := record.publish(ctx, comment, posted, stdout, stderr); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
 	releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
@@ -1128,6 +1136,113 @@ func markMergeReviewVerdictStale(ctx context.Context, provider remediationProvid
 	if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
 		return fmt.Errorf("update merge-review status comment: %w", err)
 	}
+	return nil
+}
+
+// withdrawStandingVerdict retracts a verdict that no longer stands (the void
+// path): the sticky comment is marked stale, and when the PR is still at the
+// reviewed head its native verdict status becomes pending, so a pass recorded
+// for an older base cannot keep authorizing a native merge (#4199). A moved
+// head needs nothing: the old head's status never reaches it, and the new
+// head carries no verdict status until merge-review reviews it. Best-effort,
+// like the comment: the re-review next cycle is what resolves a void verdict.
+func withdrawStandingVerdict(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, number int, reviewedHead string, current providers.PullRequestSummary, reason string, stderr io.Writer) {
+	if err := markMergeReviewVerdictStale(ctx, provider, repo, number, reason); err != nil {
+		pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", number, err)
+	}
+	if current.HeadSHA != reviewedHead {
+		return
+	}
+	publisher, err := newVerdictStatusPublisher(root, repo)
+	if err == nil {
+		req := prstatus.StaleVerdictStatusRequest(repo, strconv.Itoa(number), current.HeadSHA, current.BaseSHA, reason, current.URL)
+		err = publishVerdictStatus(ctx, publisher, req, io.Discard, stderr)
+	}
+	if err != nil {
+		pf(stderr, "warning: could not withdraw PR #%d's %s status: %v\n", number, providers.MergeReviewStatusContext, err)
+	}
+}
+
+// newVerdictStatusPublisher builds the identity that publishes the verdict
+// status: the review identity (github:pr:review), the same one that submits
+// the native review, so a repository can trust that one source for the
+// required check.
+func newVerdictStatusPublisher(root string, repo providers.RepositoryRef) (remediationProvider, error) {
+	token, err := providerToken(capability.GitHubPRReview)
+	if err != nil {
+		return nil, err
+	}
+	return remediationStageProviderWithRecorder(root, repo, token, false, sidecarMutationRecorder{kind: "pr"})
+}
+
+// verdictRecord publishes one authoritative merge-review verdict on GitHub or
+// Gitea: the sticky status comment, then the native verdict status on the
+// reviewed head (#4199). The comment comes first so the status can link to
+// it, and so a pass never authorizes a native merge before its durable
+// record exists.
+type verdictRecord struct {
+	provider        remediationProvider
+	statusPublisher any
+	repo            providers.RepositoryRef
+	number          int
+	author          string
+	current         providers.PullRequestSummary
+	standing        []providers.Comment
+}
+
+func (r verdictRecord) publish(ctx context.Context, comment string, posted apiv1.Verdict, stdout, stderr io.Writer) error {
+	if err := reconcileMergeReviewStatusCommentAs(ctx, r.provider, r.repo, r.number, r.author, comment); err != nil {
+		return err
+	}
+	req, err := prstatus.VerdictStatusRequest(r.repo, strconv.Itoa(r.number), posted.Decision,
+		r.current.HeadSHA, r.current.BaseSHA, verdictStatusSummary(posted), r.targetURL())
+	if err != nil {
+		return err
+	}
+	return publishVerdictStatus(ctx, r.statusPublisher, req, stdout, stderr)
+}
+
+// targetURL links the status to the sticky verdict comment when one already
+// stands (reconciliation keeps it in place), else to the pull request.
+func (r verdictRecord) targetURL() string {
+	for _, comment := range mergeReviewStatusComments(r.standing, r.author) {
+		if comment.URL != "" {
+			return comment.URL
+		}
+	}
+	return r.current.URL
+}
+
+// verdictStatusSummary is the one-line reason a verdict status shows.
+func verdictStatusSummary(v apiv1.Verdict) string {
+	if summary := strings.TrimSpace(v.Summary); summary != "" {
+		return summary
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(v.Rationale), "\n")
+	return line
+}
+
+// publishVerdictStatus posts a verdict status. A credential refused the
+// status write degrades to a warning rather than failing the verdict: the
+// same identity publishes every verdict status, so one that cannot write
+// statuses never published a pass either, and a required check without any
+// status already blocks natively. Any other failure is returned, so a
+// verdict is never reported published while its status is missing.
+func publishVerdictStatus(ctx context.Context, publisher any, req providers.PullRequestStatusRequest, stdout, stderr io.Writer) error {
+	statusContext := req.Genre + "/" + req.Name
+	statusPublisher, ok := publisher.(providers.PullRequestStatusPublisher)
+	if !ok {
+		pf(stderr, "warning: provider cannot publish the %s status, so this verdict is not enforced by the repository's merge policy\n", statusContext)
+		return nil
+	}
+	if _, err := statusPublisher.PublishPullRequestStatus(ctx, req); err != nil {
+		if providers.IsStatusPublishDeniedError(err) {
+			pf(stderr, "warning: the review credential may not write commit statuses, so %s was not published and this verdict is not enforced by the repository's merge policy; grant it Commit statuses: Read and write (#4199): %v\n", statusContext, err)
+			return nil
+		}
+		return fmt.Errorf("publish %s status: %w", statusContext, err)
+	}
+	pf(stdout, "published %s = %s on %s\n", statusContext, req.State, req.HeadSHA)
 	return nil
 }
 
@@ -1639,15 +1754,17 @@ func publishADOPassVerdict(
 ) int {
 	pullID := strconv.Itoa(selectedNumber)
 	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
-		Repository:  repo,
-		PullID:      pullID,
-		Genre:       "goobers",
-		Name:        "validation",
-		State:       providers.CheckStatePassing,
-		Description: "goobers merge-review verdict: pass",
+		Repository: repo,
+		PullID:     pullID,
+		Genre:      "goobers",
+		Name:       "validation",
+		State:      providers.CheckStatePassing,
+		// "pass for base <sha>": the same base-pinned description the
+		// GitHub/Gitea verdict status carries (#4199).
+		Description: prstatus.VerdictDescription(apiv1.VerdictPass, current.BaseSHA, verdictStatusSummary(verdict)),
 		// Pin to the reviewed head: a push after the pin check must not
-		// inherit this pass on ADO's latest iteration. The non-pass path
-		// stays unpinned, since a failing status on a newer head only blocks.
+		// inherit this pass on ADO's latest iteration. The non-pass path is
+		// pinned the same way.
 		HeadSHA: current.HeadSHA,
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
@@ -1687,7 +1804,10 @@ func publishADOPassVerdict(
 //     merge on. needs-changes and fail BOTH publish CheckStateFailing ("failed"):
 //     the PR must not land until reworked, and a status genre cannot carry the
 //     needs-changes/fail split — the remediation label below is the routing
-//     signal, exactly as GitHub carries it in verdictLabel.
+//     signal, exactly as GitHub carries it in verdictLabel. A defer fails
+//     too: without an ADO sibling election it routes to remediation below.
+//     The status is pinned to the reviewed head and its description records
+//     the reviewed base (#4199).
 //  2. The goobers:needs-remediation PR label, written via the native ADO
 //     PR-labels endpoint (AddPullRequestLabels), NEVER UpdateWorkItem(ID: PR#).
 //     ListPullRequests already surfaces ADO PR labels, so pr-remediation's
@@ -1715,14 +1835,23 @@ func publishADONonPassVerdict(
 	stdout, stderr io.Writer,
 ) int {
 	pullID := strconv.Itoa(selectedNumber)
+	// Pinned to the reviewed head like the pass (#4199): a verdict for an
+	// older head never lands on a newer iteration. A head that moved after
+	// the pin check voids the verdict instead; the new head is re-reviewed.
 	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
 		Repository:  repo,
 		PullID:      pullID,
 		Genre:       "goobers",
 		Name:        "validation",
 		State:       providers.CheckStateFailing,
-		Description: "goobers merge-review verdict: " + string(verdict.Decision),
+		Description: prstatus.VerdictDescription(verdict.Decision, current.BaseSHA, verdictStatusSummary(verdict)),
+		HeadSHA:     current.HeadSHA,
 	}); err != nil {
+		var moved providers.PullRequestHeadMovedError
+		if errors.As(err, &moved) {
+			pf(stdout, "verdict void for PR #%d: %v — skipping, will re-review next cycle\n", selectedNumber, moved)
+			return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", moved.Error(), stderr)
+		}
 		return failProviderStage(stderr, fmt.Sprintf("publish %s verdict status for PR #%d", verdict.Decision, selectedNumber), err, resultFile)
 	}
 	// Route the label by decision, mirroring the GitHub verdictLabel contract

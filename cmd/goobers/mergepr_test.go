@@ -26,6 +26,9 @@ import (
 type mergePRServerState struct {
 	draft      bool
 	checkState string // "success", "failure" or "cancelled" — maps to CheckStatePassing/Failing/Pending (#6817)
+	// verdictStatus, when set, is served as the head's goobers/merge-review
+	// commit status beside ordinary CI (#4199).
+	verdictStatus map[string]interface{}
 	// advisoryCheckFails adds a second, red check-run ("windows-smoke") alongside
 	// the green required "make-ci" so the combined CheckState is Failing while the
 	// only red check is advisory — the #961 case. mergeableState should be set to
@@ -232,7 +235,11 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		writeFakeJSON(w, []map[string]interface{}{})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, st.headSHA), func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, map[string]interface{}{"state": st.checkState, "statuses": []map[string]interface{}{}})
+		statuses := []map[string]interface{}{}
+		if st.verdictStatus != nil {
+			statuses = append(statuses, st.verdictStatus)
+		}
+		writeFakeJSON(w, map[string]interface{}{"state": st.checkState, "statuses": statuses})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, st.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		// combinedCheckState treats zero check details as CheckStatePending
