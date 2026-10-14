@@ -390,9 +390,14 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   - Gitea reports no review-thread resolution, and a dismissed Gitea review keeps
     its state. So on Gitea every review comment counts until it is answered.
     This over-blocks; it never under-blocks.
-  - Scope: the check holds at the moment `merge-pr` lands or arms the landing.
-    An armed Azure DevOps auto-complete or a queued GitHub merge can still land
-    after feedback arrives later; disarming those is the follow-up to #6134.
+  - An armed landing is disarmed when feedback arrives after it was armed.
+    `pr-comment-watch` scans `goobers:merge-ready` PRs. On fresh human feedback
+    it cancels an armed Azure DevOps auto-complete, and only then removes
+    `merge-ready` and routes the PR to `goobers:needs-remediation`. On GitHub,
+    `queue-watch` (which holds the merge authority while the PR is queued)
+    dequeues a PR that gains `needs-remediation`. Residual: a GitHub queue entry
+    that outlives `queue-watch`'s poll window is not dequeued by
+    `pr-comment-watch`, which does not hold the merge authority.
   - Feedback that cannot be read in full fails closed as
     `human-feedback-unverifiable`.
   - The check is on by default; `blockUnansweredFeedback: "false"` opts out for

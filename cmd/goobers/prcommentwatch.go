@@ -15,23 +15,24 @@ import (
 const prCommentWatchResultName = "comment-watch-result.json"
 
 // mergeReadyLabel mirrors verdictLabel's pass label (applyverdict.go:64, a bare
-// string literal there). It is one of the PR-side lifecycle labels the watcher
-// must treat as "already routed / parked / opted out": a PR carrying it is
-// landing, so remediation would race the merge.
+// string literal there): the PR passed review and its landing is in progress,
+// possibly armed (an Azure DevOps auto-complete, a GitHub merge-queue entry)
+// and waiting on a policy. Such a PR is still scanned (#6134): fresh human
+// feedback disarms the landing first and only then routes the PR, so neither
+// the armed landing nor remediation races the other.
 const mergeReadyLabel = "goobers:merge-ready"
 
 // prCommentWatchDefaultExcludeLabels are the lifecycle labels that HARD-exclude a
 // PR from the scan: a fresh human comment must neither re-route it nor clear the
 // label, because — unlike the human-decision parks below — a comment is not the
 // signal that changes any of these states. needs-remediation is the re-fire
-// guard (already routed); merge-ready is landing in progress (self-heals on
-// demotion, and remediation must not race the merge); blocked-on-sibling is an
-// ordering park, not a content decision; no-merge-review is an explicit operator
-// opt-out we must respect.
+// guard (already routed); blocked-on-sibling is an ordering park, not a content
+// decision; no-merge-review is an explicit operator opt-out we must respect.
+// merge-ready is deliberately NOT excluded (#6134): an armed landing would
+// otherwise complete over feedback that arrived after it was armed.
 func prCommentWatchDefaultExcludeLabels() string {
 	return strings.Join([]string{
 		needsRemediationLabel,
-		mergeReadyLabel,
 		blockedOnSiblingLabel,
 		noMergeReviewLabel,
 	}, ",")
@@ -72,7 +73,11 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"that PR in place. A PR parked for a human (needs-human / merge-escalated)\n" +
 	"is un-parked when a fresh human comment lands: the park label is cleared\n" +
 	"and needs-remediation added, since the human the PR was parked for has\n" +
-	"now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps\n" +
+	"now weighed in. A PR that is landing (goobers:merge-ready) is scanned too:\n" +
+	"fresh human feedback first disarms its armed landing — on Azure DevOps it\n" +
+	"cancels the auto-complete; on GitHub queue-watch dequeues the PR once it\n" +
+	"carries needs-remediation — then removes merge-ready and routes it.\n" +
+	"Works on GitHub, Gitea and Azure DevOps. On Azure DevOps\n" +
 	"general comments and review-thread replies both count; deleted comments\n" +
 	"and system threads (votes, pushes, policy status) never do.\n\n" +
 	"A comment is Goobers' own when it carries a Goobers marker (the\n" +
@@ -118,6 +123,9 @@ type prCommentWatchLabeled struct {
 	// label (needs-human / merge-escalated); ClearedLabels lists what was stripped.
 	Unparked      bool     `json:"unparked,omitempty"`
 	ClearedLabels []string `json:"clearedLabels,omitempty"`
+	// Disarmed is true when the PR was landing (goobers:merge-ready): its
+	// armed landing was disarmed and merge-ready removed before routing.
+	Disarmed bool `json:"disarmed,omitempty"`
 }
 
 type prCommentWatchResult struct {
@@ -277,12 +285,21 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 		return nil
 	}
 	cleared := carriedLabels(pr.Labels, settings.unpark)
-	if err := forge.route(ctx, pr, cleared); err != nil {
+	landing := carriedLabels(pr.Labels, map[string]bool{mergeReadyLabel: true})
+	if len(landing) > 0 {
+		// #6134: disarm the landing BEFORE routing; a failed disarm leaves
+		// the PR untouched and is retried next tick rather than routed while
+		// the armed landing can still complete.
+		if err := forge.disarm(ctx, pr); err != nil {
+			return fmt.Errorf("disarm the armed landing: %w", err)
+		}
+	}
+	if err := forge.route(ctx, pr, append(append([]string(nil), cleared...), landing...)); err != nil {
 		return fmt.Errorf("label %s: %w", needsRemediationLabel, err)
 	}
 	entry := prCommentWatchLabeled{
 		Number: pr.Number, URL: pr.URL, CommentAuthor: triggering.Author, CommentAuthorID: triggering.AuthorID,
-		CommentURL: triggering.URL, Unparked: len(cleared) > 0, ClearedLabels: cleared,
+		CommentURL: triggering.URL, Unparked: len(cleared) > 0, ClearedLabels: cleared, Disarmed: len(landing) > 0,
 	}
 	if triggering.CreatedAt != nil {
 		entry.CommentCreatedAt = triggering.CreatedAt.UTC().Format(time.RFC3339)

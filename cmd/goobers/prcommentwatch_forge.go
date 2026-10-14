@@ -18,6 +18,9 @@ type prCommentWatchForge interface {
 	listPullRequests(ctx context.Context, base string) ([]providers.PullRequestSummary, error)
 	listComments(context.Context, providers.PullRequestSummary) ([]providers.Comment, error)
 	route(ctx context.Context, pr providers.PullRequestSummary, clear []string) error
+	// disarm cancels a landing armed on pr (goobers:merge-ready) before the
+	// PR is routed for fresh human feedback (#6134).
+	disarm(ctx context.Context, pr providers.PullRequestSummary) error
 }
 
 // newPRCommentWatchForge builds the provider arm through the shared
@@ -108,6 +111,14 @@ func (w issueLabelCommentWatch) route(ctx context.Context, pr providers.PullRequ
 	return err
 }
 
+// disarm is a no-op here: GitHub's merge queue is the only landing Goobers
+// arms, and dequeuing takes the merge authority this stage does not hold.
+// queue-watch, which holds it while the PR is queued, dequeues a PR that
+// gains goobers:needs-remediation (the route below).
+func (issueLabelCommentWatch) disarm(context.Context, providers.PullRequestSummary) error {
+	return nil
+}
+
 // adoPRCommentWatchProvider is the Azure DevOps surface: the PR list (labels
 // via includeLabels), every live comment across general and file threads, the
 // credential's identity by immutable id, and the native PR-label endpoints —
@@ -119,6 +130,7 @@ type adoPRCommentWatchProvider interface {
 	AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error)
 	AddPullRequestLabels(ctx context.Context, repo providers.RepositoryRef, pullID string, names []string) error
 	RemovePullRequestLabel(ctx context.Context, repo providers.RepositoryRef, pullID, name string) error
+	CancelAutoComplete(ctx context.Context, repo providers.RepositoryRef, pullID string) (bool, error)
 }
 
 type adoCommentWatch struct {
@@ -140,6 +152,13 @@ func (w adoCommentWatch) listPullRequests(ctx context.Context, base string) ([]p
 
 func (w adoCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary) ([]providers.Comment, error) {
 	return w.provider.ListPullRequestFeedbackComments(ctx, w.repo, strconv.Itoa(pr.Number))
+}
+
+// disarm cancels the pull request's armed auto-complete: ADO would otherwise
+// complete it the moment its pending policies settle, over the feedback.
+func (w adoCommentWatch) disarm(ctx context.Context, pr providers.PullRequestSummary) error {
+	_, err := w.provider.CancelAutoComplete(ctx, w.repo, strconv.Itoa(pr.Number))
+	return err
 }
 
 // route clears the carried park labels, then adds needs-remediation. ADO has

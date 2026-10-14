@@ -168,7 +168,6 @@ func TestPRCommentWatchSkipsRoutedParkedAndOptedOutPRs(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	excludeLabels := []string{
 		needsRemediationLabel,
-		mergeReadyLabel,
 		blockedOnSiblingLabel,
 		noMergeReviewLabel,
 	}

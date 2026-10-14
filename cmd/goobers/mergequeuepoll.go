@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/boundedwait"
@@ -225,8 +226,9 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 			// dequeued the instant its originating run is cancelled mid-flight,
 			// same as an operator applying goobers:no-merge-review — the queue
 			// is a second merge authority and must not land a PR merge-pr would
-			// now refuse.
-			if transport.SupportsOptOutDequeue() && hasAnyLabel(result.Labels, []string{noMergeReviewLabel, abortedRunLabel}) {
+			// now refuse. #6134: so must a PR pr-comment-watch routed to
+			// remediation for human feedback that arrived while it was queued.
+			if transport.SupportsOptOutDequeue() && hasAnyLabel(result.Labels, mergeQueueDequeueLabels) {
 				optedOut = true
 			}
 			if optedOut {
@@ -317,8 +319,13 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 	}
 }
 
+// mergeQueueDequeueLabels are the labels that withdraw a queued pull request
+// from landing: the operator opt-out, a cancelled originating run, and a route
+// to remediation (#6134: fresh human feedback on a queued PR).
+var mergeQueueDequeueLabels = []string{noMergeReviewLabel, abortedRunLabel, needsRemediationLabel}
+
 func mergeQueuePollSkipped(pullNumber, resultFile string, stdout, stderr io.Writer) int {
-	reason := fmt.Sprintf("pull request #%s is labeled %s and was removed from merge-review landing", pullNumber, noMergeReviewLabel)
+	reason := fmt.Sprintf("pull request #%s is labeled %s and was removed from merge-review landing", pullNumber, strings.Join(mergeQueueDequeueLabels, " or "))
 	if err := writeQueueResult(resultFile, pullNumber, mergeReviewOptOutOutcome, "", nil, reason); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

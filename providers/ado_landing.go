@@ -187,6 +187,50 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	return EnqueuePullRequestResult{Number: out.PullRequestID}, nil
 }
 
+// adoNoAutoCompleteIdentity is the empty identity id ADO accepts in
+// autoCompleteSetBy to clear an armed auto-complete.
+const adoNoAutoCompleteIdentity = "00000000-0000-0000-0000-000000000000"
+
+// CancelAutoComplete disarms an armed Azure DevOps auto-complete (#6134): a
+// pull request whose landing EnqueuePullRequest armed while a blocking policy
+// was still pending must not complete over review feedback that arrived
+// afterwards. It reports whether it disarmed anything: a pull request that is
+// not active or has no auto-complete armed is left untouched (idempotent), and
+// one whose completion ADO has already queued cannot be recalled and is
+// reported as an error so the caller does not treat it as disarmed.
+func (p *ADOProvider) CancelAutoComplete(ctx context.Context, repo RepositoryRef, pullID string) (bool, error) {
+	if err := requireRepo(repo); err != nil {
+		return false, err
+	}
+	detail, err := p.getPullRequestDetail(ctx, repo, pullID)
+	if err != nil {
+		return false, err
+	}
+	if !strings.EqualFold(detail.Status, "active") {
+		return false, nil
+	}
+	if detail.AutoCompleteSetBy == nil {
+		if adoCompletionInFlight(detail) {
+			return false, fmt.Errorf("ado pull request %s completion is already queued and cannot be disarmed", pullID)
+		}
+		return false, nil
+	}
+	endpoint, err := p.repoURL(repo, "pullrequests", pullID)
+	if err != nil {
+		return false, err
+	}
+	body := map[string]interface{}{"autoCompleteSetBy": map[string]string{"id": adoNoAutoCompleteIdentity}}
+	var out adoPullRequestDetail
+	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
+		return false, err
+	}
+	if out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID != adoNoAutoCompleteIdentity {
+		return false, fmt.Errorf("ado pull request %s still has auto-complete armed after the cancel", pullID)
+	}
+	p.recordMutation(ctx, "pr", pullID, "auto-complete-cancel", repo)
+	return true, nil
+}
+
 // PollMergeQueueEntry reports whether a pull request previously enqueued
 // via EnqueuePullRequest has since merged or been evicted (CONF-3 #2076,
 // design doc §4: pr.landing.poll ≙ PR status completed / auto-complete-
