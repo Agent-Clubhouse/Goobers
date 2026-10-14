@@ -61,3 +61,15 @@ func (c *mutationClient) ObserveProviderMutation(ctx context.Context, kind provi
 		observer.ObserveProviderMutation(ctx, kind)
 	}
 }
+
+// UnwrapHTTPClient exposes the configured transport to non-REST discovery.
+// Callers must retain their own redirect, cookie and timeout policy.
+func (c *mutationClient) UnwrapHTTPClient() providers.HTTPClient {
+	return c.HTTPClient
+}
+
+// UnwrapHTTPClient lets Git discovery reuse enterprise TLS configuration
+// without sending discovery requests through the REST response cache.
+func (c *apiReadCache) UnwrapHTTPClient() providers.HTTPClient {
+	return c.inner
+}

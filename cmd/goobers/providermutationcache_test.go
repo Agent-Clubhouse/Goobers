@@ -88,3 +88,52 @@ func TestUncachedStageWriteInvalidatesSharedReadWithoutCachingItsReads(t *testin
 		t.Fatalf("confirmed uncached stage write left shared reads stale: writes=%d reads=%d", writes.Load(), reads.Load())
 	}
 }
+
+func TestStageProviderCachePreservesGitDiscoveryTLS(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv(executor.GaggleEnvVar, "own")
+	t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-1")
+	var discovery atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/acme/app":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{}`)
+		case "/acme/app.git/info/refs":
+			discovery.Add(1)
+			user, token, ok := r.BasicAuth()
+			if !ok || user != "x-access-token" || token != "token" {
+				t.Error("Git discovery lost its selected credential")
+			}
+			w.Header().Set("Content-Type", "application/x-git-receive-pack-advertisement")
+			_, _ = io.WriteString(w, "001f# service=git-receive-pack\n0000")
+		case "/api/v3/repos/acme/app/rules/branches/goobers/run-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[]`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	previous := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){providers.WithHTTPClient(server.Client()), func(p *providers.GitHubProvider) { p.BaseURL = server.URL + "/api/v3" }}, opts...)...)
+	}
+	t.Cleanup(func() { newGitHubProvider = previous })
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	for _, cached := range []bool{false, true} {
+		p, err := newProviderForStage(root, repo, cached, withStageProviderCapability(capability.GitHubPRWrite), withStageProviderToken("token"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := p.(*providers.GitHubProvider).PreflightRepositoryWrite(t.Context(), repo, "goobers/run-1")
+		if err != nil || !result.OK {
+			t.Errorf("cached=%v: configured TLS transport lost: %+v, %v", cached, result, err)
+		}
+	}
+	if discovery.Load() != 2 {
+		t.Errorf("Git discovery count=%d, want two live probes", discovery.Load())
+	}
+}

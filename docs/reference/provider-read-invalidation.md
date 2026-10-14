@@ -63,6 +63,8 @@ The stage provider factory also attaches mutation reporting to GitHub clients
 that deliberately bypass read caching. Their reads still use the original live
 transport; successful writes invalidate scoped readers in the same gaggle.
 The wrapper preserves existing transport observers and provider quota ownership.
+Git push-service discovery recovers the configured TLS transport through either
+wrapper, while retaining its own no-redirect/no-cookie policy and live reads.
 It requires the same explicit launch scope and never invents a gaggle for an
 unscoped client.
 
