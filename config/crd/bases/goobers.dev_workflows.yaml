@@ -58,6 +58,16 @@ spec:
                   enabled:
                     description: Enabled opts terminal runs into attribution.
                     type: boolean
+                  granularity:
+                    description: |-
+                      Granularity selects when attribution is recorded. run (the default)
+                      writes only the end-of-run record; stage additionally writes a
+                      best-effort, read-only checkpoint after each stage finishes, and the
+                      end-of-run record composes those checkpoints. Preview.
+                    enum:
+                    - run
+                    - stage
+                    type: string
                   version:
                     description: Version pins the attribution contract interpreted
                       for the run.

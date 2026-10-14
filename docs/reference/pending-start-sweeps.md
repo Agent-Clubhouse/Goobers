@@ -2,14 +2,18 @@
 
 The daemon inspects at most 100 accepted ordinary/source/child records in each
 queue pass. A shared SQLite cursor orders inspection by acceptance time and ID.
-It advances past held or unsupported records, wraps at the tail, and survives
-daemon restart. A malformed record reports its error while other records in the
+The daemon reserves one candidate immediately before inspection, advances past
+held or unsupported records, wraps at the tail, and survives daemon restart.
+A pass visits each candidate at most once, including when a small held queue wraps. A malformed record reports its error while other records in the
 window can still be inspected. Direct engine inputs retain their separate owner.
 
 Reserving a window changes only scan progress. Every start keeps its payload,
 acceptance time, state and reserved execution identity until its existing owner
-claims or settles it. A crash between reservation and inspection delays untouched
-records until the next traversal; it neither loses them nor authorizes execution.
+claims or settles it. A crash between reservation and inspection can delay the one reserved candidate
+until the next traversal; it neither loses that record nor authorizes execution.
+Ending a pass after an inspection does not skip the rest of a pre-reserved batch.
+Each candidate reservation is a separate SQLite transaction; the 100-item cap
+bounds those reservations and their payloads, not the elapsed admission time.
 Concurrent store handles reserve windows transactionally. This is not an execution
 lease, a promise of execution order, or completion of weighted gaggle scheduling.
 
@@ -17,3 +21,9 @@ The additive migration preserves accepted custody and adds one fixed cursor row
 plus a pending-order index. Older binaries refuse the newer queue schema. Queue
 inspection, cancellation, deadlines, typed waiting and bounded-time admission
 remain separate implementation slices.
+
+A drain caller waiting behind another pass can cancel its wait. An already
+cancelled caller stops before retention, reconciliation, or cursor reservation.
+Cancelling a waiting caller does not interrupt the active pass or its accepted
+run. This does not impose a wall-clock limit on an active pass; eligibility and
+execution contexts still require their own bounded-admission policy.
