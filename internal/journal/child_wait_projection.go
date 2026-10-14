@@ -88,7 +88,9 @@ func (p *childWaitProjector) consume(event Event) error {
 	switch event.Type {
 	case EventParallelStarted:
 		return p.beginParallel(event)
-	case EventParallelFinished:
+	case EventMapStarted:
+		return p.beginMap(event)
+	case EventParallelFinished, EventMapFinished:
 		if p.parallel != "" && event.Parallel != p.parallel || len(p.waits) != 0 {
 			return fmt.Errorf("runner: parallel finished with unresolved child custody")
 		}
@@ -136,6 +138,23 @@ func (p *childWaitProjector) beginParallel(event Event) error {
 			return fmt.Errorf("runner: child wait parallel has invalid owners")
 		}
 		owners[branch.Branch] = true
+	}
+	p.parallel, p.owners, p.started = event.Parallel, owners, map[int]Event{}
+	return nil
+}
+
+// beginMap opens a map visit's branch ownership from its frozen roster: item
+// i is branch i+1. A mapped task cannot hold child custody itself, but a root
+// child wait elsewhere in the run must still see the map's item branches as
+// declared owners rather than as unfiltered branch history. An empty roster
+// declares no owner.
+func (p *childWaitProjector) beginMap(event Event) error {
+	if p.parallel != "" || len(p.waits) != 0 || event.Parallel == "" || event.MapRoster == nil || len(event.MapRoster.Items) > 128 {
+		return fmt.Errorf("runner: child wait map ownership is unavailable")
+	}
+	owners := make(map[int]bool, len(event.MapRoster.Items))
+	for i := range event.MapRoster.Items {
+		owners[i+1] = true
 	}
 	p.parallel, p.owners, p.started = event.Parallel, owners, map[int]Event{}
 	return nil

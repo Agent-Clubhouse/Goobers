@@ -426,7 +426,14 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   candidate. When every strong candidate the run could claim was skipped, the
   behind-base fallback MUST be consulted as if no strong candidate existed.
   The cycle is no-work only when nothing claimable could progress, and its
-  reason names each skip. A clean, behind-base,
+  reason names each skip. On Azure DevOps, whose PR list carries no CI state,
+  the lane MUST discover failing CI itself: it reads the blocking-policy
+  evaluations of each eligible PR whose tier the read can change (not already
+  `needs-remediation`, not parked `merge-escalated`, not claimed by another
+  run), at most a bounded number per cycle in a window that rotates across
+  cycles so every such PR is eventually read (a targeted run reads its target
+  alone), so a red build-validation policy makes the PR a strong candidate
+  without waiting for merge-review to demote it. A clean, behind-base,
   finding-free candidate SHOULD be completed through the provider's
   update-branch API without provisioning a worktree (#720); everything else
   enters full remediation. A PR carrying `goobers:needs-human` MUST be excluded
@@ -481,6 +488,16 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   history on the trusted sticky status comment, and escalate immediately when
   remediation revisits a prior state (for example A→B→A), rather than waiting
   for the cycle budget to expire (#367).
+  A cycle whose PR head moved under the run before the run published — a
+  pr-claim guard's `stale_selection`, or a pod refusing to land the run's
+  workspace delta on a head that is no longer the commit the delta's producer
+  started from (`workspace_head_moved`) — MUST end the run completed rather than
+  failed, MUST NOT touch the PR's failure or no-work streaks, and
+  MUST have its charged attempt refunded at the next checkpoint without
+  counting toward the infrastructure allowance (#6019). The run's own rewrite
+  of the PR's history on an unmoved head is NOT a moved head and keeps the
+  ordinary failure accounting. Consecutive superseded cycles MUST be bounded:
+  the third forces a did-not-converge park.
 - **PRL-055 (MUST, Shipped):** A reviewer `fail` verdict inside remediation
   MUST escalate immediately with the terminal reason (skipping budget/stall
   checks), surfaced through the run's escalated phase — never retried against

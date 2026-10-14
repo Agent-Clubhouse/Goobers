@@ -95,7 +95,13 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		return fail("credential_resolve_failed", checkoutErr)
 	}
 	if err := checkoutRepoWorkspace(ctx, workspace, stderr, checkoutCreds, checkoutScheme); err != nil {
-		return fail("workspace_provision_failed", err)
+		// A pull request head that moved under the run surrenders its own
+		// code (#6019) — non-retryable, like every DivergedError (#5948) —
+		// so the engine ends the run superseded rather than failed.
+		code := workspaceProvisionFailureCode(err)
+		out := fail(code, err)
+		out.WorkspaceHeadMoved = code == runner.WorkspaceHeadMovedErrorCode
+		return out
 	}
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace

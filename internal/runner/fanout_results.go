@@ -72,17 +72,6 @@ func (s *fanOutResults) record(key fanOutResultKey, visit uint64, task apiv1.Tas
 	}
 }
 
-// result returns the result recorded under exactly one occurrence key.
-func (s *fanOutResults) result(key fanOutResultKey) (fanOutResult, bool) {
-	if s == nil {
-		return fanOutResult{}, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	got, ok := s.results[key]
-	return copyFanOutResult(got), ok
-}
-
 // branchResult returns the newest result stage recorded on one branch of one
 // fan-out visit: the per-item value a map join assembles. A retry stays in its
 // occurrence and replaces its own entry, so "newest" only matters if a branch

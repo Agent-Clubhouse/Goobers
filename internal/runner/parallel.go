@@ -62,6 +62,9 @@ type parallelExec struct {
 	spec     apiv1.Parallel
 	branches []*branchState
 	active   int
+	// mapVisit is the frozen roster this execution expands; nil for a
+	// static parallel (newMapExec).
+	mapVisit *mapVisit
 }
 
 // newParallelExec assigns branch ids by DECLARATION ORDER, from 1. Branch 0 is
@@ -94,17 +97,6 @@ func mapParallelSpec(m apiv1.Map, items []journal.MapItem) apiv1.Parallel {
 		Name: m.Name, FailurePolicy: m.FailurePolicy, Branches: branches, Join: m.Join, OnFailure: m.OnFailure,
 		BranchTimeoutSeconds: m.ItemTimeoutSeconds, MaxConcurrentBranches: fanout.EffectiveMaxConcurrent(m),
 	}
-}
-
-// newMapExec builds the live state of one map visit from its frozen roster.
-// Branch ids follow roster order from 1, so the same roster yields the same
-// (branch, identity, digest) triples on every runner.
-func newMapExec(m apiv1.Map, items []journal.MapItem) *parallelExec {
-	par := newParallelExec(mapParallelSpec(m, items))
-	for i, item := range items {
-		par.branches[i].itemIdentity, par.branches[i].itemDigest = item.Identity, item.Digest
-	}
-	return par
 }
 
 func (p *parallelExec) current() *branchState {

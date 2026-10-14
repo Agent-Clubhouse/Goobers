@@ -37,6 +37,7 @@
 package workspacedelta
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -53,6 +54,16 @@ import (
 // and never has to agree with the sender about branch naming, and it cannot
 // collide with a real branch in the bundle's namespace.
 const Ref = "refs/goobers/workspace-delta"
+
+// OriginRef optionally names, inside a bundle, the commit the producing
+// stage's checkout started from on a branch it does not own — a pull request
+// head the run rebound to (#392). A receiver that refuses the delta
+// (DivergedError) compares its own checkout against it: the same commit
+// means the branch did not move and the divergence is the run's own history
+// rewrite; a different commit means someone else moved the branch under the
+// run (#6019). Receivers fetch Ref only, so a bundle carrying OriginRef
+// lands exactly as one without it.
+const OriginRef = "refs/goobers/workspace-delta-origin"
 
 // Git runs git for one caller. Run executes a command for its side effect;
 // Output returns trimmed stdout. Both must surface git's exit status through
@@ -73,6 +84,8 @@ type Bundle struct {
 	Data   []byte
 	Base   string
 	Tip    string
+	// Origin is the commit OriginRef names, when the producer recorded one.
+	Origin string
 }
 
 // Digest is the content address of data in the blob plane's own spelling
@@ -116,6 +129,15 @@ func Load(data []byte, digest string) (Bundle, error) {
 // under it git refuses the fetch with "does not contain prerequisite
 // commits" — loud and named, the right failure for a carrier of real work.
 func Create(ctx context.Context, git Git, dir, baseRef, tipRef string) (Bundle, error) {
+	return CreateWithOrigin(ctx, git, dir, baseRef, tipRef, "")
+}
+
+// CreateWithOrigin is Create carrying origin — the commit the producing
+// checkout started from — under OriginRef. An empty origin is plain Create.
+// git omits a named ref whose commit the bundle's own range excludes (an
+// origin at or behind baseRef); such a bundle simply carries no origin, and
+// receivers treat that exactly like a producer that recorded none.
+func CreateWithOrigin(ctx context.Context, git Git, dir, baseRef, tipRef, origin string) (Bundle, error) {
 	base, err := git.Output(ctx, dir, "rev-parse", "--verify", baseRef+"^{commit}")
 	if err != nil {
 		return Bundle{}, fmt.Errorf("workspace delta: resolve base %s: %w", baseRef, err)
@@ -137,14 +159,37 @@ func Create(ctx context.Context, git Git, dir, baseRef, tipRef string) (Bundle, 
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	path := filepath.Join(tmp, "workspace.bundle")
-	if err := git.Run(ctx, dir, "bundle", "create", path, baseRef+".."+Ref); err != nil {
+	args := []string{"bundle", "create", path, baseRef + ".." + Ref}
+	if origin = strings.TrimSpace(origin); origin != "" {
+		if err := git.Run(ctx, dir, "update-ref", OriginRef, origin); err != nil {
+			return Bundle{}, fmt.Errorf("workspace delta: name origin ref: %w", err)
+		}
+		defer func() { _ = git.Run(context.WithoutCancel(ctx), dir, "update-ref", "-d", OriginRef) }()
+		args = append(args, OriginRef)
+	}
+	if err := git.Run(ctx, dir, args...); err != nil {
 		return Bundle{}, fmt.Errorf("workspace delta: bundle %s..%s: %w", baseRef, tipRef, err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("workspace delta: read bundle: %w", err)
 	}
-	return Bundle{Digest: Digest(data), Data: data, Base: strings.TrimSpace(base), Tip: strings.TrimSpace(tip)}, nil
+	return Bundle{Digest: Digest(data), Data: data, Base: strings.TrimSpace(base), Tip: strings.TrimSpace(tip), Origin: OriginOf(data)}, nil
+}
+
+// OriginOf reads the commit a bundle names under OriginRef from the bundle's
+// text header, or "" when it names none. Only the header is read — the
+// "<sha> <ref>" lines before the first blank line — and nothing the header
+// says is trusted beyond being compared against the receiver's own checkout.
+func OriginOf(data []byte) string {
+	header, _, _ := bytes.Cut(data, []byte("\n\n"))
+	for _, line := range strings.Split(string(header), "\n") {
+		sha, ref, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if ok && ref == OriginRef && !strings.HasPrefix(sha, "-") {
+			return sha
+		}
+	}
+	return ""
 }
 
 // Fetch verifies b and fetches its Ref into the repository at dir, returning
@@ -220,6 +265,10 @@ type DivergedError struct {
 	Digest  string
 	Current string
 	Tip     string
+	// Origin is the commit the delta's producer started from on this branch
+	// (OriginRef), when the caller knows it; "" otherwise. Current != Origin
+	// is the evidence that someone else moved the branch under the run.
+	Origin string
 }
 
 func (e *DivergedError) Error() string {

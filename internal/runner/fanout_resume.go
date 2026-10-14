@@ -118,7 +118,9 @@ func (p pendingFanOut) exec(events []journal.Event, machine *workflow.Machine) *
 	start := events[p.start]
 	if p.mapVisit != nil {
 		def, _ := machine.Map(start.Parallel)
-		return newMapExec(def, p.mapVisit.Items())
+		roster := *start.MapRoster
+		roster.Items = p.mapVisit.Items()
+		return newMapExec(def, roster, start.Seq)
 	}
 	spec, ok := machine.Parallel(start.Parallel)
 	if !ok {

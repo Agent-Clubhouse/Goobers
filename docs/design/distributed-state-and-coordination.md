@@ -237,7 +237,10 @@ Three properties make it safe to hand a stage pod:
   `backlog-scan-<sha256>.json` shape, the backlog-health ready-transition ledger by its
   `backlog-health.<gaggle>.<provider>__<repository>__<label>.json` shape (Goobers#3948), the
   pr-remediation no-op record by its `pr-remediation-noop-<sha256>.json` shape (Goobers#3989 — the
-  last file holding `gather-pr-context`, and the last of the three seams that command needed), and
+  last file holding `gather-pr-context`, and the last of the three seams that command needed), the
+  pr-remediation CI-probe cursor by its `pr-remediation-ci-probe-<sha256>.json` shape (#6482 — one per
+  gaggle and repository, recording where `gather-pr-context`'s bounded Azure DevOps CI-probe window
+  last ended so successive cycles cover every open PR), and
   `pr-select-fairness.json` (Goobers#3988 — the last file holding a `merge-review` stage to
   `StageRequiresInstanceRoot`, and so the last Self pin on M3). Both the client and the daemon
   enforce it, so a state bearer can never address `claims.json`, `config.yaml`, or anything else in

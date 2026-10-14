@@ -53,7 +53,7 @@ func TestRunDeclaredStageCommandSuccessCapturesOutput(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
 	var stdout, stderr bytes.Buffer
-	result := runDeclaredStage(context.Background(), &stdout, &stderr)
+	result := runDeclaredStage(context.Background(), &stdout, &stderr, nil)
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %q, want success (result %+v)", result.Status, result)
 	}
@@ -73,7 +73,7 @@ func TestRunDeclaredStageCommandFailureReportsExitCode(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %q, want failure", result.Status)
 	}
@@ -90,7 +90,7 @@ func TestRunDeclaredStageScriptPath(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "echo from-script")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultSuccess || result.Outputs["stdout"] != "from-script\n" {
 		t.Fatalf("result = %+v, want a successful script run", result)
 	}
@@ -105,7 +105,7 @@ func TestRunDeclaredStageInheritsProcessEnvironment(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Outputs["stdout"] != "carried-through" {
 		t.Fatalf("stdout = %q, want the pod's own env var inherited by the exec'd stage", result.Outputs["stdout"])
 	}
@@ -117,7 +117,7 @@ func TestRunDeclaredStageTimeoutIsAFailure(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageTimeout, "50ms")
 
 	start := time.Now()
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if elapsed := time.Since(start); elapsed > 4*time.Second {
 		t.Fatalf("runDeclaredStage took %s, want the 50ms timeout to cut it short", elapsed)
 	}
@@ -153,7 +153,7 @@ func TestRunDeclaredStageMalformedCommandJSONIsAFailureEnvelope(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "stage_declaration_invalid" {
 		t.Fatalf("result = %+v, want stage_declaration_invalid", result)
 	}
@@ -170,7 +170,7 @@ func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
 		t.Fatalf("result = %+v, want an instance_root_required failure", result)
 	}
@@ -199,7 +199,7 @@ func TestRunDeclaredStageRefusesKindWithoutInstanceRoot(t *testing.T) {
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 	t.Setenv("GOOBERS_INPUT_KIND", "some-future-kind")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
 		t.Fatalf("result = %+v, want an instance_root_required failure", result)
 	}
@@ -215,7 +215,7 @@ func TestRunDeclaredStageOrdinaryCommandIgnoresMissingInstanceRoot(t *testing.T)
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Error != nil && result.Error.Code == "instance_root_required" {
 		t.Fatalf("result = %+v, an unrelated command must not trip the instance-root backstop", result)
 	}
@@ -934,7 +934,7 @@ func runStageWithResultFile(t *testing.T, resultJSON string, exitCode int) apiv1
 	t.Setenv(dispatcher.EnvDaemonAPI, "")
 
 	var out, errOut bytes.Buffer
-	return runDeclaredStage(context.Background(), &out, &errOut)
+	return runDeclaredStage(context.Background(), &out, &errOut, nil)
 }
 
 // noWork is a DISTINCT terminal status. Flattening it to success makes a
@@ -1115,7 +1115,7 @@ func envDefaultDenyProbe(t *testing.T, defaultDeny, cliStage bool) map[string]st
 	// it is set here, never on the pod spec.
 	t.Setenv("IMAGE_AMBIENT_VAR", "baked-into-the-runner-image")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("probe stage did not run: %+v", result)
 	}
@@ -1398,7 +1398,7 @@ func TestDispatchExecClassifiesSyncBaseConflictAsRetryableInfra(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(cwd) })
 
-	got := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	got := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if got.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %q, want failure", got.Status)
 	}

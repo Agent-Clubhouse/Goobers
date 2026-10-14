@@ -153,6 +153,19 @@ hazard. Writes go through `AddPullRequestLabels` (ADO takes one label per POST, 
 per name), reads through `PullRequestLabelNames`, and clears through
 `RemovePullRequestLabel`.
 
+Failing CI is the one remediation signal that is not a label, and the list call carries
+no CI state. `gather-pr-context` therefore reads the blocking-policy evaluations
+(`HasPullRequestCIFailures`, the ADO-N22 classification `gather-ci-failures` reports) for
+each eligible PR that read could promote — not already `goobers:needs-remediation`, not
+parked `goobers:merge-escalated`, not claimed by another run — at most
+`adoRemediationCIProbeLimit` per cycle (#6482). The window rotates: a persisted cursor
+(`pr-remediation-ci-probe-<sha256>.json`, one per gaggle and repository) records where the
+last window ended, so a larger open set is read in full over successive cycles. A targeted
+run (`--pr N`) reads PR N alone, outside the bound. Each probe is the PR detail read and
+its evaluations, plus one build read per rejected build policy once cancelled-build
+classification applies (#6817). A red build-validation policy then makes the PR a strong
+remediation candidate on its own, rather than only after merge-review demotes it.
+
 ### 4.3 The three ADO PR-label API quirks
 
 ADO's PR-label API has three behaviors a fixture/fake-server test cannot observe. All three
