@@ -226,6 +226,69 @@ func TestEscalatedInfraBudgetTerminalIsNotAWorkStrike(t *testing.T) {
 	}
 }
 
+// TestHarnessStartupInfraNeverAdvancesEitherStreak is #5638's original
+// complaint: a harness that never gave the agent a turn (the required-MCP
+// control process exiting before readiness) parked six good issues. That is
+// substrate, not about the item, so however many times it repeats — past
+// both thresholds — it charges neither streak and parks nothing.
+func TestHarnessStartupInfraNeverAdvancesEitherStreak(t *testing.T) {
+	for name, outcome := range map[string]runner.FailedOutcome{
+		"runner fault class": {Code: telemetry.ErrCodeExecutor, FaultClass: telemetry.ErrorClassInfra},
+		"substrate code":     {Code: telemetry.ErrCodeHarnessRequiredMCPUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, poster, state := newTestPolicy(t)
+			state.items["run-startup"] = []Item{{ItemID: "5629", Repo: webRepo}}
+			outcome.RunID, outcome.RepoRef, outcome.Stage = "run-startup", webRepoRef, "curate"
+			for i := 0; i < 2*InfraFailureStreakThreshold; i++ {
+				if err := p.Failed(context.Background(), outcome); err != nil {
+					t.Fatalf("Failed %d: %v", i+1, err)
+				}
+			}
+			if state.streaks["web#5629"] != 0 || state.infraStreaks["web#5629"] != 0 || len(poster.updates) != 0 {
+				t.Fatalf("work=%v infra=%v updates=%+v; a harness startup failure must not touch the item", state.streaks, state.infraStreaks, poster.updates)
+			}
+		})
+	}
+}
+
+// Infrastructure that interrupted a retry of something other than the item's
+// own validation is substrate on the escalated/aborted path too: an expiry
+// during a dispatch's infrastructure retry (a clone that kept failing), or an
+// engine workflow the daemon terminated because no worker polled it.
+func TestSubstrateTerminalsChargeNeitherStreak(t *testing.T) {
+	dispatchRetry := []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventError, Stage: "implement", Error: &journal.ErrorDetail{Code: "executor_error", Message: "clone failed"},
+			Runner: map[string]any{runner.RetryFailureClassKey: string(journal.AttemptInfra)}},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2},
+	}
+	for name, events := range map[string][]journal.Event{
+		"expiry during dispatch retry": append(dispatchRetry, abortedBy(runner.RunDurationExceededErrorCode, journal.TerminalPolicyExhaustion)...),
+		"terminated engine workflow": {{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted), TerminalCause: &journal.TerminalCause{
+			Schema: journal.TerminalCauseSchema, Phase: journal.PhaseAborted, Classification: journal.TerminalInfrastructureFailure,
+			SelectorKind: "condition", Code: "terminated",
+		}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, poster, state := newTestPolicy(t)
+			writeTerminalJournal(t, p.RunsDir, "run-substrate", events...)
+			state.items["run-substrate"] = []Item{{ItemID: "42", Repo: webRepo}}
+			for i := 0; i < 2*InfraFailureStreakThreshold; i++ {
+				if err := p.TerminalNotifier(nil)("run-substrate", journal.PhaseAborted, "implement"); err != nil {
+					t.Fatalf("aborted %d: %v", i+1, err)
+				}
+			}
+			if state.streaks["web#42"] != 0 || state.infraStreaks["web#42"] != 0 || len(poster.updates) != 0 {
+				t.Fatalf("work=%v infra=%v updates=%+v, want neither streak touched", state.streaks, state.infraStreaks, poster.updates)
+			}
+			if len(state.voided) == 0 {
+				t.Fatal("a substrate terminal still refunds the run's remediation charge")
+			}
+		})
+	}
+}
+
 // A journal that exists but cannot be read leaves the terminal charged as
 // work, as before, and reports why it could not be classified.
 func TestUnreadableTerminalJournalStillCountsAndReports(t *testing.T) {

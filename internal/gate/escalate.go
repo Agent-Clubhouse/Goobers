@@ -269,9 +269,10 @@ func infraFailureStreakBody(count, threshold int, stage, latestRunID, latestRunU
 	}
 	return fmt.Sprintf(
 		"Goobers: **%d consecutive infrastructure-classified terminal(s)**%s. Latest run: [`%s`](%s). "+
-			"Classification: **infrastructure failure** — the run's own record attributes it to infrastructure, "+
-			"so it is excluded from the genuine/work streak; this separate streak parks the item after %d so an "+
-			"environment that fails the same way every time cannot retry it forever. "+
+			"Classification: **infrastructure failure** — this item's own validation kept failing on "+
+			"infrastructure (for example its CI timing out), so it is excluded from the genuine/work streak; "+
+			"this separate streak parks the item after %d so an environment that fails the same way on this "+
+			"item every time cannot retry it forever. "+
 			"%s\n\n"+
 			"<!-- goobers:infra-failure-streak data-count=\"%d\" -->",
 		count, stageInfo, latestRunID, latestRunURL, threshold, park.retryInstruction(), count,

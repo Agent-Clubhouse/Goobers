@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -57,10 +56,8 @@ func failedHandlerDispositionFixture(t *testing.T, runID string) (runner.FailedH
 // tells us the machine was RIGHT — neither may accumulate strikes that
 // eventually park the item goobers:needs-human.
 //
-// Even at the work threshold, an excluded disposition never accrues a work
-// strike or a park. A verified refusal posts nothing at all; an
-// infrastructure terminal updates only the separate infrastructure streak,
-// which parks at its own higher threshold (#5638).
+// Even at the threshold count, an excluded disposition posts nothing at all:
+// no streak comment, no labels.
 func TestFailedHandlerSkipsInfraAndItemJudgmentDispositions(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -90,34 +87,11 @@ func TestFailedHandlerSkipsInfraAndItemJudgmentDispositions(t *testing.T) {
 					t.Fatalf("handler call %d: %v", i+1, err)
 				}
 			}
-			if tc.code == telemetry.ErrCodeIssueNotApplicable {
-				if len(fake.calls) != 0 {
-					t.Fatalf("provider calls = %+v, want none — a verified refusal is not charged at all", fake.calls)
-				}
-				return
+			if len(fake.calls) != 0 {
+				t.Fatalf("provider calls = %+v, want none — %q is not a work failure and must not accrue a failure streak",
+					fake.calls, tc.code)
 			}
-			assertInfraStreakOnly(t, fake.calls, escalationnotify.FailureStreakThreshold)
 		})
-	}
-}
-
-// assertInfraStreakOnly checks a run of infrastructure terminals below the
-// infrastructure threshold (#5638): each one updates the separate
-// infrastructure-streak comment, none is called a genuine/work failure, and
-// nothing parks the item.
-func assertInfraStreakOnly(t *testing.T, calls []providers.UpdateWorkItemRequest, terminals int) {
-	t.Helper()
-	if terminals >= escalationnotify.InfraFailureStreakThreshold {
-		t.Fatalf("precondition: %d terminals reach the infrastructure threshold", terminals)
-	}
-	for _, call := range calls {
-		if len(call.AddLabels) != 0 || strings.Contains(call.Comment, "genuine/work failure") ||
-			!strings.Contains(call.Comment, "Classification: **infrastructure failure**") {
-			t.Fatalf("provider calls = %+v, want only infrastructure-streak comments and no park", calls)
-		}
-	}
-	if len(calls) == 0 {
-		t.Fatal("want the infrastructure streak's comment, got no provider call")
 	}
 }
 
@@ -176,7 +150,9 @@ func TestFailedHandlerHonorsExplicitInfraFaultClass(t *testing.T) {
 					t.Fatalf("handler call %d: %v", i+1, err)
 				}
 			}
-			assertInfraStreakOnly(t, fake.calls, escalationnotify.FailureStreakThreshold)
+			if len(fake.calls) != 0 {
+				t.Fatalf("provider calls = %+v, want none — an explicitly infra-classed terminal is not a work failure", fake.calls)
+			}
 		})
 	}
 }

@@ -329,24 +329,10 @@ func TestFailedSkipsInfraAndItemJudgmentDispositions(t *testing.T) {
 					t.Fatalf("Failed call %d: %v", i+1, err)
 				}
 			}
-			// The genuine/work streak is never charged, and nothing parks below
-			// the infrastructure threshold.
-			if len(state.streaks) != 0 || len(poster.labelUpdates()) != 0 {
-				t.Fatalf("labels=%+v streaks=%+v, want no work strike and no park", poster.labelUpdates(), state.streaks)
-			}
-			for _, update := range poster.updates {
-				if strings.Contains(update.Comment, "genuine/work failure") {
-					t.Fatalf("comment %q calls an exempt terminal a work failure", update.Comment)
-				}
-			}
-			// Infrastructure counts on its own streak (#5638); item judgment
-			// is not charged at all.
-			wantInfra := 0
-			if tc.voided {
-				wantInfra = FailureStreakThreshold
-			}
-			if got := state.infraStreaks["web#42"]; got != wantInfra {
-				t.Fatalf("infra streak = %d, want %d", got, wantInfra)
+			// A failed infrastructure terminal is substrate, not about the item:
+			// it charges neither streak (#5638).
+			if len(poster.updates) != 0 || len(state.streaks) != 0 || len(state.infraStreaks) != 0 {
+				t.Fatalf("updates=%+v streaks=%+v infra=%+v, want none", poster.updates, state.streaks, state.infraStreaks)
 			}
 			if got := len(state.voided) > 0; got != tc.voided {
 				t.Fatalf("voided = %v, want %v", state.voided, tc.voided)

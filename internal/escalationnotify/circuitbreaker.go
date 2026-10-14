@@ -13,15 +13,15 @@ import (
 // on one item after which the circuit breaker parks it goobers:needs-human.
 const FailureStreakThreshold = 3
 
-// InfraFailureStreakThreshold is the number of infrastructure-classified
-// terminals on one item, since its last completed run, after which the
-// circuit breaker parks it (#5638). Infrastructure terminals are kept off the
-// genuine/work streak because they are not evidence about the item — but an
-// environment that fails the same way every time (a CI suite that always
-// hangs past its timeout, which the failure-class gate judges retryable and
-// therefore infra) must still stop retrying eventually. A separate, higher
-// threshold bounds that loop without letting ordinary weather park items at
-// the work rate.
+// InfraFailureStreakThreshold is the number of item-correlated
+// infrastructure terminals on one item, since its last completed run, after
+// which the circuit breaker parks it (#5638). Those terminals — the item's own
+// validation failing on infrastructure, such as a CI suite that always hangs
+// past its timeout on this change, which the failure-class gate judges
+// retryable and therefore infra — are kept off the genuine/work streak, but
+// must still stop retrying eventually. Infrastructure that is not about the
+// item (credentials, network, a harness that never gave the agent a turn)
+// counts on neither streak and never parks the item.
 const InfraFailureStreakThreshold = 2 * FailureStreakThreshold
 
 // streak is one of the breaker's two counters: the genuine/work streak, or the

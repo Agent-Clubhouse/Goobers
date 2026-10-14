@@ -71,12 +71,12 @@ func TestEngineCancelDuringGateInfraRetry(t *testing.T) {
 		t.Fatalf("precondition: want the engine's run_canceled aborted terminal, got %+v", finished)
 	}
 
-	for interruption, want := range map[string]telemetry.ErrorClass{
-		runner.RunDurationExceededErrorCode: telemetry.ErrorClassInfra,
-		runner.RunStalledErrorCode:          telemetry.ErrorClassInfra,
-		"":                                  "", // an operator's cancel
+	for interruption, want := range map[string]runner.TerminalFault{
+		runner.RunDurationExceededErrorCode: runner.TerminalFaultItemInfrastructure,
+		runner.RunStalledErrorCode:          runner.TerminalFaultItemInfrastructure,
+		"":                                  runner.TerminalFaultUnclassified, // an operator's cancel
 	} {
-		if got := runner.JournaledTerminalFaultClass(events, interruption); got != want {
+		if got := runner.JournaledTerminalFault(events, interruption); got != want {
 			t.Errorf("interruption %q: class = %q, want %q", interruption, got, want)
 		}
 	}

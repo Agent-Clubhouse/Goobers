@@ -156,8 +156,8 @@ func TestGateInfraTimeoutThenExpiryIsAnInfraTerminal(t *testing.T) {
 	if failedCalls != 0 || len(notified) != 1 || notified[0] != journal.PhaseAborted {
 		t.Fatalf("Failed calls = %d, NotifyTerminal phases = %v; want the aborted terminal notifier only", failedCalls, notified)
 	}
-	if class := JournaledTerminalFaultClass(events, ""); class != telemetry.ErrorClassInfra {
-		t.Fatalf("terminal class = %q, want %q: the gate already judged this retry infrastructure", class, telemetry.ErrorClassInfra)
+	if class := JournaledTerminalFault(events, ""); class != TerminalFaultItemInfrastructure {
+		t.Fatalf("terminal class = %q, want %q: the gate already judged this retry infrastructure", class, TerminalFaultItemInfrastructure)
 	}
 }
 
@@ -168,12 +168,12 @@ func TestExpiryDuringOrdinaryWorkIsUnclassified(t *testing.T) {
 	if len(notified) != 1 || notified[0] != journal.PhaseAborted {
 		t.Fatalf("NotifyTerminal phases = %v, want aborted", notified)
 	}
-	if class := JournaledTerminalFaultClass(events, ""); class != "" {
+	if class := JournaledTerminalFault(events, ""); class != "" {
 		t.Fatalf("terminal class = %q, want unclassified", class)
 	}
 }
 
-func TestJournaledTerminalFaultClass(t *testing.T) {
+func TestJournaledTerminalFault(t *testing.T) {
 	finished := func(phase journal.RunPhase, classification journal.TerminalClassification, code string) journal.Event {
 		return journal.Event{Type: journal.EventRunFinished, Status: string(phase), TerminalCause: &journal.TerminalCause{
 			Schema: journal.TerminalCauseSchema, Phase: phase, Classification: classification, Code: code,
@@ -193,13 +193,15 @@ func TestJournaledTerminalFaultClass(t *testing.T) {
 
 	for name, tc := range map[string]struct {
 		events []journal.Event
-		want   telemetry.ErrorClass
+		want   TerminalFault
 	}{
-		"infra repass budget escalation":    {[]journal.Event{finished(journal.PhaseEscalated, journal.TerminalInfrastructureFailure, gate.ReasonInfrastructureBudgetExhausted)}, telemetry.ErrorClassInfra},
-		"expiry during gate infra retry":    {[]journal.Event{retry(journal.AttemptInfra), started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, telemetry.ErrorClassInfra},
-		"stall during dispatch infra retry": {[]journal.Event{started, dispatchFailure(journal.AttemptInfra), started, interrupt(RunStalledErrorCode), finished(journal.PhaseEscalated, journal.TerminalEscalation, RunStalledErrorCode)}, telemetry.ErrorClassInfra},
-		"expiry after the retry succeeded":  {[]journal.Event{retry(journal.AttemptInfra), started, stageDone, started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, ""},
-		"expiry during a policy retry":      {[]journal.Event{started, dispatchFailure(journal.AttemptPolicy), started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, ""},
+		"infra repass budget escalation":    {[]journal.Event{finished(journal.PhaseEscalated, journal.TerminalInfrastructureFailure, gate.ReasonInfrastructureBudgetExhausted)}, TerminalFaultItemInfrastructure},
+		"expiry during gate infra retry":    {[]journal.Event{retry(journal.AttemptInfra), started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, TerminalFaultItemInfrastructure},
+		"stall during dispatch infra retry": {[]journal.Event{started, dispatchFailure(journal.AttemptInfra), started, interrupt(RunStalledErrorCode), finished(journal.PhaseEscalated, journal.TerminalEscalation, RunStalledErrorCode)}, TerminalFaultSubstrate},
+		// An engine workflow the daemon terminated because no worker polled it.
+		"terminated engine workflow":       {[]journal.Event{finished(journal.PhaseAborted, journal.TerminalInfrastructureFailure, "terminated")}, TerminalFaultSubstrate},
+		"expiry after the retry succeeded": {[]journal.Event{retry(journal.AttemptInfra), started, stageDone, started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, ""},
+		"expiry during a policy retry":     {[]journal.Event{started, dispatchFailure(journal.AttemptPolicy), started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, ""},
 		// An operator's cancel is not a watchdog judgment about the run.
 		"cancel during infra retry": {[]journal.Event{retry(journal.AttemptInfra), started, interrupt(RunCanceledErrorCode), finished(journal.PhaseAborted, journal.TerminalOperatorAbort, RunCanceledErrorCode)}, ""},
 		"defined abort":             {[]journal.Event{finished(journal.PhaseAborted, journal.TerminalDefinedAbort, "defined_abort")}, ""},
@@ -211,7 +213,7 @@ func TestJournaledTerminalFaultClass(t *testing.T) {
 		"only latest cause": {[]journal.Event{finished(journal.PhaseEscalated, journal.TerminalInfrastructureFailure, gate.ReasonInfrastructureBudgetExhausted), finished(journal.PhaseEscalated, journal.TerminalEscalation, "escalated")}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := JournaledTerminalFaultClass(tc.events, ""); got != tc.want {
+			if got := JournaledTerminalFault(tc.events, ""); got != tc.want {
 				t.Fatalf("class = %q, want %q", got, tc.want)
 			}
 		})
@@ -247,7 +249,7 @@ func TestGateInfraBudgetEscalationIsAnInfraTerminal(t *testing.T) {
 	if failedCalls != 0 || len(notified) != 1 || notified[0] != journal.PhaseEscalated {
 		t.Fatalf("Failed calls = %d, NotifyTerminal phases = %v; want the escalated terminal notifier only", failedCalls, notified)
 	}
-	if class := JournaledTerminalFaultClass(readRunEvents(t, runsDir, runID), ""); class != telemetry.ErrorClassInfra {
-		t.Fatalf("terminal class = %q, want %q", class, telemetry.ErrorClassInfra)
+	if class := JournaledTerminalFault(readRunEvents(t, runsDir, runID), ""); class != TerminalFaultItemInfrastructure {
+		t.Fatalf("terminal class = %q, want %q", class, TerminalFaultItemInfrastructure)
 	}
 }

@@ -253,8 +253,9 @@ func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
 // on the same item, applies goobers:needs-human and removes goobers:ready so
 // the retry loop stops. The threshold is counted via a single editable
 // failure-streak comment on the issue (one comment, updated in place, instead
-// of one per run). Infrastructure-classified terminals count on a separate
-// streak with its own comment and InfraFailureStreakThreshold (#5638).
+// of one per run). A failed terminal never counts on the separate
+// infrastructure streak: that streak is for item-correlated infrastructure,
+// which only an escalated or aborted terminal's journal can show (#5638).
 //
 // Like Blocked, the handler runs before FinalizeTerminal releases the run's
 // claims, so it resolves the driving item(s) from the claim ledger by run id.
@@ -264,23 +265,23 @@ func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
 func (p *Policy) Failed(ctx context.Context, o runner.FailedOutcome) error {
 	ctx = p.terminalHandlerAttributionContext(ctx, o.RunID, o.Stage)
 	// #3361/#3364: an infra-fault terminal (credential materialization, git,
-	// network, lock contention) is weather, not evidence about the item — it
-	// never accumulates genuine/work strikes. It counts on the separate,
-	// higher-threshold infrastructure streak instead (#5638), so weather alone
-	// cannot park an item at the work rate while an environment that fails
-	// the same way every time still cannot retry forever. Item-judgment
-	// terminals (a verified ISSUE_NOT_APPLICABLE refusal, #3363) are not
-	// charged at all. Timeout still counts as work: a recurring harness
-	// session timeout is this circuit breaker's motivating case (#1054), and
-	// only the runner's explicit infrastructure classification (FaultClass,
-	// #5638) moves a terminal off the work streak.
+	// network, lock contention, a harness that never gave the agent a turn) is
+	// weather, not evidence about the item — it must not accumulate strikes
+	// that eventually park the item goobers:needs-human, on either streak.
+	// The item returns to the pool untouched and the scheduler's auth circuit
+	// / quota gates own the retry cadence. Item-judgment terminals (a
+	// verified ISSUE_NOT_APPLICABLE refusal, #3363) are likewise not charged.
+	// Timeout still counts as work: a recurring harness session timeout is
+	// this circuit breaker's motivating case (#1054), and only the runner's
+	// explicit infrastructure classification (FaultClass, #5638) moves a
+	// terminal off the work streak.
 	//
 	// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
 	// necessarily the repo the item this run actually claimed belongs
 	// to — the breaker resolves each claimed item's own recorded identity
 	// instead of trusting a single repo for all of them.
 	runURL, _ := p.State.RunURL(o.RunID)
-	return p.chargeClassified(ctx, o.RunID, o.Stage, runURL, failedOutcomeClass(o))
+	return p.chargeFailed(ctx, o.RunID, o.Stage, runURL, failedOutcomeClass(o))
 }
 
 // ExistingFix is runner.Config.ExistingFix (#3236): strips goobers:ready and
@@ -371,24 +372,39 @@ func (p *Policy) settleCompleted(ctx context.Context, runID, finalState, runURL 
 }
 
 // chargeTerminal is the escalated/aborted arm of the breaker. Like Failed, it
-// honors the classification the run already carries (#5638): an escalated or
-// aborted terminal the journal attributes to infrastructure — a gate that
-// exhausted its infrastructure repass budget, or a watchdog expiry or stall
-// that interrupted an infrastructure retry — is charged to the infrastructure
-// streak, never to the genuine/work streak. Before this, these terminals were
-// charged as work with no classification at all, so a local-ci timeout the
-// gate had judged infra still posted a genuine/work-failure comment when the
-// run then expired.
+// honors the classification the run already carries (#5638), which before
+// this was not consulted at all, so a local-ci timeout the gate had judged
+// infra still posted a genuine/work-failure comment when the run then expired.
+//
+//   - Item infrastructure — a gate that exhausted its infrastructure repass
+//     budget, or a watchdog expiry or stall that interrupted the gate's
+//     infrastructure retry of the item's own validation — is charged to the
+//     separate infrastructure streak, never to the genuine/work streak.
+//   - Substrate infrastructure — an expiry or stall during a dispatch or
+//     evaluator infrastructure retry, or an engine workflow the daemon had to
+//     terminate — is not about the item and charges neither streak.
 //
 // A journal that cannot be read leaves the terminal unclassified and charged
 // as work, as before; a read failure other than absence is reported with the
 // breaker's errors.
 func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL string) error {
-	class, readErr := p.journaledTerminalClass(runID)
-	return errors.Join(readErr, p.chargeClassified(ctx, runID, finalState, runURL, class))
+	fault, readErr := p.journaledTerminalFault(runID)
+	var err error
+	switch fault {
+	case runner.TerminalFaultItemInfrastructure:
+		err = errors.Join(
+			p.State.VoidRemediationCharge(ctx, p.Poster, runID),
+			p.applyInfraCircuitBreaker(ctx, runID, finalState, runURL),
+		)
+	case runner.TerminalFaultSubstrate:
+		err = p.State.VoidRemediationCharge(ctx, p.Poster, runID)
+	default:
+		err = p.applyCircuitBreaker(ctx, runID, finalState, runURL)
+	}
+	return errors.Join(readErr, err)
 }
 
-func (p *Policy) journaledTerminalClass(runID string) (telemetry.ErrorClass, error) {
+func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, error) {
 	reader, err := journal.OpenReadOnly(filepath.Join(p.RunsDir, runID))
 	var events []journal.Event
 	if err == nil {
@@ -410,33 +426,30 @@ func (p *Policy) journaledTerminalClass(runID string) (telemetry.ErrorClass, err
 			err = fmt.Errorf("read engine interruption for run %q: %w", runID, ierr)
 		}
 	}
-	return runner.JournaledTerminalFaultClass(events, interruption), err
+	return runner.JournaledTerminalFault(events, interruption), err
 }
 
-// chargeClassified charges one terminal by its class. It is the single
-// decision every terminal phase the breaker counts goes through, so failed,
-// escalated and aborted terminals cannot disagree about the same class:
+// chargeFailed charges a failed terminal by its class:
 //
 //   - item judgment (#3363) is a correct conclusion about the item and is not
 //     charged at all;
-//   - an infrastructure fault (#3361) is not evidence about the item, so it is
-//     kept off the genuine/work streak and charged to the separate
-//     infrastructure streak, which parks only at InfraFailureStreakThreshold
-//     and says so accurately (#5638). It also refunds a pr-remediation cycle
-//     this run charged but never had evaluated (#5588/#5598);
+//   - an infrastructure fault on a failed terminal (#3361, #5638) — the
+//     credential, git, network or lock substrate, a dispatch that exhausted
+//     its infrastructure budget, a harness that never gave the agent a turn —
+//     is not about the item, so it charges neither streak. It refunds a
+//     pr-remediation cycle this run charged but never had evaluated
+//     (#5588/#5598). This is #5638's original complaint: a harness bug must
+//     never park good issues;
 //   - everything else is a genuine/work terminal. A bare session timeout is
 //     one: only an explicit infrastructure classification moves a timeout
 //     off the work streak, so a recurring harness timeout still parks at the
 //     work threshold (#1054).
-func (p *Policy) chargeClassified(ctx context.Context, runID, stage, runURL string, class telemetry.ErrorClass) error {
+func (p *Policy) chargeFailed(ctx context.Context, runID, stage, runURL string, class telemetry.ErrorClass) error {
 	switch {
 	case class == telemetry.ErrorClassItemJudgment:
 		return nil
 	case class.InfraFault():
-		return errors.Join(
-			p.State.VoidRemediationCharge(ctx, p.Poster, runID),
-			p.applyInfraCircuitBreaker(ctx, runID, stage, runURL),
-		)
+		return p.State.VoidRemediationCharge(ctx, p.Poster, runID)
 	default:
 		return p.applyCircuitBreaker(ctx, runID, stage, runURL)
 	}

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"go.temporal.io/sdk/temporal"
@@ -502,13 +501,8 @@ func TestEngineInfrastructureTerminalDoesNotChargeFailureStreak(t *testing.T) {
 	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		hooks.fireFailed(context.Background(), engineTerminalOutcome{RunID: runID, Phase: journal.PhaseFailed, Err: cause})
 	}
-	// #5638: infrastructure terminals count only on the separate, higher
-	// threshold infrastructure streak — never as genuine/work failures, and
-	// no park below that threshold.
-	for _, call := range fake.calls {
-		if strings.Contains(call.Comment, "genuine/work failure") || len(call.AddLabels) != 0 {
-			t.Fatalf("infrastructure terminal charged the work streak or parked: %+v", fake.calls)
-		}
+	if len(fake.calls) != 0 {
+		t.Fatalf("infrastructure terminal charged failure streak: %+v", fake.calls)
 	}
 	result := engineStartResult(engine.RunResult{}, journal.PhaseFailed, cause)
 	if result.FailureCode != telemetry.ErrCodeInfraFailure {
