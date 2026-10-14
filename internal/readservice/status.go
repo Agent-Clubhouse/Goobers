@@ -549,42 +549,81 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 				)
 			}
 		}
-		active := ledger.ForRunAll(runs[i].ID)
-		history := ledger.HistoryForRun(runs[i].ID)
-		switch {
-		case len(active) > 0:
-			entry := active[0]
-			expires := entry.ExpiresAt
-			runs[i].Operator.Claim.ExpiresAt = &expires
-			if entry.ExpiresAt.After(now) {
-				runs[i].Operator.Claim.LeaseStatus = "active"
-			} else {
-				runs[i].Operator.Claim.LeaseStatus = "expired"
-			}
-			if runs[i].Operator.Issue == nil {
-				runs[i].Operator.Issue = &OperatorIssue{Number: entry.ItemID}
-			}
-		case len(history) > 0:
-			runs[i].Operator.Claim.LeaseStatus = "released"
-		}
-		s.verifyProviderClaimMarker(ctx, &runs[i])
+		claimItemID := projectClaimLease(&runs[i], ledger.ForRunAll(runs[i].ID), ledger.HistoryForRun(runs[i].ID), now)
+		s.verifyProviderClaimMarker(ctx, &runs[i], claimItemID)
 	}
 	return nil
 }
 
+// projectClaimLease records the run's lease status and returns the item ID
+// the lease names: the live (or expired) lease, else the most recently
+// released one, else "" when the run never held a claim.
+func projectClaimLease(run *RunSummary, active, history []localscheduler.ClaimEntry, now time.Time) string {
+	if len(active) > 0 {
+		entry := active[0]
+		expires := entry.ExpiresAt
+		run.Operator.Claim.ExpiresAt = &expires
+		if entry.ExpiresAt.After(now) {
+			run.Operator.Claim.LeaseStatus = "active"
+		} else {
+			run.Operator.Claim.LeaseStatus = "expired"
+		}
+		if run.Operator.Issue == nil {
+			run.Operator.Issue = &OperatorIssue{Number: entry.ItemID}
+		}
+		return entry.ItemID
+	}
+	if len(history) == 0 {
+		return ""
+	}
+	run.Operator.Claim.LeaseStatus = "released"
+	latest := history[0]
+	for _, entry := range history[1:] {
+		if claimEntryEndedAt(entry).After(claimEntryEndedAt(latest)) {
+			latest = entry
+		}
+	}
+	return latest.ItemID
+}
+
+// claimEntryEndedAt orders released claim history: the release time when
+// recorded, else the latest grant.
+func claimEntryEndedAt(entry localscheduler.ClaimEntry) time.Time {
+	if entry.ReleasedAt != nil {
+		return *entry.ReleasedAt
+	}
+	return entry.LastGrantedAt()
+}
+
 // verifyProviderClaimMarker compares a run's claim lease with the provider's
-// claim marker on the linked work item. A pull-request claim ("pr/<n>", the
-// merge-review / pr-remediation lease) has no provider claim marker by
-// contract — PR leases live in the local ledger only — and its key is not a
-// work-item id, so it is reported as not-applicable without a provider
-// lookup. Resolving it through the work-item API failed on every provider
-// (ADO rejects the non-numeric id; GitHub 404s) and surfaced as a spurious
-// "claim marker verification unavailable" diagnostic (#6798).
-func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary) {
-	if run.Operator.Issue == nil || run.Operator.Issue.Number == "" {
+// claim marker on the item the lease names (claimItemID), falling back to the
+// run's linked issue only when the run never held a lease.
+//
+// The lease, not the display issue, decides what is verified: a merge-review
+// run holding "pr/536" can carry a real linked-issue number from its own
+// post-merge ref.touched events, and comparing the PR lease against that
+// issue's claimed label manufactured drift blockers.
+//
+// A pull-request claim ("pr/<n>", the merge-review / pr-remediation lease)
+// has no provider claim marker by contract — PR leases live in the local
+// ledger only — and its key is not a work-item id, so it is reported as
+// not-applicable without a provider lookup. Resolving it through the
+// work-item API failed on every provider (ADO rejects the non-numeric id;
+// GitHub 404s) and surfaced as a spurious "claim marker verification
+// unavailable" diagnostic (#6798).
+func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary, claimItemID string) {
+	issueNumber := ""
+	if run.Operator.Issue != nil {
+		issueNumber = run.Operator.Issue.Number
+	}
+	itemID := claimItemID
+	if itemID == "" {
+		itemID = issueNumber
+	}
+	if itemID == "" {
 		return
 	}
-	if localscheduler.IsPullRequestItemID(run.Operator.Issue.Number) {
+	if localscheduler.IsPullRequestItemID(itemID) {
 		run.Operator.Claim.ProviderMarker = "not-applicable"
 		return
 	}
@@ -594,7 +633,7 @@ func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary) 
 			run.Phase != journal.PhaseEscalated) {
 		return
 	}
-	item, err := s.sources.WorkItemLookup(ctx, run.Gaggle, run.Operator.Issue.Number)
+	item, err := s.sources.WorkItemLookup(ctx, run.Gaggle, itemID)
 	if err != nil {
 		limitation := "provider work item lookup unavailable: " + err.Error()
 		if run.Phase == journal.PhaseRunning {
@@ -609,10 +648,13 @@ func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary) 
 		run.Operator.DiagnosticsLimitations = append(run.Operator.DiagnosticsLimitations, limitation)
 		return
 	}
-	if run.Operator.Issue.Title == "" {
-		run.Operator.Issue.Title = item.Title
+	// Decorate the displayed issue only when it is the item just read.
+	if issueNumber == itemID {
+		if run.Operator.Issue.Title == "" {
+			run.Operator.Issue.Title = item.Title
+		}
+		run.Operator.Issue.Labels = append([]string(nil), item.Labels...)
 	}
-	run.Operator.Issue.Labels = append([]string(nil), item.Labels...)
 	if run.Phase != journal.PhaseRunning {
 		return
 	}
