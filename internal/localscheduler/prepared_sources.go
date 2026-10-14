@@ -14,6 +14,9 @@ import (
 
 // Validate checks the closed source provenance retained by the host.
 func (source SourceTrigger) Validate() error {
+	if err := source.validateScheduleWindow(); err != nil {
+		return err
+	}
 	if err := source.validateScheduleOrdinal(); err != nil {
 		return err
 	}
@@ -83,8 +86,13 @@ func (s *Scheduler) dispatchPreparedSource(executionCtx context.Context, entry W
 		if len(entry.Schedules) == 0 || len(current.Schedules) == 0 {
 			return "", errors.New("localscheduler: queued schedule no longer configured")
 		}
-		indexes = dueScheduleIndexes(entry.Schedules, source.ScheduledFrom, source.ScheduledAt)
-		reason = fireReason(Tick(TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: source.ScheduledFrom}, source.ScheduledAt), journal.TriggerSchedule)
+		window, err := source.scheduleEvaluation(entry.Schedules)
+		if err != nil {
+			return "", err
+		}
+		indexes = window.Indexes
+		tick := window.Tick
+		reason = fireReason(tick, journal.TriggerSchedule)
 		if entry.PollFallbackCause != "" {
 			reason = "polling fallback: " + entry.PollFallbackCause + "; " + reason
 		}
