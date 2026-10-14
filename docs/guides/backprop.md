@@ -20,14 +20,17 @@ back runs. The contract and its limits are specified in the
 
 ## Preview status
 
-Backprop is a **preview** feature (`workflow.spec.backprop.enabled` and
-`workflow.spec.backprop.version` in the [feature matrix](../feature-matrix.md)).
+Backprop is a **preview** feature (`workflow.spec.backprop.enabled`,
+`workflow.spec.backprop.version`, and `workflow.spec.backprop.granularity` in
+the [feature matrix](../feature-matrix.md)).
 Today:
 
 - Enrollment is **per workflow** only. There is no gaggle-wide switch and no
   shadow mode over unenrolled workflows yet.
-- Attribution is computed **once, at run end**. There are no per-stage
-  checkpoints.
+- Attribution is computed **once, at run end** by default. Opting into
+  `granularity: stage` also writes read-only per-stage checkpoints (see
+  [Per-stage checkpoints](#per-stage-checkpoints)); stage records do not yet
+  inform later stages, and the portal does not show them.
 - Learning uses the run journal plus any ground-truth labels you record by
   hand with `goobers telemetry label` (see
   [Label run outcomes](#label-run-outcomes-ground-truth)). Automatic label
@@ -129,6 +132,66 @@ fields are at `attribution.attribution.contributions` and
 `attribution.attribution.causes`.
 
 `goobers trace --api=<url>` (a remote trace) does not include attribution.
+
+## Per-stage checkpoints
+
+By default (`granularity: run`, or omitted) attribution happens only at run
+end. To also checkpoint after every stage, opt in (preview):
+
+```yaml
+spec:
+  backprop:
+    enabled: true
+    version: v1
+    granularity: stage
+```
+
+While the run is still going, the daemon writes `attribution-stages.json` beside
+the run journal, with one record per finished stage attempt. A record holds:
+
+- the stage, attempt, branch, and terminal status;
+- the journal range it covers (`fromSequence`..`throughSequence`), a
+  `segmentDigest` of those events, and a `recordDigest` of the record itself;
+- the attempt's inputs (input snapshots and consumed artifacts), outputs,
+  declared result artifacts, and gate verdicts;
+- **provisional** contributions, causes, and evidence for that stage, computed
+  over the journal so far. The run outcome is not known yet, so these values are
+  hints only.
+
+Each record's journal segment is also saved under `attribution-segments/`,
+named by its `segmentDigest`. For stage-granular runs this roughly doubles the
+on-disk size of the journal.
+
+Checkpoints are best effort, bounded, and asynchronous. The daemon queues them
+off the stage-transition path, and a failed checkpoint is logged
+(`backprop_stage_checkpoint_failed`) without ever blocking or failing a stage.
+Once the run finishes, no more checkpoints are written until it is resumed or
+rerun. Checkpoints and the
+end-of-run record are published under one per-run lock (`attribution.lock`), so
+a checkpoint never lands after `attribution.json` was composed.
+
+At run end, `attribution.json` is composed from the saved stage segments plus
+any journal events that came after the last checkpoint. Its `stageComposition`
+field gives the number of checkpoints used. A conformance test guarantees that
+the composed record equals the record from a run-end-only analysis of the same
+journal. Before composing, Goobers verifies the checkpoints against this run's
+journal (run ID, ranges, digests, and each record rebuilt from the journal,
+provisional attribution included) and checks each saved segment
+against its digest. If anything fails verification, the whole journal is
+analyzed instead, and `stageComposition.error` says why.
+
+`goobers trace --summary` prints one line per checkpoint, and
+`goobers trace --json` includes the records under `stageAttribution`. Trace
+first verifies the checkpoints against the journal; if they do not verify, it
+prints `backprop stages: unverified (<reason>)` (`stageAttributionError` in
+JSON) instead of the records:
+
+```text
+backprop: complete (v1)
+backprop stages: 2 checkpoint(s)
+  plan#1 success (seq 1-6)
+  implement#1 failure (seq 7-12)
+```
 
 ## Read cohort attribution and fault-audit findings
 

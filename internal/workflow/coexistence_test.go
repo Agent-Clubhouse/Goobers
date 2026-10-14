@@ -150,6 +150,7 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 func TestBackpropFeatureRegistryReportsDSL30And31(t *testing.T) {
 	for _, id := range []FeatureID{
 		"workflow.spec.backprop.enabled",
+		"workflow.spec.backprop.granularity",
 		"workflow.spec.backprop.version",
 	} {
 		feature, ok := LookupFeature(id)

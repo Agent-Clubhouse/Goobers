@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	iofs "io/fs"
+	"os"
 	"strings"
 	"time"
 
@@ -210,7 +211,7 @@ func runTraceWithFactories(
 		transcripts = nil
 	}
 	now := time.Now()
-	recoveryState, attribution := traceRootEnrichment(ctx, endpoint, l, runID, now)
+	recoveryState, backprop := traceRootEnrichment(ctx, endpoint, l, runID, now)
 	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	verdicts := loadVerdictViews(ctx, reads, runID, ledger.Events)
@@ -225,21 +226,21 @@ func runTraceWithFactories(
 	}
 	if *jsonOutput {
 		result := traceJSONResult{
-			Identity:      identity,
-			Phase:         detail.Phase,
-			State:         state,
-			Repasses:      repasses,
-			Timeline:      timeline,
-			TerminalCause: terminal,
-			Escalation:    escalation,
-			Outcome:       detail.Outcome,
-			Events:        traceJSONEvents(ledger.Events),
-			Spans:         spans,
-			Verdicts:      verdicts,
-			Attribution:   attribution,
-			Recovery:      recoveryState,
-			AgentProgress: agentProgress,
-			Lineage:       detail.Lineage,
+			Identity:          identity,
+			Phase:             detail.Phase,
+			State:             state,
+			Repasses:          repasses,
+			Timeline:          timeline,
+			TerminalCause:     terminal,
+			Escalation:        escalation,
+			Outcome:           detail.Outcome,
+			Events:            traceJSONEvents(ledger.Events),
+			Spans:             spans,
+			Verdicts:          verdicts,
+			traceBackpropJSON: backprop.json(),
+			Recovery:          recoveryState,
+			AgentProgress:     agentProgress,
+			Lineage:           detail.Lineage,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode trace: %v\n", err)
@@ -252,7 +253,7 @@ func runTraceWithFactories(
 		return 0
 	}
 	if *summary {
-		printTraceSummary(stdout, detail, state, repasses, now, attribution, recoveryState, verdicts)
+		printTraceSummary(stdout, detail, state, repasses, now, backprop, recoveryState, verdicts)
 		return 0
 	}
 	ciFailures, err := traceCIFailures(ctx, reads, runID, ledger.Events)
@@ -298,9 +299,9 @@ func runTraceWithFactories(
 // instance root. A remote trace has no instance root: `l` is the local [path],
 // not the daemon's root, so reading it would mix another instance's records
 // into this run. Remote traces get neither (see remoteTraceOmissionNote).
-func traceRootEnrichment(ctx context.Context, endpoint string, l instance.Layout, runID string, now time.Time) (*recoveryView, *creditgraph.RunRecord) {
+func traceRootEnrichment(ctx context.Context, endpoint string, l instance.Layout, runID string, now time.Time) (*recoveryView, traceBackprop) {
 	if endpoint != "" {
-		return nil, nil
+		return nil, traceBackprop{}
 	}
 	return runRecoveryView(ctx, l, runID, now), loadTraceAttribution(l, runID)
 }
@@ -504,25 +505,62 @@ type traceJSONResult struct {
 	Spans         []rollup.SpanSummary               `json:"spans"`
 	Verdicts      []verdictView                      `json:"verdicts"`
 	AgentProgress []readservice.AgentProgressSummary `json:"agentProgress,omitempty"`
-	Attribution   *creditgraph.RunRecord             `json:"attribution,omitempty"`
-	Lineage       *readservice.RunLineage            `json:"lineage,omitempty"`
+	traceBackpropJSON
+	Lineage *readservice.RunLineage `json:"lineage,omitempty"`
 }
 
-func loadTraceAttribution(layout instance.Layout, runID string) *creditgraph.RunRecord {
+// traceBackprop is a run's Backprop attribution as trace renders it: the
+// end-of-run record and, for stage-granular runs, its stage checkpoints.
+type traceBackprop struct {
+	record      *creditgraph.RunRecord
+	stages      *creditgraph.StageRecordSet
+	stagesError string
+}
+
+// traceBackpropJSON is the Backprop part of trace's JSON output.
+type traceBackpropJSON struct {
+	Attribution *creditgraph.RunRecord      `json:"attribution,omitempty"`
+	Stages      *creditgraph.StageRecordSet `json:"stageAttribution,omitempty"`
+	StagesError string                      `json:"stageAttributionError,omitempty"`
+}
+
+func (b traceBackprop) json() traceBackpropJSON {
+	return traceBackpropJSON{Attribution: b.record, Stages: b.stages, StagesError: b.stagesError}
+}
+
+func loadTraceAttribution(layout instance.Layout, runID string) traceBackprop {
 	runDir, err := layout.FindRunDir(runID)
 	if err != nil {
-		return nil
+		return traceBackprop{}
 	}
-	record, err := creditgraph.ReadRunRecord(runDir)
-	if err != nil {
-		return nil
+	var backprop traceBackprop
+	if record, err := creditgraph.ReadRunRecord(runDir); err == nil {
+		backprop.record = &record
 	}
-	return &record
+	// Only checkpoints that verify against the journal are shown; an edited or
+	// stale set is reported, never presented as recorded fact.
+	stages, err := creditgraph.ReadVerifiedStageRecords(runDir)
+	switch {
+	case err == nil:
+		backprop.stages = &stages
+	case !errors.Is(err, os.ErrNotExist):
+		backprop.stagesError = err.Error()
+	}
+	return backprop
 }
 
-func printTraceAttributionSummary(stdout io.Writer, attribution *creditgraph.RunRecord) {
-	if attribution != nil {
+func printTraceAttributionSummary(stdout io.Writer, backprop traceBackprop) {
+	if attribution := backprop.record; attribution != nil {
 		pf(stdout, "backprop: %s (%s)\n", attribution.Status, attribution.ContractVersion)
+	}
+	if backprop.stages != nil {
+		pf(stdout, "backprop stages: %d checkpoint(s)\n", len(backprop.stages.Records))
+		for _, stage := range backprop.stages.Records {
+			pf(stdout, "  %s#%d %s (seq %d-%d)\n", stage.Stage, stage.Attempt, stage.Status, stage.FromSequence, stage.ThroughSequence)
+		}
+	}
+	if backprop.stagesError != "" {
+		pf(stdout, "backprop stages: unverified (%s)\n", backprop.stagesError)
 	}
 }
 
@@ -532,7 +570,7 @@ func printTraceSummary(
 	state *journal.State,
 	repasses int,
 	now time.Time,
-	attribution *creditgraph.RunRecord,
+	attribution traceBackprop,
 	recoveryState *recoveryView,
 	verdicts []verdictView,
 ) {

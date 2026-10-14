@@ -47,6 +47,69 @@ for every analysis status so incompatible runs cannot enter the same cohort.
 Runs containing more than one model/harness pair have no defined
 EffectiveVersion and are excluded from cohort aggregation.
 
+### Stage granularity (preview)
+
+`spec.backprop.granularity` is `run` (the default) or `stage`. With `stage`,
+the daemon's journal observer queues a checkpoint each time a journal append
+lands. A single bounded worker handles the queue (at most 1024 pending runs) and
+writes `attribution-stages.json`
+(`goobers.dev/backprop/stage-records/v1`). The file has one record for each
+`stage.finished`. Each record covers the contiguous journal segment since the
+previous record and carries the following:
+
+- its sequence range, a SHA-256 segment digest, and a digest of the record itself;
+- the inputs, outputs, artifacts, and gate verdicts of that stage attempt;
+- provisional contributions and causes for the attempt, filtered from a build
+  over the journal prefix.
+
+The checkpoint is read-only with respect to the run. The observer only enqueues
+work, never on the stage-transition path. A write, verify, or build failure is
+logged and dropped and never changes a phase or blocks a transition. A pass
+reads only the journal until a `stage.finished` lies past the last checkpoint;
+span content is read, and existing records verified, only when there is a new
+stage to record. While
+the latest `run.finished` stands, no more records are written. A `run.resumed`,
+`gate.overridden` or `stage.rerun.requested` after it reopens the run, and
+checkpointing continues from the last record.
+
+Each record's segment is persisted as JSON Lines under `attribution-segments/`,
+content-addressed by its segment digest. The segment is written before the
+record set that references it.
+
+At terminalization `WriteRunRecord` first verifies the checkpoint set against
+the journal: the set's `runId` must equal the run's identity, and the records
+must tile the journal by position, sequence range, segment digest, record digest
+and a full rebuild of each record from its journal prefix, provisional
+attribution included, so an edited record is refused even with a recomputed
+digest. It then builds the analysis input from the persisted
+segments, not from the journal, followed by the journal tail that no checkpoint
+covers. Each persisted segment must match its digest and event count.
+
+Attribution is a global function of the whole graph: shares are normalized
+across stages, and edge weights depend on the final outcome. So composition
+works on the persisted evidence segments rather than summing provisional
+per-stage contributions. Because the segments tile the journal, the composed
+record is identical to the run-level analysis of the same journal.
+`TestStageComposedAttributionEqualsRunLevel` pins that property for full,
+lagging, and absent checkpoint sets.
+`TestStageCompositionConsumesPersistedSegments` pins two more things. First,
+the checkpointed prefix is rebuilt from the persisted segments alone. Second, a
+missing or altered segment refuses composition even when the journal is intact.
+When a checkpoint fails
+verification, the record falls back to the whole journal and discloses the
+reason in `stageComposition.error`, so the stage data never stands in for
+evidence that could not be verified. Re-deriving covers each record's
+status, inputs, outputs, artifacts, verdicts, contributions and causes. `goobers trace` shows only
+records that verify, including their persisted segments. A checkpoint
+pass publishes under a per-run file lock, `attribution.lock`, which
+`WriteRunRecord` also holds while it composes and writes `attribution.json`.
+Under the lock the pass re-checks for `run.finished` and drops its write if the
+run has finished. Since `run.finished` is durable before the record is
+composed, checkpoints either land before composition reads them or are never
+written, so a late checkpoint cannot contradict the composed end-of-run record.
+`TestStageCheckpointPublicationIsAtomicWithTerminalization` pins both orders. Feeding stage records forward into later
+stages is still out of scope.
+
 ## Cross-workflow fault audit
 
 The read-only Backprop fault auditor consumes only persisted records from
