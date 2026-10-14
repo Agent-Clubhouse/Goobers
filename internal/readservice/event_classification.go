@@ -35,6 +35,8 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventTriggerFired,
 		journal.EventParallelStarted,
 		journal.EventParallelFinished,
+		journal.EventMapStarted,
+		journal.EventMapFinished,
 		journal.EventBranchStarted,
 		journal.EventBranchFinished:
 		return RunEventTransition, true

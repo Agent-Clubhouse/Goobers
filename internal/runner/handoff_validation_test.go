@@ -515,7 +515,7 @@ func TestInvalidHandoffReplayPrunesBranchPointers(t *testing.T) {
 	if got := countStageArtifactPointers(reconstructPointers(events, machine), "produce"); got != 0 {
 		t.Fatalf("reconstructed branch produce pointers = %d, want 0", got)
 	}
-	par, _ := pendingParallel(events, machine)
+	par, _, _ := pendingParallel(events, machine)
 	if par == nil {
 		t.Fatal("pendingParallel returned nil")
 	}

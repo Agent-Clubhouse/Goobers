@@ -232,13 +232,17 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 // subgraphs).
 // rerunParallelScope rebuilds the parallel a rerun target belongs to and
 // points the journal at the owning branch. A recorded selective visit is
-// verified first, and a rerun into a branch its frozen selection skipped is
-// refused: both are typed workflow_integrity failures.
+// verified first, a pending map visit is verified strictly against its
+// frozen roster, and a rerun into a branch its frozen selection skipped is
+// refused: all are typed workflow_integrity failures.
 func rerunParallelScope(jr *journal.Run, seedEvents []journal.Event, machine *workflow.Machine, stage string) (*parallelExec, int, error) {
 	if err := verifyRecordedSelections(seedEvents, machine); err != nil {
 		return nil, -1, err
 	}
-	activeParallel, parallelStart := pendingParallel(seedEvents, machine)
+	activeParallel, parallelStart, err := pendingParallel(seedEvents, machine)
+	if err != nil {
+		return nil, -1, fmt.Errorf("runner: rerun: %w", err)
+	}
 	if activeParallel == nil {
 		return nil, parallelStart, nil
 	}

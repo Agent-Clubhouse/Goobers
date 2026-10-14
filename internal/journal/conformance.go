@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/jcs"
 )
 
 // NormativeEvent is the cross-runner comparable projection of an Event: the
@@ -71,6 +72,13 @@ type NormativeEvent struct {
 	// every other event). Reasons and the producer visit are excluded.
 	Selection string
 
+	// Map item identity on branch lifecycle events, and the frozen roster on
+	// map.started (encodeMapRoster). Empty for static parallels, so their
+	// projection is unchanged.
+	MapItemIdentity string
+	MapItemDigest   string
+	MapRoster       string
+
 	// ExternalRef* project ExternalRef's normative identity (Provider, Kind,
 	// ID); URL is dropped. All empty when the source event has no ExternalRef.
 	ExternalRefProvider string
@@ -122,6 +130,9 @@ func projectNormative(e Event) NormativeEvent {
 		BranchStatus:      e.BranchStatus,
 		Completeness:      encodeCompleteness(e.Completeness),
 		Selection:         encodeSelection(e.Selection),
+		MapItemIdentity:   e.MapItemIdentity,
+		MapItemDigest:     e.MapItemDigest,
+		MapRoster:         encodeMapRoster(e.MapRoster),
 		Outputs:           encodeOutputs(e.Outputs),
 		WorkspaceRevision: encodeWorkspaceRevision(e.WorkspaceRevision),
 	}
@@ -205,7 +216,12 @@ func encodeCompleteness(record []BranchOutcome) string {
 	}
 	parts := make([]string, 0, len(record))
 	for _, outcome := range record {
-		parts = append(parts, fmt.Sprintf("%d:%s:%s:%d", outcome.Branch, outcome.Name, outcome.Status, outcome.Artifacts))
+		part := fmt.Sprintf("%d:%s:%s:%d", outcome.Branch, outcome.Name, outcome.Status, outcome.Artifacts)
+		if outcome.MapItemIdentity != "" || outcome.MapItemDigest != "" {
+			// Map entries only: a static record keeps its historical encoding.
+			part += fmt.Sprintf(":%s:%s", outcome.MapItemIdentity, outcome.MapItemDigest)
+		}
+		parts = append(parts, part)
 	}
 	return strings.Join(parts, ",")
 }
@@ -221,6 +237,50 @@ func encodeSelection(selection *ParallelSelection) string {
 	return fmt.Sprintf("%s.%s@%d:%s@%s:[%s]",
 		selection.Source.Task, selection.Source.Slot, selection.Source.Attempt,
 		selection.SourceDigest, selection.Integrity, strings.Join(selection.Selected, ","))
+}
+
+// encodeMapRoster flattens map.started's frozen roster into a stable string:
+// every normative field, with the source artifact's storage metadata
+// (path, size, media type) dropped exactly as Ref's is, and the producer visit
+// (a runner-local journal sequence) dropped as a selection's is. Items keep their
+// normalized identity order, which is what assigns branch ids, and each item
+// is re-canonicalized so the projection compares values, not spellings.
+func encodeMapRoster(roster *MapRoster) string {
+	if roster == nil {
+		return ""
+	}
+	type item struct {
+		Identity string          `json:"identity"`
+		Digest   string          `json:"digest"`
+		Item     json.RawMessage `json:"item"`
+	}
+	view := struct {
+		Task, Slot, Digest      string
+		Attempt                 int
+		Integrity               apiv1.Integrity
+		FailurePolicy           apiv1.BranchFailurePolicy
+		ItemTimeout, MaxWorkers int32
+		Items                   []item
+	}{
+		Task: roster.Source.Task, Slot: roster.Source.Slot, Digest: roster.Source.Digest,
+		Attempt: roster.Source.Attempt, Integrity: roster.Source.Integrity,
+		FailurePolicy: roster.FailurePolicy, ItemTimeout: roster.ItemTimeoutSeconds, MaxWorkers: roster.MaxConcurrent,
+		Items: make([]item, 0, len(roster.Items)),
+	}
+	for _, entry := range roster.Items {
+		canonical, err := jcs.Canonicalize(entry.Item)
+		if err != nil {
+			// Not canonicalizable: compare the recorded bytes as-is, so the
+			// difference still shows instead of collapsing to "".
+			canonical = entry.Item
+		}
+		view.Items = append(view.Items, item{Identity: entry.Identity, Digest: entry.Digest, Item: canonical})
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		return "unencodable"
+	}
+	return string(data)
 }
 
 // ConformanceBranches groups a normative view by branch id, preserving
@@ -262,6 +322,14 @@ func (ne NormativeEvent) String() string {
 	if ne.Selection != "" {
 		selection = "|selection=" + ne.Selection
 	}
+	// Map columns likewise render only on map events.
+	mapColumns := ""
+	if ne.MapItemIdentity != "" || ne.MapItemDigest != "" {
+		mapColumns += "|mapItem=" + ne.MapItemIdentity + "@" + ne.MapItemDigest
+	}
+	if ne.MapRoster != "" {
+		mapColumns += "|mapRoster=" + ne.MapRoster
+	}
 	return fmt.Sprintf(
 		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|action=%s|decision=%s|rationale=%s|addendum=%s|gate=%s|verdict=%s|target=%s|complete=%t|escalated=%t|status=%s|disposition=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s|workspaceRevision=%s%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
@@ -269,7 +337,7 @@ func (ne NormativeEvent) String() string {
 		ne.Gate, ne.Verdict, ne.Target, ne.Complete, ne.Escalated, ne.Status, ne.Disposition,
 		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.RefIntegrity, ne.Artifacts,
 		ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
-		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs, ne.WorkspaceRevision, selection,
+		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs, ne.WorkspaceRevision, selection+mapColumns,
 	)
 }
 
