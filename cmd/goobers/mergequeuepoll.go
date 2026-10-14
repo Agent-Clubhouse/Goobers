@@ -40,8 +40,17 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"queue-result.json). An eviction or timeout applies\n" +
 	"goobers:needs-remediation plus an explanatory comment before reporting\n" +
 	"its queueOutcome — a failure to apply that trail is a stage failure,\n" +
-	"not a swallowed warning. A live goobers:no-merge-review opt-out dequeues\n" +
-	"the pull request and reports skipped without remediation. Exit codes:\n" +
+	"not a swallowed warning. A live goobers:no-merge-review or run-aborted\n" +
+	"opt-out, or a route to remediation that removed goobers:merge-ready,\n" +
+	"withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the\n" +
+	"armed auto-complete) and reports skipped without remediation. Each poll\n" +
+	"of a still-queued pull request also runs merge-pr's unanswered-human-\n" +
+	"feedback check (#6134; blockUnansweredFeedback, identityMode and\n" +
+	"excludeAuthors as on merge-pr, default on): open human review feedback\n" +
+	"that no Goobers response has acknowledged withdraws the pull request,\n" +
+	"removes goobers:merge-ready and routes it to remediation with the\n" +
+	"unanswered-human-feedback reason. A feedback read that fails keeps it\n" +
+	"queued and is retried on the next poll. Exit codes:\n" +
 	"0 = evaluated (merged, evicted, skipped, or still-pending-timeout —\n" +
 	"see the result file's queueOutcome field),\n" +
 	"1 = business error (missing capability/config,\n" +
@@ -125,7 +134,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	return runMergeQueuePollCore(repo, githubMergeQueuePollTransport{provider: provider, root: root}, stdout, stderr)
+	return runMergeQueuePollCore(repo, githubMergeQueuePollTransport{provider: provider, root: root, repo: repo}, stdout, stderr)
 }
 
 // mergeQueuePollTransport isolates forge-native queue behavior. The core owns
@@ -139,11 +148,15 @@ type mergeQueuePollTransport interface {
 	RecordTimeout(providers.RepositoryRef, string) error
 	ConfirmAbsentEntry() bool
 	SupportsOptOutDequeue() bool
+	// Withdrawal decides each poll whether the watched PR is withdrawn from
+	// landing, unanswered human feedback included (#6134).
+	Withdrawal() queueWithdrawal
 }
 
 type githubMergeQueuePollTransport struct {
 	provider *providers.GitHubProvider
 	root     string
+	repo     providers.RepositoryRef
 }
 
 func (t githubMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
@@ -174,6 +187,10 @@ func (t githubMergeQueuePollTransport) RecordTimeout(repo providers.RepositoryRe
 
 func (githubMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return true }
 func (githubMergeQueuePollTransport) SupportsOptOutDequeue() bool { return true }
+
+func (t githubMergeQueuePollTransport) Withdrawal() queueWithdrawal {
+	return queueWithdrawal{gate: newMergeFeedbackGate(t.repo, t.provider, "", false), route: githubQueueFeedbackRoute}
+}
 
 func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePollTransport, stdout, stderr io.Writer) int {
 
@@ -217,6 +234,7 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 	// withdrawn names the label that withdrew the PR from landing ("" while
 	// it is still landing).
 	withdrawn := ""
+	withdrawal := transport.Withdrawal()
 	for attempt := 0; ; attempt++ {
 		result, pollErr := transport.Poll(ctx, repo, pullNumber)
 		if pollErr != nil && !providers.IsTransientError(pollErr) {
@@ -230,7 +248,7 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 			// now refuse. #6134: so must a PR pr-comment-watch routed to
 			// remediation for human feedback that arrived while it was queued.
 			if withdrawn == "" && transport.SupportsOptOutDequeue() {
-				withdrawn = mergeQueueWithdrawLabel(result.Labels)
+				withdrawn = withdrawal.reason(ctx, pullNumber, result, stderr)
 			}
 			if withdrawn != "" {
 				switch result.State {
@@ -240,16 +258,16 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 					entrySeen = true
 					absentStreak = 0
 					if err := transport.Dequeue(ctx, repo, pullNumber, result.PullRequestNodeID); err == nil {
-						return mergeQueuePollSkipped(pullNumber, withdrawn, resultFile, stdout, stderr)
+						return withdrawal.skipped(ctx, repo, pullNumber, withdrawn, resultFile, stdout, stderr)
 					} else {
 						pf(stderr, "warning: dequeue opted-out pull request #%s: %v; continuing to monitor and retry\n", pullNumber, err)
 					}
 				case providers.MergeQueueEntryEvicted:
-					return mergeQueuePollSkipped(pullNumber, withdrawn, resultFile, stdout, stderr)
+					return withdrawal.skipped(ctx, repo, pullNumber, withdrawn, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryAbsent:
 					absentStreak++
 					if (entrySeen || !time.Now().Before(graceUntil)) && absentStreak >= mergeQueueAbsenceConfirmPolls {
-						return mergeQueuePollSkipped(pullNumber, withdrawn, resultFile, stdout, stderr)
+						return withdrawal.skipped(ctx, repo, pullNumber, withdrawn, resultFile, stdout, stderr)
 					}
 					pf(stdout, "pr #%s opted out but its merge queue entry is not visible; waiting to dequeue or confirm absence\n", pullNumber)
 				}
@@ -581,7 +599,7 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		return 1
 	}
 	dispatcher := providers.NewDispatcher(adoProvider)
-	return runMergeQueuePollCore(repo, &adoMergeQueuePollTransport{provider: dispatcher, root: root, canceller: adoProvider, stdout: stdout}, stdout, stderr)
+	return runMergeQueuePollCore(repo, &adoMergeQueuePollTransport{provider: dispatcher, root: root, canceller: adoProvider, repo: repo, stdout: stdout}, stdout, stderr)
 }
 
 // adoMergeQueuePollTransport remembers whether the latest pending read was
@@ -592,6 +610,7 @@ type adoMergeQueuePollTransport struct {
 	provider      providers.MergeQueuePoller
 	root          string
 	canceller     adoAutoCompleteCanceller
+	repo          providers.RepositoryRef
 	stdout        io.Writer
 	awaitingHuman bool
 	// merged is the read that reported the pull request merged: its source
@@ -653,6 +672,15 @@ func (adoMergeQueuePollTransport) RecordTimeout(providers.RepositoryRef, string)
 
 func (adoMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return false }
 func (adoMergeQueuePollTransport) SupportsOptOutDequeue() bool { return true }
+
+func (t *adoMergeQueuePollTransport) Withdrawal() queueWithdrawal {
+	var provider *providers.ADOProvider
+	var gateProvider providers.Provider
+	if p, ok := t.canceller.(*providers.ADOProvider); ok && p != nil {
+		provider, gateProvider = p, p
+	}
+	return queueWithdrawal{gate: newMergeFeedbackGate(t.repo, gateProvider, "", false), route: adoQueueFeedbackRoute(provider)}
+}
 
 // mergeQueuePollMergedADO reports an ADO-completed pull request as merged. The
 // merged determination itself is the CORE land action and is written unchanged.

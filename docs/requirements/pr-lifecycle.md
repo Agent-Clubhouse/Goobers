@@ -390,24 +390,30 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   - Gitea reports no review-thread resolution, and a dismissed Gitea review keeps
     its state. So on Gitea every review comment counts until it is answered.
     This over-blocks; it never under-blocks.
-  - An armed landing can be withdrawn when feedback arrives after it was armed.
-    - `queue-watch` withdraws a PR it is watching that carries an opt-out label,
-      or that was routed to remediation off landing (`goobers:needs-remediation`
-      without `goobers:merge-ready`). On GitHub it dequeues the PR; on Azure
-      DevOps it cancels the auto-complete. A `needs-remediation` label next to
-      `merge-ready` (post-merge's overlap fan-out) is not a withdrawal.
+  - An armed landing is withdrawn when feedback arrives after it was armed.
+    - `queue-watch` runs the same check on every poll of a still-queued PR (a
+      GitHub merge-queue entry, or an armed Azure DevOps auto-complete). It
+      uses the same classifier, open-feedback set and `blockUnansweredFeedback`
+      knob, on by default. On unanswered human feedback it withdraws the PR
+      (GitHub: dequeue; ADO: cancel the auto-complete, confirmed by a re-read),
+      removes `goobers:merge-ready` and routes it to
+      `goobers:needs-remediation` with the `unanswered-human-feedback` reason.
+      This does not count toward demotion.
+    - A feedback read that fails on one poll keeps the PR queued and is
+      retried on the next. One failed read is not evidence of feedback, and
+      `merge-pr` already failed closed before arming.
+    - `queue-watch` also withdraws on an opt-out label, or on
+      `needs-remediation` without `merge-ready` (a feedback route). A
+      `needs-remediation` label next to `merge-ready` (post-merge's overlap
+      fan-out) is not a withdrawal.
     - With `blockUnansweredFeedback: "true"` and the `disarm-landing` policy
       action, `pr-comment-watch` scans `merge-ready` PRs by their open
-      feedback. On fresh human feedback it cancels an armed Azure DevOps
-      auto-complete, and only then removes `merge-ready` and routes the PR. A PR
-      that completed first is reported, not routed. This is opt-in because it
-      is a new mutation; by default landing PRs are skipped.
-    - Residuals:
-      - On GitHub, `pr-comment-watch` reads issue comments only.
-      - A GitHub queue can land in the window between the routing label and
-        queue-watch's next poll.
-      - A queue entry or auto-complete that outlives queue-watch's poll window
-        is withdrawn only by `pr-comment-watch` on Azure DevOps.
+      feedback, disarms an armed ADO auto-complete, and only then removes
+      `merge-ready` and routes the PR. This is opt-in because it is a new
+      mutation for that stage.
+    - Residual: an auto-complete still armed after `queue-watch`'s poll window
+      ends is uncovered unless `pr-comment-watch` is opted in. A GitHub queue
+      entry outliving that window is uncovered.
   - Feedback that cannot be read in full fails closed as
     `human-feedback-unverifiable`.
   - The check is on by default; `blockUnansweredFeedback: "false"` opts out for

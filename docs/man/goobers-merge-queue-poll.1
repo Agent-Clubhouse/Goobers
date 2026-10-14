@@ -17,8 +17,17 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
-the pull request and reports skipped without remediation. Exit codes:
+not a swallowed warning. A live goobers:no-merge-review or run-aborted
+opt-out, or a route to remediation that removed goobers:merge-ready,
+withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the
+armed auto-complete) and reports skipped without remediation. Each poll
+of a still-queued pull request also runs merge-pr's unanswered-human-
+feedback check (#6134; blockUnansweredFeedback, identityMode and
+excludeAuthors as on merge-pr, default on): open human review feedback
+that no Goobers response has acknowledged withdraws the pull request,
+removes goobers:merge-ready and routes it to remediation with the
+unanswered-human-feedback reason. A feedback read that fails keeps it
+queued and is retried on the next poll. Exit codes:
 0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
 see the result file's queueOutcome field),
 1 = business error (missing capability/config,

@@ -99,23 +99,37 @@ func (g mergeFeedbackGate) refuse(ctx context.Context, pullID string, reasons []
 }
 
 func (g mergeFeedbackGate) evaluate(ctx context.Context, pullID string) string {
+	unanswered, err := g.assess(ctx, pullID)
+	if err != nil {
+		return humanFeedbackUnverifiableReason(err)
+	}
+	return unanswered
+}
+
+// assess reads the feedback and returns the unanswered-human-feedback refusal,
+// "" when everything is answered, or the error that kept it from being read.
+// A disabled gate assesses nothing.
+func (g mergeFeedbackGate) assess(ctx context.Context, pullID string) (string, error) {
+	if g.disabled {
+		return "", nil
+	}
 	if g.err != nil {
-		return humanFeedbackUnverifiableReason(g.err)
+		return "", g.err
 	}
 	self, err := g.reader.identity(ctx)
 	if err != nil {
-		return humanFeedbackUnverifiableReason(fmt.Errorf("resolve the authenticated identity: %w", err))
+		return "", fmt.Errorf("resolve the authenticated identity: %w", err)
 	}
 	general, threads, err := g.reader.feedback(ctx, pullID)
 	if err != nil {
-		return humanFeedbackUnverifiableReason(err)
+		return "", err
 	}
 	classifier := newCommentClassifier(self, g.settings)
 	human, fresh, _ := latestUnaddressedHumanComment(openFeedbackComments(general, threads, classifier), classifier)
 	if !fresh {
-		return ""
+		return "", nil
 	}
-	return unansweredHumanFeedbackReason(human)
+	return unansweredHumanFeedbackReason(human), nil
 }
 
 // unansweredHumanFeedbackReason renders the refusal for comment, the newest
