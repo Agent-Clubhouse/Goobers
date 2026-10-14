@@ -10,6 +10,10 @@
 //	go run ./test/attributioneval -report=r.json
 //	go run ./test/attributioneval -update    # record a new baseline
 //	go run ./test/attributioneval -publish=<instance-root>
+//	go run ./test/attributioneval -import=<run-dir>  # case skeleton from a real run
+//
+// -import prints a case built from a real run's journal for a labeler to
+// complete; see importRun.
 //
 // -publish records the report's summary on a Goobers instance after the
 // baseline check passes: telemetry read surfaces (and so the portal) report it,
@@ -47,8 +51,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	reportPath := flags.String("report", "", "write the full JSON report to this path")
 	update := flags.Bool("update", false, "record this run's accuracy as the new baseline")
 	publishRoot := flags.String("publish", "", "publish the report summary to this Goobers instance root")
+	importDir := flags.String("import", "", "print an eval case skeleton built from this run directory")
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	if *importDir != "" {
+		return importCase(*importDir, stdout, stderr)
 	}
 	if *update && *publishRoot != "" {
 		_, _ = fmt.Fprintln(stderr, "attributioneval: -publish requires a baseline check and cannot be combined with -update")
@@ -90,6 +98,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	return 0
+}
+
+func importCase(runDir string, stdout, stderr io.Writer) int {
+	evalCase, err := importRun(runDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "attributioneval: import %s: %v\n", runDir, err)
+		return 1
+	}
+	data, err := json.MarshalIndent(evalCase, "", "  ")
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "attributioneval: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintln(stdout, string(data))
 	return 0
 }
 

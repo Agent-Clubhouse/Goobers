@@ -348,7 +348,16 @@ whether Backprop blamed the right thing. The attribution eval measures that.
 each carrying its journal and span content inline plus a label naming the
 responsible fault domain, workflow, stage, decisive step (graph node ID), and
 failure class. Label sources are `synthetic` (a failure injected at a known
-step), `human`, or `fix-marker`; v1 is synthetic only.
+step), `human`, or `fix-marker`. v1 holds 12 synthetic cases and 6 real failed
+runs from a dogfood instance, imported with their journals. A human or
+fix-marker label must carry `provenance`: the source run, `labeledBy`,
+`labeledAt` (a date), and `reason`, the fields the ground-truth label store
+(`goobers telemetry label`) records. A fix-marker label also names the fix
+commit and PR that resolved the failure in `reference`. The label store only
+says whether a run's attribution was correct, so the eval label adds the
+responsible domain, stage, step, and class. `go run ./test/attributioneval
+-import=<run-dir>` prints a case built from a run directory, with its
+provenance seeded from the run's label store, for a labeler to complete.
 
 `go run ./test/attributioneval` builds and attributes each case, takes the most
 confident cause, derives its fault domain with `creditgraph.CauseFaultDomain`
@@ -396,14 +405,17 @@ bins). The fault auditor
 derives its filing threshold from it: the upper bound of the highest populated
 calibration bin whose accuracy is below 0.8, else the lower bound of the lowest
 populated bin, never below the default 0.5 (used when nothing is published).
-v1 yields 0.6. Every audit report carries `filingThreshold` (confidence,
+When the bin that includes confidence 1 falls short, no confidence is safe:
+the threshold sets `noneFileable` and no finding is fileable. v1 yields 0.6.
+Every audit report carries `filingThreshold` (confidence, `noneFileable`,
 source, eval set) and each finding `fileable`; only fileable findings start
 the filing pass's report cooldown. A malformed published summary is an error,
-not a silent fallback to the default.
+not a silent fallback to the default. Every published score must lie in [0,1],
+each accuracy must be scored over every case, and every accuracy must match its
+correct and total counts.
 
 Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
-command, building cases from real journals with human and fix-marker labels,
-and counterfactual fault-injection generators.
+command and counterfactual fault-injection generators.
 
 ## Why
 

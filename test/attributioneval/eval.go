@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/journal"
@@ -95,6 +96,24 @@ type evalLabel struct {
 	Step     string                   `json:"step"`
 	Class    creditgraph.FailureClass `json:"class"`
 	MAST     mastCategory             `json:"mast"`
+	// Provenance records where a human or fix-marker label came from; it is
+	// required for those sources because their truth is not known by
+	// construction.
+	Provenance *labelProvenance `json:"provenance,omitempty"`
+}
+
+// labelProvenance ties a label on a real run to its source and its labeler.
+// LabeledBy, LabeledAt, and Reason mirror the ground-truth label store
+// (`goobers telemetry label`), which records whether a run's attribution was
+// correct; the eval label adds the responsible domain, stage, step, and class
+// that store does not hold. Reference names the fix that resolved a
+// fix-marker label's failure.
+type labelProvenance struct {
+	SourceRun string `json:"sourceRun"`
+	LabeledBy string `json:"labeledBy"`
+	LabeledAt string `json:"labeledAt"`
+	Reason    string `json:"reason"`
+	Reference string `json:"reference,omitempty"`
 }
 
 // prediction is what attribution blamed for one case: its most confident
@@ -245,6 +264,33 @@ func (label evalLabel) validate() error {
 	}
 	if label.Stage != "" && label.Workflow == "" {
 		return errors.New("a labeled stage requires its workflow")
+	}
+	return label.validateProvenance()
+}
+
+func (label evalLabel) validateProvenance() error {
+	if label.Source == labelSynthetic {
+		if label.Provenance != nil {
+			return errors.New("a synthetic label has no provenance")
+		}
+		return nil
+	}
+	provenance := label.Provenance
+	if provenance == nil {
+		return fmt.Errorf("a %s label requires provenance", label.Source)
+	}
+	for _, field := range []struct{ name, value string }{
+		{"sourceRun", provenance.SourceRun}, {"labeledBy", provenance.LabeledBy}, {"reason", provenance.Reason},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("label provenance %s is required", field.name)
+		}
+	}
+	if _, err := time.Parse(time.DateOnly, provenance.LabeledAt); err != nil {
+		return fmt.Errorf("label provenance labeledAt must be a date: %w", err)
+	}
+	if label.Source == labelFixMarker && strings.TrimSpace(provenance.Reference) == "" {
+		return errors.New("a fix-marker label requires the fix reference")
 	}
 	return nil
 }

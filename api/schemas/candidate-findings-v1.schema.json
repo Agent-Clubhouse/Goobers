@@ -425,7 +425,11 @@
               "type": "number",
               "minimum": 0,
               "maximum": 1,
-              "description": "Findings at or above this confidence are fileable."
+              "description": "Findings at or above this confidence are fileable unless noneFileable is set."
+            },
+            "noneFileable": {
+              "type": "boolean",
+              "description": "True when the eval's calibration fell short even in the bin that includes confidence 1, so no finding is fileable at any confidence."
             },
             "source": {
               "type": "string",

@@ -1,37 +1,37 @@
 {
   "schema": "goobers.dev/backprop/attribution-eval-baseline/v1",
   "evalSetVersion": "v1",
-  "evalSetDigest": "sha256:36785c0c716ff95c44289b03dd8df98869eb9150c1bc12dcc76f7c9810efcf08",
+  "evalSetDigest": "sha256:c2f91d30d73f558765895a4ac3e96693b80b78dc1a5636d07f2414ae37529193",
   "accuracy": [
     {
       "granularity": "domain",
       "correct": 8,
-      "total": 12,
-      "accuracy": 0.6667
+      "total": 18,
+      "accuracy": 0.4444
     },
     {
       "granularity": "workflow",
-      "correct": 12,
-      "total": 12,
+      "correct": 18,
+      "total": 18,
       "accuracy": 1
     },
     {
       "granularity": "stage",
-      "correct": 11,
-      "total": 12,
-      "accuracy": 0.9167
+      "correct": 17,
+      "total": 18,
+      "accuracy": 0.9444
     },
     {
       "granularity": "step",
-      "correct": 10,
-      "total": 12,
-      "accuracy": 0.8333
+      "correct": 16,
+      "total": 18,
+      "accuracy": 0.8889
     },
     {
       "granularity": "class",
       "correct": 9,
-      "total": 12,
-      "accuracy": 0.75
+      "total": 18,
+      "accuracy": 0.5
     }
   ]
 }

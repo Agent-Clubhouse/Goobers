@@ -332,7 +332,8 @@ Each finding also carries `fileable`: whether its `confidence` meets the
 report's `filingThreshold`. The threshold is 0.5 unless an attribution accuracy
 eval has been published to the instance (`go run ./test/attributioneval
 -publish=./instance` from a source checkout); then it is derived from the eval's
-measured calibration (`source: attribution-eval`) and the stats API also
+measured calibration (`source: attribution-eval`; `noneFileable` when even its
+most confident predictions missed the target precision) and the stats API also
 returns the eval summary as `attributionEval`, which the portal's Insight page
 shows as "Attribution accuracy". Only fileable findings start the
 `telemetry-query` report cooldown. See

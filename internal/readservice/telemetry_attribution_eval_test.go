@@ -14,7 +14,7 @@ import (
 )
 
 // imprecisePublishedEval is a calibration whose only populated bin (0.8-1)
-// measured 1/5 correct, so the derived filing threshold is 1.
+// measured 1/5 correct, so no confidence is fileable.
 func imprecisePublishedEval() creditgraph.AttributionEvalSummary {
 	return creditgraph.AttributionEvalSummary{
 		Schema: creditgraph.AttributionEvalSummarySchemaVersion, EvalSetVersion: "v1", EvalSetDigest: "sha256:abc",
@@ -54,7 +54,7 @@ func TestPublishedAttributionEvalSetsFilingThresholdAndCooldown(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := creditgraph.FilingThreshold{
-			Confidence: 1, Source: creditgraph.FilingThresholdAttributionEval, CalibrationTarget: "domain",
+			Confidence: 1, NoneFileable: true, Source: creditgraph.FilingThresholdAttributionEval, CalibrationTarget: "domain",
 			EvalSetVersion: "v1", EvalSetDigest: "sha256:abc",
 		}
 		if report.FilingThreshold == nil || *report.FilingThreshold != want {

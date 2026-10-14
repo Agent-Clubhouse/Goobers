@@ -15,17 +15,28 @@ import (
 func calibrationSummary(bins ...AttributionEvalBin) *AttributionEvalSummary {
 	summary := &AttributionEvalSummary{
 		Schema: AttributionEvalSummarySchemaVersion, EvalSetVersion: "v1", EvalSetDigest: "sha256:abc",
-		Accuracy:    []AttributionEvalAccuracy{{Granularity: "domain", Correct: 1, Total: 2, Accuracy: 0.5}},
-		Calibration: AttributionEvalCalibration{Target: "domain", Bins: bins},
+		Calibration: AttributionEvalCalibration{Target: "domain", BrierScore: 0.2, ExpectedCalibrationError: 0.1, Bins: bins},
 	}
+	correct := 0
 	for _, bin := range bins {
 		summary.CaseCount += bin.Count
+		correct += bin.Correct
 	}
+	accuracy := 0.0
+	if summary.CaseCount > 0 {
+		accuracy = float64(correct) / float64(summary.CaseCount)
+	}
+	summary.Accuracy = []AttributionEvalAccuracy{{Granularity: "domain", Correct: correct, Total: summary.CaseCount, Accuracy: accuracy}}
 	return summary
 }
 
 func evalBin(lower, upper float64, count, correct int) AttributionEvalBin {
-	return AttributionEvalBin{Lower: lower, Upper: upper, Count: count, Correct: correct}
+	bin := AttributionEvalBin{Lower: lower, Upper: upper, Count: count, Correct: correct}
+	if count > 0 {
+		bin.MeanConfidence = (lower + upper) / 2
+		bin.Accuracy = float64(correct) / float64(count)
+	}
+	return bin
 }
 
 func TestDeriveFilingThreshold(t *testing.T) {
@@ -34,6 +45,7 @@ func TestDeriveFilingThreshold(t *testing.T) {
 		summary *AttributionEvalSummary
 		want    float64
 		source  string
+		none    bool
 	}{
 		{name: "no eval keeps the default", summary: nil, want: DefaultFilingConfidenceThreshold, source: FilingThresholdDefault},
 		{name: "no populated bin keeps the default", summary: calibrationSummary(evalBin(0, 0.5, 0, 0), evalBin(0.5, 1, 0, 0)),
@@ -44,17 +56,17 @@ func TestDeriveFilingThreshold(t *testing.T) {
 		{name: "precise bins above an imprecise one admit only the precise range",
 			summary: calibrationSummary(evalBin(0.4, 0.6, 4, 1), evalBin(0.6, 0.8, 5, 4), evalBin(0.8, 1, 5, 5)),
 			want:    0.6, source: FilingThresholdAttributionEval},
-		{name: "an imprecise top bin admits nothing below certainty",
+		{name: "an imprecise top bin admits no confidence at all",
 			summary: calibrationSummary(evalBin(0.6, 0.8, 5, 5), evalBin(0.8, 1, 5, 2)),
-			want:    1, source: FilingThresholdAttributionEval},
+			want:    1, source: FilingThresholdAttributionEval, none: true},
 		{name: "a fully precise calibration never lowers the bar below the default",
 			summary: calibrationSummary(evalBin(0.2, 0.4, 5, 5), evalBin(0.4, 0.6, 5, 4)),
 			want:    DefaultFilingConfidenceThreshold, source: FilingThresholdAttributionEval},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := DeriveFilingThreshold(tc.summary)
-			if got.Confidence != tc.want || got.Source != tc.source {
-				t.Fatalf("threshold = %+v, want confidence %v from %s", got, tc.want, tc.source)
+			if got.Confidence != tc.want || got.Source != tc.source || got.NoneFileable != tc.none {
+				t.Fatalf("threshold = %+v, want confidence %v from %s (none fileable %v)", got, tc.want, tc.source, tc.none)
 			}
 			if tc.source == FilingThresholdAttributionEval &&
 				(got.EvalSetVersion != "v1" || got.EvalSetDigest != "sha256:abc" || got.CalibrationTarget != "domain") {
@@ -72,6 +84,11 @@ func TestAttributionEvalSummaryValidate(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want nil", err)
 	}
+	rounded := calibrationSummary(evalBin(0, 0.5, 32, 1))
+	rounded.Accuracy[0].Accuracy, rounded.Calibration.Bins[0].Accuracy = 0.0313, 0.0313
+	if err := rounded.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want a ratio rounded from a tie (1/32 = 0.0313) accepted", err)
+	}
 	for name, mutate := range map[string]func(*AttributionEvalSummary){
 		"schema":                   func(s *AttributionEvalSummary) { s.Schema = "other" },
 		"digest":                   func(s *AttributionEvalSummary) { s.EvalSetDigest = "" },
@@ -83,6 +100,17 @@ func TestAttributionEvalSummaryValidate(t *testing.T) {
 		"correct > count":          func(s *AttributionEvalSummary) { s.Calibration.Bins[0].Correct = 3 },
 		"overlapping bins":         func(s *AttributionEvalSummary) { s.Calibration.Bins[1].Lower = 0.4 },
 		"binned count":             func(s *AttributionEvalSummary) { s.CaseCount = 5 },
+		"brier above 1":            func(s *AttributionEvalSummary) { s.Calibration.BrierScore = 1.5 },
+		"negative ece":             func(s *AttributionEvalSummary) { s.Calibration.ExpectedCalibrationError = -0.1 },
+		"accuracy above 1":         func(s *AttributionEvalSummary) { s.Accuracy[0].Accuracy = 1.2 },
+		"accuracy ratio":           func(s *AttributionEvalSummary) { s.Accuracy[0].Accuracy = 0.9 },
+		"accuracy over a subset": func(s *AttributionEvalSummary) {
+			s.Accuracy[0].Correct, s.Accuracy[0].Total, s.Accuracy[0].Accuracy = 1, 2, 0.5
+		},
+		"bin accuracy ratio":      func(s *AttributionEvalSummary) { s.Calibration.Bins[0].Accuracy = 1 },
+		"negative bin accuracy":   func(s *AttributionEvalSummary) { s.Calibration.Bins[0].Accuracy = -0.5 },
+		"mean confidence above 1": func(s *AttributionEvalSummary) { s.Calibration.Bins[1].MeanConfidence = 1.1 },
+		"mean confidence off bin": func(s *AttributionEvalSummary) { s.Calibration.Bins[0].MeanConfidence = 0.7 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			summary := *calibrationSummary(evalBin(0, 0.5, 2, 1), evalBin(0.5, 1, 1, 1))
@@ -124,6 +152,28 @@ func TestAuditFaultDomainsMarksFindingsFileableAgainstThreshold(t *testing.T) {
 				t.Fatalf("finding confidence %v fileable %v, want 0.55 fileable %v", finding.Confidence, finding.Fileable, tc.fileable)
 			}
 		})
+	}
+}
+
+// TestAuditFaultDomainsFilesNothingWhenTheTopBinFellShort checks the boundary:
+// when the calibration bin that includes confidence 1 missed the target
+// precision, even a finding at confidence 1 is not fileable.
+func TestAuditFaultDomainsFilesNothingWhenTheTopBinFellShort(t *testing.T) {
+	var observations []AttributionObservation
+	for _, run := range []string{"run-1", "run-2", "run-3"} {
+		observations = append(observations, auditObservation(run, "implementation", "version-a", "implement",
+			"workflow selected an unsuitable tool", ClassBadToolChoice, 1, "stage:implement/tool:one"))
+	}
+	filing := DeriveFilingThreshold(calibrationSummary(evalBin(0.6, 0.8, 5, 5), evalBin(0.8, 1, 5, 2)))
+	report := AuditFaultDomains(observations, FaultAuditConfig{Filing: filing})
+	if len(report.WorkflowFindings) != 1 {
+		t.Fatalf("report = %+v, want one workflow finding", report)
+	}
+	if finding := report.WorkflowFindings[0]; finding.Confidence != 1 || finding.Fileable {
+		t.Fatalf("finding confidence %v fileable %v, want confidence 1 and not fileable", finding.Confidence, finding.Fileable)
+	}
+	if report.FilingThreshold == nil || !report.FilingThreshold.NoneFileable {
+		t.Fatalf("filing threshold = %+v, want none fileable", report.FilingThreshold)
 	}
 }
 

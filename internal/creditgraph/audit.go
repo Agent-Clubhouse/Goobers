@@ -323,7 +323,7 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 	}
 	finding.Rationale, finding.AlternativeDomains, finding.RecommendedOwner, finding.RecommendedAction = explainFaultFinding(finding, len(classificationSignals))
 	finding.Verification = verificationState(finding, signals, all, config)
-	finding.Fileable = finding.Confidence >= config.Filing.Confidence
+	finding.Fileable = config.Filing.Admits(finding.Confidence)
 	return finding
 }
 

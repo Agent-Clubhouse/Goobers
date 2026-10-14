@@ -6,9 +6,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 var (
@@ -195,7 +198,9 @@ func TestRegressions(t *testing.T) {
 
 func TestValidateRejectsMalformedSets(t *testing.T) {
 	valid := evalLabel{Source: labelFixMarker, Domain: creditgraph.FaultDomainWorkflow, Workflow: "wf",
-		Stage: "implement", Step: "stage:implement#1", Class: creditgraph.ClassTopology, MAST: mastInterAgentMisalignment}
+		Stage: "implement", Step: "stage:implement#1", Class: creditgraph.ClassTopology, MAST: mastInterAgentMisalignment,
+		Provenance: &labelProvenance{SourceRun: "run-1", LabeledBy: "operator", LabeledAt: "2026-10-13",
+			Reason: "the fix rewired the stage", Reference: "abc123 (PR #1)"}}
 	set := func(labels ...evalLabel) evalSet {
 		result := evalSet{Schema: evalSetSchemaVersion, Version: "test"}
 		for i, label := range labels {
@@ -208,17 +213,29 @@ func TestValidateRejectsMalformedSets(t *testing.T) {
 	}
 	mutate := func(edit func(*evalLabel)) evalLabel {
 		label := valid
+		provenance := *valid.Provenance
+		label.Provenance = &provenance
 		edit(&label)
 		return label
 	}
+	if err := set(mutate(func(l *evalLabel) { l.Source, l.Provenance.Reference = labelHuman, "" })).validate(); err != nil {
+		t.Fatalf("human label without a fix reference rejected: %v", err)
+	}
 	tests := map[string]evalSet{
-		"mast mismatch":          set(mutate(func(l *evalLabel) { l.MAST = mastSpecification })),
-		"unknown class":          set(mutate(func(l *evalLabel) { l.Class = "guess" })),
-		"unknown domain":         set(mutate(func(l *evalLabel) { l.Domain = "elsewhere" })),
-		"unknown source":         set(mutate(func(l *evalLabel) { l.Source = "rumor" })),
-		"missing step":           set(mutate(func(l *evalLabel) { l.Step = "" })),
-		"stage without workflow": set(mutate(func(l *evalLabel) { l.Workflow = "" })),
-		"no cases":               set(),
+		"mast mismatch":                 set(mutate(func(l *evalLabel) { l.MAST = mastSpecification })),
+		"unknown class":                 set(mutate(func(l *evalLabel) { l.Class = "guess" })),
+		"unknown domain":                set(mutate(func(l *evalLabel) { l.Domain = "elsewhere" })),
+		"unknown source":                set(mutate(func(l *evalLabel) { l.Source = "rumor" })),
+		"missing step":                  set(mutate(func(l *evalLabel) { l.Step = "" })),
+		"stage without workflow":        set(mutate(func(l *evalLabel) { l.Workflow = "" })),
+		"real label without provenance": set(mutate(func(l *evalLabel) { l.Provenance = nil })),
+		"provenance without source run": set(mutate(func(l *evalLabel) { l.Provenance.SourceRun = "" })),
+		"provenance without labeler":    set(mutate(func(l *evalLabel) { l.Provenance.LabeledBy = " " })),
+		"provenance without reason":     set(mutate(func(l *evalLabel) { l.Provenance.Reason = "" })),
+		"provenance labeled at no date": set(mutate(func(l *evalLabel) { l.Provenance.LabeledAt = "yesterday" })),
+		"fix marker without its fix":    set(mutate(func(l *evalLabel) { l.Provenance.Reference = "" })),
+		"synthetic with provenance":     set(mutate(func(l *evalLabel) { l.Source = labelSynthetic })),
+		"no cases":                      set(),
 	}
 	duplicate := set(valid, valid)
 	duplicate.Cases[1].ID = duplicate.Cases[0].ID
@@ -286,5 +303,77 @@ func TestRunDoesNotPublishARegressedOrUncheckedReport(t *testing.T) {
 				t.Fatalf("published = %+v, %v; want nothing published", published, err)
 			}
 		})
+	}
+}
+
+// TestFixtureCoversRealLabeledRuns keeps real failed runs, labeled by a human
+// or a fix marker, in the versioned set alongside the synthetic cases.
+func TestFixtureCoversRealLabeledRuns(t *testing.T) {
+	sources := map[labelSource]int{}
+	for _, evalCase := range loadFixture(t).Cases {
+		sources[evalCase.Expected.Source]++
+	}
+	if sources[labelHuman] == 0 || sources[labelFixMarker] == 0 || sources[labelSynthetic] == 0 {
+		t.Fatalf("label sources = %v, want synthetic, human, and fix-marker cases", sources)
+	}
+}
+
+func TestImportRunBuildsCaseFromARunJournal(t *testing.T) {
+	started := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID: "real-run", Workflow: "implementation", WorkflowVersion: 1, WorkflowDigest: "sha256:workflow",
+		Gaggle: "core", Trigger: journal.Trigger{Kind: journal.TriggerManual}, StartedAt: started,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"role":"tool","tool_call":{"id":"call-1","success":false}}`
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1, Time: started}); err != nil {
+		t.Fatal(err)
+	}
+	span, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, []byte(transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Time: started,
+		Status: "failure"}); err != nil {
+		t.Fatal(err)
+	}
+	dir := run.Dir()
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	labeledAt := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	writeJSONFile(t, filepath.Join(dir, creditgraph.LabelStoreFileName), creditgraph.LabelStore{
+		Schema: creditgraph.LabelStoreSchemaVersion, RunID: "real-run",
+		Labels: []creditgraph.GroundTruthLabel{{ID: "label-1", RunID: "real-run", Outcome: creditgraph.LabelIncorrect,
+			Reason: "blamed the wrong stage", Source: creditgraph.LabelSourceHuman, LabeledBy: "operator",
+			LabeledAt: labeledAt, RecordedAt: labeledAt}},
+	})
+
+	imported, err := importRun(dir)
+	if err != nil {
+		t.Fatalf("importRun: %v", err)
+	}
+	input := imported.Input
+	if input.RunID != "real-run" || input.Workflow != "implementation" || input.Gaggle != "core" || len(input.Events) == 0 {
+		t.Fatalf("input = %+v, want the run's identity and journal", input)
+	}
+	if input.SpanData[span.Digest] != transcript {
+		t.Fatalf("span data = %v, want the recorded transcript under %s", input.SpanData, span.Digest)
+	}
+	want := labelProvenance{SourceRun: "real-run", LabeledBy: "operator", LabeledAt: "2026-10-02", Reason: "blamed the wrong stage"}
+	if imported.Expected.Source != labelHuman || imported.Expected.Provenance == nil || *imported.Expected.Provenance != want {
+		t.Fatalf("expected = %+v, want a human label seeded from the label store", imported.Expected)
+	}
+	if _, err := predict(input); err != nil {
+		t.Fatalf("predict on the imported journal: %v", err)
+	}
+}
+
+func writeJSONFile(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := writeJSON(path, value); err != nil {
+		t.Fatal(err)
 	}
 }

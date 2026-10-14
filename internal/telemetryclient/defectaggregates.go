@@ -292,6 +292,7 @@ type FaultFinding struct {
 // default).
 type FilingThreshold struct {
 	Confidence        float64 `json:"confidence"`
+	NoneFileable      bool    `json:"noneFileable,omitempty"`
 	Source            string  `json:"source"`
 	CalibrationTarget string  `json:"calibrationTarget,omitempty"`
 	EvalSetVersion    string  `json:"evalSetVersion,omitempty"`
