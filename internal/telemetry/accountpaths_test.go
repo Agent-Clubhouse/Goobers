@@ -29,10 +29,21 @@ func TestAccountPathScrubberText(t *testing.T) {
 		{`open file:///Users/alice/x.json`, `open file://<home>/x.json`},
 		{`cd /mnt/c/Users/alice/src`, `cd <home>/src`},
 		{`["/home/alice/a","/home/bob/b"]`, `["<home>/a","<home>/b"]`},
+		// Paths glued to a compiler/linker flag, a response file, or a shell
+		// operator.
+		{`clang -I/Users/alice/include -L/home/alice/lib`, `clang -I<home>/include -L<home>/lib`},
+		{`ld: warning: directory not found for option '-L/Users/alice/lib'`, `ld: warning: directory not found for option '-L<home>/lib'`},
+		{`swiftc @/Users/alice/args.rsp`, `swiftc @<home>/args.rsp`},
+		{`cp x ~/a&&/home/alice/x`, `cp x ~/a&&<home>/x`},
+		{`cl -IC:\Users\alice\inc`, `cl -I<home>\inc`},
+		// Escaped newlines and tabs in a truncated JSON message (stack traces).
+		{`{"error":"failed:\n/Users/alice/x\tand\t/home/bob/y`, `{"error":"failed:\n<home>/x\tand\t<home>/y`},
+		{`{"error":"panic\n\tC:\\Users\\alice\\go\\x.go:12`, `{"error":"panic\n\t<home>\\go\\x.go:12`},
 		{`C:\Users\alice\AppData\Local\goobers.exe --mcp-config C:\Users\alice\.goobers\mcp.json`, `<home>\AppData\Local\goobers.exe --mcp-config <home>\.goobers\mcp.json`},
 		{`c:/users/Alice/src/x`, `<home>/src/x`},
 		{`--config=C:\Users\alice\x`, `--config=<home>\x`},
 		{`C:\Users\Jane Doe\AppData\x failed`, `<home>\AppData\x failed`},
+		{`C:\Users\John (Contoso)\x`, `<home>\x`},
 		{`open C:\Users\alice: access denied`, `open <home>: access denied`},
 		{`C:\Users\alice has no access to \\server\share`, `<home> has no access to \\server\share`},
 		{`\\?\C:\Users\alice\x`, `<home>\x`},
@@ -55,6 +66,7 @@ func TestAccountPathScrubberText(t *testing.T) {
 		{`lint failed: web/src/pages/home/index.tsx:12`, `lint failed: web/src/pages/home/index.tsx:12`},
 		{`src/Features/Users/UserService.cs(12,5): error CS0103`, `src/Features/Users/UserService.cs(12,5): error CS0103`},
 		{`src\Features\Users\UserService.cs(12,5): error`, `src\Features\Users\UserService.cs(12,5): error`},
+		{`see pre-/home/alice and a-b/Users/c`, `see pre-/home/alice and a-b/Users/c`},
 		{`/var/lib/goobers/runs/x and /tmp/goobers-1`, `/var/lib/goobers/runs/x and /tmp/goobers-1`},
 		{`stage failed: exit status 1`, `stage failed: exit status 1`},
 	} {

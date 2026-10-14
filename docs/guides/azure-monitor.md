@@ -178,14 +178,17 @@ UNC `\\<host>\<share>\Users\<account>`, and the daemon account's own home
 directory wherever it lives (for example `/srv/<account>`, `/root`, or a service
 home such as `/var/lib/goobers`), matched as a whole name (`/srv/<account>2` is
 a different directory). A root counts only where an absolute path begins: at
-the start of the text, or after whitespace, a quote, `=`, `:`, `,`, `;`, `(`,
-`[`, `{`, `|`, `<`, `>`, optionally followed by `file://`. A `home` or `Users`
-segment inside a relative path or URL, such as `web/src/pages/home/index.tsx`,
-`src\Features\Users\UserService.cs`, or `https://graph.microsoft.com/v1.0/Users/<id>`,
-is exported unchanged, as are other paths such as `/var/lib/...` (unless it is
-the daemon's home) or `/tmp/...`. A profile folder name with spaces
-(`C:\Users\Jane Doe\AppData`) is recognized when a backslash directly follows
-it; otherwise only its first word is replaced. An account name that appears
+the start of the text, or after whitespace, a quote or backtick, `=`, `:`, `,`,
+`;`, `(`, `[`, `{`, `|`, `<`, `>`, `&`, `!`, `+`, `*`, or an escaped `\n`, `\r`
+or `\t` in JSON-escaped text; optionally followed by a glued short flag
+(`-I/Users/<account>/include`, `-L...`), a response-file `@`, and `file://`.
+A `home` or `Users` segment inside a relative path or URL, such as
+`web/src/pages/home/index.tsx`, `src\Features\Users\UserService.cs`, or
+`https://graph.microsoft.com/v1.0/Users/<id>`, is exported unchanged, as are
+other paths such as `/var/lib/...` (unless it is the daemon's home) or
+`/tmp/...`. A profile folder name with spaces or a qualifier
+(`C:\Users\Jane Doe\AppData`, `C:\Users\John (Contoso)\x`) is recognized when a
+backslash directly follows it; otherwise only its first word is replaced. An account name that appears
 outside one of these roots is not recognized. The generated contract lists the
 roots as `consentGatedPathRoots` and the placeholder as
 `consentGatedPathPlaceholder`.

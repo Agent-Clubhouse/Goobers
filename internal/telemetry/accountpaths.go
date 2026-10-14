@@ -24,14 +24,19 @@ const accountRootField = "instanceRoot"
 
 const (
 	// pathStart is what may precede an absolute path in command-line, error or
-	// JSON text: the start of the string, whitespace, quoting, an assignment or
-	// list delimiter, optionally followed by a file:// scheme. A root preceded by
-	// a path or URL character (web/src/pages/home/x, /v1.0/Users/abc) is a
-	// relative or URL segment, not an account directory.
-	pathStart = `((?:^|[\s"'` + "`" + `=(\[{,;:<>|])(?:file://)?)`
+	// JSON text: the start of the string, whitespace, quoting, an assignment,
+	// list or shell delimiter, or an escaped newline/tab in JSON-escaped text;
+	// then optionally a glued short flag (-I/x, -L/x) or response-file @, and a
+	// file:// scheme. A root preceded by a path or URL character
+	// (web/src/pages/home/x, /v1.0/Users/abc) is a relative or URL segment, not
+	// an account directory.
+	pathStart = `((?:^|[\s"'` + "`" + `=(\[{,;:<>|&!+*]|\\[nrt])(?:-[A-Za-z]|@)?(?:file://)?)`
 	// accountSegment is one account-name path segment. It ends at a separator,
 	// whitespace, quoting, or punctuation that cannot be part of a user name.
 	accountSegment = `[^\\/\s"'` + "`" + `<>|:;,()\[\]{}*?]+`
+	// windowsProfileWord is one word of a spaced Windows profile folder name,
+	// which may carry a parenthesized qualifier ("John (Contoso)").
+	windowsProfileWord = `[^\\/\s"'` + "`" + `<>|:;,\[\]{}*?]+`
 	// Windows roots: a drive (C:\Users, c:/users, also behind \\?\ or \\.\) or
 	// a UNC share (\\host\c$\Users). Backslash runs tolerate JSON escaping.
 	windowsDriveRoot = `(?:\\+[?.]\\+)?[a-z]:[\\/]+users[\\/]+`
@@ -51,7 +56,7 @@ var (
 	// 3, preserved); prose such as `C:\Users\alice has no access to \\srv`
 	// falls back to the single-word form (group 4).
 	windowsAccountRoot = regexp.MustCompile(`(?i)` + pathStart + `(?:(` + windowsRoot + accountSegment +
-		`(?: ` + accountSegment + `){1,3})(\\+)|(` + windowsRoot + accountSegment + `))`)
+		`(?: ` + windowsProfileWord + `){1,3})(\\+)|(` + windowsRoot + accountSegment + `))`)
 )
 
 // accountPathScrubber withholds account-identifying filesystem paths from text
