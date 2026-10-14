@@ -812,7 +812,7 @@ func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
 	if p.quotaObserver == nil {
 		return
 	}
-	observation := QuotaObservation{Provider: ProviderADO}
+	observation := QuotaObservation{Provider: ProviderADO, Cached: resp.Header.Get(QuotaCacheHitHeader) == "true"}
 	remaining, remainingKnown := adoRemainingHeader(resp)
 	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
 	if remainingKnown && resetErr == nil && resetSeconds > 0 {
