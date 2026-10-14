@@ -358,7 +358,14 @@ func TestStoreFailedAppendRollsBackJournal(t *testing.T) {
 
 	original := syncJournal
 	t.Cleanup(func() { syncJournal = original })
-	syncJournal = func(*os.File) error { return errors.New("injected sync failure") }
+	failures := 1
+	syncJournal = func(f *os.File) error {
+		if failures > 0 {
+			failures--
+			return errors.New("injected sync failure")
+		}
+		return f.Sync()
+	}
 	if _, err := store.Append(opened); err == nil {
 		t.Fatal("Append succeeded despite sync failure")
 	}
@@ -379,6 +386,127 @@ func TestStoreFailedAppendRollsBackJournal(t *testing.T) {
 	}
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStoreFailedDirectorySyncRollsBackJournal(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := apiv1.GaggleHealthIdentity{Gaggle: "alpha"}
+	key, err := EpisodeKey(FindingNoProgress, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := event(1, now, apiv1.GaggleHealthFindingOpened, finding(FindingNoProgress, key, identity, now, apiv1.GaggleHealthStalled))
+	path := filepath.Join(root, "health", "events.jsonl")
+
+	original := syncJournalDir
+	t.Cleanup(func() { syncJournalDir = original })
+	syncJournalDir = func(string) error { return errors.New("injected directory sync failure") }
+	if _, err := store.Append(opened); err == nil {
+		t.Fatal("Append succeeded despite directory sync failure")
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() != 0 {
+		t.Fatalf("journal after failed append: info=%v err=%v, want empty", info, err)
+	}
+	syncJournalDir = original
+	if _, err := store.Append(opened); err != nil {
+		t.Fatalf("retry append: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("reopen after failed+retried append: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// When the rollback itself fails the journal tail is unknown, so the store must
+// refuse to allocate the next sequence from its stale in-memory view until it
+// is reopened and the journal is re-read.
+func TestStoreRefusesAppendsAfterFailedRollbackUntilReopen(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := apiv1.GaggleHealthIdentity{Gaggle: "alpha"}
+	key, err := EpisodeKey(FindingNoProgress, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := event(1, now, apiv1.GaggleHealthFindingOpened, finding(FindingNoProgress, key, identity, now, apiv1.GaggleHealthStalled))
+
+	original := syncJournal
+	t.Cleanup(func() { syncJournal = original })
+	syncJournal = func(*os.File) error { return errors.New("injected sync failure") }
+	if _, err := store.Append(opened); !errors.Is(err, errJournalUncertain) {
+		t.Fatalf("Append error = %v, want errJournalUncertain", err)
+	}
+	syncJournal = original
+	if _, err := store.Append(opened); !errors.Is(err, errJournalUncertain) {
+		t.Fatalf("Append on broken store error = %v, want errJournalUncertain", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("reopen after failed rollback: %v", err)
+	}
+	if _, err := reopened.Append(opened); err != nil {
+		t.Fatalf("append after reopen: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A well-formed final record that fails strict decoding (for example one a
+// newer binary wrote with an extra field) is not a torn write and must never be
+// silently truncated.
+func TestStoreDoesNotTruncateWellFormedUndecodableTail(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := apiv1.GaggleHealthIdentity{Gaggle: "alpha"}
+	key, err := EpisodeKey(FindingNoProgress, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(event(1, now, apiv1.GaggleHealthFindingOpened,
+		finding(FindingNoProgress, key, identity, now, apiv1.GaggleHealthStalled))); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "health", "events.jsonl")
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withFuture := append(append([]byte(nil), good...), []byte("{\"futureField\":true}\n")...)
+	if err := os.WriteFile(path, withFuture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now }); err == nil {
+		t.Fatal("open accepted an undecodable well-formed tail record")
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(withFuture) {
+		t.Fatalf("well-formed tail record was truncated: %q", got)
 	}
 }
 
