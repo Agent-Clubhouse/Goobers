@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
 )
@@ -69,16 +70,29 @@ func publicationDiagnostics(t *testing.T, rec *fakeRecorder) []map[string]any {
 func TestExecutorJournalsPublicationRepairDiagnostics(t *testing.T) {
 	for _, tc := range []struct {
 		name, first, repair string
-		wantOutcomes        []string
+		// emptyManifest stages a manifest that omits the schema-bound entry.
+		emptyManifest bool
+		wantCode      string
+		wantOutcomes  []string
 	}{
 		{name: "invalid then corrected", first: `{"summary":["hunter2-secret-value"]}`, repair: `{"summary":"fixed"}`, wantOutcomes: []string{"rejected", "accepted"}},
 		{name: "omitted then published", repair: `{"summary":"fixed"}`, wantOutcomes: []string{"rejected", "accepted"}},
+		{name: "slot omitted from manifest then published", emptyManifest: true, repair: `{"summary":"fixed"}`, wantCode: artifactset.MissingSlotCode, wantOutcomes: []string{"rejected", "accepted"}},
 		{name: "repair exhausted", first: `{"summary":3}`, repair: `{"summary":4}`, wantOutcomes: []string{"rejected", "rejected"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace := t.TempDir()
 			if err := appendPublicationReceipt(workspace, mcpio.PublicationReceipt{Outcome: "stale-from-prior-attempt"}); err != nil {
 				t.Fatal(err)
+			}
+			if tc.emptyManifest {
+				if err := os.WriteFile(filepath.Join(workspace, "manifest.json"), []byte(`{"schemaVersion":"`+artifactset.SchemaVersion+`","entries":[]}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantCode := tc.wantCode
+			if wantCode == "" {
+				wantCode = "invalid_declared_artifact_set"
 			}
 			rec := &fakeRecorder{}
 			adapter := &receiptWritingAdapter{
@@ -109,11 +123,16 @@ func TestExecutorJournalsPublicationRepairDiagnostics(t *testing.T) {
 				if check["outcome"] != want {
 					t.Fatalf("check %d = %+v, want %s", i, check, want)
 				}
-				if want == "rejected" && check["code"] != "invalid_declared_artifact_set" {
+				if want == "rejected" && check["code"] != wantCode {
 					t.Fatalf("rejected check %d = %+v, want the lift failure code", i, check)
 				}
 			}
 			rejected := checks[0].(map[string]any)
+			// No publish_output receipt names the omitted slot, so the check
+			// itself must carry the declared slot's schema identity.
+			if tc.emptyManifest && (rejected["slot"] != "report" || rejected["schemaId"] != "schemas/report.schema.json") {
+				t.Fatalf("omitted-output check = %+v, want the declared slot and its schema identity", rejected)
+			}
 			if tc.first != "" && (rejected["slot"] != "report" || rejected["schemaId"] != "schemas/report.schema.json" || !strings.Contains(mustJSON(t, rejected["issues"]), `"/summary"`)) {
 				t.Fatalf("rejected check = %+v, want the schema identity and validation location", rejected)
 			}
@@ -181,24 +200,41 @@ func TestExecutorJournalsTheCompletionValidatedPayloadDigest(t *testing.T) {
 }
 
 func TestPublicationPostconditionRecordsANonDeclaredFailureAsErrored(t *testing.T) {
-	workspace := t.TempDir()
-	if err := stageReport(workspace, `{"summary":"valid"}`); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(reportSchemaContext(t))
-	req := RunRequest{Workspace: workspace}
-	p := newPostconditionExecutor(t, &FakeAdapter{}, &fakeRecorder{}).armPublicationPostcondition(ctx, ModeInvoke, reportPublicationEnvelope(workspace), &req)
-	if p == nil {
-		t.Fatal("publication postcondition not armed")
-	}
-	cancel()
-	// A cancelled check is not a declared-artifact failure, so it does not
-	// spend the repair turn — but it must not be journaled as accepted either.
-	if err := req.ValidateCompletion([]byte(`{"status":"success"}`)); err != nil {
-		t.Fatalf("ValidateCompletion = %v, want no repairable postcondition", err)
-	}
-	if len(p.checks) != 1 || p.checks[0].Outcome != publicationCheckErrored || p.checks[0].Code != publicationCheckCancelled || p.checks[0].PayloadDigests != nil {
-		t.Fatalf("checks=%+v, want one errored check coded %s", p.checks, publicationCheckCancelled)
+	for _, tc := range []struct {
+		name     string
+		cancel   bool
+		wantCode string
+	}{
+		{name: "context cancelled", cancel: true, wantCode: publicationCheckCancelled},
+		// The workspace vanished, so the artifact set cannot be read at all.
+		{name: "artifact read error", wantCode: publicationCheckFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			if err := stageReport(workspace, `{"summary":"valid"}`); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(reportSchemaContext(t))
+			defer cancel()
+			req := RunRequest{Workspace: workspace}
+			p := newPostconditionExecutor(t, &FakeAdapter{}, &fakeRecorder{}).armPublicationPostcondition(ctx, ModeInvoke, reportPublicationEnvelope(workspace), &req)
+			if p == nil {
+				t.Fatal("publication postcondition not armed")
+			}
+			if tc.cancel {
+				cancel()
+			} else if err := os.RemoveAll(workspace); err != nil {
+				t.Fatal(err)
+			}
+			// A non-declared failure does not spend the repair turn — but it
+			// must not be journaled as accepted either.
+			if err := req.ValidateCompletion([]byte(`{"status":"success"}`)); err != nil {
+				t.Fatalf("ValidateCompletion = %v, want no repairable postcondition", err)
+			}
+			if len(p.checks) != 1 || p.checks[0].Outcome != publicationCheckErrored || p.checks[0].Code != tc.wantCode || p.checks[0].PayloadDigests != nil {
+				t.Fatalf("checks=%+v, want one errored check coded %s", p.checks, tc.wantCode)
+			}
+		})
 	}
 }
 

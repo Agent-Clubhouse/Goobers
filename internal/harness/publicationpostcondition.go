@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/mcpio"
 )
 
@@ -30,8 +31,19 @@ var ErrInvalidPublication = errors.New(ErrorCodeInvalidPublication + ": the stag
 // binds at least one slot to a JSON Schema. It remembers every completion-
 // boundary check so the outcome can be journaled.
 type publicationPostcondition struct {
-	slots  []string
-	checks []publicationCheck
+	slots []string
+	// schemaIDs keeps each declared slot's schema identity, so a rejection
+	// that names only the slot (an omitted output) still records its schema.
+	schemaIDs map[string]string
+	checks    []publicationCheck
+}
+
+func newPublicationPostcondition(schemas map[string]*handoffcheck.Schema) *publicationPostcondition {
+	p := &publicationPostcondition{slots: slices.Sorted(maps.Keys(schemas)), schemaIDs: make(map[string]string, len(schemas))}
+	for slot, schema := range schemas {
+		p.schemaIDs[slot] = schema.ID()
+	}
+	return p
 }
 
 // armPostconditions hands goobers-io the declared publication schemas and arms
@@ -68,7 +80,7 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 	if !ok || manifest == "" {
 		return nil
 	}
-	p := &publicationPostcondition{slots: slices.Sorted(maps.Keys(declaredPublicationSchemas(ctx, env)))}
+	p := newPublicationPostcondition(declaredPublicationSchemas(ctx, env))
 	base := req.ValidateCompletion
 	req.ValidateCompletion = func(payload []byte) error {
 		var commitErr error

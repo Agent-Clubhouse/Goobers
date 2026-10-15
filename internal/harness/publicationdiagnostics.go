@@ -82,6 +82,7 @@ func (p *publicationPostcondition) record(prepared *artifactset.Prepared, err er
 		}
 	case errors.As(err, &publication):
 		check.Slot = publication.Slot
+		check.SchemaID = p.schemaIDs[publication.Slot]
 	}
 	p.checks = append(p.checks, check)
 }
