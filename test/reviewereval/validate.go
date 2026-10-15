@@ -9,6 +9,11 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 )
 
+// roundingSlack is the most round4 moves one recorded cost. Replay enforces
+// the budget on raw spend but records rounded costs, so checks of recorded
+// costs against the budget or judge spend allow this much per rounded value.
+const roundingSlack = 5e-5 + costEpsilon
+
 // validate checks that a loaded report is internally consistent before
 // compare or publish trusts it: its sampling metadata is well formed, its
 // per-case results are coherent, and every aggregate (counts, recall,
@@ -66,14 +71,14 @@ func validateResultOrder(seed string, results []caseResult) error {
 }
 
 func (result caseResult) validate() error {
-	if !validCost(result.CostUSD) || !validCost(result.JudgeCostUSD) || result.JudgeCostUSD > result.CostUSD+costEpsilon {
+	if !validCost(result.CostUSD) || !validCost(result.JudgeCostUSD) || result.JudgeCostUSD > result.CostUSD+roundingSlack {
 		return fmt.Errorf("invalid cost %v (judge %v)", result.CostUSD, result.JudgeCostUSD)
 	}
 	judgeCost := 0.0
 	for _, decision := range result.JudgeDecisions {
 		judgeCost += decision.CostUSD
 	}
-	if math.Abs(judgeCost-result.JudgeCostUSD) > 5e-5 {
+	if math.Abs(judgeCost-result.JudgeCostUSD) > roundingSlack {
 		return fmt.Errorf("judge cost %v does not match its decisions' %v", result.JudgeCostUSD, judgeCost)
 	}
 	switch result.Status {
@@ -143,7 +148,7 @@ func (report evalReport) validateAggregates(options replayOptions) error {
 		return fmt.Errorf("report cost %v (%v per bug) does not match its results' %v (%v per bug)",
 			report.TotalCostUSD, report.CostPerBugUSD, want.TotalCostUSD, want.CostPerBugUSD)
 	}
-	if report.TotalCostUSD > report.BudgetUSD+costEpsilon {
+	if report.TotalCostUSD > report.BudgetUSD+roundingSlack*float64(len(report.Results)+1) {
 		return fmt.Errorf("report spent %v over its %v budget", report.TotalCostUSD, report.BudgetUSD)
 	}
 	calibration := report.SZZCalibration

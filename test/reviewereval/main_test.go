@@ -653,6 +653,24 @@ func TestParseLocation(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsRoundedCostsAtTheBudget(t *testing.T) {
+	t.Parallel()
+	// Raw spend is exactly the budget, but each case cost is recorded rounded
+	// up, so the recorded total sits just over it.
+	report := reportOf("candidate", nil, 0)
+	report.BudgetUSD = 0.66664
+	for index, raw := range []float64{0.33336, 0.33328} {
+		report.Results[index].CostUSD = round4(raw)
+	}
+	report.Results[0].JudgeCostUSD = 0.33336
+	report.Results[0].JudgeDecisions = []judgeRecord{{Finding: 0, Judge: "j", CostUSD: 0.33336}}
+	options := replayOptions{Split: report.Split, Variant: report.Variant, Seed: report.Seed, MaxCases: report.MaxCases, BudgetUSD: report.BudgetUSD}
+	recomputed := newReport(dataset{Header: datasetHeader{Version: report.DatasetVersion, Digest: report.DatasetDigest}}, options, 0, report.Results)
+	if err := recomputed.validate(); err != nil || recomputed.TotalCostUSD <= recomputed.BudgetUSD {
+		t.Fatalf("report with rounded costs at the budget (total %v of %v) rejected: %v", recomputed.TotalCostUSD, recomputed.BudgetUSD, err)
+	}
+}
+
 func TestLoadReportRejectsTamperedReports(t *testing.T) {
 	t.Parallel()
 	valid := func() evalReport { return reportOf("candidate", map[string]bool{"case-a": true}, 1) }
@@ -680,6 +698,7 @@ func TestLoadReportRejectsTamperedReports(t *testing.T) {
 		"sampled count":        func(report *evalReport) { report.Sampled = 3 },
 		"over the case cap":    func(report *evalReport) { report.MaxCases = 1 },
 		"over the budget":      func(report *evalReport) { report.BudgetUSD = 1 },
+		"judge cost over case": func(report *evalReport) { report.Results[0].JudgeCostUSD = 2 },
 		"no seed":              func(report *evalReport) { report.Seed = "" },
 		"caught with no match": func(report *evalReport) { uncaught(report).Caught = true },
 		"judge match with no decision": func(report *evalReport) {
