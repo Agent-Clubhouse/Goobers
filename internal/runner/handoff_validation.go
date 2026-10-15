@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
+	apischemas "github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/gate"
@@ -51,7 +53,7 @@ type handoffBinding struct {
 }
 
 func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJournal, machine *workflow.Machine, task apiv1.Task, attempt int, class journal.AttemptClass, pointers []apiv1.ContextPointer) (context.Context, *handoffcheck.Report, error) {
-	schemas, err := producerPublicationSchemas(task, r.cfg.HandoffSchemaLoader)
+	schemas, err := producerPublicationSchemas(machine, task, r.cfg.HandoffSchemaLoader)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -73,18 +75,26 @@ func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJourn
 // application/json artifact slots so the producer is held to its declared
 // contract when it publishes (#6868), not only when a consumer reads it. A
 // schema that cannot be loaded fails the stage before the model runs.
-func producerPublicationSchemas(task apiv1.Task, load HandoffSchemaLoader) (map[string]*handoffcheck.Schema, error) {
+//
+// A slot's effective schema is its own schemaPath or, when it declares none,
+// the host envelope the compiler lowered onto it because the slot feeds a
+// DSL 3.1 fan-out source (machine.SlotEnvelope). A nil loader keeps
+// publication validation disabled for both.
+func producerPublicationSchemas(machine *workflow.Machine, task apiv1.Task, load HandoffSchemaLoader) (map[string]*handoffcheck.Schema, error) {
 	if load == nil {
 		return nil, nil
 	}
 	var schemas map[string]*handoffcheck.Schema
 	for _, slot := range task.ArtifactSlots {
-		if slot.SchemaPath == "" || slot.MediaType != "application/json" {
+		if slot.MediaType != "application/json" {
 			continue
 		}
-		schema, err := load(slot.SchemaPath)
+		source, schema, err := slotEffectiveSchema(machine, task.Name, slot, load)
+		if source == "" {
+			continue
+		}
 		if err != nil {
-			return nil, fmt.Errorf("task %q: load artifact slot %q schema %q: %w", task.Name, slot.Name, slot.SchemaPath, err)
+			return nil, fmt.Errorf("task %q: load artifact slot %q schema %q: %w", task.Name, slot.Name, source, err)
 		}
 		if schemas == nil {
 			schemas = map[string]*handoffcheck.Schema{}
@@ -92,6 +102,42 @@ func producerPublicationSchemas(task apiv1.Task, load HandoffSchemaLoader) (map[
 		schemas[slot.Name] = schema
 	}
 	return schemas, nil
+}
+
+// slotEffectiveSchema resolves one JSON slot's effective schema and names its
+// source; an empty source means the slot has no schema.
+func slotEffectiveSchema(machine *workflow.Machine, task string, slot apiv1.ArtifactSlot, load HandoffSchemaLoader) (string, *handoffcheck.Schema, error) {
+	if slot.SchemaPath != "" {
+		schema, err := load(slot.SchemaPath)
+		return slot.SchemaPath, schema, err
+	}
+	envelope, ok := machine.SlotEnvelope(task, slot.Name)
+	if !ok {
+		return "", nil, nil
+	}
+	schema, err := hostEnvelopeSchema(envelope)
+	return envelope, schema, err
+}
+
+var hostEnvelopeSchemas sync.Map
+
+// hostEnvelopeSchema compiles an embedded api/schemas envelope once per
+// process. Envelopes are host-owned and never resolved through the
+// configuration-relative loader.
+func hostEnvelopeSchema(name string) (*handoffcheck.Schema, error) {
+	if cached, ok := hostEnvelopeSchemas.Load(name); ok {
+		return cached.(*handoffcheck.Schema), nil
+	}
+	data, err := apischemas.FS.ReadFile(name)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded envelope %q: %w", name, err)
+	}
+	schema, err := handoffcheck.Compile(name, "", data)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := hostEnvelopeSchemas.LoadOrStore(name, schema)
+	return actual.(*handoffcheck.Schema), nil
 }
 
 func handoffBindingsForContext(machine *workflow.Machine, pointers []apiv1.ContextPointer) map[string]handoffBinding {
@@ -354,6 +400,11 @@ func invalidHandoffRerouteUnsupported(machine *workflow.Machine, branchStart str
 				if workflowgraph.BranchContainsState(machine, branch.Start, producer) {
 					return fmt.Sprintf("producer %q runs inside parallel %q branch %q and cannot be retried outside that branch", producer, name, branch.Name)
 				}
+			}
+		}
+		for _, m := range machine.Def.Spec.Maps {
+			if m.Task == producer {
+				return fmt.Sprintf("producer %q is the mapped task of map %q and runs only for a frozen roster item", producer, m.Name)
 			}
 		}
 		return ""

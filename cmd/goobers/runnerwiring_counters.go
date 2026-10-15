@@ -31,8 +31,10 @@ type openPRListerDeps struct {
 	// authenticated with that poll's freshly resolved token.
 	github func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister
 	// ado builds the provider an adoOpenPRLister polls, from the configured
-	// repository's own auth block.
-	ado func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error)
+	// repository's own auth block. quota is the daemon's provider-quota
+	// observer (nil outside the daemon), so ADO throttling on the open-PR poll
+	// reaches the scheduler's quota state (#5960).
+	ado func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver, quota providers.QuotaObserver) (localscheduler.OpenPRLister, error)
 }
 
 func productionOpenPRListerDeps() openPRListerDeps {
@@ -40,8 +42,8 @@ func productionOpenPRListerDeps() openPRListerDeps {
 		github: func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
 			return providers.NewGitHubProvider(token, opts...)
 		},
-		ado: func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error) {
-			return adoauth.Provider(repo, nil, reg, nil, nil, stores)
+		ado: func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver, quota providers.QuotaObserver) (localscheduler.OpenPRLister, error) {
+			return adoauth.Provider(repo, nil, reg, nil, quota, stores)
 		},
 	}
 }
@@ -81,8 +83,11 @@ type adoOpenPRLister struct {
 	stores       credentials.StoreResolver
 	schedulerDir string
 	readScope    apireadcache.Scope
+	// quota observes every response's ADO rate-limit headers into the
+	// daemon's provider-quota state; nil when there is none.
+	quota providers.QuotaObserver
 	// newProvider is openPRListerDeps.ado, fixed when the lister is built.
-	newProvider func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error)
+	newProvider func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver, quota providers.QuotaObserver) (localscheduler.OpenPRLister, error)
 
 	mu       sync.Mutex
 	provider localscheduler.OpenPRLister
@@ -102,7 +107,7 @@ func (l *adoOpenPRLister) ensureProvider() (localscheduler.OpenPRLister, error) 
 	if l.provider != nil {
 		return l.provider, nil
 	}
-	provider, err := l.newProvider(l.repo, l.reg, l.stores)
+	provider, err := l.newProvider(l.repo, l.reg, l.stores, l.quota)
 	if err != nil {
 		return nil, fmt.Errorf("build ADO open-pr-list provider for %s/%s/%s: %w", l.repo.Owner, l.repo.Project, l.repo.Name, err)
 	}
@@ -120,7 +125,7 @@ func (l *adoOpenPRLister) ensureProvider() (localscheduler.OpenPRLister, error) 
 // A nil lister means the gaggle gets no refresher, so its count stays unknown
 // and Admit fails open: that is an ADO project with no configured binding,
 // whose auth cannot be known. Any other provider is refused.
-func (d openPRListerDeps) forRepo(gaggle string, repo instance.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, stores credentials.StoreResolver, generation string) (localscheduler.OpenPRLister, providers.RepositoryRef, string, error) {
+func (d openPRListerDeps) forRepo(gaggle string, repo instance.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, stores credentials.StoreResolver, generation string, quota *localscheduler.ProviderQuotaState) (localscheduler.OpenPRLister, providers.RepositoryRef, string, error) {
 	scope := automationProviderReadScope(gaggle, generation)
 	switch repo.Provider {
 	case string(providers.ProviderADO):
@@ -129,7 +134,13 @@ func (d openPRListerDeps) forRepo(gaggle string, repo instance.RepoRef, resolver
 		}
 		repoRef := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
 		key := openPRReadIdentity(scope, repo.Provider+":"+repo.Owner+"/"+repo.Project+"/"+repo.Name)
-		return &adoOpenPRLister{repo: repo, reg: reg, stores: stores, schedulerDir: schedulerDir, readScope: scope, newProvider: d.ado}, repoRef, key, nil
+		lister := &adoOpenPRLister{repo: repo, reg: reg, stores: stores, schedulerDir: schedulerDir, readScope: scope, newProvider: d.ado}
+		if quota != nil {
+			// The same accounting adapter ci-poll's ADO provider observes
+			// through (buildCIPollExecutor).
+			lister.quota = &providerQuotaAccounting{state: quota}
+		}
+		return lister, repoRef, key, nil
 	case "", string(providers.ProviderGitHub):
 		credentialRef := repo.Owner + "/" + repo.Name
 		lister := &resolvingOpenPRLister{ref: credentialRef, resolver: resolver, reg: reg, schedulerDir: schedulerDir, readScope: scope, newProvider: d.github}
@@ -157,13 +168,15 @@ func (d openPRListerDeps) forRepo(gaggle string, repo instance.RepoRef, resolver
 // `goobers run` has no accretion to throttle. resolver is a fresh credential
 // resolver over cfg (buildCredentials is read-only and idempotent), used only
 // to authenticate the polls. It builds with productionRuntimeDeps; tests pass
-// their own runtimeDeps to openPRRefresher instead.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gaggleProjects map[string]apiv1.RepoRef, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver, generation string) (*localscheduler.OpenPRRefresherSet, error) {
-	return productionRuntimeDeps().openPRRefresher(cfg, workflows, gaggleProjects, reg, branchNamespaces, schedulerDir, stores, generation)
+// their own runtimeDeps to openPRRefresher instead. quota is the daemon's
+// provider-quota state (nil when there is none); an ADO lister reports each
+// poll's rate-limit headers into it.
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gaggleProjects map[string]apiv1.RepoRef, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver, generation string, quota *localscheduler.ProviderQuotaState) (*localscheduler.OpenPRRefresherSet, error) {
+	return productionRuntimeDeps().openPRRefresher(cfg, workflows, gaggleProjects, reg, branchNamespaces, schedulerDir, stores, generation, quota)
 }
 
 // openPRRefresher is buildOpenPRRefresher over an explicit runtimeDeps.
-func (d runtimeDeps) openPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gaggleProjects map[string]apiv1.RepoRef, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver, generation string) (*localscheduler.OpenPRRefresherSet, error) {
+func (d runtimeDeps) openPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gaggleProjects map[string]apiv1.RepoRef, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver, generation string, quota *localscheduler.ProviderQuotaState) (*localscheduler.OpenPRRefresherSet, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -193,7 +206,7 @@ func (d runtimeDeps) openPRRefresher(cfg *instance.Config, workflows []apiv1.Wor
 			// the first repo's PRs.
 			repo = instance.RepoRef{Owner: project.Owner, Name: project.Name, Provider: string(project.Provider)}
 		}
-		lister, repoRef, key, err := d.openPRListers.forRepo(gaggle, repo, resolver, reg, schedulerDir, stores, generation)
+		lister, repoRef, key, err := d.openPRListers.forRepo(gaggle, repo, resolver, reg, schedulerDir, stores, generation, quota)
 		if err != nil {
 			return nil, err
 		}

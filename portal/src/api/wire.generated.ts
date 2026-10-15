@@ -986,7 +986,18 @@ export const goWireFixtures = {
             "leaseStatus": "released",
             "providerMarker": "recorded"
           },
-          "potentialBlockers": [],
+          "potentialBlockers": [
+            "review escalate: reviewer requested a human decision"
+          ],
+          "blockers": [
+            {
+              "code": "review_not_passed",
+              "source": "review",
+              "message": "review escalate: reviewer requested a human decision",
+              "observedAt": "2026-07-18T12:36:56Z",
+              "ageMillis": 60000
+            }
+          ],
           "reliability": {
             "state": "escalated",
             "currentStage": "review",
@@ -1143,7 +1154,18 @@ export const goWireFixtures = {
         "leaseStatus": "released",
         "providerMarker": "recorded"
       },
-      "potentialBlockers": [],
+      "potentialBlockers": [
+        "review escalate: reviewer requested a human decision"
+      ],
+      "blockers": [
+        {
+          "code": "review_not_passed",
+          "source": "review",
+          "message": "review escalate: reviewer requested a human decision",
+          "observedAt": "2026-07-18T12:36:56Z",
+          "ageMillis": 60000
+        }
+      ],
       "reliability": {
         "state": "escalated",
         "currentStage": "review",
@@ -1380,15 +1402,42 @@ export const goWireFixtures = {
             "branch": 1,
             "name": "security-lens",
             "status": "succeeded",
-            "artifacts": 1
+            "artifacts": 1,
+            "reason": "touches internal/auth"
           },
           {
             "branch": 2,
             "name": "perf-lens",
             "status": "failed",
             "artifacts": 0
+          },
+          {
+            "branch": 3,
+            "name": "unit-a",
+            "status": "succeeded",
+            "artifacts": 1,
+            "mapItemIdentity": "unit-a",
+            "mapItemDigest": "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"
           }
         ],
+        "mapItemIdentity": "unit-a",
+        "mapItemDigest": "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102",
+        "mapRoster": {
+          "sourceTask": "plan",
+          "sourceSlot": "shards",
+          "sourceDigest": "sha256:roster",
+          "integrity": "derived",
+          "failurePolicy": "continue_on_error",
+          "itemTimeoutSeconds": 1800,
+          "maxConcurrent": 4,
+          "items": [
+            {
+              "branch": 1,
+              "identity": "unit-a",
+              "digest": "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"
+            }
+          ]
+        },
         "raw": {
           "futureField": "preserved"
         }

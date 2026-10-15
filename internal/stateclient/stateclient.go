@@ -229,6 +229,18 @@ var noWorkStreakKeyPattern = regexp.MustCompile(`^no-work-streak-[0-9a-f]{64}\.j
 // `<!-- verdict-json: ... -->` payload embedded in a PR comment.
 var verdictStateKeyPattern = regexp.MustCompile(`^remediation-verdict-[0-9a-f]{64}\.json$`)
 
+// prRemediationCIProbeKeyPattern matches the PER-REPOSITORY pr-remediation
+// CI-probe cursor, pr-remediation-ci-probe-<sha256 of the gaggle-scoped
+// repository key>.json (#6482). Azure DevOps lists pull requests without CI
+// state, so gather-pr-context reads policy evaluations for a bounded window of
+// them each cycle; the cursor records where the last window ended so the next
+// cycle continues from there and every eligible PR is eventually probed. It
+// is a plane key for the same reason as the no-op record above: the stage runs
+// in a pod with no instance root, and a cursor that silently reset every run
+// would starve every PR past the first window. Digest-keyed and contained the
+// same way.
+var prRemediationCIProbeKeyPattern = regexp.MustCompile(`^pr-remediation-ci-probe-[0-9a-f]{64}\.json$`)
+
 // One private disposition per repository, review type, and PR number.
 var advisoryPRKeyPattern = regexp.MustCompile(`^advisory-pr-[0-9a-f]{64}\.json$`)
 
@@ -356,6 +368,12 @@ func ResweepStateKey(digest string) string {
 	return "backlog-resweep-" + digest + ".json"
 }
 
+// PRRemediationCIProbeKey names the pr-remediation CI-probe cursor for one
+// gaggle-scoped repository key digest (#6482).
+func PRRemediationCIProbeKey(digest string) string {
+	return "pr-remediation-ci-probe-" + digest + ".json"
+}
+
 // PRRemediationNoopKey names the pr-remediation no-op record for one PR's
 // record-key digest.
 func PRRemediationNoopKey(digest string) string {
@@ -395,6 +413,7 @@ func ValidKey(key string) bool {
 		reconcileCursorKeyPattern.MatchString(key) ||
 		resweepStateKeyPattern.MatchString(key) ||
 		prRemediationNoopKeyPattern.MatchString(key) ||
+		prRemediationCIProbeKeyPattern.MatchString(key) ||
 		backlogHealthCursorKeyPattern.MatchString(key) ||
 		failureStreakKeyPattern.MatchString(key) ||
 		noWorkStreakKeyPattern.MatchString(key) ||

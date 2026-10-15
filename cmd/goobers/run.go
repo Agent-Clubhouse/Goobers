@@ -559,7 +559,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, state)
 	}
 	if !pullRequestURLMatchesRepository(resolvedRepo, pr.URL, number) {
-		return fmt.Errorf("pull request #%d resolves outside configured repository %s", number, repoDisplay)
+		return adoPullRequestURLByIDMatch(ctx, provider, repo, resolvedRepo, pr.URL, number, repoDisplay)
 	}
 	return nil
 }
@@ -624,10 +624,11 @@ func pullRequestURLMatchesRepository(repo apiv1.RepoRef, rawURL string, number i
 // server's opaque _apis URL whenever _links.web.href was empty, so a
 // configured PR target with such a URL always failed the browser-form match
 // and the target was rejected as unresolvable even though it was correct.
-// The repository segment is only ever accepted when it equals the
-// configured repository's name (EqualFold) — an opaque GUID there is never
-// verified against anything this process can check without an extra network
-// call, so it is always rejected rather than trusted.
+// The repository segment is only accepted here when it equals the
+// configured repository's name (EqualFold) — an opaque GUID is never trusted
+// by this matcher. validateTargetedPullRequest instead verifies a GUID-form
+// URL against the configured repository's own ids, one extra read on that
+// path only (adoPullRequestURLByIDMatch, #5960).
 func adoAPIPullRequestURLMatchesRepository(parts []string, host, visualStudioHost string, repo apiv1.RepoRef, numberText string) bool {
 	for i := 1; i+5 < len(parts); i++ {
 		organizationMatches := host == visualStudioHost ||

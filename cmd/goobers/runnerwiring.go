@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blockerclear"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/gooberassets"
@@ -292,6 +293,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
+		RecoveryObserved: blockerclear.Reporter(l.SchedulerDir()),
 		RunControls:      cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			exec, err := buildAutomationDeterministicExecutor(deterministicExecutorInput{

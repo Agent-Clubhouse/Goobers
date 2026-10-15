@@ -259,6 +259,18 @@ const (
 	// earned, and a trusted-claim surface that rewards lying is worse than
 	// no claim at all.
 	RunnerAVExclusionsUnverified WarningCode = "RNR006"
+	// RunnerCrossProviderBacklogOffSelf (RNR007) identifies a task of a
+	// topology (b) gaggle (a GitHub or Gitea backlog for Azure DevOps code,
+	// docs/design/ado-parity-dsl-2-0.md §7.2) whose resolved ELIGIBLE RUNNER
+	// SET (the same per-stage solve RNR001 runs) excludes every self entry. A
+	// stage pod has no instance config to route backlog work and credentials
+	// by role, so the engine refuses every task of such a run a pod
+	// (cross_provider_backlog_pod_unsupported). A WARNING, like RNR005: the
+	// enforcement is at dispatch, where the refusal is loud and journaled, so
+	// this is advance notice at author time, not a second gate. The exception,
+	// as for RNR005, is placement.selfExecution: deny, where no runner can run
+	// the stage at all and the finding is an ERROR.
+	RunnerCrossProviderBacklogOffSelf WarningCode = "RNR007"
 	// WarningConnectionRefUnhonored (REF012) identifies a gaggle that declares
 	// a connectionRef at any of its project, backlog, or additionalRepos sites
 	// (#3296). connectionRef is a credential SELECTOR in the config, but the
@@ -297,6 +309,26 @@ const (
 	// explicit operator choice that validated cleanly before must not turn a
 	// --strict pipeline red on upgrade.
 	WarningCrossProviderCredentialOverride WarningCode = "CFG012"
+	// WarningMCPCredentialProvider (MCP002) identifies an external MCP
+	// server credentialRef that names a first-party capability (no kind: byo)
+	// whose credential belongs to another provider's repositories than the
+	// gaggle the goober runs in (a github:* capability on an Azure DevOps
+	// gaggle, an ado:* capability anywhere else). The harness refuses to
+	// materialise it and fails the stage before the harness starts
+	// (capability.FitsProvider), so every run of that goober on that
+	// gaggle fails; this surfaces it at validate time. Not strict-neutral:
+	// the config cannot run as written, so --strict promotes it.
+	WarningMCPCredentialProvider WarningCode = "MCP002"
+	// WarningCrossProviderBacklogUnbound (CFG015) identifies a topology (b)
+	// gaggle (a GitHub or Gitea backlog for Azure DevOps code) whose backlog
+	// repository has no instance repos[] entry with a token or GitHub App,
+	// while its deterministic stages declare backlog-family capabilities
+	// (github:issues:*, github:milestones:write) that no daemonIdentity or
+	// credentials: entry backs either. Those capabilities are never backed by
+	// the Azure DevOps repository's credential, so each stage that declares
+	// one fails at run time for want of a credential. Not strict-neutral: the
+	// stage cannot run as configured.
+	WarningCrossProviderBacklogUnbound WarningCode = "CFG015"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -1206,6 +1238,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleProviderTopology(r)
 	// GitHub Enterprise Server is unsupported: a github ref takes no baseUrl (#6347).
 	ix.checkGaggleGitHubBaseURL(r)
+	// Comment-classifying stages must agree on who is human (#6494).
+	ix.checkCommentIdentityAgreement(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1288,6 +1322,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	}
 	ix.checkWorkflowsCompile(r)
 	ix.checkInertADOCapabilities(r)
+	ix.checkMCPCredentialProviders(r)
 	ix.checkManifestPreviewAnnotationDeprecated(r)
 
 	// Every referenceNotFound call in this pass (including from checkWorkflow
@@ -2435,28 +2470,36 @@ func (ix *index) checkWorkflowVersionAndReferences(r *Report, w apiv1.Workflow, 
 	return canInterpret
 }
 
-func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
-	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
-	states := map[string]bool{}
+// workflowStateNames collects every declared state name — tasks, gates,
+// parallels, then DSL 3.1 maps — reporting each repeated name once per
+// repetition.
+func workflowStateNames(r *Report, w apiv1.Workflow, file string) map[string]bool {
+	names := make([]string, 0, len(w.Spec.Tasks)+len(w.Spec.Gates)+len(w.Spec.Parallels)+len(w.Spec.Maps))
 	for _, t := range w.Spec.Tasks {
-		if states[t.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", t.Name)
-		}
-		states[t.Name] = true
+		names = append(names, t.Name)
 	}
 	for _, g := range w.Spec.Gates {
-		if states[g.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", g.Name)
-		}
-		states[g.Name] = true
+		names = append(names, g.Name)
 	}
-
 	for _, p := range w.Spec.Parallels {
-		if states[p.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", p.Name)
-		}
-		states[p.Name] = true
+		names = append(names, p.Name)
 	}
+	for _, m := range w.Spec.Maps {
+		names = append(names, m.Name)
+	}
+	states := make(map[string]bool, len(names))
+	for _, name := range names {
+		if states[name] {
+			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", name)
+		}
+		states[name] = true
+	}
+	return states
+}
+
+func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
+	states := workflowStateNames(r, w, file)
 
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
 		r.add(errorStartState, Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)

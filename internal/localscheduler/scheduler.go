@@ -100,10 +100,16 @@ type WorkflowEntry struct {
 	// byte-identical to previous releases.
 	PlacementRefusal string
 	// HarnessRefusal, when non-empty, marks only this workflow unavailable
-	// because a harness it references failed startup preflight. It is a
-	// permanent condition for the current configuration/startup snapshot;
-	// sibling workflows remain eligible (#5163).
+	// because a harness it references failed startup preflight. Without a
+	// HarnessRecheck it is a permanent condition for the current
+	// configuration/startup snapshot; sibling workflows remain eligible
+	// (#5163).
 	HarnessRefusal string
+	// HarnessRecheck, when set, marks HarnessRefusal as transient: the
+	// harness's sign-in probe failed because the provider could not answer
+	// (#6017). The scheduler asks it for the current refusal instead, and the
+	// workflow becomes eligible again once it reports none.
+	HarnessRecheck HarnessRecheck
 	// DisabledReason, when non-empty, marks this workflow or its gaggle
 	// disabled by spec.enabled=false (#5200): refused before admission with
 	// this named diagnostic, while in-flight runs finish normally.
@@ -248,6 +254,7 @@ type runAdmission struct {
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
+	harnessRechecks       harnessRecheckState
 	durableScheduleDemand bool
 	sourceQueue           SourceQueue
 	workflows             map[WorkflowIdentity]WorkflowEntry
@@ -938,6 +945,7 @@ func (s *Scheduler) Wait() {
 // busy-polling, per the acceptance criterion. It returns when ctx is
 // cancelled.
 func (s *Scheduler) Run(ctx context.Context) error {
+	s.harnessRechecks.setLifetime(ctx)
 	for {
 		s.Tick(ctx, s.now())
 		if s.refreshHeartbeat != nil {
@@ -1063,7 +1071,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	var evaluated []WorkflowEntry
 	defer func() { releaseScheduleDemands(allCandidates) }()
 	for _, entry := range entries {
-		if s.authCircuitOpen(entryIdentity(entry), now) || skipPermanentRefusedEntry(entry) {
+		if s.authCircuitOpen(entryIdentity(entry), now) || s.skipRefusedEntry(entry, now) {
 			if entry.ScheduleCatchUpAll && s.sourceQueue != nil {
 				candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
 				// Discovery keeps custody while admission is held; do not poll
@@ -1344,12 +1352,13 @@ func (s *Scheduler) queueSnapshot(kind string, identity WorkflowIdentity) (queue
 	}
 }
 
-func skipPermanentRefusedEntry(entry WorkflowEntry) bool {
+func (s *Scheduler) skipRefusedEntry(entry WorkflowEntry, now time.Time) bool {
 	// Disabled workflows/gaggles (#5200), broken harness dependencies (#5163),
-	// and startup placement refusals (#2860) are permanent until config changes.
+	// and startup placement refusals (#2860) are permanent until config changes;
+	// a transient harness refusal (#6017) lasts until its recheck clears it.
 	// Skip them silently so they do not spend polls or flood the journal;
 	// explicit triggers still receive a named refusal through dispatch.
-	return entry.DisabledReason != "" || entry.HarnessRefusal != "" || entry.PlacementRefusal != ""
+	return entry.DisabledReason != "" || s.currentHarnessRefusal(entry, now) != "" || entry.PlacementRefusal != ""
 }
 
 func (s *Scheduler) orderedGaggles(gaggles []string) []string {
@@ -2857,12 +2866,15 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	return runID, true, ""
 }
 
+// permanentDispatchRefusal reports a refusal that holds for entry's whole
+// configuration. A transient harness refusal (#6017) is reported here too,
+// while it lasts: retrying the trigger cannot clear it, only its recheck can.
 func (s *Scheduler) permanentDispatchRefusal(entry WorkflowEntry) (string, bool) {
 	if entry.DisabledReason != "" {
 		return ReasonDisabled + ": " + entry.DisabledReason, true
 	}
-	if entry.HarnessRefusal != "" {
-		return ReasonHarnessUnavailable + ": " + entry.HarnessRefusal, true
+	if refusal := s.currentHarnessRefusal(entry, s.now()); refusal != "" {
+		return ReasonHarnessUnavailable + ": " + refusal, true
 	}
 	if entry.PlacementRefusal != "" {
 		return ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal, true
@@ -3105,6 +3117,7 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 // configuration — New and Reload — so the instance journal and `goobers
 // status` name every refusal without waiting for a dispatch attempt.
 func (s *Scheduler) journalStartupRefusals(entries []WorkflowEntry) {
+	s.harnessRechecks.reset()
 	for _, entry := range entries {
 		reason := entry.HarnessRefusal
 		if reason == "" {

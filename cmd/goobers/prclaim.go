@@ -6,13 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
-const pullRequestClaimPrefix = "pr/"
+const pullRequestClaimPrefix = claimsclient.PullRequestItemPrefix
 
 func pullRequestClaimKey(number int) string {
 	return pullRequestClaimPrefix + strconv.Itoa(number)
@@ -102,7 +103,7 @@ func claimedPullRequestNumber(root string) (number int, ok bool, err error) {
 // releasePullRequestClaimsForRun surrenders every PR lease runID holds. log
 // may be nil when the stage is on the claims plane (the daemon's ledger
 // journals the release there — claimLedgerJournal).
-func releasePullRequestClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
+func releasePullRequestClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string, reason claimrelease.Reason) error {
 	ledger, err := stageClaimLedgerForRun(l, l.Gaggle(), runID, withClaimJournal(log)...)
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
@@ -116,7 +117,7 @@ func releasePullRequestClaimsForRun(l instance.Layout, log *journal.InstanceLog,
 			if !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 				continue
 			}
-			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); err != nil {
+			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, reason); err != nil {
 				return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
 			}
 		}

@@ -215,6 +215,14 @@ Use [Release installation and verification](releases.md) and review
 stored data. A run already in progress remains bound to its pinned workflow
 definition; avoid removing a binary or harness needed to finish it.
 
+On a cluster with stage pods, upgrade the dispatch worker before the runner
+images. A pod's `goobers` resolves dispatcher-stamped settings that older
+workers do not stamp. An Azure DevOps stage of a named gaggle, for example,
+refuses to run without its gaggle's backlog settings (`GOOBERS_GAGGLE_BACKLOG`,
+#5957). The worker resolves these settings, like the gaggle namespaces and bot
+logins, when it starts, so restart it after adding a Gaggle or changing a
+Gaggle's `backlog` settings.
+
 ## Extend the Instance
 
 ### Add a workflow

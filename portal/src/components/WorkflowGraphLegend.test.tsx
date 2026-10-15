@@ -58,7 +58,7 @@ describe("WorkflowGraphLegend (#1431)", () => {
     ).getAllByRole("listitem");
     expect(edgeItems).toHaveLength(3);
     expect(nodeItems).toHaveLength(8);
-    expect(branchItems).toHaveLength(6);
+    expect(branchItems).toHaveLength(7);
     for (const item of [...edgeItems, ...nodeItems, ...branchItems]) {
       // Every sample is aria-hidden (a decorative shape/style cue) and is
       // always accompanied by real text content in the same list item.
@@ -78,6 +78,7 @@ describe("WorkflowGraphLegend (#1431)", () => {
       "Timed out",
       "Cancelled",
       "No output",
+      "Skipped",
     ]) {
       expect(within(branchKey).getByText(label)).toBeInTheDocument();
     }

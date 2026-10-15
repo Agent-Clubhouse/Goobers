@@ -175,6 +175,10 @@ type Outcome struct {
 	// uncommitted is set by the Executor (never an adapter) when a success
 	// completion failed the #5182 commit postcondition.
 	uncommitted *uncommittedWork
+	// execution is set by the Executor (never an adapter): the deadline the
+	// invocation actually ran under, when the completion came back, and the
+	// goobers-io readiness report (#5871).
+	execution executionEvidence
 	// Metrics contains adapter-observed numeric measures under canonical
 	// telemetry names. An absent measure is omitted; an observed zero is kept.
 	Metrics map[string]float64

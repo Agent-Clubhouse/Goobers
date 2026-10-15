@@ -449,6 +449,50 @@ func TestADOUpdateWorkItemAssignee(t *testing.T) {
 	}
 }
 
+// TestADOUpdateWorkItemBodyWritesMarkdownFormat pins ADO-N27 on the update
+// path: rewriting a work item's description also sets its
+// multilineFieldsFormat to Markdown, as create does, or Azure Boards renders
+// the Markdown body as HTML-escaped text.
+func TestADOUpdateWorkItemBodyWritesMarkdownFormat(t *testing.T) {
+	var patch []adoPatchOperation
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		fields := map[string]interface{}{"System.WorkItemType": "Issue", "System.Title": "Fix", "System.State": "Active"}
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{"id": 42, "rev": 3, "url": "item-url", "fields": fields})
+		case http.MethodPatch:
+			decodeJSON(t, r, &patch)
+			writeJSON(t, w, map[string]interface{}{"id": 42, "rev": 4, "url": "item-url", "fields": fields})
+		default:
+			t.Fatalf("unexpected work item method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	body := "## Plan\n\n- [ ] step"
+	if _, err := provider.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"}, ID: "42", Body: &body,
+	}); err != nil {
+		t.Fatalf("UpdateWorkItem: %v", err)
+	}
+	var description, format bool
+	for _, op := range patch {
+		switch {
+		case op.Op == "add" && op.Path == "/fields/System.Description" && op.Value == body:
+			description = true
+		case op.Op == "add" && op.Path == "/multilineFieldsFormat/System.Description" && op.Value == "Markdown":
+			format = true
+		}
+	}
+	if !description || !format {
+		t.Fatalf("update patch = %#v, want the description and its /multilineFieldsFormat Markdown op", patch)
+	}
+}
+
 func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
 	getRequests := 0
 	mux := http.NewServeMux()

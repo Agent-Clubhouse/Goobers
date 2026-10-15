@@ -11,7 +11,10 @@ Usage: goobers record-merge-refusal [path]
 Record a merge-pr refusal against the selected PR's durable demotion
 counter (#950). After a bounded number of refusals at an unchanged
 head, apply goobers:merge-demoted so the election crowns a sibling
-instead and the cluster drains around the stuck PR. Runs on
+instead and the cluster drains around the stuck PR. A refusal for
+unanswered human review feedback is not counted: the PR is routed to
+remediation instead (goobers:needs-remediation added,
+goobers:merge-ready removed). Runs on
 merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
 do), 1 = business error, 2 = usage/IO error.
 .fi

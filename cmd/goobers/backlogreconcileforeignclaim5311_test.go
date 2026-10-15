@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -120,7 +121,7 @@ func TestReconcileBacklogMetadataLeavesForeignInstanceClaimEpochs(t *testing.T) 
 	// A's run ends without releasing its provider marker: A's own ledger no
 	// longer backs it, so A's reconciliation clears the label and ends the
 	// epoch. Neither instance touches the other identity's claim.
-	if err := ledgerA.ReleaseScoped(keyA, "a-live-run"); err != nil {
+	if err := ledgerA.ReleaseScoped(keyA, "a-live-run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	reconcileAs(rootA, instanceA)

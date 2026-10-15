@@ -606,8 +606,8 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 	})
 
 	t.Run("shared identity: an unmarked own-login comment is human", func(t *testing.T) {
-		shared := newPRCommentClassifier(prCommentWatchIdentity{login: "bot", key: "bot"},
-			prCommentWatchSettings{identityMode: prCommentWatchIdentityShared})
+		shared := newCommentClassifier(commentIdentity{login: "bot", key: "bot"},
+			commentIdentitySettings{mode: commentIdentityShared})
 		own := comment("bot", "", at(time.Hour))
 		own.Body = stampOwnFixtureBody("verdict", "comment")
 		got, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{own, comment("bot", "", at(2*time.Hour))}, shared)
@@ -710,7 +710,7 @@ func feedbackAckPrefixFor(value string) string {
 }
 
 // dedicatedLoginClassifier is the GitHub/Gitea default: a dedicated bot login.
-func dedicatedLoginClassifier(login string) prCommentClassifier {
-	return newPRCommentClassifier(prCommentWatchIdentity{login: login, key: login},
-		prCommentWatchSettings{identityMode: prCommentWatchIdentityDedicated})
+func dedicatedLoginClassifier(login string) commentClassifier {
+	return newCommentClassifier(commentIdentity{login: login, key: login},
+		commentIdentitySettings{mode: commentIdentityDedicated})
 }

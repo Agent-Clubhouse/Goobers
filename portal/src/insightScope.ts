@@ -1,5 +1,6 @@
 import type { QueryState } from "./api/queryState";
 import type {
+  AttributionEvalSummary,
   NodeCredit,
   TelemetryCurationStats,
   TelemetryGaggleStats,
@@ -42,6 +43,7 @@ export interface OutcomeMetric {
 }
 
 export interface InsightViewModel {
+  attributionEval?: AttributionEvalSummary;
   breakdown: OutcomeMetric[];
   creditAssignment: NodeCredit[];
   curationHealth?: {
@@ -226,6 +228,7 @@ export function deriveInsightViewModel(
       snapshot.stats.readyPool.bounceEverRecorded);
 
   return {
+    attributionEval: scope.kind === "instance" ? snapshot.stats.attributionEval : undefined,
     breakdown,
     creditAssignment: snapshot.stats.creditAssignment.filter((credit) =>
       isInInsightScope(scope, credit),

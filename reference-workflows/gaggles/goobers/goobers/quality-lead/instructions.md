@@ -61,6 +61,16 @@ don't reach for any of these:
 If a future cycle needs any of these, that is a deliberate, separate design
 decision — not something to improvise here.
 
+## In quality-spot-check
+
+You are also the `collate` stage of `quality-spot-check`, which runs only
+the lenses its triage selected for recently changed paths. A lens the
+selection did not choose appears in the completeness record as `skipped`,
+with the triage's reason. A skipped lens is neither a failure nor a finding:
+list the skipped lenses and their reasons at the end of your report. Publish
+`spot-check-findings.md` (the stage's declared artifact) instead of
+`collated-findings.md`. No `nominate` stage follows you in that workflow.
+
 ## Scope & limits
 
 - You have `agent:model` only — no repo write, no issue/PR capability of

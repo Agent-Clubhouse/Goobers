@@ -400,7 +400,7 @@ func newWireFixtures() wireFixtures {
 			WorkspaceBranchSHA:    "abc123",
 			HistoricalRepassCount: 2,
 		},
-		Operator: wireOperatorRunSummary(),
+		Operator: wireOperatorRunSummary(finishedAt),
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -632,8 +632,16 @@ func newWireFixtures() wireFixtures {
 				BranchName:   "security-lens",
 				BranchStatus: journal.BranchSucceeded,
 				Completeness: []journal.BranchOutcome{
-					{Branch: 1, Name: "security-lens", Status: journal.BranchSucceeded, Artifacts: 1},
+					{Branch: 1, Name: "security-lens", Status: journal.BranchSucceeded, Artifacts: 1, Reason: "touches internal/auth"},
 					{Branch: 2, Name: "perf-lens", Status: journal.BranchFailed, Artifacts: 0},
+					{Branch: 3, Name: "unit-a", Status: journal.BranchSucceeded, Artifacts: 1, MapItemIdentity: "unit-a", MapItemDigest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"},
+				},
+				MapItemIdentity: "unit-a",
+				MapItemDigest:   "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102",
+				MapRoster: &readservice.MapRosterSummary{
+					SourceTask: "plan", SourceSlot: "shards", SourceDigest: "sha256:roster", Integrity: apiv1.IntegrityDerived,
+					FailurePolicy: apiv1.BranchContinueOnError, ItemTimeoutSeconds: 1800, MaxConcurrent: 4,
+					Items: []readservice.MapItemSummary{{Branch: 1, Identity: "unit-a", Digest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"}},
 				},
 				Raw: json.RawMessage(`{"futureField":"preserved"}`),
 			}},
@@ -1039,7 +1047,8 @@ func intPointer(value int) *int {
 
 // wireOperatorRunSummary is the run-summary fixture's operator projection,
 // including the #5313 reliability projection.
-func wireOperatorRunSummary() readservice.OperatorRunSummary {
+func wireOperatorRunSummary(reviewedAt time.Time) readservice.OperatorRunSummary {
+	reviewAge := int64(60000)
 	return readservice.OperatorRunSummary{
 		Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", URL: "https://example.test/issues/673", Labels: []string{providers.LabelNeedsHuman}},
 		DisplayTitle:      "Implement #673: Improve operator status",
@@ -1048,7 +1057,12 @@ func wireOperatorRunSummary() readservice.OperatorRunSummary {
 		Trajectory:        "terminal",
 		Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
 		NextTransition:    "",
-		PotentialBlockers: []string{},
+		PotentialBlockers: []string{"review escalate: reviewer requested a human decision"},
+		Blockers: []readservice.OperatorBlocker{{
+			Code: readservice.BlockerCodeReviewNotPassed, Source: readservice.BlockerSourceReview,
+			Message:    "review escalate: reviewer requested a human decision",
+			ObservedAt: &reviewedAt, AgeMillis: &reviewAge,
+		}},
 		Reliability: &readservice.RunReliability{
 			State:        string(journal.PhaseEscalated),
 			CurrentStage: "review",

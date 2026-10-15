@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -601,7 +602,7 @@ func TestRunInterventionUsesDurableClaimHistoryWhenInstanceJournalMissesAcquisit
 	if ok, _, err := ledger.ClaimScoped(key, "run-durable-history", machine.Def.Name, time.Hour); err != nil || !ok {
 		t.Fatalf("seed original claim: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(key, "run-durable-history"); err != nil {
+	if err := ledger.ReleaseScoped(key, "run-durable-history", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _, err := ledger.ClaimScoped(key, "other-run", machine.Def.Name, time.Hour); err != nil || !ok {

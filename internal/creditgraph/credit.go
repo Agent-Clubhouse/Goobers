@@ -63,15 +63,32 @@ type Contribution struct {
 // on and the evidence behind it. Evidence entries prefixed "intervention:"
 // name a natural experiment — a repeated stage attempt whose outcome differed
 // — and are the only entries that are more than correlational.
+//
+// ErrorCode is the normative error code the failing stage's stage.finished
+// event recorded, when it recorded one. It is provenance about what failed,
+// never an input to the class: Summary is fixed per-rule text that names no
+// component, so a consumer that needs to know which component failed reads
+// ErrorCode, not Summary.
 type CauseFinding struct {
 	Class       FailureClass `json:"class"`
 	NodeID      string       `json:"nodeId"`
 	Stage       string       `json:"stage,omitempty"`
+	ErrorCode   string       `json:"errorCode,omitempty"`
 	Confidence  float64      `json:"confidence"`
 	Summary     string       `json:"summary"`
 	Assumptions []string     `json:"assumptions,omitempty"`
 	Evidence    []string     `json:"evidence,omitempty"`
 }
+
+// stageErrorCodeAttribute is the stage-node attribute carrying the normative
+// error code of the stage attempt's stage.finished event.
+const stageErrorCodeAttribute = "errorCode"
+
+// environmentCauseSummary is the fixed summary of every ClassEnvironment
+// finding. It describes the rule, not the failure: "harness or environment"
+// is the attributor's wording for "not an agent decision" and names no
+// component, so it is never evidence of which component failed.
+const environmentCauseSummary = "the stage recorded an error status, which the harness or environment raises rather than an agent decision"
 
 // Attribution is the credit assignment computed over one run's graph. Its
 // contributions and causes are in deterministic graph order, so two
@@ -508,7 +525,7 @@ func (a *attributor) classifyStage(facts stageFacts, attribution Attribution) []
 	var causes []CauseFinding
 	if facts.node.Attributes["status"] == "error" {
 		causes = append(causes, a.finding(ClassEnvironment, facts.node.ID, stage, directConfidence, attribution,
-			"the stage recorded an error status, which the harness or environment raises rather than an agent decision",
+			environmentCauseSummary,
 			[]string{"an \"error\" status is treated as environment or harness failure, not as an agent decision"}, nil))
 	}
 	if len(facts.failedResults) > 0 {
@@ -557,7 +574,20 @@ func (a *attributor) classifyStage(facts stageFacts, attribution Attribution) []
 			[]string{"an unattributed failure stays unknown rather than being assigned to the nearest recorded component"},
 			nil))
 	}
-	return a.adjust(causes, facts)
+	return withStageErrorCode(a.adjust(causes, facts), facts.node)
+}
+
+// withStageErrorCode stamps the failing stage's recorded error code on each of
+// its findings, leaving class, confidence, and evidence untouched.
+func withStageErrorCode(causes []CauseFinding, stage Node) []CauseFinding {
+	code := stage.Attributes[stageErrorCodeAttribute]
+	if code == "" {
+		return causes
+	}
+	for index := range causes {
+		causes[index].ErrorCode = code
+	}
+	return causes
 }
 
 // provenanceMissing reports whether the stage's own record is absent, whether

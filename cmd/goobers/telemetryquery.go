@@ -1055,6 +1055,7 @@ func faultAuditReportFromPlane(report *telemetryclient.FaultAuditReport) *credit
 		UnknownFindings:     faultFindingsFromPlane(report.UnknownFindings),
 		Suppressed:          report.Suppressed,
 		Truncated:           report.Truncated,
+		FilingThreshold:     (*creditgraph.FilingThreshold)(report.FilingThreshold),
 	}
 }
 
@@ -1070,6 +1071,7 @@ func faultFindingsFromPlane(findings []telemetryclient.FaultFinding) []creditgra
 			AlternativeDomains: finding.AlternativeDomains, RecommendedOwner: finding.RecommendedOwner,
 			RecommendedAction: finding.RecommendedAction,
 			Verification:      creditgraph.VerificationState(finding.Verification),
+			Fileable:          finding.Fileable,
 		})
 	}
 	return result

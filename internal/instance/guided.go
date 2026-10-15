@@ -511,7 +511,7 @@ func validateGuidedOptions(opts GuidedOptions) error {
 			guidedTokenEnv{label: "repository token environment variable", value: opts.RepoTokenEnv},
 			guidedTokenEnv{label: "work-tracking token environment variable", value: opts.WorkTrackingTokenEnv},
 		)
-		if seen[GuidedWorkflowImplementation] || seen[GuidedWorkflowBacklogCuration] {
+		if guidedNeedsPullRequestToken(opts.Workflows) {
 			tokenEnvs = append(tokenEnvs, guidedTokenEnv{
 				label: "pull-request token environment variable",
 				value: opts.PullRequestTokenEnv,
@@ -553,17 +553,14 @@ func validateGuidedOptions(opts GuidedOptions) error {
 // validateGuidedProvider checks the repository provider and the options that
 // depend on it. Azure DevOps accepts every repository auth kind the instance
 // configuration accepts, and refuses work-nomination, whose file-issues stage
-// files GitHub issues only. Guided merge-review is offered on Azure DevOps
-// only: guided GitHub setup grants no pull-request token to it.
+// files GitHub issues only. Merge-review is offered on both providers: on
+// GitHub its pull-request, review, merge and branch-delete capabilities are
+// granted the pull-request token (guidedMergeReviewCapabilities).
 func validateGuidedProvider(opts GuidedOptions) error {
 	switch opts.RepoProvider {
 	case string(apiv1.ProviderGitHub):
 		if opts.RepoProject != "" {
 			return fmt.Errorf("repository project is only valid for Azure DevOps")
-		}
-		if slices.Contains(opts.Workflows, GuidedWorkflowMergeReview) {
-			return fmt.Errorf("guided setup offers the %s workflow on Azure DevOps only; on GitHub select %s, %s and/or %s",
-				GuidedWorkflowMergeReview, GuidedWorkflowImplementation, GuidedWorkflowBacklogCuration, GuidedWorkflowWorkNomination)
 		}
 	case string(apiv1.ProviderADO):
 		if opts.RepoProject == "" {
@@ -617,12 +614,19 @@ func guidedConfig(opts GuidedOptions) *Config {
 			Capability: string(capability.GitHubIssuesWrite),
 			Token:      guidedCapabilityToken(opts, opts.WorkTrackingTokenEnv),
 		})
-		if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) ||
-			slices.Contains(opts.Workflows, GuidedWorkflowBacklogCuration) {
+		if guidedNeedsPullRequestToken(opts.Workflows) {
 			credentials = append(credentials, CredentialGrant{
 				Capability: string(capability.ProviderPRWrite),
 				Token:      guidedCapabilityToken(opts, opts.PullRequestTokenEnv),
 			})
+		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowMergeReview) {
+			for _, granted := range guidedMergeReviewCapabilities {
+				credentials = append(credentials, CredentialGrant{
+					Capability: string(granted),
+					Token:      guidedCapabilityToken(opts, opts.PullRequestTokenEnv),
+				})
+			}
 		}
 		if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
 			credentials = append(credentials, CredentialGrant{
@@ -662,6 +666,34 @@ func guidedConfig(opts GuidedOptions) *Config {
 		Runner:        RunnerConfig{Capabilities: append([]string(nil), opts.RequiredCapabilities...)},
 	}
 	return cfg
+}
+
+// guidedNeedsPullRequestToken reports whether a guided GitHub scaffold with
+// workflows grants the pull-request token: implementation and
+// backlog-curation for provider:pr:write, merge-review for that and
+// guidedMergeReviewCapabilities.
+func guidedNeedsPullRequestToken(workflows []string) bool {
+	return slices.Contains(workflows, GuidedWorkflowImplementation) ||
+		slices.Contains(workflows, GuidedWorkflowBacklogCuration) ||
+		slices.Contains(workflows, GuidedWorkflowMergeReview)
+}
+
+// guidedMergeReviewCapabilities are the GitHub capabilities the canonical
+// merge-review workflow's stages declare beyond provider:pr:write and
+// github:issues:write, all granted the pull-request token on a guided GitHub
+// scaffold. Without these grants they fall back to the repository token,
+// which guided setup documents as read-only, so merge-review's verdict
+// comments, native reviews, merges and merged-branch cleanup would fail at
+// runtime on least-privilege tokens. github:pr:review shares the
+// pull-request identity, so GitHub refuses a native review of a PR that
+// identity opened and apply-verdict publishes the verdict through its
+// comment/label handoff instead (#870); point that grant at a second
+// identity's token to get native reviews.
+var guidedMergeReviewCapabilities = []capability.Capability{
+	capability.GitHubPRWrite,
+	capability.GitHubPRReview,
+	capability.GitHubPRMerge,
+	capability.GitHubBranchDelete,
 }
 
 func guidedRepositoryToken(opts GuidedOptions) TokenRef {

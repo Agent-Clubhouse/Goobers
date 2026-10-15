@@ -202,14 +202,19 @@ compile-matrix gate (`test/providermatrix`, ADO-N1,
 [`ado-parity-dsl-2-0.md`](ado-parity-dsl-2-0.md) §8.1) covers every shipped
 definition:
 
-- **Subjects.** `reference-workflows/`, `config-examples/`, and the
-  `goobers init --template=standard` scaffold (every guided workflow module, with
-  pull-request CI and with a local CI command). The scaffold is generated for
-  `--provider=github` and `--provider=ado`.
+- **Subjects.** `reference-workflows/`, `config-examples/`,
+  `examples/ios-simulator/`, the templates `goobers init` embeds (`starter`,
+  `quickstart-v1` and `demo`, read from `internal/instance/`), the standalone
+  `examples/hello-world.yaml` (compiled inside the `starter` tree, whose gaggle
+  it names), and the `goobers init --template=standard` scaffold (every guided
+  workflow module, with pull-request CI and with a local CI command). The
+  scaffold is generated for `--provider=github` and `--provider=ado` from
+  `instance.StandardInitDefaults`, the defaults `init` itself uses.
 - **Providers.** Each subject is copied into a temporary directory. Every
   gaggle's `spec.project` and `spec.backlog` are then rewritten onto one
   provider, with that provider's repository shape: an ADO organization and
-  project, or a Gitea base URL.
+  project, or a Gitea base URL. The manifest's `repo` and `backlog` forge
+  connections are rewritten onto the same provider.
 - **Checks.** Full config validation through `instance.LoadConfigDir` (schema,
   workflow semantics, policy actions and manifest admission), then CONF-6 for
   every workflow through `ProviderCapabilityProblems`. That function reports
@@ -222,7 +227,9 @@ definition:
   entry names the item that fixes it. The PR that fixes a gap deletes that
   entry. An entry whose failure no longer occurs fails the gate, so the list
   cannot go stale. Because each entry covers one capability, the fixing items
-  stay independent of each other.
+  stay independent of each other. CONF-6 runs only on a subject that loads, so
+  when a capability entry's subject fails to load, the gate reports "CONF-6 not
+  evaluated: load failed" instead of advising that the entry be deleted.
 - **Mutation check.** A copy of the shipped `merge-review` with
   `github:pr:merge` removed from `merge-pr` must fail validation on both GitHub
   and ADO. This shows the gate rejects a missing landing grant.

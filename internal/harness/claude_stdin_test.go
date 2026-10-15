@@ -47,7 +47,7 @@ func TestClaudeAdapterSendsPromptsOnStdinNotArgv(t *testing.T) {
 				},
 				acts: []func(ProcessRequest) error{nil, writeSuccessCompletion},
 			}
-			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 			envelope := testEnvelope(workspace)
 			envelope.Goal = payload
 			if _, err := adapter.Run(context.Background(), RunRequest{
@@ -104,8 +104,9 @@ func TestClaudeAdapterStdinReachesRealProcess(t *testing.T) {
 				t.Fatal(err)
 			}
 			adapter := &ClaudeAdapter{
-				Command: []string{os.Args[0], "-test.run=^TestClaudeStdinReceiverHelper$", "--", claudeStdinReceiverSentinel},
-				Runner:  ExecProcessRunner{},
+				KeychainReader: absentClaudeKeychain,
+				Command:        []string{os.Args[0], "-test.run=^TestClaudeStdinReceiverHelper$", "--", claudeStdinReceiverSentinel},
+				Runner:         ExecProcessRunner{},
 			}
 			envelope := testEnvelope(workspace)
 			envelope.Goal = payload

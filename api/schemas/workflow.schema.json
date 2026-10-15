@@ -107,7 +107,8 @@
         },
         "tasks": { "type": "array", "description": "Work states in the workflow state machine.", "items": { "$ref": "#/$defs/task" } },
         "gates": { "type": "array", "description": "Validation and branching states in the workflow state machine.", "items": { "$ref": "#/$defs/gate" } },
-        "parallels": { "type": "array", "description": "Static fan-out/fan-in states in the workflow state machine.", "items": { "$ref": "#/$defs/parallel" } }
+        "parallels": { "type": "array", "description": "Static fan-out/fan-in states in the workflow state machine.", "items": { "$ref": "#/$defs/parallel" } },
+        "maps": { "type": "array", "maxItems": 128, "description": "DSL 3.1 preview data-driven fan-out states. Each runs one declared task once per entry of a frozen roster document. Runtimes refuse maps at run start until they implement them.", "items": { "$ref": "#/$defs/map" } }
       }
     }
   },
@@ -133,8 +134,17 @@
                     ]
                   }
                 }
+              },
+              "parallels": {
+                "items": {
+                  "not": { "required": ["selection"] },
+                  "properties": {
+                    "branches": { "items": { "not": { "required": ["optional"] } } }
+                  }
+                }
               }
-            }
+            },
+            "not": { "required": ["maps"] }
           }
         }
       }
@@ -147,8 +157,48 @@
       "required": ["name", "start"],
       "properties": {
         "name": { "type": "string", "minLength": 1, "description": "Branch identifier used in journal events, completeness records, and branch-qualified input references." },
-        "start": { "type": "string", "minLength": 1, "description": "Name of this branch's first task or gate." }
+        "start": { "type": "string", "minLength": 1, "description": "Name of this branch's first task or gate." },
+        "optional": { "type": "boolean", "description": "DSL 3.1 preview. When true, the branch runs only when the parallel's frozen selection names it; requires the parallel to declare selection. Non-optional branches always run." }
       }
+    },
+    "fanOutSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "slot"],
+      "properties": {
+        "task": { "type": "string", "minLength": 1, "description": "Task that publishes the source document. It must run before the fan-out on every path." },
+        "slot": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$", "description": "Name of an application/json artifactSlots entry on the source task." }
+      }
+    },
+    "map": {
+      "description": "DSL 3.1 preview data-driven fan-out state: runs one declared task once per entry of a frozen roster document (api/schemas/fanout-roster.schema.json), through the static parallel executor, then runs join once. failurePolicy, join and onFailure keep static parallel semantics.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "task", "failurePolicy", "join"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "State name used as a transition target." },
+        "source": { "$ref": "#/$defs/fanOutSource", "description": "Producer slot holding the roster document." },
+        "task": { "type": "string", "minLength": 1, "description": "Mapped task declared in spec.tasks. Only this map may enter it, and it must end at @join, @abort or @escalate." },
+        "bindings": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Mapped-task invocation input names bound to a per-item value: item, identity or digest. A binding name must not collide with a static task input.",
+          "propertyNames": { "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+          "additionalProperties": { "type": "string", "enum": ["item", "identity", "digest"] }
+        },
+        "failurePolicy": { "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"], "description": "How item failures affect sibling items, the join state, and failure routing." },
+        "join": { "type": "string", "minLength": 1, "description": "State run once after every item settles when the failure policy permits joining." },
+        "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes an item failure." },
+        "itemTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Declared per-item budget, with static branchTimeoutSeconds semantics." },
+        "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 32, "description": "Maximum number of items dispatched concurrently. Omit or set to 1 for sequential execution." }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "failurePolicy": { "const": "continue_on_error" } }, "required": ["failurePolicy"] },
+          "then": { "not": { "required": ["onFailure"] } },
+          "else": { "required": ["onFailure"] }
+        }
+      ]
     },
     "parallel": {
       "description": "A fan-out/fan-in state: forks the run into a statically-declared set of named branches and joins them at a single successor once every branch has settled. failurePolicy is required — there is no default. onFailure is required for fail_fast/all_or_nothing and forbidden under continue_on_error, where the join always runs and owns the decision.",
@@ -162,7 +212,16 @@
         "join": { "type": "string", "minLength": 1, "description": "State run once after all branches settle when the failure policy permits joining." },
         "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes a branch failure." },
         "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Declared branch budget used only for compile-time task-timeout coherence checks. The runner does not currently enforce a branch wall-clock timeout." },
-        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum number of branches dispatched concurrently. Omit or set to 1 for deterministic sequential execution. Values greater than 1 are supported only when every reachable branch stage uses a scratch or repo-readonly workspace; writable branch workspaces are rejected." }
+        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum number of branches dispatched concurrently. Omit or set to 1 for deterministic sequential execution. Values greater than 1 are supported only when every reachable branch stage uses a scratch or repo-readonly workspace; writable branch workspaces are rejected." },
+        "selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source"],
+          "description": "DSL 3.1 preview. Makes this a selective parallel: branches marked optional run only when the frozen selection document (api/schemas/fanout-selection.schema.json) names them. Runtimes refuse selective parallels at run start until they implement them.",
+          "properties": {
+            "source": { "$ref": "#/$defs/fanOutSource", "description": "Producer slot holding the selection document." }
+          }
+        }
       },
       "allOf": [
         {
@@ -187,7 +246,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times a run may be routed back to the same already-completed stage before escalation. The count is cumulative per target stage across the run, charged by automated and agentic gate outcomes that route back to that stage and by producer retries after an invalid handoff. Only policy outcomes (anything other than pass, infra, or timeout) are charged: a pass branch into a completed stage is a forward step, infra and timeout outcomes spend their own retry and polling budgets, and human-gate decisions are never charged." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum active execution time of a run (its age less host suspension and durable child waits), expressed as a Go duration. Omit to disable." }
       }
@@ -393,6 +452,7 @@
               "create-issue",
               "delete-branch",
               "demote-pr",
+              "disarm-landing",
               "edit-issue",
               "escalate-pr",
               "fan-out-remediation",

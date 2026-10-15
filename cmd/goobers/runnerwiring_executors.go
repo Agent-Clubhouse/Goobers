@@ -527,6 +527,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	if repo, ok := adoRepoForGaggle(input.Config, input.GaggleProject); ok {
 		adoRepo = &repo
 		shell.RepoAuthScheme = adoauth.AuthScheme(repo)
+		shell.CredentialSchemes = adoCredentialSchemes(input.Config, input.GaggleProject, input.Grants)
 	}
 	var giteaRepo *instance.RepoRef
 	if repo, ok := giteaRepoForGaggle(input.Config, input.GaggleProject); ok {

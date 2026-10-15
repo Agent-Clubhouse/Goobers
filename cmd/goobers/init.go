@@ -83,8 +83,9 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +
 	"--template=standard non-interactively seeds backlog-curation and implementation\n" +
 	"with their three canonical personas by default. Use --workflows to select\n" +
-	"implementation, backlog-curation, merge-review (Azure DevOps only), and/or\n" +
-	"work-nomination.\n" +
+	"implementation, backlog-curation, merge-review, and/or work-nomination. On\n" +
+	"GitHub, merge-review's pull-request, review, merge and branch-delete\n" +
+	"capabilities use the --pr-token-env token.\n" +
 	"--repo accepts a GitHub owner/name or Azure DevOps identity; --branch\n" +
 	"defaults to main.\n" +
 	"Implementation requires either --pr-ci or an explicit --ci-command JSON argv\n" +

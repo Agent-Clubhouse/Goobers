@@ -248,6 +248,9 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil {
 		return RunResult{}, err
 	}
+	if err := wf.RefuseUnsupportedFanOut(in.Spec); err != nil {
+		return RunResult{}, err
+	}
 	in.Item = normalizeItemIntegrity(in.Item)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
@@ -594,7 +597,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, gateInitialAttemptClass(repassBudget.Attempts[g.Name], repassBudget.InfrastructureAttempts[g.Name]), rec)
 			}
 			if gerr != nil {
-				return RunResult{}, gerr
+				return gateEvaluationFailed(ctx, rec, g.Name, gerr, upstream, steps)
 			}
 			// #3384: the patch the reviewer judged, committed as an artifact
 			// and surfaced as the "<gate>.diff" pointer. These are the same
@@ -768,6 +771,13 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		rec.blocked(ctx, t.Name, result)
 		return "", RunResult{Status: StatusEscalated, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
 	case apiv1.ResultFailure:
+		// #6019: checked before continueOnError and before any gate routing.
+		// The subject moved under the run, so every later stage would act on
+		// work built for a revision the pull request no longer has.
+		if workspaceHeadMovedResult(result) {
+			rec.workspaceHeadMoved(ctx, t.Name, result.Error.Message)
+			return "", supersededRunResult(t.Name, upstream, steps), true
+		}
 		if t.ContinueOnError {
 			rec.toleratedFailure(ctx, t.Name)
 			break

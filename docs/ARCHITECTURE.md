@@ -110,7 +110,10 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
   started/finished, stage started/finished (policy-retry attempts included), gate
   verdicts, artifacts recorded (with digests), external refs touched, parallel and
   branch lifecycle (`parallel.started`, `branch.started`, `branch.finished`,
-  `parallel.finished`) including the branch completeness record. Events are compared in
+  `parallel.finished`) including the branch completeness record and a selective
+  parallel's frozen `parallel.started` selection (its reasons excluded), and the
+  DSL 3.1 map lifecycle (`map.started` with its frozen roster, `map.finished`, and
+  the `mapItemIdentity`/`mapItemDigest` a map item's branch events carry). Events are compared in
   `seq` order (§4); parallel-branch events order by `(branch, seq)` **at every tier**.
 - **Excluded** from comparison: timestamps and durations; infrastructure-retry
   attempts (attempt events are tagged `policy` vs `infra`, and only `policy`
@@ -362,7 +365,8 @@ Contract rules:
   `SEC-044`). Non-injection holds on every provider, Azure DevOps included:
   every ADO auth kind resolves in the daemon, a stage receives only the
   `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
-  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and, for a value whose source
+  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and per-value
+  `GOOBERS_CREDENTIAL_SCHEME_<capability>` and, for a value whose source
   states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`;
   a deterministic goobers-CLI stage with such a value also gets a stage
   credential-refresh grant, `GOOBERS_CREDENTIAL_ENDPOINT` +
@@ -413,11 +417,16 @@ Contract rules:
   suspension and durable child waits) independently of journal activity and
   is disabled when omitted. An automated or
   agentic gate may override `maxRepasses`. The value bounds cumulative
-  re-entries to a branch's target stage across all gates that route back to
-  that stage; a pass at one gate does not reset that target's live budget.
-  Only non-pass outcomes are charged: a `pass` branch into an already-completed
-  stage is a forward step, so each repair loop is bounded by the failure that
-  sent it back rather than by the passing validation that follows. Separate target stages can therefore have independent budgets. Stall
+  re-entries to a branch's target stage: every automated or agentic gate
+  outcome that routes back to that stage is charged to it, as is every
+  producer retry after an invalid handoff, and a pass at one gate does not
+  reset that target's live budget. Only policy outcomes (anything other than
+  `pass`, `infra`, or `timeout`) are charged: a `pass` branch into an
+  already-completed stage is a forward step, so each repair loop is bounded by
+  the failure that sent it back rather than by the passing validation that
+  follows; `infra` and `timeout` outcomes spend their own retry and polling
+  budgets; and human-gate decisions are never charged. Separate target stages
+  can therefore have independent budgets. Stall
   detection does not have a task-level override: task/gate `timeoutSeconds`
   and retry policies already own per-attempt execution bounds, while the stall
   watchdog protects the run journal as a whole.
@@ -672,7 +681,7 @@ and implemented into PRs by the instance running on your own machine.
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop. The `reference-workflows/` reference config
 now defines the full self-hosting workflow set and
-currently loads **11 goobers and 16 workflows**; the CI-guarded inventory in
+currently loads **11 goobers and 17 workflows**; the CI-guarded inventory in
 [`reference-workflows/README.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/reference-workflows/README.md)
 is the count and roster of record. Together those workflows provide the canonical
 patterns for curating and

@@ -142,7 +142,8 @@ scrubber.
 > former ADO missing-grant exception is gone, because every ADO auth kind backs the repository's
 > grants in the daemon. Only a capability the adapter marks optional (`agent:model`) is still
 > skipped when ungranted. Deterministic stages on Azure DevOps authenticate only with their
-> delivered `GOOBERS_CRED_<capability>` and `GOOBERS_REPO_AUTH_SCHEME`
+> delivered `GOOBERS_CRED_<capability>`, in the scheme stated for that capability's source
+> (`GOOBERS_CREDENTIAL_SCHEME_<capability>`, #5957), else `GOOBERS_REPO_AUTH_SCHEME`
 > (`docs/stage-contract.md`, "Credential delivery").
 
 ## 4. Spec / acceptance criteria

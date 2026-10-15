@@ -67,8 +67,10 @@
       "allowedTransitive": [
         "github.com/goobers/goobers/api/integrity",
         "github.com/goobers/goobers/api/v1alpha1",
+        "github.com/goobers/goobers/internal/claimrelease",
         "github.com/goobers/goobers/internal/diagnostics/featureusage",
         "github.com/goobers/goobers/internal/fieldpredicate",
+        "github.com/goobers/goobers/internal/jcs",
         "github.com/goobers/goobers/internal/journal",
         "github.com/goobers/goobers/internal/labelpredicate",
         "github.com/goobers/goobers/internal/lifecycle",
@@ -85,6 +87,7 @@
         "github.com/goobers/goobers/internal/secretpattern",
         "github.com/goobers/goobers/internal/sharedclaim",
         "github.com/goobers/goobers/internal/stringpolicy",
+        "github.com/goobers/goobers/internal/truncate",
         "github.com/goobers/goobers/internal/version",
         "github.com/goobers/goobers/providers"
       ]
@@ -100,8 +103,10 @@
       "allowedTransitive": [
         "github.com/goobers/goobers/api/integrity",
         "github.com/goobers/goobers/api/v1alpha1",
+        "github.com/goobers/goobers/internal/claimrelease",
         "github.com/goobers/goobers/internal/diagnostics/featureusage",
         "github.com/goobers/goobers/internal/fieldpredicate",
+        "github.com/goobers/goobers/internal/jcs",
         "github.com/goobers/goobers/internal/journal",
         "github.com/goobers/goobers/internal/labelpredicate",
         "github.com/goobers/goobers/internal/lifecycle",
@@ -118,6 +123,7 @@
         "github.com/goobers/goobers/internal/secretpattern",
         "github.com/goobers/goobers/internal/sharedclaim",
         "github.com/goobers/goobers/internal/stringpolicy",
+        "github.com/goobers/goobers/internal/truncate",
         "github.com/goobers/goobers/internal/version",
         "github.com/goobers/goobers/providers"
       ]

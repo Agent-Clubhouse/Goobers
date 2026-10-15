@@ -24,6 +24,7 @@ const (
 type workflowSchedulerProjection struct {
 	engineFallbacks map[localscheduler.WorkflowIdentity]readmodel.EngineFallback
 	refillBlocked   map[localscheduler.WorkflowIdentity]string
+	blockerClears   map[string]time.Time
 }
 
 type schedulerStateProjector struct {
@@ -99,6 +100,7 @@ func (p *schedulerStateProjector) refresh(ctx context.Context) {
 	p.service.workflowSchedulerState.Store(&workflowSchedulerProjection{
 		engineFallbacks: fallbacks,
 		refillBlocked:   maps.Clone(projected.refillBlocked),
+		blockerClears:   maps.Clone(projected.blockerClears),
 	})
 }
 
@@ -159,5 +161,6 @@ func (s *Local) workflowSchedulerSnapshot(ctx context.Context) (*workflowSchedul
 	return &workflowSchedulerProjection{
 		engineFallbacks: fallbacks,
 		refillBlocked:   maps.Clone(state.refillBlocked),
+		blockerClears:   maps.Clone(state.blockerClears),
 	}, nil
 }

@@ -543,7 +543,7 @@ func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, 
 			return c.GetWorkItem(ctx, req.Repository, req.ID)
 		},
 		postRelease: func(ctx context.Context, winner string) error {
-			return postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release")
+			return postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner, req.Reason), "claim-release")
 		},
 		hasLabel: func(item WorkItem, label string) bool {
 			return item.HasLabel(label)

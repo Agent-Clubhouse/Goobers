@@ -168,7 +168,7 @@ func restoreContainedParentUsage(tf taskFrame, total *stageUsageTotals, instruct
 
 func (r *Runner) prepareRecoveredTaskContext(ctx context.Context, tf *taskFrame, branch int, start *int32, class *journal.AttemptClass, accounting **resumeRetryAccounting) error {
 	if r.cfg.SelfExecutionDenied {
-		if err := r.admitParentExecution(ctx, tf.in.Machine); err != nil {
+		if err := r.admitExecution(ctx, tf.in.Machine); err != nil {
 			return err
 		}
 	}

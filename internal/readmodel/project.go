@@ -135,6 +135,13 @@ type OperatorFacts struct {
 	WorkspaceBranchSHA    string
 	InjectedInputs        []journal.InputRef
 	Reliability           ReliabilityFacts
+
+	// LatestErrorAt is when LatestError was recorded: the observed-at time of
+	// the blocker status derives from it (#5404). Nil for an event without a
+	// timestamp and for rows projected before projection version 10.
+	LatestErrorAt *time.Time
+	// ReviewAt is when the latest review verdict was recorded.
+	ReviewAt *time.Time
 }
 
 func (o *OperatorFacts) foldObservations(event journal.Event) {
@@ -374,10 +381,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		if event.Gate != "" {
 			seenStages[event.Gate] = struct{}{}
 		}
-		if event.Error != nil {
-			detail := *event.Error
-			row.Operator.LatestError = &detail
-		}
+		row.Operator.observeError(event)
 
 		switch event.Type {
 		case journal.EventStageHeartbeat:
@@ -478,6 +482,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			node.Arm = event.Verdict
 			row.observeGateOutcome(event, stages)
 			if event.Gate == "review" {
+				row.Operator.ReviewAt = eventTimePointer(event)
 				row.Operator.ReviewVerdict = event.Verdict
 				row.Operator.ReviewRationale = ""
 				row.Operator.ReviewReasonCode = ""
@@ -609,11 +614,12 @@ func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []jou
 	for _, node := range nodes {
 		steps += node.Attempts
 	}
-	// Entering a parallel is itself an engine step but is not represented by a
-	// run_node row. Full rebuilds (including the migration replay) have the
-	// immutable event history available, so preserve that part explicitly.
+	// Entering a parallel or a map is itself an engine step but is not
+	// represented by a run_node row. Full rebuilds (including the migration
+	// replay) have the immutable event history available, so preserve that
+	// part explicitly.
 	for _, event := range events {
-		if event.Type == journal.EventParallelStarted {
+		if event.Type == journal.EventParallelStarted || event.Type == journal.EventMapStarted {
 			steps++
 		}
 	}
@@ -1184,4 +1190,25 @@ func (r *RunRow) observeRunnerAnnotation(event journal.Event) {
 	if suggestion, ok := RunnerResetSuggestion(event); ok {
 		r.CurrentStage = suggestion
 	}
+}
+
+// observeError records the event's error, if any, as the run's latest, with
+// when it was observed.
+func (o *OperatorFacts) observeError(event journal.Event) {
+	if event.Error == nil {
+		return
+	}
+	detail := *event.Error
+	o.LatestError = &detail
+	o.LatestErrorAt = eventTimePointer(event)
+}
+
+// eventTimePointer is the event's timestamp, or nil for an unstamped event
+// (#3774) so "unknown" is never rendered as the zero time.
+func eventTimePointer(event journal.Event) *time.Time {
+	if event.Time.IsZero() {
+		return nil
+	}
+	at := event.Time
+	return &at
 }

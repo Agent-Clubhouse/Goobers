@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -65,7 +66,7 @@ func TestSharedRetryRegistrationFailurePreventsRemoteTransition(t *testing.T) {
 		t.Fatalf("seed: %v %v", ok, err)
 	}
 	resolver.binding.BeforeTransition = func(context.Context) error { return failure }
-	if err := file.ReleaseScoped(t.Context(), key, "run"); !errors.Is(err, failure) || store.writes != 1 || callbackCalls != 1 {
+	if err := file.ReleaseScoped(t.Context(), key, "run", claimrelease.Completed.Reason()); !errors.Is(err, failure) || store.writes != 1 || callbackCalls != 1 {
 		t.Fatalf("unregistered release reached provider: %v %d", err, store.writes)
 	}
 }
@@ -92,11 +93,11 @@ func TestSharedVisibilityHookRunsAfterTransitionsIncludingLostACK(t *testing.T) 
 		}
 	}
 	store.loseACK = true
-	if err := file.ReleaseScoped(t.Context(), key, "run"); err == nil {
+	if err := file.ReleaseScoped(t.Context(), key, "run", claimrelease.Completed.Reason()); err == nil {
 		t.Fatal("lost ACK reported as release success")
 	}
 	store.loseACK = false
-	if err := file.ReleaseScoped(t.Context(), key, "run"); err != nil {
+	if err := file.ReleaseScoped(t.Context(), key, "run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if len(observations) != 4 || observations[0] != resolver.binding.Owner || observations[1] != resolver.binding.Owner || observations[2] != (sharedclaim.Owner{}) || observations[3] != (sharedclaim.Owner{}) {
@@ -143,11 +144,11 @@ func TestFileSharedClaimAdmissionSurvivesLostACKAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A legacy assembly cannot silently discard ownership after restart.
-	if err := open(nil).ReleaseScoped(t.Context(), key, "run"); err == nil {
+	if err := open(nil).ReleaseScoped(t.Context(), key, "run", claimrelease.Completed.Reason()); err == nil {
 		t.Fatal("shared release fell back to the local-only assembly")
 	}
 	store.loseACK = true
-	if released, err := open(resolver).ReleaseAllForRun(t.Context(), "run"); err == nil || len(released) != 0 {
+	if released, err := open(resolver).ReleaseAllForRun(t.Context(), "run", claimrelease.Completed.Reason()); err == nil || len(released) != 0 {
 		t.Fatalf("uncertain bulk release reported success: %+v %v", released, err)
 	}
 	entries, err = open(resolver).ForRunAll(t.Context(), "run")
@@ -155,7 +156,7 @@ func TestFileSharedClaimAdmissionSurvivesLostACKAndRestart(t *testing.T) {
 		t.Fatalf("restart lost reconciliation ownership: %+v %v", entries, err)
 	}
 	store.loseACK = false
-	if released, err := open(resolver).ReleaseAllForRun(t.Context(), "run"); err != nil || len(released) != 1 {
+	if released, err := open(resolver).ReleaseAllForRun(t.Context(), "run", claimrelease.Completed.Reason()); err != nil || len(released) != 1 {
 		t.Fatalf("release reconciliation failed: %+v %v", released, err)
 	}
 }
@@ -181,7 +182,7 @@ func TestFileSharedClaimRefusesWrongOwnerAndResolverFailure(t *testing.T) {
 		t.Fatalf("claim: %t %v", ok, err)
 	}
 	resolver.binding.Owner.Token = "stale"
-	if err := file.ReleaseScoped(t.Context(), key, "run"); err == nil || store.writes != 1 {
+	if err := file.ReleaseScoped(t.Context(), key, "run", claimrelease.Completed.Reason()); err == nil || store.writes != 1 {
 		t.Fatal("wrong incarnation reached provider release")
 	}
 	entries, err := file.ForRunAll(t.Context(), "run")

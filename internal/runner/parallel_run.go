@@ -188,6 +188,18 @@ type parallelGateTerminal struct {
 	lastResult apiv1.ResultEnvelope
 }
 
+// parallelVisit is one entry into a parallel or map: its (expanded)
+// declaration, the execution state a resume rebuilt (nil for a fresh visit),
+// the selection a fresh selective visit froze, and for a fresh map visit the
+// map and the frozen map.started to append before any item starts.
+type parallelVisit struct {
+	spec      apiv1.Parallel
+	existing  *parallelExec
+	selection *journal.ParallelSelection
+	mapDef    *apiv1.Map
+	mapStart  *journal.Event
+}
+
 type concurrentParallelResult struct {
 	target            string
 	runJoin           bool
@@ -201,6 +213,9 @@ type concurrentParallelResult struct {
 	workspaceRevision *apiv1.WorkspaceRevision
 	repoRef           *apiv1.RepoRef
 	paused            bool
+	// fanOutResults is the per-occurrence result store rebuilt when a map
+	// visit finishes; nil for a static parallel.
+	fanOutResults *fanOutResults
 }
 
 func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Parallel) error {
@@ -252,8 +267,7 @@ func (r *Runner) runConcurrentParallel(
 	ctx context.Context,
 	jr *journal.Run,
 	in StartInput,
-	p apiv1.Parallel,
-	par *parallelExec,
+	visit parallelVisit,
 	basePointers []apiv1.ContextPointer,
 	baseLastStage string,
 	baseLastResult apiv1.ResultEnvelope,
@@ -265,18 +279,10 @@ func (r *Runner) runConcurrentParallel(
 	// Concurrent workers always use explicit branch journals. Keeping the run
 	// default at root prevents manager and terminal events from inheriting the
 	// last active branch after a resume.
-	jr.SetBranch(0)
-	jr.SetMachineState(p.Name)
-	if par == nil {
-		par = newParallelExec(p)
-		jr.SetBranchCursors(par.cursors())
-		if err := jr.Append(journal.Event{
-			Type:         journal.EventParallelStarted,
-			Parallel:     p.Name,
-			Completeness: par.completeness(),
-		}); err != nil {
-			return concurrentParallelResult{}, err
-		}
+	p := visit.spec
+	par, err := beginConcurrentParallel(jr, visit)
+	if err != nil {
+		return concurrentParallelResult{}, err
 	}
 
 	rd, err := journal.OpenRead(jr.Dir())
@@ -313,6 +319,10 @@ func (r *Runner) runConcurrentParallel(
 	for i := range p.Branches {
 		branch := par.branchSnapshot(i)
 		history := branchEvents.events(branch.id)
+		if branch.status == journal.BranchSkipped {
+			// Never started: no outcome, slot, workspace or fork.
+			continue
+		}
 		if branch.settled {
 			var err error
 			var terminalTarget string
@@ -348,11 +358,13 @@ func (r *Runner) runConcurrentParallel(
 			branch, cursors = par.startBranch(index)
 			jr.SetBranchCursors(cursors)
 			if err := jr.Append(journal.Event{
-				Type:       journal.EventBranchStarted,
-				Branch:     branch.id,
-				Parallel:   p.Name,
-				BranchName: branch.name,
-				Stage:      branch.start,
+				Type:            journal.EventBranchStarted,
+				Branch:          branch.id,
+				Parallel:        p.Name,
+				BranchName:      branch.name,
+				Stage:           branch.start,
+				MapItemIdentity: branch.itemIdentity,
+				MapItemDigest:   branch.itemDigest,
 			}); err != nil {
 				slot.release()
 				return false, err
@@ -403,10 +415,10 @@ func (r *Runner) runConcurrentParallel(
 				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel repository: conflicting configured repositories selected by parallel branches")
 			}
 		}
-		for stage, outputs := range outcome.completed {
-			mergedCompleted.put(stage, outputs)
-		}
-		if outcome.lastStage != "" {
+		mergeBranchOutputs(mergedCompleted, outcome.completed, in.Machine, par.isMap())
+		// A map's join subject stays the root's: an item's result is
+		// reachable only through mapResults, never as "the last stage".
+		if outcome.lastStage != "" && !par.isMap() {
 			lastStage, lastResult = outcome.lastStage, outcome.lastResult
 		}
 	}
@@ -419,13 +431,8 @@ func (r *Runner) runConcurrentParallel(
 	if err := r.joinParallelForks(ctx, jr, in, p, runtime, outcomes, runJoin); err != nil {
 		return concurrentParallelResult{}, err
 	}
-	jr.SetBranchCursors(nil)
-	if err := jr.Append(journal.Event{
-		Type:         journal.EventParallelFinished,
-		Parallel:     p.Name,
-		Completeness: par.completeness(),
-		Target:       target,
-	}); err != nil {
+	store, err := finishConcurrentVisit(jr, in, par, target)
+	if err != nil {
 		return concurrentParallelResult{}, err
 	}
 	mergedPointers := append([]apiv1.ContextPointer(nil), basePointers...)
@@ -444,7 +451,81 @@ func (r *Runner) runConcurrentParallel(
 		terminalGate:      terminalGate,
 		workspaceRevision: workspaceRevision,
 		repoRef:           repoRef,
+		fanOutResults:     store,
 	}, nil
+}
+
+// mergeBranchOutputs folds one branch's completed-stage outputs into the
+// root's. A map's mapped task is skipped: its results are per item and live
+// only in the per-occurrence store (design §6.3).
+func mergeBranchOutputs(merged, branch stageOutputs, machine *workflow.Machine, isMap bool) {
+	for stage, outputs := range branch {
+		if isMap && isMappedTask(machine, stage) {
+			continue
+		}
+		merged.put(stage, outputs)
+	}
+}
+
+// finishConcurrentVisit appends the visit's finish event, map.finished for a
+// map and parallel.finished otherwise, and for a map assembles the join
+// inputs from the journal through that event.
+func finishConcurrentVisit(jr *journal.Run, in StartInput, par *parallelExec, target string) (*fanOutResults, error) {
+	jr.SetBranchCursors(nil)
+	finished := journal.EventParallelFinished
+	if par.isMap() {
+		finished = journal.EventMapFinished
+	}
+	if err := jr.Append(journal.Event{
+		Type:         finished,
+		Parallel:     par.spec.Name,
+		Completeness: par.completeness(),
+		Target:       target,
+	}); err != nil {
+		return nil, err
+	}
+	if !par.isMap() {
+		return nil, nil
+	}
+	reader, err := journal.OpenReadOnly(jr.Dir())
+	if err != nil {
+		return nil, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, err
+	}
+	return assembleMapJoin(in.RunID, events, in.Machine, par), nil
+}
+
+// beginConcurrentParallel returns the visit's execution state, journaling
+// parallel.started (with any frozen selection) for a fresh visit.
+func beginConcurrentParallel(jr *journal.Run, visit parallelVisit) (*parallelExec, error) {
+	jr.SetBranch(0)
+	jr.SetMachineState(visit.spec.Name)
+	if visit.existing != nil {
+		return visit.existing, nil
+	}
+	if visit.mapStart != nil {
+		// The frozen roster is the durable source of truth for the visit:
+		// no item starts until map.started is appended (§4.2).
+		par := newMapExec(*visit.mapDef, *visit.mapStart.MapRoster, 0)
+		jr.SetBranchCursors(par.cursors())
+		if err := jr.Append(*visit.mapStart); err != nil {
+			return nil, err
+		}
+		par.mapVisit.seq = jr.Seq()
+		return par, nil
+	}
+	par := newParallelExec(visit.spec)
+	par.applySelection(visit.selection)
+	jr.SetBranchCursors(par.cursors())
+	return par, jr.Append(journal.Event{
+		Type:         journal.EventParallelStarted,
+		Parallel:     visit.spec.Name,
+		Completeness: par.completeness(),
+		Selection:    visit.selection,
+	})
 }
 
 func newParallelGateEvaluator(r *Runner, in StartInput, branchJournal gate.Journal, history []journal.Event, visitedStages map[string]bool) *gate.Evaluator {
@@ -553,6 +634,7 @@ func (r *Runner) runParallelBranch(
 					workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
 					workspaceRevision: &in.workspaceRevision,
 					repoRef:           &in.RepoRef,
+					mapItem:           par.itemBinding(branch.id),
 				}
 				applyChildTaskResume(&frame, restored.child)
 				restored.child, restored.parent = nil, false
@@ -959,7 +1041,7 @@ func parallelBranchTerminal(history []journal.Event, machine *workflow.Machine) 
 
 func parallelRootEvents(events []journal.Event, parallel string) ([]journal.Event, bool) {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventParallelStarted && events[i].Parallel == parallel {
+		if isFanOutStart(events[i].Type) && events[i].Parallel == parallel {
 			return events[:i], true
 		}
 	}
@@ -973,13 +1055,20 @@ type parallelBranchEventIndex struct {
 func newParallelBranchEventIndex(events []journal.Event, parallel string) parallelBranchEventIndex {
 	index := parallelBranchEventIndex{byBranch: make(map[int][]journal.Event)}
 	for _, event := range events {
-		if event.Type == journal.EventParallelStarted && event.Parallel == parallel {
+		if isFanOutStart(event.Type) && event.Parallel == parallel {
 			index.byBranch = make(map[int][]journal.Event)
 			continue
 		}
 		index.byBranch[event.Branch] = append(index.byBranch[event.Branch], event)
 	}
 	return index
+}
+
+// isFanOutStart reports whether kind opens a fan-out visit: a parallel's
+// parallel.started or a map's map.started. Parallel and map names share one
+// state namespace, so a name match identifies the construct.
+func isFanOutStart(kind journal.EventType) bool {
+	return kind == journal.EventParallelStarted || kind == journal.EventMapStarted
 }
 
 func (i parallelBranchEventIndex) events(branch int) []journal.Event {

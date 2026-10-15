@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -90,7 +91,7 @@ func TestOpenPRRefresherDoesNotDeduplicateAcrossGagglesOnSameRepository(t *testi
 		polls.Add(1)
 		return &fakeHeadLister{}
 	}
-	set, err := deps.openPRRefresher(cfg, workflows, nil, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-1")
+	set, err := deps.openPRRefresher(cfg, workflows, nil, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,8 +124,8 @@ func TestADOOpenPRReadCacheUsesActualConfiguredAuthAndFreshScope(t *testing.T) {
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{"Etag": {`"version"`}}, Body: io.NopCloser(strings.NewReader(`{"value":[]}`)), Request: request}, nil
 	})
-	deps.ado = func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error) {
-		l, err := original(repo, reg, stores)
+	deps.ado = func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver, quota providers.QuotaObserver) (localscheduler.OpenPRLister, error) {
+		l, err := original(repo, reg, stores, quota)
 		if err != nil {
 			return nil, err
 		}
@@ -134,7 +135,7 @@ func TestADOOpenPRReadCacheUsesActualConfiguredAuthAndFreshScope(t *testing.T) {
 	dir := t.TempDir()
 	read := func(gaggle, generation string) {
 		t.Helper()
-		l, ref, _, err := deps.forRepo(gaggle, repo, nil, &openPRTestRegistrar{}, dir, nil, generation)
+		l, ref, _, err := deps.forRepo(gaggle, repo, nil, &openPRTestRegistrar{}, dir, nil, generation, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,6 +160,9 @@ func TestStageADOReadCacheRequiresExplicitLaunchScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(executor.GaggleEnvVar, "own")
+	// A stage pod: no readable instance config, the gaggle backlog settings
+	// stamped by the dispatcher (#5957).
+	t.Setenv(dispatcher.GaggleBacklogEnv, "{}")
 	t.Setenv(executor.ConfigGenerationEnvVar, "pinned-run-generation")
 	t.Setenv(providersnapshot.EnvVar, "evaluation")
 	t.Setenv(executor.ProviderReadBindingEnvVar, "")
@@ -275,5 +279,43 @@ func TestCounterReadScopeComesFromRetainedSchedulerGeneration(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("configured counter unavailable")
+	}
+}
+
+// TestADOOpenPRListerReportsQuotaToDaemonState pins #5960: the daemon's
+// provider-quota state reaches the ADO open-PR lister's provider, so ADO
+// throttling seen on the 45-second open-PR poll is recorded where the
+// scheduler gates provider polls — not dropped because the lister was built
+// with no quota observer.
+func TestADOOpenPRListerReportsQuotaToDaemonState(t *testing.T) {
+	t.Setenv("ADO_QUOTA_TOKEN", "token")
+	repo := instance.RepoRef{Provider: "ado", Owner: "org", Project: "project", Name: "repo", Token: instance.TokenRef{Env: "ADO_QUOTA_TOKEN"}}
+	reset := time.Now().Add(time.Hour).Unix()
+	deps := productionRuntimeDeps().openPRListers
+	original := deps.ado
+	deps.ado = func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver, quota providers.QuotaObserver) (localscheduler.OpenPRLister, error) {
+		l, err := original(repo, reg, stores, quota)
+		if err != nil {
+			return nil, err
+		}
+		l.(*providers.ADOProvider).Client = scopedStageReadTransport(func(request *http.Request) (*http.Response, error) {
+			header := http.Header{}
+			header.Set("X-RateLimit-Remaining", "0")
+			header.Set("X-RateLimit-Reset", strconv.FormatInt(reset, 10))
+			return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(`{"value":[]}`)), Request: request}, nil
+		})
+		return l, nil
+	}
+	state := localscheduler.NewProviderQuotaState()
+	lister, ref, _, err := deps.forRepo("gaggle", repo, nil, &openPRTestRegistrar{}, t.TempDir(), nil, "generation-1", state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lister.ListOpenPullRequests(t.Context(), ref); err != nil {
+		t.Fatal(err)
+	}
+	resetAt, exhausted := state.ExhaustedFor(apiv1.ProviderADO, time.Unix(reset, 0).Add(-time.Minute))
+	if !exhausted || !resetAt.Equal(time.Unix(reset, 0).UTC()) {
+		t.Fatalf("ADO quota state = exhausted %v until %s, want the open-PR poll's exhausted window recorded", exhausted, resetAt)
 	}
 }

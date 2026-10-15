@@ -45,8 +45,10 @@ export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
-export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
-export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output";
+/** "map": a DSL 3.1 map runs one declared task once per item of a frozen roster. */
+export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel" | "map";
+/** "skipped": a selective parallel's frozen selection did not choose this optional branch; it never started. */
+export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output" | "skipped";
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
@@ -669,6 +671,8 @@ export interface WorkflowSafetyDetails {
 export interface RepoRef {
   provider: Provider;
   owner: string;
+  /** Azure DevOps project; omitted for GitHub and Gitea. */
+  project?: string;
   name: string;
   branch?: string;
   connectionRef?: string;
@@ -1040,6 +1044,16 @@ export interface LineageRun {
   phase?: RunPhase;
 }
 
+/** One run blocker with when its evidence was observed (#5404). `message` matches the potentialBlockers entry. */
+export interface OperatorBlocker {
+  code: string;
+  source: string;
+  message: string;
+  /** Absent when the observed time is unknown. */
+  observedAt?: string;
+  ageMillis?: number;
+}
+
 export interface OperatorRunSummary {
   issue?: { number: string; title?: string; url?: string; labels?: string[] };
   /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
@@ -1061,6 +1075,8 @@ export interface OperatorRunSummary {
   nextTransition?: string;
   /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** potentialBlockers with provenance and age, one per source and code, with cleared conditions removed (#5404); absent on older daemons. */
+  blockers?: OperatorBlocker[];
   /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
   diagnosticsLimitations?: string[];
   /** Implementation reliability projection (#5313); absent on older daemons. */
@@ -1302,6 +1318,8 @@ export type KnownRunEventType =
   | "daemon.dirty_restart"
   | "parallel.started"
   | "parallel.finished"
+  | "map.started"
+  | "map.finished"
   | "branch.started"
   | "branch.finished"
   | "agent.lifecycle"
@@ -1383,23 +1401,54 @@ export interface RunEvent {
   workflow?: string;
   runId?: string;
   reason?: string;
-  /** The parallel state this event concerns; set on parallel.started/finished and branch.started/finished. */
+  /** The fan-out state this event concerns: the parallel on parallel.*, the map on map.*, and the owning parallel or map on branch.*. */
   parallel?: string;
-  /** The declared branch name; set on branch.started/branch.finished. */
+  /** The declared branch name, or a map item's roster identity; set on branch.started/branch.finished. */
   branchName?: string;
   /** The branch's terminal status; set on branch.finished. */
   branchStatus?: BranchStatus;
-  /** The branch completeness record; set on parallel.finished, one entry per declared branch. */
+  /** The branch completeness record; set on parallel.started/finished (one entry per declared branch, skipped branches included) and map.finished (one entry per roster item). */
   completeness?: BranchOutcome[];
+  /** The roster identity of the map item a branch.started/branch.finished concerns. */
+  mapItemIdentity?: string;
+  /** The canonical digest of the map item a branch.started/branch.finished concerns. */
+  mapItemDigest?: string;
+  /** The frozen roster summary on map.started. */
+  mapRoster?: MapRosterSummary;
   raw?: JsonValue;
 }
 
-/** One entry in a parallel's completeness record (one per declared branch). */
+/** One entry in a parallel's completeness record (one per declared branch) or a map's (one per roster item). */
 export interface BranchOutcome {
   branch: number;
   name: string;
   status: BranchStatus;
   artifacts: number;
+  /** Selective parallels only: the selection's reason for a selected branch, or why a skipped branch did not run. */
+  reason?: string;
+  /** Maps only: the roster item's identity. */
+  mapItemIdentity?: string;
+  /** Maps only: the roster item's canonical digest. */
+  mapItemDigest?: string;
+}
+
+/** A map visit's frozen roster: its source and each item's identity and digest, in branch order. Item values stay in the journal. */
+export interface MapRosterSummary {
+  sourceTask: string;
+  sourceSlot: string;
+  sourceDigest: string;
+  integrity: string;
+  failurePolicy: string;
+  itemTimeoutSeconds?: number;
+  maxConcurrent: number;
+  items: MapItemSummary[];
+}
+
+/** One frozen roster item; item i runs as branch i. */
+export interface MapItemSummary {
+  branch: number;
+  identity: string;
+  digest: string;
 }
 
 export interface ExternalRef {
@@ -1642,6 +1691,35 @@ export interface TelemetryStatsResult {
   readyPool: TelemetryReadyPool;
   trend?: TelemetryTrendBucket[];
   trendPrevious?: TelemetryTrendBucket;
+  /** The instance's published Backprop attribution accuracy eval, when one exists. */
+  attributionEval?: AttributionEvalSummary;
+}
+
+export interface AttributionEvalSummary {
+  schema: string;
+  evalSetVersion: string;
+  evalSetDigest: string;
+  caseCount: number;
+  unattributed: number;
+  accuracy: {
+    granularity: string;
+    correct: number;
+    total: number;
+    accuracy: number;
+  }[];
+  calibration: {
+    target: string;
+    brierScore: number;
+    expectedCalibrationError: number;
+    bins: {
+      lower: number;
+      upper: number;
+      count: number;
+      correct: number;
+      meanConfidence: number;
+      accuracy: number;
+    }[];
+  };
 }
 
 export interface GraphAnalytics {

@@ -1,6 +1,7 @@
 package artifactset
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 
@@ -80,6 +81,54 @@ func (p *Prepared) Bind(contract *apiv1.ArtifactPublication, attempt int32) erro
 	copied.Slots = append([]apiv1.ArtifactSlot(nil), contract.Slots...)
 	p.publication, p.attempt = &copied, attempt
 	return nil
+}
+
+// LookupSlot reads and fully validates a producer's runner-authored named
+// artifact-set index and returns the binding for one slot, without reading
+// the slot's payload. A legacy (unnamed) index has no slot bindings and is
+// refused, so no ordinal or file name is ever used as a fallback binding.
+// Callers check the binding's pointer (media type, size) before reading the
+// payload with ReadVerified.
+func LookupSlot(ctx context.Context, reader Reader, pointers []apiv1.ContextPointer, producer, slot string) (SlotBinding, error) {
+	if !semanticName.MatchString(producer) || !slotName.MatchString(slot) || reader == nil {
+		return SlotBinding{}, fmt.Errorf("%w: invalid producer, slot or missing reader", ErrInvalid)
+	}
+	indexPointer, err := positional(pointers, producer, 0)
+	if err != nil {
+		return SlotBinding{}, err
+	}
+	if indexPointer.MediaType != "application/json" {
+		return SlotBinding{}, fmt.Errorf("%w: index must be application/json", ErrInvalid)
+	}
+	data, err := readVerified(ctx, reader, indexPointer, MaxIndexBytes)
+	if err != nil {
+		return SlotBinding{}, err
+	}
+	var index Index
+	if err := decodeIndex(data, &index); err != nil {
+		return SlotBinding{}, err
+	}
+	if err := validateIndex(index, pointers, producer); err != nil {
+		return SlotBinding{}, err
+	}
+	if index.SchemaVersion != NamedSchemaVersion {
+		return SlotBinding{}, fmt.Errorf("%w: producer published no named slots", ErrInvalid)
+	}
+	for _, binding := range index.Bindings {
+		if binding.Slot == slot {
+			return binding, nil
+		}
+	}
+	return SlotBinding{}, &PublicationError{Code: MissingSlotCode, Slot: slot}
+}
+
+// ReadVerified reads one runner-authored pointer's payload, refusing a
+// pointer above limit before reading and bytes whose size or digest differ.
+func ReadVerified(ctx context.Context, reader Reader, pointer apiv1.ArtifactPointer, limit int64) ([]byte, error) {
+	if reader == nil {
+		return nil, fmt.Errorf("%w: missing reader", ErrInvalid)
+	}
+	return readVerified(ctx, reader, pointer, limit)
 }
 
 func validateBindings(index Index, producer string) error {

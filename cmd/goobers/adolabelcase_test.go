@@ -18,9 +18,10 @@ import (
 // cmd/goobers really uses on ADO: the label predicate is applied here, not in
 // the provider, so the scan hands the provider the predicate's labels as
 // CompareLabels. An excluded label a human first wrote as Needs-Design must
-// still exclude the item rather than fail open.
+// still exclude the item rather than fail open. Item 1 also carries Team-A, so
+// it satisfies the include clause and only the folded exclude keeps it out.
 func TestListBacklogScanWindowADOFoldsPredicateLabels(t *testing.T) {
-	tags := map[int]string{1: "Goobers:Approved; Needs-Design", 2: "goobers:approved; Team-A"}
+	tags := map[int]string{1: "Goobers:Approved; Team-A; Needs-Design", 2: "goobers:approved; Team-A"}
 	server := newADOLabelCaseScanServer(t, tags)
 	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = server.URL })
 	filter, err := labelpredicate.Compile(`"team-a" in labels`, nil, []string{"needs-design"})

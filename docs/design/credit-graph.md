@@ -176,7 +176,34 @@ under a separate finite scan budget so sparse enrollment cannot hide later
 evidence.
 
 One stable signature produces one deterministic finding across duplicate runs
-and repeated passes. Shared daemon, worktree, scheduler, journal, claim,
+and repeated passes. Each cause's candidate domain is decided by its evidence
+in order of authority. The failure class comes first: `bad-tool-choice`,
+`bad-interpretation`, `weak-instructions`, `routing`, and `topology` are
+workflow-definition causes, and `model` is external. The attributor's summaries
+are fixed text per class, so words in them never override the class. For
+example, a routing cause says "the model that ran…" and is still a routing
+cause. Next comes the failing stage's recorded error code (`errorCode` on the
+cause, copied from `stage.finished`). Only codes whose emitter guarantees the
+owner decide. Workspace, journal, claims-lock, workspace and context
+provisioning, and agentic-kit codes are Goobers runtime. Rate-limit, provider
+auth, network, unavailable-credential, and `harness.failure` codes are external.
+Catch-all codes decide nothing: `provider_error`, `poll_provider_error`, and
+`executor_error` are stamped on any failure nothing earlier classified. So do
+codes either side can own, such as `infra_git_failed` and the required
+`goobers-io` MCP server being unavailable, and anything matched only by a
+prefix. Component keywords count only for a cause that neither its class nor
+its code resolves. They are read only from cause text, never from the
+attributor's environment template, its `intervention:` notes, or graph node IDs,
+which embed stage, agent, and tool names. An `environment` cause rules out the
+workflow but names no owner, so with no code or named component it stays
+`mixed-or-unknown` instead of defaulting to external. A workflow-definition
+cause's signature is scoped to its workflow and stage, so one instruction
+template failing in two workflows yields two workflow findings. Shared-component
+signatures stay unscoped, because crossing workflows is their evidence. Node
+paths are compared with each run's own `run:<id>` node replaced by a
+placeholder (`run`, which is also what findings' `nodePaths` show), so a
+failure can localize to one path across runs, and a post-fix run can exercise
+the affected path. Shared daemon, worktree, scheduler, journal, claim,
 admission, publication, recovery, or shared-CI failures must cross unrelated
 workflow boundaries before they are assigned to Goobers product reliability.
 Harness, model, provider, credential, network, filesystem, operating-system,
@@ -339,6 +366,84 @@ Not yet implemented (follow-ups under #7121): verifying claims in the in-run
 snapshot, weighting propagation by verified claims, and cross-checking
 reliance against stage inputs.
 
+## Attribution accuracy eval
+
+Ground-truth labels say whether a run's *result* was right; they do not say
+whether Backprop blamed the right thing. The attribution eval measures that.
+`test/attributioneval/testdata/v1.json` (schema
+`goobers.dev/backprop/attribution-eval/v1`) is a versioned set of failed runs,
+each carrying its journal and span content inline plus a label naming the
+responsible fault domain, workflow, stage, decisive step (graph node ID), and
+failure class. Label sources are `synthetic` (a failure injected at a known
+step), `human`, or `fix-marker`. v1 holds 12 synthetic cases and 6 real failed
+runs from a dogfood instance, imported with their journals. A human or
+fix-marker label must carry `provenance`: the source run, `labeledBy`,
+`labeledAt` (a date), and `reason`, the fields the ground-truth label store
+(`goobers telemetry label`) records. A fix-marker label also names the fix
+commit and PR that resolved the failure in `reference`. The label store only
+says whether a run's attribution was correct, so the eval label adds the
+responsible domain, stage, step, and class. `go run ./test/attributioneval
+-import=<run-dir>` prints a case built from a run directory, with its
+provenance seeded from the run's label store, for a labeler to complete.
+
+`go run ./test/attributioneval` builds and attributes each case, takes the most
+confident cause, derives its fault domain with `creditgraph.CauseFaultDomain`
+(the auditor's per-signal rule), and scores it independently at each
+granularity (`domain`, `workflow`, `stage`, `step`, `class`). Workflow is credited when the blamed
+cause sits in a stage of the labeled workflow, so it only discriminates
+run-level from stage-level blame. A case for which attribution produces no
+cause earns no credit at any granularity and is counted as `unattributed`. The
+report also gives the Brier score and
+expected calibration error (five equal-width bins) of cause confidence against
+fault-domain correctness, the granularity the auditor files on. Results are ordered by case ID and the set digest is
+order-independent, so a fixed set always yields the same report.
+
+It prints per-granularity accuracy and writes the full JSON report with
+`-report=PATH`. The same command, and `TestAttributionEvalRegressionGuard` in
+CI, fails when accuracy at any granularity falls below
+`test/attributioneval/testdata/v1.baseline.json`, or when the set's version
+or content digest no longer matches the baseline. After an intended change,
+record a new baseline with `go run ./test/attributioneval -update`.
+
+Labels use [MAST](https://arxiv.org/abs/2503.13657)'s top-level categories as
+the vocabulary, extended with a bucket for failures outside the agent system
+and an explicit unknown. A label's MAST category must match its class:
+
+| Failure class | MAST category | Default fault domain |
+|---|---|---|
+| `weak-instructions`, `routing` | `specification` | `workflow-definition` |
+| `bad-tool-choice`, `topology` | `inter-agent-misalignment` | `workflow-definition` |
+| `bad-interpretation` | `task-verification` | `workflow-definition` |
+| `model`, `environment` | `outside-agent-system` | `harness-model-provider-environment` |
+| `bad-tool-result`, `unknown` | `unknown` | `mixed-or-unknown` |
+
+The default domain applies when the cause's text names no shared runtime or
+external component; the auditor's keyword rules can override it either way.
+
+`-publish=<instance-root>` records the checked report's summary (schema
+`goobers.dev/backprop/attribution-eval-summary/v1`: set version and digest,
+accuracy, domain calibration bins) in
+`scheduler/backprop-audit/attribution-eval.json`. A summary calibrated against
+any other granularity is rejected, and publishing is refused with `-update`
+and after a regression. The telemetry stats API returns it as
+`attributionEval`, and the portal's Insight page shows it at instance scope as
+"Attribution accuracy" (per-granularity accuracy and populated calibration
+bins). The fault auditor
+derives its filing threshold from it: the upper bound of the highest populated
+calibration bin whose accuracy is below 0.8, else the lower bound of the lowest
+populated bin, never below the default 0.5 (used when nothing is published).
+When the bin that includes confidence 1 falls short, no confidence is safe:
+the threshold sets `noneFileable` and no finding is fileable. v1 yields 0.6.
+Every audit report carries `filingThreshold` (confidence, `noneFileable`,
+source, eval set) and each finding `fileable`; only fileable findings start
+the filing pass's report cooldown. A malformed published summary is an error,
+not a silent fallback to the default. Every published score must lie in [0,1],
+each accuracy must be scored over every case, and every accuracy must match its
+correct and total counts.
+
+Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
+command and counterfactual fault-injection generators.
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and
@@ -443,7 +548,10 @@ failing, `Attribute` emits `CauseFinding`s drawn from a fixed taxonomy:
 `bad-tool-choice`, `bad-tool-result`, `bad-interpretation`,
 `weak-instructions`, `routing`, `model`, `topology`, `environment`, and
 `unknown`. Each finding names the node it attributes, the assumptions the rule
-rests on, and the evidence behind it. Contradictory signals — a passing
+rests on, and the evidence behind it. When the failing stage's `stage.finished`
+recorded an error code, each of that stage's findings carries it as
+`errorCode`. The code is provenance about which component failed. It never
+changes the class, summary, or confidence. Contradictory signals — a passing
 evaluator verdict on a failing stage, successful tool results beside a failing
 one — lower a finding's confidence and are recorded as assumptions rather than
 resolved by fiat. A repeated stage attempt whose outcome differed is recorded

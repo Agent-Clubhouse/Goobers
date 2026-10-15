@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -105,7 +106,7 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	service := recoveryDeliveryService{layout: layout, setup: &schedulerSetup{LegacyWorktrees: manager}}
 	var body io.Reader = bytes.NewReader(wire.Bytes())
 	if release {
-		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error { return ledger.Release("7", runID) }}
+		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error { return ledger.Release("7", runID, claimrelease.Completed.Reason()) }}
 	}
 	if mode == "finished-during-transfer" {
 		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error {

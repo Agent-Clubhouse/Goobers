@@ -201,6 +201,10 @@ func CIPollFailureCode(err error) string {
 	if _, ok := providers.AsRateLimitError(err); ok {
 		return providers.ErrorCodeRateLimited
 	}
+	var noVerdict *ciPollNoVerdictError
+	if errors.As(err, &noVerdict) {
+		return CIPollNoVerdictCode
+	}
 	return CIPollProviderErrorCode
 }
 

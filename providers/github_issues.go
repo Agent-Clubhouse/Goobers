@@ -16,6 +16,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // GitHub directs clients to wait at least one minute when a secondary-limit
@@ -62,6 +63,10 @@ type RateLimitError struct {
 	Endpoint  string
 	Status    int
 	Remaining int
+	// RemainingKnown is true only when the remaining-quota header was present
+	// and parsed; Remaining is meaningless otherwise, and Error() then says
+	// "remaining unknown" rather than misreporting an exhausted quota (#5960).
+	RemainingKnown bool
 	// Reset is when GitHub says the quota window rolls over — zero when the
 	// response carried no X-RateLimit-Reset header.
 	Reset time.Time
@@ -82,7 +87,11 @@ func (e *RateLimitError) Error() string {
 	if provider == "" {
 		provider = "provider"
 	}
-	msg := fmt.Sprintf("%s rate limited (%s): %s: status %d, remaining %d", provider, ErrorCodeRateLimited, e.Endpoint, e.Status, e.Remaining)
+	remaining := "remaining unknown"
+	if e.RemainingKnown {
+		remaining = fmt.Sprintf("remaining %d", e.Remaining)
+	}
+	msg := fmt.Sprintf("%s rate limited (%s): %s: status %d, %s", provider, ErrorCodeRateLimited, e.Endpoint, e.Status, remaining)
 	if !e.Reset.IsZero() {
 		msg += ", resets at " + e.Reset.UTC().Format(time.RFC3339)
 	}
@@ -93,15 +102,16 @@ func (e *RateLimitError) Error() string {
 // record rateLimitPlan produced for telemetry.
 func rateLimitErrorFrom(ev RateLimitEvent) *RateLimitError {
 	return &RateLimitError{
-		Provider:      ev.Provider,
-		Endpoint:      ev.Endpoint,
-		Status:        ev.Status,
-		Remaining:     ev.Remaining,
-		Reset:         ev.Reset,
-		Secondary:     ev.Secondary,
-		RetryAfterRaw: ev.RetryAfterRaw,
-		RemainingRaw:  ev.RemainingRaw,
-		ResetRaw:      ev.ResetRaw,
+		Provider:       ev.Provider,
+		Endpoint:       ev.Endpoint,
+		Status:         ev.Status,
+		Remaining:      ev.Remaining,
+		RemainingKnown: ev.RemainingKnown,
+		Reset:          ev.Reset,
+		Secondary:      ev.Secondary,
+		RetryAfterRaw:  ev.RetryAfterRaw,
+		RemainingRaw:   ev.RemainingRaw,
+		ResetRaw:       ev.ResetRaw,
 	}
 }
 
@@ -157,9 +167,7 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 	}
 	if rem := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")); rem != "" {
 		ev.RemainingRaw = rem
-		if n, err := strconv.Atoi(rem); err == nil {
-			ev.Remaining = n
-		}
+		ev.Remaining, ev.RemainingKnown = parseRemainingHeader(rem)
 	}
 	if reset := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")); reset != "" {
 		ev.ResetRaw = reset
@@ -613,7 +621,7 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 	}
 	body := comment
 	if claimed {
-		body = claimReleaseBreadcrumb(winner) + "\n\n" + comment
+		body = claimReleaseBreadcrumb(winner, claimrelease.Reconciled.Because(OrphanedClaimReleaseCode, "")) + "\n\n" + comment
 	}
 	if err := p.postComment(ctx, repo, id, body); err != nil {
 		return WorkItem{}, err
@@ -788,8 +796,15 @@ func claimBreadcrumb(runID string) string {
 	return fmt.Sprintf("goobers-claim: run=%s\n\nClaimed by Goobers run `%s` for exactly-once processing.", runID, runID)
 }
 
-func claimReleaseBreadcrumb(runID string) string {
-	return fmt.Sprintf("goobers-claim-release: run=%s\n\nReleased by Goobers run `%s`; a later run may claim this item.", runID, runID)
+// OrphanedClaimReleaseCode is the release code for retiring an orphaned
+// provider claim epoch during ledger-authoritative reconciliation.
+const OrphanedClaimReleaseCode = "orphaned_claim_epoch"
+
+// claimReleaseBreadcrumb renders a release comment: the historical
+// machine-parsed boundary line first (claimReleaseBreadcrumbPattern), then
+// the structured reason (claimrelease.Comment).
+func claimReleaseBreadcrumb(runID string, reason claimrelease.Reason) string {
+	return claimrelease.Comment(runID, reason)
 }
 
 // claimRunID extracts the run id from a claim breadcrumb body, or "" if the body is

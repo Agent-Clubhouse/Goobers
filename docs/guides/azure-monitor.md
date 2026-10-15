@@ -94,8 +94,9 @@ room, a new batch can be rejected instead of evicting the in-flight batch.
 | `diagnostic` | yes | yes | yes | yes |
 
 Use `standard` for routine fleet visibility and execution reconstruction. Use
-`diagnostic` only when the tenant explicitly consents to exporting hostname and
-runtime-account fields. Unknown profile names fail configuration validation;
+`diagnostic` only when the tenant explicitly consents to exporting hostname,
+runtime-account fields, and filesystem paths that name the account (see
+[Account paths](#account-paths)). Unknown profile names fail configuration validation;
 changing a profile never deletes or reduces the authoritative local journal,
 rollup, or diagnostic history. The generated machine-readable contract is
 [`telemetry-collection-profiles-v1.json`](../reference/telemetry-collection-profiles-v1.json).
@@ -112,8 +113,10 @@ consented identity remains available through the diagnostic signal and Azure
 resource attributes. The authoritative local journal is unchanged, as are the
 exported journal sequence and stable record ID. Previously queued Azure journal
 batches receive the same projection before HTTP upload, including old spool
-files. Ordinary journal bodies retain their existing secret-scrubbed content;
-this is not a general-purpose personal-data scrubber for user-authored text.
+files. Ordinary journal bodies retain their existing secret-scrubbed content,
+apart from the [account paths](#account-paths) withheld without identity
+consent; this is not a general-purpose personal-data scrubber for user-authored
+text.
 Malformed health bodies are replaced by a JSON `telemetryBodyRedacted` marker,
 with correlation metadata retained. Malformed candidate Azure envelopes fail
 closed and remain pending rather than sending an unfiltered payload.
@@ -146,6 +149,57 @@ Logs fan out to each explicitly configured destination. A separately configured
 `telemetry.diagnostics.otlp` destination also continues to receive diagnostic
 Logs while Azure Monitor receives the same whitelisted records. Profile routing
 does not enable, redirect, or replace either explicit OTLP destination.
+
+### Account paths
+
+Local journals, run journals, and error text record absolute paths, and those
+usually sit beneath the daemon account's home directory (for example
+`/Users/<account>/...`, `/home/<account>/...`, or `C:\Users\<account>\...`).
+On every profile except `diagnostic` (`health`, `journal`, and `standard`),
+Azure Monitor export withholds them:
+
+- The `instanceRoot` field is dropped from exported journal records. The daemon
+  lifecycle events `daemon.started`, `daemon.clean_shutdown`, and
+  `daemon.dirty_restart` carry it in `runner`; their other fields (`pid`,
+  `startedAt`, `version`, `lockReadError`) are still exported. Use
+  `goobers.instance.id` to correlate them.
+- In every exported string and object key (journal bodies, including nested
+  error text such as an agent harness command line, diagnostic messages and
+  properties, and trace span names, attributes, and `otel.status_description`),
+  a home-directory root that begins an absolute path is replaced with `<home>`
+  and the rest of the path is kept:
+  `--mcp-config /Users/<account>/.goobers/mcp.json` is exported as
+  `--mcp-config <home>/.goobers/mcp.json`.
+
+The replaced roots are `/Users/<account>`, `/home/<account>`,
+`/var/home/<account>`, WSL `/mnt/<drive>/Users/<account>`,
+`<drive>:\Users\<account>` (either separator, any case, also behind `\\?\`),
+UNC `\\<host>\<share>\Users\<account>`, and the daemon account's own home
+directory wherever it lives (for example `/srv/<account>`, `/root`, or a service
+home such as `/var/lib/goobers`), matched as a whole name (`/srv/<account>2` is
+a different directory). A root counts only where an absolute path begins: at
+the start of the text, or after whitespace, a quote or backtick, `=`, `:`, `,`,
+`;`, `(`, `[`, `{`, `|`, `<`, `>`, `&`, `!`, `+`, `*`, or an escaped `\n`, `\r`
+or `\t` in JSON-escaped text; optionally followed by a glued short flag
+(`-I/Users/<account>/include`, `-L...`), a response-file `@`, and `file://`.
+A `home` or `Users` segment inside a relative path or URL, such as
+`web/src/pages/home/index.tsx`, `src\Features\Users\UserService.cs`, or
+`https://graph.microsoft.com/v1.0/Users/<id>`, is exported unchanged, as are
+other paths such as `/var/lib/...` (unless it is the daemon's home) or
+`/tmp/...`. A profile folder name with spaces or a qualifier
+(`C:\Users\Jane Doe\AppData`, `C:\Users\John (Contoso)\x`) is recognized when a
+backslash directly follows it; otherwise only its first word is replaced. An account name that appears
+outside one of these roots is not recognized. The generated contract lists the
+roots as `consentGatedPathRoots` and the placeholder as
+`consentGatedPathPlaceholder`.
+
+Like the service-health projection, this runs at the HTTP boundary on the
+already-scrubbed batch, so previously queued spool files from an older release
+are also projected before upload, according to the destination's profile at the
+time of upload. The local journals, replay spool files, exported sequence, and
+stable record ID are unchanged. The `diagnostic` profile, with its explicit
+identity consent, exports these paths unchanged. Native OTLP destinations are
+not governed by collection profiles and receive the scrubbed journal unchanged.
 
 ## Delivery and trust
 

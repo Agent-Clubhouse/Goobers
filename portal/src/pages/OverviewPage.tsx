@@ -1435,8 +1435,9 @@ function operatorContext(run: RunSummary): string {
       `Review ${operator.review.verdict}${operator.review.rationale ? `: ${operator.review.rationale}` : ""}`,
     );
   }
-  if (operator.potentialBlockers.length > 0) {
-    details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
+  const blockers = operatorBlockerText(operator);
+  if (blockers) {
+    details.push(`Blockers: ${blockers}`);
   }
   if (operator.reliability) {
     details.push(reliabilitySummary(operator.reliability));
@@ -1456,6 +1457,22 @@ function attentionHeading(count: number): string {
     return "No runs need attention.";
   }
   return count === 1 ? "One run needs attention." : `${count} runs need attention.`;
+}
+
+// Each blocker once, with how old its evidence is (#5404), so a condition that
+// stopped recurring reads as old rather than as a current outage. Older
+// daemons send only the display strings.
+function operatorBlockerText(operator: NonNullable<RunSummary["operator"]>): string {
+  if (!operator.blockers || operator.blockers.length === 0) {
+    return operator.potentialBlockers.join("; ");
+  }
+  return operator.blockers
+    .map((blocker) =>
+      blocker.ageMillis === undefined
+        ? blocker.message
+        : `${blocker.message} (observed ${formatDuration(blocker.ageMillis)} ago)`,
+    )
+    .join("; ");
 }
 
 function formatDuration(milliseconds: number): string {

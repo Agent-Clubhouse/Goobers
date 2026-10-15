@@ -1,0 +1,154 @@
+# The reference selective parallel (docs/design/plan-driven-dynamic-fan-out.md
+# §5). quality-sprint runs every lens on every run; this workflow runs only the
+# lenses that apply to what recently changed. A deterministic triage task
+# publishes the selection as a JSON artifact slot, the runner freezes it before
+# any branch starts, and every lens the selection does not name is recorded as
+# `skipped` with a reason instead of running as a no-op.
+#
+# It is the cheapest construct for this need (§3): the lenses are known when
+# the workflow is written, so a map or a child workflow would add cost without
+# adding anything. Selective parallels are a DSL 3.1 preview feature, so the
+# workflow pins DSL 3.1 and acknowledges preview. The local runner executes it;
+# the Temporal engine refuses it at run start.
+#
+# Manual and read-only: it writes one collated report and files nothing.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.1"
+metadata:
+  name: quality-spot-check
+  annotations:
+    goobers.dev/purpose: "Runs only the quality lenses that apply to recently changed paths, in parallel, and collates their findings into one report."
+    goobers.dev/allow-preview-features: "true"
+spec:
+  gaggle: goobers
+  displayName: Quality spot check
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: select-lenses
+  tasks:
+    - name: select-lenses
+      type: deterministic
+      goal: Select the quality lenses that apply to the paths changed in the recent window.
+      run:
+        script: |
+          set -euf
+          # Plain POSIX sh plus git: count the recent changes each optional
+          # lens cares about, then select the lenses with at least one.
+          security=0 tests=0 dependencies=0
+          for path in $(git log --since="${GOOBERS_INPUT_SINCE}" --name-only --pretty=format:); do
+            case "/$path" in */credentials/* | */auth/* | */sandbox/* | */policy/*) security=$((security + 1)) ;; esac
+            case "$path" in *_test.go | *.test.ts | *.test.tsx) tests=$((tests + 1)) ;; esac
+            case "/$path" in */go.mod | */go.sum | */package.json | */package-lock.json) dependencies=$((dependencies + 1)) ;; esac
+          done
+          selected=""
+          select_lens() {
+            if [ "$2" -gt 0 ]; then
+              selected="${selected:+$selected,}{\"name\":\"$1\",\"reason\":\"$2 recent change(s) to $3\"}"
+            fi
+          }
+          select_lens security "$security" 'credential, auth, sandbox or policy code'
+          select_lens testCoverage "$tests" 'tests'
+          select_lens dependencies "$dependencies" 'dependency manifests'
+          printf '{"schemaVersion":1,"branches":[%s]}\n' "$selected" >lenses.json
+          printf '%s\n' '{"schemaVersion":"goobers.dev/stage-artifact-set/v1alpha1","entries":[{"name":"lenses","path":"lenses.json","mediaType":"application/json"}]}' >"$GOOBERS_INPUT_ARTIFACTMANIFESTFILE"
+        workspace: repo
+      inputs:
+        since: "7 days ago"
+        artifactManifestFile: "lens-manifest.json"
+      capabilities: []
+      runsOn:
+        os: linux
+      # No schemaPath: the compiler applies the shipped selection envelope
+      # (api/schemas/fanout-selection.schema.json) as this slot's schema.
+      artifactSlots:
+        - name: lenses
+          mediaType: application/json
+      next: lenses
+
+    - name: review-maintainability
+      type: agentic
+      goober: quality-researcher
+      goal: Review the recently changed code through a maintainability lens.
+      workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
+      capabilities:
+        - agent:model
+      expectedOutputs:
+        - findingsRef
+      next: "@join"
+
+    - name: review-security
+      type: agentic
+      goober: quality-researcher
+      goal: Review the recently changed code through a security lens.
+      workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
+      capabilities:
+        - agent:model
+      expectedOutputs:
+        - findingsRef
+      next: "@join"
+
+    - name: review-test-coverage
+      type: agentic
+      goober: quality-researcher
+      goal: Review the recently changed code through a test-coverage lens.
+      workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
+      capabilities:
+        - agent:model
+      expectedOutputs:
+        - findingsRef
+      next: "@join"
+
+    - name: review-dependencies
+      type: agentic
+      goober: quality-researcher
+      goal: Review the recent dependency changes through a dependencies lens.
+      workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
+      capabilities:
+        - agent:model
+      expectedOutputs:
+        - findingsRef
+      next: "@join"
+
+    - name: collate
+      type: agentic
+      goober: quality-lead
+      goal: Deduplicate the reports of every lens that ran into one finding set, and list the lenses the selection skipped with their reasons.
+      workspace: repo-readonly
+      capabilities:
+        - agent:model
+      inputs:
+        artifactFile: spot-check-findings.md
+      # A skipped lens resolves as absent, exactly like a lens that produced
+      # nothing; the branchCompleteness input says which lenses were skipped.
+      inputsFrom:
+        maintainabilityFindings: "lenses.maintainability.review-maintainability.findingsRef"
+        securityFindings: "lenses.security.review-security.findingsRef"
+        testCoverageFindings: "lenses.testCoverage.review-test-coverage.findingsRef"
+        dependenciesFindings: "lenses.dependencies.review-dependencies.findingsRef"
+      expectedOutputs:
+        - collatedFindingsRef
+
+  parallels:
+    - name: lenses
+      failurePolicy: continue_on_error # one dead lens must not discard the others
+      branchTimeoutSeconds: 2700
+      maxConcurrentBranches: 4
+      join: collate
+      selection:
+        source: { task: select-lenses, slot: lenses }
+      branches:
+        - { name: maintainability, start: review-maintainability } # always runs
+        - { name: security, start: review-security, optional: true }
+        - { name: testCoverage, start: review-test-coverage, optional: true }
+        - { name: dependencies, start: review-dependencies, optional: true }

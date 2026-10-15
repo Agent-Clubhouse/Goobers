@@ -187,6 +187,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/claimrelease",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified: pure string normalization and rendering (its Windows drive-path redaction is a regexp over text); runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/claimsclient",
       "coverage": "none",
       "category": "not-selected",
@@ -313,6 +319,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/diagnostics/executiondeadline",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Platform-neutral: observes the context deadline a bounded execution runs under. No Windows-specific seam; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/diagnostics/fleetstate",
       "coverage": "none",
       "category": "not-selected",
@@ -386,6 +398,12 @@
     },
     {
       "package": "internal/failureclass",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/fanout",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -500,6 +518,12 @@
     },
     {
       "package": "internal/iossimulator",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/jcs",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -1009,6 +1033,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/workerrouting",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Portable Temporal routing assessment over a fake deployment client; no Windows-specific seam. Runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/workflow/internal/model",
       "coverage": "none",
       "category": "not-selected",
@@ -1118,6 +1148,12 @@
     },
     {
       "package": "test/adolive",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "test/attributioneval",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."

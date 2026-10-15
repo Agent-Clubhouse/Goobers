@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/lifecycle"
@@ -293,6 +294,18 @@ func IntegrityForLabels(labels []string, trustLabel string) apiintegrity.Grade {
 // item only: a caller walking several items can skip it and continue.
 var ErrLabelHistoryIncomplete = errors.New("work item label history is incomplete")
 
+// ErrorCodeLabelHistoryRevisionMismatch is the stable code callers surface
+// for ErrLabelHistoryRevisionMismatch.
+const ErrorCodeLabelHistoryRevisionMismatch = "ado_label_history_revision_mismatch"
+
+// ErrLabelHistoryRevisionMismatch is the ErrLabelHistoryIncomplete case in
+// which an Azure DevOps item's update history ends before the item's current
+// revision (#5960). The walk relies on ADO writing exactly one update per
+// revision. If that assumption were ever wrong for some update kind, every
+// ADO claim would be skipped item by item, so callers report this case loudly
+// and distinctly rather than as an ordinary malformed item.
+var ErrLabelHistoryRevisionMismatch = fmt.Errorf("%w: update history ends before the item's current revision (%s)", ErrLabelHistoryIncomplete, ErrorCodeLabelHistoryRevisionMismatch)
+
 // WorkItemLabelTransition is one provider-issued label add/remove event.
 type WorkItemLabelTransition struct {
 	EventID    int64     `json:"eventId"`
@@ -543,8 +556,12 @@ type PullRequestReviewResult struct {
 
 // PullRequestNativeReview is one provider-native review submitted on a pull request.
 type PullRequestNativeReview struct {
-	ID          int64              `json:"id"`
-	Author      string             `json:"author,omitempty"`
+	ID     int64  `json:"id"`
+	Author string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot"), so automation is told from people by
+	// type rather than by login spelling.
+	AuthorType  string             `json:"authorType,omitempty"`
 	State       string             `json:"state"`
 	Body        string             `json:"body,omitempty"`
 	CommitSHA   string             `json:"commitSha,omitempty"`
@@ -556,9 +573,12 @@ type PullRequestNativeReview struct {
 // PullRequestInlineComment is one inline review comment with its thread state
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
-	ID                int64              `json:"id"`
-	ThreadID          string             `json:"threadId"`
-	Author            string             `json:"author,omitempty"`
+	ID       int64  `json:"id"`
+	ThreadID string `json:"threadId"`
+	Author   string `json:"author,omitempty"`
+	// AuthorType is the provider's account type for Author where it reports
+	// one (GitHub: "User" or "Bot").
+	AuthorType        string             `json:"authorType,omitempty"`
 	Body              string             `json:"body"`
 	Path              string             `json:"path"`
 	Line              int                `json:"line,omitempty"`
@@ -691,6 +711,41 @@ type CheckDetail struct {
 	// queued. Such a check is never CI pending and never a remediation
 	// trigger. Providers without such checks leave it false.
 	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
+	// NoVerdict marks a check that finished without judging the code: it
+	// was cancelled, never started, or went stale (#6817), as on a CI
+	// provider outage. Its State is pending, never failing (nothing to
+	// remediate) and never passing (nothing proven), but unlike a running
+	// check it will not change until something reruns it.
+	NoVerdict bool `json:"noVerdict,omitempty"`
+}
+
+// OnlyNoVerdictPending reports whether checks are pending solely because CI
+// finished without a verdict: at least one check is NoVerdict, and every
+// other check passed or is a wait on a human. A pending check without the
+// marker may still be running, so it never qualifies.
+func OnlyNoVerdictPending(checks []CheckDetail) bool {
+	found := false
+	for _, check := range checks {
+		switch {
+		case check.State == CheckStatePassing || check.AwaitingHuman:
+		case check.State == CheckStatePending && check.NoVerdict:
+			found = true
+		default:
+			return false
+		}
+	}
+	return found
+}
+
+// NoVerdictCheckNames lists the names of the NoVerdict checks, in order.
+func NoVerdictCheckNames(checks []CheckDetail) []string {
+	var names []string
+	for _, check := range checks {
+		if check.NoVerdict {
+			names = append(names, check.Name)
+		}
+	}
+	return names
 }
 
 // CheckAnnotation is one provider-native diagnostic attached to a check run.
@@ -826,6 +881,14 @@ type PullRequestPollResult struct {
 	CommentsSince  []PullRequestComment `json:"commentsSince,omitempty"`
 	URL            string               `json:"url,omitempty"`
 	Integrity      apiintegrity.Grade   `json:"integrity,omitempty"`
+	// VerdictStatus is the merge-review verdict commit status
+	// (MergeReviewStatusContext) on the polled head, when the provider
+	// reports one (#4199). It is Goobers' own review decision, not CI, so it
+	// is kept out of CheckState and Checks: a needs-changes verdict must not
+	// read as a CI failure that the CI-remediation lane tries to fix. Nil
+	// when the head carries no such status or the provider exposes none
+	// (Azure DevOps keeps its verdict in the goobers/validation PR status).
+	VerdictStatus *CheckDetail `json:"verdictStatus,omitempty"`
 }
 
 // ClosePullRequestRequest describes closing a pull request, optionally leaving a comment.
@@ -865,6 +928,32 @@ type PullRequestStatusRequest struct {
 	// nobody reviewed. Empty keeps the unpinned behaviour (the head current
 	// at post time).
 	HeadSHA string `json:"headSha,omitempty"`
+}
+
+// The merge-review verdict status contract (#4199). merge-review's
+// apply-verdict publishes the current verdict as a commit status under this
+// stable context on the exact head it reviewed, so the provider's own merge
+// policy (a required status check) blocks every merge path, not only
+// Goobers' own merge-pr. GitHub and Gitea name the context genre/name;
+// Azure DevOps keeps its established goobers/validation PR status.
+const (
+	MergeReviewStatusGenre   = "goobers"
+	MergeReviewStatusName    = "merge-review"
+	MergeReviewStatusContext = MergeReviewStatusGenre + "/" + MergeReviewStatusName
+)
+
+// mergeReviewStatusDetail reports whether a commit status is the merge-review
+// verdict rather than CI evidence, and returns it as the poll's VerdictStatus
+// when it is. Counting the verdict as CI would turn every needs-changes
+// verdict into a failing check the CI-remediation lane tries to fix.
+func mergeReviewStatusDetail(context, state, description, targetURL string) (*CheckDetail, bool) {
+	if context != MergeReviewStatusContext {
+		return nil, false
+	}
+	return &CheckDetail{
+		Name: context, State: normalizeCombinedStatusState(state), Conclusion: state,
+		URL: targetURL, Summary: description,
+	}, true
 }
 
 // PullRequestStatusResult reports the published status's provider-assigned id.
@@ -1152,6 +1241,12 @@ type PollMergeQueueEntryResult struct {
 	// is armed and only reviewer policies are unmet). The entry is still
 	// pending; this only lets a watcher say why.
 	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
+	// HeadBranch and HeadSHA, on a merged outcome, are the pull request's
+	// source branch and the head it merged at, when the provider reports
+	// them in the same read (Azure DevOps does). A watcher uses them to
+	// confirm the source branch was cleaned up without a second read.
+	HeadBranch string `json:"headBranch,omitempty"`
+	HeadSHA    string `json:"headSha,omitempty"`
 }
 
 // ListPullRequestsRequest filters open pull requests for merge-review's
@@ -1470,6 +1565,11 @@ type ClaimWorkItemRequest struct {
 	// ExpectedClaimRunID, when set, requires the currently open provider claim
 	// epoch to still be held by this run before releasing it.
 	ExpectedClaimRunID string `json:"expectedClaimRunId,omitempty"`
+	// Reason is why the claim ends (#4421), rendered into the release comment
+	// as a human "Reason:" line plus a versioned machine-readable marker.
+	// Release-only; a zero reason renders as an explicitly unknown (legacy)
+	// release.
+	Reason claimrelease.Reason `json:"reason,omitzero"`
 }
 
 // ClaimResult reports the outcome of a claim attempt.

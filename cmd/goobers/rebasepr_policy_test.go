@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/goobers/goobers/internal/pushrejection"
@@ -17,6 +18,9 @@ import (
 // gitPushBranch does — a pushrejection.PolicyProtectedError, never a bare lease/race
 // error a caller might otherwise route into an auth retry.
 func TestForcePushWithLeaseClassifiesADOPolicyProtectedRejection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to reproduce ADO's push rejection")
+	}
 	const prBranch = "goobers/impl/run-n26-force"
 	origin, headSHA, _ := initPRBranchOrigin(t, prBranch)
 

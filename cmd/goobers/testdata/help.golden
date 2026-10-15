@@ -384,9 +384,15 @@ cross-check its optional SHA echo against the deterministic review
 pin, re-check that pin against the PR's current head/base, and — if
 still valid — publish the verdict. Managed PRs receive a native GitHub
 review plus the PR-comment handoff; non-pass verdicts also receive a
-remediation label. advisoryMode=true publishes only the non-blocking
-comment, without closing, labeling, electing, or merging the PR. A
-stale SHA pin voids the verdict: no comment, no label, exit 0 (this
+remediation label. Every published verdict also sets the
+goobers/merge-review commit status on the reviewed head (success for
+pass, failure for needs-changes/fail/escalate, pending for defer; the
+description records the reviewed base), which a required status check
+enforces on every merge path (#4199). advisoryMode=true publishes only
+the non-blocking comment, without closing, labeling, electing, or
+merging the PR. A stale SHA pin voids the verdict: no new verdict, the
+standing comment is marked stale, and a standing verdict status on the
+unchanged head turns pending; exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
 selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
@@ -835,9 +841,12 @@ like a pasted token is rejected.
 Use owner/repository for GitHub, or organization/project/repository (or a
 dev.azure.com URL) for Azure DevOps. Initialize ADO instances with
 --template=standard --provider=ado first; init defaults the repository to
-azure-cli authentication. Connect records PAT authentication for ADO, reading
-GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or
-managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.
+azure-cli authentication. Connect keeps the repository's existing credential
+source (azure-cli, workload-identity, managed-identity, or a PAT's own token
+reference) unless --token-env is given explicitly; then it records PAT
+authentication reading that variable (GOOBERS_ADO_TOKEN is the ADO default).
+A kept source that names no token variable skips the token reachability
+check (run validate --check-repos) and --seed authenticates through it.
 Connect never changes an existing provider.
 See docs/guides/ado-authentication.md for other authentication modes.
 
@@ -1000,6 +1009,7 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
   temporal-namespace required* §2/§4  configured Temporal namespace is registered
+  temporal-worker-routing required* §2/§4 worker deployment routes tasks to live engine workers
   registry           optional  §1     registry reachable (host-side sanity)
 
   apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint
@@ -1050,6 +1060,13 @@ by a denied attempt from an in-cluster negative control, never by doctor
 
 --temporal-codec reports per-instance opt-in and strict mode without probing keys.
 --k8s --instance <root> applies the instance Temporal TLS and payload codec.
+
+temporal-worker-routing compares the "goobers" worker deployment's current and
+ramping traffic shares with the builds polling the engine task queue
+(engine.taskQueue with --instance, else goobers-engine). It fails when no live
+worker serves any share, warns when a share has no live worker, a live build
+that is not draining gets none, or routing cannot be read, and hints the
+Temporal CLI command to run. It never changes the routing itself.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -1817,8 +1834,9 @@ select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
 with their three canonical personas by default. Use --workflows to select
-implementation, backlog-curation, merge-review (Azure DevOps only), and/or
-work-nomination.
+implementation, backlog-curation, merge-review, and/or work-nomination. On
+GitHub, merge-review's pull-request, review, merge and branch-delete
+capabilities use the --pr-token-env token.
 --repo accepts a GitHub owner/name or Azure DevOps identity; --branch
 defaults to main.
 Implementation requires either --pr-ci or an explicit --ci-command JSON argv
@@ -1922,7 +1940,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -1951,6 +1969,9 @@ Merge a pull request, but only when every independent conjunct holds:
 verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's
 live head/base, and — for a sibling-overlap PR — completed single-lander
 election evidence (elected:true, #1071) — never a bare self-approval.
+When the live head carries the goobers/merge-review verdict status
+(GitHub, Gitea), it must be a pass recorded for the pinned base: a
+failure, a pending, or a pass for another base refuses the merge.
 Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,
 all required; in the shipped merge-review workflow, headSha/baseSha
 come from gather-sibling-context's selectedHeadSha/selectedBaseSha,
@@ -1962,12 +1983,26 @@ attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
 issues), preMergeCheck (optional; one command per line, run without a
 shell on the PR head merged onto the CURRENT base branch tip — a
-failure refuses the merge as pre-merge-check-failed), resultFile
-(default merge-result.json). Successful merges
-also report headBranch and branchCleanup (deleted, skipped-stacked, or
-failed). Exit codes: 0 = evaluated (merged or not — see the result
-file's "merged" field), 1 = business error (missing capability/config,
-malformed inputs, provider failure), 2 = usage/IO error.
+failure refuses the merge as pre-merge-check-failed),
+blockUnansweredFeedback (default true: refuse as unanswered-human-feedback
+while the newest open human review feedback — a PR comment, a submitted
+review body, or a comment in an unresolved review thread, on Azure
+DevOps any active thread — is unacknowledged by every Goobers response;
+approving reviews and Bot-typed authors never wait on an answer. The
+feedback is read again after a preMergeCheck, right before landing.
+record-merge-refusal routes the PR to remediation, and parks it
+goobers:needs-human when the same comment is refused again. Gitea reports
+no thread resolution and keeps a dismissed review's state, so there every
+review comment counts until answered. Feedback that
+cannot be read refuses as human-feedback-unverifiable. Comments are
+classified as pr-comment-watch classifies them, under the same
+identityMode and excludeAuthors inputs. Set false to merge over
+comments), resultFile (default merge-result.json). Successful merges
+also report headBranch and branchCleanup (deleted, skipped-stacked,
+skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
+(merged or not — see the result file's "merged" field), 1 = business
+error (missing capability/config, malformed inputs, provider failure),
+2 = usage/IO error.
 
 ### merge-queue-poll
 Usage: goobers merge-queue-poll [path]
@@ -1981,8 +2016,18 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
-the pull request and reports skipped without remediation. Exit codes:
+not a swallowed warning. A live goobers:no-merge-review or run-aborted
+opt-out, or a route to remediation that removed goobers:merge-ready,
+withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the
+armed auto-complete) and reports skipped without remediation. Each poll
+of a still-queued pull request also runs merge-pr's unanswered-human-
+feedback check (#6134; blockUnansweredFeedback, identityMode,
+verdictAuthor (merge-pr's, bound via inputsFrom) and
+excludeAuthors as on merge-pr, default on): open human review feedback
+that no Goobers response has acknowledged withdraws the pull request,
+removes goobers:merge-ready and routes it to remediation with the
+unanswered-human-feedback reason. A feedback read that fails keeps it
+queued and is retried on the next poll. Exit codes:
 0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
 see the result file's queueOutcome field),
 1 = business error (missing capability/config,
@@ -2303,7 +2348,14 @@ newest comment with goobers:needs-remediation, so pr-remediation updates
 that PR in place. A PR parked for a human (needs-human / merge-escalated)
 is un-parked when a fresh human comment lands: the park label is cleared
 and needs-remediation added, since the human the PR was parked for has
-now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
+now weighed in. With blockUnansweredFeedback "true" (declare policy
+action disarm-landing) a PR that is landing (goobers:merge-ready) is
+scanned too, by its open feedback: fresh human feedback first disarms
+its armed landing — on Azure DevOps it cancels the auto-complete; on
+GitHub queue-watch withdraws the queued PR once it is routed — then
+removes merge-ready and routes it. Default false: landing PRs are
+skipped, as before; set it false to merge over comments.
+Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
 general comments and review-thread replies both count; deleted comments
 and system threads (votes, pushes, policy status) never do.
 
@@ -2313,6 +2365,9 @@ own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
 identity, such a comment is that person's and counts as human.
+rebase-pr and update-behind-pr classify comments by this same rule
+before they clear needs-remediation; give them the same identityMode and
+excludeAuthors.
 
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such
@@ -2485,8 +2540,17 @@ detected causes are allowed to trigger remediation; the shipped default is
 fully liberal. behind-base is accepted vocabulary but cannot fire yet (no
 detection reaches this stage's decision today). human-comment fires when a
 genuinely new human comment postdates the watermark recorded in the sticky
-remediation-state comment; detection runs only when the declared policy
-names human-comment, so an old pinned policy is unaffected.
+remediation-state comment, or when no Goobers response has acknowledged the
+newest human comment (the rule pr-comment-watch routes on), so a clean
+rebase never clears goobers:needs-remediation over unanswered feedback;
+detection runs only when the declared policy names human-comment, so an
+old pinned policy is unaffected. Comments are classified as
+pr-comment-watch classifies them, under the same identityMode (dedicated or
+shared; default shared on Azure DevOps, dedicated elsewhere) and
+excludeAuthors inputs; set them to pr-comment-watch's values. On Azure
+DevOps every live general and file-thread comment counts; on GitHub and
+Gitea, submitted review bodies and unresolved review-thread comments
+count alongside PR comments (the feedback merge-pr refuses to land over).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 
@@ -2521,7 +2585,10 @@ Usage: goobers record-merge-refusal [path]
 Record a merge-pr refusal against the selected PR's durable demotion
 counter (#950). After a bounded number of refusals at an unchanged
 head, apply goobers:merge-demoted so the election crowns a sibling
-instead and the cluster drains around the stuck PR. Runs on
+instead and the cluster drains around the stuck PR. A refusal for
+unanswered human review feedback is not counted: the PR is routed to
+remediation instead (goobers:needs-remediation added,
+goobers:merge-ready removed). Runs on
 merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
 do), 1 = business error, 2 = usage/IO error.
 
@@ -3161,6 +3228,9 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
 source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+With an engine configured, it checks that the Temporal worker deployment routes tasks to the
+live engine workers and warns with the set-current-version command when it does not, or says
+unknown when Temporal cannot be read (JSON: engineRouting).
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
 Manual-only workflows are summarized by default; use --all or --workflow to show
@@ -3450,7 +3520,9 @@ Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
 It does not skip the harness admission preflight: a workflow whose agentic
 stage needs a harness that fails its startup check is still refused, while
-other workflows keep running.
+other workflows keep running. A check that failed only because the model
+provider was rate limiting or unreachable is re-run with backoff, and the
+workflow is admitted again once it passes.
 
 A Git workflowSource continuously reconciles its tracked ref. Local Git
 ref changes wake the loop immediately; periodic fetch-and-compare polling
@@ -3492,7 +3564,12 @@ is mergeable, CI-clean, and carries no substantive findings. A behind
 PR whose failing checks all failed on its base branch too, at its
 merge-base or at a base commit since, is red because its base was, so
 it is updated the same way. Other candidates are routed to full
-remediation. A run dispatched for one
+remediation, including a PR carrying goobers:needs-remediation that has
+human feedback no Goobers response has answered: this lane clears that
+label, and the feedback needs the agentic path. Comments are classified
+as pr-comment-watch classifies them, under the same identityMode
+(dedicated or shared; default dedicated) and excludeAuthors inputs; set
+them to pr-comment-watch's values. A run dispatched for one
 pull request (goobers run --pr, or a pull_request webhook delivery)
 selects that PR and no other; when the target is not selectable the
 stage reports no-work naming the reason instead of falling back to
@@ -3512,7 +3589,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable

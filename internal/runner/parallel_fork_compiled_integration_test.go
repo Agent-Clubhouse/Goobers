@@ -105,7 +105,7 @@ func verifyCompiledForkJoin(t *testing.T, width int32, waiting *compiledChildWai
 		t.Fatal(err)
 	}
 	registrar, _ := journal.DefaultScrubber()
-	joined, err := r.runConcurrentParallel(t.Context(), run, in, parallel, nil, nil, "", apiv1.ResultEnvelope{}, nil, "", registrar, &atomic.Int64{})
+	joined, err := r.runConcurrentParallel(t.Context(), run, in, parallelVisit{spec: parallel}, nil, "", apiv1.ResultEnvelope{}, nil, "", registrar, &atomic.Int64{})
 	if err != nil || !joined.runJoin || joined.target != "join" {
 		t.Fatalf("parallel result=%+v error=%v", joined, err)
 	}
