@@ -218,7 +218,7 @@ func finishIntervention(action string, resolved resolvedInterventionRun, err err
 	if err != nil {
 		return httpapi.InterventionResult{}, interventionExecutionError(action, err)
 	}
-	return interventionResult(resolved)
+	return currentInterventionResult(resolved)
 }
 
 func (s *Service) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
@@ -1173,10 +1173,6 @@ func interventionCompleted(action, stage string, event journal.Event) bool {
 	default:
 		return false
 	}
-}
-
-func interventionResult(resolved resolvedInterventionRun) (httpapi.InterventionResult, error) {
-	return currentInterventionResult(resolved)
 }
 
 func currentInterventionResult(resolved resolvedInterventionRun) (httpapi.InterventionResult, error) {
