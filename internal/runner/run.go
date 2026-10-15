@@ -24,7 +24,6 @@ import (
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
@@ -4431,28 +4430,8 @@ func recordContextManifest(jr executionJournal, env apiv1.InvocationEnvelope, st
 // rather than imported — cmd depends on internal, never the reverse).
 const mutationsSidecarFile = "mutations.jsonl"
 
-// mutationFact mirrors one line of cmd/goobers's sidecar record shape
-// without importing cmd/goobers (same decoupling convention
-// internal/telemetry/rollup/mirror.go uses for the journal's own event
-// shape) — just enough to build a journal.ExternalRef plus an operation
-// annotation.
-type mutationFact struct {
-	ReceiptID         string                       `json:"receiptId,omitempty"`
-	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
-	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
-	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
-	Provider          string                       `json:"provider"`
-	Kind              string                       `json:"kind"`
-	ID                string                       `json:"id"`
-	URL               string                       `json:"url,omitempty"`
-	Operation         string                       `json:"operation,omitempty"`
-	RunID             string                       `json:"runId,omitempty"`
-	Outcome           string                       `json:"outcome,omitempty"`
-	ErrorCode         string                       `json:"errorCode,omitempty"`
-	ProviderRunID     string                       `json:"providerRunId,omitempty"`
-
-	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
-}
+// mutationFact aliases the shared sidecar record so no copy can drift.
+type mutationFact = mutationsidecar.Fact
 
 // readMutationSidecar reads and parses mutationsSidecarFile from workspace,
 // if present. Absence is the overwhelmingly common case (most deterministic
