@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -16,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/configsync"
@@ -535,5 +537,43 @@ func TestApplyDeployment_NoUpdateWhenSpecUnchanged(t *testing.T) {
 	}
 	if *live.Spec.Replicas != 3 {
 		t.Fatalf("replicas = %d, want 3", *live.Spec.Replicas)
+	}
+}
+
+func TestGenerationPointerToGaggles_RetriesListFailure(t *testing.T) {
+	old := generationListBackoff
+	generationListBackoff = time.Millisecond
+	t.Cleanup(func() { generationListBackoff = old })
+
+	gaggle := publishedGaggleFixture("web", "gnew")
+	scheme, err := NewScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(failures int) (*GaggleReconciler, *int) {
+		calls := 0
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gaggle).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					calls++
+					if calls <= failures {
+						return errors.New("boom")
+					}
+					return cl.List(ctx, list, opts...)
+				},
+			}).Build()
+		return &GaggleReconciler{Client: c}, &calls
+	}
+
+	r, calls := build(1)
+	reqs := r.generationPointerToGaggles(context.Background(), generationPointer("gnew"))
+	if len(reqs) != 1 || *calls != 2 {
+		t.Fatalf("transient failure: reqs=%+v calls=%d, want 1 request after 2 calls", reqs, *calls)
+	}
+
+	r, calls = build(100)
+	reqs = r.generationPointerToGaggles(context.Background(), generationPointer("gnew"))
+	if len(reqs) != 0 || *calls != generationListAttempts {
+		t.Fatalf("persistent failure: reqs=%+v calls=%d, want none after %d calls", reqs, *calls, generationListAttempts)
 	}
 }
