@@ -94,10 +94,6 @@ func (b *builder) build(ctx context.Context, options buildOptions) (dataset, err
 		return dataset{}, err
 	}
 	header.FixesFound, header.Truncated = len(fixes), truncated
-	labels := map[string]handLabel{}
-	for _, label := range options.HandLabels {
-		labels[label.FixCommit] = label
-	}
 	var cases []datasetCase
 	for _, fix := range fixes {
 		item, dropped, err := b.trace(ctx, fix, header.Filtered)
@@ -108,7 +104,11 @@ func (b *builder) build(ctx context.Context, options buildOptions) (dataset, err
 			header.Dropped[dropped]++
 			continue
 		}
-		if label, ok := matchLabel(labels, fix.SHA); ok {
+		label, ok, err := matchLabel(options.HandLabels, fix.SHA)
+		if err != nil {
+			return dataset{}, err
+		}
+		if ok {
 			label.FixCommit = ""
 			item.HandLabel = &label
 		}
@@ -119,13 +119,24 @@ func (b *builder) build(ctx context.Context, options buildOptions) (dataset, err
 	return set, set.validate()
 }
 
-func matchLabel(labels map[string]handLabel, fix string) (handLabel, bool) {
-	for prefix, label := range labels {
-		if prefix != "" && strings.HasPrefix(fix, prefix) {
-			return label, true
+// matchLabel finds the hand label whose fix commit prefix names fix. A fix
+// that more than one label names is ambiguous and rejected, so which label
+// applies never depends on input or iteration order.
+func matchLabel(labels []handLabel, fix string) (handLabel, bool, error) {
+	var matched []handLabel
+	for _, label := range labels {
+		if label.FixCommit != "" && strings.HasPrefix(fix, label.FixCommit) {
+			matched = append(matched, label)
 		}
 	}
-	return handLabel{}, false
+	switch len(matched) {
+	case 0:
+		return handLabel{}, false, nil
+	case 1:
+		return matched[0], true, nil
+	}
+	return handLabel{}, false, fmt.Errorf("hand labels %q and %q both name fix %s; give one unambiguous label per fix",
+		matched[0].FixCommit, matched[1].FixCommit, fix)
 }
 
 func (b *builder) resolveRange(ctx context.Context, header *datasetHeader) error {

@@ -118,6 +118,13 @@ var errBudgetOverrun = errors.New("adapter overran its remaining budget")
 // costEpsilon absorbs float rounding when comparing spend with a budget.
 const costEpsilon = 1e-9
 
+// reviewerCaseID is the opaque case ID a reviewer sees: its position in the
+// sampled order. Dataset case IDs name the fix commit, so they stay on the
+// scoring side and never reach the reviewer.
+func reviewerCaseID(index int) string {
+	return fmt.Sprintf("review-%03d", index+1)
+}
+
 // sampleRank orders cases for sampling: a seeded hash of the case ID.
 func sampleRank(seed, id string) string {
 	sum := sha256.Sum256([]byte(seed + "\x00" + id))
@@ -138,7 +145,7 @@ func replay(ctx context.Context, set dataset, live gitReader, review reviewer, m
 	sampled, outOfDiff := sampleCases(set, options)
 	results := make([]caseResult, 0, len(sampled))
 	spent := 0.0
-	for _, item := range sampled {
+	for index, item := range sampled {
 		result := caseResult{CaseID: item.ID, FixCommit: item.FixCommit, IntroducingCommit: item.IntroducingCommit}
 		remaining := options.BudgetUSD - spent
 		if remaining <= costEpsilon {
@@ -146,7 +153,7 @@ func replay(ctx context.Context, set dataset, live gitReader, review reviewer, m
 			results = append(results, result)
 			continue
 		}
-		reviewed, err := replayCase(ctx, live, review, item, options, remaining)
+		reviewed, err := replayCase(ctx, live, review, item, reviewerCaseID(index), options, remaining)
 		spent += reviewed.CostUSD
 		if errors.Is(err, errBudgetOverrun) {
 			return evalReport{}, fmt.Errorf("case %s: %w (spent $%.4f of $%.4f)", item.ID, err, spent, options.BudgetUSD)
@@ -211,7 +218,7 @@ func resolvedPath(path string) (string, error) {
 
 // replayCase reconstructs and reviews one case. A review the harness rejects
 // still returns the cost the reviewer reported, so the budget counts it.
-func replayCase(ctx context.Context, live gitReader, review reviewer, item datasetCase, options replayOptions, budget float64) (reviewResult, error) {
+func replayCase(ctx context.Context, live gitReader, review reviewer, item datasetCase, caseID string, options replayOptions, budget float64) (reviewResult, error) {
 	dir, err := os.MkdirTemp(options.WorkDir, "reviewer-eval-")
 	if err != nil {
 		return reviewResult{}, err
@@ -221,7 +228,7 @@ func replayCase(ctx context.Context, live gitReader, review reviewer, item datas
 	if err != nil {
 		return reviewResult{}, fmt.Errorf("reconstruct %s: %w", item.IntroducingCommit, err)
 	}
-	request.CaseID, request.Variant, request.BudgetRemainingUSD = item.ID, options.Variant, budget
+	request.CaseID, request.Variant, request.BudgetRemainingUSD = caseID, options.Variant, budget
 	result, err := review.Review(ctx, request)
 	if err != nil {
 		return reviewResult{}, fmt.Errorf("review: %w", err)

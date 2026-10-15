@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -127,6 +128,24 @@ func buildFixture(t *testing.T, repo *fixtureRepo) dataset {
 		t.Fatal(err)
 	}
 	return set
+}
+
+func TestMatchLabelRejectsOverlappingPrefixes(t *testing.T) {
+	t.Parallel()
+	fix := "abcdef0123456789"
+	short, long := handLabel{FixCommit: "abcdef0"}, handLabel{FixCommit: "abcdef0123", IntroducingCommit: "1234567"}
+	for _, labels := range [][]handLabel{{short, long}, {long, short}} {
+		if _, _, err := matchLabel(labels, fix); err == nil || !strings.Contains(err.Error(), "both name fix") {
+			t.Errorf("overlapping labels %v: error %v, want an ambiguity error", labels, err)
+		}
+	}
+	label, ok, err := matchLabel([]handLabel{long, {FixCommit: "fedcba9"}}, fix)
+	if err != nil || !ok || label.IntroducingCommit != "1234567" {
+		t.Errorf("single matching label = %+v %v %v", label, ok, err)
+	}
+	if _, ok, err := matchLabel([]handLabel{{FixCommit: "fedcba9"}}, fix); err != nil || ok {
+		t.Errorf("non-matching label matched: %v %v", ok, err)
+	}
 }
 
 func caseFor(set dataset, fix string) *datasetCase {
@@ -283,8 +302,36 @@ func (fake *fakeReviewer) Review(_ context.Context, request reviewRequest) (revi
 	if head, err := inRepo("rev-parse", "HEAD"); err != nil || head != request.HeadSHA {
 		fake.t.Errorf("replayed HEAD = %q, want %s", head, request.HeadSHA)
 	}
+	fake.checkOpaque(request)
 	return fake.answer(request), nil
 }
+
+// checkOpaque asserts a reviewer request names its case only by an opaque
+// position and carries no fix identity: no dataset case ID (which names the
+// fix), fix commit SHA, or fix subject.
+func (fake *fakeReviewer) checkOpaque(request reviewRequest) {
+	fake.t.Helper()
+	if !regexp.MustCompile(`^review-\d{3}$`).MatchString(request.CaseID) {
+		fake.t.Errorf("reviewer case ID %q is not opaque", request.CaseID)
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		fake.t.Fatal(err)
+	}
+	leaks := []string{"case-", "fix-", fixtureFixSubject}
+	for name, sha := range fake.repo.commits {
+		if strings.HasPrefix(name, "fix") {
+			leaks = append(leaks, sha[:7])
+		}
+	}
+	for _, leak := range leaks {
+		if strings.Contains(string(data), leak) {
+			fake.t.Errorf("reviewer request leaks fix identity %q: %s", leak, data)
+		}
+	}
+}
+
+const fixtureFixSubject = "fix: correct the scaled total"
 
 func replayFixture(t *testing.T) (*fixtureRepo, dataset) {
 	t.Helper()
@@ -292,7 +339,7 @@ func replayFixture(t *testing.T) (*fixtureRepo, dataset) {
 	label := &handLabel{IntroducingCommit: repo.commits["intro"][:12], LabeledBy: "maintainer", LabeledAt: "2024-02-01"}
 	item := func(id, split, fix, intro string, bug fileLines) datasetCase {
 		return datasetCase{
-			ID: id, Split: split, FixCommit: repo.commits[fix], IntroducingCommit: repo.commits[intro], Confidence: 1,
+			ID: id, Split: split, FixCommit: repo.commits[fix], FixSubject: fixtureFixSubject, IntroducingCommit: repo.commits[intro], Confidence: 1,
 			Candidates: []candidate{{Commit: repo.commits[intro], Lines: 1, Confidence: 1}}, BugLines: []fileLines{bug},
 		}
 	}
@@ -347,11 +394,19 @@ func TestReplayScoresIsolatedReviewsPerClass(t *testing.T) {
 	repo, set := replayFixture(t)
 	set.Cases = append(set.Cases[:2], set.Cases[4:]...)
 	before := repo.liveState(t)
+	options := replayOptions{Split: splitEval, Variant: "baseline", MaxCases: 10, BudgetUSD: 5, Seed: "s", WorkDir: t.TempDir()}
+	sampled, _ := sampleCases(set, options)
+	caseA := ""
+	for index, item := range sampled {
+		if item.ID == "case-a" {
+			caseA = reviewerCaseID(index)
+		}
+	}
 	reviewer := &fakeReviewer{t: t, repo: repo, answer: func(request reviewRequest) reviewResult {
 		if !strings.Contains(request.Diff, "+\tsecond := first * 3") || request.Title != "feat: scale the total" {
 			t.Errorf("request diff/title = %q %q, want the offending change", request.Diff, request.Title)
 		}
-		if request.CaseID != "case-a" {
+		if request.CaseID != caseA {
 			return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}, CostUSD: 0.1}
 		}
 		return reviewResult{CostUSD: 0.3, Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
@@ -361,7 +416,6 @@ func TestReplayScoresIsolatedReviewsPerClass(t *testing.T) {
 		}}}
 	}}
 	judge := &fakeJudge{}
-	options := replayOptions{Split: splitEval, Variant: "baseline", MaxCases: 10, BudgetUSD: 5, Seed: "s", WorkDir: t.TempDir()}
 	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, reviewer, matcher{judge: judge}, options)
 	if err != nil {
 		t.Fatal(err)
@@ -372,8 +426,8 @@ func TestReplayScoresIsolatedReviewsPerClass(t *testing.T) {
 	if report.Sampled != 2 || report.Reviewed != 2 || report.OutOfDiff != 1 || len(reviewer.requests) != 2 {
 		t.Fatalf("report counts = %+v, want 2 eval cases reviewed and 1 out-of-diff excluded", report)
 	}
-	for _, request := range reviewer.requests {
-		if request.CaseID == "case-train" {
+	for _, result := range report.Results {
+		if result.CaseID == "case-train" {
 			t.Fatal("replay of the eval split reviewed a training case")
 		}
 	}

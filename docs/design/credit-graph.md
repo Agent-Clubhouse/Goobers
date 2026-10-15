@@ -482,8 +482,8 @@ from a hash of its introducing commit, so every fix of one offending change
 lands in the same split; loading rejects a dataset whose digest does not match
 its cases, whose split assignment departs from the rule, or whose fix appears
 twice. `-hand-labels` attaches a hand-labeled introducing commit to matching
-cases; replay reports how often R-SZZ agrees with them (`szzCalibration`). The
-builder runs only read-only git commands against the repository (archive,
+cases, and a fix that two labels name is rejected as ambiguous; replay
+reports how often R-SZZ agrees with them (`szzCalibration`). The builder runs only read-only git commands against the repository (archive,
 blame, diff, log, rev-list, rev-parse, show, with no `--output`) and never
 writes to it.
 
@@ -501,9 +501,11 @@ live repository). Each adapter gets forge tokens stripped from its
 environment, fresh empty home and configuration directories (`HOME`,
 `USERPROFILE`, `APPDATA`, `XDG_*`, `GH_CONFIG_DIR`), global and system git
 config ignored, and git credential helpers disabled, so stored gh and git
-credentials are unreachable. The reviewer receives the request (base and head
-SHAs, title, diff, remaining budget) as JSON on stdin, and prints the verdict
-and its cost. Nothing is posted to a pull request. A real review is always
+credentials are unreachable. The reviewer receives the request (an opaque case
+ID, base and head SHAs, title, diff, remaining budget) as JSON on stdin, and
+prints the verdict and its cost. Dataset case IDs name the fix commit, so the
+reviewer only ever sees its case's position in the sampled order; the mapping
+back to the fix stays on the scoring side. Nothing is posted to a pull request. A real review is always
 opt-in: replay refuses to run without both flags.
 
 The budget caps reviewer and judge spend together, including spend on failed
