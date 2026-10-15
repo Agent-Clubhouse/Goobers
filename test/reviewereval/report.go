@@ -27,25 +27,28 @@ type szzCalibration struct {
 // Cases are scored in sampled order, which is fixed by the seed, so a given
 // dataset, seed, and reviewer always yield the same report.
 type evalReport struct {
-	Schema          string                            `json:"schema"`
-	DatasetVersion  string                            `json:"datasetVersion"`
-	DatasetDigest   string                            `json:"datasetDigest"`
-	Split           string                            `json:"split"`
-	Variant         string                            `json:"variant"`
-	Seed            string                            `json:"seed"`
-	MaxCases        int                               `json:"maxCases"`
-	BudgetUSD       float64                           `json:"budgetUsd"`
-	Sampled         int                               `json:"sampled"`
-	Reviewed        int                               `json:"reviewed"`
-	Failed          int                               `json:"failed"`
-	BudgetExhausted int                               `json:"budgetExhausted"`
-	OutOfDiff       int                               `json:"outOfDiff"`
-	Overall         creditgraph.ReviewerEvalMetrics   `json:"overall"`
-	Classes         []creditgraph.ReviewerEvalMetrics `json:"classes"`
-	TotalCostUSD    float64                           `json:"totalCostUsd"`
-	CostPerBugUSD   float64                           `json:"costPerBugUsd"`
-	SZZCalibration  szzCalibration                    `json:"szzCalibration"`
-	Results         []caseResult                      `json:"results"`
+	Schema          string  `json:"schema"`
+	DatasetVersion  string  `json:"datasetVersion"`
+	DatasetDigest   string  `json:"datasetDigest"`
+	Split           string  `json:"split"`
+	Variant         string  `json:"variant"`
+	Seed            string  `json:"seed"`
+	MaxCases        int     `json:"maxCases"`
+	BudgetUSD       float64 `json:"budgetUsd"`
+	Sampled         int     `json:"sampled"`
+	Reviewed        int     `json:"reviewed"`
+	Failed          int     `json:"failed"`
+	BudgetExhausted int     `json:"budgetExhausted"`
+	OutOfDiff       int     `json:"outOfDiff"`
+	// JudgeSkippedForBudget counts findings left unjudged, and so unmatched,
+	// because the budget ran out.
+	JudgeSkippedForBudget int                               `json:"judgeSkippedForBudget,omitempty"`
+	Overall               creditgraph.ReviewerEvalMetrics   `json:"overall"`
+	Classes               []creditgraph.ReviewerEvalMetrics `json:"classes"`
+	TotalCostUSD          float64                           `json:"totalCostUsd"`
+	CostPerBugUSD         float64                           `json:"costPerBugUsd"`
+	SZZCalibration        szzCalibration                    `json:"szzCalibration"`
+	Results               []caseResult                      `json:"results"`
 }
 
 func newReport(set dataset, options replayOptions, outOfDiff int, results []caseResult) evalReport {
@@ -60,6 +63,11 @@ func newReport(set dataset, options replayOptions, outOfDiff int, results []case
 	total := 0.0
 	for _, result := range results {
 		total += result.CostUSD
+		for _, decision := range result.JudgeDecisions {
+			if decision.SkippedForBudget {
+				report.JudgeSkippedForBudget++
+			}
+		}
 		switch result.Status {
 		case statusReviewed:
 			report.Reviewed++

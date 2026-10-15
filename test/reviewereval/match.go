@@ -39,6 +39,8 @@ type judgeRequest struct {
 	IntroducingCommit string        `json:"introducingCommit"`
 	BugLines          []fileLines   `json:"bugLines"`
 	Finding           apiv1.Finding `json:"finding"`
+	// BudgetRemainingUSD is the most this decision may cost.
+	BudgetRemainingUSD float64 `json:"budgetRemainingUsd"`
 }
 
 // judgeDecision is a judge's answer and what producing it cost; judge spend
@@ -58,9 +60,12 @@ type judge interface {
 }
 
 // commandJudge is an operator-supplied adapter command: it receives a
-// judgeRequest as JSON on stdin and prints a judgeDecision as JSON.
+// judgeRequest as JSON on stdin and prints a judgeDecision as JSON. Like the
+// reviewer, it runs in a scratch directory under workDir with an isolated
+// home and no forge credentials.
 type commandJudge struct {
-	argv []string
+	argv    []string
+	workDir string
 }
 
 func (judge commandJudge) Name() string {
@@ -69,7 +74,7 @@ func (judge commandJudge) Name() string {
 
 func (judge commandJudge) Judge(ctx context.Context, request judgeRequest) (judgeDecision, error) {
 	var decision judgeDecision
-	err := runAdapter(ctx, judge.argv, "", request, &decision)
+	err := runAdapter(ctx, judge.argv, judge.workDir, "", request, &decision)
 	return decision, err
 }
 
@@ -81,12 +86,15 @@ type findingResult struct {
 	Match             string `json:"match,omitempty"`
 }
 
+// judgeRecord is one judge decision, or a finding left unjudged because the
+// budget ran out (SkippedForBudget), which then counts as not matching.
 type judgeRecord struct {
-	Finding   int     `json:"finding"`
-	Judge     string  `json:"judge"`
-	Match     bool    `json:"match"`
-	Rationale string  `json:"rationale"`
-	CostUSD   float64 `json:"costUsd,omitempty"`
+	Finding          int     `json:"finding"`
+	Judge            string  `json:"judge"`
+	Match            bool    `json:"match"`
+	Rationale        string  `json:"rationale,omitempty"`
+	CostUSD          float64 `json:"costUsd,omitempty"`
+	SkippedForBudget bool    `json:"skippedForBudget,omitempty"`
 }
 
 // caseResult is one sampled case's outcome: the verdict the reviewer
@@ -111,9 +119,10 @@ type matcher struct {
 	judge judge
 }
 
-// score matches each finding to the case's bug. On a judge failure it returns
-// the partial result, whose JudgeCostUSD is what the judge already spent.
-func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewResult) (caseResult, error) {
+// score matches each finding to the case's bug, spending at most budget on
+// judge calls. On a judge failure it returns the partial result, whose
+// JudgeCostUSD is what the judge already spent.
+func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewResult, budget float64) (caseResult, error) {
 	verdict := reviewed.Verdict
 	result := caseResult{
 		CaseID: item.ID, FixCommit: item.FixCommit, IntroducingCommit: item.IntroducingCommit,
@@ -130,13 +139,21 @@ func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewRes
 		switch {
 		case overlapsBug(finding.Location, item.BugLines):
 			scored.Match = matchLineOverlap
+		case m.judge != nil && budget-result.JudgeCostUSD <= costEpsilon:
+			result.JudgeDecisions = append(result.JudgeDecisions, judgeRecord{Finding: index, Judge: m.judge.Name(), SkippedForBudget: true})
 		case m.judge != nil:
+			remaining := budget - result.JudgeCostUSD
 			decision, err := m.judge.Judge(ctx, judgeRequest{
 				CaseID: item.ID, FixCommit: item.FixCommit, FixSubject: item.FixSubject,
 				IntroducingCommit: item.IntroducingCommit, BugLines: item.BugLines, Finding: finding,
+				BudgetRemainingUSD: remaining,
 			})
 			if err == nil && !validCost(decision.CostUSD) {
 				err = fmt.Errorf("judge reported invalid cost %v", decision.CostUSD)
+			}
+			if err == nil && decision.CostUSD > remaining+costEpsilon {
+				result.JudgeCostUSD += decision.CostUSD
+				err = fmt.Errorf("judge reported $%.4f with $%.4f left: %w", decision.CostUSD, remaining, errBudgetOverrun)
 			}
 			if err != nil {
 				return result, fmt.Errorf("judge finding %d: %w", index, err)

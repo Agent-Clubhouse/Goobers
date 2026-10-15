@@ -177,9 +177,9 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	match := matcher{}
 	if *judgeCmd != "" {
-		match.judge = commandJudge{argv: strings.Fields(*judgeCmd)}
+		match.judge = commandJudge{argv: strings.Fields(*judgeCmd), workDir: options.WorkDir}
 	}
-	report, err := replay(ctx, set, gitReader{dir: *repo}, commandReviewer{argv: strings.Fields(*reviewerCmd)}, match, options)
+	report, err := replay(ctx, set, gitReader{dir: *repo}, commandReviewer{argv: strings.Fields(*reviewerCmd), workDir: options.WorkDir}, match, options)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "reviewereval replay: %v\n", err)
 		return 2
@@ -269,8 +269,8 @@ func loadReport(path string) (evalReport, error) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		return evalReport{}, fmt.Errorf("decode reviewer eval report %s: %w", path, err)
 	}
-	if report.Schema != reportSchemaVersion {
-		return evalReport{}, fmt.Errorf("unsupported reviewer eval report schema %q in %s", report.Schema, path)
+	if err := report.validate(); err != nil {
+		return evalReport{}, fmt.Errorf("invalid reviewer eval report %s: %w", path, err)
 	}
 	return report, nil
 }

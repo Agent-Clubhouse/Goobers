@@ -495,14 +495,25 @@ the same cases; out-of-diff cases are counted, not replayed or scored as
 misses. Each offending commit is reconstructed in a fresh repository from
 `git archive` exports of its parent and itself: two commits, no remote, no
 objects shared with the live repository, so the fix and all later history are
-unreachable. The reviewer adapter runs in that repository with forge
-credentials stripped from its environment, receives the request (base and head
+unreachable. The reviewer adapter runs in that repository, and the judge in an
+empty scratch directory, both under `-work-dir` (which may not lie inside the
+live repository). Each adapter gets forge tokens stripped from its
+environment, fresh empty home and configuration directories (`HOME`,
+`USERPROFILE`, `APPDATA`, `XDG_*`, `GH_CONFIG_DIR`), global and system git
+config ignored, and git credential helpers disabled, so stored gh and git
+credentials are unreachable. The reviewer receives the request (base and head
 SHAs, title, diff, remaining budget) as JSON on stdin, and prints the verdict
 and its cost. Nothing is posted to a pull request. A real review is always
-opt-in: replay refuses to run without both flags. The budget covers reviewer and judge
-spend, including spend on failed cases; once it is spent, the remaining cases
-are recorded as `budget-exhausted`. A synthesized or failed review, or a judge
-failure, is recorded as `failed` with its spend kept. Neither counts toward recall.
+opt-in: replay refuses to run without both flags.
+
+The budget caps reviewer and judge spend together, including spend on failed
+cases. Every reviewer and judge request carries the budget it has left, and
+an adapter that reports spending more stops the replay with an error rather
+than produce an over-budget report. Once the budget is spent, findings still
+awaiting the judge are recorded as skipped for budget (and count as not
+matching) and the remaining cases as `budget-exhausted`. A synthesized or
+failed review, or a judge failure, is recorded as `failed` with its spend kept.
+Neither counts toward recall.
 
 A finding matches its case's bug when its location names a bug file and a line
 within three lines of a bug line. If `-judge-cmd` is given, a finding that does
@@ -512,6 +523,12 @@ rationale, and cost is recorded in the report. The report (schema
 scored findings, overall and per-finding-class recall (bugs caught over bugs
 reviewed) and precision (matching findings over all findings), and total cost
 (failed cases included) and cost per bug.
+
+`compare` and `publish` re-validate every report they load: case IDs must be
+unique and in seeded sampling order, each case's scoring must agree with its
+verdict and judge decisions, spend must stay within the budget, and the counts,
+recall, precision, and costs must equal what the per-case results recompute
+to, so a hand-edited aggregate is rejected.
 
 `compare -baseline=FILE -candidate=FILE` compares a candidate reviewer variant
 with the baseline. Both reports must come from the same frozen dataset (version

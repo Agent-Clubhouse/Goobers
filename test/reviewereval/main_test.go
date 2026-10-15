@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -322,6 +325,14 @@ func (judge *failingJudge) Judge(context.Context, judgeRequest) (judgeDecision, 
 	return judgeDecision{Rationale: "unrelated", CostUSD: 0.2}, nil
 }
 
+type overspendingJudge struct{}
+
+func (overspendingJudge) Name() string { return "overspending" }
+
+func (overspendingJudge) Judge(_ context.Context, request judgeRequest) (judgeDecision, error) {
+	return judgeDecision{Rationale: "costly", CostUSD: request.BudgetRemainingUSD + 0.1}, nil
+}
+
 type fakeJudge struct{ requests int }
 
 func (judge *fakeJudge) Name() string { return "fake" }
@@ -407,8 +418,8 @@ func metricsOf(class string, caught, evaluated int, recall float64, matched, fin
 func TestReplayGuardrails(t *testing.T) {
 	t.Parallel()
 	repo, set := replayFixture(t)
-	answer := func(reviewRequest) reviewResult {
-		return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}, CostUSD: 1}
+	answer := func(request reviewRequest) reviewResult {
+		return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}, CostUSD: min(1, request.BudgetRemainingUSD)}
 	}
 	run := func(options replayOptions) evalReport {
 		t.Helper()
@@ -428,8 +439,9 @@ func TestReplayGuardrails(t *testing.T) {
 	}
 
 	budgeted := run(replayOptions{MaxCases: 10, BudgetUSD: 2.5, Seed: "s"})
-	if budgeted.Sampled != 4 || budgeted.Reviewed != 3 || budgeted.BudgetExhausted != 1 || budgeted.TotalCostUSD != 3 {
-		t.Fatalf("budgeted replay = %+v, want 3 reviewed before the 2.5 cap stopped the fourth", budgeted)
+	if budgeted.Sampled != 4 || budgeted.Reviewed != 3 || budgeted.BudgetExhausted != 1 || budgeted.TotalCostUSD != 2.5 ||
+		budgeted.TotalCostUSD > budgeted.BudgetUSD || budgeted.validate() != nil {
+		t.Fatalf("budgeted replay = %+v, want 3 reviewed within the 2.5 cap and the fourth not run", budgeted)
 	}
 	if again := run(replayOptions{MaxCases: 10, BudgetUSD: 2.5, Seed: "s"}); !reflect.DeepEqual(order(again), order(budgeted)) {
 		t.Fatalf("same seed sampled %v then %v", order(budgeted), order(again))
@@ -439,49 +451,102 @@ func TestReplayGuardrails(t *testing.T) {
 		t.Fatalf("max-cases 2 sampled %v, want the first two of %v", order(capped), order(budgeted))
 	}
 
-	failing := &fakeReviewer{t: t, repo: repo, answer: func(reviewRequest) reviewResult {
-		return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Synthesized: true}, CostUSD: 1}
-	}}
-	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, failing, matcher{},
-		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1.5, Seed: "s", WorkDir: t.TempDir()})
-	if err != nil || report.Failed != 2 || report.BudgetExhausted != 2 || report.Reviewed != 0 || report.TotalCostUSD != 2 {
-		t.Fatalf("synthesized verdict report = %+v, %v; want failed cases unscored but their spend capped by the budget", report, err)
-	}
-
-	judged := &fakeReviewer{t: t, repo: repo, answer: func(reviewRequest) reviewResult {
-		return reviewResult{CostUSD: 0.5, Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
-			{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go", Message: "untested"},
-			{Class: apiv1.FindingScopeCreep, Severity: apiv1.SeverityInfo, Location: "b.go", Message: "unrelated"},
-		}}}
-	}}
-	report, err = replay(context.Background(), set, gitReader{dir: repo.dir}, judged, matcher{judge: &failingJudge{}},
-		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1.4, Seed: "s", WorkDir: t.TempDir()})
-	if err != nil || report.Failed != 2 || report.BudgetExhausted != 2 || report.TotalCostUSD != 1.4 ||
-		len(report.Results[0].JudgeDecisions) != 1 || report.Results[0].JudgeCostUSD != 0.2 {
-		t.Fatalf("judge failure report = %+v, %v; want each case failed with review and judge spend counted", report, err)
-	}
-
 	for _, bad := range []replayOptions{
 		{Split: splitEval, Variant: "v", MaxCases: hardMaxCases + 1, BudgetUSD: 1, Seed: "s"},
 		{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 0, Seed: "s"},
 		{Split: "all", Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s"},
 		{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1},
 	} {
-		if _, err := replay(context.Background(), set, gitReader{dir: repo.dir}, failing, matcher{}, bad); err == nil {
+		if _, err := replay(context.Background(), set, gitReader{dir: repo.dir}, &fakeReviewer{t: t, repo: repo, answer: answer}, matcher{}, bad); err == nil {
 			t.Errorf("replay accepted options %+v", bad)
 		}
+	}
+}
+
+func TestReplayEnforcesBudgetAcrossReviewerAndJudge(t *testing.T) {
+	t.Parallel()
+	repo, set := replayFixture(t)
+	failing := &fakeReviewer{t: t, repo: repo, answer: func(request reviewRequest) reviewResult {
+		return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Synthesized: true}, CostUSD: min(1, request.BudgetRemainingUSD)}
+	}}
+	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, failing, matcher{},
+		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1.5, Seed: "s", WorkDir: t.TempDir()})
+	if err != nil || report.Failed != 2 || report.BudgetExhausted != 2 || report.Reviewed != 0 || report.TotalCostUSD != 1.5 || report.validate() != nil {
+		t.Fatalf("synthesized verdict report = %+v, %v; want failed cases unscored but their spend capped by the budget", report, err)
+	}
+
+	judged := &fakeReviewer{t: t, repo: repo, answer: func(request reviewRequest) reviewResult {
+		return reviewResult{CostUSD: min(0.5, request.BudgetRemainingUSD), Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
+			{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go", Message: "untested"},
+			{Class: apiv1.FindingScopeCreep, Severity: apiv1.SeverityInfo, Location: "b.go", Message: "unrelated"},
+		}}}
+	}}
+	report, err = replay(context.Background(), set, gitReader{dir: repo.dir}, judged, matcher{judge: &failingJudge{}},
+		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1.4, Seed: "s", WorkDir: t.TempDir()})
+	if err != nil || report.Failed != 1 || report.Reviewed != 1 || report.JudgeSkippedForBudget != 1 || report.BudgetExhausted != 2 || report.TotalCostUSD != 1.4 ||
+		len(report.Results[0].JudgeDecisions) != 1 || report.Results[0].JudgeCostUSD != 0.2 || report.validate() != nil {
+		t.Fatalf("judge failure report = %+v, %v; want the judge failure to fail its case with spend counted, and the next case's judging skipped once the budget ran out", report, err)
+	}
+
+	// A reviewer that spends its whole remaining budget leaves nothing for the
+	// judge: the findings are recorded as skipped for budget, not judged.
+	spendAll := &fakeReviewer{t: t, repo: repo, answer: func(request reviewRequest) reviewResult {
+		return reviewResult{CostUSD: request.BudgetRemainingUSD, Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
+			{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go", Message: "untested"},
+		}}}
+	}}
+	unjudged := &fakeJudge{}
+	report, err = replay(context.Background(), set, gitReader{dir: repo.dir}, spendAll, matcher{judge: unjudged},
+		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1, Seed: "s", WorkDir: t.TempDir()})
+	if err != nil || unjudged.requests != 0 || report.Reviewed != 1 || report.BudgetExhausted != 3 || report.JudgeSkippedForBudget != 1 ||
+		!report.Results[0].JudgeDecisions[0].SkippedForBudget || report.TotalCostUSD != 1 || report.validate() != nil {
+		t.Fatalf("exhausted judge report = %+v, %v; want the finding skipped for budget and no judge call", report, err)
+	}
+
+	checkOverrunsStopReplay(t, repo, set)
+}
+
+// checkOverrunsStopReplay asserts a reviewer or judge that reports spending
+// more than its remaining budget stops the replay, and that a work directory
+// inside the live repository is refused.
+func checkOverrunsStopReplay(t *testing.T, repo *fixtureRepo, set dataset) {
+	t.Helper()
+	// An adapter that reports spending more than it was given stops the run.
+	overReviewer := &fakeReviewer{t: t, repo: repo, answer: func(request reviewRequest) reviewResult {
+		return reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}, CostUSD: request.BudgetRemainingUSD + 1}
+	}}
+	overJudge := &fakeReviewer{t: t, repo: repo, answer: func(request reviewRequest) reviewResult {
+		return reviewResult{CostUSD: 0.5, Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
+			{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go", Message: "untested"},
+		}}}
+	}}
+	for name, run := range map[string]struct {
+		review reviewer
+		judge  judge
+	}{"reviewer": {overReviewer, nil}, "judge": {overJudge, overspendingJudge{}}} {
+		_, err := replay(context.Background(), set, gitReader{dir: repo.dir}, run.review, matcher{judge: run.judge},
+			replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1, Seed: "s", WorkDir: t.TempDir()})
+		if !errors.Is(err, errBudgetOverrun) {
+			t.Errorf("%s overspending its budget: replay error %v, want a budget overrun", name, err)
+		}
+	}
+	if _, err := replay(context.Background(), set, gitReader{dir: repo.dir}, overReviewer, matcher{},
+		replayOptions{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s", WorkDir: filepath.Join(repo.dir, "work")}); err == nil {
+		t.Error("replay accepted a work directory inside the live repository")
 	}
 }
 
 func reportOf(variant string, caught map[string]bool, cost float64) evalReport {
 	var results []caseResult
 	for _, id := range []string{"case-a", "case-b"} {
-		result := caseResult{CaseID: id, Status: statusReviewed, CostUSD: cost, Findings: []findingResult{{Class: "substantive"}}}
+		verdict := &apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{{Class: apiv1.FindingSubstantive}}}
+		result := caseResult{CaseID: id, Status: statusReviewed, CostUSD: cost, Verdict: verdict, Findings: []findingResult{{Class: "substantive"}}}
 		if caught[id] {
 			result.Caught, result.Findings[0].Match = true, matchLineOverlap
 		}
 		results = append(results, result)
 	}
+	sort.Slice(results, func(i, j int) bool { return sampleRank("s", results[i].CaseID) < sampleRank("s", results[j].CaseID) })
 	set := dataset{Header: datasetHeader{Version: "v1", Digest: "sha256:d"}}
 	return newReport(set, replayOptions{Split: splitEval, Variant: variant, Seed: "s", MaxCases: 2, BudgetUSD: 10}, 0, results)
 }
@@ -586,4 +651,226 @@ func TestParseLocation(t *testing.T) {
 			t.Errorf("parseLocation(%q) = %v, want %v", location, got, want)
 		}
 	}
+}
+
+func TestLoadReportRejectsTamperedReports(t *testing.T) {
+	t.Parallel()
+	valid := func() evalReport { return reportOf("candidate", map[string]bool{"case-a": true}, 1) }
+	if _, err := loadReport(writeReport(t, valid())); err != nil {
+		t.Fatalf("valid report rejected: %v", err)
+	}
+	uncaught := func(report *evalReport) *caseResult {
+		for index := range report.Results {
+			if !report.Results[index].Caught {
+				return &report.Results[index]
+			}
+		}
+		t.Fatal("fixture report has no uncaught case")
+		return nil
+	}
+	for name, tamper := range map[string]func(*evalReport){
+		"overall recall":       func(report *evalReport) { report.Overall.Recall = 1 },
+		"overall caught":       func(report *evalReport) { report.Overall.Caught = 2 },
+		"class precision":      func(report *evalReport) { report.Classes[0].Precision = 1 },
+		"reviewed count":       func(report *evalReport) { report.Reviewed = 1 },
+		"total cost":           func(report *evalReport) { report.TotalCostUSD = 0.5 },
+		"cost per bug":         func(report *evalReport) { report.CostPerBugUSD = 0.1 },
+		"duplicate case":       func(report *evalReport) { report.Results[1].CaseID = report.Results[0].CaseID },
+		"sampling order":       func(report *evalReport) { report.Results[0], report.Results[1] = report.Results[1], report.Results[0] },
+		"sampled count":        func(report *evalReport) { report.Sampled = 3 },
+		"over the case cap":    func(report *evalReport) { report.MaxCases = 1 },
+		"over the budget":      func(report *evalReport) { report.BudgetUSD = 1 },
+		"no seed":              func(report *evalReport) { report.Seed = "" },
+		"caught with no match": func(report *evalReport) { uncaught(report).Caught = true },
+		"judge match with no decision": func(report *evalReport) {
+			result := uncaught(report)
+			result.Caught, result.Findings[0].Match = true, matchJudge
+		},
+	} {
+		report := valid()
+		tamper(&report)
+		if _, err := loadReport(writeReport(t, report)); err == nil {
+			t.Errorf("%s: tampered report accepted", name)
+		}
+	}
+
+	tampered := valid()
+	tampered.Overall.Recall = 1
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	baseline := writeReport(t, reportOf("baseline", map[string]bool{"case-a": true}, 1))
+	if code := run(context.Background(), []string{"compare", "-baseline", baseline, "-candidate", writeReport(t, tampered), "-publish", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("compare with a tampered candidate exit %d, want 1", code)
+	}
+	if published, err := readservice.ReadReviewerEval(root); err != nil || published != nil {
+		t.Fatalf("tampered comparison published %+v, %v", published, err)
+	}
+}
+
+const (
+	adapterHelperEnv = "REVIEWEREVAL_ADAPTER_HELPER"
+	storedSecret     = "stored-forge-credential"
+)
+
+// adapterObservation is what the helper adapter saw of its environment.
+type adapterObservation struct {
+	Role    string            `json:"role"`
+	Cwd     string            `json:"cwd"`
+	Env     map[string]string `json:"env"`
+	Secrets []string          `json:"secrets"`
+}
+
+// credentialPaths lists where gh and git persist forge credentials under the
+// home and configuration directories getenv names.
+func credentialPaths(getenv func(string) string) []string {
+	var paths []string
+	for _, location := range [][2]string{
+		{"GH_CONFIG_DIR", "hosts.yml"}, {"HOME", filepath.Join(".config", "gh", "hosts.yml")},
+		{"APPDATA", filepath.Join("GitHub CLI", "hosts.yml")}, {"HOME", ".git-credentials"},
+		{"USERPROFILE", ".git-credentials"}, {"XDG_CONFIG_HOME", filepath.Join("git", "credentials")},
+	} {
+		if base := getenv(location[0]); base != "" {
+			paths = append(paths, filepath.Join(base, location[1]))
+		}
+	}
+	return paths
+}
+
+// TestAdapterHelperProcess is the adapter the isolation test runs as a
+// subprocess: it records its working directory, environment, and any stored
+// credential it can read, leaves a file in its working directory, and answers
+// as a reviewer or judge. Run normally, it does nothing.
+func TestAdapterHelperProcess(t *testing.T) {
+	out := os.Getenv(adapterHelperEnv)
+	if out == "" {
+		return
+	}
+	var request map[string]any
+	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ := os.Getwd()
+	_ = os.WriteFile(filepath.Join(cwd, "adapter-was-here"), nil, 0o644)
+	observation := adapterObservation{Role: "reviewer", Cwd: cwd, Env: map[string]string{}}
+	for _, name := range []string{"HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "GH_TOKEN",
+		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"} {
+		if value, ok := os.LookupEnv(name); ok {
+			observation.Env[name] = value
+		}
+	}
+	for _, path := range credentialPaths(os.Getenv) {
+		if data, err := os.ReadFile(path); err == nil && strings.Contains(string(data), storedSecret) {
+			observation.Secrets = append(observation.Secrets, path)
+		}
+	}
+	var answer any = reviewResult{Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
+		{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go", Message: "untested"},
+	}}}
+	if _, judging := request["finding"]; judging {
+		observation.Role, answer = "judge", judgeDecision{Rationale: "observed"}
+	}
+	line, _ := json.Marshal(observation)
+	file, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.Write(append(line, '\n'))
+	_ = file.Close()
+	_ = json.NewEncoder(os.Stdout).Encode(answer)
+	os.Exit(0)
+}
+
+func TestAdaptersRunIsolatedFromCredentialsAndLiveTree(t *testing.T) {
+	repo, set := replayFixture(t)
+	set.Cases = set.Cases[:1]
+	home := t.TempDir()
+	operator := map[string]string{
+		"HOME": home, "USERPROFILE": home, "APPDATA": filepath.Join(home, "AppData"),
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"), "GH_CONFIG_DIR": filepath.Join(home, ".config", "gh"),
+	}
+	for name, value := range operator {
+		t.Setenv(name, value)
+	}
+	t.Setenv("GH_TOKEN", storedSecret)
+	for _, path := range credentialPaths(func(name string) string { return operator[name] }) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(storedSecret), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observations := filepath.Join(t.TempDir(), "observations.jsonl")
+	t.Setenv(adapterHelperEnv, observations)
+	workDir, packageDir := t.TempDir(), t.TempDir()
+	t.Chdir(packageDir)
+	argv := []string{os.Args[0], "-test.run=^TestAdapterHelperProcess$"}
+	before := repo.liveState(t)
+
+	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, commandReviewer{argv: argv, workDir: workDir},
+		matcher{judge: commandJudge{argv: argv, workDir: workDir}}, replayOptions{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s", WorkDir: workDir})
+	if err != nil || report.Reviewed != 1 || len(report.Results[0].JudgeDecisions) != 1 {
+		t.Fatalf("replay through command adapters = %+v, %v; want one case reviewed and judged", report, err)
+	}
+	if after := repo.liveState(t); after != before {
+		t.Fatal("an adapter changed the live repository")
+	}
+	if entries, err := os.ReadDir(packageDir); err != nil || len(entries) != 0 {
+		t.Fatalf("an adapter wrote to the invoking working directory: %v %v", entries, err)
+	}
+	if entries, err := os.ReadDir(workDir); err != nil || len(entries) != 0 {
+		t.Fatalf("adapter scratch directories were left behind: %v %v", entries, err)
+	}
+	data, err := os.ReadFile(observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var seen adapterObservation
+		if err := json.Unmarshal([]byte(line), &seen); err != nil {
+			t.Fatal(err)
+		}
+		roles[seen.Role] = true
+		checkAdapterIsolated(t, seen, workDir, repo.dir)
+	}
+	if !roles["reviewer"] || !roles["judge"] {
+		t.Fatalf("adapter roles observed = %v, want reviewer and judge", roles)
+	}
+}
+
+// checkAdapterIsolated asserts an adapter ran in a scratch directory under
+// workDir, outside the live repository, with isolated home directories, git
+// credential helpers disabled, and no stored credential reachable.
+func checkAdapterIsolated(t *testing.T, seen adapterObservation, workDir, liveDir string) {
+	t.Helper()
+	if len(seen.Secrets) > 0 || seen.Env["GH_TOKEN"] != "" {
+		t.Errorf("%s adapter reached stored credentials %v (GH_TOKEN %q)", seen.Role, seen.Secrets, seen.Env["GH_TOKEN"])
+	}
+	if !inside(t, seen.Cwd, workDir) || inside(t, seen.Cwd, liveDir) {
+		t.Errorf("%s adapter ran in %s, want a scratch directory under %s", seen.Role, seen.Cwd, workDir)
+	}
+	for _, name := range []string{"HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME", "GH_CONFIG_DIR"} {
+		if !inside(t, seen.Env[name], workDir) {
+			t.Errorf("%s adapter %s = %q, want an isolated directory under %s", seen.Role, name, seen.Env[name], workDir)
+		}
+	}
+	if seen.Env["GIT_CONFIG_GLOBAL"] != os.DevNull || seen.Env["GIT_CONFIG_NOSYSTEM"] != "1" ||
+		seen.Env["GIT_CONFIG_KEY_0"] != "credential.helper" || seen.Env["GIT_CONFIG_VALUE_0"] != "" {
+		t.Errorf("%s adapter git config environment = %v, want global/system config off and credential helpers disabled", seen.Role, seen.Env)
+	}
+}
+
+func inside(t *testing.T, path, dir string) bool {
+	t.Helper()
+	if path == "" {
+		return false
+	}
+	resolvedFile, errFile := resolvedPath(path)
+	resolvedDir, errDir := resolvedPath(dir)
+	if err := errors.Join(errFile, errDir); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(resolvedDir, resolvedFile)
+	return err == nil && filepath.IsLocal(relative)
 }

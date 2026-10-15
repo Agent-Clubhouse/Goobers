@@ -101,22 +101,38 @@ func sampleCases(set dataset, options replayOptions) (sampled []datasetCase, out
 		}
 		sampled = append(sampled, item)
 	}
-	rank := func(item datasetCase) string {
-		sum := sha256.Sum256([]byte(options.Seed + "\x00" + item.ID))
-		return hex.EncodeToString(sum[:])
-	}
-	sort.Slice(sampled, func(i, j int) bool { return rank(sampled[i]) < rank(sampled[j]) })
+	sort.Slice(sampled, func(i, j int) bool {
+		return sampleRank(options.Seed, sampled[i].ID) < sampleRank(options.Seed, sampled[j].ID)
+	})
 	if len(sampled) > options.MaxCases {
 		sampled = sampled[:options.MaxCases]
 	}
 	return sampled, outOfDiff
 }
 
+// errBudgetOverrun marks an adapter that reported spending more than the
+// remaining budget it was given. Replay stops at once rather than record a
+// run whose spend broke its cap.
+var errBudgetOverrun = errors.New("adapter overran its remaining budget")
+
+// costEpsilon absorbs float rounding when comparing spend with a budget.
+const costEpsilon = 1e-9
+
+// sampleRank orders cases for sampling: a seeded hash of the case ID.
+func sampleRank(seed, id string) string {
+	sum := sha256.Sum256([]byte(seed + "\x00" + id))
+	return hex.EncodeToString(sum[:])
+}
+
 // replay reconstructs and reviews each sampled case, scoring findings with
-// the matcher. It stops reviewing once the budget is spent; cases left
-// unreviewed are reported as not run, never as misses.
+// the matcher. Every reviewer and judge call is told the budget it has left
+// and may not spend more; once the budget is spent the remaining cases are
+// reported as not run, never as misses.
 func replay(ctx context.Context, set dataset, live gitReader, review reviewer, match matcher, options replayOptions) (evalReport, error) {
 	if err := options.validate(); err != nil {
+		return evalReport{}, err
+	}
+	if err := checkWorkDir(options.WorkDir, live.dir); err != nil {
 		return evalReport{}, err
 	}
 	sampled, outOfDiff := sampleCases(set, options)
@@ -124,20 +140,27 @@ func replay(ctx context.Context, set dataset, live gitReader, review reviewer, m
 	spent := 0.0
 	for _, item := range sampled {
 		result := caseResult{CaseID: item.ID, FixCommit: item.FixCommit, IntroducingCommit: item.IntroducingCommit}
-		if spent >= options.BudgetUSD {
+		remaining := options.BudgetUSD - spent
+		if remaining <= costEpsilon {
 			result.Status = statusBudgetExhausted
 			results = append(results, result)
 			continue
 		}
-		reviewed, err := replayCase(ctx, live, review, item, options, options.BudgetUSD-spent)
+		reviewed, err := replayCase(ctx, live, review, item, options, remaining)
 		spent += reviewed.CostUSD
+		if errors.Is(err, errBudgetOverrun) {
+			return evalReport{}, fmt.Errorf("case %s: %w (spent $%.4f of $%.4f)", item.ID, err, spent, options.BudgetUSD)
+		}
 		if err != nil {
 			result.Status, result.Error, result.CostUSD = statusFailed, err.Error(), round4(reviewed.CostUSD)
 			results = append(results, result)
 			continue
 		}
-		scored, err := match.score(ctx, item, reviewed)
+		scored, err := match.score(ctx, item, reviewed, options.BudgetUSD-spent)
 		spent += scored.JudgeCostUSD
+		if errors.Is(err, errBudgetOverrun) {
+			return evalReport{}, fmt.Errorf("case %s: %w (spent $%.4f of $%.4f)", item.ID, err, spent, options.BudgetUSD)
+		}
 		if err != nil {
 			result.Status, result.Error = statusFailed, fmt.Sprintf("score: %v", err)
 			result.CostUSD, result.JudgeCostUSD = scored.CostUSD, scored.JudgeCostUSD
@@ -148,6 +171,42 @@ func replay(ctx context.Context, set dataset, live gitReader, review reviewer, m
 		results = append(results, scored)
 	}
 	return newReport(set, options, outOfDiff, results), nil
+}
+
+// checkWorkDir refuses a replay work directory inside the live repository,
+// so neither a reconstruction nor an adapter ever runs in the live tree.
+func checkWorkDir(workDir, liveDir string) error {
+	if workDir == "" {
+		workDir = os.TempDir()
+	}
+	work, errWork := resolvedPath(workDir)
+	live, errLive := resolvedPath(liveDir)
+	if err := errors.Join(errWork, errLive); err != nil {
+		return err
+	}
+	if relative, err := filepath.Rel(live, work); err == nil && filepath.IsLocal(relative) {
+		return fmt.Errorf("replay work directory %s is inside the live repository %s", workDir, liveDir)
+	}
+	return nil
+}
+
+// resolvedPath resolves symlinks in the longest existing prefix of path, so a
+// directory that does not exist yet still compares with resolved paths.
+func resolvedPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for current := absolute; ; current = filepath.Dir(current) {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		if filepath.Dir(current) == current {
+			return absolute, nil
+		}
+		rest = filepath.Join(filepath.Base(current), rest)
+	}
 }
 
 // replayCase reconstructs and reviews one case. A review the harness rejects
@@ -170,12 +229,14 @@ func replayCase(ctx context.Context, live gitReader, review reviewer, item datas
 	if !validCost(result.CostUSD) {
 		return reviewResult{}, fmt.Errorf("reviewer reported invalid cost %v", result.CostUSD)
 	}
+	if result.CostUSD > budget+costEpsilon {
+		return reviewResult{CostUSD: result.CostUSD}, fmt.Errorf("reviewer reported $%.4f with $%.4f left: %w", result.CostUSD, budget, errBudgetOverrun)
+	}
 	if result.Verdict.Synthesized || result.Verdict.Decision == "" {
 		return reviewResult{CostUSD: result.CostUSD}, errors.New("reviewer returned no reviewed verdict")
 	}
 	return result, nil
 }
-
 func validCost(value float64) bool {
 	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
@@ -319,23 +380,26 @@ func writeTarFile(reader io.Reader, target string, mode os.FileMode) error {
 
 // commandReviewer is the opt-in real reviewer: an operator-supplied adapter
 // command that runs the production merge-review reviewer on the isolated
-// repository. It runs in that repository with forge credentials stripped,
-// receives the request as JSON on stdin, and prints a reviewResult as JSON.
+// repository. It runs in that repository with an isolated home and no forge
+// credentials, receives the request as JSON on stdin, and prints a
+// reviewResult as JSON.
 type commandReviewer struct {
-	argv []string
+	argv    []string
+	workDir string
 }
 
 func (reviewer commandReviewer) Review(ctx context.Context, request reviewRequest) (reviewResult, error) {
 	var result reviewResult
-	if err := runAdapter(ctx, reviewer.argv, request.Dir, request, &result); err != nil {
+	if err := runAdapter(ctx, reviewer.argv, reviewer.workDir, request.Dir, request, &result); err != nil {
 		return reviewResult{}, err
 	}
 	return result, nil
 }
 
 // runAdapter runs an adapter command with input as JSON on stdin and decodes
-// its stdout into output. The environment carries no forge credentials.
-func runAdapter(ctx context.Context, argv []string, dir string, input, output any) error {
+// its stdout into output. It runs in dir, or in a fresh scratch directory
+// when dir is empty, never in the live checkout, with adapterEnvironment.
+func runAdapter(ctx context.Context, argv []string, workDir, dir string, input, output any) error {
 	if len(argv) == 0 {
 		return errors.New("adapter command is empty")
 	}
@@ -343,9 +407,24 @@ func runAdapter(ctx context.Context, argv []string, dir string, input, output an
 	if err != nil {
 		return err
 	}
+	sandbox, err := os.MkdirTemp(workDir, "reviewer-eval-adapter-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(sandbox) }()
+	env, err := adapterEnvironment(sandbox)
+	if err != nil {
+		return err
+	}
+	if dir == "" {
+		dir = filepath.Join(sandbox, "work")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			return err
+		}
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.Env = gitEnvironment()
+	cmd.Env = env
 	cmd.Stdin = bytes.NewReader(data)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -356,4 +435,58 @@ func runAdapter(ctx context.Context, argv []string, dir string, input, output an
 		return fmt.Errorf("decode %s output: %w", argv[0], err)
 	}
 	return nil
+}
+
+// isolatedHomeVariables are the variables through which a process finds the
+// operator's persisted configuration and credentials (gh hosts, git
+// credential stores, global git config). Adapters get fresh empty ones.
+var isolatedHomeVariables = map[string]string{
+	"HOME": "home", "USERPROFILE": "home", "APPDATA": "appdata", "LOCALAPPDATA": "localappdata",
+	"XDG_CONFIG_HOME": "config", "XDG_DATA_HOME": "data", "XDG_STATE_HOME": "state", "XDG_CACHE_HOME": "cache",
+	"GH_CONFIG_DIR": "gh",
+}
+
+// adapterEnvironment is gitEnvironment with every home and configuration
+// directory pointed into sandbox, global and system git config ignored, and
+// git credential helpers disabled, so an adapter can reach neither the
+// operator's stored forge credentials nor their git configuration.
+func adapterEnvironment(sandbox string) ([]string, error) {
+	env := make([]string, 0, len(os.Environ())+len(isolatedHomeVariables)+8)
+	for _, entry := range gitEnvironment() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !isolatedVariable(name) {
+			env = append(env, entry)
+		}
+	}
+	names := make([]string, 0, len(isolatedHomeVariables))
+	for name := range isolatedHomeVariables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		dir := filepath.Join(sandbox, isolatedHomeVariables[name])
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		env = append(env, name+"="+dir)
+	}
+	return append(env,
+		"GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
+		"GCM_INTERACTIVE=never",
+	), nil
+}
+
+func isolatedVariable(name string) bool {
+	upper := strings.ToUpper(name)
+	if _, ok := isolatedHomeVariables[upper]; ok {
+		return true
+	}
+	switch upper {
+	case "HOMEDRIVE", "HOMEPATH", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+		"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GCM_INTERACTIVE":
+		return true
+	}
+	return strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") ||
+		strings.HasPrefix(upper, "GH_") || strings.HasPrefix(upper, "GITHUB_")
 }
