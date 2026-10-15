@@ -3,6 +3,7 @@ package retryutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"time"
@@ -40,14 +41,24 @@ func Until(ctx context.Context, deadline time.Duration, p Policy, attempt func(c
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
+	var previousErr error
 	for n := 0; ; n++ {
 		retryable, err := attempt(ctx)
 		if err == nil {
 			return nil
 		}
+		// A final request interrupted by the retry deadline must retain the
+		// preceding server failure as well as the cancellation cause.
+		if previousErr != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			err = errors.Join(previousErr, err)
+		}
 		if !retryable {
 			return err
 		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("retry deadline exceeded after %d attempt(s): %w", n+1, err)
+		}
+		previousErr = err
 		timer := time.NewTimer(JitteredExponential(p, n))
 		select {
 		case <-ctx.Done():

@@ -427,6 +427,7 @@ func harnessCommandOrDefault(overrides map[string][]string, name string, def []s
 }
 
 type deterministicExecutorInput struct {
+	AutomationReadCache bool
 	Config              *instance.Config
 	Resolver            credentials.Resolver
 	Grants              []credentials.Grant
@@ -472,6 +473,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.InstanceRoot = input.InstanceRoot
 	shell.AppliedConfigDigest = input.AppliedConfigDigest
 	shell.ConfigDirectory = input.ConfigDirectory
+	shell.AutomationReadCache = input.AutomationReadCache
 	shell.ScratchDir = input.ScratchDir
 	shell.CredentialGrants = input.CredentialGrants
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
@@ -525,6 +527,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	if repo, ok := adoRepoForGaggle(input.Config, input.GaggleProject); ok {
 		adoRepo = &repo
 		shell.RepoAuthScheme = adoauth.AuthScheme(repo)
+		shell.CredentialSchemes = adoCredentialSchemes(input.Config, input.GaggleProject, input.Grants)
 	}
 	var giteaRepo *instance.RepoRef
 	if repo, ok := giteaRepoForGaggle(input.Config, input.GaggleProject); ok {

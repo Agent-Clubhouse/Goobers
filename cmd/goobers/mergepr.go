@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -16,6 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergepolicy"
+	"github.com/goobers/goobers/internal/premergecheck"
+	"github.com/goobers/goobers/internal/prstatus"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -41,6 +44,15 @@ const (
 	// branch and recorded against the unchanged pull request head.
 	mergeConflictReason         = "merge-conflict"
 	requiredStatusPendingReason = "required-status-check-pending"
+	// ciNoVerdictReason (#6817) prefixes a refusal whose only CI blocker is
+	// checks that finished without a verdict (cancelled, never started,
+	// stale). Nothing is running and nothing in the code is proven wrong, so
+	// record-merge-refusal does not count it toward demotion.
+	ciNoVerdictReason = "ci-no-verdict"
+	// preMergeCheckFailedReason (#7132) prefixes a refusal whose configured
+	// preMergeCheck failed on the head merged onto the current base tip: the
+	// PR was green against a stale base and no longer builds against main.
+	preMergeCheckFailedReason = "pre-merge-check-failed"
 )
 
 const (
@@ -60,6 +72,9 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's\n" +
 	"live head/base, and — for a sibling-overlap PR — completed single-lander\n" +
 	"election evidence (elected:true, #1071) — never a bare self-approval.\n" +
+	"When the live head carries the goobers/merge-review verdict status\n" +
+	"(GitHub, Gitea), it must be a pass recorded for the pinned base: a\n" +
+	"failure, a pending, or a pass for another base refuses the merge.\n" +
 	"Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,\n" +
 	"all required; in the shipped merge-review workflow, headSha/baseSha\n" +
 	"come from gather-sibling-context's selectedHeadSha/selectedBaseSha,\n" +
@@ -69,11 +84,28 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"apply-verdict), advisoryMode (default false — report only, no merge\n" +
 	"attempted), mergeMethod (merge/squash/rebase; default squash),\n" +
 	"commitMessage (default: PR title + review rationale + referenced\n" +
-	"issues), resultFile (default merge-result.json). Successful merges\n" +
-	"also report headBranch and branchCleanup (deleted, skipped-stacked, or\n" +
-	"failed). Exit codes: 0 = evaluated (merged or not — see the result\n" +
-	"file's \"merged\" field), 1 = business error (missing capability/config,\n" +
-	"malformed inputs, provider failure), 2 = usage/IO error.\n"
+	"issues), preMergeCheck (optional; one command per line, run without a\n" +
+	"shell on the PR head merged onto the CURRENT base branch tip — a\n" +
+	"failure refuses the merge as pre-merge-check-failed),\n" +
+	"blockUnansweredFeedback (default true: refuse as unanswered-human-feedback\n" +
+	"while the newest open human review feedback — a PR comment, a submitted\n" +
+	"review body, or a comment in an unresolved review thread, on Azure\n" +
+	"DevOps any active thread — is unacknowledged by every Goobers response;\n" +
+	"approving reviews and Bot-typed authors never wait on an answer. The\n" +
+	"feedback is read again after a preMergeCheck, right before landing.\n" +
+	"record-merge-refusal routes the PR to remediation, and parks it\n" +
+	"goobers:needs-human when the same comment is refused again. Gitea reports\n" +
+	"no thread resolution and keeps a dismissed review's state, so there every\n" +
+	"review comment counts until answered. Feedback that\n" +
+	"cannot be read refuses as human-feedback-unverifiable. Comments are\n" +
+	"classified as pr-comment-watch classifies them, under the same\n" +
+	"identityMode and excludeAuthors inputs. Set false to merge over\n" +
+	"comments), resultFile (default merge-result.json). Successful merges\n" +
+	"also report headBranch and branchCleanup (deleted, skipped-stacked,\n" +
+	"skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated\n" +
+	"(merged or not — see the result file's \"merged\" field), 1 = business\n" +
+	"error (missing capability/config, malformed inputs, provider failure),\n" +
+	"2 = usage/IO error.\n"
 
 // ciReadyForMerge reports whether the PR's CI permits a merge. A non-passing
 // aggregate CheckState normally blocks — but the check-state this codebase
@@ -245,6 +277,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		return 1
 	}
 	resultFile := providerInput("resultFile", "merge-result.json")
+	preMergeCheck := premergecheck.ParseCommands(providerInput("preMergeCheck", ""))
+	feedbackGate := newMergeFeedbackGate(repo, stageProvider, verdictAuthor, len(preMergeCheck) > 0)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -304,6 +338,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 	var mergeAttempted bool
 	var mergeErr error
 	var commitErr error
+	var checkErr error
 	var policyErr error
 	var optedOutReason string
 	var adoCleanup *mergeBranchCleanup
@@ -334,35 +369,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 			return nil
 		}
 
-		if apiv1.VerdictDecision(verdict) != apiv1.VerdictPass {
-			reasons = append(reasons, fmt.Sprintf("verdict is %q, want pass", verdict))
-		}
-		if !ciReadyForMerge(poll) {
-			reasons = append(reasons, fmt.Sprintf("CI is %q, want passing", poll.CheckState))
-		}
-		if poll.Draft {
-			reasons = append(reasons, "pull request is a draft")
-		}
-		if poll.HeadSHA != expectedHeadSHA {
-			reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
-		}
-		if poll.BaseSHA != expectedBaseSHA {
-			// Delta-aware (issue #718): base moving at all used to void every
-			// standing verdict, even when nothing that moved touches this PR
-			// — the dominant false-invalidation case (any OTHER PR merging
-			// advances base for everyone). Only a movement that actually
-			// intersects this PR's own files still voids it.
-			intersects, cerr := baseMovementIntersectsPR(ctx, dispatcher, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
-			switch {
-			case cerr != nil:
-				// Can't determine whether the movement is disjoint — fail
-				// safe to the old conservative behavior rather than risk
-				// merging past a base advance we couldn't actually check.
-				reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and whether that movement touches this PR's files could not be determined (%v) — treating as stale", expectedBaseSHA, poll.BaseSHA, cerr))
-			case intersects:
-				reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and that movement touches files this PR also changes — verdict is stale", expectedBaseSHA, poll.BaseSHA))
-			}
-		}
+		reasons = append(reasons, liveConjunctReasons(ctx, dispatcher, repo, pullNumber, verdict, expectedHeadSHA, expectedBaseSHA, poll)...)
+		// #6134: never land over open human review feedback Goobers has not
+		// answered, whether or not the forge enforces conversation resolution.
+		reasons = feedbackGate.refuse(ctx, pullNumber, reasons)
 		// Tutor-change classification is GitHub-only: classifyRemoteTutorChanges
 		// takes the concrete *GitHubProvider and the tutor lane does not run on
 		// ADO, so gate the whole block to GitHub (no-op; ADO tutor parity is
@@ -433,6 +443,19 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 			}
 		}
 
+		// #7132: a disjoint base movement still keeps a verdict valid, but
+		// two PRs can each be green alone and break the base once combined.
+		// Measure the actual merge result before landing it.
+		var checkReason string
+		checkReason, checkErr = runPreMergeCheck(ctx, repo, providerCapability, poll, pullNumber, expectedHeadSHA, preMergeCheck)
+		if checkErr != nil {
+			return nil
+		}
+		// #6134: a reviewer may comment while the check runs; re-read feedback.
+		if reasons = feedbackGate.afterPreMergeCheck(ctx, pullNumber, checkReason); len(reasons) > 0 {
+			return nil
+		}
+
 		// Merge-policy detection (issue #758): direct-merge vs.
 		// merge-queue-enqueue, detected per repo/branch from live branch
 		// protection/ruleset state (cached — mergepolicycache.go — since
@@ -488,6 +511,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		pf(stderr, "error: build merge commit message: %v\n", commitErr)
 		return 1
 	}
+	if checkErr != nil {
+		pf(stderr, "error: pre-merge check could not run, refusing to land unmeasured: %v\n", checkErr)
+		return 1
+	}
 	if policyErr != nil {
 		return failProviderStage(stderr, "detect merge policy", policyErr, "merge-result.json")
 	}
@@ -502,7 +529,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		return 1
 	}
 
-	cleanup := reportMergedBranchCleanup(ctx, root, isADO, adoCleanup, landResult, poll, prProvider, pullNumber, stdout, stderr)
+	var cleanup *mergeBranchCleanup
+	if isADO {
+		cleanup = reportADOMergedBranchCleanup(ctx, root, repo, adoCleanup, landResult, poll, pullNumber, stdout, stderr)
+	} else {
+		cleanup = reportMergedBranchCleanup(ctx, root, landResult, poll, prProvider, pullNumber, stdout, stderr)
+	}
 	if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, landResult, nil, cleanup); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -513,6 +545,172 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		pf(stdout, "merged pr #%s (%s)\n", pullNumber, landResult.MergeSHA)
 	}
 	return 0
+}
+
+// ciNotReadyReason says why CI blocks the merge. When the only blocker is
+// checks that finished without a verdict (#6817) it says so under
+// ciNoVerdictReason rather than calling CI pending, which reads as still
+// running. The text holds no "; ", the separator merge-pr joins reasons
+// with, so record-merge-refusal can tell a refusal that has no other reason.
+func ciNotReadyReason(poll providers.PullRequestPollResult) string {
+	if poll.CheckState == providers.CheckStatePending && providers.OnlyNoVerdictPending(poll.Checks) {
+		names := strings.ReplaceAll(strings.Join(providers.NoVerdictCheckNames(poll.Checks), ", "), ";", ",")
+		return fmt.Sprintf("%s: CI finished without a verdict (cancelled, never started or stale: %s), waiting for CI to be rerun", ciNoVerdictReason, names)
+	}
+	return fmt.Sprintf("CI is %q, want passing", poll.CheckState)
+}
+
+// liveConjunctReasons re-checks the merge conjuncts that depend only on the
+// locked, live poll: verdict, CI, draft and the SHA-pin.
+func liveConjunctReasons(ctx context.Context, dispatcher *providers.Dispatcher, repo providers.RepositoryRef, pullNumber, verdict, expectedHeadSHA, expectedBaseSHA string, poll providers.PullRequestPollResult) []string {
+	var reasons []string
+	if apiv1.VerdictDecision(verdict) != apiv1.VerdictPass {
+		reasons = append(reasons, fmt.Sprintf("verdict is %q, want pass", verdict))
+	}
+	if !ciReadyForMerge(poll) {
+		reasons = append(reasons, ciNotReadyReason(poll))
+	}
+	if poll.Draft {
+		reasons = append(reasons, "pull request is a draft")
+	}
+	// #4199: the native verdict status on the live head is the authoritative
+	// verdict every merge path observes. A non-pass, a stale pending, or a
+	// pass recorded for a different base refuses, whatever the verdict input
+	// or commitMessage says.
+	if reason := prstatus.VerdictStatusRefusal(poll.VerdictStatus, poll.HeadSHA, expectedBaseSHA); reason != "" {
+		reasons = append(reasons, reason)
+	}
+	if poll.HeadSHA != expectedHeadSHA {
+		reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
+	}
+	if poll.BaseSHA != expectedBaseSHA {
+		// Delta-aware (issue #718): base moving at all used to void every
+		// standing verdict, even when nothing that moved touches this PR
+		// — the dominant false-invalidation case (any OTHER PR merging
+		// advances base for everyone). Only a movement that actually
+		// intersects this PR's own files still voids it.
+		intersects, cerr := baseMovementIntersectsPR(ctx, dispatcher, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
+		switch {
+		case cerr != nil:
+			// Can't determine whether the movement is disjoint — fail
+			// safe to the old conservative behavior rather than risk
+			// merging past a base advance we couldn't actually check.
+			reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and whether that movement touches this PR's files could not be determined (%v) — treating as stale", expectedBaseSHA, poll.BaseSHA, cerr))
+		case intersects:
+			reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and that movement touches files this PR also changes — verdict is stale", expectedBaseSHA, poll.BaseSHA))
+		}
+	}
+	return reasons
+}
+
+// runPreMergeCheck runs the configured preMergeCheck commands (#7132) on the
+// pull request's pinned head merged onto the CURRENT tip of its base branch,
+// fetched fresh from origin into the stage's repository workspace. It returns
+// a refusal reason when the merge result conflicts or a command fails, and an
+// error when the check could not be carried out at all — merge-pr then fails
+// closed rather than landing an unmeasured merge. No commands configured is a
+// no-op. GitHub and Gitea heads are fetched through the pull request ref, which
+// the base repository serves for fork heads too; ADO heads by branch.
+func runPreMergeCheck(ctx context.Context, repo providers.RepositoryRef, landing capability.Capability, poll providers.PullRequestPollResult, pullNumber, headSHA string, commands [][]string) (string, error) {
+	if len(commands) == 0 {
+		return "", nil
+	}
+	headRef := "refs/pull/" + pullNumber + "/head"
+	if repo.Provider == providers.ProviderADO {
+		headRef = poll.HeadBranch
+	}
+	remote, err := originURL(".")
+	if err != nil {
+		return "", fmt.Errorf("resolve the repository workspace's origin: %w", err)
+	}
+	auth, err := preMergeCheckGitAuth(repo, landing)
+	if err != nil {
+		return "", err
+	}
+	authEnv, err := auth(ctx, remote)
+	if err != nil {
+		return "", err
+	}
+	res, err := premergecheck.Run(ctx, premergecheck.Request{
+		RepoDir: ".", Remote: remote,
+		BaseBranch: poll.BaseBranch, HeadRef: headRef, HeadSHA: headSHA,
+		Commands: commands,
+		Env:      preMergeCheckEnv(),
+		Git: func(ctx context.Context, dir string, args ...string) *exec.Cmd {
+			cmd := exec.CommandContext(ctx, "git", hardenedWorkspaceGitArgs(args)...)
+			cmd.Dir = dir
+			cmd.Env = composeGitEnv(dir, authEnv)
+			return cmd
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return preMergeCheckReason(res, headSHA), nil
+}
+
+// preMergeCheckReason renders a measured pre-merge check as merge-pr's
+// refusal reason: empty when it passed, otherwise a stable token
+// (mergeConflictReason or preMergeCheckFailedReason) followed by evidence.
+func preMergeCheckReason(res premergecheck.Result, headSHA string) string {
+	switch res.Outcome {
+	case premergecheck.OutcomePassed:
+		return ""
+	case premergecheck.OutcomeConflict:
+		return fmt.Sprintf("%s: head %s does not merge cleanly onto the current base tip %s", mergeConflictReason, headSHA, res.BaseTipSHA)
+	case premergecheck.OutcomeHeadMoved:
+		return fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", headSHA, res.HeadTipSHA)
+	default:
+		return fmt.Sprintf("%s: `%s` failed on head %s merged onto the current base tip %s: %s",
+			preMergeCheckFailedReason, res.Command, headSHA, res.BaseTipSHA, res.Output)
+	}
+}
+
+// preMergeCheckGitAuth authenticates the check's fetches with the landing
+// credential the stage already holds, so enabling the check adds no grant.
+func preMergeCheckGitAuth(repo providers.RepositoryRef, landing capability.Capability) (gitAuthEnvironmentResolver, error) {
+	if repo.Provider != providers.ProviderADO {
+		token, err := providerToken(capability.GitHubPRMerge)
+		if err != nil {
+			return nil, err
+		}
+		return func(context.Context, string) ([]string, error) {
+			return gitAuthEnvFor(capability.GitHubPRMerge, token), nil
+		}, nil
+	}
+	var token string
+	var err error
+	if landing == capability.ADOPRComplete {
+		token, err = providerToken(capability.ADOPRComplete)
+	} else {
+		token, err = providerToken(capability.GitHubPRMerge)
+	}
+	if err != nil {
+		return nil, err
+	}
+	source, err := stageADOCredentialSource(landing, token)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, remoteURL string) ([]string, error) {
+		return providers.ADOGitAuthEnvironment(ctx, source, nil, remoteURL)
+	}, nil
+}
+
+// preMergeCheckEnv is the environment the check commands run with: the
+// stage's own, minus every goobers-delivered credential and run identity, so
+// a build or vet of untrusted pull request code never sees the merge token.
+func preMergeCheckEnv() []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		upper := strings.ToUpper(name)
+		if strings.HasPrefix(upper, "GOOBERS_") || strings.HasPrefix(upper, "GIT_CONFIG_") || upper == "GIT_CONFIG_COUNT" {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
 }
 
 // pinnedPassVerdict finds the trusted merge-review sticky comment carrying a
@@ -695,10 +893,11 @@ func adoVerdictPinMatches(verdict apiv1.Verdict, poll providers.PullRequestPollR
 
 // adoDeleteSourceBranchGranted reports whether the pull request landing on
 // ADO (isADO) should ask for source-branch cleanup on the same completion
-// PATCH (ADO-N25). ADO has no separate post-merge DeleteBranch call — its
-// PollPullRequest never populates HeadRepository, so cleanupMergedBranch
-// stays unreachable for it — so cleanup must ride the landing call itself,
-// gated on the same grant GitHub's cleanup requires (github:branch:delete).
+// PATCH (ADO-N25). ADO's PollPullRequest never populates HeadRepository, so
+// cleanupMergedBranch stays unreachable for it: cleanup rides the landing
+// call itself, gated on the same grant GitHub's cleanup requires
+// (github:branch:delete), and stageADOSourceBranchBackstop removes a branch
+// ADO left behind once the merge is observed (#5957).
 // It uses the presence-check idiom landingAuthority already uses: a
 // resolvable providerToken means the stage declared the capability, without
 // spending its credential.
@@ -748,27 +947,48 @@ func adoCompletionDeletesSourceBranch(ctx context.Context, lister stackedPullReq
 	return true
 }
 
-// reportMergedBranchCleanup performs and reports post-landing branch cleanup.
-// ADO deletes the source branch through completionOptions.deleteSourceBranch
-// and its PollPullRequest does not populate HeadRepository, so the shared
-// provider-neutral cleanup path stays limited to GitHub and Gitea; on ADO only
-// a deletion adoCompletionDeletesSourceBranch withheld (adoCleanup) is
-// reported.
+// reportMergedBranchCleanup performs and reports post-landing branch cleanup
+// on GitHub and Gitea. Azure DevOps goes through reportADOMergedBranchCleanup:
+// its PollPullRequest does not populate HeadRepository, so this shared,
+// provider-neutral path cannot run there.
 func reportMergedBranchCleanup(
 	ctx context.Context,
 	root string,
-	isADO bool,
-	adoCleanup *mergeBranchCleanup,
 	landResult mergepolicy.Result,
 	poll providers.PullRequestPollResult,
 	prProvider mergeProvider,
 	pullNumber string,
 	stdout, stderr io.Writer,
 ) *mergeBranchCleanup {
-	if isADO {
-		if adoCleanup != nil && adoCleanup.Error != "" {
+	if landResult.Outcome != mergepolicy.OutcomeMerged {
+		return nil
+	}
+	outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
+	printMergedBranchCleanup(stdout, stderr, "merged pr #"+pullNumber, &outcome)
+	return &outcome
+}
+
+// reportADOMergedBranchCleanup reports Azure DevOps source-branch cleanup.
+// ADO deletes the source branch through completionOptions.deleteSourceBranch,
+// so a deletion adoCompletionDeletesSourceBranch withheld (adoCleanup) is only
+// reported. When the deletion was requested and the pull request is now
+// merged, the backstop confirms the branch is gone and removes it if ADO left
+// it (#5957). An auto-complete that has not landed yet is backed up later, by
+// merge-queue-poll, when it observes the merge.
+func reportADOMergedBranchCleanup(
+	ctx context.Context,
+	root string,
+	repo providers.RepositoryRef,
+	adoCleanup *mergeBranchCleanup,
+	landResult mergepolicy.Result,
+	poll providers.PullRequestPollResult,
+	pullNumber string,
+	stdout, stderr io.Writer,
+) *mergeBranchCleanup {
+	if adoCleanup != nil {
+		if adoCleanup.Error != "" {
 			pf(stderr, "warning: pr #%s landing keeps its source branch: %s\n", pullNumber, adoCleanup.Error)
-		} else if adoCleanup != nil {
+		} else {
 			pf(stdout, "branch cleanup %s (%s)\n", adoCleanup.Status, adoCleanup.HeadBranch)
 		}
 		return adoCleanup
@@ -776,13 +996,46 @@ func reportMergedBranchCleanup(
 	if landResult.Outcome != mergepolicy.OutcomeMerged {
 		return nil
 	}
-	outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
-	if outcome.Error != "" {
-		pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
-	} else {
+	outcome := stageADOSourceBranchBackstop(ctx, root, repo, poll.HeadBranch, poll.HeadSHA)
+	printMergedBranchCleanup(stdout, stderr, "merged pr #"+pullNumber, outcome)
+	return outcome
+}
+
+// stageADOSourceBranchBackstop runs ADOProvider.CleanupMergedSourceBranch
+// for a stage that observed an ADO merge, with the provider built from the
+// credential delivered for github:branch:delete (recording its delete as
+// kind="branch"). It returns nil, and does nothing, when the stage does not
+// hold that grant: such a stage never asked Azure DevOps to delete the branch
+// either (adoDeleteSourceBranchGranted), so there is nothing to back up.
+func stageADOSourceBranchBackstop(ctx context.Context, root string, repo providers.RepositoryRef, headBranch, mergedHeadSHA string) *mergeBranchCleanup {
+	if !adoDeleteSourceBranchGranted(true) {
+		return nil
+	}
+	out := &mergeBranchCleanup{HeadBranch: headBranch, Status: "failed"}
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubBranchDelete), withStageProviderMutations("branch"))
+	if err == nil {
+		var status providers.MergedBranchCleanupStatus
+		status, err = provider.CleanupMergedSourceBranch(ctx, repo, headBranch, mergedHeadSHA)
+		out.Status = string(status)
+	}
+	if err != nil {
+		out.Status, out.Error = "failed", err.Error()
+	}
+	return out
+}
+
+// printMergedBranchCleanup reports a cleanup outcome: a failure is a warning
+// on an already-successful merge, never a merge failure (PRL-072). subject
+// names the merge, e.g. "merged pr #12". A nil outcome reports nothing.
+func printMergedBranchCleanup(stdout, stderr io.Writer, subject string, outcome *mergeBranchCleanup) {
+	switch {
+	case outcome == nil:
+	case outcome.Error != "":
+		pf(stderr, "warning: %s but branch cleanup failed: %s\n", subject, outcome.Error)
+	default:
 		pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
 	}
-	return &outcome
 }
 
 type mergeBranchCleanup struct {
@@ -959,6 +1212,10 @@ func mergeResultFields(selectedNumber, selectedHeadSha, landOutcome, mergeSHA st
 	// head the refusal happened at (threaded via inputsFrom on the fail branch);
 	// a refusal at a new head is a fresh attempt, not a continuation.
 	out["selectedHeadSha"] = selectedHeadSha
+	// Echo the posting identity so queue-watch, the next task on the enqueue
+	// path, can bind it via inputsFrom and classify comments with the same
+	// "self" this stage's feedback gate used (#6134).
+	out["verdictAuthor"] = strings.TrimSpace(providerInput("verdictAuthor", ""))
 	if landOutcome != "" {
 		out["landOutcome"] = landOutcome
 	}

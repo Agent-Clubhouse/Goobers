@@ -86,6 +86,9 @@ func ReadRetainedAttempt(reader *journal.Reader, ref journal.Ref) (RetainedAttem
 	if err = json.Unmarshal(data, &retained); err != nil {
 		return retained, err
 	}
+	if err = restoreRetainedInputs(data, &retained); err != nil {
+		return retained, err
+	}
 	canonical, err := json.Marshal(retained)
 	if err != nil || !bytes.Equal(canonical, data) {
 		return retained, errors.New("noncanonical retained pod attempt")

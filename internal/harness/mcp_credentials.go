@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	capabilitypkg "github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/mcpconfig"
 )
 
@@ -12,7 +13,7 @@ import (
 // adapter, returning the invocation-internal key and its token.
 //
 // A capability-based reference follows the same provider rule as the
-// harness's credential environment (CredentialFitsProvider): a credential
+// harness's credential environment (capability.FitsProvider): a credential
 // that belongs to another provider's repositories is never materialised, and
 // the stage fails closed naming the reference, because the server declared
 // that it needs it. A BYO reference (kind: byo) is the operator's own named
@@ -22,7 +23,7 @@ func resolveMCPCredential(ctx context.Context, adapter string, req RunRequest, s
 	key = mcpconfig.CredentialKey(ref)
 	if ref.Kind != apiv1.MCPCredentialKindBYO {
 		provider := req.Envelope.RepoRef.Provider
-		if owner, ok := CapabilityProvider(key); ok && !CredentialFitsProvider(key, provider) {
+		if owner, ok := capabilitypkg.OwnerProvider(key); ok && !capabilitypkg.FitsProvider(key, provider) {
 			return key, "", fmt.Errorf(
 				"harness: %s: MCP server %q credential capability %q is not materialised: it belongs to %s repositories and this run's repository provider is %s; reference a kind: byo credential for this server, or remove the reference",
 				adapter, server, key, owner, providerLabel(provider))

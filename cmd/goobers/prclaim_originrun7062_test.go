@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -81,7 +82,7 @@ func TestFilterClaimAvailablePullRequestsHonorsLiveOriginRun(t *testing.T) {
 		t.Fatalf("expired origin: available = %v, want [7 8 9]", got)
 	}
 	// (b) released claim frees the PR.
-	if err := raw.ReleaseScoped(issueKey, originRun); err != nil {
+	if err := raw.ReleaseScoped(issueKey, originRun, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if got := filter("remediation-run", now); !equal(got, 7, 8, 9) {

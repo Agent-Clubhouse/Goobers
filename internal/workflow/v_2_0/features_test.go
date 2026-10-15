@@ -612,8 +612,9 @@ func TestFeatureRegistryLifecycleHistoryIsImmutable(t *testing.T) {
 
 func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	def := Definition{Name: "all-features", Version: 1, Spec: apiv1.WorkflowSpec{
-		Gaggle:      "example",
-		DisplayName: "All features",
+		ScheduleCatchUp: "all",
+		Gaggle:          "example",
+		DisplayName:     "All features",
 		Triggers: []apiv1.Trigger{
 			{Type: apiv1.TriggerManual},
 			{
@@ -1054,6 +1055,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.displayName",
 		"workflow.spec.triggers",
 		"workflow.spec.readiness",
+		"workflow.spec.scheduleCatchUp",
 		"workflow.spec.readiness.claimVisibility",
 		"workflow.spec.runControls",
 		"workflow.spec.readiness.desiredConcurrentRuns",

@@ -470,7 +470,7 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 	if err != nil {
 		return nil, fmt.Errorf("journal: read continuation source phase: %w", err)
 	}
-	if phase != PhaseCompleted && phase != PhaseFailed && phase != PhaseAborted && phase != PhaseEscalated {
+	if !phase.IsTerminal() {
 		return nil, fmt.Errorf("journal: continuation source %q is not terminal (phase=%s)", req.SourceRunID, phase)
 	}
 	events, err := reader.Events()
@@ -983,8 +983,13 @@ func (r *Run) RecordStageArtifactWithIntegrity(stage string, attempt int, class 
 // annotations never enter the conformance view — the live journal writer's
 // idempotency key (livejournal.EmitKeyRunnerField) rides here.
 func (r *Run) RecordStageArtifactAnnotated(stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
+	return r.RecordBranchStageArtifactAnnotated(0, stage, attempt, class, name, data, integrity, runnerMeta)
+}
+
+// RecordBranchStageArtifactAnnotated preserves attribution and transport retry keys.
+func (r *Run) RecordBranchStageArtifactAnnotated(branch int, stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
 	return r.recordArtifact(Event{
-		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
+		Type: EventArtifactRecorded, Branch: branch, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
 		Runner: copyRunnerMeta(runnerMeta),
 	}, data, 0)
 }
@@ -1096,8 +1101,13 @@ func (r *Run) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) 
 // annotations on the span.recorded event (the live journal writer's
 // idempotency key).
 func (r *Run) RecordSpanAnnotated(stage, name, dataSchema string, data []byte, runnerMeta map[string]any) (Ref, error) {
+	return r.RecordBranchSpanAnnotated(0, stage, name, dataSchema, data, runnerMeta)
+}
+
+// RecordBranchSpanAnnotated preserves attribution and transport retry keys.
+func (r *Run) RecordBranchSpanAnnotated(branch int, stage, name, dataSchema string, data []byte, runnerMeta map[string]any) (Ref, error) {
 	return r.recordSpanEvent(Event{
-		Type: EventSpanRecorded, Stage: stage, Name: name, DataSchema: dataSchema, Runner: copyRunnerMeta(runnerMeta),
+		Type: EventSpanRecorded, Branch: branch, Stage: stage, Name: name, DataSchema: dataSchema, Runner: copyRunnerMeta(runnerMeta),
 	}, data)
 }
 
@@ -1189,10 +1199,8 @@ func (r *Run) checkpoint() error {
 
 // phaseFromStatus maps a run.finished status string to a RunPhase.
 func phaseFromStatus(status string) RunPhase {
-	switch RunPhase(status) {
-	case PhaseCompleted, PhaseFailed, PhaseAborted, PhaseEscalated:
-		return RunPhase(status)
-	default:
-		return PhaseCompleted
+	if p := RunPhase(status); p.IsTerminal() {
+		return p
 	}
+	return PhaseCompleted
 }

@@ -43,6 +43,8 @@ func TestProjectEventClassifiesEveryKnownEventType(t *testing.T) {
 		{event: journal.Event{Type: journal.EventTriggerFired}, category: RunEventTransition, chapter: true},
 		{event: journal.Event{Type: journal.EventTickSkipped}, category: RunEventDecision, chapter: true},
 		{event: journal.Event{Type: journal.EventWorkflowStarved}, category: RunEventResult, chapter: true},
+		{event: journal.Event{Type: journal.EventWorkflowRefused}, category: RunEventResult, chapter: true},
+		{event: journal.Event{Type: journal.EventWorkflowReadmitted}, category: RunEventResult, chapter: true},
 		{event: journal.Event{Type: journal.EventProviderQuotaReset}, category: RunEventLiveness},
 		{event: journal.Event{Type: journal.EventPollShed}, category: RunEventLiveness},
 		{event: journal.Event{Type: journal.EventClaimAcquired}, category: RunEventBookkeeping},

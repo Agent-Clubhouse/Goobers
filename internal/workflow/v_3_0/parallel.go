@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
@@ -25,7 +26,7 @@ const maxParallelBranches = 32
 // portal's transition projection avoid cross-branch phantom edges.
 func parallelProblems(m *Machine) []string {
 	def := m.Def
-	if len(def.Spec.Parallels) == 0 {
+	if len(def.Spec.Parallels) == 0 && len(def.Spec.Maps) == 0 {
 		return nil
 	}
 	var problems []string
@@ -37,7 +38,9 @@ func parallelProblems(m *Machine) []string {
 	for _, parallel := range def.Spec.Parallels {
 		problems = append(problems, parallelShapeProblems(m, parallel)...)
 		problems = append(problems, parallelBodyProblems(m, parallel, owner)...)
+		problems = append(problems, selectionProblems(parallel)...)
 	}
+	problems = append(problems, mapProblems(m, owner)...)
 
 	problems = append(problems, joinEntryProblems(m)...)
 	problems = append(problems, strayJoinProblems(m, owner)...)
@@ -448,6 +451,11 @@ func parallelBodyProblems(m *Machine, p apiv1.Parallel, owner map[string]branchR
 					"parallel %q branch %q contains parallel %q; nested parallels are not supported",
 					p.Name, branch.Name, state))
 			}
+			if _, nested := m.Map(state); nested {
+				problems = append(problems, fmt.Sprintf(
+					"parallel %q branch %q contains map %q; a map may not be nested in a parallel branch",
+					p.Name, branch.Name, state))
+			}
 
 			problems = append(problems, branchStateProblems(m, p, branch, state)...)
 		}
@@ -519,6 +527,13 @@ func branchStateProblems(m *Machine, p apiv1.Parallel, branch apiv1.Branch, stat
 			p.Name, branch.Name, state))
 	}
 
+	// DSL 3.1 child-capable blocks reserve independent branch forks before
+	// dispatch. Legacy blocks retain their shared-branch restrictions. Human
+	// gates remain unsupported regardless of repository isolation.
+	if m.Def.DSLVersion == supportmatrix.V31DSLVersion && m.ParallelHasChildStage(p) {
+		return problems
+	}
+
 	// Rule 9 — no writable repo workspace inside a branch. Every stage worktree
 	// is otherwise created on ONE run branch, and git refuses to check one
 	// branch out in two worktrees, so concurrent repo-backed branch stages
@@ -570,10 +585,15 @@ func branchEffectiveGateWorkspace(g apiv1.Gate) apiv1.WorkspaceMode {
 // ordinary edge targets a join state, the join could run without its branches
 // having settled.
 func joinEntryProblems(m *Machine) []string {
-	joins := make(map[string]string, len(m.Def.Spec.Parallels))
+	joins := make(map[string]string, len(m.Def.Spec.Parallels)+len(m.Def.Spec.Maps))
 	for _, p := range m.Def.Spec.Parallels {
 		if p.Join != "" {
-			joins[p.Join] = p.Name
+			joins[p.Join] = "parallel " + quote(p.Name)
+		}
+	}
+	for _, fanOut := range m.Def.Spec.Maps {
+		if fanOut.Join != "" {
+			joins[fanOut.Join] = "map " + quote(fanOut.Name)
 		}
 	}
 	if len(joins) == 0 {
@@ -595,27 +615,35 @@ func joinEntryProblems(m *Machine) []string {
 	}
 
 	for _, task := range m.Def.Spec.Tasks {
-		if ownerName, ok := joins[task.Next]; ok {
+		if owner, ok := joins[task.Next]; ok {
 			problems = append(problems, fmt.Sprintf(
-				"task %q routes to %q, which is the join of parallel %q; a join may only be entered through its parallel",
-				task.Name, task.Next, ownerName))
+				"task %q routes to %q, which is the join of %s; a join may only be entered through its %s",
+				task.Name, task.Next, owner, joinOwnerKind(owner)))
 		}
 	}
 	for _, gate := range m.Def.Spec.Gates {
 		for _, outcome := range sortedKeys(gate.Branches) {
-			if ownerName, ok := joins[gate.Branches[outcome]]; ok {
+			if owner, ok := joins[gate.Branches[outcome]]; ok {
 				problems = append(problems, fmt.Sprintf(
-					"gate %q branch %q routes to %q, which is the join of parallel %q; a join may only be entered through its parallel",
-					gate.Name, outcome, gate.Branches[outcome], ownerName))
+					"gate %q branch %q routes to %q, which is the join of %s; a join may only be entered through its %s",
+					gate.Name, outcome, gate.Branches[outcome], owner, joinOwnerKind(owner)))
 			}
 		}
 	}
-	if ownerName, ok := joins[m.Def.Spec.Start]; ok {
+	if owner, ok := joins[m.Def.Spec.Start]; ok {
 		problems = append(problems, fmt.Sprintf(
-			"start state %q is the join of parallel %q; a join may only be entered through its parallel",
-			m.Def.Spec.Start, ownerName))
+			"start state %q is the join of %s; a join may only be entered through its %s",
+			m.Def.Spec.Start, owner, joinOwnerKind(owner)))
 	}
 	return problems
+}
+
+func quote(name string) string { return fmt.Sprintf("%q", name) }
+
+// joinOwnerKind returns "parallel" or "map" from a joins-map owner label.
+func joinOwnerKind(owner string) string {
+	kind, _, _ := strings.Cut(owner, " ")
+	return kind
 }
 
 // strayJoinProblems covers rule 4: @join is branch-scoped. Using it outside any
@@ -623,8 +651,12 @@ func joinEntryProblems(m *Machine) []string {
 // canExit fixed point.
 func strayJoinProblems(m *Machine, owner map[string]branchRef) []string {
 	var problems []string
+	mapped := mapOwnership(m)
 	for _, task := range m.Def.Spec.Tasks {
 		if !model.IsReservedBranchTarget(task.Next) {
+			continue
+		}
+		if _, isMapped := mapped[task.Name]; isMapped {
 			continue
 		}
 		if _, inBranch := owner[task.Name]; !inBranch {

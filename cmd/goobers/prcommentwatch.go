@@ -15,23 +15,25 @@ import (
 const prCommentWatchResultName = "comment-watch-result.json"
 
 // mergeReadyLabel mirrors verdictLabel's pass label (applyverdict.go:64, a bare
-// string literal there). It is one of the PR-side lifecycle labels the watcher
-// must treat as "already routed / parked / opted out": a PR carrying it is
-// landing, so remediation would race the merge.
+// string literal there): the PR passed review and its landing is in progress,
+// possibly armed (an Azure DevOps auto-complete, a GitHub merge-queue entry)
+// and waiting on a policy. Such a PR is still scanned (#6134): fresh human
+// feedback disarms the landing first and only then routes the PR, so neither
+// the armed landing nor remediation races the other.
 const mergeReadyLabel = "goobers:merge-ready"
 
 // prCommentWatchDefaultExcludeLabels are the lifecycle labels that HARD-exclude a
 // PR from the scan: a fresh human comment must neither re-route it nor clear the
 // label, because — unlike the human-decision parks below — a comment is not the
 // signal that changes any of these states. needs-remediation is the re-fire
-// guard (already routed); merge-ready is landing in progress (self-heals on
-// demotion, and remediation must not race the merge); blocked-on-sibling is an
-// ordering park, not a content decision; no-merge-review is an explicit operator
-// opt-out we must respect.
+// guard (already routed); blocked-on-sibling is an ordering park, not a content
+// decision; no-merge-review is an explicit operator opt-out we must respect.
+// merge-ready is added to these unless blockUnansweredFeedback is "true"
+// (#6134), which scans landing PRs so an armed landing does not complete over
+// feedback that arrived after it was armed.
 func prCommentWatchDefaultExcludeLabels() string {
 	return strings.Join([]string{
 		needsRemediationLabel,
-		mergeReadyLabel,
 		blockedOnSiblingLabel,
 		noMergeReviewLabel,
 	}, ",")
@@ -72,7 +74,14 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"that PR in place. A PR parked for a human (needs-human / merge-escalated)\n" +
 	"is un-parked when a fresh human comment lands: the park label is cleared\n" +
 	"and needs-remediation added, since the human the PR was parked for has\n" +
-	"now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps\n" +
+	"now weighed in. With blockUnansweredFeedback \"true\" (declare policy\n" +
+	"action disarm-landing) a PR that is landing (goobers:merge-ready) is\n" +
+	"scanned too, by its open feedback: fresh human feedback first disarms\n" +
+	"its armed landing — on Azure DevOps it cancels the auto-complete; on\n" +
+	"GitHub queue-watch withdraws the queued PR once it is routed — then\n" +
+	"removes merge-ready and routes it. Default false: landing PRs are\n" +
+	"skipped, as before; set it false to merge over comments.\n" +
+	"Works on GitHub, Gitea and Azure DevOps. On Azure DevOps\n" +
 	"general comments and review-thread replies both count; deleted comments\n" +
 	"and system threads (votes, pushes, policy status) never do.\n\n" +
 	"A comment is Goobers' own when it carries a Goobers marker (the\n" +
@@ -80,7 +89,10 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"own. With identityMode=dedicated, an unmarked comment by the credential's\n" +
 	"own identity (its login; its identity id on Azure DevOps) is Goobers' own\n" +
 	"too. With identityMode=shared, for Goobers running as a person's own\n" +
-	"identity, such a comment is that person's and counts as human.\n\n" +
+	"identity, such a comment is that person's and counts as human.\n" +
+	"rebase-pr and update-behind-pr classify comments by this same rule\n" +
+	"before they clear needs-remediation; give them the same identityMode and\n" +
+	"excludeAuthors.\n\n" +
 	"Remediation responses carry a feedback-ack frontier: the newest\n" +
 	"timestamp in the feedback snapshot the run assessed, to the second. Such\n" +
 	"a response acknowledges only human comments within that second or\n" +
@@ -115,6 +127,10 @@ type prCommentWatchLabeled struct {
 	// label (needs-human / merge-escalated); ClearedLabels lists what was stripped.
 	Unparked      bool     `json:"unparked,omitempty"`
 	ClearedLabels []string `json:"clearedLabels,omitempty"`
+	// Disarmed is true when this stage cancelled the PR's armed landing (an
+	// Azure DevOps auto-complete) before routing it. On GitHub a queued PR is
+	// withdrawn by queue-watch once routed, so this stays false there.
+	Disarmed bool `json:"disarmed,omitempty"`
 }
 
 type prCommentWatchResult struct {
@@ -138,14 +154,17 @@ type prCommentWatchResult struct {
 
 // prCommentWatchSettings are the stage inputs, parsed and defaulted.
 type prCommentWatchSettings struct {
-	maxPRs         int
-	base           string
-	prefixes       []string
-	exclude        map[string]bool
-	unpark         map[string]bool
-	excludeAuthors map[string]bool
-	identityMode   string
-	resultFile     string
+	maxPRs     int
+	base       string
+	prefixes   []string
+	exclude    map[string]bool
+	unpark     map[string]bool
+	identity   commentIdentitySettings
+	resultFile string
+	// disarmLandings scans landing (goobers:merge-ready) PRs and disarms
+	// them on fresh human feedback (#6134). Opt-in, because it is a new
+	// mutation the task must declare (policy action disarm-landing).
+	disarmLandings bool
 }
 
 func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatchSettings, error) {
@@ -154,18 +173,30 @@ func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatch
 	if err != nil || maxPRs < 1 {
 		return prCommentWatchSettings{}, fmt.Errorf("invalid maxPullRequests %q (want a positive integer)", rawMax)
 	}
-	mode := strings.ToLower(strings.TrimSpace(providerInput("identityMode", defaultPRCommentWatchIdentityMode(provider))))
-	if mode != prCommentWatchIdentityDedicated && mode != prCommentWatchIdentityShared {
-		return prCommentWatchSettings{}, fmt.Errorf("invalid identityMode %q (want %s or %s)", mode, prCommentWatchIdentityDedicated, prCommentWatchIdentityShared)
+	identity, err := readCommentIdentitySettings(provider)
+	if err != nil {
+		return prCommentWatchSettings{}, err
 	}
+	rawDisarm := providerInput("blockUnansweredFeedback", "false")
+	disarm, err := strconv.ParseBool(strings.TrimSpace(rawDisarm))
+	if err != nil {
+		return prCommentWatchSettings{}, fmt.Errorf("invalid blockUnansweredFeedback %q (want true or false)", rawDisarm)
+	}
+	// An operator's own excludeLabels list is honoured as written; the
+	// default skips landing PRs unless disarming them is enabled.
+	defaultExclude := prCommentWatchDefaultExcludeLabels()
+	if !disarm {
+		defaultExclude += "," + mergeReadyLabel
+	}
+	exclude := toLowerSet(splitLabelList(providerInput("excludeLabels", defaultExclude)))
 	return prCommentWatchSettings{
 		maxPRs:         maxPRs,
 		base:           providerInput("base", providerBaseBranch()),
 		prefixes:       splitLabelList(providerInput("headPrefixes", providerBranchNamespace())),
-		exclude:        toLowerSet(splitLabelList(providerInput("excludeLabels", prCommentWatchDefaultExcludeLabels()))),
+		exclude:        exclude,
+		disarmLandings: disarm,
 		unpark:         toLowerSet(splitLabelList(providerInput("unparkLabels", prCommentWatchDefaultUnparkLabels()))),
-		excludeAuthors: toLowerSet(splitLabelList(providerInput("excludeAuthors", ""))),
-		identityMode:   mode,
+		identity:       identity,
 		resultFile:     providerInput("resultFile", prCommentWatchResultName),
 	}, nil
 }
@@ -214,11 +245,11 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "list open pull requests", err, prCommentWatchResultName)
 	}
 
-	result := prCommentWatchResult{BotLogin: self.login, IdentityMode: settings.identityMode, Integrity: "unapproved"}
+	result := prCommentWatchResult{BotLogin: self.login, IdentityMode: settings.identity.mode, Integrity: "unapproved"}
 	if self.byID {
 		result.BotID = self.key
 	}
-	classifier := newPRCommentClassifier(self, settings)
+	classifier := newCommentClassifier(self, settings.identity)
 	lastErr := scanPRComments(ctx, forge, prs, settings, classifier, &result, stdout, stderr)
 	// Every scanned PR erroring is a systemic failure (bad token, forge down),
 	// not per-PR noise — surface it as a stage failure so the retry policy sees it.
@@ -236,7 +267,7 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 // scanPRComments visits the eligible PRs, up to settings.maxPRs, and routes
 // each whose newest human comment is unaddressed. It records outcomes on
 // result and returns the last per-PR error.
-func scanPRComments(ctx context.Context, forge prCommentWatchForge, prs []providers.PullRequestSummary, settings prCommentWatchSettings, classifier prCommentClassifier, result *prCommentWatchResult, stdout, stderr io.Writer) error {
+func scanPRComments(ctx context.Context, forge prCommentWatchForge, prs []providers.PullRequestSummary, settings prCommentWatchSettings, classifier commentClassifier, result *prCommentWatchResult, stdout, stderr io.Writer) error {
 	var lastErr error
 	for _, pr := range prs {
 		if pr.Draft || !hasAnyHeadPrefix(pr.Head, settings.prefixes) || hasAnyLowerLabel(pr.Labels, settings.exclude) {
@@ -263,8 +294,8 @@ func scanPRComments(ctx context.Context, forge prCommentWatchForge, prs []provid
 // parked for a human who has now commented, the route also clears that park so
 // the lane can pick it up (un-park). Only park labels the PR actually carries
 // are cleared, so a normal (non-parked) PR strips nothing.
-func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr providers.PullRequestSummary, settings prCommentWatchSettings, classifier prCommentClassifier, result *prCommentWatchResult, stdout io.Writer) error {
-	comments, err := forge.listComments(ctx, pr)
+func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr providers.PullRequestSummary, settings prCommentWatchSettings, classifier commentClassifier, result *prCommentWatchResult, stdout io.Writer) error {
+	comments, err := forge.listComments(ctx, pr, classifier)
 	if err != nil {
 		return fmt.Errorf("list comments: %w", err)
 	}
@@ -276,12 +307,24 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 		return nil
 	}
 	cleared := carriedLabels(pr.Labels, settings.unpark)
-	if err := forge.route(ctx, pr, cleared); err != nil {
+	landing := carriedLabels(pr.Labels, map[string]bool{mergeReadyLabel: true})
+	disarmed := false
+	if len(landing) > 0 {
+		// #6134: disarm the landing BEFORE routing; a failed disarm leaves
+		// the PR untouched and is retried next tick rather than routed while
+		// the armed landing can still complete. A PR that landed first is
+		// reported, never routed as withdrawn.
+		var err error
+		if disarmed, err = forge.disarm(ctx, pr); err != nil {
+			return fmt.Errorf("disarm the armed landing: %w", err)
+		}
+	}
+	if err := forge.route(ctx, pr, append(append([]string(nil), cleared...), landing...)); err != nil {
 		return fmt.Errorf("label %s: %w", needsRemediationLabel, err)
 	}
 	entry := prCommentWatchLabeled{
 		Number: pr.Number, URL: pr.URL, CommentAuthor: triggering.Author, CommentAuthorID: triggering.AuthorID,
-		CommentURL: triggering.URL, Unparked: len(cleared) > 0, ClearedLabels: cleared,
+		CommentURL: triggering.URL, Unparked: len(cleared) > 0, ClearedLabels: cleared, Disarmed: disarmed,
 	}
 	if triggering.CreatedAt != nil {
 		entry.CommentCreatedAt = triggering.CreatedAt.UTC().Format(time.RFC3339)
@@ -295,71 +338,6 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 	}
 	pf(stdout, "labeled PR #%d %s: unaddressed comment by %s\n", pr.Number, needsRemediationLabel, triggering.Author)
 	return nil
-}
-
-// prCommentMark is a position in the watermark order: timestamp, then list
-// position. Providers return comments oldest-first (Azure DevOps by publish
-// time, thread id, then comment id), so position breaks timestamp ties and
-// orders comments with no timestamp.
-type prCommentMark struct {
-	at  time.Time
-	idx int
-}
-
-func (m prCommentMark) after(o prCommentMark) bool {
-	return m.at.After(o.at) || (m.at.Equal(o.at) && m.idx > o.idx)
-}
-
-// prCommentAckMark is how far one Goobers comment acknowledges human feedback,
-// and whether a feedback-ack frontier bounds it (#6918). A bound comment
-// covers every human comment within the frontier's second, wherever it sits
-// in the list; a "none" or unreadable frontier covers nothing. An unbound
-// comment keeps the legacy rule and covers everything before itself.
-func prCommentAckMark(c providers.Comment, at time.Time, idx, n int) (prCommentMark, bool) {
-	frontier, bound := parseFeedbackAck(c.Body)
-	switch {
-	case !bound:
-		return prCommentMark{at: at, idx: idx}, false
-	case frontier.IsZero():
-		return prCommentMark{idx: -1}, true
-	default:
-		return prCommentMark{at: frontier.Add(time.Second - time.Nanosecond), idx: n}, true
-	}
-}
-
-// latestUnaddressedHumanComment reports the newest human comment and whether
-// it is fresh: past every Goobers acknowledgement (a PR with none compares as
-// zero time). classifier decides each comment's origin; automation comments
-// take part in neither watermark. unbound reports a newest human comment that
-// only an unbound (legacy, frontier-less) Goobers comment acknowledges, so the
-// result can say the acknowledgement rests on no assessed snapshot.
-func latestUnaddressedHumanComment(comments []providers.Comment, classifier prCommentClassifier) (human providers.Comment, fresh, unbound bool) {
-	humanMark, ack, boundAck := prCommentMark{idx: -1}, prCommentMark{idx: -1}, prCommentMark{idx: -1}
-	for i, c := range comments {
-		mark := prCommentMark{idx: i}
-		if c.CreatedAt != nil {
-			mark.at = *c.CreatedAt
-		}
-		switch classifier.origin(c) {
-		case prCommentFromGoobers:
-			covers, bound := prCommentAckMark(c, mark.at, i, len(comments))
-			if covers.after(ack) {
-				ack = covers
-			}
-			if bound && covers.after(boundAck) {
-				boundAck = covers
-			}
-		case prCommentFromHuman:
-			if mark.after(humanMark) {
-				human, humanMark = c, mark
-			}
-		}
-	}
-	if humanMark.idx == -1 {
-		return providers.Comment{}, false, false
-	}
-	fresh = humanMark.after(ack)
-	return human, fresh, !fresh && humanMark.after(boundAck)
 }
 
 // toLowerSet lowercases a slice into a membership set for case-insensitive

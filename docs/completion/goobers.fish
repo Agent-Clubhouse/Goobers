@@ -15,6 +15,10 @@ function __goobers_completion_escalations
     command goobers __complete escalations 2>/dev/null
 end
 
+function __goobers_completion_gaggles
+    command goobers __complete gaggles 2>/dev/null
+end
+
 complete -c goobers -e
 complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard run signal workflow status stats cost trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
@@ -52,8 +56,9 @@ complete -c goobers -n '__fish_seen_subcommand_from escalations; and test (count
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish powershell'
-complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'configure test merges stats errors export mark-fix label prune prune-orphans compact'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and test (count (commandline -opc)) -eq 2' -f -a 'retry'
 complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (commandline -opc)) -eq 2' -f -a 'all stages instance gaggle goober workflow stage gate harness capability'
 
 complete -c goobers -n '__fish_seen_subcommand_from roots; and __fish_seen_subcommand_from discover' -l json -d 'Emit structured root discovery'
@@ -136,7 +141,7 @@ complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-repos -d 
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-dispatch-namespaces -d 'Verify each gaggle\'s isolation.namespace is dispatch-ready'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l source-tree -d 'Validate a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l instance -r -d 'Real instance document for source-tree placement and capability solving'
-complete -c goobers -n '__fish_seen_subcommand_from validate' -l strict -d 'promote config warnings except strict-neutral DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007 to validation errors'
+complete -c goobers -n '__fish_seen_subcommand_from validate' -l strict -d 'promote config warnings except strict-neutral DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007 to validation errors'
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l json -d 'Emit a versioned findings envelope'
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l github-annotations -d 'Emit GitHub Actions file annotations'
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l check-harness -d 'Verify referenced agent harnesses are installed and signed in'
@@ -144,7 +149,7 @@ complete -c goobers -n '__fish_seen_subcommand_from lint' -l check-repos -d 'Ver
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l check-dispatch-namespaces -d 'Verify each gaggle\'s isolation.namespace is dispatch-ready'
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l source-tree -d 'Lint a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l instance -r -d 'Real instance document for source-tree placement and capability solving'
-complete -c goobers -n '__fish_seen_subcommand_from lint' -l strict -d 'promote config warnings except strict-neutral DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007 to validation errors'
+complete -c goobers -n '__fish_seen_subcommand_from lint' -l strict -d 'promote config warnings except strict-neutral DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007 to validation errors'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l to -r -d 'Target DSL version'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l instance-schema -d 'Add the schemaVersion a runners: inventory requires'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l write -d 'Apply migrations in place'
@@ -267,6 +272,7 @@ complete -c goobers -n '__fish_seen_subcommand_from override' -l api -r -d 'Daem
 complete -c goobers -n '__fish_seen_subcommand_from rerun-stage' -l addendum -r -d 'Instruction addendum'
 complete -c goobers -n '__fish_seen_subcommand_from rerun-stage' -l actor -r -d 'Recorded actor identity'
 complete -c goobers -n '__fish_seen_subcommand_from rerun-stage' -l api -r -d 'Daemon API base URL for a remote daemon'
+complete -c goobers -n '__fish_seen_subcommand_from signal' -l request-id -r -d 'Idempotency key for the accepted signal recipient set'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show' -l dot -d 'Emit Graphviz DOT'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l gaggle -r -d 'Configured parent gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l parent -r -a '(__goobers_completion_workflows)' -d 'Configured parent workflow'
@@ -412,6 +418,19 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_s
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from label' -l reason -r -d 'Why the result is correct or incorrect'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from label' -l by -r -d 'Who is recording the label'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from label' -l labeled-at -r -d 'Verdict time as RFC3339'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l kind -r -d 'Claim kind (assignment, reliance, credit, or blame)'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l stage -r -d 'Target stage name'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l attempt -r -d 'Target stage attempt'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l agent -r -d 'Target nested agent ID'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l artifact -r -d 'Target recorded artifact digest'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l statement -r -d 'What the claim asserts'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l evidence -r -d 'Supporting artifact digest or seq:N (repeatable)'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from claim' -l confidence -r -d 'Writer confidence between 0 and 1'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l json -d 'Emit the shadow comparison report as JSON'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l gaggle -r -a '(__goobers_completion_gaggles)' -d 'Filter to one gaggle'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Filter to one workflow'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l since -r -d 'Include runs at or after this RFC3339 timestamp'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l until -r -d 'Include runs at or before this RFC3339 timestamp'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune' -l dry-run -d 'Report eligible runs without deleting them'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l delete -d 'Delete eligible orphan directories (opt-in; default dry-run)'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l min-age -r -d 'Minimum inactivity age (at least 24h)'
@@ -420,6 +439,13 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_sub
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l path -r -d 'Journal-relative blob path'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l reason -r -d 'Redaction reason'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l secret-file -r -d 'Read the leaked secret bytes from this file'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and __fish_seen_subcommand_from retry' -l pr -r -d 'Pull request number'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and __fish_seen_subcommand_from retry' -l route -r -a 'merge-review remediation hold' -d 'Target route'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and __fish_seen_subcommand_from retry' -l reason -r -d 'Audit reason'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and __fish_seen_subcommand_from retry' -l gaggle -r -d 'Gaggle that owns the PR'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and __fish_seen_subcommand_from retry' -l actor -r -d 'Audit identity'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and __fish_seen_subcommand_from retry' -l dry-run -d 'Report the proposed transition without mutating anything'
+complete -c goobers -n '__fish_seen_subcommand_from pr; and __fish_seen_subcommand_from retry' -l json -d 'Print the report as JSON'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-health' -l feedback -d 'Include backlog feedback'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d 'Claim the first eligible item'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l resweep -d 'Run scheduled re-sweep with --claim'

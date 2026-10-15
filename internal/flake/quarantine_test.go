@@ -66,3 +66,39 @@ func TestQuarantineRejectsAnonymousOrMalformedEntries(t *testing.T) {
 		})
 	}
 }
+
+type recordingTB struct {
+	testing.TB
+	recordingTestHandle
+}
+
+func (r *recordingTB) Helper()                   {}
+func (r *recordingTB) Skipf(f string, a ...any)  { r.recordingTestHandle.Skipf(f, a...) }
+func (r *recordingTB) Fatalf(f string, a ...any) { r.recordingTestHandle.Fatalf(f, a...) }
+
+func TestQuarantinePublicEntryPoint(t *testing.T) {
+	t.Parallel()
+	future := time.Now().UTC().AddDate(0, 0, 30).Format(expiryLayout)
+	past := time.Now().UTC().AddDate(0, 0, -30).Format(expiryLayout)
+	tests := []struct {
+		name          string
+		issue, expiry string
+		wantSkip      bool
+		wantFatal     string
+	}{
+		{name: "valid future expiry skips", issue: "#664", expiry: future, wantSkip: true},
+		{name: "missing issue", expiry: future, wantFatal: "issue reference"},
+		{name: "malformed expiry", issue: "#664", expiry: "soon", wantFatal: "YYYY-MM-DD"},
+		{name: "expired", issue: "#664", expiry: past, wantFatal: "expired on " + past},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			tb := &recordingTB{TB: t}
+			Quarantine(tb, test.issue, test.expiry)
+			if test.wantSkip != (tb.skip != "") || !strings.Contains(tb.fatal, test.wantFatal) {
+				t.Fatalf("fatal=%q skip=%q", tb.fatal, tb.skip)
+			}
+		})
+	}
+}

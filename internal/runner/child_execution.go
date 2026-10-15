@@ -44,6 +44,7 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	cfg.PrepareTerminal, cfg.FinalizeTerminal, cfg.NotifyTerminal = nil, nil, nil
 	cfg.BaselineHealth, cfg.LookPathFunc = nil, nil
 	cfg.ChildHandoff, cfg.ChildParentCapacity = nil, nil
+	cfg.BorrowParentJournal, cfg.AdmitParentExecution = nil, nil
 	cfg.AdditionalRepos = nil
 	// The supplied factories exclusively dispatch remote attempts; their pinned
 	// placement admission owns host capability and self-deny enforcement.
@@ -51,8 +52,11 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	return New(cfg)
 }
 
-func (r *Runner) borrowChildJournal(jr *journal.Run) (func(), error) {
-	if r.cfg.childExecution == nil || r.cfg.childBorrowJournal == nil {
+func (r *Runner) borrowExecutionJournal(jr *journal.Run) (func(), error) {
+	if r.cfg.childExecution == nil {
+		return r.borrowParentJournal(jr)
+	}
+	if r.cfg.childBorrowJournal == nil {
 		return func() {}, nil
 	}
 	id := r.cfg.childExecution

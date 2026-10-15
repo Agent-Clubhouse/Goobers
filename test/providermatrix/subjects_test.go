@@ -1,6 +1,7 @@
 package providermatrix
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -24,6 +25,9 @@ const (
 // rewriteGaggles moves every Gaggle document under dir onto provider: both
 // spec.project and spec.backlog, with that provider's repository shape (an ADO
 // organization and project, a Gitea base URL). Other gaggle fields are kept.
+// The instance manifest's repo and backlog connections move with them, so the
+// synthesised instance is what an adopter on provider would write (the
+// standard scaffold names its forge connections' provider the same way).
 func rewriteGaggles(t *testing.T, dir string, provider apiv1.Provider) {
 	t.Helper()
 	rewritten := 0
@@ -40,6 +44,55 @@ func rewriteGaggles(t *testing.T, dir string, provider apiv1.Provider) {
 	}
 	if rewritten == 0 {
 		t.Fatalf("no gaggle.yaml under %s; the matrix would not exercise %s", dir, provider)
+	}
+	rewriteManifestConnections(t, dir, map[string]apiv1.Provider{"repo": provider, "backlog": provider})
+}
+
+// forgeProviders are the connection providers a forge connection may name;
+// a connection to anything else (telemetry, identity, a harness) is never
+// moved between forges.
+var forgeProviders = map[string]bool{
+	string(apiv1.ProviderGitHub): true,
+	string(apiv1.ProviderADO):    true,
+	string(apiv1.ProviderGitea):  true,
+}
+
+// rewriteManifestConnections sets the provider of every forge connection in
+// dir's manifest.yaml whose type has an entry in byType. A tree without a
+// manifest, or one declaring no such connection, is left as is.
+func rewriteManifestConnections(t *testing.T, dir string, byType map[string]apiv1.Provider) {
+	t.Helper()
+	path := filepath.Join(dir, "manifest.yaml")
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	if doc["kind"] != "Manifest" {
+		t.Fatalf("%s is not a single Manifest document (kind %v)", path, doc["kind"])
+	}
+	spec, _ := doc["spec"].(map[string]any)
+	connections, _ := spec["connections"].([]any)
+	for _, raw := range connections {
+		connection, _ := raw.(map[string]any)
+		kind, _ := connection["type"].(string)
+		current, _ := connection["provider"].(string)
+		if provider, ok := byType[kind]; ok && forgeProviders[current] {
+			connection["provider"] = string(provider)
+		}
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		t.Fatalf("encode %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
@@ -158,29 +211,60 @@ func scaffoldSubject(variant scaffoldVariant) matrixSubject {
 	}}
 }
 
-// standardScaffoldOptions mirrors cmd/goobers standardInitOptions' defaults
-// for `init --template=standard --provider=<provider>` with placeholder
-// repository identity.
+// standardScaffoldOptions is `init --template=standard
+// --provider=<provider>` with its default auth: the placeholder identity and
+// credential defaults come from instance.StandardInitDefaults, the same
+// helper init uses, so the gate cannot drift from what init writes.
 func standardScaffoldOptions(provider apiv1.Provider, variant scaffoldVariant) instance.GuidedOptions {
-	opts := instance.GuidedOptions{
-		GaggleName: "example", RepoProvider: string(provider),
-		RepoOwner: "your-org", RepoName: "your-repo",
-		RepoTokenEnv:         "GOOBERS_GITHUB_TOKEN",
-		WorkTrackingTokenEnv: "GOOBERS_GITHUB_ISSUES_TOKEN",
-		PullRequestTokenEnv:  "GOOBERS_GITHUB_PR_TOKEN",
-		RepoPushTokenEnv:     "GOOBERS_GITHUB_PUSH_TOKEN",
-		Workflows:            scaffoldWorkflows(provider, variant),
-		PullRequestCI:        variant.prCI,
-	}
+	opts := instance.StandardInitDefaults(string(provider), "")
+	opts.Workflows = scaffoldWorkflows(provider, variant)
+	opts.PullRequestCI = variant.prCI
 	if !variant.prCI {
 		opts.CICommand = []string{"make", "test"}
 		opts.RequiredCapabilities = []string{"go"}
 	}
-	if provider == apiv1.ProviderADO {
-		opts.RepoProject = "your-project"
-		opts.RepoAuthKind = instance.ADOAuthAzureCLI
-		opts.RepoTokenEnv = ""
-		opts.WorkTrackingTokenEnv, opts.PullRequestTokenEnv, opts.RepoPushTokenEnv = "", "", ""
-	}
 	return opts
+}
+
+// TestRewriteMovesManifestForgeConnections proves each column's synthesised
+// instance is consistent: config-examples' manifest declares a repo and a
+// backlog connection, and both follow the gaggles onto the column's provider
+// (in topology (b), the backlog connection follows the backlog to GitHub).
+func TestRewriteMovesManifestForgeConnections(t *testing.T) {
+	t.Parallel()
+	source := filepath.Join(repositoryRoot(t), "config-examples")
+	check := func(t *testing.T, dir string, want map[string]apiv1.Provider) {
+		t.Helper()
+		set, report, err := instance.LoadConfigDir(dir)
+		if err != nil {
+			t.Fatalf("load %s: %v (report %+v)", dir, err, report)
+		}
+		seen := map[string]bool{}
+		for _, connection := range set.Manifest.Spec.Connections {
+			if provider, ok := want[connection.Type]; ok {
+				seen[connection.Type] = true
+				if connection.Provider != string(provider) {
+					t.Errorf("%s connection %q provider = %q, want %q", connection.Type, connection.Name, connection.Provider, provider)
+				}
+			}
+		}
+		for kind := range want {
+			if !seen[kind] {
+				t.Fatalf("config-examples declares no %s connection; the check would be vacuous", kind)
+			}
+		}
+	}
+	for _, provider := range matrixProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			dir := shippedTreeSubject("config-examples", source).build(t, provider)
+			check(t, dir, map[string]apiv1.Provider{"repo": provider, "backlog": provider})
+		})
+	}
+	t.Run("topology-b", func(t *testing.T) {
+		t.Parallel()
+		dir := shippedTreeSubject("config-examples", source).build(t, apiv1.ProviderADO)
+		moveBacklogsToGitHub(t, dir)
+		check(t, dir, map[string]apiv1.Provider{"repo": apiv1.ProviderADO, "backlog": apiv1.ProviderGitHub})
+	})
 }

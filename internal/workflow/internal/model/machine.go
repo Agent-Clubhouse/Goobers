@@ -76,9 +76,11 @@ type Machine struct {
 	tasks            map[string]apiv1.Task
 	gates            map[string]apiv1.Gate
 	parallels        map[string]apiv1.Parallel
+	maps             map[string]apiv1.Map
 	graph            Graph
 	digest           string
 	artifactBindings map[string]map[string]ArtifactBinding
+	slotEnvelopes    map[string]map[string]string
 }
 
 // ArtifactBinding is the compiler-lowered DSL 3.1 semantic artifact edge for
@@ -96,7 +98,9 @@ type ArtifactBinding struct {
 // NewMachine stores interpreter-built runtime state and atomically pins its
 // definition digest.
 // A nil parallels map is valid and means the interpreter's DSL version has no
-// fan-out construct.
+// fan-out construct. Map states are indexed from def.Spec.Maps: only DSL 3.1
+// admits them, and the version router refuses them for every older pin before
+// an interpreter runs.
 func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate, parallels map[string]apiv1.Parallel, graph Graph) (*Machine, error) {
 	digest, err := ComputeDigest(def)
 	if err != nil {
@@ -105,14 +109,51 @@ func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]ap
 	graph.Name = def.Name
 	graph.Version = def.Version
 	graph.Digest = digest
+	var maps map[string]apiv1.Map
+	if len(def.Spec.Maps) > 0 {
+		maps = make(map[string]apiv1.Map, len(def.Spec.Maps))
+		for _, m := range def.Spec.Maps {
+			maps[m.Name] = m
+		}
+	}
 	return &Machine{
 		Def:       def,
 		tasks:     tasks,
 		gates:     gates,
 		parallels: parallels,
+		maps:      maps,
 		graph:     cloneGraph(graph),
 		digest:    digest,
 	}, nil
+}
+
+// SetSlotEnvelopes stores the compiler-lowered effective schemas of artifact
+// slots that declare no schemaPath of their own but feed a fan-out source:
+// producer task -> slot -> embedded host envelope schema file name
+// (api/schemas). The machine clones the input.
+func (m *Machine) SetSlotEnvelopes(envelopes map[string]map[string]string) {
+	m.slotEnvelopes = nil
+	if len(envelopes) == 0 {
+		return
+	}
+	m.slotEnvelopes = make(map[string]map[string]string, len(envelopes))
+	for task, slots := range envelopes {
+		cloned := make(map[string]string, len(slots))
+		for slot, schema := range slots {
+			cloned[slot] = schema
+		}
+		m.slotEnvelopes[task] = cloned
+	}
+}
+
+// SlotEnvelope returns the embedded host envelope schema the compiler lowered
+// onto a producer slot as its effective schema (DSL 3.1 fan-out sources).
+func (m *Machine) SlotEnvelope(task, slot string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	schema, ok := m.slotEnvelopes[task][slot]
+	return schema, ok
 }
 
 // Digest returns the content digest of the compiled definition ("sha256:<hex>").
@@ -176,7 +217,7 @@ func ComputeDigest(def Definition) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// Has reports whether name identifies a task, gate, or parallel.
+// Has reports whether name identifies a task, gate, parallel, or map.
 func (m *Machine) Has(name string) bool {
 	if _, ok := m.tasks[name]; ok {
 		return true
@@ -184,7 +225,10 @@ func (m *Machine) Has(name string) bool {
 	if _, ok := m.gates[name]; ok {
 		return true
 	}
-	_, ok := m.parallels[name]
+	if _, ok := m.parallels[name]; ok {
+		return true
+	}
+	_, ok := m.maps[name]
 	return ok
 }
 
@@ -221,8 +265,25 @@ func (m *Machine) Outgoing(state string) []string {
 		}
 		return targets
 	}
+	if fanOut, ok := m.maps[state]; ok {
+		targets := []string{fanOut.Task, fanOut.Join}
+		if fanOut.OnFailure != "" {
+			targets = append(targets, fanOut.OnFailure)
+		}
+		return targets
+	}
 	return nil
 }
+
+// Map returns the map state with the given name, if any.
+func (m *Machine) Map(name string) (apiv1.Map, bool) {
+	fanOut, ok := m.maps[name]
+	return fanOut, ok
+}
+
+// Maps returns every map state, keyed by name. The returned map is the
+// machine's own — callers must not mutate it.
+func (m *Machine) Maps() map[string]apiv1.Map { return m.maps }
 
 // Parallel returns the parallel with the given name, if any.
 func (m *Machine) Parallel(name string) (apiv1.Parallel, bool) {

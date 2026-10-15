@@ -657,7 +657,7 @@ func TestRunDeclaredStageNoLongerRefusesCIPoll(t *testing.T) {
 	t.Setenv(executor.InstanceRootEnvVar, "")
 	t.Setenv(dispatcher.InputEnvVar(executor.InputKind), executor.KindCIPoll)
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Error != nil && result.Error.Code == executor.StageRequiresInstanceRootCode {
 		t.Fatalf("result = %+v, ci-poll runs in a pod since #3881 and must not trip the instance-root backstop", result)
 	}

@@ -22,7 +22,7 @@ func TestChildBlobUpgradePreservesPendingDisposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := &Store{db: db}
-	child, request := dispositionFixture(t, before, "returned-parent", childTestTime)
+	child, request := seedLegacyDisposition(t, before, "returned-parent", childTestTime)
 	choice, err := before.RequestChildDisposition(t.Context(), request, childTestTime)
 	if err != nil {
 		t.Fatal(err)

@@ -381,21 +381,15 @@ func structuralProblems(m *Machine) []string {
 	def := m.Def
 	var problems []string
 
-	seen := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
-	dup := func(name string) {
+	// stateNames orders tasks, gates, parallels, then maps, so the first
+	// declaration keeps its name and every later one is the duplicate.
+	names := stateNames(def)
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
 		if seen[name] {
 			problems = append(problems, fmt.Sprintf("duplicate state %q", name))
 		}
 		seen[name] = true
-	}
-	for _, t := range def.Spec.Tasks {
-		dup(t.Name)
-	}
-	for _, g := range def.Spec.Gates {
-		dup(g.Name)
-	}
-	for _, p := range def.Spec.Parallels {
-		dup(p.Name)
 	}
 
 	if def.Spec.Start == TerminalComplete {

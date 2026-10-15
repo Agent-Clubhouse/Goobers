@@ -77,7 +77,8 @@ repository token, but never on an Azure DevOps repository; an `ado:*`
 capability is materialised only on an Azure DevOps repository.
 Provider-neutral capabilities fit every provider. A reference
 that does not fit fails the stage before the harness starts, naming the server
-and the reference (#5737). Third-party servers use the
+and the reference (#5737); `goobers validate` warns about it ahead of time
+(MCP002), naming the server and the gaggle. Third-party servers use the
 separate `kind: byo` branch with a DNS-label-compatible `ref`. The operator
 provides that named credential declaratively in `instance.yaml`:
 

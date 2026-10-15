@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -375,7 +376,7 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("released claim = %v, %v", ok, err)
 	}
-	if err := ledger.ReleaseScoped(releasedKey, "released"); err != nil {
+	if err := ledger.ReleaseScoped(releasedKey, "released", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	lookups := 0
@@ -568,6 +569,321 @@ func TestDecorateOperatorClaimsReportsRealMarkerDriftAsBlocker(t *testing.T) {
 	}
 	if len(got.DiagnosticsLimitations) != 0 {
 		t.Fatalf("diagnostics = %+v, want none when the reader could see the item", got.DiagnosticsLimitations)
+	}
+}
+
+// TestDecorateOperatorClaimsSkipsPullRequestClaims pins #6798: a merge-review
+// or pr-remediation run's claim ("pr/<n>") is a ledger-only lease with no
+// provider claim marker, and its key is not a work-item id. It must be
+// reported as not-applicable without a work-item lookup — handing "pr/<n>" to
+// the work-item API failed (ADO: "work item id must be a positive integer")
+// and surfaced as a spurious diagnostics limitation — while work-item claims
+// in the same pass are still verified.
+func TestDecorateOperatorClaimsSkipsPullRequestClaims(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 20, 3, 15, 0, 0, time.UTC)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range []struct{ runID, itemID, workflow string }{
+		{"run-pr", "pr/536", "merge-review"},
+		{"run-issue", "3344", "implementation"},
+	} {
+		ok, _, err := ledger.ClaimScoped(
+			localscheduler.ClaimKey{Gaggle: "goobers", Provider: "ado", ExternalID: claim.itemID},
+			claim.runID, claim.workflow, time.Hour,
+		)
+		if err != nil || !ok {
+			t.Fatalf("claim %s = %v, %v", claim.itemID, ok, err)
+		}
+	}
+	var looked []string
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(_ context.Context, _, itemID string) (providers.WorkItem, error) {
+			looked = append(looked, itemID)
+			if itemID != "3344" {
+				return providers.WorkItem{}, errors.New("ADO work item id must be a positive integer")
+			}
+			return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
+		},
+	}}
+	runs := []RunSummary{
+		{
+			// No issue of its own: the projection fills it from the active
+			// ledger entry, as for a live merge-review run.
+			ID: "run-pr", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+				PotentialBlockers: []string{},
+			},
+		},
+		{
+			ID: "run-pr-failed", Gaggle: "goobers", Phase: journal.PhaseFailed,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "pr/537"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+			},
+		},
+		{
+			ID: "run-issue", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "3344"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+	}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(looked) != 1 || looked[0] != "3344" {
+		t.Fatalf("work-item lookups = %v, want only the work-item claim", looked)
+	}
+	for _, run := range runs[:2] {
+		got := run.Operator
+		if got.Issue == nil || !strings.HasPrefix(got.Issue.Number, localscheduler.PullRequestItemIDPrefix) {
+			t.Fatalf("run %s issue = %+v, want the PR claim key", run.ID, got.Issue)
+		}
+		if got.Claim.ProviderMarker != "not-applicable" {
+			t.Fatalf("run %s provider marker = %q, want not-applicable", run.ID, got.Claim.ProviderMarker)
+		}
+		if len(got.DiagnosticsLimitations) != 0 || len(got.PotentialBlockers) != 0 {
+			t.Fatalf("run %s diagnostics = %+v, blockers = %+v, want none for a PR claim",
+				run.ID, got.DiagnosticsLimitations, got.PotentialBlockers)
+		}
+	}
+	if got := runs[0].Operator.Claim.LeaseStatus; got != "active" {
+		t.Fatalf("PR lease status = %q, want the lease still reported active", got)
+	}
+	if got := runs[2].Operator.Claim; got.LeaseStatus != "active" || got.ProviderMarker != "verified" {
+		t.Fatalf("work-item claim = %+v, want verified", got)
+	}
+}
+
+// TestDecorateOperatorClaimsVerifiesTheLeasedItem pins that the lease, not the
+// displayed issue, decides what is verified. A merge-review run's post-merge
+// stages record the linked issue as a ref.touched "issue", so its display
+// number becomes a real work item while its lease is still "pr/<n>";
+// verifying that issue's claimed label against the PR lease manufactured an
+// "active claim lease has no provider marker" blocker. Conversely a work-item
+// lease is verified against the leased item even when the display number is
+// something else (a backlog worker's trigger ref is its workflow name until
+// the claim stage records the item).
+func TestDecorateOperatorClaimsVerifiesTheLeasedItem(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := func(runID, itemID string) localscheduler.ClaimKey {
+		t.Helper()
+		key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "ado", ExternalID: itemID}
+		ok, _, err := ledger.ClaimScoped(key, runID, "workflow", time.Hour)
+		if err != nil || !ok {
+			t.Fatalf("claim %s = %v, %v", itemID, ok, err)
+		}
+		return key
+	}
+	claim("merge-active", "pr/536")
+	if err := ledger.ReleaseScoped(claim("merge-released", "pr/538"), "merge-released", claimrelease.Completed.Reason()); err != nil {
+		t.Fatal(err)
+	}
+	claim("worker", "3345")
+	var looked []string
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(_ context.Context, _, itemID string) (providers.WorkItem, error) {
+			looked = append(looked, itemID)
+			switch itemID {
+			case "3345":
+				return providers.WorkItem{Title: "leased item", Labels: []string{providers.LabelClaimed}}, nil
+			case "6798", "6799":
+				// The linked issues carry no claimed label.
+				return providers.WorkItem{}, nil
+			default:
+				return providers.WorkItem{}, errors.New("ADO work item id must be a positive integer")
+			}
+		},
+	}}
+	runs := []RunSummary{
+		{
+			ID: "merge-active", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue:             &OperatorIssue{Number: "6798"},
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+				PotentialBlockers: []string{},
+			},
+		},
+		{
+			ID: "merge-released", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue:             &OperatorIssue{Number: "6799"},
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+				PotentialBlockers: []string{},
+			},
+		},
+		{
+			ID: "worker", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue:             &OperatorIssue{Number: "implementation"},
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+				PotentialBlockers: []string{},
+			},
+		},
+	}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(looked) != 1 || looked[0] != "3345" {
+		t.Fatalf("work-item lookups = %v, want only the leased work item", looked)
+	}
+	for _, run := range runs[:2] {
+		got := run.Operator
+		if got.Claim.ProviderMarker != "not-applicable" ||
+			len(got.PotentialBlockers) != 0 || len(got.DiagnosticsLimitations) != 0 {
+			t.Fatalf("run %s operator = %+v, want a not-applicable PR claim with no blockers or diagnostics",
+				run.ID, got)
+		}
+		if got.Issue.Labels != nil {
+			t.Fatalf("run %s issue labels = %v, want the linked issue left undecorated", run.ID, got.Issue.Labels)
+		}
+	}
+	if got := runs[0].Operator.Claim.LeaseStatus; got != "active" {
+		t.Fatalf("active PR lease status = %q", got)
+	}
+	if got := runs[1].Operator.Claim.LeaseStatus; got != "released" {
+		t.Fatalf("released PR lease status = %q", got)
+	}
+	worker := runs[2].Operator
+	if worker.Claim.LeaseStatus != "active" || worker.Claim.ProviderMarker != "verified" ||
+		len(worker.PotentialBlockers) != 0 || len(worker.DiagnosticsLimitations) != 0 {
+		t.Fatalf("worker operator = %+v, want the leased item verified", worker)
+	}
+	// The displayed issue is not the item that was read, so it is not
+	// decorated with that item's title or labels.
+	if worker.Issue.Number != "implementation" || worker.Issue.Title != "" || worker.Issue.Labels != nil {
+		t.Fatalf("worker issue = %+v, want the display issue left as projected", worker.Issue)
+	}
+}
+
+// TestDecorateOperatorClaimsSkipsEveryLedgerOnlyLease extends #6798 past PR
+// claims: advisory-review and decomposition-target leases are ledger-only
+// too, a run holding several leases is verified on its work-item lease
+// rather than whichever key sorts first, and a backlog worker that has not
+// claimed anything yet is not looked up by its workflow name.
+func TestDecorateOperatorClaimsSkipsEveryLedgerOnlyLease(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	clock := now.Add(-time.Hour)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return clock }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := func(runID, itemID string) localscheduler.ClaimKey {
+		t.Helper()
+		key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: itemID}
+		ok, _, err := ledger.ClaimScoped(key, runID, "workflow", 2*time.Hour)
+		if err != nil || !ok {
+			t.Fatalf("claim %s = %v, %v", itemID, ok, err)
+		}
+		return key
+	}
+	release := func(key localscheduler.ClaimKey, runID string) {
+		t.Helper()
+		if err := ledger.ReleaseScoped(key, runID, claimrelease.Completed.Reason()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claim("advisory", "advisory-pr/acme/app/security/12")
+	claim("target", "decomposition-target:3344")
+	// "advisory-pr/…" sorts before "wi-7", so the first lease by key is the
+	// ledger-only one; the work-item lease must still be the one verified.
+	claim("mixed", "advisory-pr/acme/app/security/13")
+	claim("mixed", "wi-7")
+	// The work-item lease ended before the decomposition-target lease: the
+	// most recent release is ledger-only, the work item is still preferred.
+	release(claim("publisher", "3347"), "publisher")
+	clock = clock.Add(time.Minute)
+	release(claim("publisher", "decomposition-target:3347"), "publisher")
+	clock = now
+
+	var looked []string
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(_ context.Context, _, itemID string) (providers.WorkItem, error) {
+			looked = append(looked, itemID)
+			switch itemID {
+			case "wi-7":
+				return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
+			case "3347":
+				return providers.WorkItem{}, nil
+			default:
+				return providers.WorkItem{}, errors.New("work item id must be a positive integer")
+			}
+		},
+	}}
+	running := func(id, workflow string, issue *OperatorIssue) RunSummary {
+		return RunSummary{
+			ID: id, Gaggle: "goobers", Workflow: workflow, Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue:             issue,
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+				PotentialBlockers: []string{},
+			},
+		}
+	}
+	runs := []RunSummary{
+		running("advisory", "advisory-review", nil),
+		running("target", "decomposition", nil),
+		running("mixed", "implementation", nil),
+		running("publisher", "decomposition", &OperatorIssue{Number: "3347"}),
+		running("worker", "implementation", &OperatorIssue{Number: "implementation"}),
+	}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(looked, ",") != "wi-7,3347" {
+		t.Fatalf("work-item lookups = %v, want only the work-item leases", looked)
+	}
+	for _, run := range runs {
+		if len(run.Operator.DiagnosticsLimitations) != 0 {
+			t.Fatalf("run %s diagnostics = %+v, want none", run.ID, run.Operator.DiagnosticsLimitations)
+		}
+	}
+	for _, run := range runs[:2] {
+		if got := run.Operator.Claim; got.LeaseStatus != "active" || got.ProviderMarker != "not-applicable" {
+			t.Fatalf("run %s claim = %+v, want an active not-applicable ledger-only lease", run.ID, got)
+		}
+	}
+	if got := runs[2].Operator; got.Claim.LeaseStatus != "active" || got.Claim.ProviderMarker != "verified" ||
+		got.Issue == nil || got.Issue.Number != "wi-7" {
+		t.Fatalf("mixed-lease run = %+v, want its work-item lease verified", got)
+	}
+	if got := runs[3].Operator.Claim; got.LeaseStatus != "released" || got.ProviderMarker != "not-present" {
+		t.Fatalf("publisher claim = %+v, want the released work item checked", got)
+	}
+	if got := runs[4].Operator; got.Claim.ProviderMarker != "not-recorded" || len(got.PotentialBlockers) != 0 {
+		t.Fatalf("pending worker = %+v, want no lookup and no verdict before it claims", got)
 	}
 }
 

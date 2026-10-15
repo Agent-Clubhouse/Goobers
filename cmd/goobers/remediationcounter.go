@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
@@ -23,6 +24,7 @@ type remediationDemandCounter struct {
 	resolver     credentials.Resolver
 	reg          runner.SecretRegistrar
 	schedulerDir string
+	readScope    apireadcache.Scope
 	quota        *localscheduler.ProviderQuotaState
 	now          func() time.Time
 }
@@ -31,7 +33,7 @@ func (c *remediationDemandCounter) EligibleCount(ctx context.Context) (int, erro
 	if c.repo.Provider != providers.ProviderGitHub {
 		return 0, fmt.Errorf("remediation demand count is not supported for provider %q", c.repo.Provider)
 	}
-	provider, cleanup, err := newCounterGitHubProvider(ctx, c.ref, c.schedulerDir, c.resolver, c.reg, c.quota)
+	provider, cleanup, err := newCounterGitHubProvider(ctx, c.ref, c.schedulerDir, c.resolver, c.reg, c.quota, c.readScope)
 	if err != nil {
 		return 0, fmt.Errorf("resolve remediation-count token for %s: %w", c.ref, err)
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -90,7 +91,7 @@ func TestReconciliationSharedLeaseCannotReleaseOrdinaryClaim(t *testing.T) {
 	if ok, _, err := file.ClaimScoped(t.Context(), key, reservationID, "backlog-reconcile", time.Minute); err == nil || ok {
 		t.Fatal("terminal owning run admitted a reservation")
 	}
-	if released, err := file.ReleaseAllForRun(t.Context(), reservationID); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
+	if released, err := file.ReleaseAllForRun(t.Context(), reservationID, claimrelease.Completed.Reason()); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
 		t.Fatalf("terminal reservation release: %+v %v", released, err)
 	}
 }
@@ -191,7 +192,7 @@ func TestPinnedResolverCoordinatesFileClaimAndTerminalRelease(t *testing.T) {
 	if _, err := resolver.Release(t.Context(), forged); err == nil || store.writes != 1 {
 		t.Fatal("forged release owner accepted")
 	}
-	if released, err := file.ReleaseAllForRun(t.Context(), "shared-run"); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
+	if released, err := file.ReleaseAllForRun(t.Context(), "shared-run", claimrelease.Completed.Reason()); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
 		t.Fatalf("terminal owner release failed: %+v %v", released, err)
 	}
 }

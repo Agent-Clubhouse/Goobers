@@ -210,6 +210,9 @@ type ReadResult struct {
 // defaultReadLineCap, in which case the result is explicitly truncated
 // (Truncated: true, TotalLines still reported) rather than silently cut off.
 func (t *Toolset) ReadInput(name string, startLine, endLine int) (ReadResult, error) {
+	if startLine > 0 && endLine > 0 && endLine < startLine {
+		return ReadResult{}, fmt.Errorf("invalid line range: endLine %d is before startLine %d", endLine, startLine)
+	}
 	data, err := t.readInputFile(name)
 	if err != nil {
 		return ReadResult{}, err
@@ -236,9 +239,6 @@ func (t *Toolset) ReadInput(name string, startLine, endLine int) (ReadResult, er
 	}
 	if start > total {
 		return ReadResult{StartLine: start, EndLine: start - 1, TotalLines: total}, nil
-	}
-	if end < start {
-		end = start
 	}
 	return ReadResult{
 		Content:    strings.Join(lines[start-1:end], "\n"),

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -24,6 +25,7 @@ func TestParallelDispatchDrainsWritersBeforeReturning(t *testing.T) {
 		{name: "journal failure wins", first: parallelBranchResult{err: workerFailure}, settleErr: journalFailure, wantErr: journalFailure, wantCause: journalFailure},
 		{name: "worker failure", first: parallelBranchResult{err: workerFailure}, wantErr: workerFailure, wantCause: workerFailure},
 		{name: "pause preserves queued work", first: parallelBranchResult{paused: true}, wantPaused: true},
+		{name: "uncertain custody preserves queued work", first: parallelBranchResult{paused: true, status: journal.BranchCancelled, err: invoke.ErrChildCustodyPending}, wantErr: invoke.ErrChildCustodyPending, wantCause: invoke.ErrChildCustodyPending, wantPaused: true},
 		{name: "fail fast", first: parallelBranchResult{status: journal.BranchFailed}, wantCause: errParallelFailFast},
 		{name: "terminal", first: parallelBranchResult{terminalTarget: "blocked"}, wantCause: errParallelTerminal},
 	} {
@@ -31,13 +33,22 @@ func TestParallelDispatchDrainsWritersBeforeReturning(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
 			results := make(chan parallelBranchResult, 2)
-			results <- tc.first
-			results <- parallelBranchResult{index: 1, status: journal.BranchSucceeded}
+			slots := newParallelBranchSlots(2)
 			launched, settled := []int{}, []int{}
-			p := &parallelDispatch{queue: []int{0, 1, 2}, limit: 2, outcomes: make([]*parallelBranchResult, 3), results: results, cancel: cancel, failurePolicy: apiv1.BranchFailFast}
-			p.launch = func(index int) error {
+			p := &parallelDispatch{queue: []int{0, 1, 2}, released: slots.changed, outcomes: make([]*parallelBranchResult, 3), results: results, cancel: cancel, failurePolicy: apiv1.BranchFailFast}
+			p.launch = func(index int) (bool, error) {
+				slot, available := slots.tryAcquire()
+				if !available {
+					return false, nil
+				}
 				launched = append(launched, index)
-				return nil
+				result := parallelBranchResult{index: index, status: journal.BranchSucceeded}
+				if index == 0 {
+					result = tc.first
+				}
+				result.slot = slot
+				results <- result
+				return true, nil
 			}
 			p.settle = func(result parallelBranchResult) error {
 				settled = append(settled, result.index)
@@ -72,10 +83,10 @@ func TestParallelDispatchDrainsWritersBeforeReturning(t *testing.T) {
 func TestParallelDispatchRetainedTerminalNeverLaunches(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(nil)
-	p := &parallelDispatch{queue: []int{0}, limit: 1, terminalTriggered: true, cancel: cancel}
-	p.launch = func(int) error {
+	p := &parallelDispatch{queue: []int{0}, terminalTriggered: true, cancel: cancel}
+	p.launch = func(int) (bool, error) {
 		t.Fatal("recovered terminal launched another writer")
-		return nil
+		return false, nil
 	}
 	p.cancelQueued = func() error {
 		p.next = len(p.queue)
@@ -83,5 +94,13 @@ func TestParallelDispatchRetainedTerminalNeverLaunches(t *testing.T) {
 	}
 	if err := p.run(); err != nil || p.next != 1 || context.Cause(ctx) != nil {
 		t.Fatal("retained terminal reconciliation changed", err, p.next)
+	}
+}
+
+func TestParallelInvocationRetainsCustodyErrorDuringDrain(t *testing.T) {
+	var result parallelBranchResult
+	err := errors.Join(errChildWaitDrain, invoke.ErrChildCustodyPending)
+	if !parallelInvocationFailed(err, &result) || !result.paused || !errors.Is(result.err, invoke.ErrChildCustodyPending) {
+		t.Fatal("drain hid uncertain writer custody", result)
 	}
 }

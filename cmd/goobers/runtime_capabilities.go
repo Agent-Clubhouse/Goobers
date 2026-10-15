@@ -141,6 +141,15 @@ func telemetryCLICommand() cliCommand {
 		subcommand("telemetry label", "label", apicontract.ActionMaintenance, runTelemetryLabel).
 			withHelp("record a ground-truth verdict for a Backprop-enrolled run", telemetryLabelHelp).
 			withExamples("goobers telemetry label --run=run-123 --outcome=incorrect --reason=\"PR was reverted\""),
+		subcommand("telemetry claim", "claim", apicontract.ActionWorkflowExecution, runTelemetryClaim).
+			withHelp("append a Backprop claim from inside an agentic stage", telemetryClaimHelp).
+			withExamples("goobers telemetry claim --kind=reliance --stage=plan --statement=\"used the plan's file list\"", "goobers telemetry claim --kind=blame --stage=implement --evidence=seq:42 --confidence=0.6 --statement=\"tests failed on its change\""),
+		subcommand("telemetry claims", "claims", apicontract.ActionReadOnlyNavigation, runTelemetryClaims).
+			withHelp("print the Backprop claims earlier stages of this run recorded", telemetryClaimsHelp).
+			withExamples("goobers telemetry claims"),
+		subcommand("telemetry shadow", "shadow", apicontract.ActionReadOnlyNavigation, runTelemetryShadow).
+			withHelp("compare Backprop shadow-mode findings with actual run outcomes", telemetryShadowHelp).
+			withExamples("goobers telemetry shadow", "goobers telemetry shadow --json --gaggle=goobers"),
 		subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 			withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 			withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
@@ -152,7 +161,7 @@ func telemetryCLICommand() cliCommand {
 			withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
 	).
 		withSynopsis(synopsisByID["telemetry"]).
-		withHelp("configure, test, query, export, mark fixes, label runs, prune, or compact telemetry", telemetryHelp).
+		withHelp("configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry", telemetryHelp).
 		withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123", "goobers telemetry prune --dry-run")
 }
 
@@ -742,6 +751,14 @@ func init() {
 				withHelp("remove a leaked secret from a stored blob (SEC-041)", journalRedactHelp).
 				withExamples("printf %s \"$LEAKED\" | goobers journal redact --run <id> --path inputs/creds.env --reason 'leak'"),
 		).withHelp("the one sanctioned edit to the append-only journal", journalHelp),
+		groupCommand(
+			"pr",
+			runPR,
+			subcommand("pr retry", "retry", apicontract.ActionMaintenance, runPRRetry).
+				withSynopsis(synopsisByID["pr retry"]).
+				withHelp("route an escalated or parked PR to merge-review, remediation, or human hold (audited)", prRetryHelp).
+				withExamples("goobers pr retry --pr 533 --route remediation --reason 'review contract corrected' --dry-run"),
+		).withHelp("operator actions on pull requests", prHelp),
 		stageCommand("backlog-dedupe", apicontract.ActionWorkflowExecution, runBacklogDedupe).
 			withSynopsis(synopsisByID["backlog-dedupe"]).
 			withHelp("surface ranked duplicate candidates for curator judgment (a workflow stage)", backlogDedupeHelp).

@@ -37,9 +37,6 @@ func WalkDefinitionTrees(root string, walk func(string) error) error {
 
 func requireDirectory(path, label string) error {
 	info, err := os.Lstat(filepath.Clean(path))
-	if errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
 	if err != nil {
 		return err
 	}

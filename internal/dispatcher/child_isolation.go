@@ -37,6 +37,9 @@ type childPodAPI interface {
 
 func validateChildRunner(attempt Attempt, runner RunnerSpec) error {
 	if attempt.ChildExecutionDigest == "" {
+		if attempt.WorkflowParent {
+			return ErrChildIsolation
+		}
 		return nil
 	}
 	if !childContractDigest.MatchString(attempt.ChildExecutionDigest) || runner.HostKind != instance.RunnerHostImage || runner.OS != "linux" || attempt.CheckoutCapability != "" || attempt.CLIStage {
@@ -149,7 +152,11 @@ func (d *Dispatcher) createAttemptPod(ctx context.Context, pod *corev1.Pod, atte
 	}
 	pod.UID = created.UID
 	report.ChildPodUID = string(created.UID)
-	return validateChildPod(created, attempt)
+	if err := validateChildPod(created, attempt); err != nil {
+		return err
+	}
+	observeCreatedChild(ctx, ChildPodCustody{Namespace: created.Namespace, Name: created.Name, UID: string(created.UID)})
+	return nil
 }
 
 func observeChildWriters(attempt Attempt, pod *corev1.Pod, report *Report) error {
@@ -258,14 +265,16 @@ type childTokenMinter interface {
 }
 
 func (d *Dispatcher) mintAttemptToken(attempt *Attempt) error {
+	if attempt.WorkflowParent && !childContractDigest.MatchString(attempt.ChildExecutionDigest) {
+		return ErrChildIsolation
+	}
 	var token string
 	var err error
 	if attempt.ChildExecutionDigest != "" {
-		minter, ok := d.cfg.TokenMinter.(childTokenMinter)
-		if !ok || attempt.PodToken != "" {
+		if attempt.PodToken != "" {
 			return fmt.Errorf("%w: generated custody requires a freshly signed child token", ErrChildIsolation)
 		}
-		token, err = minter.MintChildPod(attempt.RunID, attempt.ChildExecutionDigest, 0)
+		token, err = d.mintIsolatedToken(*attempt)
 		if err == nil && token == "" {
 			return ErrChildIsolation
 		}
@@ -279,4 +288,23 @@ func (d *Dispatcher) mintAttemptToken(attempt *Attempt) error {
 	}
 	attempt.PodToken = token
 	return nil
+}
+
+type parentTokenMinter interface {
+	MintWorkflowParentPod(string, string, time.Duration) (string, error)
+}
+
+func (d *Dispatcher) mintIsolatedToken(attempt Attempt) (string, error) {
+	if attempt.WorkflowParent {
+		minter, ok := d.cfg.TokenMinter.(parentTokenMinter)
+		if !ok {
+			return "", ErrChildIsolation
+		}
+		return minter.MintWorkflowParentPod(attempt.RunID, attempt.ChildExecutionDigest, 0)
+	}
+	minter, ok := d.cfg.TokenMinter.(childTokenMinter)
+	if !ok {
+		return "", ErrChildIsolation
+	}
+	return minter.MintChildPod(attempt.RunID, attempt.ChildExecutionDigest, 0)
 }

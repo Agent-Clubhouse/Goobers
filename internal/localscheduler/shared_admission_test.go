@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -68,14 +69,14 @@ func TestCoordinatedSharedAdmissionAndReleaseWaitForAcknowledgment(t *testing.T)
 		t.Fatal("failed renewal changed previously admitted local deadline")
 	}
 	store.fail = true
-	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "repository/42", key, owner); err == nil {
+	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "repository/42", key, owner, claimrelease.Completed.Reason()); err == nil {
 		t.Fatal("uncertain release reported success")
 	}
 	if entry, found := ledger.LookupScoped(key); !found || entry.SharedOwner != owner {
 		t.Fatal("uncertain release erased reconciliation owner")
 	}
 	store.fail = false
-	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "repository/42", key, owner); err != nil {
+	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "repository/42", key, owner, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if _, found := ledger.LookupScoped(key); found {

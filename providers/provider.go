@@ -167,6 +167,14 @@ type PullRequestStatusPublisher interface {
 	PublishPullRequestStatus(context.Context, PullRequestStatusRequest) (PullRequestStatusResult, error)
 }
 
+// MergeReviewStatusReader reads the merge-review verdict status standing on a
+// commit (MergeReviewStatusContext), nil when none stands (#4199). It lets a
+// publisher skip re-posting an unchanged verdict and withdraw only a verdict
+// that actually stands.
+type MergeReviewStatusReader interface {
+	MergeReviewStatus(ctx context.Context, repo RepositoryRef, ref string) (*CheckDetail, error)
+}
+
 // PendingCheckCanceler cancels provider CI still running for one exact PR head.
 // It is optional because not every forge exposes a safe cancellation surface.
 type PendingCheckCanceler interface {

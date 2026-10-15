@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -134,5 +135,40 @@ func TestChildGenerationRecoveryRefusalDefersOnlyChildAtActualStartup(t *testing
 	}
 	if _, err = resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, nil, nil, nil, nil, nil, release, &wg, nil, []string{dir}); err == nil {
 		t.Fatal("ordinary archive error silently deferred")
+	}
+}
+
+// Startup must not create a second stage while an old physical child may still
+// be writing. The existing queue reconciler owns stop/join and subsequent resume.
+func TestStartupLeavesGeneratedChildResumeWithCustodyQueue(t *testing.T) {
+	f := actualChildLaunchFixture(t)
+	id := publishInterruptedChild(t, f)
+	registry := newDaemonRunnerRegistry()
+	registry.setChildGenerationResolver(f.launcher.resolveGeneration)
+	dir, err := f.launcher.layout.FindRunDir(id.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	releases := 0
+	outcome, err := resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, nil, nil, nil, nil, nil, func(string, string) { releases++ }, &wg, nil, []string{dir})
+	wg.Wait()
+	if err != nil || len(outcome.Resumed) != 0 || len(outcome.Reattached) != 1 || outcome.Reattached[0] != id.RunID || f.executor.calls.Load() != 0 || releases != 0 {
+		t.Fatalf("unsafe child resume: outcome=%+v calls=%d releases=%d error=%v", outcome, f.executor.calls.Load(), releases, err)
+	}
+	after, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("startup changed child journal before physical custody reconciliation")
 	}
 }

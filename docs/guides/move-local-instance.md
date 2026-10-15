@@ -9,6 +9,13 @@ This is a **cold migration**. Never run the source and destination daemons at
 the same time. They would share provider-facing work but have independent local
 claim ledgers, which can duplicate claims and external effects.
 
+This runbook does **not** convert local runs to Temporal histories or merge one
+instance's identity/claim ledger into an existing cloud instance. Reusing
+definitions in a shared cloud deployment is a different operation. The draft
+[apply-time gaggle reference design](../design/apply-time-gaggle-references.md)
+describes that adoption/cutover boundary without requiring teams to delete or
+reauthor their product-owned configuration. Its reference syntax is not shipped.
+
 ## What moves
 
 The instance root contains both durable evidence and rebuildable machine-local

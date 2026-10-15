@@ -730,6 +730,7 @@ export const goWireFixtures = {
         },
         "backprop": {
           "enabled": true,
+          "mode": "active",
           "version": "v1"
         },
         "warnings": [
@@ -818,6 +819,7 @@ export const goWireFixtures = {
     },
     "backprop": {
       "enabled": true,
+      "mode": "active",
       "version": "v1"
     },
     "warnings": [
@@ -971,6 +973,7 @@ export const goWireFixtures = {
           "issue": {
             "number": "673",
             "title": "Improve operator status",
+            "url": "https://example.test/issues/673",
             "labels": [
               "goobers:needs-human"
             ]
@@ -983,7 +986,59 @@ export const goWireFixtures = {
             "leaseStatus": "released",
             "providerMarker": "recorded"
           },
-          "potentialBlockers": []
+          "potentialBlockers": [
+            "review escalate: reviewer requested a human decision"
+          ],
+          "blockers": [
+            {
+              "code": "review_not_passed",
+              "source": "review",
+              "message": "review escalate: reviewer requested a human decision",
+              "observedAt": "2026-07-18T12:36:56Z",
+              "ageMillis": 60000
+            }
+          ],
+          "reliability": {
+            "state": "escalated",
+            "currentStage": "review",
+            "failure": {
+              "classification": "escalation",
+              "evidenceRule": "terminalCause.classification",
+              "code": "review-escalated"
+            },
+            "budgets": [
+              {
+                "kind": "implementation-review",
+                "consumed": 2,
+                "remaining": 1,
+                "evidence": "terminalCause"
+              },
+              {
+                "kind": "ci-poll",
+                "consumed": null,
+                "remaining": null,
+                "evidence": "unknown"
+              }
+            ],
+            "latestVerdict": "escalate",
+            "acceptance": {
+              "state": "complete",
+              "digest": "sha256:acc"
+            },
+            "retained": {
+              "branch": "goobers/implementation/run-122",
+              "branchSha": "abc123",
+              "pullRequest": {
+                "provider": "github",
+                "kind": "pr",
+                "id": "42"
+              },
+              "pullRequestDraft": "draft",
+              "recoveryRunId": "run-122"
+            },
+            "nextAction": "human intervention required",
+            "humanInterventionReason": "reviewer requested a human decision"
+          }
         }
       }
     ],
@@ -1086,6 +1141,7 @@ export const goWireFixtures = {
       "issue": {
         "number": "673",
         "title": "Improve operator status",
+        "url": "https://example.test/issues/673",
         "labels": [
           "goobers:needs-human"
         ]
@@ -1098,7 +1154,59 @@ export const goWireFixtures = {
         "leaseStatus": "released",
         "providerMarker": "recorded"
       },
-      "potentialBlockers": []
+      "potentialBlockers": [
+        "review escalate: reviewer requested a human decision"
+      ],
+      "blockers": [
+        {
+          "code": "review_not_passed",
+          "source": "review",
+          "message": "review escalate: reviewer requested a human decision",
+          "observedAt": "2026-07-18T12:36:56Z",
+          "ageMillis": 60000
+        }
+      ],
+      "reliability": {
+        "state": "escalated",
+        "currentStage": "review",
+        "failure": {
+          "classification": "escalation",
+          "evidenceRule": "terminalCause.classification",
+          "code": "review-escalated"
+        },
+        "budgets": [
+          {
+            "kind": "implementation-review",
+            "consumed": 2,
+            "remaining": 1,
+            "evidence": "terminalCause"
+          },
+          {
+            "kind": "ci-poll",
+            "consumed": null,
+            "remaining": null,
+            "evidence": "unknown"
+          }
+        ],
+        "latestVerdict": "escalate",
+        "acceptance": {
+          "state": "complete",
+          "digest": "sha256:acc"
+        },
+        "retained": {
+          "branch": "goobers/implementation/run-122",
+          "branchSha": "abc123",
+          "pullRequest": {
+            "provider": "github",
+            "kind": "pr",
+            "id": "42"
+          },
+          "pullRequestDraft": "draft",
+          "recoveryRunId": "run-122"
+        },
+        "nextAction": "human intervention required",
+        "humanInterventionReason": "reviewer requested a human decision"
+      }
     },
     "graph": {
       "name": "implementation",
@@ -1174,10 +1282,36 @@ export const goWireFixtures = {
         "runId": "child-run",
         "stageOccurrence": "inspect/branch0/visit1",
         "invocationKey": "inspect",
-        "state": "queued",
+        "state": "failed",
         "acceptedAt": "2026-07-18T12:34:56Z",
         "updatedAt": "2026-07-18T12:34:56Z",
-        "cancellationRequested": true
+        "terminalAt": "2026-07-18T12:34:56Z",
+        "cancellationRequested": true,
+        "publication": {
+          "status": "recorded",
+          "items": [
+            {
+              "action": "branch",
+              "state": "confirmed",
+              "head": "factory/children/child-run",
+              "base": "main",
+              "commit": "abcdef",
+              "pullRequestUrl": "",
+              "pullRequestNumber": 0,
+              "needsHuman": false
+            },
+            {
+              "action": "pr",
+              "state": "effect_pending",
+              "head": "factory/children/child-run",
+              "base": "main",
+              "commit": "abcdef",
+              "pullRequestUrl": "",
+              "pullRequestNumber": 0,
+              "needsHuman": true
+            }
+          ]
+        }
       }
     ],
     "nextCursor": ""

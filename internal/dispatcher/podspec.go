@@ -144,6 +144,27 @@ const (
 	//     local substrate would have said "" too.
 	//   - PRESENT AND SET: the login, applied as providers.WithConfiguredLogin.
 	ProviderBotLoginEnv = "GOOBERS_PROVIDER_BOT_LOGIN"
+	// GaggleBacklogEnv carries the attempt's gaggle backlog settings (the
+	// backlog provider, project, claim-scope labels and doneStates an Azure
+	// DevOps stage applies),
+	// JSON-encoded, resolved DAEMON-SIDE at dispatch from Config.GaggleBacklogs
+	// because a stage pod has no instance config to read them from (#5957).
+	// Without it, a pod's backlog-query addressed the code repository's
+	// project and counted a Resolved predecessor as done against a stricter
+	// configured doneStates: a silent fail-open.
+	//
+	// RUN IDENTITY, like ProviderBotLoginEnv and for the same reasons: a
+	// goobers-CLI stage keeps it, every other stage is stripped of it, a
+	// workflow may not author it, and it is STAMPED FOR EVERY CLI STAGE so a
+	// runner image cannot supply it. Its states:
+	//
+	//   - ABSENT: nobody resolved this (version skew, a hand-built attempt).
+	//   - PRESENT AND EMPTY: the dispatcher has no settings for this gaggle.
+	//   - PRESENT AND SET: the settings, applied in place of the config.
+	//
+	// The CLI refuses the first two when it needs the settings — an Azure
+	// DevOps stage of a named gaggle — rather than defaulting them.
+	GaggleBacklogEnv = "GOOBERS_GAGGLE_BACKLOG"
 	// ExternalTelemetryConnectorEnv carries the ONE connector's non-secret
 	// ConnectorConfig, JSON-encoded, that an inputs.kind=external-telemetry
 	// stage's inputs.connector names — resolved daemon-side at dispatch,
@@ -195,6 +216,9 @@ const (
 	// EnvStageIsCLI marks a stage whose command is the goobers CLI, so the pod
 	// keeps its run context instead of stripping it with the control plane.
 	EnvStageIsCLI = "GOOBERS_STAGE_IS_CLI"
+	// EnvPublicationLeakScreen is a daemon-resolved, explicitly opted-in model
+	// grant delivered after pod start through the credential plane.
+	EnvPublicationLeakScreen = "GOOBERS_PUBLICATION_LEAK_SCREEN"
 
 	// EnvWorkspaceDelta carries the blob digest of the git bundle holding what
 	// earlier stages of this run committed (#3763). Privileged: it names a blob
@@ -339,10 +363,12 @@ const (
 // inherited environment.
 var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivilegedEnv...), DispatcherRunIdentityEnv...), DispatcherPlaneEnv...)
 
-// DispatcherPrivilegedEnv is the half of the control plane that NO stage may
-// ever see, goobers-CLI stage included. EnvPodToken is the reason the whole
-// filter exists: it authorizes surrendering this run's results, so a stage that
-// can read it can author its own outcome. The endpoints are here because a
+// DispatcherPrivilegedEnv is the half of the inherited control plane that NO
+// stage may see, goobers-CLI stage included. A credential-plane response may
+// separately inject EnvPublicationLeakScreen into an eligible CLI child after
+// this strip. EnvPodToken is the reason the whole filter exists: it authorizes
+// surrendering this run's results, so a stage that can read it can author its
+// own outcome. The endpoints are here because a
 // stage holding them plus any token is a step from the same place, and the
 // stage-spec vars because a stage rewriting its own command/capabilities is
 // self-authorization by another name.
@@ -354,6 +380,7 @@ var DispatcherPrivilegedEnv = []string{
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
+	EnvPublicationLeakScreen,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -367,7 +394,7 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvInstanceID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, EnvPodAttempt, ProviderBotLoginEnv,
+	EnvRunID, EnvInstanceID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, EnvPodAttempt, ProviderBotLoginEnv, GaggleBacklogEnv,
 }, runContextEnv...)
 
 // DispatcherPlaneEnv is the THIRD category, and it exists because neither of
@@ -1225,6 +1252,9 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		// supply the name) and why an empty value and an absent one are two
 		// different facts on the far side.
 		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: literalPodEnv(providerBotLogin(cfg, attempt))})
+		// The gaggle's backlog settings, for the same reason and with the
+		// same unconditional stamp (#5957). See GaggleBacklogEnv.
+		env = append(env, corev1.EnvVar{Name: GaggleBacklogEnv, Value: literalPodEnv(cfg.GaggleBacklogs[attempt.Gaggle])})
 		env = append(env, corev1.EnvVar{Name: executorStageTimeoutEnv, Value: attempt.stageTimeout().String()})
 	}
 	if stamp := externalTelemetryConnectorStamp(cfg, attempt); stamp != "" {

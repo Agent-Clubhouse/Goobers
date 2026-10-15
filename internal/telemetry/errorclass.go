@@ -106,6 +106,11 @@ const (
 	// the unknown bucket; internal/runner.NoWorkUnsubstantiatedCode is this
 	// same constant.
 	ErrCodeNoWorkUnsubstantiated = "NO_WORK_UNSUBSTANTIATED"
+	// ErrCodePrematureExhaustionClaim is the harness's rewrite of an agent
+	// that reported its execution window exhausted well before the deadline
+	// the runtime enforced (#5871); internal/harness owns the literal. It is
+	// deliberately NOT the timeout class: no deadline expired.
+	ErrCodePrematureExhaustionClaim = "PREMATURE_EXHAUSTION_CLAIM"
 )
 
 // Substrate codes an agentic stage reports when it never got an agent turn
@@ -137,6 +142,12 @@ const (
 	// done, would reintroduce removed code). A correct refusal is a terminal
 	// deliverable about the item, never a work failure.
 	ErrCodeIssueNotApplicable = "ISSUE_NOT_APPLICABLE"
+	// ErrCodeWorkspaceHeadMoved is a pod's refusal to land a run's workspace
+	// delta on a pull request head that moved under the run (#6019, owned by
+	// internal/runner.WorkspaceHeadMovedErrorCode). The item moved, not the
+	// work failing: it is a judgment about the item's current state, never a
+	// strike against it.
+	ErrCodeWorkspaceHeadMoved = "workspace_head_moved"
 )
 
 var wellKnownErrorCodes = map[string]ErrorClass{
@@ -162,9 +173,14 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeCredentialUnavailable: ErrorClassInfra,
 	ErrCodeRunCanceled:           ErrorClassOperator,
 	ErrCodeIssueNotApplicable:    ErrorClassItemJudgment,
+	ErrCodeWorkspaceHeadMoved:    ErrorClassItemJudgment,
 	// The run's evidence contract, not the work: the claim did not hold up
 	// against what the journal says its upstream produced.
 	ErrCodeNoWorkUnsubstantiated: ErrorClassValidation,
+	// Same family: the agent's claim did not hold up against the deadline
+	// the runtime observed, so it is an evidence-contract failure, not a
+	// timeout (#5871).
+	ErrCodePrematureExhaustionClaim: ErrorClassValidation,
 	// No agent turn happened: the substrate, not the work, failed (#5638).
 	ErrCodeHarnessRequiredMCPUnavailable: ErrorClassInfra,
 	ErrCodeCredentialResolveFailed:       ErrorClassInfra,

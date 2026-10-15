@@ -344,6 +344,8 @@ func backlogHealthTransitions(
 		}, err
 	}
 	if repo.Provider == providers.ProviderADO {
+		// Deliberately no transition walk on ADO (#5960): ready ages come from
+		// System.ChangedDate instead (annotateBacklogReadyTimes).
 		return nil, backlogHealthScan{Mode: backlogHealthScanFull, Reason: backlogHealthScanUnsupported}, nil
 	}
 	itemProvider, ok := provider.(itemLabelTransitionProvider)
@@ -556,6 +558,7 @@ func backlogHealthItemTransitions(
 	label string,
 ) ([]providers.WorkItemLabelTransition, error) {
 	if repo.Provider == providers.ProviderADO {
+		// No per-item updates walk on ADO; see annotateBacklogReadyTimes.
 		return nil, nil
 	}
 	itemProvider, ok := provider.(itemLabelTransitionProvider)
@@ -1057,8 +1060,15 @@ func annotateBacklogReadyTimes(
 		if !items[i].HasLabel(readyLabel) {
 			continue
 		}
-		// Health skips ADO's per-item update walk; ChangedDate is a conservative
-		// timestamp for the current ready cohort, not a provider transition.
+		// Health skips ADO's per-item update walk on purpose (#5960 decision):
+		// ADO has no repository-wide label-event feed, so an exact ready time
+		// costs one paged GET workItems/{id}/updates walk per ready item on
+		// every health cycle, against the shared TSTU budget, for a metric
+		// that only trends. System.ChangedDate is used instead. It is never
+		// earlier than the item's ready-add, so the age is a lower bound:
+		// any later edit to the item (a comment, a tag, a field) restarts
+		// it. Claim-time ready ages (backlog-query) do walk the history and
+		// are exact. docs/guides/ado-limitations.md states this.
 		if items[i].UpdatedAt == nil {
 			return fmt.Errorf("ADO work item %s has %q but no ChangedDate", items[i].ID, readyLabel)
 		}

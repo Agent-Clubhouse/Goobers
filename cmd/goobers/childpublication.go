@@ -113,6 +113,9 @@ func (p *childStagePod) publish(ctx context.Context, env apiv1.InvocationEnvelop
 		receipt, publishErr := publisher.OpenPR(ctx, target, title, body, draft)
 		err = publishErr
 		outputs = map[string]any{"opened": err == nil, "prNumber": receipt.Number, "pull-request-url": receipt.URL}
+		if receipt.Draft != nil {
+			outputs["draft"] = *receipt.Draft
+		}
 	}
 	auditErr := p.recordPublication(ctx, action, request.Attempt.Stage, request.Attempt.Number)
 	if err != nil || auditErr != nil {
@@ -149,7 +152,12 @@ func (p *childStagePod) publicationCredential(ctx context.Context, stage, key st
 	response := resolved.response(request)
 	for _, credential := range response.Credentials {
 		if credential.Capability == key && credential.Value != "" {
-			return credential, response.RepoAuthScheme, nil
+			scheme := response.RepoAuthScheme
+			if credential.Scheme != "" {
+				// The value's own source decides its header (#5957).
+				scheme = credential.Scheme
+			}
+			return credential, scheme, nil
 		}
 	}
 	return httpapi.MintedCredential{}, "", errors.New("child host publication credential unavailable")

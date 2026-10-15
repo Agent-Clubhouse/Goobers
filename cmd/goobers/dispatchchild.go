@@ -49,14 +49,10 @@ func runChildDispatchContext(ctx context.Context, stdout, stderr io.Writer) int 
 		pf(stderr, "dispatch-child: writer custody: %v\n", err)
 		return 1
 	}
-	output := childpod.Output{Version: 1, ContractDigest: digest}
-	if contract.Workspace != nil {
-		carrier, _, captureErr := childpod.CaptureCarrier(custody, ".", contract.Workspace.Snapshot.Record.RepositoryKey, contract.Identity.RunID, contract.StartedAt, contract.Workspace.Snapshot.Policy)
-		if captureErr != nil {
-			pf(stderr, "dispatch-child: capture: %v\n", captureErr)
-			return 1
-		}
-		output.Workspace = &carrier
+	output, err := childpod.CaptureOutput(custody, ".", contract, digest)
+	if err != nil {
+		pf(stderr, "dispatch-child: capture: %v\n", err)
+		return 1
 	}
 	data, err := json.Marshal(output)
 	if err != nil || len(data) > childpod.MaxContractBytes {
@@ -125,9 +121,7 @@ func prepareChildPod(ctx context.Context) (childpod.Contract, string, error) {
 	if err = cleanChildPodEnvironment(); err != nil {
 		return c, digest, err
 	}
-	if c.Workspace != nil {
-		err = childpod.Materialize(ctx, ".", *c.Workspace)
-	}
+	err = childpod.MaterializeContract(ctx, ".", c)
 	return c, digest, err
 }
 

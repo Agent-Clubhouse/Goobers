@@ -12,15 +12,15 @@ func (r *Runner) createChildReadOnlyStage(ctx context.Context, in StartInput, st
 		return nil, fmt.Errorf("child read-only stage cannot change its admitted source")
 	}
 	state := in.childWorkspace
-	state.stage.Lock()
+	state.stage.RLock()
 	view, err := r.prepareChildReadOnlyView(ctx, in, stage, branch)
 	if err != nil {
-		state.stage.Unlock()
+		state.stage.RUnlock()
 		return nil, err
 	}
 	opts, err := r.childWorkspaceOptions(in)
 	if err != nil {
-		state.stage.Unlock()
+		state.stage.RUnlock()
 		return nil, err
 	}
 	validate := func(ctx context.Context) error {
@@ -34,7 +34,7 @@ func (r *Runner) createChildReadOnlyStage(ctx context.Context, in StartInput, st
 		}
 		return verified.Remove(ctx, worktree.RemoveOptions{})
 	}
-	return &stageWorkspace{path: view.Path, worktree: view, retainedChild: cleanup, validateReadOnly: validate, release: state.stage.Unlock}, nil
+	return &stageWorkspace{path: view.Path, worktree: view, retainedChild: cleanup, validateReadOnly: validate, release: state.stage.RUnlock}, nil
 }
 
 func (r *Runner) prepareChildReadOnlyView(ctx context.Context, in StartInput, stage, branch string) (*worktree.Worktree, error) {

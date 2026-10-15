@@ -34,13 +34,22 @@ func childReadOnlyOptions(child ChildOptions, stage string) (CreateOptions, erro
 	if err != nil {
 		return opts, err
 	}
-	if stage == "" || len(stage) > 256 || strings.ContainsAny(stage, "\x00\r\n") {
-		return CreateOptions{}, fmt.Errorf("child read-only view requires a bounded stage")
+	opts.RunID, err = ChildReadOnlyViewID(child.Gaggle, child.RunID, stage)
+	if err != nil {
+		return CreateOptions{}, err
 	}
-	id := sha256.Sum256(fmt.Appendf(nil, "%q:%q:%q", child.Gaggle, child.RunID, stage))
-	opts.RunID = fmt.Sprintf("child-view-%x", id[:16])
 	opts.Branch, opts.RetainOnCleanup = "", false
 	return opts, nil
+}
+
+// ChildReadOnlyViewID binds cleanup to the same immutable stage identity used
+// to create its detached view, without provisioning or reading credentials.
+func ChildReadOnlyViewID(gaggle, workspaceID, stage string) (string, error) {
+	if !validRunID(workspaceID) || stage == "" || len(stage) > 256 || strings.ContainsAny(stage, "\x00\r\n") {
+		return "", fmt.Errorf("child read-only view requires valid ownership and a bounded stage")
+	}
+	id := sha256.Sum256(fmt.Appendf(nil, "%q:%q:%q", gaggle, workspaceID, stage))
+	return fmt.Sprintf("child-view-%x", id[:16]), nil
 }
 
 func verifyChildDetachedView(ctx context.Context, path, snapshot string) error {

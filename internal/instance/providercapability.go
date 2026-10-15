@@ -26,9 +26,12 @@ var stageProviderCapabilities = map[string][]providers.Capability{
 		providers.CapPRLandingEnqueue,
 		providers.CapBranchDelete,
 	},
-	"merge-queue-poll":      {providers.CapPRLandingPoll},
-	"update-behind-pr":      {providers.CapPRUpdateBranch, providers.CapPRCompare},
-	"apply-verdict":         {providers.CapPRReviewSubmit},
+	"merge-queue-poll": {providers.CapPRLandingPoll},
+	"update-behind-pr": {providers.CapPRUpdateBranch, providers.CapPRCompare},
+	// apply-verdict submits the native review and publishes the
+	// goobers/merge-review verdict status the repository's required check
+	// enforces (#4199).
+	"apply-verdict":         {providers.CapPRReviewSubmit, providers.CapPRStatusPublish},
 	"gather-review-threads": {providers.CapPRReviewThreads},
 	// backlog-query deliberately does NOT list CapBacklogBlockers here. Its
 	// HasOpenWorkItemBlocker call (cmd/goobers/backlogquery.go,

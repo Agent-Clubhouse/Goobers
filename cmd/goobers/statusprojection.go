@@ -90,6 +90,7 @@ type statusRunLoader struct {
 	changed    map[string]struct{}
 	cursor     statusProjectedCursor
 	collection *statusCollection
+	routing    *statusEngineRouting
 
 	// afterProjectedQueries is a deterministic race seam for frame-fence tests.
 	afterProjectedQueries func()

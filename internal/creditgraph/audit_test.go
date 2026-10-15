@@ -60,18 +60,31 @@ func TestAuditFaultDomainsPreservesSparseMixedAndMissingEvidence(t *testing.T) {
 	}
 }
 
-func TestAuditFaultDomainsAggregatesConflictingClassesByStableSignature(t *testing.T) {
-	workflow := auditObservation("workflow", "implementation", "v1", "implement", "operation failed", ClassWeakInstructions, 0.9, "stage")
+func TestAuditFaultDomainsAggregatesConflictingComponentEvidenceByStableSignature(t *testing.T) {
 	external := auditObservation("external", "review", "v2", "review", "operation failed", ClassEnvironment, 0.9, "stage")
+	external.Attribution.Causes[0].Evidence = []string{"provider operation failed"}
 	product := auditObservation("product", "release", "v3", "release", "operation failed", ClassEnvironment, 0.9, "stage")
 	product.Attribution.Causes[0].Evidence = []string{"scheduler operation failed"}
+	coded := auditObservation("coded", "triage", "v4", "triage", "operation failed", ClassUnknown, 0.9, "stage")
+	coded.Attribution.Causes[0].ErrorCode = "provider_error"
+	// A workflow-owned class with the same text is a different failure: it is
+	// scoped to its own workflow and stage instead of joining the shared
+	// component group.
+	workflow := auditObservation("workflow", "implementation", "v1", "implement", "operation failed", ClassWeakInstructions, 0.9, "stage")
 
-	report := AuditFaultDomains([]AttributionObservation{workflow, external, product}, FaultAuditConfig{SampleFloor: 3})
-	if len(report.UnknownFindings) != 1 {
-		t.Fatalf("report = %+v, want one mixed finding for the stable signature", report)
+	report := AuditFaultDomains([]AttributionObservation{workflow, external, product, coded}, FaultAuditConfig{SampleFloor: 3})
+	if len(report.UnknownFindings) != 2 || len(report.ProductFindings)+len(report.ExternalFindings)+len(report.WorkflowFindings) != 0 {
+		t.Fatalf("report = %+v, want a mixed shared-component finding and a sparse workflow finding", report)
 	}
-	if finding := report.UnknownFindings[0]; finding.Signature != "operation failed" || finding.Confidence > 0.45 {
-		t.Fatalf("finding = %+v, want class-independent signature with reduced confidence", finding)
+	shared, scoped := report.UnknownFindings[0], report.UnknownFindings[1]
+	if shared.Signature != "operation failed" {
+		shared, scoped = scoped, shared
+	}
+	if shared.Signature != "operation failed" || len(shared.RunIDs) != 3 || shared.Confidence > 0.45 {
+		t.Fatalf("shared finding = %+v, want one class-independent signature over the three component causes", shared)
+	}
+	if scoped.Signature != "workflow:implementation stage:implement operation failed" || len(scoped.RunIDs) != 1 {
+		t.Fatalf("scoped finding = %+v, want the workflow-owned cause kept apart", scoped)
 	}
 }
 

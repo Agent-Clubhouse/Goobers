@@ -21,6 +21,20 @@ changes into independently verifiable delivery slices. Keep a permanent referenc
 to source commit `fa34a754148ea3076bfd04fe4976a5a461b063f2` for #6807 and
 `fdda5e21426264e7f423ef2a4cedb01cbfdf1eee` for the Fleet design correction.
 
+## Current execution checkpoint (2026-10-10)
+
+Child workflow delivery has progressed through contained parent/child execution,
+workspace disposition, cancellation and crash recovery, parallel composition, and
+Portal lineage/publication visibility. The [child delivery ledger](design/agent-authored-child-workflows.md#current-delivery-status-2026-10-10)
+links landed slices and records the remaining qualification work. Historical
+remaining-boundary columns describe the state when each earlier slice landed.
+
+The four-workstream program is still incomplete. The HITL design review remains
+open; its Fleet extension requires separate acceptance and production Agent v2
+compatibility fixtures. Continue the child qualification slices before human
+operations, then broader events/queues and backlog browsing. The reference PR
+is still an extraction source, not a merge candidate.
+
 ## 2. Inventory and integration risk
 
 Compared with original base `04198152b63d228a9714ae2f92a7dca079ba5213`, the

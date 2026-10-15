@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -396,6 +397,15 @@ func issueCloseOutIdempotencyKey(runID, itemID string, status providers.WorkItem
 	return "issue-close-out/" + runID + "/" + itemID + "/" + string(status)
 }
 
+// issueCloseOutReleaseReason: a park is an escalation, any other close-out
+// status is the run's completed work. The status is the stable code.
+func issueCloseOutReleaseReason(status providers.WorkItemStatus) claimrelease.Reason {
+	if status == issueCloseOutNeedsHuman || status == issueCloseOutNeedsRemediation {
+		return claimrelease.Escalated.Because(string(status), "item parked for attention")
+	}
+	return claimrelease.Completed.Because(string(status), "")
+}
+
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	env, ok, exitCode := parseProviderStageCommand(args, "issue-close-out", stderr)
 	if !ok {
@@ -632,10 +642,8 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// reconciles the label from remote ownership after its CAS transition.
 	if claim.SharedDeadline.IsZero() {
 		if _, err := provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-			Repository:       backlogRepo,
-			ID:               claim.ItemID,
-			RunID:            runID,
-			LedgerAuthorized: true,
+			Repository: backlogRepo, ID: claim.ItemID, RunID: runID,
+			LedgerAuthorized: true, Reason: issueCloseOutReleaseReason(status),
 		}); err != nil {
 			pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
 		}
@@ -645,7 +653,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// is finished with this item, and RecoverExpired's periodic sweep
 	// (goobers up, #131) should not have to reclaim it later.
 	err = ledger.Locked(claimContext(), claimLockOperationCloseOutRelease, func(tx claimsclient.Ledger) error {
-		return tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(claim), runID)
+		return tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(claim), runID, issueCloseOutReleaseReason(status))
 	})
 	if err != nil {
 		pf(stderr, "warning: release claim %s: %v\n", claim.ItemID, err)

@@ -192,3 +192,10 @@ func TestGrepInputUnknownInput(t *testing.T) {
 		t.Fatal("expected an error for an unknown input name")
 	}
 }
+
+func TestReadInputInvertedRangeIsAnError(t *testing.T) {
+	tool, _ := newTestToolset(t, map[string]string{"f": "1\n2\n3\n4\n5\n"})
+	if _, err := tool.ReadInput("f", 4, 2); err == nil {
+		t.Fatal("expected an error for an inverted range")
+	}
+}

@@ -50,60 +50,35 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 			return nil, fmt.Errorf("--ci-command must be a non-empty JSON argv array")
 		}
 	}
-	provider := strings.ToLower(strings.TrimSpace(input.Provider))
-	if provider != "" && provider != "github" && provider != "ado" {
-		return nil, fmt.Errorf("--provider must be github or ado")
+	provider, repo, err := standardInitRepository(input)
+	if err != nil {
+		return nil, err
 	}
-	identity := guidedRepositoryIdentity{provider: provider, owner: "your-org", name: "your-repo"}
-	gaggleName := "example"
+	repoAuthKind := input.RepoAuthKind
 	if provider == "ado" {
-		identity.project = "your-project"
-	}
-	if strings.TrimSpace(input.Repo) != "" {
-		parsed, err := parseGuidedRepositoryIdentity(input.Repo)
-		if err != nil {
-			return nil, standardRepoParseError(provider, err)
-		}
-		if provider != "" && provider != parsed.provider {
-			return nil, fmt.Errorf("--provider=%s conflicts with --repo provider %s", provider, parsed.provider)
-		}
-		identity = parsed
-		provider = parsed.provider
-		gaggleName = guidedGaggleName(parsed.name)
-	}
-	if provider == "" {
-		provider = "github"
-		identity.provider = provider
-	}
-	workflows := splitLabelList(input.Workflows)
-	if !input.WorkflowsSet {
-		workflows = standardDefaultWorkflows(provider)
-	}
-	opts := &instance.GuidedOptions{
-		GaggleName:   gaggleName,
-		DisplayName:  guidedRepositoryDisplayName(provider, identity.owner, identity.project, identity.name),
-		RepoProvider: provider, RepoOwner: identity.owner, RepoProject: identity.project, RepoName: identity.name,
-		RepoBranch: input.Branch, GitHubCLIUser: input.GitHubCLIUser, RepoAuthKind: input.RepoAuthKind,
-		Harness: input.Harness, RepoTokenEnv: "GOOBERS_GITHUB_TOKEN",
-		WorkTrackingTokenEnv: "GOOBERS_GITHUB_ISSUES_TOKEN",
-		PullRequestTokenEnv:  "GOOBERS_GITHUB_PR_TOKEN", RepoPushTokenEnv: "GOOBERS_GITHUB_PUSH_TOKEN",
-		Workflows: workflows, IssueScope: input.IssueScope, AssignedTo: input.AssignedTo,
-		PullRequestCI: input.PullRequestCI, CICommand: argv, RequiredCapabilities: splitLabelList(input.Capabilities),
-	}
-	if provider == "ado" {
-		kind, err := standardADORepoAuthKind(input)
-		if err != nil {
-			return nil, err
-		}
 		// An unset or empty kind defaults to azure-cli (normalizeGuidedOptions);
 		// only PAT auth names a token variable.
-		opts.RepoAuthKind = kind
-		opts.RepoTokenEnv = ""
-		if strings.TrimSpace(opts.RepoAuthKind) == instance.ADOAuthPAT {
-			opts.RepoTokenEnv = "GOOBERS_ADO_TOKEN"
+		if repoAuthKind, err = standardADORepoAuthKind(input); err != nil {
+			return nil, err
 		}
-		opts.WorkTrackingTokenEnv, opts.PullRequestTokenEnv, opts.RepoPushTokenEnv = "", "", ""
 	}
+	// The placeholder identity and the provider's credential defaults are
+	// shared with the provider compile-matrix gate (test/providermatrix), so
+	// the scaffold it validates is the one this command writes.
+	defaults := instance.StandardInitDefaults(provider, repoAuthKind)
+	opts := &defaults
+	if repo != nil {
+		opts.GaggleName = guidedGaggleName(repo.name)
+		opts.RepoOwner, opts.RepoProject, opts.RepoName = repo.owner, repo.project, repo.name
+	}
+	opts.DisplayName = guidedRepositoryDisplayName(provider, opts.RepoOwner, opts.RepoProject, opts.RepoName)
+	opts.RepoBranch, opts.GitHubCLIUser, opts.Harness = input.Branch, input.GitHubCLIUser, input.Harness
+	opts.Workflows = splitLabelList(input.Workflows)
+	if !input.WorkflowsSet {
+		opts.Workflows = standardDefaultWorkflows(provider)
+	}
+	opts.IssueScope, opts.AssignedTo = input.IssueScope, input.AssignedTo
+	opts.PullRequestCI, opts.CICommand, opts.RequiredCapabilities = input.PullRequestCI, argv, splitLabelList(input.Capabilities)
 	if input.RepoTokenEnvSet {
 		opts.RepoTokenEnv = input.RepoTokenEnv
 	}
@@ -122,6 +97,31 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		opts.CopilotTokenEnv = input.ModelTokenEnv
 	}
 	return opts, nil
+}
+
+// standardInitRepository resolves the provider `init --template=standard`
+// scaffolds for and, when --repo names one, the repository identity. With no
+// --repo the identity is nil (the caller keeps the placeholder) and the
+// provider is --provider, defaulting to github.
+func standardInitRepository(input standardInitInput) (string, *guidedRepositoryIdentity, error) {
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	if provider != "" && provider != "github" && provider != "ado" {
+		return "", nil, fmt.Errorf("--provider must be github or ado")
+	}
+	if strings.TrimSpace(input.Repo) == "" {
+		if provider == "" {
+			provider = "github"
+		}
+		return provider, nil, nil
+	}
+	parsed, err := parseGuidedRepositoryIdentity(input.Repo)
+	if err != nil {
+		return "", nil, standardRepoParseError(provider, err)
+	}
+	if provider != "" && provider != parsed.provider {
+		return "", nil, fmt.Errorf("--provider=%s conflicts with --repo provider %s", provider, parsed.provider)
+	}
+	return parsed.provider, &parsed, nil
 }
 
 // standardRepoParseError words a --repo parse failure. An explicit

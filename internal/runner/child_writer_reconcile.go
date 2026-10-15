@@ -24,7 +24,7 @@ func ReconcileChildWorkspaceWriter(reader *journal.Reader, writer *journal.Run, 
 	if err := verifyChildWriterPolicy(reader, id); err != nil {
 		return err
 	}
-	if writer == nil || writer.Dir() != reader.Dir() || stageStart.Seq == 0 || podStart.Seq <= stageStart.Seq || stageStart.Branch != 0 || podStart.Branch != 0 || stageStart.Stage != podStart.Stage || stageStart.Attempt != podStart.Attempt {
+	if writer == nil || writer.Dir() != reader.Dir() || stageStart.Seq == 0 || podStart.Seq <= stageStart.Seq || stageStart.Branch < 0 || stageStart.Branch != podStart.Branch || stageStart.Stage != podStart.Stage || stageStart.Attempt != podStart.Attempt {
 		return invoke.ErrWorkspaceNotQuiescent
 	}
 	events, err := reader.Events()
@@ -44,7 +44,7 @@ func ReconcileChildWorkspaceWriter(reader *journal.Reader, writer *journal.Run, 
 		if event.Seq <= candidate.Seq || event.Stage != candidate.Stage || event.Attempt != candidate.Attempt || event.Branch != candidate.Branch {
 			return invoke.ErrWorkspaceNotQuiescent
 		}
-		return VerifyChildWorkspaceQuiescence(reader, id, events)
+		return verifyChildWorkspaceQuiescence(reader, id, events, &stageStart.Branch)
 	}
 	return writer.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: candidate.Stage, Attempt: candidate.Attempt, Branch: candidate.Branch, Runner: map[string]any{"kind": childWriterJoined, "writerScope": scope}})
 }
@@ -69,7 +69,12 @@ func childRepositoryWriterScope(events []journal.Event, id journal.RunIdentity, 
 		if event.Seq <= stageStart.Seq || event.Seq >= podStart.Seq {
 			continue
 		}
-		if event.Stage != id.RunID+":"+stageStart.Stage || event.Attempt != stageStart.Attempt || event.Branch != 0 || candidate != nil {
+		// A sibling can publish its scope between this stage's origin and pod
+		// marker. Its writer remains owned by that sibling's exact recovery.
+		if event.Branch != stageStart.Branch {
+			continue
+		}
+		if event.Stage != id.RunID+":"+stageStart.Stage || event.Attempt != stageStart.Attempt || candidate != nil {
 			return nil, nil, invoke.ErrWorkspaceNotQuiescent
 		}
 		candidate = &event

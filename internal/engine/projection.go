@@ -362,12 +362,7 @@ func projectedJournalComplete(dir string) (bool, error) {
 	if last.Type != journal.EventRunFinished {
 		return false, nil
 	}
-	switch journal.RunPhase(last.Status) {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true, nil
-	default:
-		return false, nil
-	}
+	return journal.RunPhase(last.Status).IsTerminal(), nil
 }
 
 // validateProjection is the fail-closed gate: every op must be a shape the
@@ -417,9 +412,7 @@ func validateOp(op JournalOp, i, total int) error {
 			return fmt.Errorf("%w: op %d has unknown attempt class %q", ErrUnprojectable, i, ev.AttemptClass)
 		}
 		if ev.Type == journal.EventRunFinished {
-			switch journal.RunPhase(ev.Status) {
-			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			default:
+			if !journal.RunPhase(ev.Status).IsTerminal() {
 				return fmt.Errorf("%w: op %d run.finished has unknown terminal status %q", ErrUnprojectable, i, ev.Status)
 			}
 			if i != total-1 {

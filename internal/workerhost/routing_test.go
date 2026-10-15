@@ -11,6 +11,8 @@ import (
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
+
+	"github.com/goobers/goobers/internal/workerrouting"
 )
 
 // #5950: versioning is opt-in. A worker with a build version but no opt-in
@@ -69,15 +71,15 @@ func TestRoutingProblem(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := routingProblem(tc.versioned, "v2", tc.routing, tc.err)
+			got := workerrouting.Check(tc.versioned, "v2", workerrouting.Routing{WorkerDeploymentRoutingConfig: tc.routing}, tc.err).Problem
 			if tc.want == "" {
 				if got != "" {
-					t.Fatalf("routingProblem = %q, want healthy", got)
+					t.Fatalf("Check problem = %q, want healthy", got)
 				}
 				return
 			}
 			if !strings.Contains(got, tc.want) {
-				t.Fatalf("routingProblem = %q, want it to contain %q", got, tc.want)
+				t.Fatalf("Check problem = %q, want it to contain %q", got, tc.want)
 			}
 		})
 	}
@@ -115,14 +117,14 @@ func TestRunReportsRoutingMismatchWithoutFailing(t *testing.T) {
 	h.routingInterval = time.Millisecond
 	var mu sync.Mutex
 	calls := 0
-	h.describeRouting = func(context.Context, client.Client) (client.WorkerDeploymentRoutingConfig, error) {
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
 		if calls <= 2 {
-			return client.WorkerDeploymentRoutingConfig{CurrentVersion: deploymentVersion("v1")}, nil
+			return workerrouting.Routing{WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{CurrentVersion: deploymentVersion("v1")}}, nil
 		}
-		return client.WorkerDeploymentRoutingConfig{CurrentVersion: deploymentVersion("v2")}, nil
+		return workerrouting.Routing{WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{CurrentVersion: deploymentVersion("v2")}}, nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,5 +152,28 @@ func TestRunReportsRoutingMismatchWithoutFailing(t *testing.T) {
 	}
 	if mismatches != 2 || resolved != 1 {
 		t.Fatalf("logged %d mismatch and %d resolution line(s), want 2 and 1: %q", mismatches, resolved, lines)
+	}
+}
+
+// A worker whose version was replaced keeps polling while its pinned
+// workflows drain (#7427 review): that is expected, so it logs no error and
+// no command that would revert the rollout.
+func TestRoutingCheckQuietWhileDraining(t *testing.T) {
+	sink := &logSink{}
+	h := newTestHost(t, Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "v1", Versioning: true, Logf: sink.logf}, &fakeFleet{})
+	draining := workerrouting.Routing{
+		WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{CurrentVersion: deploymentVersion("v2")},
+		Draining:                      map[string]bool{"v1": true},
+	}
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) { return draining, nil }
+	if reported := h.checkRoutingOnce(context.Background(), nil, ""); reported != "" {
+		t.Fatalf("draining worker reported %q", reported)
+	}
+	if reported := h.checkRoutingOnce(context.Background(), nil, "earlier mismatch"); reported != "" {
+		t.Fatalf("draining worker reported %q", reported)
+	}
+	lines := sink.snapshot()
+	if len(lines) != 1 || !strings.Contains(lines[0], "it is draining") || strings.Contains(lines[0], "error") {
+		t.Fatalf("logged %q, want one draining note after the earlier mismatch", lines)
 	}
 }

@@ -55,7 +55,7 @@ func TestPinnedHandoffLossIsDistinguishableFromAnIdleCycle(t *testing.T) {
 }
 
 // TestSelectCandidateReportsTheLostHandoff drives the real decision rather
-// than the message helper: gatherPRContextSelectCandidate must reach the new
+// than the message helper: gatherPRContextRankCandidates must reach the new
 // branch when this run arrived with a pinned candidate that did not survive
 // eligibility. Without this, the helper could be correct and unreachable.
 //
@@ -68,7 +68,7 @@ func TestSelectCandidateReportsTheLostHandoff(t *testing.T) {
 	pinnedPR := providers.PullRequestSummary{Number: 567, Head: "goobers/implementation/e453c429"}
 
 	var stdout, stderr strings.Builder
-	_, done, code := gatherPRContextSelectCandidate(gatherPRContextCandidateSelection{
+	_, done, code := gatherPRContextRankCandidates(gatherPRContextCandidateSelection{
 		root: t.TempDir(), hasPinnedCandidate: true,
 		eligibleInput: []providers.PullRequestSummary{pinnedPR},
 		heldBranches:  map[string]bool{pinnedPR.Head: true},

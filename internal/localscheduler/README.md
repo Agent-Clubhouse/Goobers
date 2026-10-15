@@ -45,13 +45,16 @@ too, since `Schedule.Next(time.Time) time.Time` gives no visibility into
 which cron fields were fixed values versus wildcards/ranges — accepted for
 V0 since every real schedule here is a daily-or-longer workflow trigger.
 
-**Missed-tick policy**: `Tick(TriggerState, now)` collapses any number of
-fires that fell inside `[LastEval, now)` into exactly one catch-up — `LastEval`
-advances to `now`, never to the next unfired tick, so no backlog of stale fires
-replays on the following tick. `ReconstructLastEval` derives each workflow's
-`LastEval` baseline after a restart from the instance journal's
-`trigger.fired` history (or daemon-start time for a trigger never observed —
-no epoch backfill).
+**Missed-tick policy**: queued schedules coalesce newly discovered occurrences
+in the preceding hour into one start, recording the eligible window and count.
+Expired discoveries advance the cursor without work; accepted receipts and
+partially transferred demand retain custody. Interval schedules that are not yet
+due keep their cursor, avoiding postponement on every scheduler tick. See
+[durable scheduled starts](../../docs/reference/queued-scheduled-starts.md).
+
+The legacy `Tick(TriggerState, now)` path still coalesces all elapsed occurrences.
+Initial adoption seeds the durable cursor from existing evaluation history;
+a previously accepted legacy pending fire transfers once, regardless of age.
 
 ## Run conditions
 

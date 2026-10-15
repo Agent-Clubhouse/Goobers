@@ -99,7 +99,10 @@ func ChildDispatchOne(ctx workflow.Context, in ChildDispatchInput) (ChildDispatc
 	selector.Select(owned)
 	var result ChildDispatchResult
 	err := future.Get(owned, &result)
-	return result, err
+	if err != nil {
+		return recoverChildDispatch(owned, in, err)
+	}
+	return result, nil
 }
 
 // DispatchChildPod is registered with the existing worker Activities receiver.
@@ -117,9 +120,13 @@ func (a *Activities) DispatchChildPod(ctx context.Context, in ChildDispatchInput
 			return ChildDispatchResult{}, errors.New("isolated child dispatch contains registered secret material")
 		}
 	}
-	stop := heartbeatDispatch(ctx)
+	ctx, stop := heartbeatChildDispatch(ctx, in)
 	defer stop()
 	report, err := a.Dispatcher.Dispatch(ctx, in.Attempt, in.Eligible)
+	return a.finishChildDispatch(ctx, in, report, err)
+}
+
+func (a *Activities) finishChildDispatch(ctx context.Context, in ChildDispatchInput, report dispatcher.Report, err error) (ChildDispatchResult, error) {
 	a.logDispatchCleanup(ctx, in.Attempt, report)
 	out := ChildDispatchResult{BindingDigest: in.BindingDigest(), Report: report, DisposalFailed: report.DisposeErr != nil}
 	out.Report.DisposeErr = nil

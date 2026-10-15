@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -678,7 +679,7 @@ func applyBacklogMetadataCorrection(
 			return err
 		}
 		if claimed {
-			comment = backlogClaimReleaseBreadcrumb(correction.claimEpochRunID) + "\n\n" + comment
+			comment = claimrelease.Comment(correction.claimEpochRunID, claimrelease.Reconciled.Because(providers.OrphanedClaimReleaseCode, "")) + "\n\n" + comment
 		}
 		req := providers.UpdateWorkItemRequest{
 			Repository:       repo,
@@ -740,10 +741,6 @@ func updateWorkItemRequestCost(req providers.UpdateWorkItemRequest) int {
 	}
 	cost += len(uniqueSortedLabels(req.RemoveLabels))
 	return cost
-}
-
-func backlogClaimReleaseBreadcrumb(runID string) string {
-	return fmt.Sprintf("goobers-claim-release: run=%s\n\nReleased by Goobers run `%s`; a later run may claim this item.", runID, runID)
 }
 
 func backlogReconcileMetadataBudget(total int) int {
@@ -1116,7 +1113,7 @@ func releaseBacklogClaimReconciliation(l instance.Layout, reservation backlogRec
 		return fmt.Errorf("open claim ledger: %w", err)
 	}
 	return ledger.Locked(claimContext(), claimLockOperationBacklogReconcile, func(tx claimsclient.Ledger) error {
-		return tx.ReleaseScoped(claimContext(), reservation.key(), reservation.runID)
+		return tx.ReleaseScoped(claimContext(), reservation.key(), reservation.runID, claimrelease.Reconciled.Because("reconcile_reservation", ""))
 	})
 }
 

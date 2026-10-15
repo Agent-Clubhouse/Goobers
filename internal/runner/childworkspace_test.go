@@ -63,10 +63,6 @@ func TestChildWorkspaceRequiresExplicitManagedAdmission(t *testing.T) {
 		t.Fatal("ordinary run accepted child workspace")
 	}
 	in.Child = childWorkspaceStart(in.Machine).Child
-	in.Machine.Def.Spec.Parallels = []apiv1.Parallel{{Name: "fan"}}
-	if err := runner.validateChildWorkspacePlan(in); err == nil || !strings.Contains(err.Error(), "fan-in") {
-		t.Fatalf("parallel isolation gap was not refused: %v", err)
-	}
 }
 
 func TestChildWorkspaceResultCannotChangeCustody(t *testing.T) {

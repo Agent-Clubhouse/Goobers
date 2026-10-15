@@ -75,6 +75,7 @@ func assertLiveStdinRepair(t *testing.T, runner *recordingProcessRunner, payload
 func TestIntegrationClaudeStdinPromptAndResumedRepair(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CLAUDE_LIVE_SMOKE")
 	testdep.Require(t, "claude")
+	optInOperatorClaudeLogin(t)
 
 	workspace := t.TempDir()
 	nonce := fmt.Sprintf("nonce-%d", time.Now().UnixNano())

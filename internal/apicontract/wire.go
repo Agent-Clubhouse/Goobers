@@ -362,7 +362,7 @@ func newWireFixtures() wireFixtures {
 			Version: 7,
 			Digest:  "sha256:workflow",
 		},
-		Backprop: readservice.WorkflowBackprop{Enabled: true, Version: "v1"},
+		Backprop: readservice.WorkflowBackprop{Enabled: true, Mode: "active", Version: "v1"},
 		Warnings: []validate.CodedWarning{warning},
 	}
 	runSummary := readservice.RunSummary{
@@ -400,16 +400,7 @@ func newWireFixtures() wireFixtures {
 			WorkspaceBranchSHA:    "abc123",
 			HistoricalRepassCount: 2,
 		},
-		Operator: readservice.OperatorRunSummary{
-			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
-			DisplayTitle:      "Implement #673: Improve operator status",
-			CurrentStage:      "review",
-			Liveness:          "terminal",
-			Trajectory:        "terminal",
-			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
-			NextTransition:    "",
-			PotentialBlockers: []string{},
-		},
+		Operator: wireOperatorRunSummary(finishedAt),
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -589,7 +580,7 @@ func newWireFixtures() wireFixtures {
 			NextCursor: "next-run",
 		},
 		RunDetail:   wireRunDetail(runSummary, graph, timestamp),
-		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "queued", AcceptedAt: timestamp, UpdatedAt: timestamp, CancellationRequested: true}}},
+		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}}},
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
 			Events: []readservice.RunEvent{{
@@ -1040,6 +1031,45 @@ func int64Pointer(value int64) *int64 {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+// wireOperatorRunSummary is the run-summary fixture's operator projection,
+// including the #5313 reliability projection.
+func wireOperatorRunSummary(reviewedAt time.Time) readservice.OperatorRunSummary {
+	reviewAge := int64(60000)
+	return readservice.OperatorRunSummary{
+		Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", URL: "https://example.test/issues/673", Labels: []string{providers.LabelNeedsHuman}},
+		DisplayTitle:      "Implement #673: Improve operator status",
+		CurrentStage:      "review",
+		Liveness:          "terminal",
+		Trajectory:        "terminal",
+		Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+		NextTransition:    "",
+		PotentialBlockers: []string{"review escalate: reviewer requested a human decision"},
+		Blockers: []readservice.OperatorBlocker{{
+			Code: readservice.BlockerCodeReviewNotPassed, Source: readservice.BlockerSourceReview,
+			Message:    "review escalate: reviewer requested a human decision",
+			ObservedAt: &reviewedAt, AgeMillis: &reviewAge,
+		}},
+		Reliability: &readservice.RunReliability{
+			State:        string(journal.PhaseEscalated),
+			CurrentStage: "review",
+			Failure:      readservice.ReliabilityFailure{Classification: "escalation", EvidenceRule: "terminalCause.classification", Code: "review-escalated"},
+			Budgets: []readservice.ReliabilityBudget{
+				{Kind: "implementation-review", Consumed: intPointer(2), Remaining: intPointer(1), Evidence: "terminalCause"},
+				{Kind: "ci-poll", Evidence: "unknown"},
+			},
+			LatestVerdict:           "escalate",
+			Acceptance:              readservice.ReliabilityAcceptance{State: "complete", Digest: "sha256:acc"},
+			Retained:                readservice.ReliabilityRetainedRefs{Branch: "goobers/implementation/run-122", BranchSHA: "abc123", PullRequest: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"}, PullRequestDraft: "draft", RecoveryRunID: "run-122"},
+			NextAction:              "human intervention required",
+			HumanInterventionReason: "reviewer requested a human decision",
+		},
+	}
 }
 
 func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequest, OperatorMessageSubmitResponse) {

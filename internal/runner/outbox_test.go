@@ -577,3 +577,59 @@ func TestOversizedOutboxPreservesCommandOutcomeAndFailsWorkflow(t *testing.T) {
 		t.Fatalf("oversized outbox was partially published: %v", err)
 	}
 }
+
+func TestMakeContainedDirRejectsLexicalEscapes(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"..", filepath.Join("..", "x"), "/abs", `\rooted`, "C:evil"} {
+		if _, err := makeContainedDir(root, rel); err == nil || err.Error() != apiv1.ErrPathEscape.Error() {
+			t.Errorf("makeContainedDir(%q) err = %v, want ErrPathEscape", rel, err)
+		}
+	}
+	got, err := makeContainedDir(root, filepath.Join("a", "b"))
+	if err != nil {
+		t.Fatalf("contained path rejected: %v", err)
+	}
+	if info, err := os.Stat(got); err != nil || !info.IsDir() {
+		t.Fatalf("contained dir not created: %v", err)
+	}
+}
+
+// #7242: a walked path that escapes the workspace used to be reported by
+// wrapping the nil filepath.Rel error with %w ("%!w(<nil>)").
+func TestOutboxRelPathRejectsEscapeWithOwnError(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	for _, p := range []string{parent, filepath.Join(parent, "sibling", "x.txt")} {
+		rel, err := outboxRelPath(root, p)
+		if err == nil {
+			t.Fatalf("outboxRelPath(%q) = %q, want escape error", p, rel)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "outside the workspace") || strings.Contains(msg, "%!") {
+			t.Fatalf("outboxRelPath(%q) err = %q, want a well-formed escape error", p, msg)
+		}
+	}
+	for _, name := range []string{"..a", filepath.Join("reports", "b.txt")} {
+		rel, err := outboxRelPath(root, filepath.Join(root, name))
+		if err != nil || rel != name {
+			t.Fatalf("outboxRelPath(%q) = %q, %v; want %q", name, rel, err, name)
+		}
+	}
+}
+
+func TestCollectOutboxFilesDedupesOverlappingEntries(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "a.txt", "a")
+	writeWorkspaceFile(t, root, "reports/b.txt", "b")
+
+	files, err := collectOutboxFiles(root, []string{"a.txt", "./a.txt", "reports", "reports/b.txt", "."})
+	if err != nil {
+		t.Fatalf("collectOutboxFiles: %v", err)
+	}
+	seen := map[string]int{}
+	for _, f := range files {
+		seen[f.RelPath]++
+	}
+	if len(files) != 2 || seen["a.txt"] != 1 || seen["reports/b.txt"] != 1 {
+		t.Fatalf("files = %+v, want a.txt and reports/b.txt once each", files)
+	}
+}

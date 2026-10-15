@@ -85,7 +85,7 @@ func validateChildDisposition(fork, parent ChildSnapshot, result Record, action 
 	if !reflect.DeepEqual(parent.Policy, fork.Policy) {
 		return fmt.Errorf("child disposition changed the snapshot exclusion policy")
 	}
-	return result.validateRestorable()
+	return result.ValidateRestorable()
 }
 
 func childDispositionTree(ctx context.Context, repository string, fork, parent ChildSnapshot, result Record, action ChildDisposition, maxPatchBytes int64) (string, error) {
@@ -112,6 +112,17 @@ func childDispositionTree(ctx context.Context, repository string, fork, parent C
 }
 
 func pinDispositionTree(ctx context.Context, repository string, parent ChildSnapshot, childSnapshot, tree string, action ChildDisposition, operationID string, identityTime time.Time) (Record, error) {
+	record, err := prepareDispositionTree(ctx, repository, parent, childSnapshot, tree, action, operationID, identityTime)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := PinCommit(ctx, repository, record); err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
+func prepareDispositionTree(ctx context.Context, repository string, parent ChildSnapshot, childSnapshot, tree string, action ChildDisposition, operationID string, identityTime time.Time) (Record, error) {
 	// Bind the complete request identity into the commit; Git dates alone lose
 	// sub-second precision. Nothing is written through the parent branch.
 	date := identityTime.UTC().Format(time.RFC3339)
@@ -136,9 +147,6 @@ func pinDispositionTree(ctx context.Context, repository string, parent ChildSnap
 		return Record{}, err
 	}
 	record := Record{Version: 1, RunID: operationID, RepositoryKey: parent.Record.RepositoryKey, Ref: ref, BaseSHA: parent.Record.SnapshotSHA, SnapshotSHA: commit, PatchDigest: digest, CreatedAt: identityTime, RetainUntil: parent.Record.RetainUntil}
-	if err := PinCommit(ctx, repository, record); err != nil {
-		return Record{}, err
-	}
 	return record, nil
 }
 

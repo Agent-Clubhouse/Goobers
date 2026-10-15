@@ -283,13 +283,8 @@ func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
 }
 
 func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
+	t.Run("ado "+GuidedWorkflowMergeReview, assertGuidedADOSingleWorkflow(GuidedWorkflowMergeReview))
 	for _, workflow := range guidedWorkflowOrder {
-		if workflow == GuidedWorkflowMergeReview {
-			// Guided merge-review is Azure DevOps-only; GitHub refuses it
-			// (TestInitGuidedGitHubRefusesMergeReview).
-			t.Run(workflow, assertGuidedADOSingleWorkflow(workflow))
-			continue
-		}
 		t.Run(workflow, func(t *testing.T) {
 			opts := GuidedOptions{
 				GaggleName:           "widget",
@@ -306,7 +301,7 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				opts.RequiredCapabilities = []string{"go@1.26"}
 				opts.PullRequestTokenEnv = "PR_TOKEN"
 				opts.RepoPushTokenEnv = "PUSH_TOKEN"
-			case GuidedWorkflowBacklogCuration:
+			case GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview:
 				opts.PullRequestTokenEnv = "PR_TOKEN"
 			}
 			root := filepath.Join(t.TempDir(), "guided")
@@ -328,8 +323,13 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				string(capability.GitHubIssuesWrite): "ISSUES_TOKEN",
 				string(capability.AgentModel):        "MODEL_TOKEN",
 			}
-			if workflow == GuidedWorkflowImplementation || workflow == GuidedWorkflowBacklogCuration {
+			if workflow != GuidedWorkflowWorkNomination {
 				wantCredentials[string(capability.ProviderPRWrite)] = "PR_TOKEN"
+			}
+			if workflow == GuidedWorkflowMergeReview {
+				for _, granted := range []capability.Capability{capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubPRMerge, capability.GitHubBranchDelete} {
+					wantCredentials[string(granted)] = "PR_TOKEN"
+				}
 			}
 			if workflow == GuidedWorkflowImplementation {
 				wantCredentials[string(capability.RepoPush)] = "PUSH_TOKEN"
@@ -799,21 +799,62 @@ func TestInitGuidedADORejectsBeforeWriting(t *testing.T) {
 	}
 }
 
-// TestInitGuidedGitHubRefusesMergeReview pins that guided setup offers
-// merge-review on Azure DevOps only: guided GitHub setup grants merge-review
-// no pull-request token, so it is refused before anything is written.
-func TestInitGuidedGitHubRefusesMergeReview(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "guided")
-	_, err := initGuidedForTest(root, GuidedOptions{
+// TestInitGuidedGitHubMergeReviewGrantsPullRequestToken pins that guided
+// GitHub setup offers merge-review and backs every capability its stages
+// declare with an explicit grant: the pull-request token for provider:pr:write,
+// github:pr:write, github:pr:review, github:pr:merge and github:branch:delete,
+// and the work-tracking token for github:issues:write. Nothing it declares is
+// left to the read-only repository token. Merge-review alone still requires
+// the pull-request token variable.
+func TestInitGuidedGitHubMergeReviewGrantsPullRequestToken(t *testing.T) {
+	opts := GuidedOptions{
 		GaggleName: "widget", RepoOwner: "example-org", RepoName: "widget",
 		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
-		Workflows: []string{GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview},
-	})
-	if err == nil || !strings.Contains(err.Error(), "merge-review workflow on Azure DevOps only") {
-		t.Fatalf("InitGuided error = %v, want the Azure DevOps-only merge-review refusal", err)
+		Workflows: []string{GuidedWorkflowMergeReview},
 	}
-	if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
-		t.Fatalf("refused guided setup wrote root, stat error = %v", statErr)
+	root := filepath.Join(t.TempDir(), "guided")
+	if _, err := initGuidedForTest(root, opts); err != nil {
+		t.Fatalf("InitGuided: %v", err)
+	}
+	cfg, err := LoadConfig(NewLayout(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	granted := map[string]string{}
+	for _, credential := range cfg.Credentials {
+		granted[credential.Capability] = credential.Token.Env
+	}
+	set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Workflows) != 1 || set.Workflows[0].Name != GuidedWorkflowMergeReview {
+		t.Fatalf("guided workflows = %+v, want only merge-review", set.Workflows)
+	}
+	declared := 0
+	for _, task := range set.Workflows[0].Spec.Tasks {
+		for _, value := range task.Capabilities {
+			if value == string(capability.AgentModel) {
+				continue
+			}
+			declared++
+			want := "PR_TOKEN"
+			if value == string(capability.GitHubIssuesWrite) {
+				want = "ISSUES_TOKEN"
+			}
+			if granted[value] != want {
+				t.Errorf("merge-review task %q declares %q, granted %q, want %q", task.Name, value, granted[value], want)
+			}
+		}
+	}
+	if declared == 0 {
+		t.Fatal("merge-review declares no repository capabilities; the scaffold changed shape")
+	}
+
+	opts.PullRequestTokenEnv = ""
+	missing := filepath.Join(t.TempDir(), "missing-pr-token")
+	if _, err := initGuidedForTest(missing, opts); err == nil || !strings.Contains(err.Error(), "pull-request token environment variable") {
+		t.Fatalf("merge-review without a pull-request token: err = %v", err)
 	}
 }
 

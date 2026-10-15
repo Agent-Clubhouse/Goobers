@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/sqliteuri"
 )
 
 // TestReaderPoolAllowsConcurrentReads pins the property #1916 exists for.
@@ -125,24 +127,24 @@ func TestReaderPoolIsReadOnly(t *testing.T) {
 // keeps a literal path to avoid URI-encoding pitfalls, so this is the one place
 // path handling changes shape.
 func TestFileURIHandlesPlatformPaths(t *testing.T) {
-	if got := fileURI(""); got != "" {
-		t.Errorf("fileURI(\"\") = %q, want empty", got)
+	if got := sqliteuri.FromPath(""); got != "" {
+		t.Errorf("sqliteuri.FromPath(\"\") = %q, want empty", got)
 	}
 	// A path already carrying query syntax cannot be safely appended to.
-	if got := fileURI("/tmp/db?foo=1"); got != "" {
-		t.Errorf("fileURI with query syntax = %q, want empty", got)
+	if got := sqliteuri.FromPath("/tmp/db?foo=1"); got != "" {
+		t.Errorf("FromPath with query syntax = %q, want empty", got)
 	}
-	uri := fileURI(filepath.Join(t.TempDir(), "telemetry.db"))
+	uri := sqliteuri.FromPath(filepath.Join(t.TempDir(), "telemetry.db"))
 	if uri == "" {
-		t.Fatal("fileURI returned empty for an ordinary path")
+		t.Fatal("FromPath returned empty for an ordinary path")
 	}
 	if len(uri) < len("file://") || uri[:len("file://")] != "file://" {
-		t.Errorf("fileURI = %q, want a file:// URI", uri)
+		t.Errorf("FromPath = %q, want a file:// URI", uri)
 	}
 	// Spaces must be escaped, or the DSN is truncated at the space.
-	spaced := fileURI(filepath.Join(t.TempDir(), "my instance", "telemetry.db"))
+	spaced := sqliteuri.FromPath(filepath.Join(t.TempDir(), "my instance", "telemetry.db"))
 	if spaced != "" && contains(spaced, " ") {
-		t.Errorf("fileURI left an unescaped space: %q", spaced)
+		t.Errorf("FromPath left an unescaped space: %q", spaced)
 	}
 }
 

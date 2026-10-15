@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -184,5 +185,61 @@ func TestDaemonChildHandoffIncludesUncertainPublicationWithoutChangingResult(t *
 	retained, err := f.queue.ChildResult(t.Context(), f.child.Identity)
 	if err != nil || retained.ReceiptDigest != result.ResultRef {
 		t.Fatal("projection changed immutable child result", retained, err)
+	}
+}
+
+// The daemon must select the requested branch even when a sibling starts later.
+// A single parked branch must not make the whole run appear suspended.
+func TestDaemonChildHandoffSelectsExactParallelOrigin(t *testing.T) {
+	f := newHandoffDaemonFixture(t)
+	if err := f.run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "plan", Attempt: 1, Status: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run.Append(journal.Event{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{{Branch: 1}, {Branch: 2}}}); err != nil {
+		t.Fatal(err)
+	}
+	var requests []runner.ChildHandoffRequest
+	for branch := 1; branch <= 2; branch++ {
+		_, origin, err := f.run.AppendChildStageStarted(journal.Event{Type: journal.EventStageStarted, Branch: branch, Stage: "plan", Attempt: 1}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := fmt.Sprintf("child-branch-%d", branch)
+		request := runner.ChildHandoffRequest{Gaggle: f.env.Gaggle, ParentRunID: f.env.RunID, Action: "wait", ChildRunID: child, AcceptanceID: "trigger-" + child, InvocationKey: child, SourceDigest: journal.Digest([]byte("source")), Origin: *origin}
+		request.RequestID = childHandoffRequestDigest(request)
+		if branch == 2 {
+			if _, stage, err := f.host.parkedParent(requests[0]); err != nil || stage != "plan" {
+				t.Fatal("later sibling hid first wait", stage, err)
+			}
+			if _, _, err := f.host.parkedParent(request); err == nil {
+				t.Fatal("unparked sibling borrowed first custody")
+			}
+			reader, err := journal.OpenReadOnly(f.run.Dir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runner.ParkedOnChild(events) {
+				t.Fatal("running sibling lost whole-run capacity")
+			}
+		}
+		if err := f.run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": runner.ChildWaitKind, "childWait": journal.ChildWaitHeader{Version: 1, ParentRunID: f.env.RunID, Request: journal.ChildHandoffRequest(request)}}}); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, request)
+	}
+	for _, request := range requests {
+		if _, stage, err := f.host.parkedParent(request); err != nil || stage != "plan" {
+			t.Fatal("exact parked branch not selected", stage, err)
+		}
+	}
+	substituted := requests[0]
+	substituted.Origin = requests[1].Origin
+	substituted.RequestID = childHandoffRequestDigest(substituted)
+	if _, _, err := f.host.parkedParent(substituted); err == nil {
+		t.Fatal("sibling origin substituted for another child receipt")
 	}
 }

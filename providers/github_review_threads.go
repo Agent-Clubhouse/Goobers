@@ -166,6 +166,7 @@ func (p *GitHubProvider) listNativePullRequestReviews(ctx context.Context, repo 
 		reviews = append(reviews, PullRequestNativeReview{
 			ID:          review.ID,
 			Author:      review.User.Login,
+			AuthorType:  review.User.Type,
 			State:       review.State,
 			Body:        review.Body,
 			CommitSHA:   review.CommitID,
@@ -227,6 +228,7 @@ func pullRequestInlineComments(rawComments []githubInlineReviewComment, states m
 			ID:                comment.ID,
 			ThreadID:          state.ThreadID,
 			Author:            comment.User.Login,
+			AuthorType:        comment.User.Type,
 			Body:              comment.Body,
 			Path:              path,
 			Line:              line,

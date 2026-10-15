@@ -14,6 +14,25 @@ func StageAttemptID(runID string, branch int, stage string, startedSeq uint64) s
 	return "sta_" + base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// StageOccurrence returns the stage occurrence (#6881) a committed
+// stage.started belongs to. A start bound by AppendChildStageStarted carries
+// its occurrence and that is authoritative. Otherwise a continuation — a later
+// attempt, or a human or infrastructure rerun — keeps prior, the occurrence of
+// the same task's previous start on the same branch, and any other start opens
+// a new occurrence identified by its own attempt id. This is the
+// continuation rule the runner applies when it binds child origins, so a
+// retry stays in its occurrence while a new loop visit or branch does not.
+func StageOccurrence(runID string, started Event, prior string) string {
+	if bound, _ := started.Runner[ChildWorkflowOccurrenceKey].(string); childStageIdentity.MatchString(bound) {
+		return bound
+	}
+	continuation := started.Attempt > 1 || started.AttemptClass == AttemptHuman || started.AttemptClass == AttemptInfra
+	if continuation && prior != "" {
+		return prior
+	}
+	return StageAttemptID(runID, started.Branch, started.Stage, started.Seq)
+}
+
 // ReviewerAttemptEvent records dispatch lifecycle, not proof that an adapter
 // launched a model. A successful dispatch may report a synthesized verdict.
 func ReviewerAttemptEvent(kind EventType, gate string, attempt int, class AttemptClass) Event {

@@ -14,12 +14,16 @@ import (
 
 // IsRace classifies a push failure as a ref race worth a
 // fetch-rebase-retry, from git's own stable rejection phrasing. Everything
-// else (auth failures, unreachable remotes, missing refs) is not retryable
-// at this layer.
+// else (auth failures, unreachable remotes, missing refs, and any
+// "[remote rejected]" refusal such as a declined hook) is not retryable at
+// this layer. git's generic "failed to push some refs" trailer is not a race
+// marker: it accompanies every kind of refusal.
 func IsRace(err error) bool {
+	if IsTerminal(err) {
+		return false
+	}
 	msg := err.Error()
 	for _, marker := range []string{
-		"failed to push some refs",
 		"fetch first",
 		"non-fast-forward",
 		"cannot lock ref",

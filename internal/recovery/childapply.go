@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -12,12 +13,14 @@ const (
 )
 
 // ChildApplyPlan is persisted by the coordinator before any live mutation.
-// Application stages only paths changed by the disposition. HEAD, unrelated
-// staged entries, and excluded runtime/credential paths remain unchanged.
+// Child application stages only paths changed by the disposition and preserves
+// HEAD. Parent application additionally restores independent Git state. Both
+// preserve unrelated staged entries and excluded runtime/credential paths.
 type ChildApplyPlan struct {
 	Version            int                      `json:"version"`
 	Disposition        PreparedChildDisposition `json:"disposition"`
 	AppliedIndexDigest string                   `json:"appliedIndexDigest"`
+	Parent             *ParentApplication       `json:"parent,omitempty"`
 }
 
 // PlanChildApplication binds the exact before/after index and verifies bounded
@@ -63,7 +66,11 @@ func ApplyChildApplication(ctx context.Context, repository string, plan ChildApp
 	if err != nil {
 		return err
 	}
-	if head != p.ExpectedParent.Record.BaseSHA || (index != p.ExpectedParent.IndexDigest && index != plan.AppliedIndexDigest) {
+	finalHead, err := applicationHead(ctx, repository, plan)
+	if err != nil {
+		return err
+	}
+	if (head != p.ExpectedParent.Record.BaseSHA && head != finalHead) || (index != p.ExpectedParent.IndexDigest && index != plan.AppliedIndexDigest) {
 		return ErrWorkspaceChanged
 	}
 	changes, err := loadChildChanges(ctx, repository, p)
@@ -89,8 +96,13 @@ func ApplyChildApplication(ctx context.Context, repository string, plan ChildApp
 			return err
 		}
 	}
-	if err := updateChildIndex(ctx, repository, nil, changes); err != nil {
+	if err := applyApplicationIndex(ctx, repository, plan, changes); err != nil {
 		return err
+	}
+	if head != finalHead {
+		if err := recoveryGit(ctx, repository, io.Discard, "update-ref", "HEAD", finalHead, head); err != nil {
+			return err
+		}
 	}
 	return VerifyChildApplication(ctx, repository, plan)
 }
@@ -108,7 +120,11 @@ func VerifyChildApplication(ctx context.Context, repository string, plan ChildAp
 	if err != nil {
 		return err
 	}
-	if head != p.ExpectedParent.Record.BaseSHA || index != plan.AppliedIndexDigest {
+	finalHead, err := applicationHead(ctx, repository, plan)
+	if err != nil {
+		return err
+	}
+	if head != finalHead || index != plan.AppliedIndexDigest {
 		return ErrWorkspaceChanged
 	}
 	current, err := CaptureChildSnapshot(ctx, repository, p.ExpectedParent.Record.RepositoryKey, p.ExpectedParent.Record.RunID, p.ExpectedParent.Record.CreatedAt, p.ExpectedParent.Record.RetainUntil, p.ExpectedParent.Policy)

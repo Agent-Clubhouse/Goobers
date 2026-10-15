@@ -10,6 +10,14 @@ Existing gaggles without tracking metadata keep their current behavior.
 It does not change the workflow DSL, automatically apply templates, push to
 either repository, or send email.
 
+For the different "keep the whole gaggle upstream and resolve a reference at
+apply time" ownership model, see the draft
+[apply-time gaggle reference design](../design/apply-time-gaggle-references.md).
+That proposal adds locked logical references and bounded skills/instruction
+bindings; it is not current template-command behavior. Do not replace template
+tracking metadata with a reference or a filesystem symlink without a supported,
+explicit ownership conversion.
+
 ## The three locations
 
 1. **Template repository:** the author's reusable, committed gaggle package.

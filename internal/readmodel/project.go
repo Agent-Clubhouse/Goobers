@@ -115,6 +115,7 @@ type OperatorFacts struct {
 	EngineFallback        *EngineFallback
 	IssueNumber           string
 	IssueTitle            string
+	IssueURL              string
 	DisplayTitle          string
 	LastHeartbeatAt       *time.Time
 	PullRequest           *journal.ExternalRef
@@ -133,6 +134,20 @@ type OperatorFacts struct {
 	WorkspaceBranch       string
 	WorkspaceBranchSHA    string
 	InjectedInputs        []journal.InputRef
+	Reliability           ReliabilityFacts
+
+	// LatestErrorAt is when LatestError was recorded: the observed-at time of
+	// the blocker status derives from it (#5404). Nil for an event without a
+	// timestamp and for rows projected before projection version 10.
+	LatestErrorAt *time.Time
+	// ReviewAt is when the latest review verdict was recorded.
+	ReviewAt *time.Time
+}
+
+func (o *OperatorFacts) foldObservations(event journal.Event) {
+	o.Activity = o.Activity.After(event)
+	o.RetryBackoff = o.RetryBackoff.After(event)
+	o.Reliability = o.Reliability.After(event)
 }
 
 // StageRow is one projected (run, stage) pair.
@@ -359,18 +374,14 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		if !event.KnownSchema() {
 			continue
 		}
-		row.Operator.Activity = row.Operator.Activity.After(event)
-		row.Operator.RetryBackoff = row.Operator.RetryBackoff.After(event)
+		row.Operator.foldObservations(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}
 		if event.Gate != "" {
 			seenStages[event.Gate] = struct{}{}
 		}
-		if event.Error != nil {
-			detail := *event.Error
-			row.Operator.LatestError = &detail
-		}
+		row.Operator.observeError(event)
 
 		switch event.Type {
 		case journal.EventStageHeartbeat:
@@ -471,6 +482,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			node.Arm = event.Verdict
 			row.observeGateOutcome(event, stages)
 			if event.Gate == "review" {
+				row.Operator.ReviewAt = eventTimePointer(event)
 				row.Operator.ReviewVerdict = event.Verdict
 				row.Operator.ReviewRationale = ""
 				row.Operator.ReviewReasonCode = ""
@@ -536,7 +548,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			// no query predicate expects, and the run would quietly vanish from
 			// every phase-filtered list. Leave the run as it was; repair and the
 			// differential oracle surface the discrepancy.
-			if !terminalPhase(phase) {
+			if !phase.IsTerminal() {
 				continue
 			}
 			row.Phase = phase
@@ -621,6 +633,7 @@ func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []jou
 func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
 	projection.Run.Operator.QueueEligibility = projectQueueEligibility(reader, identity, events)
+	projection.Run.Operator.Reliability.Allowances = PinnedReliabilityAllowances(reader, identity)
 	projection.Remediation = projectRemediationExamples(identity, projection.Run, events)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
@@ -689,6 +702,7 @@ func projectOperatorStageOutputs(operator *OperatorFacts, event journal.Event) {
 		if idOK && titleOK && id != "" && title != "" {
 			operator.IssueNumber = id
 			operator.IssueTitle = title
+			operator.IssueURL = StageIssueURL(event)
 		}
 	}
 	if title, ok := StageDisplayTitle(event); ok {
@@ -1155,20 +1169,6 @@ func sortedStages(set map[string]struct{}) []string {
 	return out
 }
 
-// terminalPhase reports whether phase is a recognised terminal run phase.
-//
-// PhaseRunning is excluded deliberately: a run.finished carrying "running" is
-// contradictory, and accepting it would leave a row marked terminal while its
-// phase says otherwise.
-func terminalPhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseEscalated, journal.PhaseAborted:
-		return true
-	default:
-		return false
-	}
-}
-
 func terminalGatePhase(target string) (journal.RunPhase, bool) {
 	switch target {
 	case journal.TargetAbort:
@@ -1189,4 +1189,25 @@ func (r *RunRow) observeRunnerAnnotation(event journal.Event) {
 	if suggestion, ok := RunnerResetSuggestion(event); ok {
 		r.CurrentStage = suggestion
 	}
+}
+
+// observeError records the event's error, if any, as the run's latest, with
+// when it was observed.
+func (o *OperatorFacts) observeError(event journal.Event) {
+	if event.Error == nil {
+		return
+	}
+	detail := *event.Error
+	o.LatestError = &detail
+	o.LatestErrorAt = eventTimePointer(event)
+}
+
+// eventTimePointer is the event's timestamp, or nil for an unstamped event
+// (#3774) so "unknown" is never rendered as the zero time.
+func eventTimePointer(event journal.Event) *time.Time {
+	if event.Time.IsZero() {
+		return nil
+	}
+	at := event.Time
+	return &at
 }

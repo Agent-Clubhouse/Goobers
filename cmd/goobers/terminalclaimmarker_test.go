@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
@@ -192,6 +193,10 @@ func TestTerminalFailureReleasesEveryBatchClaimMarkerAndLease(t *testing.T) {
 	seen := map[string]bool{}
 	for _, req := range fake.requests {
 		seen[req.ID] = true
+		// The provider comment states the run's own terminal outcome (#4421).
+		if req.Reason.Disposition != claimrelease.Failed {
+			t.Errorf("provider release reason for %s = %+v, want failed", req.ID, req.Reason)
+		}
 	}
 	for _, itemID := range []string{"2718", "2719", "2720"} {
 		if !seen[itemID] {
@@ -201,6 +206,7 @@ func TestTerminalFailureReleasesEveryBatchClaimMarkerAndLease(t *testing.T) {
 	if entries := openTestClaimLedger(t, ledgerPath).ForRunAll(runID); len(entries) != 0 {
 		t.Fatalf("terminal batch still holds claim leases: %+v", entries)
 	}
+	assertClaimReleaseReason(t, openTestClaimLedger(t, ledgerPath), runID, claimrelease.Failed)
 }
 
 // TestTerminalCleanupSkipsClaimMarkerWhenAlreadyReleased covers the ordinary
@@ -682,10 +688,15 @@ func TestNoWorkTerminalRunReleasesClaimMarker(t *testing.T) {
 	if len(fake.requests) != 1 || fake.requests[0].ID != "3347" || fake.requests[0].RunID != runID {
 		t.Fatalf("provider claim releases = %+v, want item 3347 released by the no-work run itself", fake.requests)
 	}
+	if fake.requests[0].Reason.Disposition != claimrelease.NoWork {
+		t.Fatalf("provider release reason = %+v, want no-work", fake.requests[0].Reason)
+	}
 	reopened := openTestClaimLedger(t, ledgerPath)
 	if entry, ok := reopened.Lookup("3347"); ok {
 		t.Fatalf("no-work run's claim leaked: %+v", entry)
 	}
+	// The ledger and the provider comment record the same disposition.
+	assertClaimReleaseReason(t, reopened, runID, claimrelease.NoWork)
 }
 
 // claimReleaserFunc adapts a bare func to the workItemClaimReleaser seam.
