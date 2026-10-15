@@ -1027,9 +1027,48 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > on the runner's bounded INFRASTRUCTURE budget (journaled `attemptClass:
 > infra`, conformance-excluded), and never decrement `Task.Retry`'s attempts.
 > Their terminals carry a typed `infra*` error class, which keeps them out of
-> the failure-streak circuit breaker and out of the success-rate denominator
+> the genuine/work failure streak and out of the success-rate denominator
 > (#3364) — at attempt budgets of 1, the prior classification converted
 > transient infrastructure weather into permanent-looking work failures.
+>
+> **Two failure streaks (#5638).** The circuit breaker keeps two per-item
+> counters, both reset by a completed run:
+>
+> | Streak | Counts | Parks `goobers:needs-human` after | Comment classification |
+> |---|---|---|---|
+> | genuine/work | every failed, escalated or aborted terminal not exempted below — a bare session timeout included (#1054) | 3 | **genuine/work failure** |
+> | infrastructure | item-correlated infrastructure: the item's own validation kept failing on infrastructure | 6 (twice the work threshold) | **infrastructure failure** |
+>
+> The infrastructure streak exists so an environment that fails the same way
+> on one item every time — a CI suite that always hangs past its timeout on
+> that change, which the `failure-class` check judges retryable and therefore
+> `infra` — still stops retrying, and says why. Only escalated and aborted
+> terminals whose journal shows that count on it:
+>
+> - a gate escalated on an exhausted infrastructure repass budget; or
+> - the run expired (`run_duration_exceeded`) or stalled (`run_stalled`)
+>   while a gate's infrastructure retry of the item's validation was in
+>   flight, with no stage or gate result since — for example after a
+>   failure-class gate sent a timed-out `local-ci` back down its `infra`
+>   branch. On the Temporal driver the stall sweep stops the run with a
+>   workflow cancellation, which the engine journals as `run_canceled`; the
+>   sweep's own instance-log record of why it cancelled supplies the
+>   interruption, and an operator's cancel is never read as one.
+>
+> Infrastructure that is not about the item counts on **neither** streak and
+> never parks it: a failed run whose dispatch exhausted its infrastructure
+> retry budget or whose code is an infrastructure code (credential, git,
+> network, lock, a harness that never gave the agent a turn, a required MCP
+> server that never came up); an expiry or stall during a dispatch's or gate
+> evaluator's own infrastructure retry; and an engine workflow the daemon
+> terminated because no worker polled it. This is deliberate and has a cost:
+> a non-item infrastructure fault that is in fact specific to one item (its
+> build exhausting a worker's memory, git failing on its branch, credentials
+> missing for its repository only) is **not bounded by the circuit breaker**
+> and retries until a human or another control notices. A verified item judgment
+> (`ISSUE_NOT_APPLICABLE`, #3363) counts on neither either. An expiry or
+> stall during ordinary work, and an operator cancel, count on the
+> genuine/work streak.
 >
 > **A pull request head that moved under the run is superseded, not failed
 > (#6019):** when a run has rebound its workspace to a pull request's own head
