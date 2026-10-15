@@ -15,6 +15,11 @@ import (
 	"github.com/goobers/goobers/internal/platform/lock"
 )
 
+const (
+	heldStateReadAttempts = 5
+	heldStateReadDelay    = 10 * time.Millisecond
+)
+
 // DaemonIdentity records the process and configuration pinned by a daemon lock.
 type DaemonIdentity struct {
 	PID                   int             `json:"pid"`
@@ -140,14 +145,11 @@ func writeInstanceLockState(f *os.File, state State) error {
 		return fmt.Errorf("encode lock state: %w", err)
 	}
 	data = append(data, '\n')
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("truncate lock state: %w", err)
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek lock state: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := f.WriteAt(data, 0); err != nil {
 		return fmt.Errorf("write lock state: %w", err)
+	}
+	if err := f.Truncate(int64(len(data))); err != nil {
+		return fmt.Errorf("truncate lock state: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync lock state: %w", err)
@@ -245,9 +247,12 @@ func InspectDaemonLock(lockPath string) (running bool, identity *DaemonIdentity,
 	held, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		if errors.Is(err, lock.ErrHeld) {
-			state, readErr := ReadStatePath(lockPath)
-			if readErr != nil || state == nil {
+			state, readErr := readHeldState(lockPath)
+			if readErr != nil {
 				return false, nil, readErr
+			}
+			if state == nil {
+				return true, nil, nil
 			}
 			identity, readErr := state.DaemonIdentity()
 			if readErr != nil {
@@ -261,6 +266,21 @@ func InspectDaemonLock(lockPath string) (running bool, identity *DaemonIdentity,
 
 	identity, err = ReadDaemonIdentity(held.File())
 	return false, identity, err
+}
+
+// readHeldState re-reads the holder record while the lock is held, tolerating
+// the brief window where the holder is still writing it.
+func readHeldState(lockPath string) (*State, error) {
+	var state *State
+	var err error
+	for range heldStateReadAttempts {
+		state, err = ReadStatePath(lockPath)
+		if err == nil && state != nil {
+			return state, nil
+		}
+		time.Sleep(heldStateReadDelay)
+	}
+	return state, err
 }
 
 // InspectDaemonLiveness evaluates the held daemon lock using its pinned timeout.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -137,5 +138,77 @@ func TestAcquireInstanceLockConflictIncludesHolderPID(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "already holds the lock") ||
 		!strings.Contains(err.Error(), fmt.Sprintf("holder pid %d", os.Getpid())) {
 		t.Fatalf("err = %v, want existing conflict message enriched with holder pid", err)
+	}
+}
+
+func holdRaw(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "up.lock")
+	held, err := lock.TryAcquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Release() })
+	if content != "" {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path
+}
+
+func TestInspectDaemonLockHeldWithEmptyStateReportsHeld(t *testing.T) {
+	path := holdRaw(t, "")
+	running, identity, err := InspectDaemonLock(path)
+	if err != nil {
+		t.Fatalf("InspectDaemonLock: %v", err)
+	}
+	if !running || identity != nil {
+		t.Fatalf("running=%v identity=%v, want held with unknown identity", running, identity)
+	}
+}
+
+func TestInspectDaemonLockHeldByManualHolder(t *testing.T) {
+	path := holdRaw(t, "")
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := writeInstanceLockState(f, newInstanceLockState(nil, HolderManual, os.Getpid())); err != nil {
+		t.Fatal(err)
+	}
+	running, identity, err := InspectDaemonLock(path)
+	if err != nil {
+		t.Fatalf("InspectDaemonLock: %v", err)
+	}
+	if running || identity != nil {
+		t.Fatalf("running=%v identity=%v, want manual holder not running", running, identity)
+	}
+}
+
+func TestInspectDaemonLockHeldWithCorruptStateErrors(t *testing.T) {
+	path := holdRaw(t, "{not json")
+	if _, _, err := InspectDaemonLock(path); err == nil {
+		t.Fatal("expected decode error for corrupt held state")
+	}
+}
+
+func TestWriteInstanceLockStateShrinksWithoutTrailingBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "up.lock")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := writeInstanceLockState(f, newInstanceLockState(nil, HolderManual, 7)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := ReadStatePath(path)
+	if err != nil || state == nil || state.HolderPID != 7 {
+		t.Fatalf("state=%+v err=%v", state, err)
 	}
 }
