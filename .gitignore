@@ -23,6 +23,9 @@
 /scheduler
 /stress
 /validate
+# test/reviewereval is a runnable package too (go build ./test/reviewereval).
+/reviewereval
+/reviewereval.exe
 # The same stray also lands next to the source when `go build .` (or a subagent's
 # `go build ./cmd/<name>`) runs from inside the package dir — /goobers above is
 # repo-root only and does not match cmd/goobers/goobers (a 37MB binary reached a

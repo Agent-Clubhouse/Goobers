@@ -162,12 +162,18 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	reviewerCmd := flags.String("reviewer-cmd", "", "reviewer adapter command (JSON request on stdin, JSON result on stdout)")
 	allowReal := flags.Bool("allow-real-reviewer", false, "explicitly allow running the reviewer adapter, which may spend money")
 	judgeCmd := flags.String("judge-cmd", "", "optional semantic judge adapter command")
+	adapterEnv := flags.String("adapter-env", "", "comma-separated ambient variables adapters may inherit beyond the default allowlist (never forge credentials)")
 	reportPath := flags.String("report", "", "write the JSON report here (default stdout)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if *datasetPath == "" || *reviewerCmd == "" || !*allowReal {
 		_, _ = fmt.Fprintln(stderr, "reviewereval replay: -dataset, -reviewer-cmd, and -allow-real-reviewer are required; a real review is always opt-in")
+		return 2
+	}
+	passthrough := splitList(*adapterEnv)
+	if err := validatePassthrough(passthrough); err != nil {
+		_, _ = fmt.Fprintf(stderr, "reviewereval replay: %v\n", err)
 		return 2
 	}
 	set, err := loadDataset(*datasetPath)
@@ -177,9 +183,10 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	match := matcher{}
 	if *judgeCmd != "" {
-		match.judge = commandJudge{argv: strings.Fields(*judgeCmd), workDir: options.WorkDir}
+		match.judge = commandJudge{adapterCommand{argv: strings.Fields(*judgeCmd), workDir: options.WorkDir, passthrough: passthrough}}
 	}
-	report, err := replay(ctx, set, gitReader{dir: *repo}, commandReviewer{argv: strings.Fields(*reviewerCmd), workDir: options.WorkDir}, match, options)
+	reviewer := commandReviewer{adapterCommand{argv: strings.Fields(*reviewerCmd), workDir: options.WorkDir, passthrough: passthrough}}
+	report, err := replay(ctx, set, gitReader{dir: *repo}, reviewer, match, options)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "reviewereval replay: %v\n", err)
 		return 2
@@ -307,4 +314,15 @@ func encodeJSON(out io.Writer, value any) error {
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
+}
+
+// splitList splits a comma-separated flag value, dropping empty entries.
+func splitList(value string) []string {
+	var items []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }

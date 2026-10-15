@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -64,8 +65,7 @@ type judge interface {
 // reviewer, it runs in a scratch directory under workDir with an isolated
 // home and no forge credentials.
 type commandJudge struct {
-	argv    []string
-	workDir string
+	adapterCommand
 }
 
 func (judge commandJudge) Name() string {
@@ -74,7 +74,7 @@ func (judge commandJudge) Name() string {
 
 func (judge commandJudge) Judge(ctx context.Context, request judgeRequest) (judgeDecision, error) {
 	var decision judgeDecision
-	err := runAdapter(ctx, judge.argv, judge.workDir, "", request, &decision)
+	err := judge.run(ctx, "", request, &decision)
 	return decision, err
 }
 
@@ -95,6 +95,8 @@ type judgeRecord struct {
 	Rationale        string  `json:"rationale,omitempty"`
 	CostUSD          float64 `json:"costUsd,omitempty"`
 	SkippedForBudget bool    `json:"skippedForBudget,omitempty"`
+	// Error is set when the judge call failed; its cost still counts.
+	Error string `json:"error,omitempty"`
 }
 
 // caseResult is one sampled case's outcome: the verdict the reviewer
@@ -142,28 +144,15 @@ func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewRes
 		case m.judge != nil && budget-result.JudgeCostUSD <= costEpsilon:
 			result.JudgeDecisions = append(result.JudgeDecisions, judgeRecord{Finding: index, Judge: m.judge.Name(), SkippedForBudget: true})
 		case m.judge != nil:
-			remaining := budget - result.JudgeCostUSD
-			decision, err := m.judge.Judge(ctx, judgeRequest{
+			matched, err := m.judgeFinding(ctx, &result, reviewed.CostUSD, index, judgeRequest{
 				CaseID: item.ID, FixCommit: item.FixCommit, FixSubject: item.FixSubject,
 				IntroducingCommit: item.IntroducingCommit, BugLines: item.BugLines, Finding: finding,
-				BudgetRemainingUSD: remaining,
+				BudgetRemainingUSD: budget - result.JudgeCostUSD,
 			})
-			if err == nil && !validCost(decision.CostUSD) {
-				err = fmt.Errorf("judge reported invalid cost %v", decision.CostUSD)
-			}
-			if err == nil && decision.CostUSD > remaining+costEpsilon {
-				result.JudgeCostUSD += decision.CostUSD
-				err = fmt.Errorf("judge reported $%.4f with $%.4f left: %w", decision.CostUSD, remaining, errBudgetOverrun)
-			}
 			if err != nil {
 				return result, fmt.Errorf("judge finding %d: %w", index, err)
 			}
-			result.JudgeCostUSD += decision.CostUSD
-			result.CostUSD = round4(reviewed.CostUSD + result.JudgeCostUSD)
-			result.JudgeDecisions = append(result.JudgeDecisions, judgeRecord{
-				Finding: index, Judge: m.judge.Name(), Match: decision.Match, Rationale: decision.Rationale, CostUSD: decision.CostUSD,
-			})
-			if decision.Match {
+			if matched {
 				scored.Match = matchJudge
 			}
 		}
@@ -171,6 +160,29 @@ func (m matcher) score(ctx context.Context, item datasetCase, reviewed reviewRes
 		result.Findings = append(result.Findings, scored)
 	}
 	return result, nil
+}
+
+// judgeFinding runs one judge call and records it on result. A failed call
+// still spent what it reports, so its cost is recorded and checked against
+// the remaining budget like any other; only its verdict is discarded.
+func (m matcher) judgeFinding(ctx context.Context, result *caseResult, reviewedCost float64, index int, request judgeRequest) (bool, error) {
+	decision, err := m.judge.Judge(ctx, request)
+	if !validCost(decision.CostUSD) {
+		return false, errors.Join(err, fmt.Errorf("judge reported invalid cost %v", decision.CostUSD))
+	}
+	result.JudgeCostUSD += decision.CostUSD
+	result.CostUSD = round4(reviewedCost + result.JudgeCostUSD)
+	record := judgeRecord{Finding: index, Judge: m.judge.Name(), CostUSD: decision.CostUSD}
+	if err == nil {
+		record.Match, record.Rationale = decision.Match, decision.Rationale
+	} else {
+		record.Error = err.Error()
+	}
+	result.JudgeDecisions = append(result.JudgeDecisions, record)
+	if decision.CostUSD > request.BudgetRemainingUSD+costEpsilon {
+		return false, errors.Join(err, fmt.Errorf("judge reported $%.4f with $%.4f left: %w", decision.CostUSD, request.BudgetRemainingUSD, errBudgetOverrun))
+	}
+	return record.Match, err
 }
 
 var (

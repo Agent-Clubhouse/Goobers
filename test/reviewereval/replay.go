@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/procenv"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
@@ -230,14 +232,16 @@ func replayCase(ctx context.Context, live gitReader, review reviewer, item datas
 	}
 	request.CaseID, request.Variant, request.BudgetRemainingUSD = caseID, options.Variant, budget
 	result, err := review.Review(ctx, request)
-	if err != nil {
-		return reviewResult{}, fmt.Errorf("review: %w", err)
-	}
 	if !validCost(result.CostUSD) {
-		return reviewResult{}, fmt.Errorf("reviewer reported invalid cost %v", result.CostUSD)
+		return reviewResult{}, errors.Join(err, fmt.Errorf("reviewer reported invalid cost %v", result.CostUSD))
 	}
+	// A failed call still spent what it reports, so its cost is kept and
+	// checked against the budget like any other.
 	if result.CostUSD > budget+costEpsilon {
 		return reviewResult{CostUSD: result.CostUSD}, fmt.Errorf("reviewer reported $%.4f with $%.4f left: %w", result.CostUSD, budget, errBudgetOverrun)
+	}
+	if err != nil {
+		return reviewResult{CostUSD: result.CostUSD}, fmt.Errorf("review: %w", err)
 	}
 	if result.Verdict.Synthesized || result.Verdict.Decision == "" {
 		return reviewResult{CostUSD: result.CostUSD}, errors.New("reviewer returned no reviewed verdict")
@@ -385,41 +389,49 @@ func writeTarFile(reader io.Reader, target string, mode os.FileMode) error {
 	return file.Close()
 }
 
-// commandReviewer is the opt-in real reviewer: an operator-supplied adapter
-// command that runs the production merge-review reviewer on the isolated
-// repository. It runs in that repository with an isolated home and no forge
-// credentials, receives the request as JSON on stdin, and prints a
-// reviewResult as JSON.
-type commandReviewer struct {
-	argv    []string
-	workDir string
+// adapterCommand is an operator-supplied adapter: argv, the parent for its
+// scratch directories, and the extra ambient variables (beyond the shared
+// default-deny allowlist) it may inherit, such as a model API key.
+type adapterCommand struct {
+	argv        []string
+	workDir     string
+	passthrough []string
 }
 
+// commandReviewer is the opt-in real reviewer: an adapter that runs the
+// production merge-review reviewer on the isolated repository. It runs in that
+// repository with adapterEnvironment, receives the request as JSON on stdin,
+// and prints a reviewResult as JSON.
+type commandReviewer struct {
+	adapterCommand
+}
+
+// Review returns the decoded result even when the adapter fails, so the cost
+// a failed call reports still counts against the budget.
 func (reviewer commandReviewer) Review(ctx context.Context, request reviewRequest) (reviewResult, error) {
 	var result reviewResult
-	if err := runAdapter(ctx, reviewer.argv, reviewer.workDir, request.Dir, request, &result); err != nil {
-		return reviewResult{}, err
-	}
-	return result, nil
+	err := reviewer.run(ctx, request.Dir, request, &result)
+	return result, err
 }
 
-// runAdapter runs an adapter command with input as JSON on stdin and decodes
-// its stdout into output. It runs in dir, or in a fresh scratch directory
-// when dir is empty, never in the live checkout, with adapterEnvironment.
-func runAdapter(ctx context.Context, argv []string, workDir, dir string, input, output any) error {
-	if len(argv) == 0 {
+// run runs the adapter with input as JSON on stdin and decodes its stdout
+// into output, even when the command fails, so a failed call can still report
+// its cost. It runs in dir, or in a fresh scratch directory when dir is empty,
+// never in the live checkout, with adapterEnvironment.
+func (command adapterCommand) run(ctx context.Context, dir string, input, output any) error {
+	if len(command.argv) == 0 {
 		return errors.New("adapter command is empty")
 	}
 	data, err := json.Marshal(input)
 	if err != nil {
 		return err
 	}
-	sandbox, err := os.MkdirTemp(workDir, "reviewer-eval-adapter-")
+	sandbox, err := os.MkdirTemp(command.workDir, "reviewer-eval-adapter-")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(sandbox) }()
-	env, err := adapterEnvironment(sandbox)
+	env, err := adapterEnvironment(sandbox, command.passthrough)
 	if err != nil {
 		return err
 	}
@@ -429,17 +441,20 @@ func runAdapter(ctx context.Context, argv []string, workDir, dir string, input, 
 			return err
 		}
 	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	name := command.argv[0]
+	cmd := exec.CommandContext(ctx, name, command.argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdin = bytes.NewReader(data)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w: %s", argv[0], err, strings.TrimSpace(stderr.String()))
+	runErr := cmd.Run()
+	decodeErr := json.Unmarshal(stdout.Bytes(), output)
+	if runErr != nil {
+		return fmt.Errorf("%s: %w: %s", name, runErr, strings.TrimSpace(stderr.String()))
 	}
-	if err := json.Unmarshal(stdout.Bytes(), output); err != nil {
-		return fmt.Errorf("decode %s output: %w", argv[0], err)
+	if decodeErr != nil {
+		return fmt.Errorf("decode %s output: %w", name, decodeErr)
 	}
 	return nil
 }
@@ -453,15 +468,21 @@ var isolatedHomeVariables = map[string]string{
 	"GH_CONFIG_DIR": "gh",
 }
 
-// adapterEnvironment is gitEnvironment with every home and configuration
-// directory pointed into sandbox, global and system git config ignored, and
-// git credential helpers disabled, so an adapter can reach neither the
-// operator's stored forge credentials nor their git configuration.
-func adapterEnvironment(sandbox string) ([]string, error) {
-	env := make([]string, 0, len(os.Environ())+len(isolatedHomeVariables)+8)
-	for _, entry := range gitEnvironment() {
+// adapterEnvironment starts from procenv's default-deny ambient allowlist,
+// the one every stage and harness subprocess gets, plus the operator's
+// explicit passthrough names, so no forge token (GH_TOKEN, an instance's
+// configured token variable, or any other) is inherited unless named. It
+// then points every home and configuration directory into sandbox, ignores
+// global and system git config, and disables git credential helpers, so an
+// adapter can reach neither stored forge credentials nor git configuration.
+func adapterEnvironment(sandbox string, passthrough []string) ([]string, error) {
+	if err := validatePassthrough(passthrough); err != nil {
+		return nil, err
+	}
+	var env []string
+	for _, entry := range procenv.BaseEnvWith(passthrough) {
 		name, _, _ := strings.Cut(entry, "=")
-		if !isolatedVariable(name) {
+		if _, isolated := isolatedHomeVariables[strings.ToUpper(name)]; !isolated && !strings.EqualFold(name, "HOMEDRIVE") && !strings.EqualFold(name, "HOMEPATH") {
 			env = append(env, entry)
 		}
 	}
@@ -480,20 +501,36 @@ func adapterEnvironment(sandbox string) ([]string, error) {
 	return append(env,
 		"GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
-		"GCM_INTERACTIVE=never",
+		"GCM_INTERACTIVE=never", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0",
 	), nil
 }
 
-func isolatedVariable(name string) bool {
-	upper := strings.ToUpper(name)
-	if _, ok := isolatedHomeVariables[upper]; ok {
-		return true
+// forgeHosts name the forges whose tokens a passthrough name may not carry.
+var forgeHosts = []string{"GITHUB", "GITEA", "GITLAB", "FORGEJO", "BITBUCKET"}
+
+// validatePassthrough refuses a malformed passthrough name, and any name that
+// is or looks like a forge credential: the ones gitEnvironment strips, the gh
+// family, a name naming a forge, a GOOBERS_ instance-configured or minted
+// capability variable, or any *_TOKEN or *_PAT, the shape an instance's
+// configured repository token variable takes. It also refuses git, Git
+// Credential Manager, and SSH configuration and the isolated home variables,
+// any of which could re-enable a credential helper or reach stored credentials.
+func validatePassthrough(names []string) error {
+	for _, name := range names {
+		upper := strings.ToUpper(name)
+		forge := forgeCredential(name) || strings.HasPrefix(upper, "GH_") || strings.HasPrefix(upper, "GOOBERS_") ||
+			strings.HasSuffix(upper, "_TOKEN") || strings.HasSuffix(upper, "_PAT") ||
+			strings.HasPrefix(upper, "GIT_") || strings.HasPrefix(upper, "GCM_") || strings.HasPrefix(upper, "SSH_") ||
+			upper == "HOMEDRIVE" || upper == "HOMEPATH"
+		if _, isolated := isolatedHomeVariables[upper]; isolated {
+			forge = true
+		}
+		for _, host := range forgeHosts {
+			forge = forge || strings.Contains(upper, host)
+		}
+		if !procenv.ValidName(name) || forge {
+			return fmt.Errorf("adapter environment passthrough %q is not allowed: adapters never receive forge credentials", name)
+		}
 	}
-	switch upper {
-	case "HOMEDRIVE", "HOMEPATH", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
-		"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GCM_INTERACTIVE":
-		return true
-	}
-	return strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") ||
-		strings.HasPrefix(upper, "GH_") || strings.HasPrefix(upper, "GITHUB_")
+	return nil
 }

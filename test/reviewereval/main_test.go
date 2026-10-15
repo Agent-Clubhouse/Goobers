@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/testgit"
@@ -279,6 +280,9 @@ type fakeReviewer struct {
 	repo     *fixtureRepo
 	requests []reviewRequest
 	answer   func(reviewRequest) reviewResult
+	// fail makes Review return its answer together with an error, as a
+	// reviewer that spent money and then failed does.
+	fail bool
 }
 
 func (fake *fakeReviewer) Review(_ context.Context, request reviewRequest) (reviewResult, error) {
@@ -303,6 +307,9 @@ func (fake *fakeReviewer) Review(_ context.Context, request reviewRequest) (revi
 		fake.t.Errorf("replayed HEAD = %q, want %s", head, request.HeadSHA)
 	}
 	fake.checkOpaque(request)
+	if fake.fail {
+		return fake.answer(request), errors.New("reviewer crashed after spending")
+	}
 	return fake.answer(request), nil
 }
 
@@ -378,6 +385,23 @@ func (overspendingJudge) Name() string { return "overspending" }
 
 func (overspendingJudge) Judge(_ context.Context, request judgeRequest) (judgeDecision, error) {
 	return judgeDecision{Rationale: "costly", CostUSD: request.BudgetRemainingUSD + 0.1}, nil
+}
+
+// spendingFailingJudge reports cost and then fails: cost, or more than it
+// was given when overrun is set.
+type spendingFailingJudge struct {
+	cost    float64
+	overrun bool
+}
+
+func (spendingFailingJudge) Name() string { return "spending-failing" }
+
+func (judge spendingFailingJudge) Judge(_ context.Context, request judgeRequest) (judgeDecision, error) {
+	cost := judge.cost
+	if judge.overrun {
+		cost = request.BudgetRemainingUSD + 0.1
+	}
+	return judgeDecision{Match: true, CostUSD: cost}, errors.New("judge crashed after spending")
 }
 
 type fakeJudge struct{ requests int }
@@ -538,7 +562,7 @@ func TestReplayEnforcesBudgetAcrossReviewerAndJudge(t *testing.T) {
 	report, err = replay(context.Background(), set, gitReader{dir: repo.dir}, judged, matcher{judge: &failingJudge{}},
 		replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1.4, Seed: "s", WorkDir: t.TempDir()})
 	if err != nil || report.Failed != 1 || report.Reviewed != 1 || report.JudgeSkippedForBudget != 1 || report.BudgetExhausted != 2 || report.TotalCostUSD != 1.4 ||
-		len(report.Results[0].JudgeDecisions) != 1 || report.Results[0].JudgeCostUSD != 0.2 || report.validate() != nil {
+		len(report.Results[0].JudgeDecisions) != 2 || report.Results[0].JudgeDecisions[1].Error == "" || report.Results[0].JudgeCostUSD != 0.2 || report.validate() != nil {
 		t.Fatalf("judge failure report = %+v, %v; want the judge failure to fail its case with spend counted, and the next case's judging skipped once the budget ran out", report, err)
 	}
 
@@ -558,6 +582,45 @@ func TestReplayEnforcesBudgetAcrossReviewerAndJudge(t *testing.T) {
 	}
 
 	checkOverrunsStopReplay(t, repo, set)
+}
+
+func TestReplayCountsSpendOfFailedCalls(t *testing.T) {
+	t.Parallel()
+	repo, set := replayFixture(t)
+	options := replayOptions{Split: splitEval, Variant: "v", MaxCases: 10, BudgetUSD: 1, Seed: "s", WorkDir: t.TempDir()}
+	crashing := &fakeReviewer{t: t, repo: repo, fail: true, answer: func(request reviewRequest) reviewResult {
+		return reviewResult{CostUSD: min(0.4, request.BudgetRemainingUSD)}
+	}}
+	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, crashing, matcher{}, options)
+	if err != nil || report.Failed != 3 || report.BudgetExhausted != 1 || report.TotalCostUSD != 1 || report.Results[0].CostUSD != 0.4 || report.validate() != nil {
+		t.Fatalf("failed reviewer report = %+v, %v; want each failed call's spend counted until the budget ran out", report, err)
+	}
+
+	finding := func(request reviewRequest) reviewResult {
+		return reviewResult{CostUSD: min(0.5, request.BudgetRemainingUSD), Verdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
+			{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go", Message: "untested"},
+		}}}
+	}
+	reviewed := &fakeReviewer{t: t, repo: repo, answer: finding}
+	report, err = replay(context.Background(), set, gitReader{dir: repo.dir}, reviewed, matcher{judge: spendingFailingJudge{cost: 0.2}}, options)
+	first := report.Results[0]
+	if err != nil || report.Failed != 1 || report.Reviewed != 1 || report.BudgetExhausted != 2 || report.TotalCostUSD != 1 ||
+		first.CostUSD != 0.7 || first.JudgeCostUSD != 0.2 || len(first.JudgeDecisions) != 1 || first.JudgeDecisions[0].Error == "" ||
+		first.JudgeDecisions[0].Match || report.validate() != nil {
+		t.Fatalf("failed judge report = %+v, %v; want the failed judge call's spend counted and its verdict discarded", report, err)
+	}
+
+	overReviewer := &fakeReviewer{t: t, repo: repo, fail: true, answer: func(request reviewRequest) reviewResult {
+		return reviewResult{CostUSD: request.BudgetRemainingUSD + 1}
+	}}
+	for name, run := range map[string]struct {
+		review reviewer
+		judge  judge
+	}{"reviewer": {overReviewer, nil}, "judge": {reviewed, spendingFailingJudge{overrun: true}}} {
+		if _, err := replay(context.Background(), set, gitReader{dir: repo.dir}, run.review, matcher{judge: run.judge}, options); !errors.Is(err, errBudgetOverrun) {
+			t.Errorf("failed %s call overspending its budget: replay error %v, want a budget overrun", name, err)
+		}
+	}
 }
 
 // checkOverrunsStopReplay asserts a reviewer or judge that reports spending
@@ -825,10 +888,15 @@ func TestAdapterHelperProcess(t *testing.T) {
 	cwd, _ := os.Getwd()
 	_ = os.WriteFile(filepath.Join(cwd, "adapter-was-here"), nil, 0o644)
 	observation := adapterObservation{Role: "reviewer", Cwd: cwd, Env: map[string]string{}}
-	for _, name := range []string{"HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "GH_TOKEN",
+	for _, name := range []string{"HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME", "GH_CONFIG_DIR",
 		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"} {
 		if value, ok := os.LookupEnv(name); ok {
 			observation.Env[name] = value
+		}
+	}
+	for _, entry := range os.Environ() {
+		if name, value, _ := strings.Cut(entry, "="); strings.Contains(value, storedSecret) {
+			observation.Secrets = append(observation.Secrets, "$"+name)
 		}
 	}
 	for _, path := range credentialPaths(os.Getenv) {
@@ -864,7 +932,9 @@ func TestAdaptersRunIsolatedFromCredentialsAndLiveTree(t *testing.T) {
 	for name, value := range operator {
 		t.Setenv(name, value)
 	}
-	t.Setenv("GH_TOKEN", storedSecret)
+	for _, name := range forgeTokenVariables {
+		t.Setenv(name, storedSecret)
+	}
 	for _, path := range credentialPaths(func(name string) string { return operator[name] }) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -880,8 +950,9 @@ func TestAdaptersRunIsolatedFromCredentialsAndLiveTree(t *testing.T) {
 	argv := []string{os.Args[0], "-test.run=^TestAdapterHelperProcess$"}
 	before := repo.liveState(t)
 
-	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, commandReviewer{argv: argv, workDir: workDir},
-		matcher{judge: commandJudge{argv: argv, workDir: workDir}}, replayOptions{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s", WorkDir: workDir})
+	adapter := adapterCommand{argv: argv, workDir: workDir, passthrough: []string{adapterHelperEnv}}
+	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, commandReviewer{adapter},
+		matcher{judge: commandJudge{adapter}}, replayOptions{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s", WorkDir: workDir})
 	if err != nil || report.Reviewed != 1 || len(report.Results[0].JudgeDecisions) != 1 {
 		t.Fatalf("replay through command adapters = %+v, %v; want one case reviewed and judged", report, err)
 	}
@@ -912,13 +983,43 @@ func TestAdaptersRunIsolatedFromCredentialsAndLiveTree(t *testing.T) {
 	}
 }
 
+// forgeTokenVariables are the forms a forge credential reaches the
+// environment in: gh's and GitHub's own names, an instance's configured
+// repository token variable (GOOBERS_GITHUB_TOKEN by default, or any name
+// such as GITEA_TOKEN), and a minted capability credential.
+var forgeTokenVariables = []string{
+	"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+	"GOOBERS_GITHUB_TOKEN", "GITEA_TOKEN", "CUSTOM_FORGE_TOKEN", capability.CredentialEnvVar("repo:write"),
+}
+
+func TestAdapterEnvironmentCarriesNoForgeCredentials(t *testing.T) {
+	for _, name := range forgeTokenVariables {
+		t.Setenv(name, storedSecret)
+	}
+	t.Setenv("MODEL_API_KEY", "model-key")
+	env, err := adapterEnvironment(t.TempDir(), []string{"MODEL_API_KEY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := "\n" + strings.Join(env, "\n") + "\n"
+	if strings.Contains(joined, storedSecret) || !strings.Contains(joined, "\nMODEL_API_KEY=model-key\n") || !strings.Contains(strings.ToUpper(joined), "\nPATH=") {
+		t.Fatalf("adapter environment = %q; want the default allowlist and passthrough names only, no forge token", env)
+	}
+	for _, name := range append([]string{"GITHUB_APP_KEY", "GOOBERS_CREDENTIAL_SCHEME_REPO", "GITLAB_PAT", "BAD=NAME",
+		"GIT_CONFIG_PARAMETERS", "git_config_key_1", "GCM_CREDENTIAL_STORE", "SSH_AUTH_SOCK", "HOME", "AppData"}, forgeTokenVariables...) {
+		if _, err := adapterEnvironment(t.TempDir(), []string{name}); err == nil {
+			t.Errorf("adapter passthrough %q was accepted; forge credentials must never be passed through", name)
+		}
+	}
+}
+
 // checkAdapterIsolated asserts an adapter ran in a scratch directory under
 // workDir, outside the live repository, with isolated home directories, git
 // credential helpers disabled, and no stored credential reachable.
 func checkAdapterIsolated(t *testing.T, seen adapterObservation, workDir, liveDir string) {
 	t.Helper()
-	if len(seen.Secrets) > 0 || seen.Env["GH_TOKEN"] != "" {
-		t.Errorf("%s adapter reached stored credentials %v (GH_TOKEN %q)", seen.Role, seen.Secrets, seen.Env["GH_TOKEN"])
+	if len(seen.Secrets) > 0 {
+		t.Errorf("%s adapter reached stored credentials %v", seen.Role, seen.Secrets)
 	}
 	if !inside(t, seen.Cwd, workDir) || inside(t, seen.Cwd, liveDir) {
 		t.Errorf("%s adapter ran in %s, want a scratch directory under %s", seen.Role, seen.Cwd, workDir)

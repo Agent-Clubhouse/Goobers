@@ -497,8 +497,17 @@ misses. Each offending commit is reconstructed in a fresh repository from
 objects shared with the live repository, so the fix and all later history are
 unreachable. The reviewer adapter runs in that repository, and the judge in an
 empty scratch directory, both under `-work-dir` (which may not lie inside the
-live repository). Each adapter gets forge tokens stripped from its
-environment, fresh empty home and configuration directories (`HOME`,
+live repository). Each adapter's environment starts from the same default-deny
+ambient allowlist every stage and harness subprocess gets (`internal/procenv`),
+plus only the names given to `-adapter-env` (for example a model API key), so
+no forge token is inherited: not `GH_TOKEN` or `GITHUB_TOKEN`, an instance's
+configured repository token variable (`GOOBERS_GITHUB_TOKEN`, `GITEA_TOKEN`, or
+any other), nor a minted `GOOBERS_CRED_*` credential. `-adapter-env` refuses
+names that look like forge credentials (`GH_*`, `GOOBERS_*`, names containing
+a forge such as `GITHUB` or `GITEA`, any `*_TOKEN` or `*_PAT`, git, credential
+manager, and SSH configuration such as `GIT_CONFIG_PARAMETERS`, and the home
+variables below). Each
+adapter also gets fresh empty home and configuration directories (`HOME`,
 `USERPROFILE`, `APPDATA`, `XDG_*`, `GH_CONFIG_DIR`), global and system git
 config ignored, and git credential helpers disabled, so stored gh and git
 credentials are unreachable. The reviewer receives the request (an opaque case
@@ -515,6 +524,9 @@ than produce an over-budget report. Once the budget is spent, findings still
 awaiting the judge are recorded as skipped for budget (and count as not
 matching) and the remaining cases as `budget-exhausted`. A synthesized or
 failed review, or a judge failure, is recorded as `failed` with its spend kept.
+A reviewer or judge call that fails after reporting a cost still counts that
+cost, is checked against the budget it was given like any other call, and a
+failed judge call is recorded with its error and cost but no verdict.
 Neither counts toward recall.
 
 A finding matches its case's bug when its location names a bug file and a line
