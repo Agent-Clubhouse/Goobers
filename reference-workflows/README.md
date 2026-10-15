@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **11 goobers and 16 workflows**.
-<!-- reference-inventory: goobers=11 workflows=16 -->
+The shipped tree loads **11 goobers and 17 workflows**.
+<!-- reference-inventory: goobers=11 workflows=17 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -54,6 +54,7 @@ The shipped tree loads **11 goobers and 16 workflows**.
 | `merge-review` | Reviews eligible PRs and, when explicitly enabled, lands them. |
 | `parked-item-report` | Reports parked remediation candidates for human review; schedule disabled by default. |
 | `pr-remediation` | Rebases or fixes managed PRs from CI and review evidence. |
+| `quality-spot-check` | Manually runs only the quality lenses that apply to recently changed paths and collates a report; the reference selective parallel (DSL 3.1 preview). |
 | `quality-sprint` | Runs parallel quality audits and nominates findings. |
 | `self-update` | Stages an operator-requested Goobers binary update. |
 | `test-suite-quality` | Detects recurring flaky tests and nominates fix or bounded quarantine proposals. |
@@ -292,7 +293,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 16 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 17 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
@@ -355,6 +356,8 @@ After the canonical quickstart has created and validated a regular instance:
   `pr-remediation` rebases or fixes PRs that need work.
 - **Maintenance:** `docs-updater` handles documentation signals,
   `quality-sprint` nominates findings from parallel audits,
+  `quality-spot-check` runs only the lenses that apply to recent changes
+  (manual; a DSL 3.1 preview selective parallel, local runner only),
   `test-suite-quality` nominates recurring flaky-test fixes or bounded
   quarantines, `tutor` proposes confined config improvements, and
   `self-update` stages requested binary updates. Their trigger and budget

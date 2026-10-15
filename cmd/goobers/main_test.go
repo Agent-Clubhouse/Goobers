@@ -394,13 +394,18 @@ func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 11 goober(s), 16 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 11 goober(s), 17 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
+	// quality-spot-check is the one preview reference workflow: it opts into
+	// DSL 3.1 and acknowledges six preview features (artifact slots and the
+	// selective parallel). Every other reference workflow is preview-free.
 	warnings, previewCount := withoutGeneratedPreviewWarnings(withoutSafetyWarnings(stdout))
 	if !containsWarning(warnings, `Workflow/docs-updater: workflow "docs-updater" has no schedule trigger`) ||
 		!containsWarning(warnings, `Workflow/implementation-pre-review-experiment: workflow "implementation-pre-review-experiment" has no schedule trigger`) ||
-		previewCount != 0 {
+		!containsWarning(warnings, `Workflow/quality-spot-check: workflow "quality-spot-check" has no schedule trigger`) ||
+		!containsWarning(warnings, `Workflow/quality-spot-check: dslVersion "3.1" is preview; this workflow has opted in`) ||
+		previewCount != 6 {
 		t.Fatalf("validate warnings = %#v, preview count = %d; want the intentional manual-workflow notices", warnings, previewCount)
 	}
 }

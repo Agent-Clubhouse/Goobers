@@ -68,6 +68,7 @@ type fakeState struct {
 	cycle        blockedcycle.Result
 	recordErr    error
 	streaks      map[string]int
+	infraStreaks map[string]int
 	loadErr      error
 	writeErr     error
 	reconcileErr error
@@ -86,9 +87,10 @@ type fakeState struct {
 
 func newFakeState() *fakeState {
 	return &fakeState{
-		claimedIDs: map[string][]string{},
-		items:      map[string][]Item{},
-		streaks:    map[string]int{},
+		claimedIDs:   map[string][]string{},
+		items:        map[string][]Item{},
+		streaks:      map[string]int{},
+		infraStreaks: map[string]int{},
 	}
 }
 
@@ -121,6 +123,18 @@ func (s *fakeState) WriteFailureStreak(repo providers.RepositoryRef, itemID stri
 		return s.writeErr
 	}
 	s.streaks[repo.Name+"#"+itemID] = count
+	return nil
+}
+
+func (s *fakeState) LoadInfraFailureStreak(_ context.Context, repo providers.RepositoryRef, itemID string) (int, error) {
+	return s.infraStreaks[repo.Name+"#"+itemID], s.loadErr
+}
+
+func (s *fakeState) WriteInfraFailureStreak(repo providers.RepositoryRef, itemID string, count int, _, _ string) error {
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	s.infraStreaks[repo.Name+"#"+itemID] = count
 	return nil
 }
 
@@ -315,8 +329,10 @@ func TestFailedSkipsInfraAndItemJudgmentDispositions(t *testing.T) {
 					t.Fatalf("Failed call %d: %v", i+1, err)
 				}
 			}
-			if len(poster.updates) != 0 || len(state.streaks) != 0 {
-				t.Fatalf("updates=%+v streaks=%+v, want none", poster.updates, state.streaks)
+			// A failed infrastructure terminal is substrate, not about the item:
+			// it charges neither streak (#5638).
+			if len(poster.updates) != 0 || len(state.streaks) != 0 || len(state.infraStreaks) != 0 {
+				t.Fatalf("updates=%+v streaks=%+v infra=%+v, want none", poster.updates, state.streaks, state.infraStreaks)
 			}
 			if got := len(state.voided) > 0; got != tc.voided {
 				t.Fatalf("voided = %v, want %v", state.voided, tc.voided)

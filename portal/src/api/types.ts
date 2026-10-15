@@ -45,7 +45,8 @@ export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
-export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
+/** "map": a DSL 3.1 map runs one declared task once per item of a frozen roster. */
+export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel" | "map";
 /** "skipped": a selective parallel's frozen selection did not choose this optional branch; it never started. */
 export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output" | "skipped";
 export type GraphTerminal = "complete" | "abort" | "escalate";
@@ -1317,6 +1318,8 @@ export type KnownRunEventType =
   | "daemon.dirty_restart"
   | "parallel.started"
   | "parallel.finished"
+  | "map.started"
+  | "map.finished"
   | "branch.started"
   | "branch.finished"
   | "agent.lifecycle"
@@ -1398,18 +1401,24 @@ export interface RunEvent {
   workflow?: string;
   runId?: string;
   reason?: string;
-  /** The parallel state this event concerns; set on parallel.started/finished and branch.started/finished. */
+  /** The fan-out state this event concerns: the parallel on parallel.*, the map on map.*, and the owning parallel or map on branch.*. */
   parallel?: string;
-  /** The declared branch name; set on branch.started/branch.finished. */
+  /** The declared branch name, or a map item's roster identity; set on branch.started/branch.finished. */
   branchName?: string;
   /** The branch's terminal status; set on branch.finished. */
   branchStatus?: BranchStatus;
-  /** The branch completeness record; set on parallel.started/finished, one entry per declared branch (skipped branches included). */
+  /** The branch completeness record; set on parallel.started/finished (one entry per declared branch, skipped branches included) and map.finished (one entry per roster item). */
   completeness?: BranchOutcome[];
+  /** The roster identity of the map item a branch.started/branch.finished concerns. */
+  mapItemIdentity?: string;
+  /** The canonical digest of the map item a branch.started/branch.finished concerns. */
+  mapItemDigest?: string;
+  /** The frozen roster summary on map.started. */
+  mapRoster?: MapRosterSummary;
   raw?: JsonValue;
 }
 
-/** One entry in a parallel's completeness record (one per declared branch). */
+/** One entry in a parallel's completeness record (one per declared branch) or a map's (one per roster item). */
 export interface BranchOutcome {
   branch: number;
   name: string;
@@ -1417,6 +1426,29 @@ export interface BranchOutcome {
   artifacts: number;
   /** Selective parallels only: the selection's reason for a selected branch, or why a skipped branch did not run. */
   reason?: string;
+  /** Maps only: the roster item's identity. */
+  mapItemIdentity?: string;
+  /** Maps only: the roster item's canonical digest. */
+  mapItemDigest?: string;
+}
+
+/** A map visit's frozen roster: its source and each item's identity and digest, in branch order. Item values stay in the journal. */
+export interface MapRosterSummary {
+  sourceTask: string;
+  sourceSlot: string;
+  sourceDigest: string;
+  integrity: string;
+  failurePolicy: string;
+  itemTimeoutSeconds?: number;
+  maxConcurrent: number;
+  items: MapItemSummary[];
+}
+
+/** One frozen roster item; item i runs as branch i. */
+export interface MapItemSummary {
+  branch: number;
+  identity: string;
+  digest: string;
 }
 
 export interface ExternalRef {

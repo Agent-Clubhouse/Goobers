@@ -217,11 +217,17 @@ export function eventNodeId(event: RunEvent, runId?: string): string | undefined
   if (event.stage) {
     return normalizeRunScopedId(event.stage, runId);
   }
-  if (event.type === "parallel.started" || event.type === "parallel.finished") {
-    // A parallel container is its own graph node (id === declared name);
-    // branch.* events have no single node of their own — a branch spans
-    // multiple stage nodes, so they are attributed via deriveBranchStates
-    // instead, keyed by branch name rather than a graph node id.
+  if (
+    event.type === "parallel.started" ||
+    event.type === "parallel.finished" ||
+    event.type === "map.started" ||
+    event.type === "map.finished"
+  ) {
+    // A parallel or map container is its own graph node (id === declared
+    // name); branch.* events have no single node of their own — a branch
+    // spans multiple stage nodes, so they are attributed via
+    // deriveBranchStates (declared branches) or deriveMapVisits (map items)
+    // instead.
     return event.parallel;
   }
   return normalizeRunScopedId(event.artifact?.stage || event.gate, runId);
@@ -732,6 +738,7 @@ export function deriveNodeStates(
       case "stage.started":
       case "gate.started":
       case "parallel.started":
+      case "map.started":
         states[nodeId] = "running";
         break;
       case "stage.finished":
@@ -741,10 +748,12 @@ export function deriveNodeStates(
         states[nodeId] = stateFromGate(event);
         break;
       case "parallel.finished":
+      case "map.finished":
         // The container's own pending/running/completed axis tracks whether
         // execution REACHED the join, not what the branches inside it did —
         // per-branch outcome (succeeded/failed/cancelled/...) is a separate
-        // signal carried by deriveBranchStates, not smashed into this state.
+        // signal carried by deriveBranchStates and deriveMapVisits, not
+        // smashed into this state.
         states[nodeId] = "completed";
         break;
     }
@@ -895,6 +904,9 @@ export function deriveBranchStates(
           states.delete(branch.name);
         }
       }
+    } else if (event.mapItemIdentity) {
+      // A map item's branch is not a declared branch; deriveMapVisits owns it.
+      continue;
     } else if (event.type === "branch.started" && event.branchName) {
       states.set(event.branchName, { state: "running", seq: event.seq });
     } else if (event.type === "branch.finished" && event.branchName && event.branchStatus) {
@@ -902,6 +914,107 @@ export function deriveBranchStates(
     }
   }
   return states;
+}
+
+// MapItemState is one frozen roster item's execution state as of the
+// playhead: "pending" until its branch starts, then "running" or its terminal
+// BranchStatus. Identity and digest come from the frozen roster on
+// map.started, never from the producer's current output.
+export interface MapItemState {
+  branch: number;
+  identity: string;
+  digest: string;
+  state: "pending" | BranchState;
+  seq?: number;
+}
+
+// MapVisit is the latest visit of one map as of the playhead.
+export interface MapVisit {
+  map: string;
+  startedSeq: number;
+  finishedSeq?: number;
+  sourceTask: string;
+  sourceSlot: string;
+  items: MapItemState[];
+}
+
+// deriveMapVisits is deriveBranchStates' counterpart for maps (#7386): each
+// map's latest visit, its frozen roster in branch order, and each item's
+// state from its branch.started/branch.finished and map.finished's
+// completeness record. Keyed by map name (the map's graph node id). A
+// re-entered map starts a new visit, replacing the previous one.
+export function deriveMapVisits(events: RunEvent[], selectedSeq: number): Map<string, MapVisit> {
+  const visits = new Map<string, MapVisit>();
+  // An item event updates its item only when branch and identity both match
+  // the frozen roster; anything else is not this visit's item.
+  const settle = (event: RunEvent, state: BranchState) => {
+    const item = event.parallel
+      ? visits.get(event.parallel)?.items.find((candidate) => candidate.branch === event.branch)
+      : undefined;
+    if (item && item.identity === event.mapItemIdentity) {
+      item.state = state;
+      item.seq = event.seq;
+    }
+  };
+  for (const event of orderRunEvents(events)) {
+    if (event.seq > selectedSeq) {
+      break;
+    }
+    if (event.type === "map.started" && event.parallel && event.mapRoster) {
+      visits.set(event.parallel, {
+        map: event.parallel,
+        startedSeq: event.seq,
+        sourceTask: event.mapRoster.sourceTask,
+        sourceSlot: event.mapRoster.sourceSlot,
+        items: event.mapRoster.items.map((item) => ({
+          branch: item.branch,
+          identity: item.identity,
+          digest: item.digest,
+          state: "pending",
+        })),
+      });
+    } else if (event.type === "branch.started" && event.mapItemIdentity) {
+      settle(event, "running");
+    } else if (event.type === "branch.finished" && event.mapItemIdentity && event.branchStatus) {
+      settle(event, event.branchStatus);
+    } else if (event.type === "map.finished" && event.parallel) {
+      const visit = visits.get(event.parallel);
+      if (visit) {
+        visit.finishedSeq = event.seq;
+        for (const outcome of event.completeness ?? []) {
+          const item = visit.items.find((candidate) => candidate.branch === outcome.branch);
+          if (item && item.state === "pending") {
+            item.state = outcome.status;
+            item.seq = event.seq;
+          }
+        }
+      }
+    }
+  }
+  return visits;
+}
+
+// mapVisitSummary is the non-color-dependent text for a map visit's progress
+// ("3 items — 2 succeeded, 1 running"), in the BranchState vocabulary.
+export function mapVisitSummary(visit: MapVisit): string {
+  if (visit.items.length === 0) {
+    return "0 items";
+  }
+  const noun = visit.items.length === 1 ? "item" : "items";
+  const counts = new Map<string, number>();
+  for (const item of visit.items) {
+    const label = item.state === "pending" ? "pending" : branchStateLabel(item.state).toLowerCase();
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const detail = [...counts.entries()].map(([label, count]) => `${count} ${label}`).join(", ");
+  return `${visit.items.length} ${noun} — ${detail}`;
+}
+
+// shortDigest abbreviates a canonical "sha256:<hex>" digest for display; the
+// full digest stays available alongside it.
+export function shortDigest(digest: string): string {
+  const hex = digest.startsWith("sha256:") ? digest.slice("sha256:".length) : digest;
+  return hex.slice(0, 12);
 }
 
 // branchStateLabel is the non-color-dependent text for a BranchState — the
@@ -959,6 +1072,8 @@ export function eventHeading(event: RunEvent): string {
     "span.recorded": "Span recorded",
     "parallel.started": "Parallel started",
     "parallel.finished": "Parallel finished",
+    "map.started": "Map started",
+    "map.finished": "Map finished",
     "branch.started": "Branch started",
     "branch.finished": "Branch finished",
     "agent.lifecycle": "Agent lifecycle recorded",
@@ -1054,9 +1169,39 @@ export function eventSummary(
       }
       return `${label} — skipped ${skipped.map(describeBranchOutcome).join(", ")}.`;
     }
+    case "map.started": {
+      const label = event.parallel ? `Map ${event.parallel}` : "A map";
+      const roster = event.mapRoster;
+      if (!roster) {
+        return `${label} started.`;
+      }
+      const noun = roster.items.length === 1 ? "item" : "items";
+      return `${label} started with ${roster.items.length} ${noun} frozen from ${roster.sourceTask}.${roster.sourceSlot}.`;
+    }
+    case "map.finished": {
+      const label = event.parallel ? `Map ${event.parallel}` : "The map";
+      const items = event.completeness ?? [];
+      if (items.length === 0) {
+        return `${label} finished with no items.`;
+      }
+      const succeeded = items.filter((item) => item.status === "succeeded").length;
+      const detail = items
+        .map((item) => `${item.mapItemIdentity ?? item.name}: ${item.status}`)
+        .join(", ");
+      return `${label} finished — ${succeeded}/${items.length} items succeeded (${detail}).`;
+    }
     case "branch.started":
+      if (event.mapItemIdentity) {
+        return `Map item ${event.mapItemIdentity}${event.mapItemDigest ? ` (${shortDigest(event.mapItemDigest)})` : ""} started.`;
+      }
       return event.branchName ? `Branch ${event.branchName} started.` : "A branch started.";
     case "branch.finished":
+      if (event.mapItemIdentity) {
+        const digest = event.mapItemDigest ? ` (${shortDigest(event.mapItemDigest)})` : "";
+        return event.branchStatus
+          ? `Map item ${event.mapItemIdentity}${digest} finished as ${event.branchStatus}.`
+          : `Map item ${event.mapItemIdentity}${digest} finished.`;
+      }
       if (!event.branchName) {
         return "A branch finished.";
       }

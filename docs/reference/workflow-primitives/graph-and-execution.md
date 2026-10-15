@@ -258,6 +258,27 @@ error. The local runner refuses selective parallels whose branches can start
 child workflows the same way. A refused selective parallel never runs as a
 plain parallel.
 
+**Choosing a construct.** Use the cheapest construct that fits:
+
+| You need | Use | Decided by | Shape fixed by the author |
+| --- | --- | --- | --- |
+| One path out of several | Gate `branches` | Gate verdict | All paths |
+| A fixed set of branches, all run | Static `parallel` | Nothing; every branch runs | Branches and width |
+| A fixed set of different branches, a subset run | Selective `parallel` | Selection artifact | Branches; width at most the declared count |
+| The same task over a data-determined list | `map` | Roster artifact | Task template; width at most 32 |
+| A composition nobody can know until run time | Child workflow | The parent agent writes a Workflow | Policy ceiling only |
+| Skip the whole fan-out | Gate before the parallel or map | Gate verdict | Both paths |
+
+**Generated children.** A child workflow proposal may use selective parallels
+and maps only when the parent's pinned policy allows preview features, and
+each map counts as one state toward the proposal's 128-state limit. A mapped
+task may not declare `childWorkflows`, and a generated child cannot declare
+them at all.
+
+The reference workflow
+[`quality-spot-check`](https://github.com/Agent-Clubhouse/Goobers/blob/main/reference-workflows/gaggles/goobers/workflows/quality-spot-check.yaml)
+is a complete selective parallel.
+
 Both read a source document the same way:
 
 ```yaml

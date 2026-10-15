@@ -10,7 +10,16 @@ import type {
   WorkflowGraphNode,
 } from "../api/types";
 import { newestFirst } from "../chronology";
-import { eventHeading, eventSummary, formatDuration, isTranscriptEvent } from "../runDetailData";
+import {
+  branchStateLabel,
+  eventHeading,
+  eventSummary,
+  formatDuration,
+  isTranscriptEvent,
+  mapVisitSummary,
+  shortDigest,
+  type MapVisit,
+} from "../runDetailData";
 import {
   isEmptyTurn,
   parseTranscript,
@@ -137,6 +146,41 @@ function repassDecision(
   return undefined;
 }
 
+// MapItemList shows a map visit's frozen roster (#7386): every item's
+// identity, canonical digest and state in branch order, so each item's lineage
+// is visible whatever order the items ran or settled in.
+function MapItemList({ visit }: { visit: MapVisit | undefined }) {
+  if (!visit) {
+    return (
+      <div className="not-reached">
+        <span>Not reached at this point</span>
+        <small>The map freezes its roster when it starts.</small>
+      </div>
+    );
+  }
+  return (
+    <section aria-label={`${visit.map} map items`} className="map-items">
+      <p className="map-items-summary">
+        {mapVisitSummary(visit)}, frozen from {visit.sourceTask}.{visit.sourceSlot} at sequence{" "}
+        {visit.startedSeq}.
+      </p>
+      {visit.items.length > 0 && (
+        <ol className="map-items-list">
+          {visit.items.map((item) => (
+            <li className={`map-item map-item-${item.state}`} key={item.branch}>
+              <strong>{item.identity}</strong>
+              <code title={item.digest}>{shortDigest(item.digest)}</code>
+              <span>
+                {item.state === "pending" ? "Pending" : branchStateLabel(item.state)}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 // RunStageInspector drills into a selected graph node's attempts or the
 // transcript/artifact evidence selected from the journal.
 export function RunStageInspector({
@@ -151,6 +195,7 @@ export function RunStageInspector({
   onSelectAttempt,
   selectedEvidence,
   selectedEvidenceVisit,
+  mapVisit,
 }: {
   client: DaemonClient;
   runId: string;
@@ -164,6 +209,8 @@ export function RunStageInspector({
   onSelectAttempt?: (isLatest: boolean) => void;
   selectedEvidence?: RunEvent;
   selectedEvidenceVisit?: number;
+  /** The selected map node's latest visit as of the playhead (#7386). */
+  mapVisit?: MapVisit;
 }) {
   const [attempts, setAttempts] = useState<StageAttempt[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "error">("idle");
@@ -172,7 +219,8 @@ export function RunStageInspector({
   const visitButtons = useRef<Array<HTMLButtonElement | null>>([]);
   const attemptButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
-  const stageId = node?.id;
+  // A map is a fan-out container, not a stage: it has items, never attempts.
+  const stageId = node?.kind === "map" ? undefined : node?.id;
   const selectedEvidenceKey = selectedEvidence
     ? `${selectedEvidence.branch}-${selectedEvidence.seq}`
     : undefined;
@@ -345,6 +393,8 @@ export function RunStageInspector({
           runId={runId}
           visit={selectedEvidenceVisit}
         />
+      ) : node.kind === "map" ? (
+        <MapItemList visit={mapVisit} />
       ) : (
         <>
           {loadState === "loading" && (

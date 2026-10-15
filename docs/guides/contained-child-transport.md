@@ -239,7 +239,11 @@ refusal, never an overwrite.
 The catalog projects the pinned parent policy intersected with current grants:
 DSL version, gaggle and policy/config digests, allowed Goober names and effective
 capabilities, declared Linux image runner claims, placement floor, publication
-ceiling and limits. It omits credentials, launcher commands, images/endpoints,
+ceiling, limits, the parent's preview policy and the construct-selection guide
+(gates, static and selective parallels, maps and child workflows, each marked
+available or not for this child). Selective parallels and maps are available
+only when the parent allows preview features, and each map counts as one state
+toward the proposal state limit. It omits credentials, launcher commands, images/endpoints,
 model settings, persona instructions and other Goobers. Catalog JSON is bounded
 to 64 KiB and travels with the kit's existing 8 MiB custody limit.
 
