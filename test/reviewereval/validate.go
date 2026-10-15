@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/gooberruntime"
 )
 
 // roundingSlack is the most round4 moves one recorded cost. Replay enforces
@@ -104,6 +105,9 @@ func (result caseResult) validate() error {
 func (result caseResult) validateReviewed() error {
 	if result.Verdict == nil || len(result.Findings) != len(result.Verdict.Findings) {
 		return errors.New("a reviewed case must record its verdict and score every finding")
+	}
+	if err := gooberruntime.ValidateMergeReviewVerdict(*result.Verdict); err != nil {
+		return fmt.Errorf("a reviewed case's verdict breaks the merge-review contract: %w", err)
 	}
 	judgedMatch := map[int]bool{}
 	for _, decision := range result.JudgeDecisions {

@@ -523,7 +523,12 @@ an adapter that reports spending more stops the replay with an error rather
 than produce an over-budget report. Once the budget is spent, findings still
 awaiting the judge are recorded as skipped for budget (and count as not
 matching) and the remaining cases as `budget-exhausted`. A synthesized or
-failed review, or a judge failure, is recorded as `failed` with its spend kept.
+failed review, a verdict that breaks the merge-review verdict contract (an
+unknown decision, a finding with an invalid severity or class, no message, or a
+cross-PR blocker naming no PR, checked by the same validation production uses),
+or a judge failure, is recorded as `failed` with its spend kept and is never
+scored; `compare` and `publish` refuse a report whose reviewed verdicts break
+that contract.
 A reviewer or judge call that fails after reporting a cost still counts that
 cost, is checked against the budget it was given like any other call, and a
 failed judge call is recorded with its error and cost but no verdict.

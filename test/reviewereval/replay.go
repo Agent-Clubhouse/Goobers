@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/procenv"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -245,6 +246,12 @@ func replayCase(ctx context.Context, live gitReader, review reviewer, item datas
 	}
 	if result.Verdict.Synthesized || result.Verdict.Decision == "" {
 		return reviewResult{CostUSD: result.CostUSD}, errors.New("reviewer returned no reviewed verdict")
+	}
+	// The verdict must satisfy the production merge-review contract (known
+	// decision, severities, classes, messages, cross-PR blockers) before it is
+	// scored; anything else is a failed review with its spend kept.
+	if err := gooberruntime.ValidateMergeReviewVerdict(result.Verdict); err != nil {
+		return reviewResult{CostUSD: result.CostUSD}, fmt.Errorf("reviewer returned an invalid verdict: %w", err)
 	}
 	return result, nil
 }

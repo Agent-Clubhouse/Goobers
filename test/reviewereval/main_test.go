@@ -623,6 +623,41 @@ func TestReplayCountsSpendOfFailedCalls(t *testing.T) {
 	}
 }
 
+func TestReplayRejectsVerdictsBreakingTheMergeReviewContract(t *testing.T) {
+	t.Parallel()
+	repo, set := replayFixture(t)
+	valid := apiv1.Finding{Class: apiv1.FindingMissingTests, Severity: apiv1.SeverityWarning, Location: "a.go:9", Message: "untested"}
+	with := func(change func(*apiv1.Finding)) apiv1.Verdict {
+		finding := valid
+		change(&finding)
+		return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{finding}}
+	}
+	for name, verdict := range map[string]apiv1.Verdict{
+		"unknown decision":         {Decision: "approve", Findings: []apiv1.Finding{valid}},
+		"unknown severity":         with(func(f *apiv1.Finding) { f.Severity = "huge" }),
+		"missing severity":         with(func(f *apiv1.Finding) { f.Severity = "" }),
+		"unknown class":            with(func(f *apiv1.Finding) { f.Class = "nitpick" }),
+		"missing class":            with(func(f *apiv1.Finding) { f.Class = "" }),
+		"empty message":            with(func(f *apiv1.Finding) { f.Message = " " }),
+		"cross-PR with no blocker": with(func(f *apiv1.Finding) { f.Class = apiv1.FindingCrossPRBlocked }),
+	} {
+		reviewer := &fakeReviewer{t: t, repo: repo, answer: func(reviewRequest) reviewResult { return reviewResult{Verdict: verdict, CostUSD: 0.25} }}
+		report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, reviewer, matcher{judge: &fakeJudge{}},
+			replayOptions{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s", WorkDir: t.TempDir()})
+		if err != nil || report.Failed != 1 || report.Reviewed != 0 || report.Overall.Evaluated != 0 || report.TotalCostUSD != 0.25 ||
+			report.Results[0].Verdict != nil || len(report.Results[0].Findings) != 0 || !strings.Contains(report.Results[0].Error, "invalid verdict") || report.validate() != nil {
+			t.Errorf("%s: report = %+v, %v; want the case failed unscored with its spend kept", name, report, err)
+		}
+	}
+	blocked := with(func(f *apiv1.Finding) { f.Class, f.BlockingPRs = apiv1.FindingCrossPRBlocked, []int{7} })
+	reviewer := &fakeReviewer{t: t, repo: repo, answer: func(reviewRequest) reviewResult { return reviewResult{Verdict: blocked} }}
+	report, err := replay(context.Background(), set, gitReader{dir: repo.dir}, reviewer, matcher{},
+		replayOptions{Split: splitEval, Variant: "v", MaxCases: 1, BudgetUSD: 1, Seed: "s", WorkDir: t.TempDir()})
+	if err != nil || report.Reviewed != 1 || report.Failed != 0 {
+		t.Errorf("cross-PR finding naming its blocker: report = %+v, %v; want it reviewed", report, err)
+	}
+}
+
 // checkOverrunsStopReplay asserts a reviewer or judge that reports spending
 // more than its remaining budget stops the replay, and that a work directory
 // inside the live repository is refused.
@@ -656,7 +691,7 @@ func checkOverrunsStopReplay(t *testing.T, repo *fixtureRepo, set dataset) {
 func reportOf(variant string, caught map[string]bool, cost float64) evalReport {
 	var results []caseResult
 	for _, id := range []string{"case-a", "case-b"} {
-		verdict := &apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{{Class: apiv1.FindingSubstantive}}}
+		verdict := &apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{{Class: apiv1.FindingSubstantive, Severity: apiv1.SeverityError, Message: "wrong total"}}}
 		result := caseResult{CaseID: id, Status: statusReviewed, CostUSD: cost, Verdict: verdict, Findings: []findingResult{{Class: "substantive"}}}
 		if caught[id] {
 			result.Caught, result.Findings[0].Match = true, matchLineOverlap
@@ -848,6 +883,8 @@ func TestLoadReportRejectsTamperedReports(t *testing.T) {
 		"over the budget":      func(report *evalReport) { report.BudgetUSD = 1 },
 		"judge cost over case": func(report *evalReport) { report.Results[0].JudgeCostUSD = 2 },
 		"no seed":              func(report *evalReport) { report.Seed = "" },
+		"invalid verdict":      func(report *evalReport) { report.Results[0].Verdict.Decision = "approve" },
+		"unclassed finding":    func(report *evalReport) { report.Results[0].Verdict.Findings[0].Class = "" },
 		"caught with no match": func(report *evalReport) { uncaught(report).Caught = true },
 		"judge match with no decision": func(report *evalReport) {
 			result := uncaught(report)
