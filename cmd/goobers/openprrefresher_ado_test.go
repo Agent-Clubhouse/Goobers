@@ -43,7 +43,7 @@ func (f *recordingADOOpenPRLister) lastRepo() (providers.RepositoryRef, bool) {
 // by build.
 func adoOpenPRDeps(build func(instance.RepoRef) (localscheduler.OpenPRLister, error)) runtimeDeps {
 	deps := productionRuntimeDeps()
-	deps.openPRListers.ado = func(repo instance.RepoRef, _ runner.SecretRegistrar, _ credentials.StoreResolver) (localscheduler.OpenPRLister, error) {
+	deps.openPRListers.ado = func(repo instance.RepoRef, _ runner.SecretRegistrar, _ credentials.StoreResolver, _ providers.QuotaObserver) (localscheduler.OpenPRLister, error) {
 		return build(repo)
 	}
 	return deps
@@ -93,7 +93,7 @@ func TestBuildOpenPRRefresherEnforcesADOCap(t *testing.T) {
 		return fake, nil
 	})
 
-	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test")
+	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test", nil)
 	if err != nil {
 		t.Fatalf("buildOpenPRRefresher: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestBuildOpenPRRefresherADOFailsOpen(t *testing.T) {
 		projects := map[string]apiv1.RepoRef{
 			"example": {Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "web"},
 		}
-		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test")
+		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test", nil)
 		if err != nil || set == nil {
 			t.Fatalf("set = %v, err = %v; want a refresher", set, err)
 		}
@@ -237,7 +237,7 @@ func TestBuildOpenPRRefresherADOFailsOpen(t *testing.T) {
 		projects := map[string]apiv1.RepoRef{
 			"example": {Provider: apiv1.ProviderADO, Owner: "example-org", Project: "other-project", Name: "site"},
 		}
-		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test")
+		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test", nil)
 		if err != nil || set != nil {
 			t.Fatalf("set = %v, err = %v; want nil, nil", set, err)
 		}

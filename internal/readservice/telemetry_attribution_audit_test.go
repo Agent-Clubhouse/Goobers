@@ -265,8 +265,22 @@ func TestStoredFaultAuditPersistsFindingAfterBaselineLeavesWindow(t *testing.T) 
 func TestStoredFaultAuditScopesCooldownToQuery(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	writeAuditRecordForWorkflow(t, root, "first", "implementation", "v1", "shared worktree failure")
-	writeAuditRecordForWorkflow(t, root, "second", "curation", "v1", "shared worktree failure")
+	// A shared worktree fault as the attributor records it: an environment
+	// cause whose fixed summary names no component, and the stage's recorded
+	// error code, which does. (This fixture used to be a weak-instructions
+	// cause summarized "shared worktree failure", which only reached the
+	// product domain because keywords outranked the class — a weak-
+	// instructions finding is a workflow-definition defect by definition, and
+	// the attributor never writes that summary.)
+	sharedWorktreeFault := creditgraph.CauseFinding{
+		Class:     creditgraph.ClassEnvironment,
+		ErrorCode: telemetry.ErrCodeInfraWorkspace,
+		// Copy of creditgraph.environmentCauseSummary (unexported); keep in
+		// step if the attributor's template changes.
+		Summary: "the stage recorded an error status, which the harness or environment raises rather than an agent decision",
+	}
+	writeAuditRecordForWorkflow(t, root, "first", "implementation", "v1", sharedWorktreeFault)
+	writeAuditRecordForWorkflow(t, root, "second", "curation", "v1", sharedWorktreeFault)
 
 	scopedReader := &pagedAttributionReader{pages: []readmodel.ListPage{{
 		Runs: []readmodel.RunRow{terminalAuditRow("first", now.Add(-time.Hour))},
@@ -333,7 +347,10 @@ func TestShadowBackpropReportEnrollsOverrideRunsWithoutReachingFiling(t *testing
 	reader := func() readmodel.Reader {
 		return &pagedAttributionReader{pages: []readmodel.ListPage{{Runs: rows}}}
 	}
-	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+	// The fixture's runs yield only a sparse mixed/unknown finding, which the
+	// default threshold never files; a low explicit threshold makes it fileable.
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1,
+		Filing: creditgraph.FilingThreshold{Confidence: 0.3, Source: creditgraph.FilingThresholdDefault}}
 	overrides := map[string]*apiv1.GaggleBackprop{"goobers": {Mode: apiv1.BackpropModeShadow}}
 
 	report, err := StoredShadowBackprop(context.Background(), root, reader(), StoredAttributionQuery{}, overrides, config)
@@ -359,6 +376,28 @@ func TestShadowBackpropReportEnrollsOverrideRunsWithoutReachingFiling(t *testing
 		t.Fatalf("report without override = %+v, want off workflows unobserved", unobserved.Runs)
 	}
 	assertShadowRunsInvisibleToFiling(t, root, reader, config, rows)
+}
+
+func TestShadowBackpropAppliesThePublishedFilingThreshold(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	rows := writeShadowAuditRuns(t, root, now, map[string]any{"mode": "shadow", "version": "v1"}, "shadow-1", "shadow-2")
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{Runs: rows}}}
+	if err := PublishAttributionEval(root, imprecisePublishedEval()); err != nil {
+		t.Fatal(err)
+	}
+	report, err := StoredShadowBackprop(context.Background(), root, reader, StoredAttributionQuery{}, nil,
+		creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := imprecisePublishedEval()
+	if got := report.WouldFile.FilingThreshold; got == nil || *got != creditgraph.DeriveFilingThreshold(&summary) {
+		t.Fatalf("shadow filing threshold = %+v, want one derived from the published eval", got)
+	}
+	if report.WouldFile.ObservationsScanned != 2 || len(report.Comparisons) != 0 {
+		t.Fatalf("shadow report = %+v, want findings scanned but none listed as would-file under a none-fileable threshold", report)
+	}
 }
 
 // writeShadowAuditRuns creates failed terminal runs whose trusted pinned
@@ -450,21 +489,25 @@ func writeAuditRecord(t *testing.T, root, runID, version string, withCause bool)
 
 func writeAuditRecordWithEnvironment(t *testing.T, root, runID, version string, withCause bool, environment string) {
 	t.Helper()
-	summary := ""
+	var cause *creditgraph.CauseFinding
 	if withCause {
-		summary = "workflow instructions failed"
+		cause = &creditgraph.CauseFinding{Class: creditgraph.ClassWeakInstructions, Summary: "workflow instructions failed"}
 	}
-	writeAuditRecordForWorkflowEnvironment(t, root, runID, "implementation", version, summary, environment)
+	writeAuditRecordForWorkflowEnvironment(t, root, runID, "implementation", version, cause, environment)
 }
 
-func writeAuditRecordForWorkflow(t *testing.T, root, runID, workflow, version, summary string) {
+func writeAuditRecordForWorkflow(t *testing.T, root, runID, workflow, version string, cause creditgraph.CauseFinding) {
 	t.Helper()
-	writeAuditRecordForWorkflowEnvironment(t, root, runID, workflow, version, summary, "")
+	writeAuditRecordForWorkflowEnvironment(t, root, runID, workflow, version, &cause, "")
 }
 
+// writeAuditRecordForWorkflowEnvironment publishes an attribution record for
+// one terminal run; a nil cause records a run without failure causes.
 func writeAuditRecordForWorkflowEnvironment(
 	t *testing.T,
-	root, runID, workflow, version, summary, environment string,
+	root, runID, workflow, version string,
+	cause *creditgraph.CauseFinding,
+	environment string,
 ) {
 	t.Helper()
 	layout := instance.NewLayout(root)
@@ -511,19 +554,18 @@ func writeAuditRecordForWorkflowEnvironment(
 		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordComplete,
 		RunID: runID, Workflow: workflow, EffectiveVersion: version, Workload: "issue",
 	}
-	if summary != "" {
+	if cause != nil {
+		finding := *cause
+		finding.NodeID, finding.Stage, finding.Confidence = "stage", "implement", 0.9
 		record.Attribution = creditgraph.Attribution{
 			Contributions: []creditgraph.Contribution{{
 				NodeID: "stage", Stage: "implement", Path: []string{"stage"}, Confidence: 0.9,
 			}},
-			Causes: []creditgraph.CauseFinding{{
-				NodeID: "stage", Stage: "implement", Class: creditgraph.ClassWeakInstructions,
-				Confidence: 0.9, Summary: summary,
-			}},
+			Causes: []creditgraph.CauseFinding{finding},
 		}
 		record.Evidence = []creditgraph.AttributionEvidenceLink{{
 			RunID: runID, NodeID: "stage", Stage: "implement",
-			Source: string(creditgraph.ClassWeakInstructions), JournalSequence: 1, JournalPath: "events.jsonl",
+			Source: string(finding.Class), JournalSequence: 1, JournalPath: "events.jsonl",
 		}}
 	} else {
 		record.Attribution = creditgraph.Attribution{

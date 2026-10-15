@@ -181,6 +181,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		Mutations:            mutations,
 		Result:               envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
+		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runner.WorkspaceHeadMovedErrorCode,
 		Verdict:                 outcome.Verdict,
 	})
 	if err != nil {
@@ -248,6 +249,10 @@ func surrenderRetryDeadline(stageTimeout time.Duration) time.Duration {
 type stageOutcome struct {
 	Result  apiv1.ResultEnvelope
 	Verdict *apiv1.Verdict
+	// WorkspaceHeadMoved marks Result as this runtime's own provisioning
+	// refusal on a moved pull request head (#6019); see
+	// dispatcher.SurrenderedResult.WorkspaceHeadMoved.
+	WorkspaceHeadMoved bool
 }
 
 // runStage executes whatever this pod was dispatched to run. An AGENTIC stage
@@ -273,14 +278,20 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	case executor.KindExternalTelemetry:
 		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr)}
 	}
-	return stageOutcome{Result: runDeclaredStage(ctx, stdout, stderr)}
+	var headMoved bool
+	result := runDeclaredStage(ctx, stdout, stderr, &headMoved)
+	return stageOutcome{Result: result, WorkspaceHeadMoved: headMoved}
 }
 
 // runDeclaredStage builds and runs the pinned Command/Script, and always
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
-func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome apiv1.ResultEnvelope) {
+//
+// headMoved, when non-nil, reports whether its workspace provisioning refused
+// a delta on a moved pull request head (#6019) — provenance only this runtime
+// can vouch for (dispatcher.SurrenderedResult.WorkspaceHeadMoved).
+func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *bool) (outcome apiv1.ResultEnvelope) {
 	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
 	// it is currently enforced by an ABSENCE and an absence is invisible to the
@@ -379,7 +390,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that
 		// says nothing about provisioning.
-		return failureEnvelope("workspace_provision_failed", err.Error())
+		return provisionFailureEnvelope(err, headMoved)
 	}
 	// The STAGE's git needs the same exemption: it runs in the same
 	// differently-owned workspace, and real workflows commit and push from it.
@@ -667,6 +678,16 @@ func logStageFailureEnvelope(stderr io.Writer, envelope apiv1.ResultEnvelope) {
 	pf(stderr, "dispatch-exec: stage %s: code=%q message=%q\n", envelope.Status, code, message)
 }
 
+// provisionFailureEnvelope is the declared-stage arm's workspace-provisioning
+// failure, attesting a moved pull request head through headMoved (#6019).
+func provisionFailureEnvelope(err error, headMoved *bool) apiv1.ResultEnvelope {
+	code := workspaceProvisionFailureCode(err)
+	if headMoved != nil {
+		*headMoved = code == runner.WorkspaceHeadMovedErrorCode
+	}
+	return failureEnvelope(code, err.Error())
+}
+
 func failureEnvelope(code, message string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: code, Message: message}}
 }
@@ -908,12 +929,20 @@ func (c podStageCredentials) withGrant(creds []dispatcher.MintedCredential) []di
 // executor applies too (#5905): the stage cannot refresh the value, and the
 // expiry lets its Azure DevOps credential source say "expired" rather than
 // "revoked or without access" when Azure DevOps answers 401.
+//
+// On Azure DevOps (a stated repoAuthScheme) each credential the plane stated a
+// scheme for also gets GOOBERS_CREDENTIAL_SCHEME_<capability> (#5957); one with
+// none uses the repository's. The local executor applies the same rule
+// (executor.ShellExecutor.appendRepoEnv).
 func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
-	env := make([]string, 0, 2*len(creds)+1)
+	env := make([]string, 0, 3*len(creds)+1)
 	for _, cred := range creds {
 		env = append(env, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
 		if cred.ExpiresAt != nil && !cred.ExpiresAt.IsZero() {
 			env = append(env, capability.CredentialExpiryEnvVar(cred.Capability)+"="+capability.FormatCredentialExpiry(*cred.ExpiresAt))
+		}
+		if repoAuthScheme != "" && cred.Scheme != "" {
+			env = append(env, capability.CredentialSchemeEnvVar(cred.Capability)+"="+cred.Scheme)
 		}
 	}
 	if repoAuthScheme != "" && len(creds) > 0 {
@@ -990,17 +1019,21 @@ func podCheckoutCredentials(ctx context.Context, stageCreds []dispatcher.MintedC
 // every credential this pod held — the stage's and the checkout's — and, for
 // an Azure DevOps repository credential, every header form it can be sent in
 // (providers.ADOCredential.ScrubForms): a bare base64 Basic value has no
-// "Basic " prefix for the pattern net to key on. The daemon's minting source
-// registers the same forms, so a self runner and a pod redact the same bytes.
+// "Basic " prefix for the pattern net to key on. The self runner registers the
+// same forms (executor.ShellExecutor.registerADOCredentialForms), so a self
+// runner and a pod redact the same bytes.
+// Each value's forms follow its own stated scheme (#5957): a credentials:
+// entry's PAT on an Entra gaggle is sent as Basic, so its Basic form is what
+// must be redacted.
 func podStageScrubber(creds []dispatcher.MintedCredential, repoAuthScheme string) journal.Scrubber {
 	registry, scrubber := journal.DefaultScrubber()
-	kind := ""
-	if strings.TrimSpace(repoAuthScheme) != "" {
-		kind, _ = adoCredentialKindForScheme(repoAuthScheme)
-	}
 	for _, cred := range creds {
 		registry.Register([]byte(cred.Value))
-		if kind == "" {
+		if strings.TrimSpace(repoAuthScheme) == "" {
+			continue
+		}
+		kind, err := adoCredentialKindForScheme(cred.SchemeOr(repoAuthScheme))
+		if err != nil {
 			continue
 		}
 		for _, form := range (providers.ADOCredential{Kind: kind, Secret: cred.Value}).ScrubForms() {

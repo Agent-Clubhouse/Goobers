@@ -76,6 +76,7 @@ func (s *instanceState) apply(event journal.Event) {
 	s.applyClusterCheck(event)
 	s.applyProviderAuthHealth(event)
 	s.applyBlockerCleared(event)
+	s.applyWorkflowRefusal(event)
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -114,20 +115,6 @@ func (s *instanceState) apply(event journal.Event) {
 		}
 		if blocking, ok := localscheduler.RefillBlockedReason(event.Reason); ok && event.Workflow != "" {
 			s.blockRefill(event.Gaggle, event.Workflow, blocking)
-		}
-	case journal.EventWorkflowRefused:
-		key := event.Gaggle + "/" + event.Workflow
-		if _, known := s.refusals[key]; !known {
-			s.refusalOrder = append(s.refusalOrder, key)
-		}
-		if s.refusals == nil {
-			s.refusals = make(map[string]WorkflowRefusalStatus)
-		}
-		s.refusals[key] = WorkflowRefusalStatus{
-			Gaggle:   event.Gaggle,
-			Workflow: event.Workflow,
-			Reason:   event.Reason,
-			At:       event.Time,
 		}
 	case journal.EventDaemonDirtyRestart:
 		s.dirtyReason = event.Reason
@@ -287,6 +274,38 @@ func (s *instanceState) blockRefill(gaggle, workflow, blocking string) {
 		s.refillBlocked = make(map[localscheduler.WorkflowIdentity]string)
 	}
 	s.refillBlocked[localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflow}] = blocking
+}
+
+// applyWorkflowRefusal folds workflow.refused and workflow.readmitted: the
+// latest refusal per workflow, cleared when a transient harness refusal
+// lifts (#6017).
+func (s *instanceState) applyWorkflowRefusal(event journal.Event) {
+	key := event.Gaggle + "/" + event.Workflow
+	switch event.Type {
+	case journal.EventWorkflowRefused:
+		if _, known := s.refusals[key]; !known {
+			s.refusalOrder = append(s.refusalOrder, key)
+		}
+		if s.refusals == nil {
+			s.refusals = make(map[string]WorkflowRefusalStatus)
+		}
+		s.refusals[key] = WorkflowRefusalStatus{
+			Gaggle:   event.Gaggle,
+			Workflow: event.Workflow,
+			Reason:   event.Reason,
+			At:       event.Time,
+		}
+	case journal.EventWorkflowReadmitted:
+		s.removeRefusal(key)
+	}
+}
+
+func (s *instanceState) removeRefusal(key string) {
+	if _, known := s.refusals[key]; !known {
+		return
+	}
+	delete(s.refusals, key)
+	s.refusalOrder = slices.DeleteFunc(slices.Clone(s.refusalOrder), func(candidate string) bool { return candidate == key })
 }
 
 func (s *instanceState) resetRefusals() {

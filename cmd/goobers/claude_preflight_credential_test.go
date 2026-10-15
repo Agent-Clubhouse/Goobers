@@ -36,7 +36,7 @@ func TestClaudePreflightRegistryUsesScopedFileCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, err := harnessModelCredentialResolver(cfg, stores)(apiv1.HarnessClaudeCode)
+	resolve, err := harnessModelCredentialResolver(cfg, stores).resolve(apiv1.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}

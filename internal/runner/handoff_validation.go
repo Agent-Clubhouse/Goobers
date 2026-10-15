@@ -402,6 +402,11 @@ func invalidHandoffRerouteUnsupported(machine *workflow.Machine, branchStart str
 				}
 			}
 		}
+		for _, m := range machine.Def.Spec.Maps {
+			if m.Task == producer {
+				return fmt.Sprintf("producer %q is the mapped task of map %q and runs only for a frozen roster item", producer, m.Name)
+			}
+		}
 		return ""
 	}
 	if hasStageArtifactPointers(inherited, producer) {

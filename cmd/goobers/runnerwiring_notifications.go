@@ -280,6 +280,9 @@ func newEscalationPolicy(l instance.Layout, cfg *instance.Config, resolver crede
 		},
 		RunsDir: l.RunsDir(),
 		State:   escalationNotifyState{layout: l, cfg: cfg},
+		EngineInterruption: func(runID string) (string, error) {
+			return engineWatchdogInterruption(l.SchedulerDir(), runID)
+		},
 	}
 }
 
@@ -392,6 +395,10 @@ func (s escalationNotifyState) ClearParks(repo providers.RepositoryRef, itemID s
 
 func (s escalationNotifyState) VoidRemediationCharge(ctx context.Context, poster gate.Commenter, runID string) error {
 	return voidRemediationChargeForRun(ctx, poster, s.layout, runID)
+}
+
+func (s escalationNotifyState) SettleSupersededRun(ctx context.Context, poster gate.Commenter, runID, finalState string) (bool, error) {
+	return settleSupersededRun(ctx, poster, s.layout, runID, finalState)
 }
 
 func (s escalationNotifyState) SettleNoWorkStreak(ctx context.Context, poster gate.Commenter, runID, finalState, runURL string) error {

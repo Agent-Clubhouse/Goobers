@@ -130,6 +130,11 @@ removes that state after the invocation. Repository `.codex` configuration is
 therefore not activated. Goobers' platform sandbox, when configured, still
 wraps the process.
 
+On macOS, Codex's workspace-write sandbox also refuses to signal processes
+outside it, so a name-based `pkill` or `killall` cannot reach the operator's
+other processes. Claude-code needs a built-in deny list for this instead. See
+[Harness host-process safety](harness-host-process-safety.md).
+
 Declared `mcpServers` are written to the private run configuration. Local
 server credentials are forwarded by environment-variable name, and remote
 header credentials use Codex's environment-backed header configuration;

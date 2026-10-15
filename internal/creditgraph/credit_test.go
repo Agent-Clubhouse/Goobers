@@ -321,6 +321,34 @@ func TestAttributeClassifiesEachFailureClass(t *testing.T) {
 	}
 }
 
+// TestAttributeCarriesTheStageErrorCodeWithoutChangingTheClass pins that the
+// failing stage's recorded error code reaches its findings as provenance only:
+// the class, summary, and confidence are what they are without it.
+func TestAttributeCarriesTheStageErrorCodeWithoutChangingTheClass(t *testing.T) {
+	events := func(finished journal.Event) []journal.Event {
+		return []journal.Event{
+			{Seq: 1, Type: journal.EventRunStarted},
+			{Seq: 2, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+			agentEvent("root", "", "implement", "gpt-5", journal.AgentFailed),
+			{Seq: 3, Type: journal.EventArtifactRecorded, Stage: "implement", Attempt: 1,
+				Name: "diff", Ref: &journal.Ref{Digest: "sha256:diff"}, Integrity: apiv1.IntegrityUnapproved},
+			finished,
+			{Seq: 5, Type: journal.EventRunFinished, Status: "failed"},
+		}
+	}
+	finished := journal.Event{Seq: 4, Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: "error"}
+	uncoded := causeOfClass(t, attributeGraph(t, Input{RunID: "run-1", Events: events(finished)}), ClassEnvironment)
+	finished.Error = &journal.ErrorDetail{Code: "infra_workspace_failed", Message: "worktree add failed"}
+	coded := causeOfClass(t, attributeGraph(t, Input{RunID: "run-1", Events: events(finished)}), ClassEnvironment)
+	if uncoded.ErrorCode != "" || coded.ErrorCode != "infra_workspace_failed" {
+		t.Fatalf("error codes = %q, %q; want none, then the recorded code", uncoded.ErrorCode, coded.ErrorCode)
+	}
+	coded.ErrorCode = ""
+	if !reflect.DeepEqual(coded, uncoded) {
+		t.Fatalf("coded cause = %+v, want it identical to %+v apart from the code", coded, uncoded)
+	}
+}
+
 // TestAttributeReportsUnknownCauseWhenNoSignalDistinguishesOne covers the
 // unknown-cause criterion: a failing stage the journal describes but does not
 // explain is left unattributed rather than blamed on its nearest component.

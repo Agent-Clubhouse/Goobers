@@ -161,7 +161,7 @@ func classifyTerminalCause(c *journal.TerminalCause, events []journal.Event, fin
 		if (e.Type == journal.EventGateEvaluated || e.Type == journal.EventGateOverridden) && e.Gate == finalState {
 			return terminalGateDecision(c, e, artifactBytes)
 		}
-		if e.Type == journal.EventParallelFinished && e.Parallel == finalState {
+		if (e.Type == journal.EventParallelFinished || e.Type == journal.EventMapFinished) && e.Parallel == finalState {
 			c.Selector, c.Branch, c.Target, c.CausalEventSeq = e.Parallel, e.Branch, e.Target, e.Seq
 			return nil
 		}

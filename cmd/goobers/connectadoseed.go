@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -56,7 +57,7 @@ func connectADOSeedRepository(opts connectOptions) (providers.RepositoryRef, err
 
 func connectSeedADORepository(opts connectOptions, selectors []string, result *onboardingActionResult, stderr io.Writer) int {
 	catalog := connectADOSeedCatalog(opts, selectors)
-	if os.Getenv(opts.tokenEnv) == "" {
+	if opts.keptADOAuth == nil && os.Getenv(opts.tokenEnv) == "" {
 		appendPendingSeedIssues(result, catalog, "credentials unavailable")
 		return 0
 	}
@@ -64,13 +65,34 @@ func connectSeedADORepository(opts connectOptions, selectors []string, result *o
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), stubSampleProviderTimeout)
 		defer cancel()
-		err = seedADOStarter(ctx, newConnectADOSeeder(repo, os.Getenv(opts.tokenEnv)), repo, catalog, result)
+		var seeder connectADOSeeder
+		seeder, err = connectADOSeedClient(opts, repo)
+		if err == nil {
+			err = seedADOStarter(ctx, seeder, repo, catalog, result)
+		}
 	}
 	if err != nil {
 		pf(stderr, "error: seed Azure Boards: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// connectADOSeedClient is the Azure Boards client --seed files through: the
+// --token-env PAT, or, when connect kept a credential source that names no
+// token variable, that source, the way the instance itself authenticates. Errors are
+// scrubbed of anything the source registered as secret.
+func connectADOSeedClient(opts connectOptions, repo providers.RepositoryRef) (connectADOSeeder, error) {
+	if opts.keptADOAuth == nil {
+		return newConnectADOSeeder(repo, os.Getenv(opts.tokenEnv)), nil
+	}
+	registry := journal.NewRegistryScrubber()
+	client, err := newGuidedADOClient(*opts.keptADOAuth, opts.stores, registry)
+	if err != nil {
+		return nil, fmt.Errorf("%s authentication: %s", connectADOAuthLabel(*opts.keptADOAuth),
+			journal.Chain(registry, journal.NewPatternScrubber()).Scrub([]byte(err.Error())))
+	}
+	return client, nil
 }
 
 func connectADOSeedCatalog(opts connectOptions, selectors []string) onboardingSeedCatalog {

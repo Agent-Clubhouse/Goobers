@@ -151,6 +151,14 @@ type SurrenderedResult struct {
 	// nothing about the branch rather than inferring "unchanged" from
 	// silence. Never set beside a non-empty WorkspaceDelta.
 	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
+	// WorkspaceHeadMoved is the pod RUNTIME's own statement that Result's
+	// workspace_head_moved failure came from its workspace provisioning
+	// refusing to land the run's delta on a pull request head that moved
+	// under the run (#6019) — never from the stage. The engine honours that
+	// code only beside this flag: a stage's own result cannot claim the
+	// superseded exit, because the stage never sees the dispatcher's control
+	// plane that sets it.
+	WorkspaceHeadMoved bool `json:"workspaceHeadMoved,omitempty"`
 	// Verdict is the reviewer's decision when the attempt was an agentic
 	// reviewer GATE evaluated in a pod (Attempt.Review, agentickit.ModeReview;
 	// decision 001 rulings 7–8) — the same apiv1.Verdict the worker's

@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -105,6 +106,7 @@ func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, it
 	if err != nil || held {
 		return result, err
 	}
+	request.Reason = claimrelease.Superseded.Because("ledger_lease_lost", "")
 	if _, err := session.env.issueProvider.ReleaseWorkItemClaim(ctx, request); err != nil {
 		// The open provider epoch would block the lease's new owner, so the
 		// stage must fail rather than carry on as though cleanup succeeded.

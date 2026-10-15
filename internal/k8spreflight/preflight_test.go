@@ -126,7 +126,7 @@ func TestRunConformantClusterPasses(t *testing.T) {
 		TemporalHostPort:  "temporal-frontend.goobers-temporal:7233",
 		TemporalNamespace: "default",
 		DialTemporal: func(context.Context, string) (temporalNamespaceDescriber, error) {
-			return &fakeTemporalDescriber{wantNamespace: "default"}, nil
+			return healthyRoutingTemporal("default"), nil
 		},
 	})
 

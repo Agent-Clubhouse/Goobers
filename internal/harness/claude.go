@@ -112,6 +112,56 @@ var defaultClaudeExtraArgs = []string{
 	"--permission-mode", "bypassPermissions",
 }
 
+// claudeDeniedNameKillRules are Claude Code permission deny rules for
+// name-based process killing, carried on every claude-code invocation
+// (#6302). An unsandboxed stage shares the operator's uid, and BSD/macOS pkill
+// stops parsing options at its first operand: `pkill -f "cat" -U $(id -u) -n`
+// treats -U, the uid and -n as extra patterns and SIGTERMs every process whose
+// full command line contains "cat" — terminals, browsers, the agent host. The
+// isolated CLAUDE_CONFIG_DIR means no deny rule or hook the operator keeps in
+// ~/.claude can intervene, so the adapter supplies its own.
+//
+// Claude Code matches a Bash rule against the command name as written. It
+// splits compound commands and looks through a fixed set of bare wrappers, so
+// the bare-name rules also deny `x; pkill ...`, `x && pkill ...`, `env pkill`,
+// `sudo pkill`, `command`/`nohup`/`timeout`/`nice`/`time`/`exec pkill`,
+// `FOO=1 pkill`, subshells and groups, and `... | xargs pkill`. An absolute
+// path is a different name, so /usr/bin/env and the absolute pkill/killall
+// paths need their own rules. This is a guard against a known footgun, not a
+// sandbox. Shapes that still get through (verified live, Claude Code
+// 2.1.292): any `sh -c`/`bash -c` wrapper, even a literal one; `eval`;
+// `xargs -I{}`; `find -exec`; `$(command -v pkill)`; a relative `./pkill`;
+// absolute paths not listed here; and `kill $(pgrep ...)`. Only a
+// PID-namespaced or signal-scoped sandbox closes those.
+var claudeDeniedNameKillRules = []string{
+	"Bash(pkill:*)",
+	"Bash(killall:*)",
+	"Bash(/usr/bin/pkill:*)",
+	"Bash(/usr/bin/killall:*)",
+	"Bash(/bin/pkill:*)",
+	"Bash(/bin/killall:*)",
+	"Bash(/usr/bin/env pkill:*)",
+	"Bash(/usr/bin/env killall:*)",
+}
+
+// claudeHostSafetyArgs returns the --disallowedTools flag carrying
+// claudeDeniedNameKillRules.
+//
+// The deny travels as --disallowedTools rather than an injected --settings
+// value on purpose. --settings takes a single file-or-JSON value, and an
+// operator's runner.harnessCommand may already carry one, so injecting a
+// second would either clobber the operator's settings or be clobbered by
+// them. --disallowedTools is its own permission-rule source: Claude Code
+// unions it with every settings layer (an operator --settings, the
+// workspace's .claude/settings.json) and with any --disallowedTools the
+// operator adds, and a deny from any source beats an allow from any source,
+// including --allowedTools and bypassPermissions. The result is strictly
+// additive in both directions: the operator's settings are never dropped,
+// and nothing the operator configures can remove this deny.
+func claudeHostSafetyArgs() []string {
+	return append([]string{"--disallowedTools"}, claudeDeniedNameKillRules...)
+}
+
 // claudeToolGroups expands the shared harness-neutral tool-group vocabulary
 // (see copilotToolGroups) into Claude Code's own built-in tool names. There is
 // no Claude equivalent of the "github" group (Copilot resolves it to
@@ -201,6 +251,14 @@ type ClaudeAdapter struct {
 	// EphemeralTmpRoot overrides the temp root the per-attempt directory is
 	// carved out of. Empty means the daemon's own temp root.
 	EphemeralTmpRoot string
+	// KeychainReader reads Claude Code's stored login from the macOS
+	// Keychain when no credentials file is found. Nil selects the invoking
+	// user's real login Keychain via /usr/bin/security, which is what
+	// production wiring wants. A unit test must inject a fake (#7447): left
+	// nil under `go test`, Run panics rather than read the developer's own
+	// Claude Code login, unless an opt-in live integration test called
+	// optInOperatorClaudeLogin (see claude_credential_guard.go).
+	KeychainReader ClaudeKeychainReader
 }
 
 // Name returns the adapter's diagnostic identity.
@@ -300,7 +358,7 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 	})
 	if err != nil || res.ExitCode != 0 {
-		return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
+		return PreflightInfo{}, authProbeFailure(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
 	}
 	return PreflightInfo{Version: version}, nil
 }
@@ -317,6 +375,10 @@ func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID strin
 	argv = append(argv, baseCommand...)
 	argv = append(argv, "-p")
 	argv = append(argv, extra...)
+	// Added here, not in claudeExtraArgs, so no ExtraArgs override and no
+	// tool-allowlist shape can produce an argv without it. The completion
+	// repair resumes from a copy of this argv and keeps it too.
+	argv = append(argv, claudeHostSafetyArgs()...)
 	// "auto" is our harness-neutral default sentinel, not a Claude model ID.
 	// Omit it so Claude selects its own default, just as for an empty model.
 	if model != "" && model != "auto" {
@@ -436,7 +498,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
 	}
-	if err := seedClaudeCredentials(ctx, env, configDir); err != nil {
+	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
 	}
 	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
@@ -631,10 +693,18 @@ func ensurePlainDirectory(path string) error {
 
 const claudeCodeKeychainService = "Claude Code-credentials"
 
-type claudeKeychainReader func(context.Context, string) ([]byte, error)
+// ClaudeKeychainReader returns the generic-password secret stored under
+// service in the macOS Keychain. An absent item is reported as an error
+// matching ErrClaudeKeychainItemNotFound (errors.Is).
+type ClaudeKeychainReader func(ctx context.Context, service string) ([]byte, error)
 
-func seedClaudeCredentials(ctx context.Context, env []string, destination string) error {
-	return seedClaudeCredentialsForPlatform(ctx, env, destination, runtime.GOOS, readClaudeKeychainCredentials)
+// ErrClaudeKeychainItemNotFound is a ClaudeKeychainReader's report that the
+// Keychain holds no Claude Code login: the machine was never signed in.
+// Seeding treats it like a missing credentials file, not as a failure.
+var ErrClaudeKeychainItemNotFound = errors.New("keychain item not found")
+
+func seedClaudeCredentials(ctx context.Context, env []string, destination string, readKeychain ClaudeKeychainReader) error {
+	return seedClaudeCredentialsForPlatform(ctx, env, destination, runtime.GOOS, readKeychain)
 }
 
 func seedClaudeCredentialsForPlatform(
@@ -642,7 +712,7 @@ func seedClaudeCredentialsForPlatform(
 	env []string,
 	destination string,
 	goos string,
-	readKeychain claudeKeychainReader,
+	readKeychain ClaudeKeychainReader,
 ) error {
 	sourceDir := ""
 	var home, userProfile string
@@ -681,6 +751,7 @@ func seedClaudeCredentialsForPlatform(
 	var credentials []byte
 	if sourceDir != "" {
 		source := filepath.Join(sourceDir, ".credentials.json")
+		refuseHostClaudeConfigDirUnderTest(sourceDir)
 		var err error
 		credentials, err = os.ReadFile(source)
 		if err != nil && !os.IsNotExist(err) {
@@ -702,7 +773,7 @@ func seedClaudeCredentialsForPlatform(
 			// which includes every CI runner. Genuine failures (a locked
 			// keychain, a denied prompt, security(1) missing) still fail
 			// closed, since they leave the credential state unknown.
-			if isKeychainItemNotFound(err) {
+			if errors.Is(err, ErrClaudeKeychainItemNotFound) {
 				return nil
 			}
 			return fmt.Errorf("read Claude Code credentials from macOS Keychain service %q: %w", claudeCodeKeychainService, err)
@@ -723,8 +794,19 @@ func seedClaudeCredentialsForPlatform(
 	return nil
 }
 
-func readClaudeKeychainCredentials(ctx context.Context, service string) ([]byte, error) {
-	return exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+// readOperatorClaudeKeychain is the production ClaudeKeychainReader: it runs
+// /usr/bin/security against the invoking user's login Keychain, so it reads
+// the operator's real Claude Code login. It is the nil KeychainReader
+// default: always in production, and under `go test` only for an opt-in live
+// integration test (operatorClaudeLoginOptIn). It refuses to run under
+// `go test` otherwise, however a test reached it.
+func readOperatorClaudeKeychain(ctx context.Context, service string) ([]byte, error) {
+	refuseOperatorClaudeKeychainUnderTest()
+	out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+	if isKeychainItemNotFound(err) {
+		return nil, fmt.Errorf("%w: %w", ErrClaudeKeychainItemNotFound, err)
+	}
+	return out, err
 }
 
 // keychainItemNotFoundExit is security(1)'s exit status for

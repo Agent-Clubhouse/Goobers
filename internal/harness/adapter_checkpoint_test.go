@@ -13,6 +13,9 @@ import (
 func TestAdapterTranscriptCheckpointsIdentifyRecoveryInvocation(t *testing.T) {
 	for _, name := range []string{"claude", "copilot"} {
 		t.Run(name, func(t *testing.T) {
+			if name == "claude" {
+				stubClaudeCredentialsHome(t)
+			}
 			workspace := t.TempDir()
 			var got []InvocationTranscriptDelta
 			calls := 0
@@ -66,6 +69,9 @@ func TestAdapterTranscriptCheckpointsIdentifyRecoveryInvocation(t *testing.T) {
 func TestAdapterTranscriptCheckpointFailureDoesNotLaunchRecovery(t *testing.T) {
 	for _, name := range []string{"claude", "copilot"} {
 		t.Run(name, func(t *testing.T) {
+			if name == "claude" {
+				stubClaudeCredentialsHome(t)
+			}
 			workspace := t.TempDir()
 			failure := errors.New("checkpoint storage failed")
 			calls := 0
@@ -96,7 +102,7 @@ func TestAbsentAdapterTranscriptCheckpointAllocatesNoCallback(t *testing.T) {
 
 func checkpointTestAdapter(name string, runner ProcessRunner) Adapter {
 	if name == "claude" {
-		return &ClaudeAdapter{Command: []string{"claude-checkpoint-test"}, Runner: runner}
+		return &ClaudeAdapter{Command: []string{"claude-checkpoint-test"}, Runner: runner, KeychainReader: absentClaudeKeychain}
 	}
 	return &CopilotAdapter{Command: []string{"copilot-checkpoint-test"}, Runner: runner}
 }

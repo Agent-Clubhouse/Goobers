@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,12 +41,27 @@ type adoRemediationServerState struct {
 	// order; the sticky remediation-state comment is seeded here so
 	// ListPullRequestThreadComments surfaces it exactly as a GitHub PR comment.
 	threadComments []string
+	// humanComments are comments a person wrote, served as a second, active
+	// thread after the bot's. In shared identity mode a person commenting
+	// through Goobers' own identity carries Goobers' author id but no marker.
+	humanComments []adoFixtureHumanComment
 	// deletedLabels records every label name cleared via the native PR-label
 	// DELETE, proving the reroute of the GitHub UpdateWorkItem(ID: PR#) path.
 	deletedLabels []string
 	// workItemHit is set if any wit/workitems endpoint was touched — it must stay
 	// false (the wrong-object hazard, remediation-wiring-plan §0.5).
 	workItemHit bool
+}
+
+// adoRemediationSelfID is the identity id the fake's connectionData reports
+// for the credential, and the author id of the bot's own thread comments.
+const adoRemediationSelfID = "goobers-bot-guid"
+
+// adoFixtureHumanComment is one person-written thread comment.
+type adoFixtureHumanComment struct {
+	body          string
+	authorID      string
+	publishedDate string
 }
 
 func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
@@ -91,14 +107,28 @@ func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
 				"id":            i + 1,
 				"content":       stampOwnFixtureBody(body, "comment"),
 				"commentType":   "text",
-				"author":        map[string]string{"displayName": "goobers-bot", "uniqueName": "bot@example.com"},
+				"author":        map[string]string{"id": adoRemediationSelfID, "displayName": "goobers-bot", "uniqueName": "bot@example.com"},
 				"publishedDate": "2026-07-15T00:00:00Z",
 			}
 		}
+		threads := []map[string]interface{}{{"id": 10, "status": "closed", "comments": comments}}
+		if len(s.humanComments) > 0 {
+			human := make([]map[string]interface{}, len(s.humanComments))
+			for i, c := range s.humanComments {
+				human[i] = map[string]interface{}{
+					"id": i + 1, "content": c.body, "commentType": "text",
+					"author":        map[string]string{"id": c.authorID, "displayName": "a person"},
+					"publishedDate": c.publishedDate,
+				}
+			}
+			threads = append(threads, map[string]interface{}{"id": 11, "status": "active", "comments": human})
+		}
+		writeJSONResp(t, w, map[string]interface{}{"value": threads})
+	})
+
+	mux.HandleFunc("/"+s.owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
-			"value": []map[string]interface{}{{
-				"id": 10, "status": "active", "comments": comments,
-			}},
+			"authenticatedUser": map[string]string{"id": adoRemediationSelfID, "providerDisplayName": "goobers-bot"},
 		})
 	})
 
@@ -106,8 +136,21 @@ func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
 	// before deleting, because ADO 400s on delete-by-name for colon-bearing
 	// names. The id embeds the name so the DELETE can map it back.
 	mux.HandleFunc(idPath+"/labels", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode label add: %v", err)
+			}
+			s.mu.Lock()
+			s.labels = append(s.labels, body.Name)
+			s.mu.Unlock()
+			writeJSONResp(t, w, map[string]interface{}{"id": "labelid-" + body.Name, "name": body.Name})
+			return
+		}
 		if r.Method != http.MethodGet {
-			t.Fatalf("labels method = %s, want GET", r.Method)
+			t.Fatalf("labels method = %s, want GET or POST", r.Method)
 		}
 		s.mu.Lock()
 		vals := make([]map[string]interface{}, 0, len(s.labels))

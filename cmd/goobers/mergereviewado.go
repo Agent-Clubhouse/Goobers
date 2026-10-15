@@ -11,7 +11,8 @@ import (
 // mergeReviewADOProvider adapts the ADO operations used by the merge-review
 // election and refusal stages to the shared remediation helpers. Operations
 // outside those stages remain unavailable rather than being mistaken for ADO
-// support.
+// support. Review threads are supported (ADO-N20): ListPullRequestReviewThreads
+// is the embedded provider's own, no longer reported unsupported (#6134).
 type mergeReviewADOProvider struct {
 	*providers.ADOProvider
 }
@@ -42,10 +43,6 @@ func (p mergeReviewADOProvider) UpdateBranch(context.Context, providers.UpdateBr
 
 func (p mergeReviewADOProvider) CIFailures(context.Context, providers.RepositoryRef, string) ([]providers.CIFailureDetail, error) {
 	return nil, p.unsupported("CI failures")
-}
-
-func (p mergeReviewADOProvider) ListPullRequestReviewThreads(context.Context, providers.RepositoryRef, string) (providers.PullRequestReviewThreads, error) {
-	return providers.PullRequestReviewThreads{}, p.unsupported("review threads")
 }
 
 func (p mergeReviewADOProvider) ListRecentlyClosedPullRequests(context.Context, providers.ListPullRequestsRequest, time.Time) ([]providers.PullRequestSummary, error) {

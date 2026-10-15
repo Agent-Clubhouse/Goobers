@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/decomposition"
@@ -365,7 +366,10 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	env.issueProvider = issueProvider
 	env.ghIssueProvider = githubProviderForBacklogExtras(provider)
 	if ado := adoProviderForBacklogDefaults(provider); ado != nil {
-		applyGaggleDoneStates(env.root, ado)
+		if err := applyGaggleDoneStates(env.root, ado); err != nil {
+			pf(env.stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }
@@ -966,7 +970,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return
 		}
 		for _, item := range session.newlyClaimed {
-			if releaseErr := session.rollback(ctx, item); releaseErr != nil {
+			if releaseErr := session.rollback(ctx, item, claimrelease.Abandoned.Because("backlog_query_failed", "")); releaseErr != nil {
 				pf(stderr, "error: roll back claim %s after backlog query failure: %v\n", item.ID, releaseErr)
 			}
 		}
@@ -1354,13 +1358,42 @@ func (session *backlogClaimSession) annotateNewReadyClaims(ctx context.Context, 
 // set, and warns why it was skipped.
 func (session *backlogClaimSession) skipMalformedClaim(ctx context.Context, index int, cause error) int {
 	malformed := session.claimed[index]
-	if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
+	if releaseErr := session.releaseLedger(ctx, malformed, claimrelease.Abandoned.Because("malformed_item", cause.Error())); releaseErr != nil {
 		pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
 		return 1
 	}
 	session.forgetNewClaim(malformed.ID)
+	if errors.Is(cause, providers.ErrLabelHistoryRevisionMismatch) {
+		return session.reportRevisionMismatch(malformed.ID, index, cause)
+	}
 	pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, cause)
 	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	return 0
+}
+
+// adoRevisionMismatchAnnotation journals an ADO item skipped because its
+// update history ended before its current revision.
+const adoRevisionMismatchAnnotation = "backlog.ado-label-history-revision-mismatch"
+
+// reportRevisionMismatch skips an item exactly as skipMalformedClaim does,
+// but loudly (#5960). The ADO ready-age walk assumes one update per revision.
+// If that assumption is ever wrong, every ADO claim fails this way, so the
+// skip carries a stable error code on stderr and in the instance journal
+// instead of reading as one more malformed item.
+func (session *backlogClaimSession) reportRevisionMismatch(itemID string, index int, cause error) int {
+	pf(session.env.stderr, "error: [%s] skipping eligible item %s: its ADO update history ends before its current revision, which breaks the one-update-per-revision assumption ready ages rely on; if every ADO item reports this, file an issue: %v\n",
+		providers.ErrorCodeLabelHistoryRevisionMismatch, itemID, cause)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	if err := session.annotations.Append(journal.Event{
+		Type:     journal.EventRunnerAnnotation,
+		Workflow: session.workflow,
+		RunID:    session.runID,
+		Reason:   providers.ErrorCodeLabelHistoryRevisionMismatch,
+		Runner:   map[string]any{"annotation": adoRevisionMismatchAnnotation, "itemId": itemID, "errorCode": providers.ErrorCodeLabelHistoryRevisionMismatch},
+	}); err != nil {
+		pf(session.env.stderr, "error: journal %s for item %s: %v\n", providers.ErrorCodeLabelHistoryRevisionMismatch, itemID, err)
+		return 1
+	}
 	return 0
 }
 
@@ -1504,7 +1537,7 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 	// this back instead of reconstructing ownership from the gaggle's
 	// static project or cfg.Repos[0].
 	if recordErr := recordItemRepositoryForPurpose(session.annotations, session.runID, item.ID, itemKindIssue, session.purpose, session.env.issueRepo()); recordErr != nil {
-		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
+		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID, claimrelease.Abandoned.Because("repository_identity_unrecorded", recordErr.Error())); releaseErr != nil {
 			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
 		}
 		return false, "", fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
@@ -1579,7 +1612,7 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			session.recordCurrentContention(ctx, item, result.ClaimedBy)
 		}
 		session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: result.ClaimedBy, source: claimRefusalProviderEpoch})
-		if err := session.releaseLedger(ctx, item); err != nil {
+		if err := session.releaseLedger(ctx, item, claimrelease.Superseded.Because("provider_claim_lost", "provider claim is held by run "+result.ClaimedBy)); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
 		session.forgetNewClaim(item.ID)
@@ -1599,7 +1632,7 @@ func (session *backlogClaimSession) dropLostLease(ctx context.Context, index int
 		return false, nil
 	}
 	item := session.claimed[index]
-	if releaseErr := session.releaseLedger(ctx, item); releaseErr != nil {
+	if releaseErr := session.releaseLedger(ctx, item, claimrelease.Superseded.Because("ledger_lease_lost", "")); releaseErr != nil {
 		return false, fmt.Errorf("release lapsed ledger claim %s: %w", item.ID, releaseErr)
 	}
 	session.refusals = append(session.refusals, claimRefusal{itemID: lost.itemID, source: claimRefusalLedger})
@@ -1777,7 +1810,7 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if current, held := listing.Lookup(session.claimKey(item)); held && (current.RunID == holder || !current.SharedDeadline.IsZero()) {
 		return false, nil
 	}
-	surrendered, err := session.providerClaimSurrendered(ctx, item, holder, listing)
+	surrendered, released, err := session.providerClaimSurrendered(ctx, item, holder, listing)
 	if err != nil {
 		return false, err
 	}
@@ -1792,13 +1825,16 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 		RunID:              session.runID,
 		LedgerAuthorized:   true,
 		ExpectedClaimRunID: holder,
+		Reason:             claimrelease.Retired(released, holder),
 	}); err != nil {
 		return false, fmt.Errorf("retire provider claim: %w", err)
 	}
 	return true, nil
 }
 
-func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, listing claimsclient.Listing) (bool, error) {
+// providerClaimSurrendered also reports why the holder's lease ended (zero for
+// pre-#4421 history and orphaned epochs), so the retiring comment says it.
+func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, listing claimsclient.Listing) (bool, claimrelease.Reason, error) {
 	foundHistory := false
 	for _, entry := range listing.HistoryForItem(item.ID) {
 		if entry.RunID != holder {
@@ -1806,10 +1842,11 @@ func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context
 		}
 		foundHistory = true
 		if entry.ReleasedAt != nil {
-			return true, nil
+			return true, entry.ReleaseReason, nil
 		}
 	}
-	return session.orphanedProviderClaimSurrendered(ctx, item, holder, foundHistory)
+	surrendered, err := session.orphanedProviderClaimSurrendered(ctx, item, holder, foundHistory)
+	return surrendered, claimrelease.Reason{}, err
 }
 
 type providerClaimEpochReader interface {
@@ -1883,7 +1920,7 @@ func (session *backlogClaimSession) forgetNewClaim(itemID string) {
 	}
 }
 
-func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem) error {
+func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem, reason claimrelease.Reason) error {
 	legacy, err := legacyClaimMarkerAllowed(ctx, session.ledger, session.claimKey(item), session.runID)
 	if err != nil {
 		return err
@@ -1894,15 +1931,16 @@ func (session *backlogClaimSession) rollback(ctx context.Context, item providers
 			Repository: session.env.backlogRepo,
 			ID:         item.ID,
 			RunID:      session.runID,
+			Reason:     reason,
 		})
 	}
-	ledgerErr := session.releaseLedger(ctx, item)
+	ledgerErr := session.releaseLedger(ctx, item, reason)
 	return errors.Join(providerErr, ledgerErr)
 }
 
-func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem) error {
+func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem, reason claimrelease.Reason) error {
 	return session.ledger.Locked(ctx, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
-		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID)
+		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID, reason)
 	})
 }
 
@@ -2895,7 +2933,7 @@ func filterDeclaredDependencyEligibilityDebug(
 			filtered = append(filtered, item)
 			continue
 		}
-		blocked, err := dispatcher.HasOpenWorkItemBlocker(ctx, repo, item.ID)
+		blocked, reason, err := nativeDependencyVerdict(ctx, dispatcher, provider, repo, item.ID)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("check item %s: %v", item.ID, err))
 			if excluded != nil {
@@ -2908,7 +2946,7 @@ func filterDeclaredDependencyEligibilityDebug(
 			continue
 		}
 		if excluded != nil {
-			excluded(item, nativeDependencyExclusionReason(ctx, provider, repo, item))
+			excluded(item, reason)
 		}
 	}
 	return filtered, warnings
@@ -2918,19 +2956,36 @@ type workItemBlockerLister interface {
 	ListWorkItemBlockers(context.Context, providers.RepositoryRef, string) ([]providers.WorkItem, error)
 }
 
-func nativeDependencyExclusionReason(
+// nativeDependencyGenericReason is the exclusion reason when the provider
+// can say an item is blocked but not by what.
+const nativeDependencyGenericReason = "native issue dependencies include an open blocker"
+
+// nativeDependencyVerdict decides whether a work item has an open native
+// blocker and, if so, the exclusion reason naming the blockers — from ONE
+// provider read (#5960). A provider that lists its blockers is asked once and
+// both answers come from that list; asking HasOpenWorkItemBlocker first and
+// listing afterwards read an excluded item's dependencies twice (on ADO, the
+// successor, the predecessor batch and their state categories, all twice).
+// A blocker with no state counts as open, failing closed.
+//
+// backlog.blockers still governs either path: an undeclared capability goes
+// through the Dispatcher and fails closed with ErrUnsupported (CONF-5,
+// #2078), and a provider that cannot list is asked only the yes/no question.
+func nativeDependencyVerdict(
 	ctx context.Context,
+	dispatcher *providers.Dispatcher,
 	provider backlogIssueProvider,
 	repo providers.RepositoryRef,
-	item providers.WorkItem,
-) string {
+	id string,
+) (bool, string, error) {
 	lister, ok := provider.(workItemBlockerLister)
-	if !ok {
-		return "native issue dependencies include an open blocker"
+	if !ok || !dispatcher.Capabilities().Has(providers.CapBacklogBlockers) {
+		blocked, err := dispatcher.HasOpenWorkItemBlocker(ctx, repo, id)
+		return blocked, nativeDependencyGenericReason, err
 	}
-	blockers, err := lister.ListWorkItemBlockers(ctx, repo, item.ID)
+	blockers, err := lister.ListWorkItemBlockers(ctx, repo, id)
 	if err != nil {
-		return "native issue dependencies include an open blocker"
+		return false, "", err
 	}
 	ids := make([]string, 0, len(blockers))
 	for _, blocker := range blockers {
@@ -2939,10 +2994,10 @@ func nativeDependencyExclusionReason(
 		}
 	}
 	if len(ids) == 0 {
-		return "native issue dependencies include an open blocker"
+		return false, "", nil
 	}
 	sort.Strings(ids)
-	return fmt.Sprintf("native issue dependencies include open blocker(s): %s", strings.Join(ids, ","))
+	return true, fmt.Sprintf("native issue dependencies include open blocker(s): %s", strings.Join(ids, ",")), nil
 }
 
 // openPRIssueNumbers returns the set of issue numbers already referenced by
@@ -3521,6 +3576,10 @@ func (s *backlogScanState) run(
 // issue. Curation still needs the early ledger release added by #234, but it
 // must also remove the provider-visible marker that --claim added; otherwise
 // the authoritative ledger becomes free while goobers:claimed leaks forever.
+// workflowReleaseStepReason records that the workflow itself released its
+// claims through an explicit --release step once its consuming step finished.
+var workflowReleaseStepReason = claimrelease.Completed.Because("workflow_release_step", "")
+
 func runBacklogQueryRelease(env backlogQueryEnv) int {
 	root, l := env.root, env.layout
 	stdout, stderr := env.stdout, env.stderr
@@ -3554,7 +3613,7 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 				localEntries = append(localEntries, entry)
 				continue
 			}
-			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); err != nil {
+			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); err != nil {
 				return fmt.Errorf("release shared claim %s: %w", entry.ItemID, err)
 			}
 			released = append(released, entry.ItemID)
@@ -3592,11 +3651,12 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 				ID:               entry.ItemID,
 				RunID:            runID,
 				LedgerAuthorized: true,
+				Reason:           workflowReleaseStepReason,
 			}); rerr != nil {
 				providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
 				return providerErr
 			}
-			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); rerr != nil {
+			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
 			}
 			released = append(released, entry.ItemID)

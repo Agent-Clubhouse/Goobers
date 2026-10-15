@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
@@ -678,17 +679,47 @@ func completeJournalEvent() journal.Event {
 				},
 			}},
 		},
-		Parallel:     "fanout",
-		BranchName:   "east",
-		BranchStatus: journal.BranchSucceeded,
+		Parallel:        "fanout",
+		BranchName:      "east",
+		BranchStatus:    journal.BranchSucceeded,
+		MapItemIdentity: "east",
+		MapItemDigest:   "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		MapRoster: &journal.MapRoster{
+			Source: journal.FanOutSourceRef{
+				Task: "plan", Slot: "roster", Visit: 2, Attempt: 1,
+				Digest:    "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+				Integrity: apiv1.IntegrityDerived, Path: "artifacts/roster", Size: 64, MediaType: "application/json",
+			},
+			FailurePolicy: apiv1.BranchContinueOnError, ItemTimeoutSeconds: 60, MaxConcurrent: 2,
+			Items: []journal.MapItem{{
+				Identity: "east",
+				Digest:   "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				Item:     json.RawMessage(`{"region":"east"}`),
+			}},
+		},
 		Completeness: []journal.BranchOutcome{{
-			Branch: 1, Name: "east", Status: journal.BranchSucceeded, Artifacts: 1,
+			Branch: 1, Name: "east", Status: journal.BranchSucceeded, Artifacts: 1, Reason: "touches internal/auth",
+			MapItemIdentity: "east", MapItemDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		}},
+		Selection: &journal.ParallelSelection{
+			Source:       journal.SelectionSource{Task: "triage", Slot: "lenses", Visit: 4, Attempt: 1},
+			SourceDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			Integrity:    apiv1.IntegrityDerived,
+			Selected:     []string{"east"},
+			Reasons:      map[string]string{"east": "touches internal/auth"},
+		},
 		Workflow:  "implementation",
 		Gaggle:    "goobers",
 		RunID:     "run-123",
 		Reason:    "manual trigger",
 		SkipCount: 1,
+		ClaimRelease: &claimrelease.Reason{
+			Disposition: claimrelease.ForceReleased,
+			Stage:       "implement",
+			Code:        "operator_override",
+			Summary:     "stuck lease recovered",
+			Actor:       "cli",
+		},
 	}
 }
 

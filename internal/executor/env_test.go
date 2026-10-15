@@ -122,7 +122,7 @@ func TestBuildStageEnvTypesUnavailableCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = buildStageEnv(
+	_, _, err = buildStageEnv(
 		context.Background(), injector, []string{capability}, noopRegistrar{},
 		"", "", "", "", "", "", false, nil, nil, nil, nil,
 	)
@@ -162,7 +162,7 @@ func TestBuildStageEnvDeliversTheCredentialExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := buildStageEnv(
+	env, _, err := buildStageEnv(
 		context.Background(), injector, []string{"repo:push", "github:issues:read"}, noopRegistrar{},
 		"", "", "", "", "", "", false, nil, nil, nil, nil,
 	)
@@ -193,7 +193,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
 	ctx := providersnapshot.WithID(context.Background(), "tick-1")
-	withCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "release", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"}, nil, nil)
+	withCtx, _, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "release", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
@@ -213,7 +213,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		}
 	}
 
-	noCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "release", "/instances/demo", false, inputs, nil, nil, nil)
+	noCtx, _, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "release", "/instances/demo", false, inputs, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
@@ -229,7 +229,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 
 	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
 	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
-	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", "", "", true, nil, nil, nil, nil)
+	emptyRoot, _, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", "", "", true, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
 	}
@@ -261,7 +261,7 @@ func TestBuildStageEnvInjectsAdditionalRepoPaths(t *testing.T) {
 	}
 	declared := []string{string(capability.ContentsRead)}
 	for _, injectRunContext := range []bool{true, false} {
-		env, err := buildStageEnv(context.Background(), nil, declared, nil, "run-1", "site", "publish", "", "", "", injectRunContext, nil, nil, nil, additional)
+		env, _, err := buildStageEnv(context.Background(), nil, declared, nil, "run-1", "site", "publish", "", "", "", injectRunContext, nil, nil, nil, additional)
 		if err != nil {
 			t.Fatalf("buildStageEnv(injectRunContext=%v): %v", injectRunContext, err)
 		}
@@ -279,7 +279,7 @@ func TestBuildStageEnvInjectsAdditionalRepoPaths(t *testing.T) {
 		t.Errorf("AdditionalRepoEnvVar(goobers) = %q", got)
 	}
 
-	withoutCapability, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", "", false, nil, nil, nil, additional)
+	withoutCapability, _, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", "", false, nil, nil, nil, additional)
 	if err != nil {
 		t.Fatalf("buildStageEnv(without contents:read): %v", err)
 	}
@@ -296,7 +296,7 @@ func TestBuildStageEnvPassesExtraAllowlist(t *testing.T) {
 	t.Setenv("MY_TOOLCHAIN_HOME", "/opt/toolchain")
 	t.Setenv("MY_UNDECLARED_SECRET", "should-not-pass")
 
-	env, err := buildStageEnv(context.Background(), nil, nil, nil, "", "", "", "", "", "", false, nil, nil, []string{"MY_TOOLCHAIN_HOME"}, nil)
+	env, _, err := buildStageEnv(context.Background(), nil, nil, nil, "", "", "", "", "", "", false, nil, nil, []string{"MY_TOOLCHAIN_HOME"}, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestBuildStageEnvPassesExtraAllowlist(t *testing.T) {
 }
 
 func TestBuildStageEnvIncludesDeclaredEnvironment(t *testing.T) {
-	env, err := buildStageEnv(
+	env, _, err := buildStageEnv(
 		context.Background(),
 		nil,
 		nil,
@@ -421,7 +421,7 @@ func hasEnvPrefix(env []string, name string) bool {
 func TestBuildStageEnvLetsADeclaredGOMAXPROCSWinOverTheAmbientOne(t *testing.T) {
 	t.Setenv(procenv.GOMAXPROCS, "8")
 
-	env, err := buildStageEnv(context.Background(), nil, nil, nil, "run", "gaggle", "wf", "", "", "", false, nil,
+	env, _, err := buildStageEnv(context.Background(), nil, nil, nil, "run", "gaggle", "wf", "", "", "", false, nil,
 		map[string]string{procenv.GOMAXPROCS: "1"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -442,5 +442,29 @@ func TestBuildStageEnvLetsADeclaredGOMAXPROCSWinOverTheAmbientOne(t *testing.T) 
 	if declared < ambient {
 		t.Fatalf("declared %s is at index %d, ambient at %d — the declared value must come last to win",
 			procenv.GOMAXPROCS, declared, ambient)
+	}
+}
+
+// TestBuildStageEnvRefusesTheGaggleBacklogStamp: a local stage cannot author
+// its gaggle's backlog settings (#5957). The CLI trusts GOOBERS_GAGGLE_BACKLOG
+// over the instance config because only the dispatcher sets it, so a
+// workflow's declared env naming it is refused, as a stage pod refuses it,
+// and the operator passthrough never carries the daemon's own value.
+func TestBuildStageEnvRefusesTheGaggleBacklogStamp(t *testing.T) {
+	_, _, err := buildStageEnv(context.Background(), nil, nil, nil, "run", "gaggle", "wf", "", "", "", true, nil,
+		map[string]string{GaggleBacklogEnvVar: `{"project":"attacker"}`}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), GaggleBacklogEnvVar) {
+		t.Fatalf("buildStageEnv error = %v, want a refusal naming %s", err, GaggleBacklogEnvVar)
+	}
+
+	t.Setenv(GaggleBacklogEnvVar, `{"project":"from-the-daemon-environment"}`)
+	env, _, err := buildStageEnv(context.Background(), nil, nil, nil, "run", "gaggle", "wf", "", "", "", true, nil, nil, []string{GaggleBacklogEnvVar}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, GaggleBacklogEnvVar+"=") {
+			t.Fatalf("env carries %q through the operator passthrough", entry)
+		}
 	}
 }

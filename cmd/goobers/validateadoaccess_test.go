@@ -440,7 +440,7 @@ func TestValidateCheckReposFailsOnMissingADOPermission(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init: %d %s", code, stderr)
 	}
-	code, _, stderr = runArgs(t, "connect", "example-org/example-project/web", root)
+	code, _, stderr = runArgs(t, "connect", "example-org/example-project/web", "--token-env", "GOOBERS_ADO_TOKEN", root)
 	if code != 0 {
 		t.Fatalf("connect: %d %s", code, stderr)
 	}

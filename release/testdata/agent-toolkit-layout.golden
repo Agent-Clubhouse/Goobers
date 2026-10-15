@@ -131,6 +131,7 @@ payload/.goobers/agent-toolkit/docs/design/static-fan-out-fan-in.md
 payload/.goobers/agent-toolkit/docs/feature-matrix.md
 payload/.goobers/agent-toolkit/docs/guides/codex-harness.md
 payload/.goobers/agent-toolkit/docs/guides/goobers-io-mcp.md
+payload/.goobers/agent-toolkit/docs/guides/harness-host-process-safety.md
 payload/.goobers/agent-toolkit/docs/guides/quickstart.md
 payload/.goobers/agent-toolkit/docs/guides/stack-support.md
 payload/.goobers/agent-toolkit/docs/guides/supervision.md

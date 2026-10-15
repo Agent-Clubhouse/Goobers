@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -168,7 +169,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		// dispatch time (Linux-preferring, Windows excluded for
 		// ledger-touching stages), so the queue pinned here and the runner
 		// resolved there cannot disagree.
-		selected, serr := dispatcher.SelectRunner(dispatcher.Attempt{
+		selected, serr := SelectStageRunner(gaggleSpec, dispatcher.Attempt{
 			RunID: def.Name, Stage: stage.Stage, Number: 1, LedgerTouching: ledger,
 		}, eligible)
 		if serr != nil {
@@ -194,6 +195,36 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		placements = append(placements, pin)
 	}
 	return placements, nil
+}
+
+// SelectStageRunner picks the runner a stage of gaggle is pinned to from the
+// solver's eligible set. It is dispatcher.SelectRunner, except for a stage of
+// a topology (b) gaggle (a GitHub or Gitea backlog for Azure DevOps code,
+// providerconfig.CrossProviderBacklog). The engine refuses every stage of such
+// a run a pod (engine.CrossProviderBacklogPodCode), so when a self runner is
+// eligible the stage is pinned there, even where SelectRunner's Linux
+// preference would pick a pod over a self entry that declares no OS. That
+// makes "no self runner is eligible" the exact condition under which the
+// stage is refused, which is what `goobers validate` warns about (RNR007).
+//
+// The preference covers every placed stage, agentic gates that declare runsOn
+// included, deliberately: a gate pod of a topology (b) run has the same
+// missing backlog routing, so self is never the worse choice for one.
+// `goobers preflight` reports runner selection through this function too, so
+// its report and the run-start pin agree.
+func SelectStageRunner(gaggle apiv1.GaggleSpec, attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec) (dispatcher.RunnerSpec, error) {
+	if providerconfig.CrossProviderBacklog(gaggle.Project.Provider, gaggle.Backlog.Provider) {
+		var self []dispatcher.RunnerSpec
+		for _, r := range eligible {
+			if r.HostKind == instance.RunnerHostSelf {
+				self = append(self, r)
+			}
+		}
+		if selected, err := dispatcher.SelectRunner(attempt, self); err == nil {
+			return selected, nil
+		}
+	}
+	return dispatcher.SelectRunner(attempt, eligible)
 }
 
 func selfDeniedInstanceRootTask(cfg *instance.Config, task apiv1.Task) bool {

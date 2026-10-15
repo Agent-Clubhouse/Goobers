@@ -121,14 +121,19 @@ type Options struct {
 	// with no namespaces registered, so this must exist before first use —
 	// see deploy/reference/temporal/namespace-job.yaml.
 	TemporalNamespace string
+	// TemporalTaskQueue is the engine task queue whose workflow pollers the
+	// worker-routing check compares with the deployment's routing; empty
+	// uses the instance default (goobers-engine).
+	TemporalTaskQueue string
 	// TemporalTLS is the frontend transport security the namespace check
 	// dials with (#5289); nil dials plaintext. The check reports which
 	// transport it used.
 	TemporalTLS           *temporaldial.TLS
 	TemporalDataConverter converter.DataConverter
 	// DialTemporal dials the Temporal frontend; nil uses temporaldial.Dial
-	// with TemporalTLS. Tests
-	// substitute a fake to avoid a live Temporal server.
+	// with TemporalTLS and TemporalNamespace. Tests substitute a fake to avoid
+	// a live Temporal server; a fake that also implements
+	// workerrouting.Client serves the worker-routing check.
 	DialTemporal func(ctx context.Context, hostPort string) (temporalNamespaceDescriber, error)
 	// HTTPClient serves the issuer/registry probes; nil builds one bounded
 	// by Timeout.
@@ -185,6 +190,7 @@ func checkDefinitions() []checkDefinition {
 		{"registry", checkRegistry},
 		{"egress", checkEgress},
 		{"temporal-namespace", checkTemporalNamespace},
+		{"temporal-worker-routing", checkTemporalWorkerRouting},
 		{"overlay-pin-agreement", checkOverlayPinAgreement},
 		{"overlay-image-contract", checkOverlayImageContract},
 	}

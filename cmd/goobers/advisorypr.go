@@ -20,6 +20,7 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -282,7 +283,7 @@ func runAdvisoryPRSelect(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if !record.SkippedAt.IsZero() || record.HeadSHA == pr.HeadSHA {
-			_ = ledger.ReleaseScoped(ctx, claim, runID)
+			_ = ledger.ReleaseScoped(ctx, claim, runID, claimrelease.NoWork.Because("advisory_already_disposed", ""))
 			continue
 		}
 		return writeAdvisorySelection(ctx, provider, repo, reviewType, pr, stdout, stderr)

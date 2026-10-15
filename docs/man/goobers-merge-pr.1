@@ -12,6 +12,9 @@ Merge a pull request, but only when every independent conjunct holds:
 verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's
 live head/base, and — for a sibling-overlap PR — completed single-lander
 election evidence (elected:true, #1071) — never a bare self-approval.
+When the live head carries the goobers/merge-review verdict status
+(GitHub, Gitea), it must be a pass recorded for the pinned base: a
+failure, a pending, or a pass for another base refuses the merge.
 Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,
 all required; in the shipped merge-review workflow, headSha/baseSha
 come from gather-sibling-context's selectedHeadSha/selectedBaseSha,
@@ -23,12 +26,26 @@ attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
 issues), preMergeCheck (optional; one command per line, run without a
 shell on the PR head merged onto the CURRENT base branch tip — a
-failure refuses the merge as pre-merge-check-failed), resultFile
-(default merge-result.json). Successful merges
-also report headBranch and branchCleanup (deleted, skipped-stacked, or
-failed). Exit codes: 0 = evaluated (merged or not — see the result
-file's "merged" field), 1 = business error (missing capability/config,
-malformed inputs, provider failure), 2 = usage/IO error.
+failure refuses the merge as pre-merge-check-failed),
+blockUnansweredFeedback (default true: refuse as unanswered-human-feedback
+while the newest open human review feedback — a PR comment, a submitted
+review body, or a comment in an unresolved review thread, on Azure
+DevOps any active thread — is unacknowledged by every Goobers response;
+approving reviews and Bot-typed authors never wait on an answer. The
+feedback is read again after a preMergeCheck, right before landing.
+record-merge-refusal routes the PR to remediation, and parks it
+goobers:needs-human when the same comment is refused again. Gitea reports
+no thread resolution and keeps a dismissed review's state, so there every
+review comment counts until answered. Feedback that
+cannot be read refuses as human-feedback-unverifiable. Comments are
+classified as pr-comment-watch classifies them, under the same
+identityMode and excludeAuthors inputs. Set false to merge over
+comments), resultFile (default merge-result.json). Successful merges
+also report headBranch and branchCleanup (deleted, skipped-stacked,
+skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
+(merged or not — see the result file's "merged" field), 1 = business
+error (missing capability/config, malformed inputs, provider failure),
+2 = usage/IO error.
 .fi
 .SH EXAMPLES
 .nf

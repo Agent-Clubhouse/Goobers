@@ -136,7 +136,8 @@
       "id": "workflow_refused",
       "signal": "journal",
       "eventNames": [
-        "workflow.refused"
+        "workflow.refused",
+        "workflow.readmitted"
       ],
       "stableCodes": [
         "conditions: harness-unavailable"
@@ -173,6 +174,7 @@
       "signal": "journal",
       "eventNames": [
         "workflow.refused",
+        "workflow.readmitted",
         "stage.finished"
       ],
       "stableCodes": [

@@ -68,6 +68,7 @@ type fakeState struct {
 	cycle        blockedcycle.Result
 	recordErr    error
 	streaks      map[string]int
+	infraStreaks map[string]int
 	loadErr      error
 	writeErr     error
 	reconcileErr error
@@ -77,13 +78,19 @@ type fakeState struct {
 	voided       []string
 	settled      []string
 	runURLs      []string
+	// superseded marks the runs SettleSupersededRun reports as superseded
+	// (#6019); supersededChecked records every run it was asked about.
+	superseded        map[string]bool
+	supersededChecked []string
+	supersededErr     error
 }
 
 func newFakeState() *fakeState {
 	return &fakeState{
-		claimedIDs: map[string][]string{},
-		items:      map[string][]Item{},
-		streaks:    map[string]int{},
+		claimedIDs:   map[string][]string{},
+		items:        map[string][]Item{},
+		streaks:      map[string]int{},
+		infraStreaks: map[string]int{},
 	}
 }
 
@@ -119,6 +126,18 @@ func (s *fakeState) WriteFailureStreak(repo providers.RepositoryRef, itemID stri
 	return nil
 }
 
+func (s *fakeState) LoadInfraFailureStreak(_ context.Context, repo providers.RepositoryRef, itemID string) (int, error) {
+	return s.infraStreaks[repo.Name+"#"+itemID], s.loadErr
+}
+
+func (s *fakeState) WriteInfraFailureStreak(repo providers.RepositoryRef, itemID string, count int, _, _ string) error {
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	s.infraStreaks[repo.Name+"#"+itemID] = count
+	return nil
+}
+
 func (s *fakeState) ReconcileParkOutbox(context.Context, gate.Commenter) error {
 	s.reconciles++
 	return s.reconcileErr
@@ -137,6 +156,11 @@ func (s *fakeState) ClearParks(repo providers.RepositoryRef, itemID string) erro
 func (s *fakeState) VoidRemediationCharge(_ context.Context, _ gate.Commenter, runID string) error {
 	s.voided = append(s.voided, runID)
 	return nil
+}
+
+func (s *fakeState) SettleSupersededRun(_ context.Context, _ gate.Commenter, runID, _ string) (bool, error) {
+	s.supersededChecked = append(s.supersededChecked, runID)
+	return s.superseded[runID], s.supersededErr
 }
 
 func (s *fakeState) SettleNoWorkStreak(_ context.Context, _ gate.Commenter, runID, _, _ string) error {
@@ -305,8 +329,10 @@ func TestFailedSkipsInfraAndItemJudgmentDispositions(t *testing.T) {
 					t.Fatalf("Failed call %d: %v", i+1, err)
 				}
 			}
-			if len(poster.updates) != 0 || len(state.streaks) != 0 {
-				t.Fatalf("updates=%+v streaks=%+v, want none", poster.updates, state.streaks)
+			// A failed infrastructure terminal is substrate, not about the item:
+			// it charges neither streak (#5638).
+			if len(poster.updates) != 0 || len(state.streaks) != 0 || len(state.infraStreaks) != 0 {
+				t.Fatalf("updates=%+v streaks=%+v infra=%+v, want none", poster.updates, state.streaks, state.infraStreaks)
 			}
 			if got := len(state.voided) > 0; got != tc.voided {
 				t.Fatalf("voided = %v, want %v", state.voided, tc.voided)
@@ -430,6 +456,45 @@ func TestTerminalNotifierRoutesByPhase(t *testing.T) {
 	if !slices.Equal(innerCalls, []journal.RunPhase{journal.PhaseFailed, journal.PhaseEscalated, journal.PhaseCompleted}) {
 		t.Fatalf("inner calls = %v", innerCalls)
 	}
+}
+
+// TestTerminalNotifierLeavesStreaksAloneForSupersededRun is #6019's policy
+// half: a completed run whose pull request moved under it is evidence about
+// neither the work nor the item, so its completion must not erase the item's
+// failure strikes or touch its no-work streak the way an ordinary completion
+// does.
+func TestTerminalNotifierLeavesStreaksAloneForSupersededRun(t *testing.T) {
+	p, poster, state := newTestPolicy(t)
+	state.items["run-1"] = []Item{{ItemID: "pr/42", Repo: webRepo}}
+	state.streaks["web#pr/42"] = 2
+	state.superseded = map[string]bool{"run-1": true}
+
+	if err := p.TerminalNotifier(nil)("run-1", journal.PhaseCompleted, "review"); err != nil {
+		t.Fatalf("completed superseded run: %v", err)
+	}
+	if !slices.Equal(state.supersededChecked, []string{"run-1"}) {
+		t.Fatalf("superseded checks = %v, want run-1 settled", state.supersededChecked)
+	}
+	if state.streaks["web#pr/42"] != 2 || len(state.cleared) != 0 || len(poster.updates) != 0 {
+		t.Fatalf("streaks=%v cleared=%v updates=%+v, want the failure streak untouched", state.streaks, state.cleared, poster.updates)
+	}
+	if len(state.settled) != 0 {
+		t.Fatalf("no-work streak settled for %v, want it untouched", state.settled)
+	}
+
+	t.Run("an unclassifiable run fails closed", func(t *testing.T) {
+		p, _, state := newTestPolicy(t)
+		state.items["run-2"] = []Item{{ItemID: "pr/42", Repo: webRepo}}
+		state.streaks["web#pr/42"] = 2
+		state.supersededErr = errors.New("journal unreadable")
+		err := p.TerminalNotifier(nil)("run-2", journal.PhaseCompleted, "review")
+		if err == nil || !strings.Contains(err.Error(), "journal unreadable") {
+			t.Fatalf("err = %v, want the classification failure reported", err)
+		}
+		if state.streaks["web#pr/42"] != 2 || len(state.settled) != 0 {
+			t.Fatalf("streaks=%v settled=%v, want both left alone", state.streaks, state.settled)
+		}
+	})
 }
 
 // labeledPoster is a fakePoster whose item carries labels, so it satisfies

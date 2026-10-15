@@ -368,6 +368,56 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   (default 3) the PR is labeled `goobers:merge-demoted` (+
   `needs-remediation`, so remediation has a path to move its head) and stops
   being crowned. The demotion self-heals the moment the head advances.
+- **PRL-046a (MUST, Shipped):** A merge MUST NOT land a pull request with open,
+  unanswered **human review feedback**, on any provider, whether or not the
+  forge enforces conversation resolution (#6134). Open feedback is the PR's
+  general comments, its submitted review bodies, and the comments of every
+  review thread that is not resolved (on Azure DevOps, every thread that is not
+  fixed, closed, won't-fix or by-design). It is unanswered when its newest human
+  entry postdates every Goobers acknowledgement, which is the rule
+  `pr-comment-watch` routes on. Human means the shared comment classifier's
+  verdict under the stage's `identityMode`/`excludeAuthors`, so a person writing
+  through Goobers' own identity is still a person. Approving reviews and
+  Bot-typed authors never wait on an answer. `merge-pr` checks this under the
+  merge lock against a live read, and reads the feedback again after a
+  configured pre-merge check, immediately before landing.
+  - An unanswered PR is refused as `unanswered-human-feedback`.
+    `record-merge-refusal` then routes it to remediation (`goobers:needs-remediation`
+    added, `goobers:merge-ready` removed), and the refusal does not count toward
+    demotion. If the same comment is refused again after that, the PR is parked
+    `goobers:needs-human` with a comment that acknowledges the feedback, so the
+    review/remediation cycle is bounded.
+  - Gitea reports no review-thread resolution, and a dismissed Gitea review keeps
+    its state. So on Gitea every review comment counts until it is answered.
+    This over-blocks; it never under-blocks.
+  - An armed landing is withdrawn when feedback arrives after it was armed.
+    - `queue-watch` runs the same check on every poll of a still-queued PR (a
+      GitHub merge-queue entry, or an armed Azure DevOps auto-complete). It
+      uses the same classifier, open-feedback set and `blockUnansweredFeedback`
+      knob, on by default. On unanswered human feedback it withdraws the PR
+      (GitHub: dequeue; ADO: cancel the auto-complete, confirmed by a re-read),
+      removes `goobers:merge-ready` and routes it to
+      `goobers:needs-remediation` with the `unanswered-human-feedback` reason.
+      This does not count toward demotion.
+    - A feedback read that fails on one poll keeps the PR queued and is
+      retried on the next. One failed read is not evidence of feedback, and
+      `merge-pr` already failed closed before arming.
+    - `queue-watch` also withdraws on an opt-out label, or on
+      `needs-remediation` without `merge-ready` (a feedback route). A
+      `needs-remediation` label next to `merge-ready` (post-merge's overlap
+      fan-out) is not a withdrawal.
+    - With `blockUnansweredFeedback: "true"` and the `disarm-landing` policy
+      action, `pr-comment-watch` scans `merge-ready` PRs by their open
+      feedback, disarms an armed ADO auto-complete, and only then removes
+      `merge-ready` and routes the PR. This is opt-in because it is a new
+      mutation for that stage.
+    - Residual: an auto-complete still armed after `queue-watch`'s poll window
+      ends is uncovered unless `pr-comment-watch` is opted in. A GitHub queue
+      entry outliving that window is uncovered.
+  - Feedback that cannot be read in full fails closed as
+    `human-feedback-unverifiable`.
+  - The check is on by default; `blockUnansweredFeedback: "false"` opts out for
+    teams that deliberately merge over comments.
 - **PRL-047 (SHOULD, Shipped):** An **advisory mode** toggle SHOULD let an
   instance evaluate the full conjunct set without attempting a merge;
   advisory refusals never accrue toward demotion. Advisory is the recommended
@@ -383,9 +433,28 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
 
 ### Remediation loop
 
-- **PRL-050 (MUST, Shipped):** `pr-remediation` MUST select by descending
-  cause priority — labeled `needs-remediation`, then failing CI, then merely
-  behind-base — in the shared claim namespace (PRL-002). A clean, behind-base,
+- **PRL-050 (MUST, Shipped):** `pr-remediation` MUST select from two tiers in
+  the shared claim namespace (PRL-002): the strong tier — labeled
+  `needs-remediation` or failing CI — and, only when no strong candidate
+  exists, the merely behind-base fallback. Within the strong tier the two
+  signals share ONE oldest-first order (lowest PR number first — PR age, not
+  how long the signal has been present), so a PR with either signal waits
+  only behind older open PRs' remediation turns; a steady supply of newer
+  `needs-remediation` PRs cannot starve a failing-CI PR (#6482). A claimed
+  candidate that cannot progress this cycle — its diff unchanged since its
+  last recorded escalation, including the run that visibly parks it — MUST be
+  skipped with its claim released, and selection MUST continue with the next
+  candidate. When every strong candidate the run could claim was skipped, the
+  behind-base fallback MUST be consulted as if no strong candidate existed.
+  The cycle is no-work only when nothing claimable could progress, and its
+  reason names each skip. On Azure DevOps, whose PR list carries no CI state,
+  the lane MUST discover failing CI itself: it reads the blocking-policy
+  evaluations of each eligible PR whose tier the read can change (not already
+  `needs-remediation`, not parked `merge-escalated`, not claimed by another
+  run), at most a bounded number per cycle in a window that rotates across
+  cycles so every such PR is eventually read (a targeted run reads its target
+  alone), so a red build-validation policy makes the PR a strong candidate
+  without waiting for merge-review to demote it. A clean, behind-base,
   finding-free candidate SHOULD be completed through the provider's
   update-branch API without provisioning a worktree (#720); everything else
   enters full remediation. A PR carrying `goobers:needs-human` MUST be excluded
@@ -440,6 +509,16 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   history on the trusted sticky status comment, and escalate immediately when
   remediation revisits a prior state (for example A→B→A), rather than waiting
   for the cycle budget to expire (#367).
+  A cycle whose PR head moved under the run before the run published — a
+  pr-claim guard's `stale_selection`, or a pod refusing to land the run's
+  workspace delta on a head that is no longer the commit the delta's producer
+  started from (`workspace_head_moved`) — MUST end the run completed rather than
+  failed, MUST NOT touch the PR's failure or no-work streaks, and
+  MUST have its charged attempt refunded at the next checkpoint without
+  counting toward the infrastructure allowance (#6019). The run's own rewrite
+  of the PR's history on an unmoved head is NOT a moved head and keeps the
+  ordinary failure accounting. Consecutive superseded cycles MUST be bounded:
+  the third forces a did-not-converge park.
 - **PRL-055 (MUST, Shipped):** A reviewer `fail` verdict inside remediation
   MUST escalate immediately with the terminal reason (skipping budget/stall
   checks), surfaced through the run's escalated phase — never retried against
@@ -528,7 +607,11 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   `deleteSourceBranch` flag rather than this cleanup path, and `merge-pr` skips
   the shared cleanup for ADO by construction. #2061. The flag honours the same
   stacked exception: it is withheld (`branchCleanup: skipped-stacked`) when an
-  open PR targets the source branch when the landing is requested. The landing stage still
+  open PR targets the source branch when the landing is requested. ADO does not
+  always honour the flag, so the stage that observes the merge backs it up:
+  it confirms the source ref is gone and otherwise deletes it with a ref update
+  conditional on the merged head, keeping a branch that moved
+  (`skipped-moved`) or that a stacked PR now targets (#5957). The landing stage still
   declares `github:branch:delete` on ADO, and completes with `github:pr:merge`
   or a declared `ado:pr:complete` per PRL-040.)* After an actual merge
   (direct or queue-reported), the merged head branch MUST be deleted unless

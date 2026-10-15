@@ -315,6 +315,9 @@ the `todos-found` gate must evaluate.
   credentials for declared capabilities as `GOOBERS_CRED_*`. A credential whose
   source states an expiry (a GitHub App or Microsoft Entra token) also carries
   the non-secret `GOOBERS_CREDENTIAL_EXPIRES_*`, an RFC 3339 UTC timestamp.
+  On an Azure DevOps gaggle each credential also carries the non-secret
+  `GOOBERS_CREDENTIAL_SCHEME_*` (`basic` or `bearer`), the Authorization
+  scheme to send it in, beside the repository's `GOOBERS_REPO_AUTH_SCHEME`.
 - A custom command does not receive `GOOBERS_RUN_ID`, `GOOBERS_WORKFLOW`, or
   `GOOBERS_INSTANCE_ROOT`; those operational variables are reserved for stages
   whose command is the `goobers` CLI. It also does not inherit arbitrary daemon

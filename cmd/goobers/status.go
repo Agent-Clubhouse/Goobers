@@ -35,6 +35,7 @@ import (
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workerrouting"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -409,16 +410,19 @@ type statusJSONOutput struct {
 	Root                    *statusRootIdentity                        `json:"root,omitempty"`
 	QueueEligibility        *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
 	EngineFallbacks         []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
-	Warnings                []validate.CodedWarning                    `json:"warnings"`
-	TimeToFirstPR           *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
-	DaemonRestart           *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
-	StageServiceAccounts    map[string]string                          `json:"stageServiceAccounts,omitempty"`
-	IsolationMandates       map[string][]string                        `json:"isolationMandates,omitempty"`
-	Maintenance             *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
-	WorkerConfigDivergence  []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
-	TelemetryRetention      *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
-	JournalHealth           *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
-	StorageHealth           *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
+	// EngineRouting is the Temporal worker deployment's routing verdict
+	// (#6020); omitted on instances with no engine configured.
+	EngineRouting          *workerrouting.Assessment                  `json:"engineRouting,omitempty"`
+	Warnings               []validate.CodedWarning                    `json:"warnings"`
+	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
+	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	StageServiceAccounts   map[string]string                          `json:"stageServiceAccounts,omitempty"`
+	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
+	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
+	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
+	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
+	JournalHealth          *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
+	StorageHealth          *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -1179,6 +1183,9 @@ const statusHelp = "Usage: goobers status [--api=<url>] [--daemon | --agents | -
 	"Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;\n" +
 	"source runs identify each continuation and its independent phase.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
+	"With an engine configured, it checks that the Temporal worker deployment routes tasks to the\n" +
+	"live engine workers and warns with the set-current-version command when it does not, or says\n" +
+	"unknown when Temporal cannot be read (JSON: engineRouting).\n" +
 	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
 	"and next steps from the existing daemon projection, never current claim authority.\n" +
 	"Manual-only workflows are summarized by default; use --all or --workflow to show\n" +
@@ -1491,7 +1498,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if summaryErr := appendStatusFleetSummaryText(&text, runLoader, loadFleetSummary, textWorkflows, runs, status, err == nil, now); summaryErr != nil {
 			return "", summaryErr
 		}
-		text.WriteString(statusCollectionUnavailableText(runLoader.collectionStatus()))
+		text.WriteString(runLoader.collectionAndEngineText(ctx))
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))
@@ -1643,7 +1650,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if !runsOnlyMode {
 			output.Runs = statusRecoverySummaries(l, runs, now)
 		}
-		return writeStatusJSON(stdout, stderr, output)
+		return writeStatusJSON(stdout, stderr, runLoader.withEngineRouting(context.Background(), output))
 	}
 
 	// Skipped in --json mode since the structured summary has no plain-text

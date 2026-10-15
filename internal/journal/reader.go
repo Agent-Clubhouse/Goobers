@@ -623,7 +623,7 @@ func gateParkingEffect(event Event) (parked, decisive bool) {
 	case EventGateStarted, EventGateEvaluated, EventGateOverridden,
 		EventRunStarted, EventRunResumed, EventRunFinished,
 		EventStageStarted, EventStageFinished, EventStageRerunRequested,
-		EventParallelStarted, EventParallelFinished,
+		EventParallelStarted, EventParallelFinished, EventMapStarted, EventMapFinished,
 		EventBranchStarted, EventBranchFinished:
 		return false, true
 	default:

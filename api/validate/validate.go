@@ -259,6 +259,18 @@ const (
 	// earned, and a trusted-claim surface that rewards lying is worse than
 	// no claim at all.
 	RunnerAVExclusionsUnverified WarningCode = "RNR006"
+	// RunnerCrossProviderBacklogOffSelf (RNR007) identifies a task of a
+	// topology (b) gaggle (a GitHub or Gitea backlog for Azure DevOps code,
+	// docs/design/ado-parity-dsl-2-0.md §7.2) whose resolved ELIGIBLE RUNNER
+	// SET (the same per-stage solve RNR001 runs) excludes every self entry. A
+	// stage pod has no instance config to route backlog work and credentials
+	// by role, so the engine refuses every task of such a run a pod
+	// (cross_provider_backlog_pod_unsupported). A WARNING, like RNR005: the
+	// enforcement is at dispatch, where the refusal is loud and journaled, so
+	// this is advance notice at author time, not a second gate. The exception,
+	// as for RNR005, is placement.selfExecution: deny, where no runner can run
+	// the stage at all and the finding is an ERROR.
+	RunnerCrossProviderBacklogOffSelf WarningCode = "RNR007"
 	// WarningConnectionRefUnhonored (REF012) identifies a gaggle that declares
 	// a connectionRef at any of its project, backlog, or additionalRepos sites
 	// (#3296). connectionRef is a credential SELECTOR in the config, but the
@@ -307,6 +319,16 @@ const (
 	// gaggle fails; this surfaces it at validate time. Not strict-neutral:
 	// the config cannot run as written, so --strict promotes it.
 	WarningMCPCredentialProvider WarningCode = "MCP002"
+	// WarningCrossProviderBacklogUnbound (CFG015) identifies a topology (b)
+	// gaggle (a GitHub or Gitea backlog for Azure DevOps code) whose backlog
+	// repository has no instance repos[] entry with a token or GitHub App,
+	// while its deterministic stages declare backlog-family capabilities
+	// (github:issues:*, github:milestones:write) that no daemonIdentity or
+	// credentials: entry backs either. Those capabilities are never backed by
+	// the Azure DevOps repository's credential, so each stage that declares
+	// one fails at run time for want of a credential. Not strict-neutral: the
+	// stage cannot run as configured.
+	WarningCrossProviderBacklogUnbound WarningCode = "CFG015"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -1216,6 +1238,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleProviderTopology(r)
 	// GitHub Enterprise Server is unsupported: a github ref takes no baseUrl (#6347).
 	ix.checkGaggleGitHubBaseURL(r)
+	// Comment-classifying stages must agree on who is human (#6494).
+	ix.checkCommentIdentityAgreement(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)

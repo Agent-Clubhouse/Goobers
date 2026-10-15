@@ -311,7 +311,9 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
 	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
 	"stage needs a harness that fails its startup check is still refused, while\n" +
-	"other workflows keep running.\n\n" +
+	"other workflows keep running. A check that failed only because the model\n" +
+	"provider was rate limiting or unreachable is re-run with backoff, and the\n" +
+	"workflow is admitted again once it passes.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +
@@ -1810,18 +1812,14 @@ func (u *upSession) startMaintenance() int {
 				} else {
 					claimRenewErrors.report(probeErr)
 				}
-				released, err := u.recoverExpiredClaims(now)
+				// Each reaped lease is journaled by the ledger itself as its own
+				// claim.released boundary carrying stall-swept (#4421), so the
+				// sweep adds no aggregate claim.released of its own.
+				_, err := u.recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
 					claimSweepErrors.report(nil)
 				} else {
 					claimSweepErrors.report(err)
-				}
-				if err == nil && len(released) > 0 {
-					u.setup.InstanceLog.AppendBestEffort(journal.Event{
-						Type:   journal.EventClaimReleased,
-						Reason: fmt.Sprintf("periodic recovery released %d expired claim(s)", len(released)),
-						Runner: map[string]any{"releasedClaims": len(released)},
-					})
 				}
 			}
 		}

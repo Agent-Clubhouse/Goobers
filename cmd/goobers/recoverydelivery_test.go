@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -55,7 +56,7 @@ func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
 			}
 			seedItemRepositoryForTest(t, layout, "receiving-run", "7", repo)
 			if mode == "released" {
-				if err := ledger.Release("7", "receiving-run"); err != nil {
+				if err := ledger.Release("7", "receiving-run", claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -132,7 +133,7 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 			case "expired":
 				at = now.Add(time.Hour)
 			case "released":
-				if err := ledger.Release("7", runID); err != nil {
+				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
 				}
 			case "multiple":
@@ -171,7 +172,7 @@ func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
 			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
 			seedItemRepositoryForTest(t, layout, runID, "7", repo)
 			if mode == "released" {
-				if err := ledger.Release("7", runID); err != nil {
+				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
 				}
 			}

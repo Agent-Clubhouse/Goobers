@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -67,7 +68,7 @@ func TestSharedCustodyRetiresOnlyAfterValidatedOwnerLoss(t *testing.T) {
 				if admin {
 					err = ledger.ForceReleaseCoordinatedShared(t.Context(), store, "42", key, owner, "cli")
 				} else {
-					err = ledger.ReleaseCoordinatedShared(t.Context(), store, "42", key, owner)
+					err = ledger.ReleaseCoordinatedShared(t.Context(), store, "42", key, owner, claimrelease.Completed.Reason())
 				}
 				wantReleased := scenario == "successor" || scenario == "released" || scenario == "absent"
 				if (err == nil) != wantReleased || store.writes != 0 || store.reads != 2 {
@@ -103,7 +104,7 @@ func TestSharedCustodyLocalPersistenceFailurePreservesRetry(t *testing.T) {
 	observed := sharedclaim.Observation{Now: time.Now(), Revision: "next", Record: sharedclaim.Record{Version: 1, Owner: sharedclaim.Owner{Instance: "next", Run: "next-run", Token: "next-token"}, ExpiresAt: time.Now().Add(time.Minute)}}
 	store := &custodyObservationStore{first: observed, second: observed}
 	ledger.path = t.TempDir()
-	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "42", key, owner); err == nil || store.writes != 0 {
+	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "42", key, owner, claimrelease.Completed.Reason()); err == nil || store.writes != 0 {
 		t.Fatalf("failed persistence reported success: %v", err)
 	}
 	if current, held := ledger.LookupScoped(key); !held || current.SharedOwner != owner {
@@ -111,7 +112,7 @@ func TestSharedCustodyLocalPersistenceFailurePreservesRetry(t *testing.T) {
 	}
 	ledger.path = path
 	store.reads = 0
-	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "42", key, owner); err != nil {
+	if err := ledger.ReleaseCoordinatedShared(t.Context(), store, "42", key, owner, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 }

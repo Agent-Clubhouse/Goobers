@@ -375,6 +375,8 @@ var commands = map[string]Command{
 			// On Azure DevOps the routing labels are native pull-request labels
 			// on the project provider, which github:pr:write authorizes there
 			// (docs/design/ado-parity-dsl-2-0.md §3.1).
+			// With blockUnansweredFeedback "true" (policy action disarm-landing)
+			// the same credential cancels an armed auto-complete before routing.
 			optional(capability.GitHubPRWrite, "required on Azure DevOps: without it the pull-request comment read and label routing fail at runtime; unused on GitHub and Gitea"),
 		},
 	},

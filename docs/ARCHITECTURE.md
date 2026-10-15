@@ -110,7 +110,10 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
   started/finished, stage started/finished (policy-retry attempts included), gate
   verdicts, artifacts recorded (with digests), external refs touched, parallel and
   branch lifecycle (`parallel.started`, `branch.started`, `branch.finished`,
-  `parallel.finished`) including the branch completeness record. Events are compared in
+  `parallel.finished`) including the branch completeness record and a selective
+  parallel's frozen `parallel.started` selection (its reasons excluded), and the
+  DSL 3.1 map lifecycle (`map.started` with its frozen roster, `map.finished`, and
+  the `mapItemIdentity`/`mapItemDigest` a map item's branch events carry). Events are compared in
   `seq` order (§4); parallel-branch events order by `(branch, seq)` **at every tier**.
 - **Excluded** from comparison: timestamps and durations; infrastructure-retry
   attempts (attempt events are tagged `policy` vs `infra`, and only `policy`
@@ -362,7 +365,8 @@ Contract rules:
   `SEC-044`). Non-injection holds on every provider, Azure DevOps included:
   every ADO auth kind resolves in the daemon, a stage receives only the
   `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
-  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and, for a value whose source
+  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and per-value
+  `GOOBERS_CREDENTIAL_SCHEME_<capability>` and, for a value whose source
   states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`;
   a deterministic goobers-CLI stage with such a value also gets a stage
   credential-refresh grant, `GOOBERS_CREDENTIAL_ENDPOINT` +
@@ -677,7 +681,7 @@ and implemented into PRs by the instance running on your own machine.
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop. The `reference-workflows/` reference config
 now defines the full self-hosting workflow set and
-currently loads **11 goobers and 16 workflows**; the CI-guarded inventory in
+currently loads **11 goobers and 17 workflows**; the CI-guarded inventory in
 [`reference-workflows/README.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/reference-workflows/README.md)
 is the count and roster of record. Together those workflows provide the canonical
 patterns for curating and

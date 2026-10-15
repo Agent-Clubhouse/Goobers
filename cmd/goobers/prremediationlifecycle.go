@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -122,7 +123,7 @@ func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "read remediation PR claim", err, prRemediationLifecycleResultFile)
 	}
 	if *release {
-		if err := releasePRRemediationClaim(root); err != nil {
+		if err := releasePRRemediationClaim(root, workflowReleaseStepReason); err != nil {
 			return failProviderStage(stderr, "release remediation PR claim", err, prRemediationLifecycleResultFile)
 		}
 		result := prRemediationLifecycleResult{Released: held, Outcome: prClaimOutcomeReleased}
@@ -250,7 +251,7 @@ func readClaimedPullRequest(root string, repo providers.RepositoryRef, number in
 // keeps whatever made the PR eligible, so the next cycle re-selects it at its
 // new head rather than this run adopting a revision it never selected.
 func endClaimedPullRequest(root string, result prRemediationLifecycleResult, check prRevisionCheck, stdout, stderr io.Writer) int {
-	if err := releasePRRemediationClaim(root); err != nil {
+	if err := releasePRRemediationClaim(root, claimrelease.NoWork.Because(result.Outcome, result.NoWorkReason)); err != nil {
 		return failProviderStage(stderr, "release remediation PR claim", err, prRemediationLifecycleResultFile)
 	}
 	result.Released = true
@@ -269,7 +270,7 @@ func endClaimedPullRequest(root string, result prRemediationLifecycleResult, che
 	return writePRRemediationLifecycleResult(result, stdout, stderr)
 }
 
-func releasePRRemediationClaim(root string) error {
+func releasePRRemediationClaim(root string, reason claimrelease.Reason) error {
 	runID, _, err := providerRunContext()
 	if err != nil {
 		return err
@@ -280,7 +281,7 @@ func releasePRRemediationClaim(root string) error {
 		return err
 	}
 	defer closeLog()
-	return releasePullRequestClaimsForRun(l, log, runID)
+	return releasePullRequestClaimsForRun(l, log, runID, reason)
 }
 
 func writePRRemediationLifecycleResult(result prRemediationLifecycleResult, stdout, stderr io.Writer) int {

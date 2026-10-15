@@ -1104,7 +1104,7 @@ func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 			return p.GetWorkItem(ctx, req.Repository, req.ID)
 		},
 		postRelease: func(ctx context.Context, winner string) error {
-			return p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release")
+			return p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner, req.Reason), "claim-release")
 		},
 		hasLabel: func(item WorkItem, label string) bool {
 			return adoHasLabel(item.Labels, label)

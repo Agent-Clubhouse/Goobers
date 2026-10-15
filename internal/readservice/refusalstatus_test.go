@@ -62,6 +62,44 @@ func TestSchedulerStatusProjectsCurrentWorkflowRefusals(t *testing.T) {
 	}
 }
 
+// TestSchedulerStatusTracksTransientHarnessRefusals: a transient harness
+// refusal (#6017) is re-journaled when its reason changes and cleared by
+// workflow.readmitted, so status reflects the scheduler's current state
+// rather than the startup snapshot.
+func TestSchedulerStatusTracksTransientHarnessRefusals(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{Type: journal.EventDaemonStarted},
+		{Type: journal.EventWorkflowRefused, Gaggle: "example", Workflow: "recovers", Reason: "rate limited (transient provider failure; next probe after 12:01)"},
+		{Type: journal.EventWorkflowRefused, Gaggle: "example", Workflow: "signs-out", Reason: "rate limited (transient provider failure; next probe after 12:01)"},
+		{Type: journal.EventWorkflowRefused, Gaggle: "example", Workflow: "signs-out", Reason: "HARNESS_AUTH_REQUIRED: not signed in; a re-probe found a failure that is not transient"},
+		{Type: journal.EventWorkflowReadmitted, Gaggle: "example", Workflow: "recovers"},
+	} {
+		if err := log.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.RefusedWorkflows) != 1 || status.RefusedWorkflows[0].Workflow != "signs-out" ||
+		status.RefusedWorkflows[0].Reason != "HARNESS_AUTH_REQUIRED: not signed in; a re-probe found a failure that is not transient" {
+		t.Fatalf("RefusedWorkflows = %+v, want only the workflow whose re-probe found a sign-in failure, with that reason", status.RefusedWorkflows)
+	}
+}
+
 // TestSchedulerStatusReportsProviderAuthUnhealthyWorkflows: a workflow
 // blocked by readiness.requireProviderAuthorization (#5317) surfaces with its
 // stable reason and code until a run starts.

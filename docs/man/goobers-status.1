@@ -16,6 +16,9 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
 source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+With an engine configured, it checks that the Temporal worker deployment routes tasks to the
+live engine workers and warns with the set-current-version command when it does not, or says
+unknown when Temporal cannot be read (JSON: engineRouting).
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
 Manual-only workflows are summarized by default; use --all or --workflow to show

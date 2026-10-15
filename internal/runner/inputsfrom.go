@@ -149,7 +149,7 @@ func resolveBranchInput(value string, machine *workflow.Machine, completed stage
 	switch branch.status {
 	case journal.BranchFailed, journal.BranchTimedOut, journal.BranchCancelled:
 		return nil, false, true, true
-	case journal.BranchNoOutput:
+	case journal.BranchNoOutput, journal.BranchSkipped:
 		return nil, false, true, true
 	}
 	if ref.stage == "" {
@@ -323,6 +323,11 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 	out := stageOutputs{}
 	for _, e := range events {
 		if e.Type != journal.EventStageFinished || e.Stage == "" {
+			continue
+		}
+		if isMappedTask(machine, e.Stage) {
+			// Mapped results are per item; only the per-occurrence store
+			// holds them (design plan-driven-dynamic-fan-out.md §6.3).
 			continue
 		}
 		if machine != nil {
