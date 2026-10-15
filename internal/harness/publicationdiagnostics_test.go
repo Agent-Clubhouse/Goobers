@@ -145,6 +145,63 @@ func mustJSON(t *testing.T, v any) string {
 	return string(data)
 }
 
+func TestExecutorJournalsTheCompletionValidatedPayloadDigest(t *testing.T) {
+	workspace := t.TempDir()
+	published, final := `{"summary":"as published"}`, `{"summary":"rewritten after publish"}`
+	rec := &fakeRecorder{}
+	// The tool-time receipt names the published bytes; the agent then rewrites
+	// the payload with different schema-valid bytes before completing.
+	adapter := &receiptWritingAdapter{
+		publicationRepairingAdapter: publicationRepairingAdapter{status: apiv1.ResultSuccess, first: final},
+		receipt: mcpio.PublicationReceipt{Outcome: mcpio.PublicationAccepted, ManifestDigest: "sha256:abc", Outputs: []mcpio.PublicationReceiptOutput{
+			{Slot: "report", SchemaID: "schemas/report.schema.json", PayloadDigest: apiv1.Digest([]byte(published))},
+		}},
+	}
+	if _, err := newPostconditionExecutor(t, adapter, rec).Invoke(reportSchemaContext(t), reportPublicationEnvelope(workspace)); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	diagnostics := publicationDiagnostics(t, rec)
+	if len(diagnostics) != 1 {
+		t.Fatalf("publication diagnostics = %+v", diagnostics)
+	}
+	receipts, _ := diagnostics[0]["receipts"].([]any)
+	checks, _ := diagnostics[0]["completionChecks"].([]any)
+	if len(receipts) != 1 || len(checks) != 1 {
+		t.Fatalf("receipts=%+v checks=%+v", receipts, checks)
+	}
+	toolDigest := receipts[0].(map[string]any)["outputs"].([]any)[0].(map[string]any)["payloadDigest"]
+	check := checks[0].(map[string]any)
+	digests, _ := check["payloadDigests"].(map[string]any)
+	if check["outcome"] != mcpio.PublicationAccepted || digests["report"] != apiv1.Digest([]byte(final)) {
+		t.Fatalf("completion check = %+v, want accepted with the final payload digest", check)
+	}
+	if digests["report"] == toolDigest {
+		t.Fatalf("completion digest %v matches the tool-time digest; the rewrite was not observed", toolDigest)
+	}
+}
+
+func TestPublicationPostconditionRecordsANonDeclaredFailureAsErrored(t *testing.T) {
+	workspace := t.TempDir()
+	if err := stageReport(workspace, `{"summary":"valid"}`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(reportSchemaContext(t))
+	req := RunRequest{Workspace: workspace}
+	p := newPostconditionExecutor(t, &FakeAdapter{}, &fakeRecorder{}).armPublicationPostcondition(ctx, ModeInvoke, reportPublicationEnvelope(workspace), &req)
+	if p == nil {
+		t.Fatal("publication postcondition not armed")
+	}
+	cancel()
+	// A cancelled check is not a declared-artifact failure, so it does not
+	// spend the repair turn — but it must not be journaled as accepted either.
+	if err := req.ValidateCompletion([]byte(`{"status":"success"}`)); err != nil {
+		t.Fatalf("ValidateCompletion = %v, want no repairable postcondition", err)
+	}
+	if len(p.checks) != 1 || p.checks[0].Outcome != publicationCheckErrored || p.checks[0].Code != publicationCheckCancelled || p.checks[0].PayloadDigests != nil {
+		t.Fatalf("checks=%+v, want one errored check coded %s", p.checks, publicationCheckCancelled)
+	}
+}
+
 func TestGoobersIORuntimeRequestsPublicationReceiptsOnlyForSchemaBoundSlots(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

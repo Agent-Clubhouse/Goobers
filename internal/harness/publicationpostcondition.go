@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -28,6 +30,7 @@ var ErrInvalidPublication = errors.New(ErrorCodeInvalidPublication + ": the stag
 // binds at least one slot to a JSON Schema. It remembers every completion-
 // boundary check so the outcome can be journaled.
 type publicationPostcondition struct {
+	slots  []string
 	checks []publicationCheck
 }
 
@@ -65,7 +68,7 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 	if !ok || manifest == "" {
 		return nil
 	}
-	p := &publicationPostcondition{}
+	p := &publicationPostcondition{slots: slices.Sorted(maps.Keys(declaredPublicationSchemas(ctx, env)))}
 	base := req.ValidateCompletion
 	req.ValidateCompletion = func(payload []byte) error {
 		var commitErr error
@@ -82,9 +85,13 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 		if !claimsSuccess(payload) {
 			return commitErr
 		}
-		err := e.checkDeclaredPublication(ctx, env, manifest)
-		p.record(err)
-		if err == nil {
+		prepared, err := e.prepareDeclaredSet(ctx, env, manifest)
+		p.record(prepared, err)
+		// Diagnostics keep every completion-boundary failure, but only one
+		// liftArtifacts would report as a declared-artifact failure is
+		// repairable; anything else (I/O, cancellation) is left for the
+		// authoritative lift to surface.
+		if _, _, repairable := declaredArtifactFailure(err); err == nil || !repairable {
 			return commitErr
 		}
 		// One %w keeps this a single member, so withoutPostcondition strips it whole.
@@ -95,18 +102,6 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 		return errors.Join(commitErr, publicationErr)
 	}
 	return p
-}
-
-// checkDeclaredPublication runs the lift-time validation without recording
-// anything. Only failures liftArtifacts would report as a declared-artifact
-// failure are repairable; anything else (I/O, cancellation) is left for the
-// authoritative lift to surface.
-func (e *Executor) checkDeclaredPublication(ctx context.Context, env apiv1.InvocationEnvelope, manifest string) error {
-	_, err := e.prepareDeclaredSet(ctx, env, manifest)
-	if _, _, ok := declaredArtifactFailure(err); err != nil && ok {
-		return err
-	}
-	return nil
 }
 
 // settle clears an adapter error that is only the publication postcondition:
