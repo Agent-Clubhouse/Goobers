@@ -35,6 +35,17 @@ import (
 
 const usage = "usage: reviewereval build|replay|compare|publish [flags]"
 
+// adapterIsolationNote is replay's help on what isolates the adapters from
+// the fix and later history, and what does not.
+const adapterIsolationNote = `Adapters never see the fix or later history through git: they run on a frozen
+two-commit repository with no remotes, with the default-deny environment
+(plus -adapter-env names, never forge credentials), an isolated home, no git
+credential helper, and git limited to local transport (GIT_ALLOW_PROTOCOL=file).
+They are NOT network-isolated: an adapter or its model can still make non-git
+HTTP requests, for example to a forge's web or API endpoints. Use adapters
+that cannot browse, or a host with restricted egress, until
+https://github.com/Agent-Clubhouse/Goobers/issues/7483 adds an egress allowlist.`
+
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -160,10 +171,14 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	flags.StringVar(&options.Seed, "seed", "reviewer-eval-v1", "deterministic sampling seed")
 	flags.StringVar(&options.WorkDir, "work-dir", "", "parent for isolated replay repositories (default system temp)")
 	reviewerCmd := flags.String("reviewer-cmd", "", "reviewer adapter command (JSON request on stdin, JSON result on stdout)")
-	allowReal := flags.Bool("allow-real-reviewer", false, "explicitly allow running the reviewer adapter, which may spend money")
+	allowReal := flags.Bool("allow-real-reviewer", false, "explicitly allow running the reviewer adapter, which may spend money and is not network-isolated (see below)")
 	judgeCmd := flags.String("judge-cmd", "", "optional semantic judge adapter command")
 	adapterEnv := flags.String("adapter-env", "", "comma-separated ambient variables adapters may inherit beyond the default allowlist (never forge credentials)")
 	reportPath := flags.String("report", "", "write the JSON report here (default stdout)")
+	flags.Usage = func() {
+		_, _ = fmt.Fprintf(stderr, "usage: reviewereval replay [flags]\n\n%s\n\n", adapterIsolationNote)
+		flags.PrintDefaults()
+	}
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}

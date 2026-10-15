@@ -481,7 +481,9 @@ var isolatedHomeVariables = map[string]string{
 // configured token variable, or any other) is inherited unless named. It
 // then points every home and configuration directory into sandbox, ignores
 // global and system git config, and disables git credential helpers, so an
-// adapter can reach neither stored forge credentials nor git configuration.
+// adapter can reach neither stored forge credentials nor git configuration,
+// and restricts git to the local file transport. These overrides come last,
+// and validatePassthrough refuses every GIT_* name, so nothing overrides them.
 func adapterEnvironment(sandbox string, passthrough []string) ([]string, error) {
 	if err := validatePassthrough(passthrough); err != nil {
 		return nil, err
@@ -509,6 +511,9 @@ func adapterEnvironment(sandbox string, passthrough []string) ([]string, error) 
 		"GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
 		"GCM_INTERACTIVE=never", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0",
+		// Git may use only local transport: no fetch or clone of later
+		// history from a forge or any other remote.
+		"GIT_ALLOW_PROTOCOL=file",
 	), nil
 }
 

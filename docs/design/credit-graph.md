@@ -509,8 +509,32 @@ manager, and SSH configuration such as `GIT_CONFIG_PARAMETERS`, and the home
 variables below). Each
 adapter also gets fresh empty home and configuration directories (`HOME`,
 `USERPROFILE`, `APPDATA`, `XDG_*`, `GH_CONFIG_DIR`), global and system git
-config ignored, and git credential helpers disabled, so stored gh and git
-credentials are unreachable. The reviewer receives the request (an opaque case
+config ignored, git credential helpers disabled, and git restricted to the
+local file transport (`GIT_ALLOW_PROTOCOL=file`, `GIT_TERMINAL_PROMPT=0`;
+`-adapter-env` cannot override either), so stored gh and git credentials are
+unreachable and a `git fetch` or `git clone` over https, ssh, or git fails.
+
+The threat this isolation answers is an adapter (or the model behind it)
+seeing the fix or any later history, which would turn a recall measurement
+into a lookup. What is enforced:
+
+- the frozen two-commit repository, with no remotes and no objects shared with
+  the live repository;
+- the `internal/procenv` default-deny environment plus refused credential-like
+  `-adapter-env` names;
+- isolated home and configuration directories, and no git credential helper;
+- git limited to local transport.
+
+The residual gap is non-git network access: an adapter or its model can still
+make arbitrary HTTP requests, for example to a forge's web or API endpoints for
+a public repository, because the only enforced local network block
+(`network:none`) would also cut off the model provider. A host-level egress
+allowlist for adapters is tracked in
+[#7483](https://github.com/Agent-Clubhouse/Goobers/issues/7483); until then,
+use adapters whose tools cannot browse, or run replay on a host whose egress is
+already restricted.
+
+The reviewer receives the request (an opaque case
 ID, base and head SHAs, title, diff, remaining budget) as JSON on stdin, and
 prints the verdict and its cost. Dataset case IDs name the fix commit, so the
 reviewer only ever sees its case's position in the sampled order; the mapping

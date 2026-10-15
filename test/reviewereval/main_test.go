@@ -922,6 +922,9 @@ type adapterObservation struct {
 	Cwd     string            `json:"cwd"`
 	Env     map[string]string `json:"env"`
 	Secrets []string          `json:"secrets"`
+	// GitRemote is git's output when the adapter tried to retrieve history
+	// over https.
+	GitRemote string `json:"gitRemote"`
 }
 
 // credentialPaths lists where gh and git persist forge credentials under the
@@ -978,6 +981,15 @@ func TestAdapterHelperProcess(t *testing.T) {
 	if _, judging := request["finding"]; judging {
 		observation.Role, answer = "judge", judgeDecision{Rationale: "observed"}
 	}
+	// An adapter trying to reach later history: the reviewer fetches into the
+	// replay repository, the judge clones. The host is unresolvable, so no
+	// real network is used either way.
+	remote := []string{"fetch", unreachableRemote}
+	if observation.Role == "judge" {
+		remote = []string{"clone", unreachableRemote, "later-history"}
+	}
+	gitOut, _ := testgit.AmbientCommand(remote...).CombinedOutput()
+	observation.GitRemote = string(gitOut)
 	line, _ := json.Marshal(observation)
 	file, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -1003,6 +1015,7 @@ func TestAdaptersRunIsolatedFromCredentialsAndLiveTree(t *testing.T) {
 	for _, name := range forgeTokenVariables {
 		t.Setenv(name, storedSecret)
 	}
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file:https")
 	for _, path := range credentialPaths(func(name string) string { return operator[name] }) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -1074,7 +1087,7 @@ func TestAdapterEnvironmentCarriesNoForgeCredentials(t *testing.T) {
 		t.Fatalf("adapter environment = %q; want the default allowlist and passthrough names only, no forge token", env)
 	}
 	for _, name := range append([]string{"GITHUB_APP_KEY", "GOOBERS_CREDENTIAL_SCHEME_REPO", "GITLAB_PAT", "BAD=NAME",
-		"GIT_CONFIG_PARAMETERS", "git_config_key_1", "GCM_CREDENTIAL_STORE", "SSH_AUTH_SOCK", "HOME", "AppData"}, forgeTokenVariables...) {
+		"GIT_CONFIG_PARAMETERS", "git_config_key_1", "GIT_ALLOW_PROTOCOL", "GIT_TERMINAL_PROMPT", "GCM_CREDENTIAL_STORE", "SSH_AUTH_SOCK", "HOME", "AppData"}, forgeTokenVariables...) {
 		if _, err := adapterEnvironment(t.TempDir(), []string{name}); err == nil {
 			t.Errorf("adapter passthrough %q was accepted; forge credentials must never be passed through", name)
 		}
@@ -1084,6 +1097,8 @@ func TestAdapterEnvironmentCarriesNoForgeCredentials(t *testing.T) {
 // checkAdapterIsolated asserts an adapter ran in a scratch directory under
 // workDir, outside the live repository, with isolated home directories, git
 // credential helpers disabled, and no stored credential reachable.
+const unreachableRemote = "https://github.invalid/goobers/goobers.git"
+
 func checkAdapterIsolated(t *testing.T, seen adapterObservation, workDir, liveDir string) {
 	t.Helper()
 	if len(seen.Secrets) > 0 {
@@ -1096,6 +1111,9 @@ func checkAdapterIsolated(t *testing.T, seen adapterObservation, workDir, liveDi
 		if !inside(t, seen.Env[name], workDir) {
 			t.Errorf("%s adapter %s = %q, want an isolated directory under %s", seen.Role, name, seen.Env[name], workDir)
 		}
+	}
+	if !strings.Contains(seen.GitRemote, "transport 'https' not allowed") {
+		t.Errorf("%s adapter git over https = %q, want it refused as a disallowed transport", seen.Role, seen.GitRemote)
 	}
 	if seen.Env["GIT_CONFIG_GLOBAL"] != os.DevNull || seen.Env["GIT_CONFIG_NOSYSTEM"] != "1" ||
 		seen.Env["GIT_CONFIG_KEY_0"] != "credential.helper" || seen.Env["GIT_CONFIG_VALUE_0"] != "" {
