@@ -614,11 +614,12 @@ func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []jou
 	for _, node := range nodes {
 		steps += node.Attempts
 	}
-	// Entering a parallel is itself an engine step but is not represented by a
-	// run_node row. Full rebuilds (including the migration replay) have the
-	// immutable event history available, so preserve that part explicitly.
+	// Entering a parallel or a map is itself an engine step but is not
+	// represented by a run_node row. Full rebuilds (including the migration
+	// replay) have the immutable event history available, so preserve that
+	// part explicitly.
 	for _, event := range events {
-		if event.Type == journal.EventParallelStarted {
+		if event.Type == journal.EventParallelStarted || event.Type == journal.EventMapStarted {
 			steps++
 		}
 	}

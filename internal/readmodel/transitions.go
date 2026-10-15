@@ -213,8 +213,10 @@ func walkOccurrence(events []journal.Event, branch, occurrence int, depth map[st
 			arrive(event.Stage, event.Seq)
 		case journal.EventGateStarted:
 			arrive(event.Gate, event.Seq)
-		case journal.EventParallelStarted:
-			// The parallel construct is itself a graph node (GraphNodeParallel).
+		case journal.EventParallelStarted, journal.EventMapStarted:
+			// The parallel construct is itself a graph node (GraphNodeParallel),
+			// and so is a map (GraphNodeMap), which expands into the same
+			// branch lifecycle. Both journal their name in Parallel.
 			// Its own outgoing edge (to Join or OnFailure) is never journaled
 			// discretely — unlike a gate, a parallel's completion carries no
 			// Target field — but it needs none: whatever real event follows

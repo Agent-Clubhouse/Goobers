@@ -979,6 +979,13 @@ func workflowStages(def *apiv1.Workflow) []StageDefinition {
 			Capabilities: []string{},
 		})
 	}
+	for _, fanOut := range def.Spec.Maps {
+		stages = append(stages, StageDefinition{
+			Name:         fanOut.Name,
+			Kind:         workflow.GraphNodeMap,
+			Capabilities: []string{},
+		})
+	}
 	return stages
 }
 

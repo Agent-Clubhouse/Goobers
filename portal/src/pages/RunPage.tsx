@@ -27,6 +27,7 @@ import {
 } from "../components/WorkflowTopologyGraph";
 import {
   deriveBranchStates,
+  deriveMapVisits,
   deriveNodeStates,
   deriveTraversedEdges,
   evidenceVisit,
@@ -222,6 +223,7 @@ function RunDetailWorkspace({
   const nodeStates = run.graph ? deriveNodeStates(run.graph, events, selectedSeq, runId) : {};
   const traversedEdges = deriveTraversedEdges(run.transitions, selectedSeq);
   const branchStates = deriveBranchStates(events, selectedSeq);
+  const mapVisits = deriveMapVisits(events, selectedSeq);
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
   const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
   const selectedEvidenceVisit = selectedEvidence
@@ -723,6 +725,7 @@ function RunDetailWorkspace({
                   causalNodeId={causalNodeId}
                   fullscreenTargetRef={fullscreenRootRef}
                   graph={run.graph}
+                  mapVisits={mapVisits}
                   nodeStates={nodeStates}
                   onFullscreenModeChange={setFullscreenMode}
                   onSelectStage={selectNode}
@@ -759,6 +762,7 @@ function RunDetailWorkspace({
                   events={events}
                   hideHeading
                   inspectorRef={inspectorRef}
+                  mapVisit={selectedNodeId ? mapVisits.get(selectedNodeId) : undefined}
                   node={selectedNode}
                   onSelectAttempt={(isLatest) =>
                     setFollowingLatest(isLatest && selectedNodeId === latestNodeId)

@@ -470,8 +470,52 @@ type RunEvent struct {
 	BranchName          string                       `json:"branchName,omitempty"`
 	BranchStatus        journal.BranchStatus         `json:"branchStatus,omitempty"`
 	Completeness        []journal.BranchOutcome      `json:"completeness,omitempty"`
-	Raw                 json.RawMessage              `json:"raw,omitempty"`
-	JournalEvent        *journal.Event               `json:"-"`
+	// MapItemIdentity and MapItemDigest identify the roster item a map item's
+	// branch.started/branch.finished concerns. Empty for a static branch.
+	MapItemIdentity string `json:"mapItemIdentity,omitempty"`
+	MapItemDigest   string `json:"mapItemDigest,omitempty"`
+	// MapRoster summarizes the frozen roster on map.started.
+	MapRoster    *MapRosterSummary `json:"mapRoster,omitempty"`
+	Raw          json.RawMessage   `json:"raw,omitempty"`
+	JournalEvent *journal.Event    `json:"-"`
+}
+
+// MapRosterSummary is the display projection of a map.started roster: the
+// frozen source and each item's identity and canonical digest, in branch
+// order. Item values stay in the journal; they can be large and carry the
+// source's integrity, and the identity and digest are what name an item.
+type MapRosterSummary struct {
+	SourceTask         string                    `json:"sourceTask"`
+	SourceSlot         string                    `json:"sourceSlot"`
+	SourceDigest       string                    `json:"sourceDigest"`
+	Integrity          apiv1.Integrity           `json:"integrity"`
+	FailurePolicy      apiv1.BranchFailurePolicy `json:"failurePolicy"`
+	ItemTimeoutSeconds int32                     `json:"itemTimeoutSeconds,omitempty"`
+	MaxConcurrent      int32                     `json:"maxConcurrent"`
+	Items              []MapItemSummary          `json:"items"`
+}
+
+// MapItemSummary names one frozen roster item. Item i runs as branch i.
+type MapItemSummary struct {
+	Branch   int    `json:"branch"`
+	Identity string `json:"identity"`
+	Digest   string `json:"digest"`
+}
+
+func summarizeMapRoster(roster *journal.MapRoster) *MapRosterSummary {
+	if roster == nil {
+		return nil
+	}
+	summary := &MapRosterSummary{
+		SourceTask: roster.Source.Task, SourceSlot: roster.Source.Slot, SourceDigest: roster.Source.Digest,
+		Integrity: roster.Source.Integrity, FailurePolicy: roster.FailurePolicy,
+		ItemTimeoutSeconds: roster.ItemTimeoutSeconds, MaxConcurrent: roster.MaxConcurrent,
+		Items: make([]MapItemSummary, 0, len(roster.Items)),
+	}
+	for i, item := range roster.Items {
+		summary.Items = append(summary.Items, MapItemSummary{Branch: i + 1, Identity: item.Identity, Digest: item.Digest})
+	}
+	return summary
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -2704,6 +2748,9 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.BranchName = event.BranchName
 	projected.BranchStatus = event.BranchStatus
 	projected.Completeness = event.Completeness
+	projected.MapItemIdentity = event.MapItemIdentity
+	projected.MapItemDigest = event.MapItemDigest
+	projected.MapRoster = summarizeMapRoster(event.MapRoster)
 	return projected
 }
 

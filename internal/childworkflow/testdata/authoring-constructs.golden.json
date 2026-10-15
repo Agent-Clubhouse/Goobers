@@ -1,0 +1,47 @@
+[
+  {
+    "need": "One path out of several",
+    "construct": "gate branches",
+    "decidedBy": "Gate verdict",
+    "fixedByAuthor": "All paths",
+    "available": true
+  },
+  {
+    "need": "A fixed set of branches, all run",
+    "construct": "static parallel (spec.parallels)",
+    "decidedBy": "Nothing; every branch runs",
+    "fixedByAuthor": "Branches and width",
+    "available": true
+  },
+  {
+    "need": "A fixed set of different branches, a subset run",
+    "construct": "selective parallel (spec.parallels[].selection, branches[].optional)",
+    "decidedBy": "Selection artifact",
+    "fixedByAuthor": "Branches; width at most the declared count",
+    "preview": true,
+    "available": true
+  },
+  {
+    "need": "The same task over a data-determined list",
+    "construct": "map (spec.maps)",
+    "decidedBy": "Roster artifact",
+    "fixedByAuthor": "Task template; width at most 32",
+    "preview": true,
+    "available": true
+  },
+  {
+    "need": "A composition nobody can know until run time",
+    "construct": "child workflow (task.childWorkflows)",
+    "decidedBy": "The parent agent writes a Workflow",
+    "fixedByAuthor": "Policy ceiling only",
+    "available": false,
+    "unavailable": "a generated child cannot open child workflows"
+  },
+  {
+    "need": "Skip the whole fan-out",
+    "construct": "gate before the parallel or map",
+    "decidedBy": "Gate verdict",
+    "fixedByAuthor": "Both paths",
+    "available": true
+  }
+]
