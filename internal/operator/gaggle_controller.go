@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -260,6 +261,12 @@ func (r *GaggleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// A map function cannot return an error to trigger a requeue, so a failed List
+// is retried in place with a short bounded backoff before being dropped.
+const generationListAttempts = 3
+
+var generationListBackoff = 200 * time.Millisecond
+
 func (r *GaggleReconciler) generationPointerToGaggles(ctx context.Context, obj client.Object) []reconcile.Request {
 	if obj.GetName() != configsync.GenerationConfigMapName {
 		return nil
@@ -273,11 +280,25 @@ func (r *GaggleReconciler) generationPointerToGaggles(ctx context.Context, obj c
 		return nil
 	}
 	var gaggles v1alpha1.GaggleList
-	if err := r.List(ctx, &gaggles,
-		client.InNamespace(cm.Namespace),
-		configsync.GenerationSelector(generation),
-	); err != nil {
-		return nil
+	var err error
+	for attempt := 1; attempt <= generationListAttempts; attempt++ {
+		err = r.List(ctx, &gaggles,
+			client.InNamespace(cm.Namespace),
+			configsync.GenerationSelector(generation),
+		)
+		if err == nil {
+			break
+		}
+		log.FromContext(ctx).Error(err, "listing gaggles for generation pointer failed",
+			"namespace", cm.Namespace, "generation", generation, "attempt", attempt)
+		if attempt == generationListAttempts {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(generationListBackoff * time.Duration(attempt)):
+		}
 	}
 	reqs := make([]reconcile.Request, 0, len(gaggles.Items))
 	for i := range gaggles.Items {
