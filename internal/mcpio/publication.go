@@ -34,6 +34,12 @@ const (
 	RejectUnreadableOutput = "output_unreadable"
 	// RejectSchemaViolation: the payload is not JSON or violates its schema.
 	RejectSchemaViolation = "output_schema_violation"
+	// RejectTargetUnresolved: every slot validated, but the declared manifest
+	// target could not be resolved inside the workspace.
+	RejectTargetUnresolved = "output_target_unresolved"
+	// RejectWriteFailed: every slot validated and the target resolved, but the
+	// manifest could not be written.
+	RejectWriteFailed = "output_write_failed"
 )
 
 // PublicationRepairInstructions is returned with every rejection so the

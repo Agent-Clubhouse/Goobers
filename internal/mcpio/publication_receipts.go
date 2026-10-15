@@ -15,8 +15,8 @@ const (
 	// PublicationAccepted: every schema-bound slot validated and the manifest
 	// was written.
 	PublicationAccepted = "accepted"
-	// PublicationRejected: publish_output refused the manifest; nothing was
-	// written.
+	// PublicationRejected: publish_output refused the manifest, or validated
+	// it but could not resolve or write the target; nothing was written.
 	PublicationRejected = "rejected"
 )
 
@@ -63,6 +63,31 @@ func (t *Toolset) recordRejectedPublication(err error) {
 	for _, out := range rejection.Outputs {
 		receipt.Outputs = append(receipt.Outputs, PublicationReceiptOutput{
 			Slot: out.Slot, SchemaID: out.SchemaID, Category: out.Category, Issues: out.Issues,
+		})
+	}
+	_ = t.appendReceipt(t.cfg.PublicationReceiptFile, "publication", receipt)
+}
+
+// recordUnwrittenPublication records the single rejected receipt for a
+// publication whose slots all validated but whose manifest was never written.
+// category is RejectTargetUnresolved or RejectWriteFailed; it is empty only on
+// a path with no defined post-validation failure, which records nothing. No
+// digests are kept: nothing was published.
+func (t *Toolset) recordUnwrittenPublication(validated []PublicationReceiptOutput, category string) {
+	if len(t.schemas) == 0 || category == "" {
+		return
+	}
+	message := "the validated manifest could not be written to the declared target"
+	if category == RejectTargetUnresolved {
+		message = "the declared manifest target could not be resolved inside the workspace"
+	}
+	receipt := PublicationReceipt{Outcome: PublicationRejected}
+	for _, out := range validated {
+		receipt.Outputs = append(receipt.Outputs, PublicationReceiptOutput{
+			Slot:     out.Slot,
+			SchemaID: out.SchemaID,
+			Category: category,
+			Issues:   []handoffcheck.Issue{{Code: category, Message: message}},
 		})
 	}
 	_ = t.appendReceipt(t.cfg.PublicationReceiptFile, "publication", receipt)

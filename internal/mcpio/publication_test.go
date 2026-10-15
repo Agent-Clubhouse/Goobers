@@ -223,21 +223,36 @@ func TestPublishOutputWithoutSchemasRecordsNoPublicationReceipt(t *testing.T) {
 	}
 }
 
-func TestPublishOutputRecordsNoAcceptedReceiptWhenTheWriteFails(t *testing.T) {
-	tool, root := schemaToolset(t)
-	tool.cfg.PublicationReceiptFile = PublicationReceiptFileName
-	// The manifest's parent is a regular file, so the validated publication
-	// cannot be written.
-	tool.cfg.ArtifactManifestFile = "out/finding.json/manifest.json"
-	writePayload(t, root, `{"summary": "x", "severity": 2}`)
-	if _, _, err := tool.PublishOutput(findingManifest); err == nil {
-		t.Fatal("publication into an unwritable target reported success")
-	}
-	receipts, err := ReadPublicationReceipts(root, tool.cfg.PublicationReceiptFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(receipts) != 0 {
-		t.Fatalf("receipts=%+v, want none for a manifest that was never written", receipts)
+func TestPublishOutputRecordsARejectedReceiptWhenTheValidatedManifestIsNotWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, category string
+	}{
+		// The manifest's parent is a regular file, so the target resolves but
+		// the validated publication cannot be written.
+		{name: "write failure", target: "out/finding.json/manifest.json", category: RejectWriteFailed},
+		{name: "target escapes workspace", target: "../outside/manifest.json", category: RejectTargetUnresolved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, root := schemaToolset(t)
+			tool.cfg.PublicationReceiptFile = PublicationReceiptFileName
+			tool.cfg.ArtifactManifestFile = tc.target
+			writePayload(t, root, `{"summary": "x", "severity": 2}`)
+			if _, _, err := tool.PublishOutput(findingManifest); err == nil {
+				t.Fatal("publication into an unusable target reported success")
+			}
+			receipts, err := ReadPublicationReceipts(root, tool.cfg.PublicationReceiptFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(receipts) != 1 || receipts[0].Outcome != PublicationRejected || receipts[0].ManifestDigest != "" {
+				t.Fatalf("receipts=%+v, want exactly one rejected receipt for a manifest that was never written", receipts)
+			}
+			outs := receipts[0].Outputs
+			if len(outs) != 1 || outs[0].Slot != "finding" || outs[0].SchemaID != "schemas/finding.schema.json" ||
+				outs[0].Category != tc.category || outs[0].PayloadDigest != "" ||
+				len(outs[0].Issues) != 1 || outs[0].Issues[0].Code != tc.category {
+				t.Fatalf("outputs=%+v, want slot finding rejected as %s", outs, tc.category)
+			}
+		})
 	}
 }

@@ -81,7 +81,11 @@ func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string
 // and lifts the complete set only after completion, never from this tool call.
 // When the stage declares schema-bound slots (Config.PublicationSchemas), a
 // manifest whose payloads are absent, malformed, or schema-invalid is refused
-// with a PublicationRejection before anything is written (#6868).
+// with a PublicationRejection before anything is written (#6868). Each
+// schema-bound call that is validated records exactly one receipt: accepted only when the
+// manifest was written, otherwise rejected — including a validated manifest
+// whose target could not be resolved (RejectTargetUnresolved) or written
+// (RejectWriteFailed).
 //
 // The write is atomic (#2422). os.WriteFile truncates the existing artifact
 // before writing its replacement, so a second publish that died mid-write —
@@ -101,6 +105,7 @@ func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string
 // looking at.
 func (t *Toolset) PublishOutput(content string) (bytesWritten int, digest string, err error) {
 	target := t.cfg.ArtifactFile
+	var failure string
 	if t.cfg.ArtifactManifestFile != "" {
 		if target != "" {
 			return 0, "", fmt.Errorf("artifactFile and artifactManifestFile are mutually exclusive")
@@ -112,9 +117,12 @@ func (t *Toolset) PublishOutput(content string) (bytesWritten int, digest string
 			return 0, "", checkErr
 		}
 		defer func() {
-			// Only a manifest that was actually written is an accepted publication.
+			// Only a manifest that was actually written is an accepted
+			// publication; a validated one that was not is still rejected.
 			if err == nil {
 				t.recordAcceptedPublication(digest, accepted)
+			} else {
+				t.recordUnwrittenPublication(accepted, failure)
 			}
 		}()
 	}
@@ -123,10 +131,12 @@ func (t *Toolset) PublishOutput(content string) (bytesWritten int, digest string
 	}
 	full, err := t.resolveInWorkspace(target, true)
 	if err != nil {
+		failure = RejectTargetUnresolved
 		return 0, "", fmt.Errorf("resolve artifactFile: %w", err)
 	}
 	data := []byte(content)
 	if err := journal.WriteFileAtomic(full, data, 0o644); err != nil {
+		failure = RejectWriteFailed
 		return 0, "", fmt.Errorf("write artifactFile: %w", err)
 	}
 	sum := sha256.Sum256(data)
