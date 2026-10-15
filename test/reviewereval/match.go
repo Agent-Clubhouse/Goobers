@@ -212,12 +212,12 @@ func parseLocation(location string) (file string, start, end int) {
 	return normalizePath(match[1]), start, end
 }
 
+// normalizePath turns a repository-relative path into slash form. It never
+// strips a diff side prefix: "a/foo.go" is a real path distinct from
+// "foo.go", and bug paths have their diff prefixes removed where the diff is
+// parsed (parseUnifiedDiff), against diffs built with explicit prefixes.
 func normalizePath(file string) string {
-	file = strings.ReplaceAll(file, `\`, "/")
-	for _, prefix := range []string{"./", "a/", "b/"} {
-		file = strings.TrimPrefix(file, prefix)
-	}
-	return file
+	return strings.TrimPrefix(strings.ReplaceAll(file, `\`, "/"), "./")
 }
 
 // overlapsBug reports whether a location names a bug file and a line within

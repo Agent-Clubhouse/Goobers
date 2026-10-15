@@ -226,7 +226,7 @@ func containsInt(values []int, value int) bool {
 // the most traced lines as the culprit. It returns a drop reason instead of
 // a case when no culprit can be named with confidence.
 func (b *builder) trace(ctx context.Context, fix fixCommit, filtered map[string]int) (datasetCase, string, error) {
-	diff, err := b.git.run(ctx, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", fix.Parent, fix.SHA)
+	diff, err := b.git.run(ctx, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", fix.Parent, fix.SHA)
 	if err != nil {
 		return datasetCase{}, "", err
 	}
@@ -393,7 +393,7 @@ func (b *builder) isPureRefactor(ctx context.Context, commit string, boundary bo
 	if refactor, ok := b.refactor[commit]; ok {
 		return refactor, nil
 	}
-	diff, err := b.git.run(ctx, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", commit+"^", commit)
+	diff, err := b.git.run(ctx, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", commit+"^", commit)
 	if err != nil {
 		return false, err
 	}

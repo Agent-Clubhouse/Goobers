@@ -760,12 +760,43 @@ func TestParseLocation(t *testing.T) {
 		"a.go":                {"a.go", 0, 0},
 		"./pkg/a.go:12":       {"pkg/a.go", 12, 12},
 		"pkg\\a.go:12-20":     {"pkg/a.go", 12, 20},
-		"b/pkg/a.go:7:3":      {"pkg/a.go", 7, 7},
+		"b/pkg/a.go:7:3":      {"b/pkg/a.go", 7, 7},
 		"pkg/a.go#L4-L9 note": {"pkg/a.go", 4, 9},
 	} {
 		file, start, end := parseLocation(location)
 		if got := [3]any{file, start, end}; got != want {
 			t.Errorf("parseLocation(%q) = %v, want %v", location, got, want)
+		}
+	}
+}
+
+// TestBugPathsKeepARealADirectory guards against confusing a repository's
+// own a/ directory with a diff side prefix: a bug in a/foo.go must not match
+// a finding in the distinct file foo.go, even when the repository configures
+// prefix-free diffs.
+func TestBugPathsKeepARealADirectory(t *testing.T) {
+	t.Parallel()
+	repo := &fixtureRepo{dir: t.TempDir(), commits: map[string]string{}}
+	repo.git(t, "init", "-q", "-b", "main")
+	repo.git(t, "config", "diff.noprefix", "true")
+	if err := os.Mkdir(filepath.Join(repo.dir, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := func(value int) string { return fmt.Sprintf("package a\n\nfunc F() int {\n\treturn %d\n}\n", value) }
+	repo.commit(t, "root", "initial", map[string]string{"a/foo.go": source(1), "foo.go": source(1)})
+	repo.commit(t, "intro", "feat: return two", map[string]string{"a/foo.go": source(2)})
+	repo.commit(t, "fix", "fix: return three\n\nFixes #41", map[string]string{"a/foo.go": source(3)})
+	set, err := newBuilder(repo.dir).build(context.Background(), buildOptions{Range: "main", Version: "v", BugIssues: map[int]bool{41: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := caseFor(set, repo.commits["fix"])
+	if item == nil || len(item.BugLines) != 1 || item.BugLines[0].Path != "a/foo.go" {
+		t.Fatalf("fix case = %+v, want its bug in a/foo.go", item)
+	}
+	for location, want := range map[string]bool{"a/foo.go:4": true, "./a/foo.go:4": true, "foo.go:4": false, "b/foo.go:4": false} {
+		if got := overlapsBug(location, item.BugLines); got != want {
+			t.Errorf("overlapsBug(%q, %v) = %v, want %v", location, item.BugLines, got, want)
 		}
 	}
 }
