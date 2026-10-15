@@ -206,6 +206,10 @@ neutral outcome (an escalated run) carries neither credit nor blame, and a
 run whose journal cannot be read is listed in `linkEvidenceUnavailable`
 instead of silently contributing no links.
 
+Each workflow entry also reports its runs' accepted label sources
+(`groundTruthSources`), a `groundTruth` summary over accepted labels only, and
+`ignoredLabelRuns` for runs whose labels their pinned contract refused.
+
 Cross-workflow links follow the credit graph's no-guessed-edges rule (see
 [Why](#why)). An edge
 exists only when two runs recorded the same identifier:

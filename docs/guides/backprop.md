@@ -412,6 +412,11 @@ now and `--since` to seven days earlier. The report includes:
   neither when it was neutral (an escalated run; counted as `neutral`). Each share is
   the workflow's units divided by the gaggle's total. Insufficient-evidence and
   failed records are counted but carry no share.
+- **Ground truth per workflow.** `groundTruthSources` lists the label sources
+  the workflow's runs accept (`[]` when every run opted out). `groundTruth`
+  counts labeled, correct, and incorrect runs using accepted labels only, and
+  `ignoredLabelRuns` counts runs whose labels all came from a source they do
+  not accept.
 - **Per-stage credit and blame share.** Each record's stage contributions are
   normalized to one unit before pooling, so long runs do not outweigh short
   ones.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -92,6 +93,16 @@ type GaggleWorkflowCredit struct {
 	// DownstreamFailures counts failed runs of other workflows that a
 	// recorded link places after one of this workflow's runs.
 	DownstreamFailures int `json:"downstreamFailures"`
+	// GroundTruthSources lists the label sources at least one of the
+	// workflow's runs accepts under its pinned backprop.groundTruth contract;
+	// an empty list means every run with a readable contract opted out.
+	GroundTruthSources []apiv1.BackpropLabelSource `json:"groundTruthSources"`
+	// GroundTruth summarizes the runs' effective labels from accepted sources
+	// only; it is omitted when no run carries one.
+	GroundTruth *creditgraph.GroundTruthSummary `json:"groundTruth,omitempty"`
+	// IgnoredLabelRuns counts runs whose recorded labels all come from
+	// sources their contract does not accept.
+	IgnoredLabelRuns int `json:"ignoredLabelRuns,omitempty"`
 }
 
 // GaggleStageCredit is one workflow stage's share of the gaggle's credit and
@@ -148,6 +159,12 @@ type gaggleReportRun struct {
 	record        creditgraph.RunRecord
 	refs          []string
 	continuedFrom string
+	// groundTruth is the effective label among the sources the run accepts.
+	groundTruth *creditgraph.GroundTruthLabel
+	// labelsIgnored reports recorded labels that the contract refused.
+	labelsIgnored bool
+	// acceptedSources is nil when the run's contract could not be read.
+	acceptedSources []apiv1.BackpropLabelSource
 	// linkEvidenceMissing reports that the run's journal could not be read.
 	linkEvidenceMissing bool
 }
@@ -180,6 +197,7 @@ func StoredGaggleBackprop(
 	}
 	links := gaggleCrossWorkflowLinks(current)
 	workflows := gaggleWorkflowCredit(current, links)
+	gaggleWorkflowGroundTruth(workflows, current)
 	return GaggleBackpropReport{
 		Schema: GaggleBackpropReportSchema, Gaggle: query.Gaggle,
 		Window: window, PreviousWindow: previous,
@@ -253,10 +271,18 @@ func readGaggleReportRun(layout instance.Layout, row readmodel.RunRow) (gaggleRe
 	if err != nil {
 		return gaggleReportRun{}, false, fmt.Errorf("read attribution record %q: %w", row.RunID, err)
 	}
+	labels, err := creditgraph.ReadLabelStore(runDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return gaggleReportRun{}, false, fmt.Errorf("read ground-truth labels %q: %w", row.RunID, err)
+	}
 	run := gaggleReportRun{
 		runID: row.RunID, workflow: firstNonEmpty(record.Workflow, row.Workflow),
 		startedAt: row.StartedAt, phase: row.Phase, record: record,
 	}
+	// Without a readable contract every label counts, as on the attribution
+	// read path's fallback.
+	run.applyGroundTruth(nil, labels.Labels)
+	run.acceptedSources = nil
 	// Without a readable journal the run still counts toward credit, but the
 	// report flags it: its recorded identifiers, and so its links, are unknown.
 	reader, err := journal.OpenReadOnly(runDir)
@@ -270,6 +296,9 @@ func readGaggleReportRun(layout instance.Layout, row readmodel.RunRow) (gaggleRe
 		return run, true, nil
 	}
 	run.continuedFrom = identity.ContinuedFromRunID
+	if contract, err := creditgraph.PinnedGroundTruth(reader, identity); err == nil {
+		run.applyGroundTruth(contract, labels.Labels)
+	}
 	events, err := reader.Events()
 	if err != nil {
 		run.linkEvidenceMissing = true
@@ -287,6 +316,30 @@ func readGaggleReportRun(layout instance.Layout, row readmodel.RunRow) (gaggleRe
 		}
 	}
 	return run, true, nil
+}
+
+// gaggleLabelSources are the label sources a groundTruth contract can name.
+var gaggleLabelSources = []apiv1.BackpropLabelSource{apiv1.BackpropLabelSourceHuman}
+
+// applyGroundTruth sets the run's accepted sources and its effective label
+// among the labels contract accepts.
+func (run *gaggleReportRun) applyGroundTruth(contract *apiv1.BackpropGroundTruth, labels []creditgraph.GroundTruthLabel) {
+	run.acceptedSources = []apiv1.BackpropLabelSource{}
+	for _, source := range gaggleLabelSources {
+		if contract.AcceptsLabelSource(source) {
+			run.acceptedSources = append(run.acceptedSources, source)
+		}
+	}
+	accepted := make([]creditgraph.GroundTruthLabel, 0, len(labels))
+	for _, label := range labels {
+		if creditgraph.AcceptedLabel(contract, label) {
+			accepted = append(accepted, label)
+		}
+	}
+	run.groundTruth, run.labelsIgnored = nil, len(labels) > 0 && len(accepted) == 0
+	if label, ok := creditgraph.EffectiveLabel(accepted); ok {
+		run.groundTruth = &label
+	}
 }
 
 // externalRefIdentifier is the normative (Provider, Kind, ID) identity of a
@@ -420,6 +473,47 @@ func gaggleWorkflowCredit(runs []gaggleReportRun, links []GaggleCrossWorkflowLin
 	}
 	sort.Slice(workflows, func(i, j int) bool { return workflows[i].Workflow < workflows[j].Workflow })
 	return workflows
+}
+
+// gaggleWorkflowGroundTruth adds each workflow's accepted label sources and
+// accepted-label summary. workflows must come from gaggleWorkflowCredit(runs).
+func gaggleWorkflowGroundTruth(workflows []GaggleWorkflowCredit, runs []gaggleReportRun) {
+	index := make(map[string]*GaggleWorkflowCredit, len(workflows))
+	sources := map[string]map[apiv1.BackpropLabelSource]bool{}
+	for i := range workflows {
+		index[workflows[i].Workflow] = &workflows[i]
+		sources[workflows[i].Workflow] = map[apiv1.BackpropLabelSource]bool{}
+	}
+	for _, run := range runs {
+		entry := index[run.workflow]
+		for _, source := range run.acceptedSources {
+			sources[run.workflow][source] = true
+		}
+		if run.labelsIgnored {
+			entry.IgnoredLabelRuns++
+		}
+		if run.groundTruth == nil {
+			continue
+		}
+		if entry.GroundTruth == nil {
+			entry.GroundTruth = &creditgraph.GroundTruthSummary{}
+		}
+		entry.GroundTruth.LabeledRunCount++
+		switch run.groundTruth.Outcome {
+		case creditgraph.LabelCorrect:
+			entry.GroundTruth.CorrectRunCount++
+		case creditgraph.LabelIncorrect:
+			entry.GroundTruth.IncorrectRunCount++
+		}
+	}
+	for i := range workflows {
+		workflows[i].GroundTruthSources = []apiv1.BackpropLabelSource{}
+		for _, source := range gaggleLabelSources {
+			if sources[workflows[i].Workflow][source] {
+				workflows[i].GroundTruthSources = append(workflows[i].GroundTruthSources, source)
+			}
+		}
+	}
 }
 
 func gaggleStageCredit(runs []gaggleReportRun) []GaggleStageCredit {

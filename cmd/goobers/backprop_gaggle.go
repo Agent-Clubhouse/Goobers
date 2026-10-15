@@ -108,6 +108,19 @@ func renderGaggleBackpropReport(stdout io.Writer, report readservice.GaggleBackp
 		pf(stdout, "%-24s  %5d  %6d  %7.2f  %7.2f  %10d\n", workflow.Workflow, workflow.Runs, workflow.Failed,
 			workflow.CreditShare, workflow.BlameShare, workflow.DownstreamFailures)
 	}
+	pln(stdout, "ground truth (accepted sources only):")
+	for _, workflow := range report.Workflows {
+		sources := make([]string, 0, len(workflow.GroundTruthSources))
+		for _, source := range workflow.GroundTruthSources {
+			sources = append(sources, string(source))
+		}
+		labeled, correct, incorrect := 0, 0, 0
+		if summary := workflow.GroundTruth; summary != nil {
+			labeled, correct, incorrect = summary.LabeledRunCount, summary.CorrectRunCount, summary.IncorrectRunCount
+		}
+		pf(stdout, "  %s  sources=[%s] labeled=%d correct=%d incorrect=%d ignored=%d\n", workflow.Workflow,
+			strings.Join(sources, ","), labeled, correct, incorrect, workflow.IgnoredLabelRuns)
+	}
 	pln(stdout, "stages:")
 	for _, stage := range report.Stages {
 		pf(stdout, "  %s/%s  credit=%.2f blame=%.2f runs=%d\n", stage.Workflow, stage.Stage, stage.CreditShare, stage.BlameShare, stage.Runs)
