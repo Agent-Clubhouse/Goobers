@@ -460,5 +460,7 @@ function stageKindLabel(stage: StageDefinition): string {
       return "Gate";
     case "parallel":
       return "Parallel";
+    case "map":
+      return "Map";
   }
 }

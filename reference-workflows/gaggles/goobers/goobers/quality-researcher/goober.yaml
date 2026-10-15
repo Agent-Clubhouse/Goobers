@@ -22,3 +22,4 @@ spec:
   scaleFactor: 1
   workflows:
     - quality-sprint
+    - quality-spot-check
