@@ -42,6 +42,18 @@ func readReferenceWorkflows(t *testing.T) map[string]apiv1.Workflow {
 	return out
 }
 
+// isDSL20Source reports whether a reference workflow is a DSL 2.0 source, the
+// population dsl-3.0.md §9 migrates. A workflow authored at DSL 3.1 (the
+// preview quality-spot-check selective parallel) is already past that hop.
+func isDSL20Source(t *testing.T, src []byte) bool {
+	t.Helper()
+	var wf apiv1.Workflow
+	if err := k8syaml.Unmarshal(src, &wf); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return wf.DSLVersion == "2.0"
+}
+
 // TestAcceptanceEveryReferenceWorkflowMigratesClean is dsl-3.0.md §9 item 1's
 // compile half: every shipped/reference workflow, run through
 // `goobers fix --to 3.0`, validates clean under 3.0 with zero manual edits.
@@ -59,6 +71,9 @@ func TestAcceptanceEveryReferenceWorkflowMigratesClean(t *testing.T) {
 			src, err := os.ReadFile(filepath.Join(referenceWorkflowsDir, e.Name()))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !isDSL20Source(t, src) {
+				return
 			}
 			res, err := dslmigrate.Migrate(src, "3.0")
 			if err != nil {
@@ -198,7 +213,7 @@ func TestAcceptanceConformanceEquivalentTransitionGraph(t *testing.T) {
 			if err := k8syaml.Unmarshal(src, &original); err != nil {
 				t.Fatal(err)
 			}
-			if original.Kind != "Workflow" {
+			if original.Kind != "Workflow" || !isDSL20Source(t, src) {
 				return
 			}
 			m20, err := workflow.Compile(workflow.Definition{

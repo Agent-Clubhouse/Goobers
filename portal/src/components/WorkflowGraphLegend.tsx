@@ -119,6 +119,11 @@ export function WorkflowGraphLegend() {
             labelled with the branch name, and once the branch reaches a terminal state the
             label names it too — the word itself is the encoding, never color alone.
           </p>
+          <p>
+            A map node (dashed border) runs one task per item of a frozen roster. Its single
+            fan-out edge counts the items by state, and selecting the map lists every item
+            with its identity and digest.
+          </p>
           <ul aria-label="Branch state key" className="graph-legend-list">
             {BRANCH_STATES.map(({ state, className }) => (
               <li key={state}>
