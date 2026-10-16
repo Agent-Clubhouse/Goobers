@@ -14,6 +14,8 @@ import (
 
 const recordActivityHeartbeatMethod = "/temporal.api.workflowservice.v1.WorkflowService/RecordActivityTaskHeartbeat"
 
+const maxRetainedHeartbeatTasks = 1024
+
 type heartbeatDetails struct {
 	Sequence     uint64    `json:"sequence"`
 	GeneratedAt  time.Time `json:"generatedAt"`
@@ -51,7 +53,6 @@ func (d *heartbeatRPCDiagnostics) interceptor(ctx context.Context, method string
 	}
 
 	started := d.now().UTC()
-	key := heartbeatTaskKey(request.TaskToken)
 	var details heartbeatDetails
 	decoded := request.Details != nil && d.converter.FromPayloads(request.Details, &details) == nil
 	generatedAt := details.GeneratedAt
@@ -59,26 +60,34 @@ func (d *heartbeatRPCDiagnostics) interceptor(ctx context.Context, method string
 		generatedAt = details.LegacySentAt
 	}
 	decoded = decoded && !generatedAt.IsZero()
+	if !decoded {
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+	key := heartbeatTaskKey(request.TaskToken)
 	err := invoker(ctx, method, req, reply, cc, opts...)
 	completed := d.now().UTC()
 
 	d.mu.Lock()
 	previous := d.lastAccepted[key]
 	if err == nil {
+		if _, exists := d.lastAccepted[key]; !exists && len(d.lastAccepted) >= maxRetainedHeartbeatTasks {
+			var oldestKey string
+			var oldest time.Time
+			for candidate, acceptedAt := range d.lastAccepted {
+				if oldestKey == "" || acceptedAt.Before(oldest) {
+					oldestKey, oldest = candidate, acceptedAt
+				}
+			}
+			delete(d.lastAccepted, oldestKey)
+		}
 		d.lastAccepted[key] = completed
 	} else {
 		delete(d.lastAccepted, key)
 	}
 	d.mu.Unlock()
 
-	generationAt := ""
-	schedulingLatency := ""
-	if decoded {
-		generationAt = generatedAt.UTC().Format(time.RFC3339Nano)
-		schedulingLatency = nonNegativeDuration(started.Sub(generatedAt)).String()
-	}
 	d.logf("temporal activity heartbeat transport task=%s resource=%q sequence=%d generationAt=%s rpcStartedAt=%s schedulingLatency=%s rpcLatency=%s accepted=%t lastAcceptedAt=%s error=%v",
-		key, request.ResourceId, details.Sequence, generationAt, started.Format(time.RFC3339Nano), schedulingLatency,
+		key, request.ResourceId, details.Sequence, generatedAt.UTC().Format(time.RFC3339Nano), started.Format(time.RFC3339Nano), nonNegativeDuration(started.Sub(generatedAt)),
 		nonNegativeDuration(completed.Sub(started)), err == nil, formatDiagnosticTime(previous), err)
 	return err
 }

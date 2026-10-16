@@ -69,7 +69,7 @@ func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
 			}
 			out := &sourceReportingBuffer{}
 			err = (recoveryDeliveryService{layout: layout}).StreamRecovery(context.Background(), "receiving-run", repo.CanonicalKey(), "7", out)
-			if mode == "valid" {
+			if mode == "valid" || mode == "released" {
 				if err != nil {
 					t.Fatal(err)
 				}

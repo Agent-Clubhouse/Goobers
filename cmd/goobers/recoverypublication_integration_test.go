@@ -5,14 +5,24 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/mock"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/testsuite"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	kubetesting "k8s.io/client-go/testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimrelease"
@@ -24,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -33,7 +44,7 @@ func TestIntegrationRecoveryPublicationTakesVerifiedHostCustody(t *testing.T) {
 	testdep.Require(t, "git")
 	for _, mode := range []string{
 		"live",
-		"cold-pod-completes-after-terminal-release",
+		"cold-pending-times-out-before-terminal-release",
 		"warm-ready-finishes-before-terminal-release",
 		"successor-owns-before-late-publication",
 		"finished-during-transfer",
@@ -70,15 +81,8 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		t.Fatalf("claim: %t %v", ok, err)
 	}
 	seedItemRepositoryForTest(t, layout, runID, "7", repo)
-	var canceledDispatch <-chan error
-	if mode == "cold-pod-completes-after-terminal-release" {
-		cancel, done := startCanceledRecoveryDispatch(t, runID)
-		cancel()
-		canceledDispatch = done
-		if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
-			t.Fatal(err)
-		}
-		assertRecoveryDispatchCanceled(t, canceledDispatch)
+	if mode == "cold-pending-times-out-before-terminal-release" {
+		runHeartbeatTimeoutLifecycle(t, layout, runID, false)
 	}
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
@@ -125,19 +129,12 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	service := recoveryDeliveryService{layout: layout, setup: &schedulerSetup{LegacyWorktrees: manager}}
 	var body io.Reader = bytes.NewReader(wire.Bytes())
 	if mode == "warm-ready-finishes-before-terminal-release" {
-		cancel, done := startCanceledRecoveryDispatch(t, runID)
-		cancel()
-		canceledDispatch = done
+		runHeartbeatTimeoutLifecycle(t, layout, runID, true)
 	}
-	if mode == "warm-ready-finishes-before-terminal-release" || mode == "successor-owns-before-late-publication" {
+	if mode == "successor-owns-before-late-publication" {
 		if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if mode == "warm-ready-finishes-before-terminal-release" {
-		assertRecoveryDispatchCanceled(t, canceledDispatch)
-	}
-	if mode == "successor-owns-before-late-publication" {
 		if ok, _, err := ledger.Claim("7", "successor-run", "implementation", time.Hour); err != nil || !ok {
 			t.Fatalf("successor claim: %t %v", ok, err)
 		}
@@ -197,60 +194,138 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline, source)
 }
 
-type cancelingRecoveryDispatcher struct {
-	started chan struct{}
+type heartbeatLifecycleRelay struct {
+	cancel context.CancelFunc
+	cold   bool
+	ready  bool
 }
 
-func (d *cancelingRecoveryDispatcher) Dispatch(ctx context.Context, _ dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
-	close(d.started)
+func (r *heartbeatLifecycleRelay) RelayLiveness(_ context.Context, _ dispatcher.Attempt, _ string, phase corev1.PodPhase) error {
+	if phase == corev1.PodRunning {
+		r.ready = true
+	}
+	if r.cold && phase == corev1.PodPending {
+		r.cancel()
+	}
+	return nil
+}
+
+type heartbeatLifecycleGate struct {
+	cancel    context.CancelFunc
+	completed bool
+}
+
+func (g *heartbeatLifecycleGate) Confirmed(ctx context.Context, _ dispatcher.Attempt) (bool, error) {
+	g.completed = true
+	g.cancel()
 	<-ctx.Done()
-	return dispatcher.Report{}, ctx.Err()
+	return false, ctx.Err()
 }
 
-func startCanceledRecoveryDispatch(t *testing.T, runID string) (context.CancelFunc, <-chan error) {
+func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, runID string, warm bool) {
 	t.Helper()
+	api := fake.NewSimpleClientset()
+	var pod *corev1.Pod
+	var observations int
+	var deleted bool
+	api.PrependReactor("create", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		pod = action.(kubetesting.CreateAction).GetObject().(*corev1.Pod)
+		pod.Status.Phase = corev1.PodPending
+		observations = 0
+		deleted = false
+		return false, nil, nil
+	})
+	api.PrependReactor("get", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+		if pod == nil || deleted {
+			return false, nil, nil
+		}
+		observations++
+		observed := pod.DeepCopy()
+		if warm {
+			if observations == 1 {
+				observed.Status.Phase = corev1.PodRunning
+				observed.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			} else {
+				observed.Status.Phase = corev1.PodSucceeded
+			}
+		}
+		return true, observed, nil
+	})
+	api.PrependReactor("delete", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+		deleted = true
+		return false, nil, nil
+	})
+	relay := &heartbeatLifecycleRelay{cold: !warm}
+	gate := &heartbeatLifecycleGate{}
+	stageDispatcher, err := dispatcher.New(dispatcher.Config{
+		GaggleNamespaces:    map[string]string{"goobers": "test"},
+		EmbeddedVersion:     "v1",
+		SupervisionInterval: time.Millisecond,
+	}, dispatcher.NewKubernetesPodAPI(api), relay, gate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	plane, err := dispatcher.NewSurrenderDir(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	stageDispatcher := &cancelingRecoveryDispatcher{started: make(chan struct{})}
 	activities := &engine.Activities{Dispatcher: stageDispatcher, Surrenders: plane}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := activities.DispatchStage(ctx, engine.DispatchStageInput{
-			Envelope: apiv1.InvocationEnvelope{
-				TaskID: runID + ":implement", WorkflowID: "implementation", RunID: runID,
-				Gaggle: "goobers", Attempt: 1, Limits: apiv1.Limits{MaxDurationSeconds: 90},
-			},
-			Placement: engine.PinnedPlacement{
-				Stage: "implement", Queue: dispatcher.QueueName("goobers", "windows"),
-				Eligible: []dispatcher.RunnerSpec{{
-					Name: "windows", OS: "windows", HostKind: "image", Host: "example/windows:v1",
-				}},
-				LedgerTouching: true,
-			},
-		})
-		done <- err
-	}()
-	select {
-	case <-stageDispatcher.started:
-	case <-time.After(5 * time.Second):
-		cancel()
-		t.Fatal("dispatch did not reach the remote boundary")
+	timeout := temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil)
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	env.RegisterActivity(activities)
+	env.OnActivity(engine.ActDispatchStage, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, input engine.DispatchStageInput) (engine.DispatchStageResult, error) {
+			dispatchCtx, cancel := context.WithCancel(ctx)
+			relay.cancel = cancel
+			gate.cancel = cancel
+			_, dispatchErr := activities.DispatchStage(dispatchCtx, input)
+			if dispatchErr == nil || !strings.Contains(dispatchErr.Error(), "control path lost") {
+				return engine.DispatchStageResult{}, fmt.Errorf("dispatch interruption = %v, want lost heartbeat control path", dispatchErr)
+			}
+			return engine.DispatchStageResult{}, timeout
+		},
+	)
+	env.ExecuteWorkflow(engine.Run, engine.RunInput{
+		RunID: runID, Gaggle: "goobers", WorkflowName: "implementation", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers", Start: "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+				Run: &apiv1.DeterministicRun{Command: []string{"go", "version"}, Workspace: apiv1.WorkspaceScratch},
+			}},
+		},
+		Placements: []engine.PinnedPlacement{{
+			Stage: "implement", Queue: dispatcher.QueueName("goobers", "windows"),
+			Eligible: []dispatcher.RunnerSpec{{
+				Name: "windows", OS: "windows", HostKind: "image", Host: "example/windows:v1",
+			}},
+		}},
+	})
+	if err := env.GetWorkflowError(); err == nil || !strings.Contains(strings.ToLower(err.Error()), "heartbeat") {
+		t.Fatalf("workflow heartbeat timeout = %v", err)
 	}
-	return cancel, done
-}
-
-func assertRecoveryDispatchCanceled(t *testing.T, done <-chan error) {
-	t.Helper()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("dispatch cancellation = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("dispatch did not observe cancellation")
+	if warm && (!relay.ready || !gate.completed) {
+		t.Fatalf("warm lifecycle ready=%t agentCompleted=%t, want both before timeout", relay.ready, gate.completed)
+	}
+	if !warm && (relay.ready || gate.completed) {
+		t.Fatalf("cold lifecycle ready=%t agentCompleted=%t, want timeout while Pending", relay.ready, gate.completed)
+	}
+	hooks := &engineTerminalHooks{
+		finalize: func(id string, _ journal.RunPhase) error {
+			return releaseClaimsForRun(layout, nil, id)
+		},
+	}
+	hooks.run(context.Background(), engineTerminalOutcome{
+		RunID: runID, Gaggle: "goobers", Workflow: "implementation",
+		Phase: journal.PhaseFailed, Err: env.GetWorkflowError(),
+	})
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held := ledger.ForRunAll(runID); len(held) != 0 {
+		t.Fatalf("terminal workflow retained claims: %+v", held)
 	}
 }
 

@@ -72,3 +72,52 @@ func TestHeartbeatRPCDiagnosticsIgnoreOtherRPCs(t *testing.T) {
 		t.Fatalf("pass-through: called=%t err=%v", called, err)
 	}
 }
+
+func TestHeartbeatRPCDiagnosticsIgnoreUnrecognizedHeartbeatDetails(t *testing.T) {
+	diagnostics := newHeartbeatRPCDiagnostics(nil, func(string, ...any) {
+		t.Fatal("unrecognized heartbeat was logged")
+	})
+	payloads, err := converter.GetDefaultDataConverter().ToPayloads(struct {
+		Progress int `json:"progress"`
+	}{Progress: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &workflowservice.RecordActivityTaskHeartbeatRequest{TaskToken: []byte("other-activity"), Details: payloads}
+	invoker := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error { return nil }
+	if err := diagnostics.interceptor(context.Background(), recordActivityHeartbeatMethod, request, nil, nil, invoker); err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics.lastAccepted) != 0 {
+		t.Fatalf("retained unrelated heartbeat tasks = %d, want 0", len(diagnostics.lastAccepted))
+	}
+}
+
+func TestHeartbeatRPCDiagnosticsBoundRetainedDispatchTasks(t *testing.T) {
+	diagnostics := newHeartbeatRPCDiagnostics(nil, func(string, ...any) {})
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	diagnostics.now = func() time.Time {
+		now = now.Add(time.Millisecond)
+		return now
+	}
+	payloads, err := converter.GetDefaultDataConverter().ToPayloads(heartbeatDetails{Sequence: 1, GeneratedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoker := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error { return nil }
+	for i := 0; i < maxRetainedHeartbeatTasks+10; i++ {
+		request := &workflowservice.RecordActivityTaskHeartbeatRequest{
+			TaskToken: []byte(fmt.Sprintf("dispatch-%d", i)),
+			Details:   payloads,
+		}
+		if err := diagnostics.interceptor(context.Background(), recordActivityHeartbeatMethod, request, nil, nil, invoker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(diagnostics.lastAccepted) != maxRetainedHeartbeatTasks {
+		t.Fatalf("retained dispatch heartbeat tasks = %d, want %d", len(diagnostics.lastAccepted), maxRetainedHeartbeatTasks)
+	}
+	if _, retained := diagnostics.lastAccepted[heartbeatTaskKey([]byte("dispatch-0"))]; retained {
+		t.Fatal("oldest accepted dispatch heartbeat was not evicted")
+	}
+}
