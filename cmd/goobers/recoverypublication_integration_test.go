@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimrelease"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -28,7 +31,14 @@ import (
 
 func TestIntegrationRecoveryPublicationTakesVerifiedHostCustody(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"live", "released-during-transfer", "finished-during-transfer", "crashed-reservation-present"} {
+	for _, mode := range []string{
+		"live",
+		"cold-pod-completes-after-terminal-release",
+		"warm-ready-finishes-before-terminal-release",
+		"successor-owns-before-late-publication",
+		"finished-during-transfer",
+		"crashed-reservation-present",
+	} {
 		t.Run(mode, func(t *testing.T) {
 			testRecoveryPublicationCustody(t, mode)
 		})
@@ -37,7 +47,6 @@ func TestIntegrationRecoveryPublicationTakesVerifiedHostCustody(t *testing.T) {
 
 func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	t.Helper()
-	release := mode == "released-during-transfer"
 	ctx := context.Background()
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
@@ -61,6 +70,16 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		t.Fatalf("claim: %t %v", ok, err)
 	}
 	seedItemRepositoryForTest(t, layout, runID, "7", repo)
+	var canceledDispatch <-chan error
+	if mode == "cold-pod-completes-after-terminal-release" {
+		cancel, done := startCanceledRecoveryDispatch(t, runID)
+		cancel()
+		canceledDispatch = done
+		if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
+			t.Fatal(err)
+		}
+		assertRecoveryDispatchCanceled(t, canceledDispatch)
+	}
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
@@ -105,8 +124,23 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	}
 	service := recoveryDeliveryService{layout: layout, setup: &schedulerSetup{LegacyWorktrees: manager}}
 	var body io.Reader = bytes.NewReader(wire.Bytes())
-	if release {
-		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error { return ledger.Release("7", runID, claimrelease.Completed.Reason()) }}
+	if mode == "warm-ready-finishes-before-terminal-release" {
+		cancel, done := startCanceledRecoveryDispatch(t, runID)
+		cancel()
+		canceledDispatch = done
+	}
+	if mode == "warm-ready-finishes-before-terminal-release" || mode == "successor-owns-before-late-publication" {
+		if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mode == "warm-ready-finishes-before-terminal-release" {
+		assertRecoveryDispatchCanceled(t, canceledDispatch)
+	}
+	if mode == "successor-owns-before-late-publication" {
+		if ok, _, err := ledger.Claim("7", "successor-run", "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("successor claim: %t %v", ok, err)
+		}
 	}
 	if mode == "finished-during-transfer" {
 		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error {
@@ -123,8 +157,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		seedRecoveryDebris(t, layout, "0000000000000000-deadbeef")
 	}
 	err = service.PublishRecovery(ctx, runID, repo.CanonicalKey(), "7", body)
-	if (err != nil) != release {
-		t.Fatalf("publication release=%t: %v", release, err)
+	wantRefusal := mode == "successor-owns-before-late-publication"
+	if (err != nil) != wantRefusal {
+		t.Fatalf("late publication refusal=%t: %v", wantRefusal, err)
 	}
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -134,9 +169,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if release {
+	if wantRefusal {
 		if len(captures) != 0 {
-			t.Fatalf("released claim acknowledged: %+v", captures)
+			t.Fatalf("successor-fenced publication acknowledged: %+v", captures)
 		}
 		return
 	}
@@ -160,6 +195,63 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		return
 	}
 	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline, source)
+}
+
+type cancelingRecoveryDispatcher struct {
+	started chan struct{}
+}
+
+func (d *cancelingRecoveryDispatcher) Dispatch(ctx context.Context, _ dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
+	close(d.started)
+	<-ctx.Done()
+	return dispatcher.Report{}, ctx.Err()
+}
+
+func startCanceledRecoveryDispatch(t *testing.T, runID string) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	plane, err := dispatcher.NewSurrenderDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageDispatcher := &cancelingRecoveryDispatcher{started: make(chan struct{})}
+	activities := &engine.Activities{Dispatcher: stageDispatcher, Surrenders: plane}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := activities.DispatchStage(ctx, engine.DispatchStageInput{
+			Envelope: apiv1.InvocationEnvelope{
+				TaskID: runID + ":implement", WorkflowID: "implementation", RunID: runID,
+				Gaggle: "goobers", Attempt: 1, Limits: apiv1.Limits{MaxDurationSeconds: 90},
+			},
+			Placement: engine.PinnedPlacement{
+				Stage: "implement", Queue: dispatcher.QueueName("goobers", "windows"),
+				Eligible: []dispatcher.RunnerSpec{{
+					Name: "windows", OS: "windows", HostKind: "image", Host: "example/windows:v1",
+				}},
+				LedgerTouching: true,
+			},
+		})
+		done <- err
+	}()
+	select {
+	case <-stageDispatcher.started:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("dispatch did not reach the remote boundary")
+	}
+	return cancel, done
+}
+
+func assertRecoveryDispatchCanceled(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("dispatch cancellation = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("dispatch did not observe cancellation")
+	}
 }
 
 func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string, deadline time.Time, base string) {

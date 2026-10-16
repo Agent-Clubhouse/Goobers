@@ -99,7 +99,7 @@ func TestReviewerDispatchReceivesCancellationOptions(t *testing.T) {
 	}
 }
 
-func TestDispatchHeartbeatCarriesLastSentDiagnostic(t *testing.T) {
+func TestDispatchHeartbeatCarriesGenerationDiagnostic(t *testing.T) {
 	var got dispatchHeartbeatDetails
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
@@ -116,8 +116,8 @@ func TestDispatchHeartbeatCarriesLastSentDiagnostic(t *testing.T) {
 	if _, err := env.ExecuteActivity("diagnostic-heartbeat"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Sequence != 1 || got.SentAt.IsZero() {
-		t.Fatalf("heartbeat details = %+v, want sequence and send time", got)
+	if got.Sequence != 1 || got.GeneratedAt.IsZero() {
+		t.Fatalf("heartbeat details = %+v, want sequence and generation time", got)
 	}
 }
 

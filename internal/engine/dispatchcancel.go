@@ -38,8 +38,8 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 }
 
 type dispatchHeartbeatDetails struct {
-	Sequence uint64    `json:"sequence"`
-	SentAt   time.Time `json:"sentAt"`
+	Sequence    uint64    `json:"sequence"`
+	GeneratedAt time.Time `json:"generatedAt"`
 }
 
 // Temporal delivers activity cancellation through heartbeat replies. Keep
@@ -50,7 +50,7 @@ func heartbeatDispatch(ctx context.Context) func() {
 	var sequence uint64
 	return heartbeatDispatchDetails(ctx, func() any {
 		sequence++
-		return dispatchHeartbeatDetails{Sequence: sequence, SentAt: time.Now().UTC()}
+		return dispatchHeartbeatDetails{Sequence: sequence, GeneratedAt: time.Now().UTC()}
 	})
 }
 
