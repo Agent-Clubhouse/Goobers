@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -66,6 +67,20 @@ func classifyTransport(err error) string {
 	return "transport error"
 }
 
+// PublicationRefusal preserves the API's bounded public refusal class without
+// exposing response detail, URLs, credentials, or archive paths.
+type PublicationRefusal struct {
+	StatusCode int
+	Code       string
+}
+
+func (e *PublicationRefusal) Error() string {
+	if e.Code == "" {
+		return fmt.Sprintf("recovery upload refused (HTTP %d)", e.StatusCode)
+	}
+	return fmt.Sprintf("recovery upload refused (%s, HTTP %d)", e.Code, e.StatusCode)
+}
+
 // HTTPArchivePublisher transfers custody using the source run's claims bearer.
 // Success means the daemon acknowledged durable verified custody, not merely
 // that a blob was uploaded. The caller retains its source on every error.
@@ -115,12 +130,24 @@ func (p HTTPArchivePublisher) PublishArchive(ctx context.Context, issueID string
 	// the body. Join it on every exit; no upload goroutine may outlive its source.
 	_ = reader.Close()
 	writeErr := <-finished
+	var refusalCode string
 	if response != nil {
+		if response.StatusCode != http.StatusNoContent {
+			var envelope apicontract.ErrorEnvelope
+			if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&envelope); err == nil {
+				refusalCode = envelope.Error.Code
+			}
+		}
 		_ = response.Body.Close()
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("recovery upload stopped after %s, %d of %d bytes sent: %w",
 			time.Since(started).Round(time.Millisecond), sent.n, request.ContentLength, err)
+	}
+	// A server refusal is more authoritative than the pipe error caused when
+	// that server stops reading the upload. Preserve its public cause class.
+	if response != nil && response.StatusCode != http.StatusNoContent {
+		return &PublicationRefusal{StatusCode: response.StatusCode, Code: refusalCode}
 	}
 	if transportErr != nil || writeErr != nil {
 		// Do not expose URL-bearing transport errors or private archive paths:
@@ -130,9 +157,6 @@ func (p HTTPArchivePublisher) PublishArchive(ctx context.Context, issueID string
 			cause = classifyTransport(transportErr)
 		}
 		return transferFailure(cause, time.Since(started), sent.n, request.ContentLength)
-	}
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("recovery upload refused (HTTP %d)", response.StatusCode)
 	}
 	return nil
 }

@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	dispatchCancellationChange   = "dispatch-cancellation-v1"
-	dispatchHeartbeatTimeout     = 10 * time.Second
-	dispatchHeartbeatInterval    = time.Second
-	dispatchSurrenderReadTimeout = 30 * time.Second
+	dispatchCancellationChange      = "dispatch-cancellation-v1"
+	dispatchHeartbeatContractChange = "dispatch-heartbeat-contract-v2"
+	dispatchHeartbeatTimeout        = 10 * time.Second
+	dispatchHeartbeatTimeoutV2      = time.Minute
+	dispatchHeartbeatInterval       = time.Second
+	dispatchSurrenderReadTimeout    = 30 * time.Second
 )
 
 // Only remote dispatch waits for cancellation cleanup and requires heartbeats.
@@ -27,9 +29,17 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 	options := stageActivityOptions(limits, queue)
 	if workflow.GetVersion(ctx, dispatchCancellationChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 		options.HeartbeatTimeout = dispatchHeartbeatTimeout
+		if workflow.GetVersion(ctx, dispatchHeartbeatContractChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			options.HeartbeatTimeout = dispatchHeartbeatTimeoutV2
+		}
 		options.WaitForCancellation = true
 	}
 	return workflow.WithActivityOptions(ctx, options)
+}
+
+type dispatchHeartbeatDetails struct {
+	Sequence uint64    `json:"sequence"`
+	SentAt   time.Time `json:"sentAt"`
 }
 
 // Temporal delivers activity cancellation through heartbeat replies. Keep
@@ -37,7 +47,11 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 // so heartbeat timeout cannot settle the workflow while cleanup is in flight.
 // Direct non-Temporal callers already own their context and need no heartbeat.
 func heartbeatDispatch(ctx context.Context) func() {
-	return heartbeatDispatchDetails(ctx, nil)
+	var sequence uint64
+	return heartbeatDispatchDetails(ctx, func() any {
+		sequence++
+		return dispatchHeartbeatDetails{Sequence: sequence, SentAt: time.Now().UTC()}
+	})
 }
 
 func heartbeatDispatchDetails(ctx context.Context, details func() any) func() {

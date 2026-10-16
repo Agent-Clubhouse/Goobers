@@ -113,8 +113,8 @@ func lastRecoverySourceSeq(t *testing.T, layout instance.Layout, runID string) u
 	return events[len(events)-1].Seq
 }
 
-func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
-	for _, mode := range []string{"live", "expired", "released", "multiple", "foreign-run", "foreign-repository"} {
+func TestRecoveryDeliveryRequiresExclusiveIssueLease(t *testing.T) {
+	for _, mode := range []string{"live", "expired", "released", "released-and-reclaimed", "multiple", "foreign-run", "foreign-repository"} {
 		t.Run(mode, func(t *testing.T) {
 			layout := instance.NewLayout(initDemo(t))
 			now := time.Now().UTC()
@@ -136,6 +136,13 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
 				}
+			case "released-and-reclaimed":
+				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
+					t.Fatal(err)
+				}
+				if ok, _, err := ledger.Claim("7", "successor-run", "implementation-recovery", time.Hour); err != nil || !ok {
+					t.Fatalf("successor claim: %t %v", ok, err)
+				}
 			case "multiple":
 				if ok, _, err := ledger.Claim("8", runID, "implementation-recovery", time.Hour); err != nil || !ok {
 					t.Fatalf("second claim: %t %v", ok, err)
@@ -146,9 +153,9 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 				requestedKey = "github|||another-team|repo|"
 			}
 			deadline, err := authorizeRecoveryDelivery(context.Background(), layout, requestedRun, requestedKey, "7", at)
-			if mode == "live" {
+			if mode == "live" || mode == "released" {
 				if err != nil || !deadline.Equal(now.Add(time.Hour)) {
-					t.Fatalf("live lease refused: %s %v", deadline, err)
+					t.Fatalf("exclusive lease refused: %s %v", deadline, err)
 				}
 			} else if err == nil || !deadline.IsZero() {
 				t.Fatalf("unauthorized transfer admitted: %s %v", deadline, err)
@@ -157,8 +164,8 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 	}
 }
 
-func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
-	for _, mode := range []string{"live", "released", "ack-failure"} {
+func TestRecoveryDeliveryAcknowledgementHoldsExclusiveClaimFence(t *testing.T) {
+	for _, mode := range []string{"live", "released", "reclaimed", "ack-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			layout := instance.NewLayout(initDemo(t))
 			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
@@ -171,9 +178,14 @@ func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
 			}
 			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
 			seedItemRepositoryForTest(t, layout, runID, "7", repo)
-			if mode == "released" {
+			if mode == "released" || mode == "reclaimed" {
 				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if mode == "reclaimed" {
+				if ok, _, err := ledger.Claim("7", "successor-run", "implementation", time.Hour); err != nil || !ok {
+					t.Fatalf("successor claim: %t %v", ok, err)
 				}
 			}
 			ackFailure := errors.New("durable acknowledgement failed")
@@ -194,9 +206,9 @@ func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
 				}
 				return nil
 			})
-			if mode == "live" {
+			if mode == "live" || mode == "released" {
 				if err != nil || !called || deadline.IsZero() {
-					t.Fatalf("live acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)
+					t.Fatalf("exclusive acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)
 				}
 			} else if err == nil || !deadline.IsZero() || called != (mode == "ack-failure") {
 				t.Fatalf("unsafe acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)

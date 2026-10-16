@@ -118,15 +118,15 @@ func withAuthorizedRecoveryDelivery(ctx context.Context, layout instance.Layout,
 		if err != nil {
 			return err
 		}
-		claims := ledger.ForRunAll(runID)
 		// Waiting for the lock must not extend a lease that expired meanwhile.
 		if current := time.Now().UTC(); current.After(now) {
 			now = current
 		}
-		if len(claims) != 1 || claims[0].ItemID != issueID || claims[0].ReleasedAt != nil || !claims[0].ExpiresAt.After(now) {
-			return fmt.Errorf("recovery delivery requires exactly one current unexpired issue lease")
+		claim, ok := recoveryDeliveryClaim(ledger, runID, issueID, now)
+		if !ok {
+			return fmt.Errorf("recovery delivery requires exclusive unexpired issue authorization")
 		}
-		deadline = claims[0].ExpiresAt
+		deadline = claim.ExpiresAt
 		if acknowledge != nil {
 			return acknowledge()
 		}
@@ -136,4 +136,33 @@ func withAuthorizedRecoveryDelivery(ctx context.Context, layout instance.Layout,
 		return time.Time{}, err
 	}
 	return deadline, nil
+}
+
+// recoveryDeliveryClaim admits the authenticated run's released lease only
+// inside its original expiry window and while no successor owns the issue.
+// The claim lock held by the caller makes that fence continuous through a
+// durable acknowledgement.
+func recoveryDeliveryClaim(ledger *localscheduler.ClaimLedger, runID, issueID string, now time.Time) (localscheduler.ClaimEntry, bool) {
+	claims := ledger.ForRunAll(runID)
+	if len(claims) == 1 && claims[0].ItemID == issueID && claims[0].ReleasedAt == nil && claims[0].ExpiresAt.After(now) {
+		return claims[0], true
+	}
+	if len(claims) != 0 {
+		return localscheduler.ClaimEntry{}, false
+	}
+	for _, current := range ledger.Snapshot() {
+		if (current.ItemID == issueID || current.ExternalID == issueID) && current.ExpiresAt.After(now) {
+			return localscheduler.ClaimEntry{}, false
+		}
+	}
+	var matched []localscheduler.ClaimEntry
+	for _, prior := range ledger.HistoryForRun(runID) {
+		if (prior.ItemID == issueID || prior.ExternalID == issueID) && prior.ReleasedAt != nil && prior.ExpiresAt.After(now) {
+			matched = append(matched, prior)
+		}
+	}
+	if len(matched) != 1 {
+		return localscheduler.ClaimEntry{}, false
+	}
+	return matched[0], true
 }
