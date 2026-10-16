@@ -44,7 +44,7 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `pr.update-branch` |  | conformant | not declared | conformant |
 | `branch.delete` | yes | conformant | conformant | conformant |
 | `repo.policy.read` |  | conformant | not declared | not declared |
-| `pr.status.publish` |  | not declared | conformant | conformant |
+| `pr.status.publish` |  | conformant | conformant | conformant |
 | `ci.cancel` |  | conformant | not declared | not declared |
 | `backlog.list` | yes | conformant | conformant | conformant |
 | `backlog.get` | yes | conformant | conformant | conformant |

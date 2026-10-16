@@ -9,7 +9,11 @@ package operator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,7 +38,11 @@ import (
 const (
 	// Label keys applied to operator-managed worker objects.
 	managedByLabel = "app.kubernetes.io/managed-by"
-	gaggleLabel    = "goobers.dev/gaggle"
+	// specHashAnnotation records the hash of the last-applied desired spec so
+	// API-server-defaulted fields on the live object don't force an Update
+	// every reconcile.
+	specHashAnnotation = "goobers.dev/spec-hash"
+	gaggleLabel        = "goobers.dev/gaggle"
 	// gaggleResourceLabel records the actual Gaggle CR name. It can differ from
 	// gaggleLabel when config-sync publishes generation-versioned resources.
 	gaggleResourceLabel = "goobers.dev/gaggle-resource"
@@ -183,6 +191,12 @@ func (r *GaggleReconciler) goobersFor(ctx context.Context, gaggle *v1alpha1.Gagg
 
 // applyDeployment creates or updates a worker Deployment and reports readiness.
 func (r *GaggleReconciler) applyDeployment(ctx context.Context, dep *appsv1.Deployment) (bool, error) {
+	specJSON, err := json.Marshal(dep.Spec)
+	if err != nil {
+		return false, err
+	}
+	sum := sha256.Sum256(specJSON)
+	hash := hex.EncodeToString(sum[:])
 	live := &appsv1.Deployment{}
 	live.Name = dep.Name
 	live.Namespace = dep.Namespace
@@ -193,7 +207,13 @@ func (r *GaggleReconciler) applyDeployment(ctx context.Context, dep *appsv1.Depl
 		for k, v := range dep.Labels {
 			live.Labels[k] = v
 		}
-		live.Spec = dep.Spec
+		if live.Annotations[specHashAnnotation] != hash {
+			live.Spec = dep.Spec
+		}
+		if live.Annotations == nil {
+			live.Annotations = map[string]string{}
+		}
+		live.Annotations[specHashAnnotation] = hash
 		return nil
 	}); err != nil {
 		return false, err
@@ -429,7 +449,7 @@ func computeStatus(generation int64, gooberCount, readyWorkers int, prev v1alpha
 		Phase:              phase,
 		GooberCount:        int32(gooberCount),
 		ReadyWorkers:       int32(readyWorkers),
-		Conditions:         prev.Conditions,
+		Conditions:         slices.Clone(prev.Conditions),
 	}
 	apimeta.SetStatusCondition(&next.Conditions, metav1.Condition{
 		Type:               readyConditionType,

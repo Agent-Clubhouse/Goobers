@@ -46,29 +46,11 @@ func collectGoobersIOReceipts(req RunRequest, selfBin string) ([]mcpio.InputInsp
 // goobersIOTools are goobers-io's own tool names, as the server itself
 // reports them in its tools/list response — used for the per-server "tools"
 // field inside the --additional-mcp-config registration. They carry no
-// privileged capability or credential access, so auto-granting them needs no
+// privileged capability or credential access. The separate optional child
+// tools require trusted launcher access. Auto-granting ordinary tools needs no
 // per-goober tools: declaration — unlike shell/github, there is no SEC-030
 // reason to gate them behind explicit opt-in.
 var goobersIOTools = []string{"get_run_info", "publish_output", "list_inputs", "read_input", "grep_input"}
-
-// goobersIOAvailableToolNames returns goobersIOTools prefixed the way
-// Copilot's own --available-tools allowlist expects an external server's
-// tools to be named (<serverName>-<toolName>) — the same convention
-// copilotToolGroups["github"] already uses for the built-in GitHub server
-// (github-mcp-server-issue_write, etc.). Confirmed live: the bare names
-// alone do not resolve against a restrictive --available-tools= for an
-// externally-registered server — Copilot silently drops them, leaving zero
-// goobers-io tools reachable, even though the same bare names are exactly
-// right for the per-server "tools" field in the MCP registration itself.
-// These are two different fields with two different naming conventions;
-// conflating them is what broke this the first time.
-func goobersIOAvailableToolNames() []string {
-	out := make([]string, len(goobersIOTools))
-	for i, name := range goobersIOTools {
-		out[i] = goobersIOServerName + "-" + name
-	}
-	return out
-}
 
 // autoGoobersIOEligible reports whether this invocation has a run identity for
 // goobers-io to expose. Valid agentic invocations always do; artifact and
@@ -91,7 +73,7 @@ func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return req
 	}
-	req.Tools = appendMissing(req.Tools, goobersIOAvailableToolNames()...)
+	req.Tools = appendMissing(req.Tools, prefixedGoobersIOTools(req, goobersIOServerName+"-")...)
 	req.GoobersIORegistered = true
 	return req
 }
@@ -166,11 +148,27 @@ func goobersIOPromptSection(req RunRequest) string {
 	}
 	if artifactManifestFile != "" {
 		b.WriteString("Write the declared payload files inside your workspace, then call `publish_output` with the complete artifact-set staging JSON manifest (schemaVersion: goobers.dev/stage-artifact-set/v1alpha1; entries: unique name, workspace-relative path, mediaType). This publishes only the staging manifest. Leave completion artifacts/evidence empty: the runner validates, sanitizes, and records the payloads and authors the slot-0 index. Do not invent artifact paths or digests.\n\n")
+		writePublicationContractPrompt(&b, req.PublicationSchemas)
 	}
 	if len(req.ContextPaths) > 0 {
 		b.WriteString("Use `list_inputs`, `grep_input`, and `read_input` to examine the upstream content listed under Context above, instead of opening those files directly. Prefer `grep_input` to search a large input, or `read_input` with a line range around a match, rather than reading a large input in one call.\n\n")
 	}
+	writeChildWorkflowPrompt(&b, req)
 	return b.String()
+}
+
+// writePublicationContractPrompt names the schema-bound outputs and tells the
+// agent that a rejected publish_output is a repair request, not a terminal
+// failure (#6868).
+func writePublicationContractPrompt(b *strings.Builder, schemas []mcpio.PublicationSchema) {
+	if len(schemas) == 0 {
+		return
+	}
+	names := make([]string, 0, len(schemas))
+	for _, schema := range schemas {
+		names = append(names, fmt.Sprintf("`%s` (schema %s)", schema.Slot, schema.SchemaID))
+	}
+	fmt.Fprintf(b, "These entries must be application/json and satisfy their declared JSON Schema: %s. `publish_output` validates them immediately. If it returns a rejection, nothing was published: fix the payload at each reported location and call `publish_output` again in this session. Do not repeat completed external actions, and do not report completion until publication is accepted.\n\n", strings.Join(names, ", "))
 }
 
 // appendMissing returns existing plus every entry of add not already present

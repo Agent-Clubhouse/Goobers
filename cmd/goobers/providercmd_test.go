@@ -179,6 +179,14 @@ type fakeGitHubServer struct {
 	issueEventQuotaLimit     int
 	issueEventQuotaRemaining int
 	issueEventQuotaDrain     int
+	// issueEventWindow, when > 0, makes the repository-wide issue-events
+	// endpoint serve only the newest issueEventWindow events, as a provider
+	// that stops serving old repository history does (#6986). The per-issue
+	// events endpoint still serves an issue's complete history unless
+	// hideItemEvents is set.
+	issueEventWindow  int
+	hideItemEvents    bool
+	itemEventRequests int
 	// globalQuotaLimit/globalQuotaRemaining, when globalQuotaLimit > 0, stamp
 	// X-RateLimit-Limit/-Remaining on EVERY response this server serves —
 	// unlike issueEventQuotaLimit/Remaining above, which is scoped to the
@@ -194,6 +202,9 @@ type fakeGitHubServer struct {
 	issueItemGetRequests int
 	hiddenIssueLabels    map[int]map[string]int
 	issueGetMutations    map[int][]func(*fakeGitHubServer, *fakeIssue)
+	// bumpUpdatedAtOnWrite makes comment and label-add writes advance the
+	// issue's updated_at, as real GitHub does (#6903).
+	bumpUpdatedAtOnWrite bool
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -211,6 +222,11 @@ type fakeGitHubServer struct {
 	reviewThreadsFailure  map[int]int
 	pullGetMutations      map[int][]func(*fakeGitHubServer, *fakePR)
 	labelRemovalMutations map[int][]func(*fakeGitHubServer, *fakePR)
+	// commitStatuses records POST /statuses/{sha} in order, and
+	// GET /commits/{sha}/status serves them after the fixture CI status;
+	// statusWriteFailure makes the POST answer that status instead (#4199).
+	commitStatuses     map[string][]fakeCommitStatus
+	statusWriteFailure int
 }
 
 // setIssueCommentsFailure makes GET /issues/{number}/comments respond with
@@ -347,6 +363,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/issues/", s.handleIssueItem)
 	mux.HandleFunc(prefix+"/pulls/", s.handlePullItem)
 	mux.HandleFunc(prefix+"/commits/", s.handleCommitItem)
+	mux.HandleFunc(prefix+"/statuses/", s.handleCommitStatusWrite)
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
@@ -616,6 +633,12 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 	}
 	for _, label := range labels {
 		s.appendLabelEventLocked(number, label, true, createdAt)
+	}
+}
+
+func (s *fakeGitHubServer) bumpUpdatedAtLocked(issue *fakeIssue) {
+	if s.bumpUpdatedAtOnWrite {
+		issue.updatedAt = issue.updatedAt.Add(time.Hour)
 	}
 }
 
@@ -953,6 +976,9 @@ func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Requ
 	for i, event := range s.issueEvents {
 		newestFirst[len(s.issueEvents)-1-i] = event
 	}
+	if s.issueEventWindow > 0 && len(newestFirst) > s.issueEventWindow {
+		newestFirst = newestFirst[:s.issueEventWindow]
+	}
 	perPage := 30
 	if pp, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && pp > 0 {
 		if pp > 100 {
@@ -1019,6 +1045,20 @@ func (s *fakeGitHubServer) issueEventRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.issueEventRequests
+}
+
+// setIssueEventWindow limits the repository-wide issue-events endpoint to the
+// newest window events and, with hideItem, empties the per-issue history too.
+func (s *fakeGitHubServer) setIssueEventWindow(window int, hideItem bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueEventWindow, s.hideItemEvents = window, hideItem
+}
+
+func (s *fakeGitHubServer) itemEventRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.itemEventRequests
 }
 
 func (s *fakeGitHubServer) resetIssueEventRequestCount() {
@@ -1155,9 +1195,10 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+		s.itemEventRequests++
 		out := make([]map[string]any, 0)
 		for _, event := range s.issueEvents {
-			if event.number != num {
+			if event.number != num || s.hideItemEvents {
 				continue
 			}
 			out = append(out, map[string]any{
@@ -1173,6 +1214,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		decodeFakeJSON(r, &body)
 		s.nextCommentID++
+		s.bumpUpdatedAtLocked(issue)
 		issue.comments = append(issue.comments, body.Body)
 		issue.commentIDs = append(issue.commentIDs, s.nextCommentID)
 		issue.commentAuthors = append(issue.commentAuthors, s.authenticatedLogin)
@@ -1189,6 +1231,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			if hasAllLabels(issue.labels, []string{label}) {
 				continue
 			}
+			s.bumpUpdatedAtLocked(issue)
 			issue.labels = append(issue.labels, label)
 			if pr := s.prs[num]; pr != nil {
 				pr.labels = append(pr.labels, label)
@@ -1520,9 +1563,10 @@ func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Reque
 	s.mu.Unlock()
 	switch kind {
 	case "status":
-		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": []map[string]interface{}{
+		statuses := []map[string]interface{}{
 			{"context": "ci", "state": state, "target_url": "", "description": ""},
-		}})
+		}
+		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": append(statuses, s.commitStatusesFor(sha)...)})
 	case "check-runs":
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
 	default:
@@ -1615,7 +1659,7 @@ func (s *fakeGitHubServer) prDetailJSON(pr *fakePR) map[string]interface{} {
 		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
 	}
 	return map[string]interface{}{
-		"number": pr.number, "html_url": s.prHTMLURL(pr.number),
+		"number": pr.number, "title": pr.title, "html_url": s.prHTMLURL(pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft, "mergeable": pr.mergeable,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},

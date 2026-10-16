@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -32,11 +33,11 @@ func TestAzureReplaySlowUploadDoesNotBlockAdmissionOrOtherStreams(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(func() {
-		close(release)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = s.close(ctx)
+		unblock()
+		closeReplaySpoolForTest(t, s)
 	})
 	if err := s.submit(context.Background(), []byte("{}\n")); err != nil {
 		t.Fatal(err)
@@ -48,8 +49,21 @@ func TestAzureReplaySlowUploadDoesNotBlockAdmissionOrOtherStreams(t *testing.T) 
 	}
 	other := testAzureReplaySpool(t, filepath.Join(root, "diagnostics"), time.Now())
 	other.cfg.root = root
+	// Acquire the shared manifest now so other's cleanup releases it; a lazy
+	// acquisition after cleanup would leak an open handle (#6683).
+	if err := other.ensureIndex(); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
+	var producer sync.WaitGroup
+	producer.Add(1)
+	// Registered last, so it runs first: no admission may outlive the spools.
+	t.Cleanup(func() {
+		unblock()
+		producer.Wait()
+	})
 	go func() {
+		defer producer.Done()
 		if err := s.submit(context.Background(), []byte("{}\n")); err != nil {
 			done <- err
 			return
@@ -66,7 +80,9 @@ func TestAzureReplaySlowUploadDoesNotBlockAdmissionOrOtherStreams(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
+		// The upload stays blocked until cleanup, so a regression never
+		// completes; the generous bound only tolerates slow CI filesystems.
 		t.Fatal("slow HTTP held up disk admission or stats")
 	}
 }
@@ -87,11 +103,7 @@ func TestAzureReplayContinuousAdmissionHonorsRetryBackoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = s.close(ctx)
-	})
+	t.Cleanup(func() { closeReplaySpoolForTest(t, s) })
 	if err := s.submit(context.Background(), []byte("{}\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +133,89 @@ func TestAzureReplayContinuousAdmissionHonorsRetryBackoff(t *testing.T) {
 	for i := 1; i < len(attempts); i++ {
 		if gap := attempts[i].Sub(attempts[i-1]); gap < azureReplayRetryMinimum {
 			t.Fatalf("new arrivals bypassed backoff: attempt interval=%s", gap)
+		}
+	}
+}
+
+// closeReplaySpoolForTest closes s with a short deadline, then joins the
+// deadline fallback so t.TempDir cleanup cannot race an open manifest handle.
+func closeReplaySpoolForTest(t testing.TB, s *azureReplaySpool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = s.close(ctx)
+	<-s.released
+}
+
+// #6684/#6683: close must not release the manifest while a worker can still
+// query it, and once released, Windows must allow the file to be renamed and
+// removed. The health worker is parked mid-report, so a past-deadline close
+// deterministically takes its fallback; releasing early fails the first check.
+func TestAzureReplayCloseReleasesIndexHandle(t *testing.T) {
+	for range 8 {
+		root := t.TempDir()
+		s, err := newAzureReplaySpool(azureReplayConfig{dir: root, maxAge: time.Hour, maxBytes: 1 << 20},
+			func(context.Context, []byte) error { return errors.New("offline") })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.submit(context.Background(), []byte("{}\n")); err != nil {
+			t.Fatal(err)
+		}
+		entered, gate := make(chan struct{}), make(chan struct{})
+		var parked atomic.Bool
+		setReplayLossSource(&s.lossSource, func() replayLossCounters {
+			if parked.CompareAndSwap(false, true) {
+				close(entered)
+				<-gate
+			}
+			return replayLossCounters{}
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := s.close(ctx); !errors.Is(err, context.Canceled) {
+			close(gate)
+			t.Fatalf("close with a parked health worker = %v, want its deadline fallback", err)
+		}
+		<-entered
+		select {
+		case <-s.released:
+			close(gate)
+			t.Fatal("index released while the health worker may still query it")
+		default:
+		}
+		close(gate)
+		<-s.released
+		path := filepath.Join(root, azureReplayIndexName)
+		if err := os.Rename(path, path+".moved"); err != nil {
+			t.Fatalf("manifest still open after close: %v", err)
+		}
+		if err := os.Remove(path + ".moved"); err != nil {
+			t.Fatalf("manifest still open after close: %v", err)
+		}
+	}
+}
+
+// An initialized manifest closes before release returns, even past the
+// caller's deadline; a random select once deferred it to a goroutine (#6684).
+func TestAzureReplayIndexReleasePastDeadlineClosesManifest(t *testing.T) {
+	for range 8 {
+		root := t.TempDir()
+		x, _, err := acquireReplayIndex(azureReplayConfig{dir: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := x.wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := x.release(ctx); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, azureReplayIndexName)
+		if err := os.Rename(path, path+".moved"); err != nil {
+			t.Fatalf("manifest still open after release: %v", err)
 		}
 	}
 }

@@ -27,8 +27,16 @@ const (
 
 const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
 	"Update one behind-base PR through GitHub's update-branch API when it\n" +
-	"is mergeable, CI-clean, and carries no substantive findings. Other\n" +
-	"candidates are routed to full remediation. A run dispatched for one\n" +
+	"is mergeable, CI-clean, and carries no substantive findings. A behind\n" +
+	"PR whose failing checks all failed on its base branch too, at its\n" +
+	"merge-base or at a base commit since, is red because its base was, so\n" +
+	"it is updated the same way. Other candidates are routed to full\n" +
+	"remediation, including a PR carrying goobers:needs-remediation that has\n" +
+	"human feedback no Goobers response has answered: this lane clears that\n" +
+	"label, and the feedback needs the agentic path. Comments are classified\n" +
+	"as pr-comment-watch classifies them, under the same identityMode\n" +
+	"(dedicated or shared; default dedicated) and excludeAuthors inputs; set\n" +
+	"them to pr-comment-watch's values. A run dispatched for one\n" +
 	"pull request (goobers run --pr, or a pull_request webhook delivery)\n" +
 	"selects that PR and no other; when the target is not selectable the\n" +
 	"stage reports no-work naming the reason instead of falling back to\n" +
@@ -68,6 +76,11 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	// pr.compare needed on ADO for this stage).
 	if repo.Provider == providers.ProviderADO {
 		return writeUpdateBehindNotApplicable(stdout, stderr, repo.Provider)
+	}
+	identity, err := readCommentIdentitySettings(repo.Provider)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
@@ -161,7 +174,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	}
 	candidate := *claimed
 	minSeverity := resolveMinSeverity(stderr)
-	action, err := updateBehindActionForPR(ctx, root, provider, repo, candidate, baseTips, behindByPR, minSeverity)
+	action, err := updateBehindActionForPR(ctx, root, provider, repo, candidate, baseTips, behindByPR, minSeverity, identity)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check PR #%d for API branch update", candidate.Number), err, "update-behind-result.json")
 	}
@@ -196,9 +209,32 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func updateBehindActionForPR(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
+// updateBehindNeedsAgent reports whether pr carries something only the
+// agentic path can answer: a substantive finding, or — on a PR carrying
+// needs-remediation — a human comment no Goobers response has answered, by the
+// rule pr-comment-watch routes on (#6494). The API-only lane clears that
+// label, and clearing it over unanswered feedback drops what pr-comment-watch
+// routed the PR for; the full path applies the declared remediate policy to it
+// instead. Comments are classified exactly as pr-comment-watch and rebase-pr
+// classify them, under the same identityMode and excludeAuthors inputs.
+func updateBehindNeedsAgent(root string, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment, login string, minSeverity apiv1.Severity, identity commentIdentitySettings) bool {
+	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(root, repo, pr.Number, comments, login), pr.Number, minSeverity) {
+		return true
+	}
+	if !hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+		return false
+	}
+	_, unanswered, _ := latestUnaddressedHumanComment(comments, newCommentClassifier(loginCommentIdentity(login), identity))
+	return unanswered
+}
+
+func updateBehindActionForPR(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity, identity commentIdentitySettings) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
-		return updateBehindRouteFull, nil
+		inherited, err := failingChecksInheritedFromBase(ctx, provider, repo, pr, baseTips)
+		if err != nil || !inherited {
+			return updateBehindRouteFull, err
+		}
+		behindByPR[pr.Number] = true
 	}
 	behind, known := behindByPR[pr.Number]
 	if !known {
@@ -226,7 +262,7 @@ func updateBehindActionForPR(ctx context.Context, root string, provider remediat
 	if err != nil {
 		return updateBehindRouteFull, err
 	}
-	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(root, repo, pr.Number, comments, verdictAuthor), pr.Number, minSeverity) {
+	if updateBehindNeedsAgent(root, repo, pr, comments, verdictAuthor, minSeverity, identity) {
 		return updateBehindRouteFull, nil
 	}
 	if behind {
@@ -235,24 +271,144 @@ func updateBehindActionForPR(ctx context.Context, root string, provider remediat
 	return updateBehindClearLabel, nil
 }
 
+// Bounds on the base history failingChecksInheritedFromBase reads: how many
+// first-parent base commits after the merge-base it checks, and how many
+// failing ones it reads check names for.
+const (
+	inheritedBaseCommitWindow = 100
+	inheritedBaseFailureReads = 10
+)
+
+// failingChecksInheritedFromBase reports whether a failing PR is red only
+// because its base was (#7071): the PR is behind its live base and every
+// check failing on its head also failed on the base, at the PR's merge-base
+// or at a base commit between the merge-base and the live tip. Such a PR
+// needs its branch updated and CI re-run, not an agentic remediation whose
+// agent finds nothing in the PR's diff to change and then parks it as
+// no-work. Pull-request CI runs against the base tip of its trigger time, so
+// a base commit after the merge-base can be the one that turned it red.
+//
+// A failing check the base never failed in that range is the PR's own, so it
+// routes the PR to full remediation. So does a failure the provider does not
+// name, and so does base history the provider does not report (history
+// beyond the one listed page is not read): nothing then shows the base
+// explains the failure. A base that merely passes now is not evidence; on a
+// busy base it would update a genuinely broken PR on every base move. Once
+// updated, the merge-base is the tip the update merged, so the PR is updated
+// again on this rule only if the base fails the same checks after that.
+func failingChecksInheritedFromBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
+	mergeBase, baseTip, err := pullRequestLiveBaseMergeBase(ctx, provider, repo, pr, baseTips)
+	if err != nil || mergeBase == baseTip {
+		return false, err
+	}
+	headFailures, err := provider.CIFailures(ctx, repo, pr.HeadSHA)
+	if err != nil {
+		return false, fmt.Errorf("list failing checks on PR #%d head: %w", pr.Number, err)
+	}
+	unexplained := make(map[string]bool, len(headFailures))
+	for _, failure := range headFailures {
+		if failure.Name == "" {
+			return false, nil
+		}
+		unexplained[failure.Name] = true
+	}
+	if len(unexplained) == 0 {
+		return false, nil
+	}
+	refs, err := baseCommitsFromMergeBase(ctx, provider, repo, mergeBase, baseTip)
+	if err != nil {
+		return false, fmt.Errorf("list PR #%d base commits since merge-base %s: %w", pr.Number, mergeBase, err)
+	}
+	return baseFailuresExplain(ctx, provider, repo, refs, unexplained)
+}
+
+// firstParentHistoryReader is the base-history read
+// failingChecksInheritedFromBase uses. The GitHub and Gitea providers both
+// implement it; a provider that does not leaves only the merge-base as
+// evidence.
+type firstParentHistoryReader interface {
+	FirstParentHistory(ctx context.Context, repo providers.RepositoryRef, tip, stop string, limit int) ([]string, error)
+}
+
+var (
+	_ firstParentHistoryReader = (*providers.GitHubProvider)(nil)
+	_ firstParentHistoryReader = (*providers.GiteaProvider)(nil)
+)
+
+// baseCommitsFromMergeBase returns mergeBase followed by the base branch's
+// own first-parent commits after it, newest first, when that chain reaches
+// mergeBase within inheritedBaseCommitWindow commits; otherwise mergeBase
+// alone. Commits of branches merged into the base are left out: their checks
+// ran as pull-request CI, never on the base.
+func baseCommitsFromMergeBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergeBase, baseTip string) ([]string, error) {
+	reader, ok := provider.(firstParentHistoryReader)
+	if !ok {
+		return []string{mergeBase}, nil
+	}
+	history, err := reader.FirstParentHistory(ctx, repo, baseTip, mergeBase, inheritedBaseCommitWindow)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{mergeBase}, history...), nil
+}
+
+// baseFailuresExplain reports whether the base commits in refs whose checks
+// are failing, between them, fail every check named in unexplained. It reads
+// check names for at most inheritedBaseFailureReads failing commits.
+func baseFailuresExplain(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, refs []string, unexplained map[string]bool) (bool, error) {
+	states, err := provider.RefCheckStates(ctx, repo, refs)
+	if err != nil {
+		return false, fmt.Errorf("resolve base commit check states: %w", err)
+	}
+	reads := 0
+	for _, ref := range refs {
+		if states[ref] != providers.CheckStateFailing {
+			continue
+		}
+		if reads == inheritedBaseFailureReads {
+			return false, nil
+		}
+		reads++
+		failures, err := provider.CIFailures(ctx, repo, ref)
+		if err != nil {
+			return false, fmt.Errorf("list failing checks on base commit %s: %w", ref, err)
+		}
+		for _, failure := range failures {
+			delete(unexplained, failure.Name)
+		}
+		if len(unexplained) == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func pullRequestBehindLiveBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
-	baseTip := baseTips[pr.Base]
+	mergeBase, baseTip, err := pullRequestLiveBaseMergeBase(ctx, provider, repo, pr, baseTips)
+	if err != nil {
+		return false, err
+	}
+	return mergeBase != baseTip, nil
+}
+
+// pullRequestLiveBaseMergeBase resolves pr's merge-base with the live tip of
+// its base branch, caching the tip per base in baseTips.
+func pullRequestLiveBaseMergeBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (mergeBase, baseTip string, err error) {
+	baseTip = baseTips[pr.Base]
 	if baseTip == "" {
-		var err error
 		baseTip, err = provider.BranchTipSHA(ctx, repo, pr.Base)
 		if err != nil {
-			return false, fmt.Errorf("resolve live base branch %q: %w", pr.Base, err)
+			return "", "", fmt.Errorf("resolve live base branch %q: %w", pr.Base, err)
 		}
 		baseTips[pr.Base] = baseTip
 	}
 	compared, err := provider.CompareCommits(ctx, repo, baseTip, pr.HeadSHA)
 	if err != nil {
-		return false, fmt.Errorf("compare live base with PR #%d head: %w", pr.Number, err)
+		return "", "", fmt.Errorf("compare live base with PR #%d head: %w", pr.Number, err)
 	}
 	if compared.MergeBaseSHA == "" {
-		return false, fmt.Errorf("compare live base with PR #%d head returned no merge base", pr.Number)
+		return "", "", fmt.Errorf("compare live base with PR #%d head returned no merge base", pr.Number)
 	}
-	return compared.MergeBaseSHA != baseTip, nil
+	return compared.MergeBaseSHA, baseTip, nil
 }
 
 // writeUpdateBehindNotApplicable reports update-behind-pr as not applicable

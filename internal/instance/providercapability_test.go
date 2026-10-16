@@ -3,6 +3,7 @@ package instance
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -188,9 +189,11 @@ func TestCheckProviderCapabilityRequirementsAdmitsADOApplyVerdict(t *testing.T) 
 		t.Errorf("ADO derivation = %v, want [%s]", got, providers.CapPRStatusPublish)
 	}
 	// The GitHub derivation is unchanged: the override replaces the default
-	// only for the provider it names.
-	if got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub); len(got) != 1 || got[0] != providers.CapPRReviewSubmit {
-		t.Errorf("GitHub derivation = %v, want [%s]", got, providers.CapPRReviewSubmit)
+	// only for the provider it names. GitHub submits the native review and
+	// publishes the merge-review verdict status (#4199).
+	want := []providers.Capability{providers.CapPRReviewSubmit, providers.CapPRStatusPublish}
+	if got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub); !reflect.DeepEqual(got, want) {
+		t.Errorf("GitHub derivation = %v, want %v", got, want)
 	}
 }
 

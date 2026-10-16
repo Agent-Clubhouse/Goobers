@@ -372,6 +372,14 @@ spec:
         # github:pr:merge grant remains fail-closed either way.
         advisoryMode: "false"
         resultFile: "merge-result.json"
+        # #7132: CI only proves the head against the base its last run used.
+        # Two PRs green alone can break main once both land (one removes a
+        # symbol the other still calls), so compile the head merged onto the
+        # CURRENT base tip before landing and refuse on failure.
+        preMergeCheck: |
+          go build ./...
+          go vet ./...
+          go vet -tags integration ./...
       capabilities:
         # INSTANCE OPT-IN: this per-workflow grant enables auto-merge for this
         # instance. Without it, remove merge-pr/merge-gate/post-merge and route
@@ -404,6 +412,9 @@ spec:
         # refusal happened at.
         - reason
         - selectedHeadSha
+        # #6134: echoed so queue-watch binds the same "self" for its
+        # per-poll unanswered-feedback check.
+        - verdictAuthor
       next: merge-opt-out-gate
 
     - name: queue-watch
@@ -417,6 +428,9 @@ spec:
       timeoutSeconds: 1800
       inputsFrom:
         pullNumber: selectedNumber
+        # #6134: merge-pr echoes the identity Goobers posts as, so queue-watch's
+        # per-poll feedback check classifies "self" exactly as merge-pr did.
+        verdictAuthor: verdictAuthor
       inputs:
         resultFile: "queue-result.json"
         # A merge queue runs a full combined build against the projected

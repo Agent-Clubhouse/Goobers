@@ -31,7 +31,7 @@ func (r pinnedSharedClaimResolver) Admission(ctx context.Context, key claimsclie
 	if err != nil {
 		return nil, err
 	}
-	if terminalRunPhase(phase) {
+	if phase.IsTerminal() {
 		return nil, fmt.Errorf("terminal run cannot acquire a shared claim")
 	}
 	binding, err := r.binding(ctx, key, identity, sharedclaim.Owner{})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ const (
 type workflowSchedulerProjection struct {
 	engineFallbacks map[localscheduler.WorkflowIdentity]readmodel.EngineFallback
 	refillBlocked   map[localscheduler.WorkflowIdentity]string
+	blockerClears   map[string]time.Time
 }
 
 type schedulerStateProjector struct {
@@ -34,6 +36,9 @@ type schedulerStateProjector struct {
 	stop      chan struct{}
 	done      chan struct{}
 	cancel    context.CancelFunc
+
+	logger  *slog.Logger
+	lastErr string
 }
 
 // StartSchedulerStateProjector starts periodic scheduler-state projection and returns its stop function.
@@ -81,7 +86,12 @@ func (p *schedulerStateProjector) refresh(ctx context.Context) {
 		p.service.sources.Layout.SchedulerDir(),
 	)
 	if err != nil {
+		p.recordRefreshFailure(ctx, err)
 		return
+	}
+	if p.lastErr != "" {
+		p.lastErr = ""
+		p.log().Info("scheduler-state projection refresh recovered")
 	}
 	fallbacks := make(map[localscheduler.WorkflowIdentity]readmodel.EngineFallback, len(projected.engineFallbacks.items))
 	for key, fallback := range projected.engineFallbacks.items {
@@ -90,7 +100,29 @@ func (p *schedulerStateProjector) refresh(ctx context.Context) {
 	p.service.workflowSchedulerState.Store(&workflowSchedulerProjection{
 		engineFallbacks: fallbacks,
 		refillBlocked:   maps.Clone(projected.refillBlocked),
+		blockerClears:   maps.Clone(projected.blockerClears),
 	})
+}
+
+// recordRefreshFailure logs only when the error changes so a persistent
+// failure does not flood the log every interval; shutdown cancellation is silent.
+func (p *schedulerStateProjector) recordRefreshFailure(ctx context.Context, err error) {
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		return
+	}
+	msg := err.Error()
+	if msg == p.lastErr {
+		return
+	}
+	p.lastErr = msg
+	p.log().Error("scheduler-state projection refresh failed; serving last good projection", "error", err)
+}
+
+func (p *schedulerStateProjector) log() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
+	}
+	return slog.Default()
 }
 
 func (p *schedulerStateProjector) stopAndWait() error {
@@ -129,5 +161,6 @@ func (s *Local) workflowSchedulerSnapshot(ctx context.Context) (*workflowSchedul
 	return &workflowSchedulerProjection{
 		engineFallbacks: fallbacks,
 		refillBlocked:   maps.Clone(state.refillBlocked),
+		blockerClears:   maps.Clone(state.blockerClears),
 	}, nil
 }

@@ -48,18 +48,32 @@ repos:
 See [ADO limitations](../../docs/guides/ado-limitations.md) for what is not
 supported on ADO.
 
-## PAT onboarding with `connect`
+## Onboarding with `connect`
 
-`goobers connect` fills in a placeholder scaffold and records PAT
-authentication:
+`goobers connect` fills in a placeholder scaffold. It keeps the repository's
+authentication: the `azure-cli` default (or the `workload-identity`,
+`managed-identity` or PAT variable you chose at `init`) stays as it is:
 
 ```sh
 goobers init --template=standard --provider=ado --ci-command='["dotnet","test"]' --required-capabilities=dotnet@8 ./ado-instance
 goobers connect contoso/platform/widgets ./ado-instance
 ```
 
-Set `GOOBERS_ADO_TOKEN` securely in your environment; the instance records only
-the variable name. `connect` switches the placeholder repository to:
+With a kept source there is no token to check, so `connect` does not preflight
+the repository; run `goobers validate --strict --check-repos ./ado-instance`
+next. `--seed` files the starter task through the same source.
+
+### PAT onboarding
+
+To use a PAT instead, pass `--token-env` explicitly. Set `GOOBERS_ADO_TOKEN`
+(or the variable you name) securely in your environment; the instance records
+only the variable name:
+
+```sh
+goobers connect contoso/platform/widgets --token-env GOOBERS_ADO_TOKEN ./ado-instance
+```
+
+`connect` then switches the placeholder repository to:
 
 ```yaml
 repos:

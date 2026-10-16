@@ -226,7 +226,7 @@ func CheckWorkflowAdmission(def Definition, goobers map[string]apiv1.GooberSpec)
 	if err != nil {
 		return []string{err.Error()}
 	}
-	return interpreter.checkWorkflowAdmission(def, goobersForCapabilityAdmission(goobers))
+	return append(interpreter.checkWorkflowAdmission(def, goobersForCapabilityAdmission(goobers)), childWorkflowProblems(def, goobers, goobers != nil)...)
 }
 
 // CheckPushBoundaries reports provably cross-platform task transitions that

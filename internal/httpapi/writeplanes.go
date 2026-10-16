@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -45,9 +46,15 @@ type ClaimRequest struct {
 	// lease defeats lease-based liveness).
 	LeaseSeconds int `json:"leaseSeconds,omitempty"`
 	// Outcome is settle-only: how the run concluded its work on the item
-	// (e.g. "completed", "abandoned"), recorded with the settle's journal
-	// event. Refused on the other operations.
+	// (e.g. "completed", "abandoned"), recorded as the release reason's
+	// disposition. Refused on the other operations.
 	Outcome string `json:"outcome,omitempty"`
+	// Reason is why ownership ends, on release and settle (#4421): recorded
+	// on the ledger's released history entry and on the claim.released
+	// event. Optional — an absent reason (an older client) is recorded as
+	// claimrelease.Unknown — and normalized (bounded, scrubbed) by the
+	// service. Refused on acquire and renew.
+	Reason claimrelease.Reason `json:"reason,omitzero"`
 }
 
 // MaxClaimLeaseSeconds is the ceiling on ClaimRequest.LeaseSeconds: four
@@ -93,11 +100,15 @@ type ClaimEntry struct {
 	RunID          string            `json:"runId"`
 	Workflow       string            `json:"workflow"`
 	ClaimedAt      time.Time         `json:"claimedAt"`
+	RenewedAt      time.Time         `json:"renewedAt,omitzero"`
 	ExpiresAt      time.Time         `json:"expiresAt"`
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
 	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
 	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
+	// ReleaseReason is why a released history entry ended; zero on live
+	// entries and on history recorded before it existed.
+	ReleaseReason claimrelease.Reason `json:"releaseReason,omitzero"`
 }
 
 // ClaimVerification mirrors the ledger's bounded, lease-specific provider
@@ -252,7 +263,7 @@ type EscalationService interface {
 // codes: a local run was finalized aborted, an engine cancellation was
 // requested, the run already finished, or the daemon does not own a live run.
 const (
-	// CancelCodeRequested means the engine accepted a request, not a terminal outcome.
+	// CancelCodeRequested means cancellation was accepted, not that all work stopped.
 	CancelCodeRequested  = "cancellation_requested"
 	CancelCodeAborted    = "aborted"
 	CancelCodeTerminal   = "already_terminal"
@@ -339,15 +350,17 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 		func(ctx context.Context, claims ClaimService, request ClaimRequest) (ClaimResponse, error) {
 			return claims.Settle(ctx, request)
 		})
-	registerClaimListRoute(router, config.claims, errorLog)
+	registerClaimListRoute(router, config.claims, config.generatedChildExecution, config.workflowParentExecution, errorLog)
 	registerClaimVerificationRoute(router, config.claims, errorLog)
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
 	registerTriggerStatusRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCancelRoute(router, config.cancels, errorLog)
-	registerCredentialRoute(router, config.credentials, errorLog)
+	registerCredentialRoute(router, config.credentials, config.generatedChildCredentials, config.workflowParentCredentials, errorLog)
 	registerCredentialRefreshRoute(router, config.credentials, errorLog)
+	registerChildWorkflowRoutes(router, config.childWorkflows, errorLog)
+	registerParentAccessRoutes(router, config.workflowParentAccess, errorLog)
 }
 
 func registerClaimRoute(
@@ -402,15 +415,16 @@ func registerClaimRoute(
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "outcome is only valid for settle")
 			return
 		}
+		if !input.Reason.IsZero() && !settle && !release {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "reason is only valid for release and settle")
+			return
+		}
 		// Per-run containment: a pod token proves "I am run X's stage pod",
 		// which authorizes ledger operations for run X and no other. The
 		// authorizer already confined pods to this plane; the body-level run
 		// binding has to happen here, where the body is visible.
-		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
-			if principal.Subject != podPrincipalSubject(input.RunID) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only operate on its own run's claims")
-				return
-			}
+		if _, ok := applyPodClaimScope(w, request, input.RunID, "operate on its own run's claims"); !ok {
+			return
 		}
 		response, err := call(request.Context(), claims, input)
 		if err != nil {
@@ -429,11 +443,20 @@ func applyPodClaimScope(w http.ResponseWriter, request *http.Request, runID, act
 	if !exists || !IsPodPrincipal(principal) {
 		return false, true
 	}
-	if principal.Subject != podPrincipalSubject(runID) {
-		writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only "+action)
+	if !requirePodRun(w, principal, runID, "pod principal may only "+action) {
 		return false, false
 	}
 	return true, true
+}
+
+// requirePodRun writes the 403 run_mismatch response and returns false when
+// principal is not the pod principal of runID.
+func requirePodRun(w http.ResponseWriter, principal Principal, runID, message string) bool {
+	if principal.Subject != podPrincipalSubject(runID) {
+		writeError(w, http.StatusForbidden, "run_mismatch", message)
+		return false
+	}
+	return true
 }
 
 // registerClaimListRoute serves the claims plane's read. The same containment
@@ -441,9 +464,24 @@ func applyPodClaimScope(w http.ResponseWriter, request *http.Request, runID, act
 // a pod's namespace listing is flagged PodScoped so the service confines it
 // to the gaggle the run belongs to — a stage pod has no business reading
 // another gaggle's ledger, even read-only.
-func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.Logger) {
+func registerClaimListRoute(router *Router, claims ClaimService, child, parent ChildExecutionObserver, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteClaimList, func(w http.ResponseWriter, request *http.Request) {
-		if claims == nil {
+		principal, authenticated := PrincipalFromRequest(request)
+		generated := authenticated && principal.Issuer == GeneratedChildPrincipalIssuer
+		isParent := authenticated && principal.Issuer == WorkflowParentPrincipalIssuer
+		owner := child
+		if isParent {
+			owner = parent
+		}
+		isolated := generated || isParent
+		if isolated {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if owner == nil {
+				writeError(w, http.StatusForbidden, "child_execution_unavailable", "child execution observation owner unavailable")
+				return
+			}
+		}
+		if !isolated && claims == nil {
 			writeError(w, http.StatusServiceUnavailable, "claims_unavailable", "the claims plane is not available from this server")
 			return
 		}
@@ -458,6 +496,10 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 		}
 		if input.RunID == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId is required")
+			return
+		}
+		if isolated && !isolatedClaimListAllowed(principal, input) {
+			writeError(w, http.StatusForbidden, "child_execution_scope", "child may only observe its own execution authority")
 			return
 		}
 		switch input.Scope {
@@ -476,7 +518,11 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 			return
 		}
 		input.PodScoped = podScoped
-		response, err := claims.List(request.Context(), input)
+		var observer ChildExecutionObserver = claims
+		if isolated {
+			observer = owner
+		}
+		response, err := observer.List(request.Context(), input)
 		if err != nil {
 			writePlaneError(w, errorLog, "list claims", err)
 			return
@@ -759,4 +805,8 @@ func writePlaneError(w http.ResponseWriter, errorLog *log.Logger, operation stri
 	}
 	errorLog.Printf("%s failed: %v", operation, err)
 	writeError(w, http.StatusInternalServerError, "write_failed", operation+" failed")
+}
+
+func isolatedClaimListAllowed(principal Principal, input ClaimListRequest) bool {
+	return principal.Subject == podPrincipalSubject(input.RunID) && input.Execution && input.IncludeHistory && input.Scope == ClaimListScopeRun && input.Gaggle == "" && input.Provider == ""
 }

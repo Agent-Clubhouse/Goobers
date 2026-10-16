@@ -60,3 +60,62 @@ func TestReportProducerRejectsUnboundedAndContradictoryEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestMarshalBoundedChecksErrorBeforeSizeLimit(t *testing.T) {
+	atLimit := strings.Repeat("x", MaxReportBytes-2)
+	if data, err := marshalBounded(atLimit); err != nil || len(data) != MaxReportBytes {
+		t.Fatalf("at limit: len=%d err=%v", len(data), err)
+	}
+	if _, err := marshalBounded(atLimit + "x"); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("over limit: %v", err)
+	}
+	if _, err := marshalBounded(make(chan int)); err == nil || strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("marshal error not surfaced: %v", err)
+	}
+}
+
+func TestValidateClaimRejectionsAndLegacyOverride(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+	report := Report{RunID: "run", ObservedAt: now, Gaggle: "g"}
+	valid := func(mut func(*ClaimObservation)) ClaimObservation {
+		c := ObserveClaim(true, "other", "run", future, now, true)
+		mut(&c)
+		return c
+	}
+	tests := []struct {
+		name string
+		c    ClaimObservation
+		want string
+	}{
+		{"owner too long", valid(func(c *ClaimObservation) { c.OwnerRunID = strings.Repeat("x", 257) }), "field limits"},
+		{"missing next step", valid(func(c *ClaimObservation) { c.NextStep = "" }), "field limits"},
+		{"next step too long", valid(func(c *ClaimObservation) { c.NextStep = strings.Repeat("x", 2049) }), "field limits"},
+		{"unclaimed with owner", ClaimObservation{State: "unclaimed", OwnerRunID: "o", Comparison: "no-local-lease-or-provider-label", NextStep: "n"}, "has an owner"},
+		{"unknown with expiry", ClaimObservation{State: "unknown", ExpiresAt: &future, Comparison: "unavailable", NextStep: "n"}, "has an owner"},
+		{"held without owner", valid(func(c *ClaimObservation) { c.OwnerRunID = "" }), "lacks owner or expiry"},
+		{"held without expiry", valid(func(c *ClaimObservation) { c.ExpiresAt = nil }), "lacks owner or expiry"},
+		{"unknown state", valid(func(c *ClaimObservation) { c.State = "bogus" }), "unknown claim observation state"},
+		{"unknown comparison", valid(func(c *ClaimObservation) { c.Comparison = "bogus" }), "unknown claim comparison"},
+		{"state contradicts expiry", valid(func(c *ClaimObservation) { c.ExpiresAt = &past }), "contradicts"},
+		{"comparison contradicts label", valid(func(c *ClaimObservation) { c.Comparison = "unavailable" }), "contradicts"},
+		{"legacy without live lease", ClaimObservation{State: "held-in-legacy-namespace", OwnerRunID: "o", ExpiresAt: &past, Comparison: "provider-label-without-live-local-lease", ProviderClaimLabel: true, NextStep: "n"}, "contradicts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateClaim(tt.c, report)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("got %v, want error containing %q", err, tt.want)
+			}
+		})
+	}
+
+	legacy := valid(func(c *ClaimObservation) { c.State = "held-in-legacy-namespace" })
+	if err := validateClaim(legacy, report); err != nil {
+		t.Fatalf("legacy override rejected: %v", err)
+	}
+	if err := validateClaim(legacy, Report{RunID: "run", ObservedAt: now}); err == nil {
+		t.Fatal("legacy override accepted without gaggle")
+	}
+}

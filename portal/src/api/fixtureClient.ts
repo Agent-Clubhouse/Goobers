@@ -22,6 +22,7 @@ import type {
   RequestOptions,
   RunEvent,
   RunDetail,
+  ChildHistoryPage,
   RunList,
   RunListOptions,
   RunPhase,
@@ -57,6 +58,7 @@ export interface DaemonFixtures {
   runs: RunList;
   runDetails?: Record<string, RunDetail>;
   runEvents?: Record<string, EventList>;
+  runChildren?: Record<string, ChildHistoryPage>;
   stageUsage?: Record<string, FixtureStageUsage[]>;
   stageAttempts?: Record<string, AttemptList>;
   artifacts?: Record<string, ArtifactContent>;
@@ -278,6 +280,12 @@ export class FixtureDaemonClient implements DaemonClient {
     return fixture(required(this.fixtures.runEvents, runId, "run events"), options);
   }
 
+  async listRunChildren(runId: string, cursor = "", options?: RequestOptions): Promise<ChildHistoryPage> {
+    const run = required(this.fixtures.runDetails, runId, "run");
+    const value = this.fixtures.runChildren?.[fixtureKey(runId, cursor)];
+    return fixture(value ?? { runId, gaggle: run.gaggle, status: "unavailable", observedAt: new Date().toISOString(), items: [], nextCursor: "" }, options);
+  }
+
   async listStageAttempts(
     runId: string,
     stage: string,
@@ -349,6 +357,7 @@ export class FixtureDaemonClient implements DaemonClient {
       models: stats.models,
       curation: stats.curation,
       readyPool: stats.readyPool,
+      attributionEval: stats.attributionEval,
       trend: request?.trendBuckets
         ? Array.from({ length: request.trendBuckets }, (_, index) => {
             const start = new Date(request.trendSince ?? 0).getTime();

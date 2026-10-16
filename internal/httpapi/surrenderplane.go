@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/blobstore"
 )
 
 // surrenderplane.go is the write API's surrender plane (#3699): a mode-3
@@ -55,6 +56,18 @@ func WithSurrenderService(plane SurrenderService) HandlerOption {
 	}
 }
 
+// WithGeneratedChildSurrenderService installs the exact-attempt result owner.
+// This never grants generated children the worker-only surrender read routes.
+func WithGeneratedChildSurrenderService(plane SurrenderService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if plane == nil {
+			return errors.New("generated child surrender owner is required")
+		}
+		config.generatedChildSurrenders = plane
+		return nil
+	}
+}
+
 // surrenderedResultShape is the minimal shape this route validates before
 // storing the request body verbatim: it needs to know the document carries a
 // real terminal status, not the full dispatcher.SurrenderedResult schema
@@ -73,6 +86,26 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 	}, map[apicontract.RouteID]http.HandlerFunc{
 		apicontract.RouteStageSurrenderGet: surrenderReadHandler(plane, false, errorLog),
 		apicontract.RouteStageSurrender: func(w http.ResponseWriter, request *http.Request) {
+			plane := config.surrenders
+			principal, authenticated := PrincipalFromRequest(request)
+			generated := authenticated && principal.Issuer == GeneratedChildPrincipalIssuer
+			if generated {
+				w.Header().Set("Cache-Control", "private, no-store")
+				if config.generatedChildSurrenders == nil || principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
+					writeError(w, http.StatusForbidden, "child_surrender_unavailable", "generated child result authority is not available")
+					return
+				}
+				plane = config.generatedChildSurrenders
+			}
+			isParent := authenticated && principal.Issuer == WorkflowParentPrincipalIssuer
+			if isParent {
+				w.Header().Set("Cache-Control", "private, no-store")
+				if config.workflowParentSurrenders == nil || principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+					writeError(w, http.StatusForbidden, "parent_surrender_unavailable", "contained parent result authority is not available")
+					return
+				}
+				plane = config.workflowParentSurrenders
+			}
 			if plane == nil {
 				writeError(w, http.StatusServiceUnavailable, "surrender_unavailable", "the surrender plane is not available from this server")
 				return
@@ -99,29 +132,14 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			// Per-run containment: a pod token proves "I am run X's stage pod",
 			// which authorizes surrendering a result for run X and no other —
 			// the same body-level binding the journal plane applies.
-			if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
-				if principal.Subject != podPrincipalSubject(run) {
-					writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only surrender its own run's results")
+			if authenticated && (IsPodPrincipal(principal) || generated || isParent) {
+				if !requirePodRun(w, principal, run, "pod principal may only surrender its own run's results") {
 					return
 				}
 			}
-			defer func() { _ = request.Body.Close() }()
-			body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
-			if err != nil {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "request body could not be read")
-				return
-			}
-			if int64(len(body)) > maxSurrenderBody {
-				writeError(w, http.StatusRequestEntityTooLarge, CodeInvalidRequest, "surrendered result body exceeds the size limit")
-				return
-			}
-			var shape surrenderedResultShape
-			if err := json.Unmarshal(body, &shape); err != nil {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "invalid JSON request body")
-				return
-			}
-			if shape.Result.Status == "" {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "surrendered result carries no status")
+			body, status, message := readSurrenderedResult(request)
+			if status != 0 {
+				writeError(w, status, CodeInvalidRequest, message)
 				return
 			}
 			if err := plane.Put(request.Context(), run, stage, attempt, body); err != nil {
@@ -130,4 +148,34 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			}
 			writeJSON(w, http.StatusOK, struct{}{})
 		}})
+}
+
+// WithWorkflowParentSurrenderService installs write-only parent result custody.
+func WithWorkflowParentSurrenderService(plane SurrenderService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if plane == nil {
+			return errors.New("contained parent surrender owner is required")
+		}
+		config.workflowParentSurrenders = plane
+		return nil
+	}
+}
+
+func readSurrenderedResult(request *http.Request) ([]byte, int, string) {
+	defer func() { _ = request.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
+	if err != nil {
+		return nil, http.StatusBadRequest, "request body could not be read"
+	}
+	if int64(len(body)) > maxSurrenderBody {
+		return nil, http.StatusRequestEntityTooLarge, "surrendered result body exceeds the size limit"
+	}
+	var shape surrenderedResultShape
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return nil, http.StatusBadRequest, "invalid JSON request body"
+	}
+	if shape.Result.Status == "" {
+		return nil, http.StatusBadRequest, "surrendered result carries no status"
+	}
+	return body, 0, ""
 }

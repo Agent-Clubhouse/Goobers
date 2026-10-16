@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/goobers/goobers/internal/pathutil"
 )
 
 // InputInspectionReceipt is tool-owned evidence that an invocation attempted
@@ -53,7 +55,7 @@ func ReadInputInspectionReceipts(workspace, receiptFile string) ([]InputInspecti
 	if receiptFile == "" {
 		return nil, nil
 	}
-	full, err := resolveRooted(workspace, receiptFile, false)
+	full, err := pathutil.ResolveRootedPath(workspace, receiptFile, false)
 	if err != nil {
 		return nil, fmt.Errorf("resolve input inspection receipt file: %w", err)
 	}
@@ -87,7 +89,7 @@ func ResetInputInspectionReceipts(workspace, receiptFile string) error {
 	if receiptFile == "" {
 		return nil
 	}
-	full, err := resolveRooted(workspace, receiptFile, false)
+	full, err := pathutil.ResolveRootedPath(workspace, receiptFile, false)
 	if err != nil {
 		return fmt.Errorf("resolve input inspection receipt file: %w", err)
 	}

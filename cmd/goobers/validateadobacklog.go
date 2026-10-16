@@ -20,7 +20,7 @@ func checkConfiguredRepositoryAccess(root, configDir, configFile string, cfg *in
 	if !checkTargetRepositoriesAtFile(cfg.Repos, stores, stdout, diagnosticFile(root, configFile), diagnostics) {
 		return false
 	}
-	accessOK := checkADORepositoryAccess(cfg.Repos, stores, stdout, diagnosticFile(root, configFile), diagnostics)
+	accessOK := checkADORepositoryAccess(cfg.Repos, adoRunBranchRootsByRepo(cfg, set), stores, stdout, diagnosticFile(root, configFile), diagnostics)
 	// #2744: repos[] tokens reaching their own repos says nothing about the
 	// grants a run receives — a credentials: override replaces the repo
 	// default in every gaggle, so preflight it against each gaggle's repo.

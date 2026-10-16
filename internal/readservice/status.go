@@ -127,8 +127,13 @@ type StorageHealthStatus struct {
 	CriticalFloorPercent float64 `json:"criticalFloorPercent,omitempty"`
 	// WarningFloorSource and CriticalFloorSource identify the byte, percent,
 	// or recovery-derived threshold currently binding each tier.
-	WarningFloorSource  string    `json:"warningFloorSource,omitempty"`
-	CriticalFloorSource string    `json:"criticalFloorSource,omitempty"`
+	WarningFloorSource  string `json:"warningFloorSource,omitempty"`
+	CriticalFloorSource string `json:"criticalFloorSource,omitempty"`
+	// CriticalResumeBytes is the free space at which a latched
+	// admission-stopped tier resumes admission: the effective critical floor
+	// plus a fixed hysteresis margin, so free space between the floor and
+	// this value still refuses new runs.
+	CriticalResumeBytes uint64    `json:"criticalResumeBytes,omitempty"`
 	MeasuredAt          time.Time `json:"measuredAt,omitempty"`
 	Error               string    `json:"error,omitempty"`
 }
@@ -208,6 +213,7 @@ func storageHealthStatus(stats localscheduler.StorageHealthStats) *StorageHealth
 		CriticalFloorPercent: stats.CriticalFloorPercent,
 		WarningFloorSource:   stats.WarningFloorSource,
 		CriticalFloorSource:  stats.CriticalFloorSource,
+		CriticalResumeBytes:  stats.CriticalResumeBytes,
 		MeasuredAt:           stats.MeasuredAt,
 		Error:                stats.Error,
 	}
@@ -370,6 +376,7 @@ func (s *Local) ListStatusRuns(ctx context.Context, options StatusRunOptions) ([
 	if err := s.decorateRunLineage(ctx, runs); err != nil {
 		return nil, err
 	}
+	s.decorateBlockerClears(ctx, runs)
 	return runs, nil
 }
 
@@ -537,90 +544,172 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 			if s.sources.LivenessTimeout > 0 &&
 				*runs[i].Operator.HeartbeatAgeMillis > s.sources.LivenessTimeout.Milliseconds() {
 				runs[i].Operator.Liveness = "stale"
-				runs[i].Operator.PotentialBlockers = append(
-					runs[i].Operator.PotentialBlockers,
-					"stage heartbeat is stale",
-				)
+				runs[i].Operator.addBlocker(OperatorBlocker{
+					Code: BlockerCodeHeartbeatStale, Source: BlockerSourceHeartbeat,
+					Message: "stage heartbeat is stale", ObservedAt: runs[i].Operator.LastHeartbeatAt,
+				}, now)
 			}
 		}
-		active := ledger.ForRunAll(runs[i].ID)
-		history := ledger.HistoryForRun(runs[i].ID)
-		switch {
-		case len(active) > 0:
-			entry := active[0]
-			expires := entry.ExpiresAt
-			runs[i].Operator.Claim.ExpiresAt = &expires
-			if entry.ExpiresAt.After(now) {
-				runs[i].Operator.Claim.LeaseStatus = "active"
-			} else {
-				runs[i].Operator.Claim.LeaseStatus = "expired"
-			}
-			if runs[i].Operator.Issue == nil {
-				runs[i].Operator.Issue = &OperatorIssue{Number: entry.ItemID}
-			}
-		case len(history) > 0:
-			runs[i].Operator.Claim.LeaseStatus = "released"
-		}
-		markerVerified := false
-		markerPresent := false
-		if s.sources.WorkItemLookup != nil &&
-			(runs[i].Phase == journal.PhaseRunning ||
-				runs[i].Phase == journal.PhaseFailed ||
-				runs[i].Phase == journal.PhaseEscalated) &&
-			runs[i].Operator.Issue != nil &&
-			runs[i].Operator.Issue.Number != "" {
-			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
-			if err != nil {
-				limitation := "provider work item lookup unavailable: " + err.Error()
-				if runs[i].Phase == journal.PhaseRunning {
-					// The reader could not verify the marker; the run itself is
-					// unaffected. This belongs to the diagnostics-limitations
-					// channel, never to the run's blockers (#3346) — a
-					// credential-less `goobers status` reported two healthy runs as
-					// blocked and nearly triggered an investigation into them.
-					runs[i].Operator.Claim.ProviderMarker = "unavailable"
-					limitation = "provider claim marker verification unavailable: " + err.Error()
-				}
-				runs[i].Operator.DiagnosticsLimitations = append(
-					runs[i].Operator.DiagnosticsLimitations,
-					limitation,
-				)
-				continue
-			}
-			if runs[i].Operator.Issue.Title == "" {
-				runs[i].Operator.Issue.Title = item.Title
-			}
-			runs[i].Operator.Issue.Labels = append([]string(nil), item.Labels...)
-			if runs[i].Phase == journal.PhaseRunning {
-				markerVerified = true
-				markerPresent = item.HasLabel(providers.LabelClaimed)
-			}
-		}
-		if markerVerified &&
-			runs[i].Operator.Claim.LeaseStatus != "active" &&
-			markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "drift"
-			runs[i].Operator.PotentialBlockers = append(
-				runs[i].Operator.PotentialBlockers,
-				"provider claim marker exists without an active lease",
-			)
-		} else if markerVerified &&
-			runs[i].Operator.Claim.LeaseStatus == "active" &&
-			!markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "drift"
-			runs[i].Operator.PotentialBlockers = append(
-				runs[i].Operator.PotentialBlockers,
-				"active claim lease has no provider marker",
-			)
-		} else if markerVerified &&
-			runs[i].Operator.Claim.LeaseStatus == "active" &&
-			markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "verified"
-		} else if markerVerified && !markerPresent {
-			runs[i].Operator.Claim.ProviderMarker = "not-present"
-		}
+		claimItemID := projectClaimLease(&runs[i], ledger.ForRunAll(runs[i].ID), ledger.HistoryForRun(runs[i].ID), now)
+		s.verifyProviderClaimMarker(ctx, &runs[i], claimItemID, now)
 	}
 	return nil
+}
+
+// projectClaimLease records the run's lease status and returns the item ID
+// the lease names: the live (or expired) lease, else the most recently
+// released one, else "" when the run never held a claim. A run can hold
+// several leases (a work item plus its decomposition-target lease, a PR plus
+// its merge lock); a work-item lease is preferred, since it is the one with a
+// provider claim marker.
+func projectClaimLease(run *RunSummary, active, history []localscheduler.ClaimEntry, now time.Time) string {
+	if len(active) > 0 {
+		entry := preferWorkItemLease(active)
+		expires := entry.ExpiresAt
+		run.Operator.Claim.ExpiresAt = &expires
+		if entry.ExpiresAt.After(now) {
+			run.Operator.Claim.LeaseStatus = "active"
+		} else {
+			run.Operator.Claim.LeaseStatus = "expired"
+		}
+		if run.Operator.Issue == nil {
+			run.Operator.Issue = &OperatorIssue{Number: entry.ItemID}
+		}
+		return entry.ItemID
+	}
+	if len(history) == 0 {
+		return ""
+	}
+	run.Operator.Claim.LeaseStatus = "released"
+	return latestReleasedLease(history).ItemID
+}
+
+// preferWorkItemLease returns the first work-item lease, else the first lease.
+func preferWorkItemLease(entries []localscheduler.ClaimEntry) localscheduler.ClaimEntry {
+	for _, entry := range entries {
+		if localscheduler.IsWorkItemClaimKey(entry.ItemID) {
+			return entry
+		}
+	}
+	return entries[0]
+}
+
+// latestReleasedLease returns the most recently ended work-item lease, else
+// the most recently ended lease of any kind.
+func latestReleasedLease(history []localscheduler.ClaimEntry) localscheduler.ClaimEntry {
+	latest := history[0]
+	latestWorkItem := localscheduler.IsWorkItemClaimKey(latest.ItemID)
+	for _, entry := range history[1:] {
+		workItem := localscheduler.IsWorkItemClaimKey(entry.ItemID)
+		newer := claimEntryEndedAt(entry).After(claimEntryEndedAt(latest))
+		if (workItem && !latestWorkItem) || (workItem == latestWorkItem && newer) {
+			latest, latestWorkItem = entry, workItem
+		}
+	}
+	return latest
+}
+
+// claimEntryEndedAt orders released claim history: the release time when
+// recorded, else the latest grant.
+func claimEntryEndedAt(entry localscheduler.ClaimEntry) time.Time {
+	if entry.ReleasedAt != nil {
+		return *entry.ReleasedAt
+	}
+	return entry.LastGrantedAt()
+}
+
+// verifyProviderClaimMarker compares a run's claim lease with the provider's
+// claim marker on the item the lease names (claimItemID), falling back to the
+// run's linked issue only when the run never held a lease.
+//
+// The lease, not the display issue, decides what is verified: a merge-review
+// run holding "pr/536" can carry a real linked-issue number from its own
+// post-merge ref.touched events, and comparing the PR lease against that
+// issue's claimed label manufactured drift blockers. Such a run is therefore
+// not decorated with the linked issue's labels either.
+//
+// A ledger-only lease (a PR claim "pr/<n>", an advisory review, a
+// decomposition target, a merge lock — localscheduler.IsWorkItemClaimKey) has
+// no provider claim marker by contract and its key is not a work-item id, so
+// it is reported as not-applicable without a provider lookup. Resolving it
+// through the work-item API failed on every provider (ADO rejects the
+// non-numeric id; GitHub 404s) and surfaced as a spurious "claim marker
+// verification unavailable" diagnostic (#6798).
+func (s *Local) verifyProviderClaimMarker(ctx context.Context, run *RunSummary, claimItemID string, now time.Time) {
+	issueNumber := ""
+	if run.Operator.Issue != nil {
+		issueNumber = run.Operator.Issue.Number
+	}
+	itemID := claimItemID
+	if itemID == "" {
+		// No lease. A backlog worker's display number is its trigger ref —
+		// the workflow name — until its claim stage records the item, and
+		// there is nothing claimed to verify yet.
+		if issueNumber == "" || issueNumber == run.Workflow {
+			return
+		}
+		itemID = issueNumber
+	}
+	if !localscheduler.IsWorkItemClaimKey(itemID) {
+		run.Operator.Claim.ProviderMarker = "not-applicable"
+		return
+	}
+	if s.sources.WorkItemLookup == nil ||
+		(run.Phase != journal.PhaseRunning &&
+			run.Phase != journal.PhaseFailed &&
+			run.Phase != journal.PhaseEscalated) {
+		return
+	}
+	item, err := s.sources.WorkItemLookup(ctx, run.Gaggle, itemID)
+	if err != nil {
+		limitation := "provider work item lookup unavailable: " + err.Error()
+		if run.Phase == journal.PhaseRunning {
+			// The reader could not verify the marker; the run itself is
+			// unaffected. This belongs to the diagnostics-limitations
+			// channel, never to the run's blockers (#3346) — a
+			// credential-less `goobers status` reported two healthy runs as
+			// blocked and nearly triggered an investigation into them.
+			run.Operator.Claim.ProviderMarker = "unavailable"
+			limitation = "provider claim marker verification unavailable: " + err.Error()
+		}
+		run.Operator.DiagnosticsLimitations = append(run.Operator.DiagnosticsLimitations, limitation)
+		return
+	}
+	// Decorate the displayed issue only when it is the item just read.
+	if issueNumber == itemID {
+		if run.Operator.Issue.Title == "" {
+			run.Operator.Issue.Title = item.Title
+		}
+		run.Operator.Issue.Labels = append([]string(nil), item.Labels...)
+	}
+	if run.Phase != journal.PhaseRunning {
+		return
+	}
+	reconcileProviderClaimMarker(run, item.HasLabel(providers.LabelClaimed), now)
+}
+
+// reconcileProviderClaimMarker classifies a running run's verified provider
+// marker against its lease, recording observed drift as a run blocker.
+func reconcileProviderClaimMarker(run *RunSummary, markerPresent bool, now time.Time) {
+	active := run.Operator.Claim.LeaseStatus == "active"
+	switch {
+	case !active && markerPresent:
+		run.Operator.Claim.ProviderMarker = "drift"
+		run.Operator.addBlocker(OperatorBlocker{
+			Code: BlockerCodeClaimMarkerDrift, Source: BlockerSourceClaim,
+			Message: "provider claim marker exists without an active lease", ObservedAt: &now,
+		}, now)
+	case active && !markerPresent:
+		run.Operator.Claim.ProviderMarker = "drift"
+		run.Operator.addBlocker(OperatorBlocker{
+			Code: BlockerCodeClaimMarkerDrift, Source: BlockerSourceClaim,
+			Message: "active claim lease has no provider marker", ObservedAt: &now,
+		}, now)
+	case active:
+		run.Operator.Claim.ProviderMarker = "verified"
+	default:
+		run.Operator.Claim.ProviderMarker = "not-present"
+	}
 }
 
 // TimeToFirstPR merges the retained lifetime milestone with the successful-init

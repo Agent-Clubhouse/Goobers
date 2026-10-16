@@ -262,7 +262,7 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 
 		event := branchReconcileEvent{Kind: "decision", Owner: &owner, MinimumAge: opts.MinimumAge}
 		switch {
-		case !terminalBranchRunPhase(owner.Phase):
+		case !owner.Phase.IsTerminal():
 			report.Preserved++
 			event.Outcome, event.Reason = "preserved", "run-active"
 			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
@@ -487,15 +487,6 @@ func inspectBranchOwner(ctx context.Context, crossRun journalclient.CrossRun, ru
 		StartedAt: response.Owner.StartedAt, TerminalAt: response.Owner.TerminalAt, Phase: journal.RunPhase(response.Owner.Phase),
 	}
 	return owner, "", nil
-}
-
-func terminalBranchRunPhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true
-	default:
-		return false
-	}
 }
 
 type branchReconcileEvent struct {

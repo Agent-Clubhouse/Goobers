@@ -15,6 +15,8 @@ import type {
   WorkflowGraph,
 } from "../api/types";
 import { newestFirst } from "../chronology";
+import { ChildHistoryPanel } from "../components/ChildHistoryPanel";
+import { ChildActivityPanel } from "../components/ChildActivityPanel";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -25,6 +27,7 @@ import {
 } from "../components/WorkflowTopologyGraph";
 import {
   deriveBranchStates,
+  deriveMapVisits,
   deriveNodeStates,
   deriveTraversedEdges,
   evidenceVisit,
@@ -57,6 +60,8 @@ import {
   useRunDetail,
 } from "../runDetailData";
 import { routeHash, type Navigate, type RunDetailTab } from "../routing";
+import { runWorkTitle } from "../operationalData";
+import { RunWorkTitle } from "../components/RunWorkTitle";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -218,6 +223,7 @@ function RunDetailWorkspace({
   const nodeStates = run.graph ? deriveNodeStates(run.graph, events, selectedSeq, runId) : {};
   const traversedEdges = deriveTraversedEdges(run.transitions, selectedSeq);
   const branchStates = deriveBranchStates(events, selectedSeq);
+  const mapVisits = deriveMapVisits(events, selectedSeq);
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
   const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
   const selectedEvidenceVisit = selectedEvidence
@@ -397,6 +403,8 @@ function RunDetailWorkspace({
     }
   };
   const displayedRunId = shortenIdentifier(run.id);
+  const workTitle = runWorkTitle(run, " · ");
+  const claimedIssue = run.operator?.issue;
   const relatedReferences = collectRelatedReferences(run, events);
   const stageVisits = semanticStageVisits(events, runId);
   const artifacts = newestFirst(
@@ -443,12 +451,31 @@ function RunDetailWorkspace({
         className="run-heading"
         contentClassName="run-heading-main"
         fullWidth
-        title={
-          <>
-            Run <span aria-hidden="true">{displayedRunId}</span>
-          </>
+        beforeTitle={
+          workTitle && (
+            // Outside the description, which narrow layouts hide, so the run
+            // ID stays visible and readable whenever claimed work headlines.
+            <div className="run-secondary-id">
+              Run{" "}
+              <span aria-hidden="true" className="mono" title={run.id}>
+                {displayedRunId}
+              </span>
+              <span className="sr-only">{run.id}</span>
+            </div>
+          )
         }
-        titleProps={{ "aria-label": `Run ${run.id}` }}
+        title={
+          workTitle ? (
+            <span className="run-work-title"><RunWorkTitle run={run} separator=" · " /></span>
+          ) : (
+            <>
+              Run <span aria-hidden="true">{displayedRunId}</span>
+            </>
+          )
+        }
+        titleProps={
+          workTitle ? { title: workTitle } : { "aria-label": `Run ${run.id}` }
+        }
         titleActions={
           <>
             <button
@@ -482,6 +509,16 @@ function RunDetailWorkspace({
                 {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
               </dd>
             </div>
+            {claimedIssue && (
+              <div>
+                <dt>Claimed work</dt>
+                <dd
+                  title={`#${claimedIssue.number}${claimedIssue.title ? ` · ${claimedIssue.title}` : ""}`}
+                >
+                  <RunWorkTitle run={run} numberOnly />
+                </dd>
+              </div>
+            )}
             <div>
               <dt>Started</dt>
               <dd>
@@ -532,6 +569,8 @@ function RunDetailWorkspace({
         )}
       </PageHeading>
 
+      <ChildActivityPanel activity={run.childActivity} navigate={navigate} />
+      <ChildHistoryPanel key={run.id} client={client} runId={run.id} gaggle={run.gaggle} navigate={navigate} />
       {run.lineage && (
         <section aria-labelledby="run-lineage-heading" className="run-lineage">
           <h2 id="run-lineage-heading">Continuation lineage</h2>
@@ -686,6 +725,7 @@ function RunDetailWorkspace({
                   causalNodeId={causalNodeId}
                   fullscreenTargetRef={fullscreenRootRef}
                   graph={run.graph}
+                  mapVisits={mapVisits}
                   nodeStates={nodeStates}
                   onFullscreenModeChange={setFullscreenMode}
                   onSelectStage={selectNode}
@@ -722,6 +762,7 @@ function RunDetailWorkspace({
                   events={events}
                   hideHeading
                   inspectorRef={inspectorRef}
+                  mapVisit={selectedNodeId ? mapVisits.get(selectedNodeId) : undefined}
                   node={selectedNode}
                   onSelectAttempt={(isLatest) =>
                     setFollowingLatest(isLatest && selectedNodeId === latestNodeId)

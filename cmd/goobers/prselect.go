@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/runner"
@@ -137,6 +138,11 @@ func runPRSelectCore(
 		Author:            providerInput("author", ""),
 		Assignee:          providerInput("assignee", ""),
 		RequestedReviewer: providerInput("requestedReviewer", ""),
+	}
+	identityFilters.TitlePredicate, err = fieldpredicate.CompileTitlePredicate(providerInput("titlePredicate", ""))
+	if err != nil {
+		pf(stderr, "error: invalid titlePredicate: %v\n", err)
+		return 1
 	}
 
 	ctx, cancel := providerCommandContext()
@@ -503,7 +509,11 @@ func pullRequestsForSelectionCommon(
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
-		if !req.identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+		matched, err := req.identityFilters.MatchesSummary(pr)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !matched {
 			if req.completeness != prSelectCompleteSnapshot {
 				return nil, openPRs, nil
 			}
@@ -534,7 +544,11 @@ func pullRequestsForSelectionCommon(
 		if req.authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, req.headPrefixes, req.expectedAuthorLogin) {
 			continue
 		}
-		if !req.identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+		matched, err := req.identityFilters.MatchesSummary(pr)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !matched {
 			continue
 		}
 		if err := resolver.resolve(ctx, &pr); err != nil {
@@ -1178,6 +1192,7 @@ func adoSelectionCandidate(ctx context.Context, provider adoSelectProvider, repo
 		ID:                 strconv.Itoa(poll.Number),
 		Number:             poll.Number,
 		URL:                poll.URL,
+		Title:              poll.Title,
 		Author:             poll.Author,
 		Assignees:          poll.Assignees,
 		RequestedReviewers: poll.RequestedReviewers,

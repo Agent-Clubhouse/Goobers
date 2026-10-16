@@ -1,10 +1,18 @@
 # Design: Workflow CD — GitOps config source for the local daemon
 
-> Status: **implemented — shipped** (WCD-1..7 #454–#461 closed — workflowSource, GitSource last-known-good reconcile, `goobers apply`, configrepo:read grant, isolation pen-test all live; epic #453 awaits close-out audit; header refreshed 2026-08-07) · Area prefix: `WCD` (new) · Milestone: **Workflow CD** (#15)
+> Status: **implemented — shipped** (WCD-1..7 #454–#461 and epic #453 closed — workflowSource, GitSource last-known-good reconcile, `goobers apply`, configrepo:read grant, isolation pen-test all live) · Area prefix: `WCD` · Milestone: **Workflow CD** (#15)
 > Requirements: [`docs/requirements/config-as-code.md`](../requirements/config-as-code.md), [`docs/requirements/deployment.md`](../requirements/deployment.md), [`docs/requirements/security.md`](../requirements/security.md)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #337 (continuous-reconciliation CD daemon), #336 (`goobers apply`), #154 (config hot-reload), #250 (capability enforcement for built-in kinds)
 > Delivered-by: #454, #455, #456, #457, #458, #459, #460, #461
+> Verified: ff826744e (2026-10-13)
+
+**Proposed extension, not shipped:** [Apply-time gaggle references and portable
+cloud adoption](apply-time-gaggle-references.md) defines logical references to
+whole gaggle subtrees, dependency locks, skills/instruction expansion and
+cloud cutover. This shipped design covers one root `workflowSource`; it does
+not itself provide remote includes, filesystem-symlink composition, or live
+instance migration.
 
 ## 1. Why this exists
 
@@ -26,24 +34,36 @@ Core properties the PO specified:
 5. **Isolation**, proven adversarially: the CD integration uses a **separate scoped PAT** with access to
    *only* the CD repo; the code-repo PAT cannot reach the CD repo and the CD PAT cannot reach the code repo.
 
-## 2. Current state (grounded)
+## 2. Shipped state and extension boundary
 
-- **Local daemon (tiers 1–2): direct-directory watch, but no CD or reconcile-from-git.**
-  `goobers up` polls `<instance-root>/config`, validates changed definitions, and
-  atomically reloads them between scheduler ticks. Invalid edits retain the
-  last-known-good definitions and are recorded in the instance journal.
-- The only "reconcile" in the local path is `localscheduler.Reconcile` reconciling in-memory run counters
-  against on-disk run journals at startup — **not** config-vs-git.
-- **Tier-3 GitOps exists but is operator/ArgoCD-based:** `cmd/config-sync` renders a config repo into CRs
-  for ArgoCD to apply; `cmd/operator` reconciles them (controller-runtime). This is the K8s pattern, not
-  an in-daemon watch loop. Item 12 asks for the *local-daemon* analog.
-- **Credential seam supports this; wiring doesn't yet.** `internal/credentials` resolves N named token
-  refs (`instance.yaml` `Config.Repos[].Token`), and `Grant{Capability, Ref}` can map a capability to a
-  *specific* ref — but `cmd/goobers/runnerwiring.go:62` **collapses all capabilities onto `Repos[0]`'s
-  single token** (self-described "known simplification"). There is **no capability string** for
-  config-repo access in `internal/capability`.
-- `#336 goobers apply` and `#337 CD daemon mode` are unbuilt; `#154` supplies
-  direct-directory hot reload but not Git reconciliation.
+- `goobers up` watches materialized definitions by default. A Git
+  `workflowSource` continuously reconciles its committed tracked branch.
+  `goobers apply` requests an explicit reconcile from the live daemon.
+  Invalid candidates retain the last-known-good definitions; cold startup
+  without usable definitions fails explicitly.
+- `workflowSource` selects one local directory or Git repository, separate
+  from product `repos[]`. Git materialization reads root `manifest.yaml` and
+  `gaggles/`; there is no `subdir` selector or multiple-source composition.
+  A local directory may itself be a selected config subtree.
+- Remote Git reads use the dedicated `configrepo:read` credential seam through
+  `workflowSource.token` or GitHub App authentication. They do not borrow the
+  product-stage token.
+- `instance.yaml`, including source provisioning and runner/engine settings,
+  is startup-pinned and requires restart. Definition hot reload does not mean
+  instance provisioning hot reload or engine-history migration.
+- The daemon remains the cloud control plane. `config-sync`/operator rendering
+  is a separate delivery caller, not permission to let workers independently
+  fetch and choose configuration revisions.
+- [Run configuration generations](../guides/run-config-generations.md) pin
+  executable definitions for admitted work. The
+  [rendered config mirror](../../deploy/reference/config-mirror/README.md)
+  seeds new workers only; it is not a live updater. A cloud configuration
+  change must remain executable through the generation/kit transport used by
+  that deployment.
+
+The original WCD-1..7 design below records the delivered root-source model.
+Reference graph resolution, parameter expansion and cloud adoption belong to
+the linked draft, not to the shipped WCD acceptance claim.
 
 ## 3. Design
 

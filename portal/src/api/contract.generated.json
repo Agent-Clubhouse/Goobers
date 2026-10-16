@@ -212,6 +212,17 @@
       "recoverySafe": false
     },
     {
+      "id": "runChildren",
+      "method": "GET",
+      "path": "/api/v1/runs/{run}/children",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "single-run",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "runDetail",
       "method": "GET",
       "path": "/api/v1/runs/{run}",
@@ -273,7 +284,7 @@
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "blob",
-      "budgetMs": 60000,
+      "budgetMs": 316000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -284,7 +295,7 @@
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 60000,
+      "budgetMs": 316000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -726,7 +737,7 @@
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 60000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -756,6 +767,72 @@
       "id": "operatorMessageSubmit",
       "method": "POST",
       "path": "/api/v1/runs/{run}/operator-messages",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowValidate",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflows/validate",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowStart",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflows/start",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowStatus",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflows/status",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowResolve",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflows/resolve",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowAccessAcquire",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflow-access",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowAccessRevoke",
+      "method": "DELETE",
+      "path": "/api/v1/runs/{run}/child-workflow-access",
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",

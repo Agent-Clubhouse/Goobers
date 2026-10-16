@@ -113,3 +113,42 @@ func TestIntegrationRecoveryPatchDigestIgnoresWorktreeAttributes(t *testing.T) {
 		t.Fatalf("patch applied worktree attributes:\n%s", patch.String())
 	}
 }
+
+// Regression for #6297: Git resolves a relative -O path against the
+// repository prefix, so os.DevNull ("NUL" on Windows) became "<prefix>/NUL"
+// and capture exited 128 below the repository root.
+func TestIntegrationRecoveryPatchDiffDisablesOrderFileBelowRepositoryRoot(t *testing.T) {
+	testdep.Require(t, "git")
+	ctx := context.Background()
+	repository := t.TempDir()
+	recoveryTestGit(t, repository, "init", "--initial-branch=main")
+	recoveryTestGit(t, repository, "commit", "--allow-empty", "-m", "base")
+	base := recoveryTestGit(t, repository, "rev-parse", "HEAD")
+	if err := os.MkdirAll(filepath.Join(repository, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.txt", filepath.Join("sub", "b.txt")} {
+		if err := os.WriteFile(filepath.Join(repository, name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recoveryTestGit(t, repository, "add", ".")
+	recoveryTestGit(t, repository, "commit", "-m", "snapshot")
+	snapshot := recoveryTestGit(t, repository, "rev-parse", "HEAD")
+	var captured bytes.Buffer
+	if _, err := WriteSnapshotPatch(ctx, repository, base, snapshot, &captured); err != nil {
+		t.Fatal(err)
+	}
+	order := filepath.Join(t.TempDir(), "order")
+	if err := os.WriteFile(order, []byte("sub/*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recoveryTestGit(t, repository, "config", "diff.orderFile", order)
+	var nested bytes.Buffer
+	if err := recoveryGit(ctx, filepath.Join(repository, "sub"), &nested, snapshotPatchDiffArgs(base, snapshot)...); err != nil {
+		t.Fatalf("capture diff below repository root: %v", err)
+	}
+	if nested.String() != captured.String() || strings.Index(captured.String(), "a/a.txt") > strings.Index(captured.String(), "a/sub/b.txt") {
+		t.Fatalf("configured order or working directory changed recovery bytes:\n%s\nwant:\n%s", nested.String(), captured.String())
+	}
+}

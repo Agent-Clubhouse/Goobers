@@ -21,6 +21,20 @@ changes into independently verifiable delivery slices. Keep a permanent referenc
 to source commit `fa34a754148ea3076bfd04fe4976a5a461b063f2` for #6807 and
 `fdda5e21426264e7f423ef2a4cedb01cbfdf1eee` for the Fleet design correction.
 
+## Current execution checkpoint (2026-10-10)
+
+Child workflow delivery has progressed through contained parent/child execution,
+workspace disposition, cancellation and crash recovery, parallel composition, and
+Portal lineage/publication visibility. The [child delivery ledger](design/agent-authored-child-workflows.md#current-delivery-status-2026-10-10)
+links landed slices and records the remaining qualification work. Historical
+remaining-boundary columns describe the state when each earlier slice landed.
+
+The four-workstream program is still incomplete. The HITL design review remains
+open; its Fleet extension requires separate acceptance and production Agent v2
+compatibility fixtures. Continue the child qualification slices before human
+operations, then broader events/queues and backlog browsing. The reference PR
+is still an extraction source, not a merge candidate.
+
 ## 2. Inventory and integration risk
 
 Compared with original base `04198152b63d228a9714ae2f92a7dca079ba5213`, the
@@ -116,6 +130,16 @@ set during extraction and may grow. Stable design tasks can span several PRs.
 | LAND-C05 | Parent result disposition and delegated PR publication: `internal/childpublication`, workspace handoff | C04; merge/replace/discard and uncertain publication recover safely. Publication requires the parent's upfront grant. |
 | LAND-C06 | Contained/pod child execution and remote authority: `internal/childpod`, podauth/dispatcher/blob plane | C03–C05; qualify the configured pod capability shape, token isolation, reconnect and worker-loss recovery. This may need several PRs. |
 | LAND-C07 | Parent/child Portal projection and end-to-end acceptance | C04–C06; use current Portal components. Show durable wait, child links, blocked/uncertain state and cancellation outcome. Only advertise qualified execution shapes. |
+
+The first connected extraction refines these rows without enabling a host-process
+fallback: #6915 contains custody and the minimum durable wait/launcher owners,
+#6916 adds local result disposition, and #6947 adds isolated worker transport.
+Both #6916 and #6947 depend on #6915 and can be reviewed independently. They do
+not complete the executing parent/child journey. The exact signed attempt,
+bounded artifact access, retained kit, host factory and uncertain-worker recovery
+must be connected and qualified before enabling execution. Delegated publication
+uses that contained host factory, so the publication portion of C05 follows the
+necessary C06 slices. C07 remains the final projection and journey acceptance.
 
 Human intervention on a child uses the common HITL restart work in H03; do not
 copy a separate child-only human auth/session implementation into Wave 1. Child
@@ -249,6 +273,23 @@ Completion means each accepted capability is implemented, integrated, tested and
 documented on main, with qualified deployment shapes and every snapshot item
 accounted for. It does not mean merging #6807 or preserving its original branch
 boundaries.
+
+### Extraction record: first child slices
+
+These records describe the extracted changes, not completion of the broader design.
+Verify each linked PR's merged state before treating its scope as delivered.
+
+| Slice | Review | Source and disposition | Acceptance boundary |
+| --- | --- | --- | --- |
+| LAND-C01 | Merged [#6880](https://github.com/Agent-Clubhouse/Goobers/pull/6880) as `7ba3f512c15c3c509ab62a962b4f532dc74ebc18` | Retains validation portions of `918fbd376`, `89a1032a3`, `a04dc1cc4` and `451574e98`: `api` policy/schema, compiler feature checks, runtime refusal, `internal/childworkflow/{cli,configured,proposal}.go`, thin CLI registration/help and tests. Adapts the later credential-ceiling checks into pure validation, including Copilot model-auth publication refusal and Goober policy identity. Regenerates actual CLI/CRD outputs; updates Windows coverage and the exact CLI growth ledger. | Advisory validation only; no secret resolution, queue admission or runtime launch. The current-main harness admission and runner/engine behavior are preserved. |
+| LAND-C02a | Merged [#6881](https://github.com/Agent-Clubhouse/Goobers/pull/6881) as `caad196059ca85c3c06b708483892130c29e2963` | Retains `e9192d29e`'s `api` invocation/schema/completeness, `internal/journal/{childorigin,run}.go`, runner task-start/envelope/parallel wiring, engine dispatch-copy and agent-kit tests; adapts onto current main without replacing shared files. Carries the later metadata-key comment and adds checkpoint-failure qualification. | Atomic committed stage identity, branch/revisit separation, retry/recovery continuity and transport copy isolation. No new durable store or pruning obligation: metadata is added to existing stage-start events under the existing run-retention lifecycle. No child start or human restart surface is enabled. |
+
+C02 is intentionally split: C02a establishes occurrence identity before the child
+grant/admission handlers. Later C02 slices own the active grant fence, one-child
+admission, cancellation races and retained configuration. Neither the offline
+validator nor the stage-origin envelope is an authorization receipt. The general
+queue, runtime credential isolation, workspace and Portal snapshot changes remain
+assigned to their owning later slices.
 
 ## 7. Traceability to design tasks
 

@@ -1,0 +1,15 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+    labels: ["goobers:approved"]
+  isolation:
+    namespace: gaggle-acme

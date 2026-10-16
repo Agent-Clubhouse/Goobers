@@ -323,13 +323,36 @@
           "items": {
             "$ref": "#/$defs/attributionEvidenceLink"
           }
+        },
+        "groundTruth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["labeledRunCount", "correctRunCount", "incorrectRunCount"],
+          "description": "Counts of this cohort's runs by their effective user-defined ground-truth label; omitted when no run is labeled.",
+          "properties": {
+            "labeledRunCount": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The number of cohort runs carrying a ground-truth label."
+            },
+            "correctRunCount": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The number of labeled cohort runs whose effective label is correct."
+            },
+            "incorrectRunCount": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The number of labeled cohort runs whose effective label is incorrect."
+            }
+          }
         }
       }
     },
     "faultAudit": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "mode", "since", "until", "observationsScanned", "suppressed"],
+      "required": ["schema", "mode", "since", "until", "observationsScanned", "suppressed", "filingThreshold"],
       "description": "The deterministic cross-workflow Backprop fault-domain report.",
       "properties": {
         "schema": {
@@ -391,6 +414,41 @@
         "truncated": {
           "type": "boolean",
           "description": "True when the configured finding budget omitted additional signatures."
+        },
+        "filingThreshold": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["confidence", "source"],
+          "description": "The minimum finding confidence the auditor treats as fileable and where it came from.",
+          "properties": {
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Findings at or above this confidence are fileable unless noneFileable is set."
+            },
+            "noneFileable": {
+              "type": "boolean",
+              "description": "True when the eval's calibration fell short even in the bin that includes confidence 1, so no finding is fileable at any confidence."
+            },
+            "source": {
+              "type": "string",
+              "enum": ["default", "attribution-eval"],
+              "description": "Whether the threshold is the built-in default or derived from a published attribution eval's calibration."
+            },
+            "calibrationTarget": {
+              "type": "string",
+              "description": "The attribution granularity the eval calibrated confidence against."
+            },
+            "evalSetVersion": {
+              "type": "string",
+              "description": "The version of the labeled eval set the threshold was derived from."
+            },
+            "evalSetDigest": {
+              "type": "string",
+              "description": "The content digest of the labeled eval set the threshold was derived from."
+            }
+          }
         }
       }
     },
@@ -409,7 +467,8 @@
         "alternativeDomains",
         "recommendedOwner",
         "recommendedAction",
-        "verification"
+        "verification",
+        "fileable"
       ],
       "description": "One deduplicated stable failure signature and its smallest defensible fault domain.",
       "properties": {
@@ -520,6 +579,10 @@
           "type": "string",
           "enum": ["open", "verification-pending", "recovered", "repeated"],
           "description": "Whether a held-out or post-fix cohort has verified recovery or repetition."
+        },
+        "fileable": {
+          "type": "boolean",
+          "description": "True when the finding's confidence meets the report's filing threshold, so the auditor may file it."
         }
       }
     },

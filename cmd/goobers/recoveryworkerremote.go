@@ -88,6 +88,9 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktr
 			return publisher.PublishArchive(ctx, claims[0].ItemID, record, archive)
 		},
 	}
+	if gone, err := recovery.SettleGoneCleanupTarget(ctx, manager, target, request, publication); gone || err != nil {
+		return err
+	}
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
 	}

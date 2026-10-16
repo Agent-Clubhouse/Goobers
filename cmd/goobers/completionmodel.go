@@ -375,6 +375,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
+	"signal": {
+		{name: "request-id", takesArg: true, desc: "Idempotency key for the accepted signal recipient set"},
+	},
 	"run": {
 		{name: "no-api", desc: "Explicitly use local execution or file delegation"},
 		{name: "api-timeout", takesArg: true, desc: "Bound API validation and acceptance"},
@@ -412,6 +415,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},
+	},
+	"workflow validate-child": {
+		{name: "gaggle", takesArg: true, desc: "Configured parent gaggle"},
+		{name: "parent", takesArg: true, valueKind: "workflows", desc: "Configured parent workflow"},
+		{name: "stage", takesArg: true, desc: "Configured parent agentic stage"},
+		{name: "backend", takesArg: true, desc: "Advisory validation target: runner or engine"},
+		{name: "json", desc: "Emit structured diagnostics and digests"},
 	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
@@ -611,14 +621,47 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "finding", takesArg: true, desc: "Backprop finding ID to verify"},
 		{name: "applied-at", takesArg: true, desc: "Fix deployment time as RFC3339"},
 	},
+	"telemetry label": {
+		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
+		{name: "outcome", takesArg: true, desc: "Ground-truth verdict (correct or incorrect)"},
+		{name: "reason", takesArg: true, desc: "Why the result is correct or incorrect"},
+		{name: "by", takesArg: true, desc: "Who is recording the label"},
+		{name: "labeled-at", takesArg: true, desc: "Verdict time as RFC3339"},
+	},
+	"telemetry shadow": {
+		{name: "json", desc: "Emit the shadow comparison report as JSON"},
+		{name: "gaggle", takesArg: true, valueKind: "gaggles", desc: "Filter to one gaggle"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter to one workflow"},
+		{name: "since", takesArg: true, desc: "Include runs at or after this RFC3339 timestamp"},
+		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
+	},
+	"telemetry claim": {
+		{name: "kind", takesArg: true, desc: "Claim kind (assignment, reliance, credit, or blame)"},
+		{name: "stage", takesArg: true, desc: "Target stage name"},
+		{name: "attempt", takesArg: true, desc: "Target stage attempt"},
+		{name: "agent", takesArg: true, desc: "Target nested agent ID"},
+		{name: "artifact", takesArg: true, desc: "Target recorded artifact digest"},
+		{name: "statement", takesArg: true, desc: "What the claim asserts"},
+		{name: "evidence", takesArg: true, desc: "Supporting artifact digest or seq:N (repeatable)"},
+		{name: "confidence", takesArg: true, desc: "Writer confidence between 0 and 1"},
 	},
 	"journal redact": {
 		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
 		{name: "path", takesArg: true, desc: "Journal-relative blob path"},
 		{name: "reason", takesArg: true, desc: "Redaction reason"},
 		{name: "secret-file", takesArg: true, desc: "Read the leaked secret bytes from this file"},
+	},
+	"pr retry": {
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+		{name: "route", takesArg: true, values: []string{prRetryRouteMergeReview, prRetryRouteRemediation, prRetryRouteHold}, desc: "Target route"},
+		{name: "reason", takesArg: true, desc: "Audit reason"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle that owns the PR"},
+		{name: "actor", takesArg: true, desc: "Audit identity"},
+		{name: "dry-run", desc: "Report the proposed transition without mutating anything"},
+		{name: "json", desc: "Print the report as JSON"},
 	},
 	"backlog-health": {
 		{name: "feedback", desc: "Include backlog feedback"},

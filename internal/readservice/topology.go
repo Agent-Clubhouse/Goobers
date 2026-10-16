@@ -201,8 +201,17 @@ func EnsureBuilt(ctx context.Context, store *readmodel.Store, layout instance.La
 	if err != nil {
 		return fmt.Errorf("readservice: inspect read model: %w", err)
 	}
+	roots, err := layout.RunDirs()
+	if err != nil {
+		return err
+	}
 	for _, n := range counts {
 		if n > 0 {
+			// A built store still re-projects rows written by older
+			// projection rules, as the daemon does at startup (#6895).
+			if err := reprojectIfReady(ctx, store, roots); err != nil {
+				return err
+			}
 			if report != nil {
 				report(BuildProgress{Done: true})
 			}
@@ -210,10 +219,6 @@ func EnsureBuilt(ctx context.Context, store *readmodel.Store, layout instance.La
 		}
 	}
 
-	roots, err := layout.RunDirs()
-	if err != nil {
-		return err
-	}
 	result, err := store.BuildFromJournals(ctx, roots)
 	if err != nil {
 		return err
@@ -222,6 +227,21 @@ func EnsureBuilt(ctx context.Context, store *readmodel.Store, layout instance.La
 		report(BuildProgress{Scanned: result.Scanned, Projected: result.Projected, Done: true})
 	}
 	return nil
+}
+
+// reprojectIfReady leaves an unready, non-empty store alone (that is a
+// whole-journal build only the daemon owns) but brings a ready one's
+// older-rule rows up to date.
+func reprojectIfReady(ctx context.Context, store *readmodel.Store, roots []string) error {
+	state, err := store.State(ctx)
+	if err != nil {
+		return fmt.Errorf("readservice: read model state: %w", err)
+	}
+	if !state.Ready {
+		return nil
+	}
+	_, err = store.EnsureReady(ctx, state, roots, nil)
+	return err
 }
 
 // SetReadMode records how this service answers bounded reads.

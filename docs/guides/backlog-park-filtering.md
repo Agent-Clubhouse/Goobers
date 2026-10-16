@@ -36,6 +36,13 @@ Custom non-lifecycle selector labels are still supported in generic selectors
 such as `requireLabels: "goobers:ready,area:backend"` or partition labels such
 as `goobers:cloud`; do not replace a reserved lifecycle value itself.
 
+These checks resolve the stage's effective inputs the way dispatch does: a
+workflow that omits `requireLabels` inherits the gaggle's `spec.requireLabels`
+default, and `spec.backlog.labels` is unioned in. A contract violation is an
+`LCL001` error, and the check applies only to workflows pinned to
+`dslVersion: "3.0"` or later. DSL 2.x workflows predate the contract and
+validate exactly as they did before it existed.
+
 For diagnosis, invoke `backlog-query --debug` with the same task inputs supplied
 through `GOOBERS_INPUT_PARKLABELS`, `GOOBERS_INPUT_FILTERPARKLABELS`, and the other
 `GOOBERS_INPUT_*` variables. Debug output names each excluded candidate's label,

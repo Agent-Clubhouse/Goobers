@@ -4,6 +4,7 @@ import { FilterField, FilterOption, FilterOptions } from "../ui/Filters";
 import { Action } from "../ui/Action";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
+  AttributionEvalSummary,
   DaemonClient,
   TelemetryErrorSignature,
   TelemetryCurationStats,
@@ -149,7 +150,8 @@ function InsightContent({
   errorSignaturesRetry: () => void;
   view: InsightViewModel;
 }) {
-  const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage } = view;
+  const { attributionEval, breakdown, creditAssignment, curationHealth, filters, stages, summary, usage } =
+    view;
   const hasOutcomes = Boolean(summary) || breakdown.length > 0;
   const hasFailureReasons =
     (errorSignatures.status === "ready" || errorSignatures.status === "stale") &&
@@ -166,6 +168,7 @@ function InsightContent({
     !hasFailureReasons &&
     !failureReasonsFailed &&
     !curationHealth &&
+    !attributionEval &&
     errorSignatures.status !== "loading";
 
   return (
@@ -216,6 +219,8 @@ function InsightContent({
               readyPool={curationHealth.readyPool}
             />
           )}
+
+          {attributionEval && <AttributionEvalReport summary={attributionEval} />}
 
           {creditAssignment.length > 0 && (
             <InsightReportSection title="Highest-contributing nodes">
@@ -392,6 +397,47 @@ function CurationHealth({
               : unmeasuredLabel(false)}
           </dd>
         </div>
+      </dl>
+    </section>
+  );
+}
+
+// AttributionEvalReport shows the instance's published Backprop attribution
+// accuracy eval: how often blame was right at each granularity and how well
+// cause confidence was calibrated, which sets the fault auditor's filing bar.
+function AttributionEvalReport({ summary }: { summary: AttributionEvalSummary }) {
+  const { calibration } = summary;
+  return (
+    <section className="content-section">
+      <SectionHeading title="Attribution accuracy" className="" />
+      <p className="usage-description">
+        Eval set {summary.evalSetVersion}: {summary.caseCount} labeled cases,{" "}
+        {summary.unattributed} unattributed. Calibration against {calibration.target}: Brier{" "}
+        {calibration.brierScore.toFixed(4)}, ECE {calibration.expectedCalibrationError.toFixed(4)}.
+      </p>
+      <dl className="curation-health" aria-label="Attribution accuracy by granularity">
+        {summary.accuracy.map((item) => (
+          <div key={item.granularity}>
+            <dt>{item.granularity}</dt>
+            <dd>
+              {formatRate(item.accuracy)} · {item.correct}/{item.total}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <dl className="curation-health" aria-label="Attribution confidence calibration">
+        {calibration.bins
+          .filter((bin) => bin.count > 0)
+          .map((bin) => (
+            <div key={bin.lower}>
+              <dt>
+                Confidence {bin.lower.toFixed(1)}–{bin.upper.toFixed(1)}
+              </dt>
+              <dd>
+                {formatRate(bin.accuracy)} correct · {bin.correct}/{bin.count}
+              </dd>
+            </div>
+          ))}
       </dl>
     </section>
   );
@@ -1445,7 +1491,7 @@ export function ExternalCostBreakdown({
                   shellLabel={`${openRuns.label} run comparison`}
                   shellClassName="external-cost-run-table-wrap"
                   className="external-cost-run-table"
-                  columns={["Run", "Started", "Attempts", "AIC", "Models"]}
+                  columns={["Run", "Workflow / trigger", "Started", "Attempts", "AIC", "Models"]}
                 >
                   {openRuns.runs.map((run) => (
                     <tr key={run.runId}>
@@ -1457,6 +1503,10 @@ export function ExternalCostBreakdown({
                         >
                           {run.runId}
                         </a>
+                      </td>
+                      <td>
+                        <strong>{externalCostRunWorkflow(run)}</strong>
+                        <small className="data-table-meta">{externalCostRunTrigger(run)}</small>
                       </td>
                       <td>
                         <Timestamp value={run.startedAt} />
@@ -1480,6 +1530,16 @@ export function ExternalCostBreakdown({
       )}
     </section>
   );
+}
+
+function externalCostRunWorkflow(run: TelemetryCostRunAggregate): string {
+  if (!run.workflow) return "Workflow unavailable";
+  return run.gaggle ? `${run.gaggle} / ${run.workflow}` : run.workflow;
+}
+
+function externalCostRunTrigger(run: TelemetryCostRunAggregate): string {
+  if (!run.triggerKind) return "Trigger unavailable";
+  return run.triggerRef ? `${run.triggerKind} · ${run.triggerRef}` : run.triggerKind;
 }
 
 function ExternalCostHeading({ statusMessage }: { statusMessage?: string }) {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -41,14 +43,14 @@ func connectRewriteTargetGaggle(path string, opts connectOptions) (bool, error) 
 
 func connectRewriteADOInstanceConfig(cfg *instance.Config, opts connectOptions) (bool, error) {
 	a := opts.ado
-	target := instance.RepoRef{Provider: "ado", Owner: a.Organization, Project: a.Project, Name: a.Repository, Token: instance.TokenRef{Env: opts.tokenEnv}, Auth: &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT}}
 	for i, repo := range cfg.Repos {
 		if repo.Provider != "ado" {
 			continue
 		}
+		target := connectADOTarget(repo, opts)
 		placeholder := repo.Owner == connectPlaceholderOwner && repo.Name == connectPlaceholderName && repo.Project == "your-project"
 		current := repo.Owner == target.Owner && repo.Project == target.Project && repo.Name == target.Name
-		if current && repo.Token.Env == opts.tokenEnv && (repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT) {
+		if current && connectADOSameCredential(repo, target) {
 			return false, nil
 		}
 		if placeholder || (current && opts.replace) {
@@ -60,10 +62,80 @@ func connectRewriteADOInstanceConfig(cfg *instance.Config, opts connectOptions) 
 		}
 	}
 	if opts.replace && len(cfg.Repos) > 0 && cfg.Repos[0].Provider == "ado" {
-		cfg.Repos[0] = connectADORepositoryIdentity(cfg.Repos[0], target)
+		cfg.Repos[0] = connectADORepositoryIdentity(cfg.Repos[0], connectADOTarget(cfg.Repos[0], opts))
 		return true, nil
 	}
 	return false, fmt.Errorf("no matching ADO placeholder found; initialize with --template=standard --provider=ado first; connect never changes an existing repository's provider")
+}
+
+// connectADOTarget is the repository entry connect writes over existing: the
+// requested identity, and the credential source. An existing source is kept
+// unless --token-env was given explicitly: an azure-cli (init's default),
+// workload-identity or managed-identity block, or a PAT's own token reference.
+// Otherwise, and for an entry with no source at all, connect records PAT
+// authentication reading the --token-env variable.
+func connectADOTarget(existing instance.RepoRef, opts connectOptions) instance.RepoRef {
+	a := opts.ado
+	target := instance.RepoRef{Provider: "ado", Owner: a.Organization, Project: a.Project, Name: a.Repository}
+	if !opts.explicitTokenEnv && (connectADONonPATAuthKind(existing) != "" || existing.Token != (instance.TokenRef{})) {
+		target.Token = existing.Token
+		target.Auth = existing.Auth
+		return target
+	}
+	target.Token = instance.TokenRef{Env: opts.tokenEnv}
+	target.Auth = &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT}
+	return target
+}
+
+// connectADONonPATAuthKind returns repo's auth kind when it is an Azure
+// DevOps credential source other than a PAT, and "" otherwise (no auth block
+// means PAT).
+func connectADONonPATAuthKind(repo instance.RepoRef) string {
+	if repo.Auth == nil || repo.Auth.Kind == "" || repo.Auth.Kind == instance.ADOAuthPAT {
+		return ""
+	}
+	return repo.Auth.Kind
+}
+
+// connectADOAuthLabel names repo's Azure DevOps auth kind; no auth block is PAT.
+func connectADOAuthLabel(repo instance.RepoRef) string {
+	if kind := connectADONonPATAuthKind(repo); kind != "" {
+		return kind
+	}
+	return instance.ADOAuthPAT
+}
+
+// connectADOSameCredential reports, by value, whether existing already
+// carries target's credential source, so a repeat connect changes nothing.
+func connectADOSameCredential(existing, target instance.RepoRef) bool {
+	pat := &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT}
+	existingAuth, targetAuth := cmp.Or(existing.Auth, pat), cmp.Or(target.Auth, pat)
+	return reflect.DeepEqual(existing.Token, target.Token) && reflect.DeepEqual(*existingAuth, *targetAuth)
+}
+
+// connectKeptADOCredential points the steps after the rewrite at the
+// credential source connect kept (connectADOTarget), so they authenticate the
+// way the instance will: a kept PAT's own token variable becomes opts.tokenEnv,
+// and any other kept source (a non-PAT kind, or a PAT read from a file,
+// keychain or secret store) is recorded in opts.keptADOAuth, since it names
+// no token variable to preflight with.
+func connectKeptADOCredential(cfg *instance.Config, opts connectOptions) connectOptions {
+	if opts.ado == nil || opts.explicitTokenEnv {
+		return opts
+	}
+	for i := range cfg.Repos {
+		repo := cfg.Repos[i]
+		if !connectTargetMatches(repo, opts) {
+			continue
+		}
+		if connectADONonPATAuthKind(repo) == "" && repo.Token.Env != "" {
+			opts.tokenEnv = repo.Token.Env
+		} else {
+			opts.keptADOAuth = &repo
+		}
+		return opts
+	}
+	return opts
 }
 
 // Change only the requested identity and credential; repository execution

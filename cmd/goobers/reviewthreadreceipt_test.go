@@ -124,7 +124,7 @@ func TestReviewThreadReceiptRecoversAtEveryMutationBoundary(t *testing.T) {
 
 				stopped := runReceiptAttempt(t, w)
 				entry := onlyThread(t, stopped.receipt)
-				if stopped.code != 1 || stopped.receipt.Status != tc.wantStatus || stopped.receipt.ErrorCode == "" {
+				if stopped.code != 1 || stopped.receipt.ResolutionStatus != tc.wantStatus || stopped.receipt.ErrorCode == "" {
 					t.Fatalf("faulted attempt: code = %d, receipt = %s; want exit 1 with a typed %s receipt", stopped.code, stopped.raw, tc.wantStatus)
 				}
 				if entry.ReplyState != tc.wantReply || entry.ResolutionState != tc.wantResolution || entry.LastError == "" {
@@ -137,7 +137,7 @@ func TestReviewThreadReceiptRecoversAtEveryMutationBoundary(t *testing.T) {
 
 				resumed := runReceiptAttempt(t, w)
 				entry = onlyThread(t, resumed.receipt)
-				if resumed.code != 0 || resumed.receipt.Status != apiv1.ReviewThreadPublicationComplete || !resumed.receipt.ResumedFromReceipt {
+				if resumed.code != 0 || resumed.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationComplete || !resumed.receipt.ResumedFromReceipt {
 					t.Fatalf("recovering attempt: code = %d, receipt = %s; want a complete receipt resumed from the stopped one", resumed.code, resumed.raw)
 				}
 				if entry.ReplyState != apiv1.ReviewThreadMutationVerified || entry.ResolutionState != apiv1.ReviewThreadMutationVerified ||
@@ -170,7 +170,7 @@ func TestReviewThreadReceiptAdoptsUnrecordedMutationsAfterCrash(t *testing.T) {
 			}
 			resumed := runReceiptAttempt(t, w)
 			entry := onlyThread(t, resumed.receipt)
-			if resumed.code != 0 || resumed.receipt.Status != apiv1.ReviewThreadPublicationComplete || resumed.receipt.ResumedFromReceipt {
+			if resumed.code != 0 || resumed.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationComplete || resumed.receipt.ResumedFromReceipt {
 				t.Fatalf("code = %d, receipt = %s; want a complete receipt that resumed nothing", resumed.code, resumed.raw)
 			}
 			if entry.Recovery != apiv1.ReviewThreadRecoveryProviderAdopted || w.replies() != 1 || !w.resolved() {
@@ -207,7 +207,7 @@ func TestReviewThreadReceiptStopsOnDivergedProviderState(t *testing.T) {
 
 				retry := runReceiptAttempt(t, w)
 				entry := onlyThread(t, retry.receipt)
-				if retry.code != 0 || retry.receipt.Status != apiv1.ReviewThreadPublicationStale ||
+				if retry.code != 0 || retry.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationStale ||
 					retry.receipt.StaleInput != staleReasonThreadState || !retry.receipt.ResumedFromReceipt {
 					t.Fatalf("code = %d, receipt = %s; want typed changed_thread_state stale input", retry.code, retry.raw)
 				}
@@ -231,7 +231,7 @@ func TestReviewThreadReceiptRecordsStaleStops(t *testing.T) {
 			w.addComment("One more thing.")
 			stopped := runReceiptAttempt(t, w)
 			entry := onlyThread(t, stopped.receipt)
-			if stopped.code != 0 || stopped.receipt.Status != apiv1.ReviewThreadPublicationStale || stopped.receipt.StaleInput != staleReasonNew {
+			if stopped.code != 0 || stopped.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationStale || stopped.receipt.StaleInput != staleReasonNew {
 				t.Fatalf("code = %d, receipt = %s; want a stale receipt", stopped.code, stopped.raw)
 			}
 			if entry.ReplyState != apiv1.ReviewThreadMutationPending || entry.ResolutionState != apiv1.ReviewThreadMutationPending || w.replies() != 0 {
@@ -256,7 +256,7 @@ func TestReviewThreadReceiptRecordsStaleStops(t *testing.T) {
 			w, _ := newReceiptWorld(t, kind)
 			w.setHead(revisionMovedSHA)
 			stopped := runReceiptAttempt(t, w)
-			if stopped.code != 0 || !stopped.receipt.NoWork || stopped.receipt.Status != apiv1.ReviewThreadPublicationStale ||
+			if stopped.code != 0 || !stopped.receipt.NoWork || stopped.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationStale ||
 				stopped.receipt.Outcome != staleReasonHead || stopped.receipt.LiveHeadSHA != revisionMovedSHA {
 				t.Fatalf("code = %d, receipt = %s; want a stale-head no-work receipt", stopped.code, stopped.raw)
 			}
@@ -277,7 +277,7 @@ func TestReviewThreadReceiptIgnoresAnotherPass(t *testing.T) {
 	}
 	recordReceipt(t, run, receiptAttempt{raw: data})
 	attempt := runReceiptAttempt(t, w)
-	if attempt.code != 0 || attempt.receipt.ResumedFromReceipt || attempt.receipt.Status != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
+	if attempt.code != 0 || attempt.receipt.ResumedFromReceipt || attempt.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
 		t.Fatalf("code = %d, receipt = %s, replies = %d; want a fresh, complete transaction", attempt.code, attempt.raw, w.replies())
 	}
 }
@@ -334,7 +334,7 @@ func TestReviewThreadReceiptSecondPassAtTheSamePublishedHead(t *testing.T) {
 			w.setHead(revisionPublishedSHA)
 
 			first := runReceiptAttempt(t, w)
-			if first.code != 0 || first.receipt.Status != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
+			if first.code != 0 || first.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
 				t.Fatalf("first pass: code = %d, replies = %d, receipt = %s", first.code, w.replies(), first.raw)
 			}
 			recordReceipt(t, run, first)
@@ -351,7 +351,7 @@ func TestReviewThreadReceiptSecondPassAtTheSamePublishedHead(t *testing.T) {
 			for attempt := 1; attempt <= 2; attempt++ {
 				pass := runReceiptAttempt(t, w)
 				entry := onlyThread(t, pass.receipt)
-				if pass.code != 0 || pass.receipt.Status != apiv1.ReviewThreadPublicationComplete ||
+				if pass.code != 0 || pass.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationComplete ||
 					pass.receipt.FeedbackSnapshotDigest != second.FeedbackSnapshot.SnapshotDigest {
 					t.Fatalf("second pass attempt %d: code = %d, receipt = %s", attempt, pass.code, pass.raw)
 				}
@@ -386,7 +386,7 @@ func TestReviewThreadReceiptSecondPassAtTheSamePublishedHead(t *testing.T) {
 		for attempt := 1; attempt <= 2; attempt++ {
 			pass := runReceiptAttempt(t, w)
 			entry := onlyThread(t, pass.receipt)
-			if pass.code != 0 || pass.receipt.Status != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
+			if pass.code != 0 || pass.receipt.ResolutionStatus != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
 				t.Fatalf("attempt %d: code = %d, replies = %d, receipt = %s; want the first pass's reply reused", attempt, pass.code, w.replies(), pass.raw)
 			}
 			if entry.Recovery != apiv1.ReviewThreadRecoveryEarlierPass || entry.ProviderReplyID != first.receipt.Threads[0].ProviderReplyID {

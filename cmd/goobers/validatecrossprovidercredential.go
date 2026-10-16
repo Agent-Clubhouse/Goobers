@@ -5,9 +5,13 @@ import (
 	"sort"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/providerconfig"
+	"github.com/goobers/goobers/internal/runnersolve"
 )
 
 // appendCrossProviderCredentialOverrideWarnings warns (CFG012) about an
@@ -51,11 +55,11 @@ func appendCrossProviderCredentialOverrideWarnings(
 }
 
 // crossProviderBacklogGaggles names, sorted, the gaggles whose backlog lives
-// on GitHub or Gitea for Azure DevOps code (crossProviderBacklog).
+// on GitHub or Gitea for Azure DevOps code (providerconfig.CrossProviderBacklog).
 func crossProviderBacklogGaggles(set *instance.ConfigSet) []string {
 	var names []string
 	for _, gaggle := range set.Gaggles {
-		if crossProviderBacklog(gaggle.Spec.Project.Provider, gaggle.Spec.Backlog.Provider) {
+		if providerconfig.CrossProviderBacklog(gaggle.Spec.Project.Provider, gaggle.Spec.Backlog.Provider) {
 			names = append(names, gaggle.Name)
 		}
 	}
@@ -76,4 +80,105 @@ func isProjectFamilyCapability(c capability.Capability) bool {
 		}
 	}
 	return false
+}
+
+// appendCrossProviderBacklogUnboundWarnings warns (CFG015) about a topology
+// (b) gaggle whose deterministic stages declare backlog-family capabilities
+// (github:issues:*, github:milestones:write) that nothing backs: the backlog
+// repository has no repos[] entry with a token or GitHub App, and no
+// daemonIdentity or credentials: entry sources them. Each such capability gets
+// no credential at run time and the stage that declares it fails closed
+// (credentials.RunnerGrants never falls back to the Azure DevOps repository's
+// credential), so the gap is reported here instead of at the first run.
+func appendCrossProviderBacklogUnboundWarnings(
+	root, configDir string,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	add func(code validate.WarningCode, kind, name, file, path, message string),
+) {
+	if cfg == nil || set == nil {
+		return
+	}
+	for _, gaggle := range set.Gaggles {
+		spec := gaggle.Spec
+		if !providerconfig.CrossProviderBacklog(spec.Project.Provider, spec.Backlog.Provider) {
+			continue
+		}
+		granted, err := configuredCredentialGrants(cfg, spec.Project, spec.Backlog)
+		if err != nil {
+			continue
+		}
+		var missing []string
+		for _, c := range declaredBacklogCapabilities(set, gaggle.Name) {
+			if !granted[c] {
+				missing = append(missing, c)
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		add(validate.WarningCrossProviderBacklogUnbound, "Gaggle", gaggle.Name,
+			gaggleDiagnosticFile(root, configDir, set, gaggle.Name), "/spec/backlog/project",
+			fmt.Sprintf("backlog repository %s (%s) has no instance repos[] entry with a token or GitHub App, and its stages "+
+				"declare %s, which in topology (b) only the backlog repository's credential, a daemonIdentity or a "+
+				"credentials: entry can back; those stages fail for want of a credential. Add a repos[] entry for %s "+
+				"(docs/guides/ado-limitations.md)",
+				spec.Backlog.Project, spec.Backlog.Provider, strings.Join(missing, ", "), spec.Backlog.Project))
+	}
+}
+
+// declaredBacklogCapabilities lists, sorted and once each, the backlog-family
+// capabilities the deterministic tasks of the gaggle's workflows declare.
+// Agentic stages are left out: their credentials follow the Azure DevOps
+// project, so a backlog repository credential never reaches them.
+func declaredBacklogCapabilities(set *instance.ConfigSet, gaggle string) []string {
+	seen := map[string]bool{}
+	for _, workflow := range set.Workflows {
+		if workflow.Spec.Gaggle != gaggle {
+			continue
+		}
+		for _, task := range workflow.Spec.Tasks {
+			for _, c := range task.Capabilities {
+				if task.Type == apiv1.TaskDeterministic && isBacklogRoleCapability(capability.Capability(c)) {
+					seen[c] = true
+				}
+			}
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for c := range seen {
+		names = append(names, c)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// appendCrossProviderBacklogPlacementFinding warns (RNR007) about a task of a
+// topology (b) gaggle whose eligible runner set excludes the daemon's own host.
+// The engine refuses every task of such a run a stage pod
+// (engine.CrossProviderBacklogPodCode), because a pod has no instance config to
+// route backlog work and credentials by role, so a placement like this
+// validates and then fails every run at dispatch. An unsatisfiable stage is
+// left to RNR001. Under placement.selfExecution: deny no runner can run the
+// task, so the finding is an error.
+func appendCrossProviderBacklogPlacementFinding(
+	gaggle apiv1.GaggleSpec, placement runnersolve.StagePlacement, selfRunnerNames map[string]bool,
+	workflowName, file, path string,
+	add func(code validate.WarningCode, severity validate.Severity, kind, name, file, path, message string),
+	selfDenied bool,
+) {
+	if !providerconfig.CrossProviderBacklog(gaggle.Project.Provider, gaggle.Backlog.Provider) ||
+		placement.Unsat != nil || placementIncludesSelf(placement.Eligible, selfRunnerNames) {
+		return
+	}
+	severity := validate.Warning
+	remedy := "place it on a self runner: declare what its runsOn requires on the self runner entry, if that host provides it, or relax its runsOn"
+	if selfDenied {
+		severity = validate.Error
+		remedy = "placement.selfExecution: deny leaves no runner that can run it; a topology (b) gaggle's stages run only on the daemon's own host"
+	}
+	add(validate.RunnerCrossProviderBacklogOffSelf, severity, "Workflow", workflowName, file, path, fmt.Sprintf(
+		"stage %q cannot resolve to the daemon's own host (self): its eligible runner set is %v. Its gaggle keeps the backlog on %s "+
+			"and the code on %s (topology (b)), which stage pods do not support, so it will be refused at dispatch (code %q); %s",
+		placement.Stage, placement.Eligible, gaggle.Backlog.Provider, gaggle.Project.Provider, engine.CrossProviderBacklogPodCode, remedy))
 }

@@ -223,13 +223,18 @@ func TestADOProviderFixtureWorkflowIsDispatchOnly(t *testing.T) {
 		"secrets.ADO_PAT",
 		"vars.ADO_ORG_URL",
 		"vars.ADO_PROJECT",
-		"vars.ADO_PROVIDER_FIXTURE_WORK_ITEM",
 		"-provider ado",
+		"-provision-fixture",
 		"test/providers/testdata/ado_contract.json",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("ADO fixture workflow does not contain %q", want)
 		}
+	}
+	// The workflow owns the fixture's lifecycle; a pinned work-item number
+	// turns the check red as soon as that item is closed (#6372).
+	if strings.Contains(workflow, "ADO_PROVIDER_FIXTURE_WORK_ITEM") || strings.Contains(workflow, "-work-item") {
+		t.Fatal("ADO provider fixture workflow must resolve its fixture, not pin a work-item number")
 	}
 	if strings.Contains(workflow, "pull_request:") {
 		t.Fatal("ADO provider fixture workflow must not run in pull-request CI")

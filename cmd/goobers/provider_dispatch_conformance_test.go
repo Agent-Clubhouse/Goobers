@@ -56,6 +56,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"push-branch":              {test: TestPushBranchDispatchesADOOrigin},
 	"push-remediated":          {test: TestPushRemediatedDispatchesFromCommand},
 	"rebase-pr":                {test: TestRebasePRDispatchesFromCommand},
+	"reconcile-branches":       {test: TestReconcileBranchesDispatchesToADO},
 	"reconcile-post-merge":     {test: TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry},
 	"record-merge-refusal":     {test: TestRecordMergeRefusalDispatchesADOAndRecordsComment},
 	"remediation-checkpoint":   {test: TestRemediationCheckpointDispatchesFromCommand},
@@ -73,7 +74,6 @@ var providerDispatchAllowlist = map[string]string{
 	"recovery-restore":     "Uses configured Git transport and verified archives, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/record and /http-issue exercise the command against a Gitea identity with an exact local Git URL redirect.",
 	"recovery-resume":      "Uses claims-plane identity and configured Git transport, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/resume-issue exercises actual adoption for a Gitea repository.",
 	"preflight-repo-write": "Repository-write preflight (#4414) is a GitHub-only capability today (branch ruleset introspection has no ADO/Gitea equivalent); Dispatcher fails closed with ErrUnsupported for other providers.",
-	"reconcile-branches":   "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",
 	"set-milestone":        "Milestones are GitHub-only; the command help explicitly says GitHub milestone and no ADO milestone capability exists.",
 	"telemetry-query":      "Provider access is limited to the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
 }
@@ -605,8 +605,6 @@ var adoStageCredentialCases = []adoStageCredentialCase{
 	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credProviderPRWrite}},
 	{command: "push-remediated", want: []string{credPRWrite}},
 	{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{credPRWrite}},
-	// reconcile-branches builds its provider before it refuses Azure DevOps,
-	// so the credential it would use is still the declared one.
 	{command: "reconcile-branches", want: []string{string(capability.GitHubBranchDelete)}},
 	{command: "reconcile-post-merge", want: []string{credPRWrite, credIssuesWrite}},
 	{command: "record-merge-refusal", inputs: map[string]string{"selectedNumber": "77", "selectedHeadSha": "head-sha", "reason": "blocked"}, want: []string{credPRWrite}},

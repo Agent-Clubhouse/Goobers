@@ -31,6 +31,11 @@ const azureReplayIndexName = ".replay-index.db"
 const azureReplayIndexAuditInterval = time.Minute
 const azureReplayLargeColdBacklogFiles = 1024
 
+// A directory stamp observed within this window of its own modification time
+// may share a filesystem timestamp tick with a later external mutation (kernel
+// tick, 1-2s on coarse filesystems), so opening a manifest rescans it once.
+const azureReplayIndexStampSettle = 2 * time.Second
+
 var azureReplayIndexes = struct {
 	sync.Mutex
 	roots map[string]*azureReplayIndex
@@ -198,6 +203,20 @@ func (x *azureReplayIndex) release(ctx context.Context) error {
 	if !last {
 		return nil
 	}
+	// An initialized index closes synchronously even past the caller's
+	// deadline; select would otherwise pick randomly and leave the manifest
+	// open after shutdown returns (#6684). A successful first attempt is
+	// followed immediately by readiness.
+	select {
+	case <-x.ready:
+		return x.closeDatabases()
+	case <-x.firstAttempt:
+		if x.firstErr == nil {
+			<-x.ready
+			return x.closeDatabases()
+		}
+	default:
+	}
 	select {
 	case <-x.ready:
 		return x.closeDatabases()
@@ -319,6 +338,7 @@ var replayIndexMigrations = []string{
 	replayIndexSchema,
 	`CREATE TABLE reconciliation(id INTEGER PRIMARY KEY CHECK(id=1), audited INTEGER NOT NULL);
 INSERT INTO reconciliation VALUES(1,0);`,
+	`ALTER TABLE directories ADD COLUMN observed INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (x *azureReplayIndex) open(ctx context.Context) error {
@@ -355,8 +375,16 @@ func (x *azureReplayIndex) open(ctx context.Context) error {
 		return err
 	}
 	// A fresh manifest or changed directory is reconciled. Opening every short-
-	// lived CLI process must not rescan an already-current daemon manifest.
-	if err = x.transaction(ctx, func(tx *sql.Tx) error { return x.reconcile(ctx, tx, false) }); err != nil {
+	// lived CLI process must not rescan an already-current daemon manifest, but
+	// a stamp too recent to exclude a same-tick external publication is not
+	// current (#6893).
+	if err = x.transaction(ctx, func(tx *sql.Tx) error {
+		scanned, err := x.reconcile(ctx, tx, false, true)
+		if err != nil {
+			return err
+		}
+		return x.stamp(ctx, tx, scanned)
+	}); err != nil {
 		return err
 	}
 	// Durable publication and reconciliation can hold the sole writer connection
@@ -394,13 +422,14 @@ func (x *azureReplayIndex) withLock(ctx context.Context, f func(*sql.Tx) error) 
 	}
 	defer unlock()
 	err = x.transaction(ctx, func(tx *sql.Tx) error {
-		if err := x.reconcile(ctx, tx, x.dirty); err != nil {
+		scanned, err := x.reconcile(ctx, tx, x.dirty, false)
+		if err != nil {
 			return err
 		}
 		if err := f(tx); err != nil {
 			return err
 		}
-		return x.stamp(ctx, tx)
+		return x.stamp(ctx, tx, scanned)
 	})
 	x.dirty = err != nil && x.dirty
 	return err
@@ -417,13 +446,21 @@ func directoryStamp(path string) (int64, error) {
 	return info.ModTime().UnixNano(), nil
 }
 
-func (x *azureReplayIndex) stamp(ctx context.Context, tx *sql.Tx) error {
+// stamp records each stream directory's modification time and when the
+// manifest confirmed it. scanned holds the time just before a directory was
+// listed in this transaction; no confirmation is later than that listing. An
+// unchanged stamp that was not listed keeps its prior confirmation.
+func (x *azureReplayIndex) stamp(ctx context.Context, tx *sql.Tx, scanned map[string]int64) error {
 	for _, stream := range x.streams {
 		stamp, err := directoryStamp(filepath.Join(x.root, stream))
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO directories VALUES(?,?) ON CONFLICT(stream) DO UPDATE SET modified=excluded.modified`, stream, stamp); err != nil {
+		observed, listed := scanned[stream]
+		if !listed {
+			observed = time.Now().UnixNano()
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO directories(stream,modified,observed) VALUES(?,?,?) ON CONFLICT(stream) DO UPDATE SET observed=CASE WHEN ? AND directories.modified=excluded.modified THEN directories.observed ELSE excluded.observed END,modified=excluded.modified`, stream, stamp, observed, !listed); err != nil {
 			return err
 		}
 	}
@@ -447,40 +484,63 @@ func (x *azureReplayIndex) path(f indexedReplayFile) (string, error) {
 	return filepath.Join(x.root, f.stream, f.name), nil
 }
 
-func (x *azureReplayIndex) reconcile(ctx context.Context, tx *sql.Tx, force bool) error {
+// reconcile rescans directories whose stamp changed. When opening, it also
+// rescans a directory whose stored stamp was observed too soon after its own
+// modification: an external publication in the same timestamp tick leaves the
+// stamp unchanged and would otherwise wait for the periodic audit (#6893).
+func (x *azureReplayIndex) reconcile(ctx context.Context, tx *sql.Tx, force, opening bool) (map[string]int64, error) {
 	// Windows/filesystem timestamp coalescing can hide an external mutation.
 	// Persist the audit cadence so short-lived CLI processes share it instead
 	// of each rescanning the backlog. Normal manifest mutations stay incremental.
 	var audited int64
 	if err := tx.QueryRowContext(ctx, `SELECT audited FROM reconciliation WHERE id=1`).Scan(&audited); err != nil {
-		return err
+		return nil, err
 	}
 	now := time.Now()
 	force = force || now.Sub(time.Unix(0, audited)) >= azureReplayIndexAuditInterval || now.UnixNano() < audited
+	scanned := map[string]int64{}
 	for _, stream := range x.streams {
 		dir := filepath.Join(x.root, stream)
-		stamp, err := directoryStamp(dir)
+		current, err := x.directoryCurrent(ctx, tx, stream, dir, opening)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		var prior int64
-		err = tx.QueryRowContext(ctx, `SELECT modified FROM directories WHERE stream=?`, stream).Scan(&prior)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if !force && err == nil && prior == stamp {
+		if !force && current {
 			continue
 		}
+		scanned[stream] = time.Now().UnixNano()
 		if err = x.reconcileDirectory(ctx, tx, stream, dir); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if force {
 		if _, err := tx.ExecContext(ctx, `UPDATE reconciliation SET audited=? WHERE id=1`, now.UnixNano()); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return x.stamp(ctx, tx)
+	return scanned, nil
+}
+
+// directoryCurrent reports whether the stored stamp still describes dir. A
+// stamp whose observation could share a timestamp tick with its modification
+// (or a legacy row without an observation time) is not trusted when opening.
+func (x *azureReplayIndex) directoryCurrent(ctx context.Context, tx *sql.Tx, stream, dir string, opening bool) (bool, error) {
+	stamp, err := directoryStamp(dir)
+	if err != nil {
+		return false, err
+	}
+	var prior, observed int64
+	err = tx.QueryRowContext(ctx, `SELECT modified,observed FROM directories WHERE stream=?`, stream).Scan(&prior, &observed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil || prior != stamp {
+		return false, err
+	}
+	if opening && stamp != 0 && time.Duration(observed-prior) < azureReplayIndexStampSettle {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (x *azureReplayIndex) reconcileDirectory(ctx context.Context, tx *sql.Tx, stream, dir string) error {

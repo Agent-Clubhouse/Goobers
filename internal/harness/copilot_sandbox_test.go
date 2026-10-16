@@ -79,7 +79,7 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 	if len(command) < 3 || command[0] != "sandbox-stub" || command[1] != "--confine" {
 		t.Fatalf("exec'd argv is not sandbox-wrapped: %v", command)
 	}
-	if command[2] != "copilot" {
+	if command[2] != resolveStdioHarnessCommand([]string{"copilot"})[0] {
 		t.Fatalf("wrapped argv target = %q, want the original copilot invocation: %v", command[2], command)
 	}
 	logDir := filepath.Join(workspace, ".goobers", "sandbox", "logs")
@@ -142,7 +142,7 @@ func TestCopilotAdapterWithoutSandboxKeepsLaunchUnchanged(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	command := runner.lastReq.Command
-	if command[0] != "copilot" {
+	if command[0] != resolveStdioHarnessCommand([]string{"copilot"})[0] {
 		t.Fatalf("argv[0] = %q, want the unwrapped copilot invocation: %v", command[0], command)
 	}
 	if slices.Contains(command, "--log-dir") {
@@ -167,9 +167,9 @@ func dirExists(path string) bool {
 }
 
 // TestCopilotAdapterRecoveryTurnStaysConfined proves the contract-recovery
-// turn (a clean exit with no completion file) reuses the WRAPPED argv with
-// only the prompt swapped — the wrapper prefix must shift the prompt index,
-// not corrupt the recovery invocation or escape the sandbox.
+// turn (a clean exit with no completion file) reuses the WRAPPED argv
+// unchanged and carries the recovery prompt on stdin (#6871) — the wrapper
+// prefix must not corrupt the recovery invocation or escape the sandbox.
 func TestCopilotAdapterRecoveryTurnStaysConfined(t *testing.T) {
 	workspace := t.TempDir()
 	sb := &stubSandbox{}
@@ -198,28 +198,20 @@ func TestCopilotAdapterRecoveryTurnStaysConfined(t *testing.T) {
 	if second[0] != "sandbox-stub" {
 		t.Fatalf("recovery argv is not sandbox-wrapped: %v", second)
 	}
-	if len(first) != len(second) {
-		t.Fatalf("recovery argv length %d != initial %d", len(second), len(first))
+	if !slices.Equal(first, second) {
+		t.Fatalf("recovery argv differs from initial: %v vs %v", first, second)
 	}
-	diffs := 0
-	promptIdx := -1
-	for i := range first {
-		if first[i] != second[i] {
-			diffs++
-			promptIdx = i
-		}
+	// The empty prompt-mode flag follows the wrapper prefix (2 args) and the
+	// base command (1); the prompt itself is never in argv.
+	if got := second[3]; got != defaultPromptFlag+"=" {
+		t.Fatalf("argv[3] = %q, want the empty prompt-mode flag (wrapper-shifted)", got)
 	}
-	if diffs != 1 {
-		t.Fatalf("recovery argv differs from initial at %d positions, want exactly the prompt: %v vs %v", diffs, first, second)
+	recoveryPrompt := string(runner.reqs[1].Stdin)
+	if !strings.Contains(recoveryPrompt, "completion") && !strings.Contains(recoveryPrompt, "result") {
+		t.Fatalf("recovery stdin does not look like the completion-recovery prompt: %q", recoveryPrompt)
 	}
-	// The prompt follows the wrapper prefix (2 args) and the base command
-	// (1). It is bound to its flag in that same element (`-p=<text>`), so it
-	// does not occupy one of its own — see copilotPromptArg.
-	if wantIdx := 3; promptIdx != wantIdx {
-		t.Fatalf("recovery prompt swapped at index %d, want %d (wrapper-shifted)", promptIdx, wantIdx)
-	}
-	if !strings.Contains(second[promptIdx], "completion") && !strings.Contains(second[promptIdx], "result") {
-		t.Fatalf("recovery prompt does not look like the completion-recovery prompt: %q", second[promptIdx])
+	if recoveryPrompt == string(runner.reqs[0].Stdin) {
+		t.Fatal("recovery turn resent the initial prompt instead of the recovery prompt")
 	}
 }
 

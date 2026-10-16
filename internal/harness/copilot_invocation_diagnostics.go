@@ -22,6 +22,7 @@ var copilotPermissionFlagPrefixes = []string{
 	"--deny-tool",
 	"--available-tools",
 	"--add-github-mcp-toolset",
+	"--enable-all-github-mcp-tools",
 	"--disable-builtin-mcps",
 	"--no-allow-all-tools",
 }

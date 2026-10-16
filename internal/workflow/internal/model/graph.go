@@ -19,13 +19,14 @@ type Graph struct {
 // GraphNodeKind identifies the visual and execution kind of a graph node.
 type GraphNodeKind string
 
-// Graph node kinds distinguish task execution from gate evaluation and
-// parallel fan-out.
+// Graph node kinds distinguish task execution from gate evaluation, parallel
+// fan-out, and data-driven map fan-out.
 const (
 	GraphNodeDeterministic GraphNodeKind = "deterministic"
 	GraphNodeAgentic       GraphNodeKind = "agentic"
 	GraphNodeGate          GraphNodeKind = "gate"
 	GraphNodeParallel      GraphNodeKind = "parallel"
+	GraphNodeMap           GraphNodeKind = "map"
 )
 
 // GraphNode is one task, gate, or parallel in a workflow graph. Owner is the

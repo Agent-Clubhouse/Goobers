@@ -1,7 +1,6 @@
 package stateclient
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -143,7 +142,7 @@ func (h *HTTP) Get(ctx context.Context, key string) (Value, error) {
 		return Value{}, err
 	}
 	endpoint := h.endpoint(key)
-	response, err := h.plane.DoRaw(ctx, http.MethodGet, h.endpointPath(key), nil, nil)
+	response, err := h.plane.DoRetrying(ctx, http.MethodGet, h.endpointPath(key), nil, nil, true)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "build" {
@@ -194,7 +193,11 @@ func (h *HTTP) Put(ctx context.Context, key string, data []byte, ifMatch string)
 	} else {
 		headers.Set(HeaderIfMatch, `"`+ifMatch+`"`)
 	}
-	response, err := h.plane.DoRaw(ctx, http.MethodPut, h.endpointPath(key), bytes.NewReader(data), headers)
+	// Not replay-safe after an ambiguous failure: if the first PUT committed, a
+	// replay under the same If-Match answers 412, which Update would read as a
+	// lost race and re-apply fn over its own write. Retried only when the daemon
+	// refused the PUT before a handler ran (admission, recovery, dial).
+	response, err := h.plane.DoRetrying(ctx, http.MethodPut, h.endpointPath(key), data, headers, false)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "build" {

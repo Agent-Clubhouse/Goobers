@@ -95,6 +95,11 @@ func TestIsAuthenticationError(t *testing.T) {
 		statusCode:         403,
 		rateLimitRemaining: "0",
 	}
+	// The refusal exactly as adoCompletionError builds it from ADO's 403.
+	policyNotMet := adoCompletionError(&providerResponseError{
+		method: "PATCH", endpoint: "/pullrequests/42", statusCode: 403,
+		body: `{"message":"The update is rejected by policy.","typeKey":"GitPullRequestUpdateRejectedByPolicyException"}`,
+	}, MergePullRequestRequest{PullID: "42"})
 	cases := []struct {
 		name string
 		err  error
@@ -109,6 +114,11 @@ func TestIsAuthenticationError(t *testing.T) {
 		{"rate limit error", &RateLimitError{Status: 403}, false},
 		{"not found", errors.New("GET /issues/1 failed: status 404: Not Found"), false},
 		{"nil", nil, false},
+		// A branch-policy refusal is a 403 the same credential clears once
+		// the policy is satisfied, never an authentication failure — even
+		// when its text carries the raw status the fallback parser keys on.
+		{"policy not met", policyNotMet, false},
+		{"wrapped policy not met", fmt.Errorf("PATCH /pullrequests/42 failed: status 403: %w", policyNotMet), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

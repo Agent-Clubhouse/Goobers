@@ -61,6 +61,9 @@ var checkoutCloneURL = runner.DefaultRepoCloneURL
 // other provider. On Azure DevOps it selects the URL-scoped Authorization
 // header every other in-pod ADO git operation sends (checkoutGitAuthEnv).
 func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential, repoAuthScheme string) error {
+	if isolatedChildWorkspace(ctx) {
+		return nil // verified carrier was materialized before invoking the stage
+	}
 	mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace))
 	if mode == "" || mode == string(apiv1.WorkspaceScratch) {
 		return nil
@@ -238,6 +241,11 @@ func finishWritableRepoCheckoutOnExistingBranch(ctx context.Context, dir string,
 	// resolvable locally by then regardless of whether this stage declared
 	// syncBase (#5103).
 	if err := ensureRecoveryBaseRemoteRef(ctx, dir, gitEnv, stderr, base); err != nil {
+		return err
+	}
+	// Before the inherited delta moves HEAD: the pull request head as this
+	// stage found it, carried in this stage's own delta (#6019).
+	if err := recordCheckoutOrigin(ctx, dir, gitEnv, stderr); err != nil {
 		return err
 	}
 	if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
@@ -445,11 +453,15 @@ func adoCheckoutAuthFor(ref apiv1.RepoRef, repoAuthScheme, cloneURL string) adoC
 // ADO git operations already use; the askpass helper would send an Entra
 // token as a Basic password, which Azure DevOps does not accept everywhere.
 func checkoutGitAuthEnv(ctx context.Context, dir string, creds []dispatcher.MintedCredential, ado adoCheckoutAuth) ([]string, error) {
-	token := gitToken(creds)
-	if token == "" {
+	cred, ok := gitCredential(creds)
+	if !ok {
 		return nil, nil
 	}
+	token := cred.Value
 	if ado.scheme != "" {
+		// The value's own stated scheme wins over the repository's: a
+		// credentials: entry's PAT is sent as Basic on an Entra gaggle (#5957).
+		ado.scheme = cred.SchemeOr(ado.scheme)
 		return adoCheckoutGitAuthEnv(ctx, token, ado)
 	}
 	// OUTSIDE the workspace, deliberately. `git clone <url> .` refuses a
@@ -538,11 +550,12 @@ func remoteBranchExists(ctx context.Context, dir string, env []string, remote, b
 	return false, err
 }
 
-// gitToken picks a credential the stage already holds that can authenticate a
-// git fetch. Preference order matters: a write-scoped credential also reads, so
-// either works for the clone, but choosing deterministically keeps the same
+// gitCredential picks a credential the stage already holds that can
+// authenticate a git fetch, with the scheme the plane stated for it.
+// Preference order matters: a write-scoped credential also reads, so either
+// works for the clone, but choosing deterministically keeps the same
 // credential in play across attempts of the same stage.
-func gitToken(creds []dispatcher.MintedCredential) string {
+func gitCredential(creds []dispatcher.MintedCredential) (dispatcher.MintedCredential, bool) {
 	for _, c := range creds {
 		name := strings.ToLower(c.Capability)
 		if c.Value == "" {
@@ -557,7 +570,7 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 		// "repo" covers the capabilities production stages actually declare:
 		// repo:push, push-repository-branch, modify-repository.
 		if strings.Contains(name, "repo") {
-			return c.Value
+			return c, true
 		}
 	}
 	// No repo-shaped capability. Deliberately NOT falling back to any other
@@ -565,7 +578,7 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 	// would be a silent scope widening. An anonymous clone is correct for a
 	// public repository and fails loudly on a private one, which is the honest
 	// outcome and names the real cause.
-	return ""
+	return dispatcher.MintedCredential{}, false
 }
 
 // clearDirContents empties dir without removing dir itself: the workspace is a

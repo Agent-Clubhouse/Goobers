@@ -208,6 +208,14 @@ func TestNamedTelemetryMissingCredentialAndBadTLSLeaveHealthyAndLocal(t *testing
 		t.Fatal(err)
 	}
 	span.End()
+	// Healthy trace state is recorded only when the healthy destination's export
+	// returns. A bounded Shutdown may abandon that first gRPC export on a loaded
+	// runner, so wait for it via ForceFlush before the bounded shutdown.
+	flushCtx, cancelFlush := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancelFlush()
+	if err := client.Flush(flushCtx); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	_ = client.Shutdown(ctx)

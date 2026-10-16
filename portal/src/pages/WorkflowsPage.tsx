@@ -21,6 +21,7 @@ import { DataList } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useCompactRecordDisclosure } from "../ui/compactRecordLayout";
 import { manualRunCommand } from "../manualRunCommand";
+import { repositoryPath } from "../repositoryIdentity";
 
 export function WorkflowsPage({
   client,
@@ -125,7 +126,7 @@ function GaggleSection({
   const headingId = `gaggle-${gaggle.name}`;
   const contentId = `${headingId}-inventory`;
   const [expanded, setExpanded] = useCompactRecordDisclosure();
-  const gaggleIdentity = `${gaggle.name} · ${gaggle.project.owner}/${gaggle.project.name}`;
+  const gaggleIdentity = `${gaggle.name} · ${repositoryPath(gaggle.project)}`;
 
   return (
     <section aria-labelledby={headingId} className="goober-group workflow-gaggle-group">

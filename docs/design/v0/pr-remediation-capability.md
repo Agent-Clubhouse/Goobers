@@ -203,7 +203,7 @@ Both can move while it runs, so both are pinned and re-checked.
 `goobers.dev/review-thread-publication/v1`
 (`api/schemas/review-thread-publication-v1.schema.json`). It names the pull
 request, the published head, the feedback snapshot digest, an overall
-`status` (`in_progress`, `complete`, `partial`, `failed`, `stale`), and one
+`resolutionStatus` (`in_progress`, `complete`, `partial`, `failed`, `stale`), and one
 entry per answered thread with its disposition, `replyState`,
 `resolutionState`, the provider's reply id and the last error. The scalar
 outputs the workflow routes on (`selectedNumber`, `publishedHeadSha`,

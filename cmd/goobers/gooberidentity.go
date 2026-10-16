@@ -68,8 +68,10 @@ func resolvedInstructionsPath(configDir string, set *instance.ConfigSet, spec ap
 // and the goober's assets against (#6611). It falls back to the conventional
 // name-derived layout only when no loaded ConfigSet provenance is available.
 func resolvedGooberDefinitionDir(configDir string, set *instance.ConfigSet, spec apiv1.GooberSpec, gooberName string) string {
-	if source, ok := set.GooberSource(gooberName); ok {
-		return filepath.Join(configDir, filepath.Dir(source))
+	if set != nil {
+		if source, ok := set.GooberSource(gooberName); ok {
+			return filepath.Join(configDir, filepath.Dir(source))
+		}
 	}
 	return gooberDefinitionDir(configDir, spec, gooberName)
 }

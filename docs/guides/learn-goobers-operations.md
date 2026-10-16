@@ -161,6 +161,9 @@ Debug in this order:
 5. validate before starting another run.
 
 Do not edit scheduler state, run journals, or pinned graph files by hand.
+To have a coding agent gather and cite this evidence for you, install the
+read-only
+[agent toolkit diagnostic skills](agent-toolkit-diagnostics.md).
 Chapter 2 contains the full
 [testing and debugging ladder](learn-workflow-authoring.md#11-test-at-the-smallest-useful-layer).
 
@@ -211,6 +214,14 @@ Use [Release installation and verification](releases.md) and review
 [schema migrations](schema-migrations.md) when the target release changes
 stored data. A run already in progress remains bound to its pinned workflow
 definition; avoid removing a binary or harness needed to finish it.
+
+On a cluster with stage pods, upgrade the dispatch worker before the runner
+images. A pod's `goobers` resolves dispatcher-stamped settings that older
+workers do not stamp. An Azure DevOps stage of a named gaggle, for example,
+refuses to run without its gaggle's backlog settings (`GOOBERS_GAGGLE_BACKLOG`,
+#5957). The worker resolves these settings, like the gaggle namespaces and bot
+logins, when it starts, so restart it after adding a Gaggle or changing a
+Gaggle's `backlog` settings.
 
 ## Extend the Instance
 

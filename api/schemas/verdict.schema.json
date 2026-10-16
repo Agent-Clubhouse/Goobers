@@ -38,6 +38,10 @@
       }
     },
     {
+      "if": { "required": ["synthesized"], "properties": { "synthesized": { "const": true } } },
+      "then": { "not": { "required": ["findings"] } }
+    },
+    {
       "if": { "required": ["reasonCode"] },
       "then": {
         "required": ["rationale"],
@@ -72,6 +76,10 @@
       "type": "array",
       "description": "Specific review findings that require attention.",
       "items": { "$ref": "#/$defs/finding" }
+    },
+    "synthesized": {
+      "type": "boolean",
+      "description": "True when the runner produced this verdict without invoking the reviewer (empty-diff fast-fail or unchanged repass). Findings are absent on a synthesized verdict because no review ran; a missing findings list there never means a clean review."
     },
     "summary": {
       "type": "string",

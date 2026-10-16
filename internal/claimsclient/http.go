@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/planehttp"
 )
 
@@ -25,6 +28,9 @@ type claimRequest struct {
 	RunID        string `json:"runId"`
 	Workflow     string `json:"workflow,omitempty"`
 	LeaseSeconds int    `json:"leaseSeconds,omitempty"`
+	// Reason is release-only (#4421); omitted when zero so the request shape
+	// of every other route is unchanged.
+	Reason claimrelease.Reason `json:"reason,omitzero"`
 }
 
 type claimResponse struct {
@@ -144,9 +150,13 @@ func newHTTP(cfg HTTPConfig, anonymous bool) (*HTTP, error) {
 	return &HTTP{cfg: cfg, plane: plane}, nil
 }
 
-func (h *HTTP) post(ctx context.Context, path string, body, target any) error {
+// post sends one claims-plane call. replaySafe is the route's declaration that
+// replaying it after an ambiguous transport failure (stream reset, EOF) cannot
+// change the outcome; see the per-route notes at each call site. Calls refused
+// before a handler ran (admission, recovery) are always replayed.
+func (h *HTTP) post(ctx context.Context, path string, body, target any, replaySafe bool) error {
 	endpoint := h.cfg.BaseURL + path
-	response, err := h.plane.DoJSON(ctx, http.MethodPost, path, body, nil)
+	response, err := h.plane.DoJSONRetrying(ctx, http.MethodPost, path, body, nil, replaySafe)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "encode" {
@@ -196,11 +206,13 @@ func (h *HTTP) ClaimScoped(ctx context.Context, key Key, runID, workflow string,
 	if err != nil {
 		return false, "", err
 	}
+	// Replay-safe: a same-run re-claim is the ledger's idempotent renew, and a
+	// claim held by another run is refused identically however often it is asked.
 	var response claimResponse
 	if err := h.post(ctx, apicontract.ClaimAcquirePath, claimRequest{
 		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID,
 		RunID: runID, Workflow: workflow, LeaseSeconds: seconds,
-	}, &response); err != nil {
+	}, &response, true); err != nil {
 		return false, "", err
 	}
 	if !response.Ok {
@@ -216,40 +228,78 @@ func (h *HTTP) renew(ctx context.Context, key Key, runID, workflow string, lease
 	if err != nil {
 		return false, err
 	}
+	// Replay-safe: renew extends the run's own lease to now+lease, so a replay
+	// only moves the expiry forward again; a lost lease answers ok=false.
 	var response claimResponse
 	if err := h.post(ctx, apicontract.ClaimRenewPath, claimRequest{
 		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID,
 		RunID: runID, Workflow: workflow, LeaseSeconds: seconds,
-	}, &response); err != nil {
+	}, &response, true); err != nil {
 		return false, err
 	}
 	return response.Ok, nil
 }
 
 // ReleaseScoped implements Ledger over claims/release.
-func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string) error {
+func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string, reason claimrelease.Reason) error {
 	if err := scopedKey(key); err != nil {
 		return err
 	}
+	// Replay-safe: release of a claim not held, or held by another run, is a
+	// no-op in the ledger, so a replay cannot release a later holder's claim.
 	var response claimResponse
-	return h.post(ctx, apicontract.ClaimReleasePath, claimRequest{
+	return h.postRelease(ctx, claimRequest{
 		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID, RunID: runID,
-	}, &response)
+		Reason: reason.Normalize(),
+	}, &response, true)
 }
 
 // ReleaseAllForRun implements Ledger over claims/release with itemId omitted.
-func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string) ([]Entry, error) {
+func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) ([]Entry, error) {
+	// Not replay-safe after an ambiguous failure: the reply lists what THIS call
+	// released, and a replay of a call that did commit answers an empty list.
+	// It is still retried when the daemon refused it before a handler ran.
 	var response claimResponse
-	if err := h.post(ctx, apicontract.ClaimReleasePath, claimRequest{RunID: runID}, &response); err != nil {
+	if err := h.postRelease(ctx, claimRequest{RunID: runID, Reason: reason.Normalize()}, &response, false); err != nil {
 		return nil, err
 	}
 	return response.Released, nil
 }
 
+// releaseFallbackLog receives the warning postRelease writes when it drops a
+// reason for an older daemon; a stage's stderr is its log. A var so tests can
+// capture it.
+var releaseFallbackLog io.Writer = os.Stderr
+
+func releaseTarget(request claimRequest) string {
+	if request.ItemID == "" {
+		return "every claim"
+	}
+	return "claim " + request.ItemID
+}
+
+// postRelease sends a release carrying its reason. A daemon that predates the
+// reason field refuses the unknown field before any handler runs (strict
+// decoding), so the release is resent once without it: the claim must still
+// be surrendered across a version skew, and that older daemon records the
+// release as it always did — without a reason.
+func (h *HTTP) postRelease(ctx context.Context, request claimRequest, response *claimResponse, replaySafe bool) error {
+	err := h.post(ctx, apicontract.ClaimReleasePath, request, response, replaySafe)
+	var planeErr *Error
+	if err == nil || request.Reason.IsZero() || !errors.As(err, &planeErr) ||
+		planeErr.Status != http.StatusBadRequest || !strings.Contains(planeErr.Message, `unknown field "reason"`) {
+		return err
+	}
+	_, _ = fmt.Fprintf(releaseFallbackLog, "warning: claims plane predates release reasons; releasing %s for run %s without recording its %s reason\n",
+		releaseTarget(request), request.RunID, request.Reason.Disposition)
+	request.Reason = claimrelease.Reason{}
+	return h.post(ctx, apicontract.ClaimReleasePath, request, response, replaySafe)
+}
+
 // ForRunAll implements Ledger over claims/list scope=run.
 func (h *HTTP) ForRunAll(ctx context.Context, runID string) ([]Entry, error) {
 	var response claimListResponse
-	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: runID, Scope: scopeRun}, &response); err != nil {
+	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: runID, Scope: scopeRun}, &response, true); err != nil {
 		return nil, err
 	}
 	return response.Entries, nil
@@ -265,7 +315,7 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 	var response claimListResponse
 	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{
 		Gaggle: gaggle, Provider: provider, RunID: h.cfg.RunID, Scope: scopeNamespace, IncludeHistory: true,
-	}, &response); err != nil {
+	}, &response, true); err != nil {
 		return Listing{}, err
 	}
 	return Listing{Entries: response.Entries, History: response.History}, nil
@@ -277,7 +327,7 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 func (h *HTTP) ExecutionSnapshot(ctx context.Context) (string, Listing, error) {
 	var response claimListResponse
 	started := time.Now()
-	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: h.cfg.RunID, Scope: scopeRun, IncludeHistory: true, Execution: true}, &response); err != nil {
+	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: h.cfg.RunID, Scope: scopeRun, IncludeHistory: true, Execution: true}, &response, true); err != nil {
 		return "", Listing{}, err
 	}
 	if response.ClaimVisibility != "local" && response.ClaimVisibility != "shared" {
@@ -307,6 +357,7 @@ func localExecutionTimes(entries []Entry, started, observed time.Time) []Entry {
 		entries[i].ExpiresAt = translate(entries[i].ExpiresAt)
 		entries[i].SharedDeadline = translate(entries[i].SharedDeadline)
 		entries[i].ClaimedAt = translate(entries[i].ClaimedAt)
+		entries[i].RenewedAt = translate(entries[i].RenewedAt)
 		if entries[i].ReleasedAt != nil {
 			released := translate(*entries[i].ReleasedAt)
 			entries[i].ReleasedAt = &released
@@ -406,7 +457,7 @@ func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Co
 	// handed back even when the stage is being torn down.
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultHTTPTimeout)
 	defer cancel()
-	if err := h.ReleaseScoped(releaseCtx, lock.Key, lock.RunID); err != nil {
+	if err := h.ReleaseScoped(releaseCtx, lock.Key, lock.RunID, claimrelease.Completed.Because(MergeLockReleaseCode, "")); err != nil {
 		return errors.Join(fnErr, fmt.Errorf("release merge lock %s: %w", lock.Key.ExternalID, err))
 	}
 	return fnErr
@@ -419,8 +470,10 @@ func (h *HTTP) ContainedRunID() string { return h.cfg.RunID }
 // RecoverStale implements StaleRecoverer over claims/recover: the daemon runs
 // its own sweep and answers with what it released.
 func (h *HTTP) RecoverStale(ctx context.Context) ([]Entry, error) {
+	// Replay-safe: the sweep releases whatever is stale at the time it runs, and
+	// RecoverStale callers act on no individual entry of the reply.
 	var response claimRecoverResponse
-	if err := h.post(ctx, apicontract.ClaimRecoverPath, claimRecoverRequest{RunID: h.cfg.RunID}, &response); err != nil {
+	if err := h.post(ctx, apicontract.ClaimRecoverPath, claimRecoverRequest{RunID: h.cfg.RunID}, &response, true); err != nil {
 		return nil, err
 	}
 	return response.Released, nil

@@ -88,6 +88,9 @@ func (p Policy) validate() error {
 // Publisher files nominations.
 type Publisher struct {
 	Provider Provider
+	// ObservePublication, when set, receives issue text immediately before a
+	// create. It is advisory and cannot alter the deterministic filing plan.
+	ObservePublication func(context.Context, string, string)
 	// Approver is nil when the github:issues:approve credential did not
 	// resolve (or the stage did not opt in); then no nomination is approved
 	// and every filed issue names that reason.
@@ -440,10 +443,14 @@ func (p Publisher) file(ctx context.Context, artifact Artifact, cand Candidate, 
 			return FiledIssue{}, nil, fmt.Errorf("read issue #%s this run filed for nomination %q: %w", cand.OwnedIssue, n.Key, err)
 		}
 	} else {
+		body := IssueBody(cand.KeyHash, p.RunID, artifact.Producer, n, needsHuman)
+		if p.ObservePublication != nil {
+			p.ObservePublication(ctx, n.Title, body)
+		}
 		item, err = p.Provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
 			Repository: p.Repo,
 			Title:      n.Title,
-			Body:       IssueBody(cand.KeyHash, p.RunID, artifact.Producer, n, needsHuman),
+			Body:       body,
 			Labels:     labels,
 			RunID:      CreateRunID(cand.KeyHash, p.RunID),
 		})

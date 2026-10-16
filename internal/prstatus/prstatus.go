@@ -8,9 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -66,7 +66,7 @@ func Publish(
 	if err != nil {
 		return result, &ResultWriteError{cause: fmt.Errorf("marshal status result: %w", err)}
 	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+	if err := durability.WriteFileAtomic(resultFile, data, 0o600); err != nil {
 		return result, &ResultWriteError{cause: fmt.Errorf("write %s: %w", resultFile, err)}
 	}
 	return result, nil

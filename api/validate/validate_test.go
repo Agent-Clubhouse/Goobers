@@ -302,6 +302,17 @@ func TestFieldSelectionsValidatedAtConfigLoad(t *testing.T) {
 			fieldOrder: "priority:sideways",
 			want:       "spec.tasks[0].inputs.fieldOrder is invalid",
 		},
+		{
+			name:             "valid title string operations",
+			gagglePredicate:  `fields["title"].startsWithIgnoreCase("[ui]")`,
+			triggerPredicate: `fields["title"].contains("widget") || fields["title"].endsWith("(v2)")`,
+			taskPredicate:    `!fields["title"].containsIgnoreCase("draft")`,
+		},
+		{
+			name:          "unsupported string operation",
+			taskPredicate: `fields["title"].matches("^widget")`,
+			want:          "spec.tasks[0].inputs.fieldPredicate is invalid",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -377,6 +388,48 @@ spec:
 			}
 			if !report.HasErrors() || !strings.Contains(issues, tt.want) {
 				t.Fatalf("issues = %q, want error containing %q", issues, tt.want)
+			}
+		})
+	}
+}
+
+// TestPRSelectTitlePredicateValidatedAtConfigLoad covers #5810: a pr-select
+// titlePredicate must compile and reference only fields["title"].
+func TestPRSelectTitlePredicateValidatedAtConfigLoad(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		predicate string
+		want      string
+	}{
+		{name: "contains", predicate: `fields["title"].contains("widget")`},
+		{name: "case-insensitive prefix", predicate: `fields["title"].startsWithIgnoreCase("release:")`},
+		{name: "blank", predicate: " ", want: "titlePredicate is invalid: CEL expression must not be blank"},
+		{name: "non-title field", predicate: `fields["state"] == "open"`, want: `may only reference fields["title"]`},
+		{name: "unsupported operation", predicate: `fields["title"].matches("w.*")`, want: "titlePredicate is invalid: unsupported CEL expression"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			task := fmt.Sprintf(`    - name: select
+      type: deterministic
+      goal: select the PR
+      run:
+        command: ["goobers", "pr-select"]
+      inputs:
+        titlePredicate: %q
+      capabilities:
+        - provider:pr:write
+      policyActions:
+        - flag-foundation-coupling
+`, tt.predicate)
+			report := validatePRLifecycleBase(t, "", task)
+			issues := joinIssues(report)
+			if tt.want == "" {
+				if strings.Contains(issues, "FLD005") || strings.Contains(issues, "titlePredicate") {
+					t.Fatalf("valid titlePredicate reported issues:\n%s", issues)
+				}
+				return
+			}
+			if !report.HasErrors() || !strings.Contains(issues, "FLD005") || !strings.Contains(issues, tt.want) {
+				t.Fatalf("issues = %q, want FLD005 error containing %q", issues, tt.want)
 			}
 		})
 	}
@@ -1565,6 +1618,41 @@ func TestStageTimeoutCoherenceSurfacesInValidate(t *testing.T) {
 	if !found {
 		t.Fatalf("timeout-coherence diagnostic not surfaced: %v", report.Issues)
 	}
+}
+
+func TestUnparseableCIPollDurationSurfacesInValidate(t *testing.T) {
+	ix := newIndex()
+	ix.gaggles["example"] = apiv1.Gaggle{}
+	report := &Report{}
+	workflow := apiv1.Workflow{
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example",
+			Start:  "ci",
+			Tasks: []apiv1.Task{{
+				Name:           "ci",
+				Type:           apiv1.TaskDeterministic,
+				Goal:           "Wait for CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
+				TimeoutSeconds: 3600,
+				Inputs: map[string]string{
+					"kind":               "ci-poll",
+					"prNumber":           "1",
+					"pollTimeoutSeconds": "3300",
+				},
+			}},
+		},
+	}
+	workflow.Name = "ci-review"
+	ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+	for _, issue := range report.Issues {
+		if issue.Severity == Error && issue.Code == errorStageTimeout &&
+			strings.Contains(issue.Message, `inputs.pollTimeoutSeconds "3300" is not a valid duration`) &&
+			strings.Contains(issue.Message, `"3300s" (55m0s)`) {
+			return
+		}
+	}
+	t.Fatalf("unparseable duration not surfaced as an error: %v", report.Issues)
 }
 
 func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {

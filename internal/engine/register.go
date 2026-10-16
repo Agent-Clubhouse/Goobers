@@ -20,5 +20,6 @@ func RegisterWith(w worker.Worker, a *Activities) {
 	// workflow type fails the start with a task-timeout that names nothing
 	// useful.
 	w.RegisterWorkflowWithOptions(DispatchOne, versioned)
+	w.RegisterWorkflowWithOptions(ChildDispatchOne, versioned)
 	w.RegisterActivity(a)
 }

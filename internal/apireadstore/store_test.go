@@ -184,7 +184,7 @@ func TestOpenVersionsSchemaAndRefusesNewerCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version int
-	if err := s.db.QueryRow("SELECT version FROM schema_meta").Scan(&version); err != nil || version != 1 {
+	if err := s.db.QueryRow("SELECT version FROM schema_meta").Scan(&version); err != nil || version != 2 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 	if _, err := s.db.Exec("UPDATE schema_meta SET version=99"); err != nil {

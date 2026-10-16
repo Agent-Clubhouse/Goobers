@@ -186,6 +186,9 @@ type BlobStatusError struct {
 	StatusCode int
 	Status     string
 	Body       string
+	// Header is the answer's response headers, so a caller can read hints a
+	// starting daemon attaches to its 503 (see internal/startuphint).
+	Header http.Header
 }
 
 func (e *BlobStatusError) Error() string {
@@ -228,7 +231,7 @@ func (c *BlobClient) PutOnce(ctx context.Context, digest string, data []byte) er
 		return nil
 	default:
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-		return &BlobStatusError{Op: "put", Digest: digest, StatusCode: response.StatusCode, Status: response.Status, Body: strings.TrimSpace(string(body))}
+		return &BlobStatusError{Op: "put", Digest: digest, StatusCode: response.StatusCode, Status: response.Status, Body: strings.TrimSpace(string(body)), Header: response.Header.Clone()}
 	}
 }
 

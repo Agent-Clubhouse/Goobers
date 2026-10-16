@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/pathutil"
 	"github.com/goobers/goobers/internal/platform/durability"
 )
 
@@ -166,7 +167,8 @@ func taskDispatchError(stage string, result apiv1.ResultEnvelope, dispatchErr er
 }
 
 func stageFinishedOutputs(result apiv1.ResultEnvelope, continueOnError bool) map[string]interface{} {
-	if result.Status == apiv1.ResultFailure && continueOnError && !isOutboxExportFailure(result) {
+	// Invalid-handoff outputs carry the reroute that resume must replay.
+	if result.Status == apiv1.ResultFailure && continueOnError && !isOutboxExportFailure(result) && !isInvalidHandoffFailure(result) {
 		return nil
 	}
 	return result.Outputs
@@ -251,7 +253,7 @@ func expandOutboxMirrorRoot(configured string) (string, error) {
 // checks every resulting path after symlink resolution.
 func makeContainedDir(root, rel string) (string, error) {
 	clean := filepath.Clean(rel)
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if _, err := pathutil.IsLexicallyContained("", clean); err != nil {
 		return "", apiv1.ErrPathEscape
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
@@ -298,7 +300,14 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 	var candidates []outboxCandidate
 	var totalBytes int64
 
+	seen := map[string]struct{}{}
+
 	addFile := func(relPath, absPath string, size int64) error {
+		relPath = filepath.ToSlash(filepath.Clean(relPath))
+		if _, dup := seen[relPath]; dup {
+			return nil
+		}
+		seen[relPath] = struct{}{}
 		candidates = append(candidates, outboxCandidate{relPath: relPath, absPath: absPath, size: size})
 		totalBytes += size
 		if len(candidates) > journal.MaxOutboxFilesPerAttempt {
@@ -338,9 +347,9 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 			// must not be silently pruned from exported outbox payloads.
 			opts.SkipHiddenDirs = false
 			walkErr := mcpio.WalkFiles(full, func(p string, d fs.DirEntry) error {
-				rel, err := filepath.Rel(resolvedRoot, p)
-				if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-					return fmt.Errorf("resolve outbox file %q relative to workspace: %w", p, err)
+				rel, err := outboxRelPath(resolvedRoot, p)
+				if err != nil {
+					return err
 				}
 				fi, err := d.Info()
 				if err != nil {
@@ -368,6 +377,20 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 		files = append(files, journal.OutboxFile{RelPath: candidate.relPath, Data: data})
 	}
 	return files, nil
+}
+
+// outboxRelPath returns p relative to the resolved workspace root, failing
+// when p cannot be expressed relative to it or climbs out of it. The escape
+// case has no underlying error to wrap, so it reports its own (#7242).
+func outboxRelPath(resolvedRoot, p string) (string, error) {
+	rel, err := filepath.Rel(resolvedRoot, p)
+	if err != nil {
+		return "", fmt.Errorf("resolve outbox file %q relative to workspace: %w", p, err)
+	}
+	if _, err := pathutil.IsLexicallyContained("", rel); err != nil {
+		return "", fmt.Errorf("outbox file %q is outside the workspace: %w", p, err)
+	}
+	return rel, nil
 }
 
 func newOutboxLimitError(candidates []outboxCandidate, totalBytes int64) *outboxLimitError {

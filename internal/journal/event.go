@@ -5,6 +5,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // RunnerEventNamespace is the dotted prefix of the runner.* namespace — the
@@ -174,6 +175,20 @@ const (
 	// the root branch.
 	EventParallelFinished EventType = "parallel.finished"
 
+	// Map lifecycle (docs/design/plan-driven-dynamic-fan-out.md §6, §8). Both
+	// are conformance-normative and recorded on the root branch. A map's item
+	// branches reuse branch.started/branch.finished, carrying MapItemIdentity
+	// and MapItemDigest, so a map is expanded into the static branch lifecycle
+	// rather than a second one.
+
+	// EventMapStarted opens one map visit. Parallel names the map and
+	// MapRoster carries the frozen, normalized roster: the durable source of
+	// truth for the visit, so resume never rereads the producer.
+	EventMapStarted EventType = "map.started"
+	// EventMapFinished closes a map visit with one completeness entry per
+	// roster item, in identity order, and the routing target.
+	EventMapFinished EventType = "map.finished"
+
 	// Instance-journal event types (§4/§6): scheduler decisions and
 	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
 	// envelope as a run journal's events.jsonl. EventRunStarted/EventRunFinished
@@ -202,6 +217,13 @@ const (
 	// diagnostic. Instance-journal only; written when the scheduler learns
 	// the configuration (start and each accepted reload).
 	EventWorkflowRefused EventType = "workflow.refused"
+	// EventWorkflowReadmitted records a workflow whose workflow.refused
+	// refusal was transient (#6017) becoming eligible again: a harness whose
+	// sign-in probe failed because the provider was rate limiting or
+	// unreachable passed a later re-probe. Instance-journal only. A transient
+	// refusal whose reason changes (a new next-probe time, or a re-probe that
+	// found a real sign-in failure) is journaled as a fresh workflow.refused.
+	EventWorkflowReadmitted EventType = "workflow.readmitted"
 	// EventProviderQuotaReset records a provider budget window expiring and
 	// polling admission reopening.
 	EventProviderQuotaReset EventType = "provider.quota.reset"
@@ -211,9 +233,10 @@ const (
 	// EventClaimAcquired records the claim ledger granting a lease.
 	EventClaimAcquired EventType = "claim.acquired"
 	// EventClaimReleased records a lease release (run finished, expired, or
-	// crash-recovered).
+	// crash-recovered). ClaimRelease carries why ownership ended (#4421).
 	EventClaimReleased EventType = "claim.released"
 	// EventClaimForceReleased records an operator overriding a claim lease.
+	// ClaimRelease carries the force-release disposition and actor.
 	EventClaimForceReleased EventType = "claim.force_released"
 	// EventClaimRefused records the claims plane refusing a lease because a
 	// live lease is held by a different run — the losing side of a
@@ -321,6 +344,32 @@ const (
 	// they either resume from their pinned snapshot or, when that snapshot is
 	// unavailable, are refused at the next daemon restart.
 	RunnerAnnotationWorkflowDigestDrift = "workflow.digest.drift"
+	// RunnerAnnotationHostSuspended records an interval the daemon observed
+	// the host spending suspended (#5891). Its Runner payload carries
+	// suspendedFrom and suspendedTo as RFC 3339 timestamps.
+	RunnerAnnotationHostSuspended = "host.suspended"
+	// RunnerAnnotationBlockerCleared is the instance-journal record that a
+	// condition a run blocker reports was observed healthy again (#5404). Its
+	// Runner payload carries "code", the ErrorDetail code it clears;
+	// "observedAt" (RFC 3339), when the successful observation STARTED —
+	// a record without it clears nothing; and "scope": "instance" for a
+	// condition of the shared instance, or "run" for one of the run named by
+	// RunID only. A run error with that code (and, for "run", that run)
+	// recorded before observedAt is no longer a current blocker. Readers
+	// honour it only for codes they register as clearable this way
+	// (readservice's blocker clear-path registry), so the record cannot
+	// retract an arbitrary run failure.
+	RunnerAnnotationBlockerCleared = "blocker.cleared"
+	// ErrorCodeRecoveryObservationFailed is the run error recorded when a
+	// workspace cleanup succeeded but the shared recovery inventory could not
+	// be read afterwards to observe the state it retained.
+	ErrorCodeRecoveryObservationFailed = "recovery_observation_failed"
+	// ErrorCodeRecoveryObservationRunFailed is the run error recorded when a
+	// workspace cleanup succeeded and the inventory was readable, but the
+	// run's own retained state could not be observed or journaled: its own
+	// records, the observation-count and ownership checks, or the append into
+	// its journal.
+	ErrorCodeRecoveryObservationRunFailed = "recovery_observation_run_failed"
 	// RecoveryActionResumed records continuation of an interrupted stage.
 	RecoveryActionResumed = "resumed"
 	// RecoveryActionRetried records a new attempt after interruption.
@@ -346,6 +395,11 @@ const (
 	// terminalizing its journal. The run's own terminal event follows from the
 	// engine once the cancellation lands.
 	RecoveryActionEngineCancelRequested = "engine_cancel_requested"
+	// RecoveryActionEngineTerminated records that the stalled-run sweep
+	// terminated an engine-driven run's workflow on the server because no
+	// worker acted on its earlier cancellation, then wrote the run's terminal
+	// itself (#5407).
+	RecoveryActionEngineTerminated = "engine_terminated"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in
@@ -500,13 +554,29 @@ type Event struct {
 
 	// --- parallel/branch payload (§6.2) ---
 
-	// Parallel is the name of the parallel state a branch belongs to, set on
-	// parallel.started/finished and branch.started/finished. Normative.
+	// Parallel is the name of the fan-out state an event concerns: the
+	// parallel on parallel.started/finished, the map on map.started/finished,
+	// and the owning parallel or map on branch.started/finished. The event
+	// type, and MapItemIdentity on a branch event, say which construct it is.
+	// Normative.
 	Parallel string `json:"parallel,omitempty"`
 	// BranchName is the declared name of the branch this event concerns. The
 	// numeric id lives in Branch; the name is what an author wrote and what
-	// branch-qualified references use. Normative.
+	// branch-qualified references use. A map item's branch name is its roster
+	// identity, for display; MapItemIdentity is the authoritative field.
+	// Normative.
 	BranchName string `json:"branchName,omitempty"`
+	// MapItemIdentity is the roster identity of the map item a
+	// branch.started/branch.finished concerns. Empty for a static branch.
+	// Normative.
+	MapItemIdentity string `json:"mapItemIdentity,omitempty"`
+	// MapItemDigest is the canonical item digest (sha256 over the RFC 8785
+	// form of {identity, item}) of the map item a branch event concerns. Empty
+	// for a static branch. Normative.
+	MapItemDigest string `json:"mapItemDigest,omitempty"`
+	// MapRoster is the frozen roster on map.started. Normative; see
+	// MapRoster's own field comments for the excluded storage metadata.
+	MapRoster *MapRoster `json:"mapRoster,omitempty"`
 	// BranchStatus is the terminal status of a branch on branch.finished.
 	// Normative.
 	BranchStatus BranchStatus `json:"branchStatus,omitempty"`
@@ -515,6 +585,12 @@ type Event struct {
 	// report?" is answerable from the journal alone. Normative — it, and not
 	// the interleaving, is what a parallel means.
 	Completeness []BranchOutcome `json:"completeness,omitempty"`
+	// Selection is the frozen selection of a DSL 3.1 selective parallel, set
+	// only on that parallel's parallel.started. It is the durable source of
+	// truth for which optional branches run in this visit: resume rebuilds
+	// the skip set from it and never consults the producer again. Absent for
+	// every non-selective parallel. Normative except Reasons and Source.Visit.
+	Selection *ParallelSelection `json:"selection,omitempty"`
 
 	// --- instance-journal payload (scheduler/events.jsonl only; not used in a
 	// run's own events.jsonl, since a run event's identity is implicit from its
@@ -532,8 +608,13 @@ type Event struct {
 	SourceRunID       string `json:"sourceRunId,omitempty"`
 	SourceTerminalSeq uint64 `json:"sourceTerminalSeq,omitempty"`
 	// Reason is a short, stable explanation for an instance-level scheduler or
-	// daemon lifecycle event.
+	// daemon lifecycle event. On a claim release it is the release
+	// disposition code.
 	Reason string `json:"reason,omitempty"`
+	// ClaimRelease is the structured, bounded reason a claim ended, on
+	// claim.released and claim.force_released (#4421). Absent on events
+	// written before the field existed.
+	ClaimRelease *claimrelease.Reason `json:"claimRelease,omitempty"`
 	// SkipCount is the consecutive shared-pool refusal count for a
 	// workflow.starved event.
 	SkipCount int `json:"skipCount,omitempty"`
@@ -576,6 +657,12 @@ const (
 	// other four statuses could not express: a join must be able to tell "ran
 	// and found nothing" from "ran and produced findings".
 	BranchNoOutput BranchStatus = "no-output"
+	// BranchSkipped means a selective parallel's frozen selection did not
+	// choose this optional branch. The branch never started: no
+	// branch.started, stage, workspace, fork, child or concurrency slot. It
+	// is distinct from no-output ("ran and produced nothing") and cancelled
+	// ("chosen, then stopped"), and failure policies never count it.
+	BranchSkipped BranchStatus = "skipped"
 )
 
 // BranchOutcome is one entry in a parallel's completeness record.
@@ -590,6 +677,49 @@ type BranchOutcome struct {
 	// distinguish a branch that settled empty from one that produced work
 	// without resolving every pointer.
 	Artifacts int `json:"artifacts"`
+	// Reason is the optional human-facing explanation a selective parallel
+	// records: the selection document's reason for a selected optional
+	// branch, or why a skipped branch did not run. Displayed, never compared
+	// by conformance.
+	Reason string `json:"reason,omitempty"`
+	// MapItemIdentity and MapItemDigest identify the roster item of a map
+	// completeness entry (map.finished). Empty for a static branch.
+	MapItemIdentity string `json:"mapItemIdentity,omitempty"`
+	MapItemDigest   string `json:"mapItemDigest,omitempty"`
+}
+
+// ParallelSelection is the frozen, normalized selection a selective parallel
+// writes to parallel.started before any branch starts (design
+// plan-driven-dynamic-fan-out.md §4.2, §5.3).
+type ParallelSelection struct {
+	// Source is the journal-bound producer attempt the document came from.
+	Source SelectionSource `json:"source"`
+	// SourceDigest is the digest of the frozen source document.
+	SourceDigest string `json:"sourceDigest"`
+	// Integrity is the source artifact's integrity, recorded for audit. The
+	// selection is control data and is never delivered as branch input.
+	Integrity apiv1.Integrity `json:"integrity"`
+	// Selected names the selected OPTIONAL branches in branch-id (declaration)
+	// order. Non-optional branches always run and are never listed. An empty
+	// list means only the non-optional branches run.
+	Selected []string `json:"selected"`
+	// Reasons carries the document's optional reason per selected branch.
+	// Human-facing and excluded from conformance.
+	Reasons map[string]string `json:"reasons,omitempty"`
+}
+
+// SelectionSource identifies the producer slot and recorded attempt a
+// selection was frozen from.
+type SelectionSource struct {
+	// Task is the producing task.
+	Task string `json:"task"`
+	// Slot is the producer's DSL 3.1 artifact slot.
+	Slot string `json:"slot"`
+	// Visit is the producer's artifact publication visit (a journal
+	// sequence). Runner-local provenance, excluded from conformance.
+	Visit uint64 `json:"visit"`
+	// Attempt is the producer attempt that published the document.
+	Attempt int32 `json:"attempt"`
 }
 
 // ExternalRef identifies an external reference the run touched — an issue or PR

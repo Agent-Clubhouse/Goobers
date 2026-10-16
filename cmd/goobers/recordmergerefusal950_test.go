@@ -176,6 +176,82 @@ func TestRecordMergeRefusalSkipsPendingRequiredChecks(t *testing.T) {
 	}
 }
 
+// TestRecordMergeRefusalNoVerdictCI covers #6817: a refusal whose only reason
+// is CI that finished without a verdict (an outage cancelled it) is not a
+// stuck PR and must never demote it, since a demotion survives the rerun that
+// turns CI green. The same reason beside another refusal still counts.
+func TestRecordMergeRefusalNoVerdictCI(t *testing.T) {
+	noVerdict := ciNoVerdictReason + ": CI finished without a verdict (cancelled, never started or stale: build, test), waiting for CI to be rerun"
+	for name, tc := range map[string]struct {
+		reason     string
+		wantDemote bool
+	}{
+		"only no-verdict CI":         {reason: noVerdict},
+		"no-verdict CI and a draft":  {reason: noVerdict + "; pull request is a draft", wantDemote: true},
+		"another reason comes first": {reason: `verdict is "needs-changes", want pass; ` + noVerdict, wantDemote: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addOpenPR(84, "goobers/implementation/outage", "main", "sha-outage", "base1", false, nil, nil)
+			server.addIssue(84, "outage")
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+			t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "84")
+			t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-outage")
+			t.Setenv("GOOBERS_INPUT_REASON", tc.reason)
+			t.Setenv("GOOBERS_INPUT_DEMOTIONTHRESHOLD", "1")
+			t.Chdir(t.TempDir())
+
+			code, _, stderr := runArgs(t, "record-merge-refusal", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if demoted := issueHasLabel(server, 84, mergeDemotedLabel); demoted != tc.wantDemote {
+				t.Fatalf("demoted = %v, want %v", demoted, tc.wantDemote)
+			}
+		})
+	}
+}
+
+// TestRecordMergeRefusalNoVerdictNoticeIsStickyPerHead pins the #6817 notice:
+// one comment asking for a CI rerun, posted once per head, updated in place
+// when the head moves, and never a demotion record.
+func TestRecordMergeRefusalNoVerdictNoticeIsStickyPerHead(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(85, "goobers/implementation/outage", "main", "sha-one", "base1", false, nil, nil)
+	server.addIssue(85, "outage")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "85")
+	t.Setenv("GOOBERS_INPUT_REASON", ciNoVerdictReason+": CI finished without a verdict (cancelled, never started or stale: build), waiting for CI to be rerun")
+	t.Chdir(t.TempDir())
+
+	comments := func() []string {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return append([]string(nil), server.issues[85].comments...)
+	}
+	for _, head := range []string{"sha-one", "sha-one", "sha-one", "sha-two"} {
+		t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", head)
+		if code, _, stderr := runArgs(t, "record-merge-refusal", root); code != 0 {
+			t.Fatalf("head %s: code = %d, stderr = %q", head, code, stderr)
+		}
+		got := comments()
+		if len(got) != 1 {
+			t.Fatalf("head %s: comments = %q, want exactly one sticky notice", head, got)
+		}
+		if !strings.Contains(got[0], "CI needs a rerun") || !strings.Contains(got[0], "`"+head+"`") || !strings.Contains(got[0], "build") {
+			t.Fatalf("head %s: notice = %q, want it to ask for a rerun of build at this head", head, got[0])
+		}
+		if _, _, found := latestMergeDemotionState([]providers.Comment{{Body: got[0]}}); found {
+			t.Fatalf("head %s: notice carries a demotion record", head)
+		}
+	}
+	if issueHasLabel(server, 85, mergeDemotedLabel) {
+		t.Fatal("a no-verdict refusal must never demote")
+	}
+}
+
 // TestRecordMergeRefusalResetsOnHeadAdvance proves a refusal at a NEW head resets
 // the counter — a PR whose head advanced (a remediation push) is a genuinely
 // fresh attempt, not a continuation of the stuck run.

@@ -63,6 +63,7 @@ func (p *GitHubProvider) CreateRepository(ctx context.Context, req CreateReposit
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &created); err != nil {
 		return CreateRepositoryResult{}, fmt.Errorf("create GitHub repository %s/%s: %w", req.Owner, req.Name, err)
 	}
+	observeProviderMutation(ctx, p.Client, ProviderGitHub)
 	return CreateRepositoryResult{
 		Repository: RepositoryRef{
 			Provider: ProviderGitHub,

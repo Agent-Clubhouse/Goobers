@@ -189,6 +189,12 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if preflightErr != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: gaggle namespace preflight: %w", preflightErr)
 	}
+	// Each gaggle's backlog settings, resolved here for the same reason as
+	// BotLogins below: a stage pod cannot read the instance config (#5957).
+	gaggleBacklogs, err := stageGaggleBacklogStamps(set.Gaggles)
+	if err != nil {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
+	}
 	build := version.Get()
 	tmpfsSize, err := cfg.Runner.ResolvePodTmpfsSize()
 	if err != nil {
@@ -196,6 +202,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	}
 	d, err := newStageDispatcher(dispatcher.Config{
 		TmpfsSizeLimit: tmpfsSize,
+		TmpDiskBacked:  cfg.Runner.PodTmpDiskBacked(),
 		PodEgressProxy: cfg.Runner.PodEgressProxy,
 		// Validation guarantees a non-nil signer before it enters the interface.
 		TokenMinter: signed,
@@ -226,6 +233,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		BotLogins:                   cfg.GitHubBotLogins(),
 		ExternalTelemetryConnectors: cfg.ExternalTelemetryConnectorsByName(),
 		NeedsHumanAssignee:          cfg.NeedsHumanAssignee,
+		GaggleBacklogs:              gaggleBacklogs,
 	}, dispatcher.NewKubernetesPodAPI(client), nil, dispatcher.PlaneSurrenderGate{Plane: surrenders}, nil)
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)

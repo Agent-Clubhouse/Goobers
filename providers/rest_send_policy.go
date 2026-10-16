@@ -29,6 +29,17 @@ type restSendPolicy struct {
 	handleExhaustedRateLimit func(*http.Response, RateLimitEvent) (*http.Response, error)
 }
 
+// rateLimitWaitOutlivesDeadline reports whether sleeping wait for a rate limit
+// would run past ctx's deadline (#5572). Such a sleep can only end in context
+// cancellation — or, when the caller's deadline is the stage's, in the
+// executor killing the stage as stage_timeout — so the request gives up at
+// once with the typed rate-limit error, which carries the reset instant the
+// scheduler defers on, instead of spending the rest of its budget asleep.
+func rateLimitWaitOutlivesDeadline(ctx context.Context, wait time.Duration) bool {
+	deadline, ok := ctx.Deadline()
+	return ok && wait >= time.Until(deadline)
+}
+
 func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endpoint string, body interface{}) (*http.Response, error) {
 	maxWait := policy.maxRateLimitWait
 	if maxWait <= 0 {
@@ -81,7 +92,8 @@ func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endp
 		}
 		if policy.isRateLimited(resp) {
 			wait, ev := policy.planRateLimit(resp, endpoint, rateLimitRetries)
-			if rateLimitRetries >= policy.maxRateLimitRetries || wait > maxWait-rateLimitWaited {
+			if rateLimitRetries >= policy.maxRateLimitRetries || wait > maxWait-rateLimitWaited ||
+				rateLimitWaitOutlivesDeadline(ctx, wait) {
 				ev.Outcome = RateLimitOutcomeExhausted
 				finalResp, finalErr := policy.handleExhaustedRateLimit(resp, ev)
 				policy.observeRateLimit(ctx, ev)

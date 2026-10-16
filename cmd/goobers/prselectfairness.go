@@ -243,8 +243,8 @@ func observePRSelectEligibility(
 
 				observation.EligibleSince = make(map[int]time.Time, len(eligible))
 				for _, pr := range eligible {
-					claimed, ownedByCurrentRun := pullRequestClaimStatus(
-						claims, gaggle, repo.Provider, pr.Number, currentRunID, now,
+					claimed, ownedByCurrentRun := pullRequestClaimStatusFor(
+						claims, gaggle, repo.Provider, pr, currentRunID, now,
 					)
 					if claimed {
 						if ownedByCurrentRun {
@@ -377,6 +377,59 @@ func pullRequestClaimStatus(
 		return false, false
 	}
 	return true, ownershipComparable && currentRunID != "" && entry.RunID == currentRunID
+}
+
+// pullRequestClaimStatusFor is pullRequestClaimStatus for a concrete PR: on top
+// of the PR's own pr/<n> lease it treats the PR as claimed while the run that
+// opened it (named by the run-scoped head branch <namespace><workflow>/<runID>,
+// providers.BranchNameIn) still holds a live claim (#7062). The opening run
+// keeps pushing to that branch (ci-poll, remediate-ci, local-ci) without ever
+// taking a pr/<n> lease, so without this a PR-consuming lane would rebase the
+// same branch concurrently and one of the two pushes would be lost. The origin
+// run itself is not blocked from its own PR.
+func pullRequestClaimStatusFor(
+	claims claimsclient.Listing,
+	gaggle string,
+	provider providers.ProviderKind,
+	pr providers.PullRequestSummary,
+	currentRunID string,
+	now time.Time,
+) (claimed, ownedByCurrentRun bool) {
+	claimed, ownedByCurrentRun = pullRequestClaimStatus(claims, gaggle, provider, pr.Number, currentRunID, now)
+	if claimed {
+		return claimed, ownedByCurrentRun
+	}
+	originRunID := runBranchOriginRunID(pr.Head)
+	if originRunID == "" || originRunID == currentRunID {
+		return false, false
+	}
+	for _, entry := range claims.Entries {
+		if entry.RunID == originRunID && entry.ReleasedAt == nil && entry.ExpiresAt.After(now) {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+// runBranchOriginRunID extracts the run ID from a run-scoped head branch
+// (providers.BranchNameIn: <namespace><workflow>/<runID>). The namespace is
+// gaggle-configurable, so only the shape is checked: at least
+// <namespace>/<workflow>/<runID> with a 32-hex run ID. Anything else returns "".
+func runBranchOriginRunID(head string) string {
+	parts := strings.Split(head, "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	id := parts[len(parts)-1]
+	if len(id) != 32 {
+		return ""
+	}
+	for _, r := range id {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return ""
+		}
+	}
+	return id
 }
 
 // resolvePullRequestClaim is shared by selection and its operator report.

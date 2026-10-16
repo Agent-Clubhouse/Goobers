@@ -1608,6 +1608,65 @@ func TestGettingStartedSecondRunWhileRunningConflicts(t *testing.T) {
 	}
 }
 
+func TestGettingStartedCloseDuringRunStartupStopsJob(t *testing.T) {
+	t.Setenv(connectDefaultTokenEnv, "token-value")
+	server := newTestGuidedServer(t, t.TempDir())
+	handler := http.HandlerFunc(server.serveGuided)
+	stubGuidedExec(t, `sleep 5`)
+
+	// Pause at the existing command-construction seam: handleRun has published
+	// the job, but cannot launch the subprocess yet. Sampling job and then done
+	// independently could falsely fail when publication occurred between reads.
+	factory := guidedExecCommand
+	entered, release := make(chan struct{}), make(chan struct{})
+	guidedExecCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		close(entered)
+		<-release
+		if ctx.Err() != context.Canceled {
+			t.Error("stopping the published job did not cancel pending startup")
+		}
+		return factory(ctx, name, args...)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- guidedPost(handler, "/guided/actions/run", `{}`) }()
+	var response *httptest.ResponseRecorder
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+		if response == nil {
+			response = <-done
+		}
+		if err := server.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-entered:
+	case response = <-done:
+		t.Fatalf("run finished before command construction: status=%d body=%q", response.Code, response.Body.String())
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not reach command construction")
+	}
+	server.mu.Lock()
+	job := server.job
+	server.mu.Unlock()
+	if job == nil {
+		t.Fatal("command construction started before job publication")
+	}
+	if job.cancel == nil {
+		t.Error("job visible before cancel was set")
+	}
+	job.stop()
+	close(release)
+	released = true
+	response = <-done
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("run status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestGettingStartedAPIUnavailableThenReady(t *testing.T) {
 	workdir := t.TempDir()
 	server := newTestGuidedServer(t, workdir)

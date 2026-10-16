@@ -7,6 +7,19 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+func TestUnresolvableGitRevisionDiagnosticRanksBelowWorkFindings(t *testing.T) {
+	const gitLine = "fatal: ambiguous argument 'origin/main...HEAD': unknown revision or path not in the working tree."
+	gitStderr := gitLine + "\nUse '--' to separate paths from revisions, like this:\nmake: *** [Makefile:9: check-diff] Error 128\n"
+	if got := FailureDiagnostic(nil, []byte(gitStderr)); got != gitLine {
+		t.Fatalf("diagnostic = %q, want the git line over the wrapper trailer", got)
+	}
+	// A tolerated git probe must not displace a real finding about the work.
+	const finding = "x.go:1:1: ineffectual assignment to err (ineffassign)"
+	if got := FailureDiagnostic([]byte(finding+"\n"), []byte(gitStderr)); !strings.Contains(got, finding) {
+		t.Fatalf("diagnostic = %q, want the source finding %q", got, finding)
+	}
+}
+
 func TestDiagnosticTruncatedMatchesTheBound(t *testing.T) {
 	long := FailureDiagnostic(nil, []byte("x.go:1:2: "+strings.Repeat("finding ", 200)+"\n"))
 	if !DiagnosticTruncated(long) {

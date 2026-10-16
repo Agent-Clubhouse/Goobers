@@ -42,6 +42,7 @@ var exceptions = []exception{
 	{Path: "internal/builtincmd/builtincmd.go", Value: "self-update", Reason: "built-in subcommand inventory entry (#2861); names the CLI subcommand, not a workflow"},
 	{Path: "internal/providerstage/inputs.go", Value: "self-update", Reason: "provider-stage input registry key; names the CLI subcommand, not a workflow"},
 	{Path: "cmd/goobers/tutorprpolicy.go", Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
+	{Path: "cmd/goobers/prretry.go", Value: "merge-review", Reason: "pr retry --route value naming the merge-review lane, not a workflow lookup"},
 
 	// Existing telemetry projections still infer roles from shipped names.
 	// #2494 tracks replacing these with a config-sourced workflow role marker.
@@ -58,8 +59,8 @@ var exceptions = []exception{
 	{Path: "internal/lifecycle/labels.go", Value: "goobers:needs-human", Reason: "canonical lifecycle label registry"},
 	{Path: "internal/lifecycle/labels.go", Value: "goobers:needs-remediation", Reason: "canonical lifecycle label registry"},
 	{Path: "internal/lifecycle/labels.go", Value: "goobers:blocked-on-sibling", Reason: "canonical lifecycle label registry"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:merge-escalated", Reason: "canonical lifecycle label registry"},
 	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:merge-ready", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
 	// No entry for goobers:needs-remediation here: applyverdict.go reaches it
 	// through the needsRemediationLabel constant, and this list rejects a stale
 	// exception (#2988).
@@ -67,7 +68,6 @@ var exceptions = []exception{
 	{Path: "cmd/goobers/prcommentwatch.go", Value: "goobers:merge-ready", Reason: "canonical merge-review label the comment watcher treats as already-landing"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
-	{Path: "cmd/goobers/remediationcheckpoint.go", Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
 	{Path: "cmd/goobers/runabortlabel.go", Value: "goobers:run-aborted", Reason: "canonical run lifecycle label"},
 	{Path: "cmd/goobers/scopedrift.go", Value: "goobers:scope-drift", Reason: "canonical scope-review label"},
 	{Path: "cmd/goobers/scopegate1313.go", Value: "goobers:scope-gate", Reason: "canonical scope-review label"},

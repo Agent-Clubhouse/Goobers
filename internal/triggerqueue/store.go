@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, childPublicationSchema, directEngineSchema, sourceStartSchema, sourceCursorSchema, scheduleDemandSchema, sourceRevisionSchema, pendingSweepSchema, scheduleOccurrenceDemandSchema, sourceOccurrenceSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -129,6 +129,14 @@ func scanRecord(row scanner) (Record, error) {
 // terminal records older than the replay window can be pruned on insert; queued
 // or uncertain dispatches retain custody even when the ledger is full.
 func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, now time.Time) (Record, bool, error) {
+	return s.AcceptAdmitted(ctx, key, actor, payload, now, nil)
+}
+
+// AcceptAdmitted is Accept with an admission check for new keys. A redelivery
+// of an already-recorded key answers its original record without consulting
+// admit, so a later catalog change never turns an acknowledged trigger into a
+// refusal. A non-nil admit error is returned verbatim and records nothing.
+func (s *Store) AcceptAdmitted(ctx context.Context, key, actor string, payload []byte, now time.Time, admit func() error) (Record, bool, error) {
 	if strings.TrimSpace(key) != key || key == "" || len(key) > 256 || len(actor) > 1024 || len(payload) == 0 || len(payload) > MaxPayloadBytes || now.IsZero() {
 		return Record{}, false, errors.New("triggerqueue: invalid acceptance")
 	}
@@ -152,15 +160,19 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, err
 	}
+	if admit != nil {
+		if err := admit(); err != nil {
+			return Record{}, false, err
+		}
+	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ?", now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return Record{}, false, err
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM triggers").Scan(&count); err != nil {
+	if err := triggerSlotCapacity(ctx, tx, 1); err != nil {
 		return Record{}, false, err
 	}
-	if count >= MaxRecords {
-		return Record{}, false, ErrFull
+	if err := childByteCapacity(ctx, tx, len(payload)+len(actor)+len(key)); err != nil {
+		return Record{}, false, err
 	}
 	r = Record{ID: fmt.Sprintf("trigger-%x", randomID()), Key: key, Actor: actor, Payload: append([]byte(nil), payload...), State: Accepted, AcceptedAt: now.UTC()}
 	_, err = tx.ExecContext(ctx, "INSERT INTO triggers (id,key,actor,payload,state,accepted_ns) VALUES (?,?,?,?,?,?)", r.ID, r.Key, r.Actor, r.Payload, r.State, now.UnixNano())
@@ -196,7 +208,7 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]Record, error) {
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: batch limit must be 1..100")
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='accepted' ORDER BY accepted_ns,id LIMIT ?", limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='accepted' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) ORDER BY accepted_ns,id LIMIT ?", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +235,7 @@ func (s *Store) BeginDispatch(ctx context.Context, id string) error {
 // request payloads. Later dispatches must not enter this set: their asynchronous
 // starter may still be publishing a journal in the current process.
 func (s *Store) UncertainIDs(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM triggers WHERE state='dispatching' LIMIT ?", MaxRecords+1)
+	rows, err := s.db.QueryContext(ctx, "SELECT id FROM triggers WHERE state='dispatching' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) LIMIT ?", MaxRecords+1)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +264,7 @@ func (s *Store) RetryUnstarted(ctx context.Context, id string) error {
 }
 
 // Requeue returns a dispatch attempt to the accepted queue after the scheduler
-// refused it for temporary capacity. The reason stays visible to status
+// refused it for a waitable operating constraint. The reason stays visible to status
 // readers while preserving the original acceptance ID and FIFO time.
 func (s *Store) Requeue(ctx context.Context, id, reason string) error {
 	if len(reason) > 1024 {
@@ -268,7 +280,7 @@ func (s *Store) RecordDispatch(ctx context.Context, id, runID string) error {
 	if len(runID) > 256 {
 		return ErrTransition
 	}
-	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET run_id=? WHERE id=? AND state='dispatching' AND run_id=''", runID, id)
+	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET run_id=?,reason='' WHERE id=? AND state='dispatching' AND run_id=''", runID, id)
 	return changed(result, err)
 }
 
@@ -279,7 +291,7 @@ func (s *Store) Uncertain(ctx context.Context, after string, limit int) ([]Recor
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: batch limit must be 1..100")
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='dispatching' AND id>? ORDER BY id LIMIT ?", after, limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='dispatching' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) AND id>? ORDER BY id LIMIT ?", after, limit)
 	if err != nil {
 		return nil, err
 	}

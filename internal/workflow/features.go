@@ -118,6 +118,8 @@ func AllFeatures() []Feature {
 	for _, feature := range v31ArtifactFeatures() {
 		merge(feature)
 	}
+	features = append(features, childWorkflowFeatures()...)
+	features = append(features, fanOutFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
@@ -156,11 +158,18 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	if def.Spec.Enabled != nil {
 		features = append(features, binaryLayerFeature("workflow.spec.enabled"))
 	}
+	if def.Spec.Readiness.RequireProviderAuthorization {
+		features = append(features, binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"))
+	}
 	if def.Spec.Backprop != nil {
 		features = append(features,
 			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+			binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 			binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		)
+		if def.Spec.Backprop.Granularity != "" {
+			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
 	}
 	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	return features, nil
@@ -228,7 +237,10 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 	if spec.Health != nil {
 		features = append(features, binaryLayerFeatureSince("gaggle.spec.health", "dev"))
 	}
-	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil {
+	if spec.Backprop != nil {
+		features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+	}
+	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil || spec.Backprop != nil {
 		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	}
 	return features, nil
@@ -239,14 +251,22 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 // changing a frozen interpreter's executable contract.
 func binaryLayerFeatures() []Feature {
 	return []Feature{
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeature("gaggle.spec.cost.enabled"),
 		binaryLayerFeature("gaggle.spec.enabled"),
 		binaryLayerFeatureSince("gaggle.spec.health", "dev"),
 		binaryLayerFeature("workflow.spec.enabled"),
+		binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}
 }
+
+// featureRequireProviderAuthorization is the pre-claim provider authorization
+// health predicate (#5317), enforced by the daemon scheduler.
+const featureRequireProviderAuthorization FeatureID = "workflow.spec.readiness.requireProviderAuthorization"
 
 func binaryLayerFeature(id FeatureID) Feature {
 	return binaryLayerFeatureSince(id, "v0.4.0")
@@ -551,7 +571,7 @@ func checkV30WorkflowFeatureSupport(def Definition, allowPreview bool) []Feature
 	return diagnosticsFromV30(v30.CheckWorkflowFeatureSupport(def, allowPreview))
 }
 
-// --- DSL 3.1 glue: DSL 3.0 semantics plus named artifact contracts. ------
+// --- DSL 3.1 glue: artifacts and child-workflow policy over DSL 3.0. ------
 
 func newV31FeatureRegistry(features []Feature) (FeatureRegistry, error) {
 	return featureRegistry(features), nil
@@ -581,6 +601,8 @@ func featuresForV31Workflow(def Definition) ([]Feature, error) {
 	if err != nil {
 		return nil, err
 	}
+	features = append(features, usedChildWorkflowFeatures(def)...)
+	features = append(features, usedFanOutFeatures(def)...)
 	used := map[FeatureID]struct{}{}
 	add := func(ids ...FeatureID) {
 		for _, id := range ids {

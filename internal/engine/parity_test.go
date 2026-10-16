@@ -618,6 +618,7 @@ type parityEnvelope struct {
 // projected fields covers the envelope exactly, so a new envelope field cannot
 // join the exclusion set by being forgotten.
 var parityEnvelopeExcludedFields = map[string]string{
+	"ChildWorkflowOrigin": "local-only durable stage-start authority; child workflows remain explicitly refused by Temporal until its actual committed journal identity is available",
 	"ArtifactPublication": "optional named publication contract includes a backend-specific journal visit cursor; dedicated publication tests check the authority and bindings",
 	"Workspace":           "absolute path minted per attempt by each side's provisioner; never the same string",
 	"Attempt":             "infra retries renumber attempts independently on each side; dispatch order is the slice's",

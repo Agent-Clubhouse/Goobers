@@ -62,8 +62,10 @@ func scheduleInterval(schedules []Schedule, after time.Time) (time.Duration, boo
 // landed": LastEval advances whenever a schedule was due and fired, even if
 // the resulting dispatch was refused.
 //
-// That leaves the second shape, which journalCapacityStarvation covers: a lane
-// that keeps firing on time and is refused admission every single time.
+// That leaves two more shapes. journalCapacityStarvation covers a lane that
+// keeps firing on time and is refused admission every single time;
+// recordScheduleDemandOutcome covers a lane whose due slots keep being sized
+// to zero demand, so LastEval advances while no trigger.fired lands (#5564).
 func (s *Scheduler) journalTriggerStalls(entries []WorkflowEntry, now time.Time) {
 	for _, entry := range entries {
 		if len(entry.Schedules) == 0 {
@@ -213,4 +215,96 @@ func (s *Scheduler) journalCapacityStarvation(entries []WorkflowEntry, now time.
 			),
 		})
 	}
+}
+
+// scheduleQuietWindow is one workflow's record of due schedule slots that
+// produced no scheduled trigger.fired because the demand poll sized them to
+// zero (#5564).
+type scheduleQuietWindow struct {
+	// LastFire is the last scheduled dispatch attempt this process saw; every
+	// such attempt journals trigger.fired.
+	LastFire time.Time
+	// Since opens the quiet episode: LastFire when known, otherwise the first
+	// zero-sized slot. Zero when the lane is not quiet.
+	Since time.Time
+	// Slots counts due slots sized to zero since the episode opened.
+	Slots    int
+	Notified bool
+}
+
+// recordScheduleFire closes any quiet episode: a scheduled trigger fired.
+func (s *Scheduler) recordScheduleFire(identity WorkflowIdentity, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduleQuiet[identity] = scheduleQuietWindow{LastFire: now}
+}
+
+// recordScheduleDemandOutcome tracks a due schedule slot's demand poll and
+// journals one workflow.starved event when the scheduled trigger has not fired
+// for triggerStallMultiple of its own interval because every polled slot in
+// that span was sized to zero demand (#5564).
+//
+// # Why neither existing check sees this
+//
+// journalTriggerStalls watches LastEval, which advances on every due slot
+// whether or not the slot fired. journalCapacityStarvation needs a refused
+// dispatch, and a zero-sized slot never dispatches. A zero-sized slot also
+// journals nothing — no trigger.fired, no tick.skipped — so a lane whose
+// demand counter sizes to zero indefinitely produced no event at all: the
+// quieter failure went undetected while the louder one alarmed in minutes.
+//
+// The lane may well be legitimately idle; the event says why it is quiet so an
+// operator can tell "no eligible work" from "not being evaluated" in one read.
+//
+// Only an observed zero extends the episode, and the check runs only on such a
+// poll. A non-zero poll closes it. A failed, shed or auth-refused poll is not
+// evidence of zero demand and journals its own record (#5605 alarms on a
+// failure streak), so it closes the episode and forgets the last fire: the
+// next zero-sized slot starts a fresh span rather than counting the failures
+// as quiet. A lane that is not polled at all — auth circuit open, permanently
+// refused — never reaches here; #1868 covers it. One event per episode.
+func (s *Scheduler) recordScheduleDemandOutcome(poll demandPoll, snapshot demandSnapshot, now time.Time) {
+	if !poll.schedule {
+		return
+	}
+	entry := poll.candidate.entry
+	identity := entryIdentity(entry)
+	s.mu.Lock()
+	window := s.scheduleQuiet[identity]
+	switch {
+	case !snapshot.observed, snapshot.ready > 0 && poll.candidate.scheduleRemaining == 0:
+		// Unobserved, or demand that could not be retained and so will not
+		// fire: neither is zero demand nor a fire.
+		window = scheduleQuietWindow{}
+	case snapshot.ready > 0:
+		window = scheduleQuietWindow{LastFire: window.LastFire}
+	default:
+		if window.Since.IsZero() {
+			window.Since = window.LastFire
+			if window.Since.IsZero() {
+				window.Since = now
+			}
+		}
+		window.Slots++
+	}
+	interval, ok := scheduleInterval(entry.Schedules, window.Since)
+	quiet := now.Sub(window.Since)
+	report := !window.Since.IsZero() && !window.Notified && ok && quiet >= interval*triggerStallMultiple
+	if report {
+		window.Notified = true
+	}
+	s.scheduleQuiet[identity] = window
+	s.mu.Unlock()
+	if !report {
+		return
+	}
+	s.journalEvent(journal.Event{
+		Type:     journal.EventWorkflowStarved,
+		Workflow: entry.Workflow,
+		Gaggle:   entry.Gaggle,
+		Reason: fmt.Sprintf(
+			"scheduled trigger has not fired for %s, over %dx its %s schedule interval (demand poll found no eligible work on %d consecutive due slot(s))",
+			quiet.Round(time.Second), triggerStallMultiple, interval, window.Slots,
+		),
+	})
 }

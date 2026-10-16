@@ -19,6 +19,12 @@ import (
 )
 
 type wireFixtures struct {
+	ChildWorkflowSource      ChildWorkflowSourceRequest                 `json:"childWorkflowSource"`
+	ChildWorkflowResolve     ChildWorkflowResolveRequest                `json:"childWorkflowResolve"`
+	ChildWorkflowResolution  ChildWorkflowResolutionResponse            `json:"childWorkflowResolution"`
+	ChildWorkflowStatus      ChildWorkflowStatusRequest                 `json:"childWorkflowStatus"`
+	ChildWorkflowValidation  ChildWorkflowValidationResponse            `json:"childWorkflowValidation"`
+	ChildWorkflow            ChildWorkflowResponse                      `json:"childWorkflow"`
 	TriggerRequest           TriggerRequest                             `json:"triggerRequest"`
 	TriggerResponse          TriggerResponse                            `json:"triggerResponse"`
 	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
@@ -36,6 +42,7 @@ type wireFixtures struct {
 	WorkflowDetail           readservice.WorkflowDetail                 `json:"workflowDetail"`
 	Runs                     readservice.RunList                        `json:"runs"`
 	RunDetail                readservice.RunDetail                      `json:"runDetail"`
+	RunChildren              readservice.ChildHistoryPage               `json:"runChildren"`
 	RunEvents                readservice.EventList                      `json:"runEvents"`
 	StageAttempts            readservice.AttemptList                    `json:"stageAttempts"`
 	TelemetryCosts           readservice.TelemetryCostResult            `json:"telemetryCosts"`
@@ -59,6 +66,12 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "childWorkflowSource", scriptType: "ChildWorkflowSourceRequest"},
+	{name: "childWorkflowStatus", scriptType: "ChildWorkflowStatusRequest"},
+	{name: "childWorkflowResolve", scriptType: "ChildWorkflowResolveRequest"},
+	{name: "childWorkflowResolution", scriptType: "ChildWorkflowResolutionResponse"},
+	{name: "childWorkflowValidation", scriptType: "ChildWorkflowValidationResponse"},
+	{name: "childWorkflow", scriptType: "ChildWorkflowResponse"},
 	{name: "triggerRequest", scriptType: "TriggerRequest"},
 	{name: "triggerResponse", scriptType: "TriggerResponse"},
 	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
@@ -76,6 +89,7 @@ var wireFixtureTypes = []struct {
 	{name: "workflowDetail", scriptType: "WorkflowDetail"},
 	{name: "runs", scriptType: "RunList"},
 	{name: "runDetail", scriptType: "RunDetail"},
+	{name: "runChildren", scriptType: "ChildHistoryPage"},
 	{name: "runEvents", scriptType: "EventList"},
 	{name: "stageAttempts", scriptType: "AttemptList"},
 	{name: "telemetryCosts", scriptType: "TelemetryCostResult"},
@@ -170,7 +184,7 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 		JournalHealth: &readservice.JournalHealthStatus{AppendsDropped: 2},
 		StorageHealth: &readservice.StorageHealthStatus{
 			Tier: "admission-stopped", Path: "/instances/fixture", FreeBytes: 1 << 30, TotalBytes: 100 << 30,
-			WarningFloorBytes: 10 << 30, CriticalFloorBytes: 5 << 30, MeasuredAt: startedAt,
+			WarningFloorBytes: 10 << 30, CriticalFloorBytes: 5 << 30, CriticalResumeBytes: 5<<30 + 512<<20, MeasuredAt: startedAt,
 		},
 		TelemetryRetention:      telemetryRetentionWireFixture(startedAt, finishedAt),
 		TelemetryExporterHealth: telemetryExporterHealthWireFixture(startedAt, finishedAt),
@@ -362,7 +376,7 @@ func newWireFixtures() wireFixtures {
 			Version: 7,
 			Digest:  "sha256:workflow",
 		},
-		Backprop: readservice.WorkflowBackprop{Enabled: true, Version: "v1"},
+		Backprop: readservice.WorkflowBackprop{Enabled: true, Mode: "active", Version: "v1"},
 		Warnings: []validate.CodedWarning{warning},
 	}
 	runSummary := readservice.RunSummary{
@@ -400,15 +414,7 @@ func newWireFixtures() wireFixtures {
 			WorkspaceBranchSHA:    "abc123",
 			HistoricalRepassCount: 2,
 		},
-		Operator: readservice.OperatorRunSummary{
-			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
-			CurrentStage:      "review",
-			Liveness:          "terminal",
-			Trajectory:        "terminal",
-			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
-			NextTransition:    "",
-			PotentialBlockers: []string{},
-		},
+		Operator: wireOperatorRunSummary(finishedAt),
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -461,7 +467,7 @@ func newWireFixtures() wireFixtures {
 
 	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
 
-	return wireFixtures{
+	return withChildWorkflowFixtures(wireFixtures{
 		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
 		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
 		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
@@ -587,25 +593,8 @@ func newWireFixtures() wireFixtures {
 			}},
 			NextCursor: "next-run",
 		},
-		RunDetail: readservice.RunDetail{
-			RunSummary:  runSummary,
-			Graph:       &graph,
-			GraphStatus: "pinned",
-			Escalation: &readservice.EscalationCause{
-				Selector:       readservice.EscalationSelector{Kind: "gate", Name: "review"},
-				SelectedBranch: "fail",
-				RepassCount:    1,
-				RetryCount:     2,
-				TerminalReason: "review budget exhausted",
-				CausalEventSeq: 9,
-			},
-			TerminalCauseStatus: "unavailable",
-			Transitions: []readservice.RunTransition{
-				{Branch: 0, Seq: 3, Source: "implement", Target: "review"},
-				{Branch: 0, Seq: 9, Source: "review", Verdict: "fail", Terminal: true, Status: "escalated"},
-			},
-			TransitionsStatus: "projected",
-		},
+		RunDetail:   wireRunDetail(runSummary, graph, timestamp),
+		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}}},
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
 			Events: []readservice.RunEvent{{
@@ -657,8 +646,16 @@ func newWireFixtures() wireFixtures {
 				BranchName:   "security-lens",
 				BranchStatus: journal.BranchSucceeded,
 				Completeness: []journal.BranchOutcome{
-					{Branch: 1, Name: "security-lens", Status: journal.BranchSucceeded, Artifacts: 1},
+					{Branch: 1, Name: "security-lens", Status: journal.BranchSucceeded, Artifacts: 1, Reason: "touches internal/auth"},
 					{Branch: 2, Name: "perf-lens", Status: journal.BranchFailed, Artifacts: 0},
+					{Branch: 3, Name: "unit-a", Status: journal.BranchSucceeded, Artifacts: 1, MapItemIdentity: "unit-a", MapItemDigest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"},
+				},
+				MapItemIdentity: "unit-a",
+				MapItemDigest:   "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102",
+				MapRoster: &readservice.MapRosterSummary{
+					SourceTask: "plan", SourceSlot: "shards", SourceDigest: "sha256:roster", Integrity: apiv1.IntegrityDerived,
+					FailurePolicy: apiv1.BranchContinueOnError, ItemTimeoutSeconds: 1800, MaxConcurrent: 4,
+					Items: []readservice.MapItemSummary{{Branch: 1, Identity: "unit-a", Digest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"}},
 				},
 				Raw: json.RawMessage(`{"futureField":"preserved"}`),
 			}},
@@ -785,7 +782,8 @@ func newWireFixtures() wireFixtures {
 					CostBases:     []string{"vendor_reported"},
 				}},
 				Runs: []readservice.TelemetryCostRunAggregate{{
-					RunID: "run-123", Gaggle: "goobers", Workflow: "implement", Status: "completed", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
+					RunID: "run-123", Gaggle: "goobers", Workflow: "implement", TriggerKind: "item", TriggerRef: "4398",
+					Status: "completed", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
 					InputTokens: &modelInputTokens, OutputTokens: &modelOutputTokens,
 					NativeTotals: []readservice.TelemetryCostAmount{{
 						Unit: "aiCredits", Value: 2.5,
@@ -815,7 +813,7 @@ func newWireFixtures() wireFixtures {
 				},
 				Models: []readservice.TelemetryCostModelAggregate{},
 				Runs: []readservice.TelemetryCostRunAggregate{{
-					RunID: "run-124", Gaggle: "goobers", Workflow: "review", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
+					RunID: "run-124", Gaggle: "goobers", Workflow: "review", TriggerKind: "manual", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
 					NativeTotals: []readservice.TelemetryCostAmount{{
 						Unit: "usd", Value: 0.025,
 					}},
@@ -1047,15 +1045,53 @@ func newWireFixtures() wireFixtures {
 				Message: "requested resource was not found",
 			},
 		},
-	}
+	})
 }
-
 func int64Pointer(value int64) *int64 {
 	return &value
 }
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+// wireOperatorRunSummary is the run-summary fixture's operator projection,
+// including the #5313 reliability projection.
+func wireOperatorRunSummary(reviewedAt time.Time) readservice.OperatorRunSummary {
+	reviewAge := int64(60000)
+	return readservice.OperatorRunSummary{
+		Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", URL: "https://example.test/issues/673", Labels: []string{providers.LabelNeedsHuman}},
+		DisplayTitle:      "Implement #673: Improve operator status",
+		CurrentStage:      "review",
+		Liveness:          "terminal",
+		Trajectory:        "terminal",
+		Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+		NextTransition:    "",
+		PotentialBlockers: []string{"review escalate: reviewer requested a human decision"},
+		Blockers: []readservice.OperatorBlocker{{
+			Code: readservice.BlockerCodeReviewNotPassed, Source: readservice.BlockerSourceReview,
+			Message:    "review escalate: reviewer requested a human decision",
+			ObservedAt: &reviewedAt, AgeMillis: &reviewAge,
+		}},
+		Reliability: &readservice.RunReliability{
+			State:        string(journal.PhaseEscalated),
+			CurrentStage: "review",
+			Failure:      readservice.ReliabilityFailure{Classification: "escalation", EvidenceRule: "terminalCause.classification", Code: "review-escalated"},
+			Budgets: []readservice.ReliabilityBudget{
+				{Kind: "implementation-review", Consumed: intPointer(2), Remaining: intPointer(1), Evidence: "terminalCause"},
+				{Kind: "ci-poll", Evidence: "unknown"},
+			},
+			LatestVerdict:           "escalate",
+			Acceptance:              readservice.ReliabilityAcceptance{State: "complete", Digest: "sha256:acc"},
+			Retained:                readservice.ReliabilityRetainedRefs{Branch: "goobers/implementation/run-122", BranchSHA: "abc123", PullRequest: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"}, PullRequestDraft: "draft", RecoveryRunID: "run-122"},
+			NextAction:              "human intervention required",
+			HumanInterventionReason: "reviewer requested a human decision",
+		},
+	}
 }
 
 func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequest, OperatorMessageSubmitResponse) {
@@ -1084,4 +1120,45 @@ func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequ
 		},
 	}
 	return request, response
+}
+
+func childWorkflowWireFixture() ChildWorkflowResponse {
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	digest := "sha256:" + strings.Repeat("a", 64)
+	return ChildWorkflowResponse{ChildID: "child-1", AcceptanceID: "trigger-1", RunID: "run-1", InvocationKey: "inspect-1", Sequence: 1, State: "queued", SourceDigest: digest, CanonicalDigest: digest, ConfigDigest: digest, PolicyDigest: digest, WorkflowDigest: digest, AcceptedAt: at, UpdatedAt: at}
+}
+
+func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures.ChildWorkflowSource = ChildWorkflowSourceRequest{Source: "kind: Workflow\n"}
+	fixtures.ChildWorkflowStatus = ChildWorkflowStatusRequest{InvocationKey: "inspect-1"}
+	fixtures.ChildWorkflowValidation = ChildWorkflowValidationResponse{Valid: false, Advisory: true, Diagnostics: []ChildWorkflowDiagnostic{{Code: "schema", Field: "dslVersion", Message: "explicit DSL 3.1 is required"}}}
+	fixtures.ChildWorkflow = childWorkflowWireFixture()
+	fixtures.ChildWorkflowResolve = ChildWorkflowResolveRequest{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest}
+	fixtures.ChildWorkflowResolution = ChildWorkflowResolutionResponse{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest, RequestedAt: fixtures.ChildWorkflow.AcceptedAt, RequestDigest: fixtures.ChildWorkflow.SourceDigest, PlanPublished: false}
+	return fixtures
+}
+
+func wireRunDetail(runSummary readservice.RunSummary, graph workflow.Graph, timestamp time.Time) readservice.RunDetail {
+	return readservice.RunDetail{
+		ChildActivity: &readservice.ChildActivity{Status: "recorded", Parked: true,
+			Parent: &readservice.ChildParentLink{RunID: "parent-run", Workflow: "planning", StageOccurrence: "plan/branch0/visit1"},
+			Waits:  []readservice.ChildStageWait{{RunID: "child-run", Stage: "implement", Branch: 0, Action: "wait", Since: timestamp, Sequence: 7}}},
+		RunSummary:  runSummary,
+		Graph:       &graph,
+		GraphStatus: "pinned",
+		Escalation: &readservice.EscalationCause{
+			Selector:       readservice.EscalationSelector{Kind: "gate", Name: "review"},
+			SelectedBranch: "fail",
+			RepassCount:    1,
+			RetryCount:     2,
+			TerminalReason: "review budget exhausted",
+			CausalEventSeq: 9,
+		},
+		TerminalCauseStatus: "unavailable",
+		Transitions: []readservice.RunTransition{
+			{Branch: 0, Seq: 3, Source: "implement", Target: "review"},
+			{Branch: 0, Seq: 9, Source: "review", Verdict: "fail", Terminal: true, Status: "escalated"},
+		},
+		TransitionsStatus: "projected",
+	}
 }

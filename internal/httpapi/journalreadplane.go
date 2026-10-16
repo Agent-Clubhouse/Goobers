@@ -104,11 +104,7 @@ func podRunContained(w http.ResponseWriter, request *http.Request, run, action s
 		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
 		return false
 	}
-	if principal.Subject != podPrincipalSubject(run) {
-		writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only read its own run's "+action)
-		return false
-	}
-	return true
+	return requirePodRun(w, principal, run, "pod principal may only read its own run's "+action)
 }
 
 func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
@@ -323,9 +319,5 @@ func podBodyRunContained(w http.ResponseWriter, request *http.Request, runID, ac
 	if !ok || !IsPodPrincipal(principal) {
 		return true
 	}
-	if principal.Subject != podPrincipalSubject(runID) {
-		writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only ask as its own run: "+action)
-		return false
-	}
-	return true
+	return requirePodRun(w, principal, runID, "pod principal may only ask as its own run: "+action)
 }

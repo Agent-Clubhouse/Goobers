@@ -25,6 +25,7 @@ type verdictView struct {
 	Target        string                        `json:"target"`
 	Rationale     string                        `json:"rationale,omitempty"`
 	Findings      []apiv1.Finding               `json:"findings"`
+	Synthesized   bool                          `json:"synthesized,omitempty"`
 	Cached        bool                          `json:"cached"`
 	DiffDigest    string                        `json:"diffDigest,omitempty"`
 	Artifact      *readservice.ArtifactMetadata `json:"artifact,omitempty"`
@@ -86,9 +87,23 @@ func loadVerdictViews(
 		view.Content = &verdict
 		view.Rationale = verdict.Rationale
 		view.Findings = verdict.Findings
+		view.Synthesized = verdict.Synthesized
 		verdicts = append(verdicts, view)
 	}
 	return verdicts
+}
+
+// MarshalJSON omits findings from a runner-synthesized verdict (#5894): no
+// reviewer ran, so an empty findings list would read as a clean review.
+func (v verdictView) MarshalJSON() ([]byte, error) {
+	type plain verdictView
+	if !v.Synthesized {
+		return json.Marshal(plain(v))
+	}
+	return json.Marshal(struct {
+		plain
+		Findings []apiv1.Finding `json:"findings,omitempty"`
+	}{plain: plain(v)})
 }
 
 func runnerBool(values map[string]any, key string) bool {
@@ -120,6 +135,9 @@ func renderVerdicts(stdout io.Writer, verdicts []verdictView) {
 		}
 		if verdict.ArtifactError != "" {
 			pf(stdout, "    artifact: unavailable (%s)\n", singleLine(verdict.ArtifactError))
+		}
+		if verdict.Synthesized {
+			pln(stdout, "    synthesized: runner-generated; the reviewer did not run, so findings are absent (not a clean review)")
 		}
 		if verdict.Rationale != "" {
 			pf(stdout, "    rationale: %s\n", indentContinuation(truncateHuman(verdict.Rationale, verdictHumanRationaleLimit), "      "))

@@ -1,0 +1,30 @@
+# pr-select declaring github:pr:write, as every merge-review written before
+# v0.6.0-alpha.3 does. v0.6.0-alpha.3 rejected it.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: merge-review
+spec:
+  gaggle: acme
+  triggers:
+    - type: schedule
+      schedule: "*/10 * * * *"
+  start: pr-select
+  tasks:
+    - name: pr-select
+      type: deterministic
+      goal: Select one eligible open PR for holistic review.
+      run:
+        command: ["goobers", "pr-select"]
+      inputs:
+        headPrefix: "goobers/implementation/"
+        resultFile: "selected-pr.json"
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - flag-foundation-coupling
+      expectedOutputs:
+        - number
+        - head
+        - base

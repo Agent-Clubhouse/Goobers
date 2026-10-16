@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -257,6 +258,20 @@ func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *
 	}
 	if result[unresolvedReviewThreadCountOutput] != "2" || result["publishedHeadSha"] != "published-sha" {
 		t.Fatalf("result = %v, want unresolved count 2 at published-sha", result)
+	}
+	// Goobers#7052: a successful run's outputs must not collide with the
+	// automated gate's reserved inputs, or pr-remediation's review-threads-gate
+	// fails the run.
+	for _, key := range []string{gate.InputKeyStatus, gate.InputKeyErrorCode, gate.InputKeyErrorMessage, gate.InputKeyErrorRetryable} {
+		if _, ok := result[key]; ok {
+			t.Errorf("result file emits reserved gate input key %q: %v", key, result)
+		}
+	}
+	if _, err := gate.AutomatedInputs(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: result}); err != nil {
+		t.Errorf("gate.AutomatedInputs rejects the result file: %v", err)
+	}
+	if result["resolutionStatus"] != apiv1.ReviewThreadPublicationComplete {
+		t.Errorf("resolutionStatus = %v, want %q", result["resolutionStatus"], apiv1.ReviewThreadPublicationComplete)
 	}
 	if !threads["PRRT_addressed"].resolved || threads["PRRT_obsolete"].resolved || threads["PRRT_blocked"].resolved {
 		t.Fatalf("thread resolution states = %+v", threads)

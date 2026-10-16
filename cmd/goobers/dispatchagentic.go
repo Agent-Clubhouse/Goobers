@@ -95,7 +95,13 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		return fail("credential_resolve_failed", checkoutErr)
 	}
 	if err := checkoutRepoWorkspace(ctx, workspace, stderr, checkoutCreds, checkoutScheme); err != nil {
-		return fail("workspace_provision_failed", err)
+		// A pull request head that moved under the run surrenders its own
+		// code (#6019) — non-retryable, like every DivergedError (#5948) —
+		// so the engine ends the run superseded rather than failed.
+		code := workspaceProvisionFailureCode(err)
+		out := fail(code, err)
+		out.WorkspaceHeadMoved = code == runner.WorkspaceHeadMovedErrorCode
+		return out
 	}
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace
@@ -117,7 +123,15 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		return fail("context_materialize_failed", err)
 	}
 
-	if kit.IsReview() {
+	// Generated children receive the host runner's captured reviewer diff through
+	// contract-bound context. Their portable checkout deliberately has no host
+	// ancestry and cannot recompute that diff. Ordinary pod reviews still compute it.
+	if kit.IsReview() && isolatedChildWorkspace(ctx) && kit.ReviewRequiresDiff {
+		if err := requireCapturedChildReviewDiff(kit.Envelope, os.Getenv(dispatcher.EnvStage)); err != nil {
+			return fail("reviewer_diff_missing", err)
+		}
+	}
+	if kit.IsReview() && !isolatedChildWorkspace(ctx) {
 		// The reviewer's diff evidence (#301 parity on the pod path; decision
 		// 001 ruling 7): computed HERE, by this binary, from the checkout the
 		// delta was just applied to — never reported by a model — and handed
@@ -137,6 +151,15 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		}
 		if pointer != nil {
 			kit.Envelope.ContextPointers = append(kit.Envelope.ContextPointers, *pointer)
+		} else if kit.ReviewRequiresDiff {
+			verdict, err := missingReviewerDiff(kit.Envelope, os.Getenv(dispatcher.EnvStage))
+			if err != nil {
+				return fail("reviewer_diff_missing", err)
+			}
+			return stageOutcome{
+				Result:  apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "empty-diff verdict surrendered"},
+				Verdict: verdict,
+			}
 		}
 	}
 
@@ -157,13 +180,13 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 			// The harness's own class survives the surrender plane only as
 			// Retryable, so it is committed HERE, where the marker is still
 			// visible: harness.Executor.Review marks a session that ended
-			// without a completion (ErrNoCompletion) as an
-			// invoke.InfrastructureFailure, and the self arm's ReviewGoober
-			// hands exactly that class to classifySeamError, so the gate's
-			// evaluator retry bound covers it there. A pod that dropped the
-			// class would fail the run where the worker would retry. A
-			// verdict the schema refused, or a harness that would not run,
-			// carries no marker and stays the review's own outcome.
+			// without a verdict (no completion, a harness exit, a timeout —
+			// #5543) as an invoke.InfrastructureFailure, and the self arm's
+			// ReviewGoober hands that class to classifySeamError, so the
+			// gate's evaluator retry bound covers it there. A pod that dropped
+			// the class would fail the run where the worker would retry. A
+			// verdict the schema refused, or a harness that refused the
+			// session, carries no marker and stays the review's own outcome.
 			outcome := fail("agentic_review_failed", err)
 			outcome.Result.Error.Retryable = invoke.IsInfrastructureFailure(err)
 			return outcome
@@ -493,6 +516,7 @@ func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
 		GooberName:       w.Kit.Envelope.Goober,
 		Goobers:          w.Kit.Goobers,
 		Instructions:     w.Kit.Instructions,
+		SkillPackages:    w.Kit.SkillPackages,
 		Assets:           w.Kit.AssetBundles(),
 		HarnessInfo:      w.HarnessInfo,
 		AdapterRegistry:  w.AdapterRegistry,
@@ -504,6 +528,7 @@ func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
 		SandboxPosture:   instance.SandboxPosture(w.Kit.SandboxPosture),
 		ArtifactRecorder: podCheckpointRecorder(w),
 		SecretRegistrar:  w.Registry,
+		ChildWorkflows:   parentPodAccess(w.Registry),
 		AgenticAdapter:   newAgenticAdapter,
 	}
 }

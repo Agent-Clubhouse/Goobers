@@ -167,6 +167,7 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		retryCI.Run.Workspace != apiv1.WorkspaceScratch ||
 		retryCI.Inputs["kind"] != "ci-poll" ||
 		retryCI.Inputs["retryFailedChecksMaxAttempts"] != "1" ||
+		retryCI.Inputs["noVerdict"] != "continue" ||
 		retryCI.Next != "remediation-checkpoint" {
 		t.Errorf("retry-failed-ci = %+v, want one bounded failed-check rerun before remediation-checkpoint", retryCI)
 	}

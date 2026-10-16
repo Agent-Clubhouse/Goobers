@@ -1,0 +1,3 @@
+# Make the child-retention prune budget a service field
+
+The trigger sweep bounds its child-retention pass with a 250ms budget so retention never stalls dispatch. That bound was a literal inside `Drain`, so `TestDurableTriggerDrainPrunesChildCustodyWithoutScheduler` could not separate the retention contract from runner speed and failed under `-race` on CI. The budget becomes a field on `durableTriggerService`; a zero value falls back to the named 250ms production default. The growth is the field, the constant, their doc comments and the zero-value fallback, all beside the sweep that uses them.

@@ -90,9 +90,11 @@ func TestCostCommandSupportsIssueAndSummaryHumanOutput(t *testing.T) {
 						NativeTotals: []readservice.TelemetryCostAmount{{Unit: "aiCredits", Value: 2.5}},
 					}},
 					Runs: []readservice.TelemetryCostRunAggregate{{
-						RunID: "run-1", StartedAt: now.Add(-time.Hour),
-						UsageAttempts: 2, MeasuredAttempts: 2,
+						RunID: "run-1", Gaggle: "core", Workflow: "implement", TriggerKind: "item", TriggerRef: "90",
+						StartedAt: now.Add(-time.Hour), UsageAttempts: 2, MeasuredAttempts: 2,
 						NativeTotals: []readservice.TelemetryCostAmount{{Unit: "aiCredits", Value: 2.5}},
+					}, {
+						RunID: "run-legacy", StartedAt: now.Add(-2 * time.Hour),
 					}},
 				}},
 				Issues: []readservice.TelemetryCostAggregate{},
@@ -114,7 +116,8 @@ func TestCostCommandSupportsIssueAndSummaryHumanOutput(t *testing.T) {
 				"Normalized estimate: $0.0250 estimated",
 				"Coverage: lower bound; 1/2 runs, 2/3 attempts measured",
 				"Model gpt-5.6-sol: 2.5000 AI credits; 2/2 attempts measured",
-				"Run run-1 (2026-09-07T00:02:03Z): 2.5000 AI credits; 2/2 attempts measured",
+				"Run run-1 [core/implement; trigger item 90] (2026-09-07T00:02:03Z): 2.5000 AI credits; 2/2 attempts measured",
+				"Run run-legacy [unclassified] (2026-09-06T23:02:03Z): unmeasured; 0/0 attempts measured",
 			}
 			for _, fragment := range wantFragments {
 				if !strings.Contains(stdout.String(), fragment) {

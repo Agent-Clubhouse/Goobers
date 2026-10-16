@@ -122,10 +122,13 @@ same abstraction, whose shape is unchanged.
     that take precedence for one work item type. Names are trimmed of surrounding
     whitespace, and `byType` keys that differ only in case are merged. The
     setting governs only predecessor blocking; Goobers' own close always drives
-    an item to the Completed category. A stage that cannot read its gaggle's
-    instance config (a brokered or Goobernetes stage pod) warns on stderr that
-    `doneStates` and the backlog project are not applied there and uses the
-    defaults. A predecessor whose state cannot
+    an item to the Completed category. A stage pod, which has no instance
+    config, receives its gaggle's backlog settings (the backlog project,
+    `labels` and `doneStates`) from the dispatcher as the non-secret
+    `GOOBERS_GAGGLE_BACKLOG` and applies them as a local stage applies the
+    config (#5957). An Azure DevOps stage of a named gaggle whose settings
+    cannot be resolved (no stamp and no readable config, or an empty or
+    malformed stamp) fails closed instead of using the defaults. A predecessor whose state cannot
     be read still blocks. GitHub and Gitea accept `doneStates` and ignore it
     (`ADO-N32`).
   - *ADO partial label add:* ADO adds one PR label per request. When some labels

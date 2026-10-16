@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 // Stage-contract analysis (issue #900). These checks target a specific,
@@ -290,6 +291,28 @@ func isShellStage(task apiv1.Task) bool {
 	}
 	kind := strings.TrimSpace(task.Inputs["kind"])
 	return kind == "" || kind == "shell"
+}
+
+// EnforcesExpectedOutputs reports whether task's expectedOutputs is a runtime
+// contract under dslVersion (#5175). DSL 3.0 and earlier keep the advisory
+// VER003 behaviour. From DSL 3.1 on, every stage that declares expectedOutputs
+// (shell, built-in kind, or agentic) fails when it reports success without one
+// of its declared keys.
+func EnforcesExpectedOutputs(dslVersion string, task apiv1.Task) bool {
+	if len(task.ExpectedOutputs) == 0 {
+		return false
+	}
+	order, ok := supportmatrix.CompareDSLVersions(dslVersion, supportmatrix.V31DSLVersion)
+	return ok && order >= 0
+}
+
+// IsShellStage reports whether task statically runs through the shell
+// executor, whose outputs come only from its declared result file. A stage
+// whose kind is bound at runtime through inputsFrom.kind is not statically a
+// shell stage.
+func IsShellStage(task apiv1.Task) bool {
+	_, dynamicKind := task.InputsFrom["kind"]
+	return !dynamicKind && isShellStage(task)
 }
 
 // splitQualifiedRef splits "<stage>.<key>" on the FIRST dot. An output key may

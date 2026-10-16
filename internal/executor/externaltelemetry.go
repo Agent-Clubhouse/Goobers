@@ -13,13 +13,15 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 const (
 	// KindExternalTelemetry selects the external telemetry built-in stage.
-	KindExternalTelemetry = "external-telemetry"
+	KindExternalTelemetry = boundedwait.KindExternalTelemetry
 
 	// InputTelemetryConnector and the remaining InputTelemetry* values are the
 	// provider-neutral workflow input keys consumed by this stage.
@@ -31,7 +33,7 @@ const (
 	// InputTelemetryParameters contains a JSON parameter object.
 	InputTelemetryParameters = "parameters"
 	// InputTelemetryWindow contains a relative duration.
-	InputTelemetryWindow = "window"
+	InputTelemetryWindow = boundedwait.InputTelemetryWindow
 	// InputTelemetryWindowStart contains an RFC 3339 start.
 	InputTelemetryWindowStart = "windowStart"
 	// InputTelemetryWindowEnd contains an RFC 3339 end.
@@ -41,13 +43,13 @@ const (
 	// InputTelemetryShape selects point, table, or time-series.
 	InputTelemetryShape = "shape"
 	// InputTelemetryFreshness bounds source watermark age.
-	InputTelemetryFreshness = "freshness"
+	InputTelemetryFreshness = boundedwait.InputTelemetryFreshness
 	// InputTelemetryTimeout tightens the configured timeout.
-	InputTelemetryTimeout = "queryTimeout"
+	InputTelemetryTimeout = boundedwait.InputTelemetryQueryTimeout
 	// InputTelemetryMaxAttempts tightens configured attempts.
 	InputTelemetryMaxAttempts = "queryMaxAttempts"
 	// InputTelemetryRetryBackoff declares a fixed retry delay.
-	InputTelemetryRetryBackoff = "queryRetryBackoff"
+	InputTelemetryRetryBackoff = boundedwait.InputTelemetryQueryRetryBackoff
 	// InputTelemetryMaxRows tightens the configured row limit.
 	InputTelemetryMaxRows = "maxRows"
 	// InputTelemetryMaxBytes tightens the configured byte limit.
@@ -89,6 +91,11 @@ func NewTelemetryQueryExecutor(host *externaltelemetry.Host, recorder ArtifactRe
 
 // Run executes one external telemetry query.
 func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	// All local file access and provider work joins before this synchronous
+	// adapter returns; no subprocess receives the inherited repository.
+	if done := invoke.RegisterWorkspaceWriter(ctx); done != nil {
+		defer done(nil)
+	}
 	required := string(capability.TelemetryRead)
 	if !slices.Contains(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindExternalTelemetry, required)

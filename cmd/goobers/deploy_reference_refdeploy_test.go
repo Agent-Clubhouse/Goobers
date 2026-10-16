@@ -58,8 +58,8 @@ func TestDispatcherRBACMatchesKubePodAPIVerbSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The exact four client-go pod calls kubepods.go makes today, and
-	// nothing else — a fifth (e.g. Watch, GetLogs) appearing in the source
+	// The exact five client-go pod calls kubepods.go makes today, and
+	// nothing else — a sixth (e.g. Watch, GetLogs) appearing in the source
 	// without a matching verb here should fail this test, not silently ship
 	// under-permissioned RBAC.
 	podCalls := map[string]*regexp.Regexp{
@@ -67,14 +67,15 @@ func TestDispatcherRBACMatchesKubePodAPIVerbSet(t *testing.T) {
 		"get":    regexp.MustCompile(`Pods\([^)]*\)\.Get\(`),
 		"delete": regexp.MustCompile(`Pods\([^)]*\)\.Delete\(`),
 		"list":   regexp.MustCompile(`Pods\([^)]*\)\.List\(`),
+		"patch":  regexp.MustCompile(`Pods\([^)]*\)\.Patch\(`),
 	}
 	for verb, pattern := range podCalls {
 		if !pattern.Match(source) {
 			t.Errorf("kubepods.go no longer calls Pods().%s — dispatcher-rbac.yaml grants %q but nothing uses it; narrow the Role", verb, verb)
 		}
 	}
-	// No OTHER pod verbs (watch, patch, update, deletecollection) appear.
-	otherPodCalls := regexp.MustCompile(`Pods\([^)]*\)\.(Watch|Patch|Update|DeleteCollection|Apply)\(`)
+	// No OTHER pod verbs (watch, update, deletecollection) appear.
+	otherPodCalls := regexp.MustCompile(`Pods\([^)]*\)\.(Watch|Update|DeleteCollection|Apply)\(`)
 	if otherPodCalls.Match(source) {
 		t.Fatal("kubepods.go now calls a pod verb this RBAC does not grant — update dispatcher-rbac.yaml's verb list")
 	}
@@ -115,7 +116,7 @@ func TestDispatcherRBACMatchesKubePodAPIVerbSet(t *testing.T) {
 	if podRule == nil {
 		t.Fatal("dispatcher-rbac.yaml Role has no core/pods rule")
 	}
-	wantPodVerbs := []string{"create", "get", "delete", "list"}
+	wantPodVerbs := []string{"create", "get", "delete", "list", "patch"}
 	for _, verb := range wantPodVerbs {
 		if !slices.Contains(podRule.Verbs, verb) {
 			t.Errorf("pods rule verbs = %v, missing %q (kubepods.go calls it)", podRule.Verbs, verb)

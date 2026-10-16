@@ -64,7 +64,7 @@ func Open(dir string, maxEntries, maxBytes int) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, maxEntries: maxEntries, maxBytes: maxBytes}
-	if err := sqliteschema.Migrate(context.Background(), db, "apireadstore", []string{schema}); err != nil {
+	if err := sqliteschema.Migrate(context.Background(), db, "apireadstore", []string{schema, snapshotGenerationSchema}); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -171,11 +171,4 @@ func (s *Store) evict(tx *sql.Tx) error {
 			return err
 		}
 	}
-}
-
-// InvalidateSnapshot drops only the named evaluation's aliases. Body reclamation
-// happens only when its last reference disappears, using indexed lookups.
-func (s *Store) InvalidateSnapshot(snapshot string) error {
-	_, err := s.db.Exec(`DELETE FROM entries WHERE snapshot=?`, snapshot)
-	return err
 }

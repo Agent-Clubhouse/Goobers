@@ -25,7 +25,7 @@ import (
 //     database as "no evidence yet" rather than a failure.
 //
 // Only DERIVED, low-sensitivity projections travel this way: this evidence,
-// and the four defect-nomination aggregates `telemetry-query` reads since
+// and the fixed defect-nomination aggregates `telemetry-query` reads since
 // Goobers#4001 (telemetrydefectplane.go). EXTERNAL telemetry connectors
 // (executor.KindExternalTelemetry) reach a third-party vendor with the
 // instance's own credential rather than this rollup, have no plane, and stay

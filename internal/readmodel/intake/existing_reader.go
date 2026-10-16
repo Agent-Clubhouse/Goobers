@@ -22,7 +22,7 @@ type Fence struct {
 // OpenExistingReader opens intake.db in SQLite read-only mode and verifies its
 // schema by executing the bounded count query used by status cutover.
 func OpenExistingReader(ctx context.Context, path string) (*ExistingReader, error) {
-	db, err := sql.Open("sqlite", fileURI(path)+"?_pragma=busy_timeout(5000)&mode=ro")
+	db, err := sql.Open("sqlite", intakeURI(path)+"?_pragma=busy_timeout(5000)&mode=ro")
 	if err != nil {
 		return nil, err
 	}

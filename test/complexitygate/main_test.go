@@ -308,11 +308,21 @@ func TestEvaluateRatchetBudget(t *testing.T) {
 func TestEvaluateBodyLengthHasNoAllowExemption(t *testing.T) {
 	t.Parallel()
 	limits := thresholds{hardCap: 40, ratchet: 25, report: 15, body: 200}
-	entryKey := key("cmd/goobers/up.go", "runUpContextWithForce")
+	// Select a still-retained baseline: successful refactors remove entries.
+	var entryKey string
+	for candidate := range bodyLengthSeedCeilings {
+		if entryKey == "" || candidate < entryKey {
+			entryKey = candidate
+		}
+	}
+	if entryKey == "" {
+		t.Fatal("growth fixture requires a retained body-length baseline")
+	}
+	path, symbol, _ := strings.Cut(entryKey, "\t")
 	base := testBaseline(t, 0, map[string]int{})
 	base.BodyLengthCap = 200
 	functions := []function{{
-		Path: "cmd/goobers/up.go", Symbol: "runUpContextWithForce", Line: 320,
+		Path: path, Symbol: symbol, Line: 320,
 		BodyLines: 200, Allowed: true,
 	}}
 

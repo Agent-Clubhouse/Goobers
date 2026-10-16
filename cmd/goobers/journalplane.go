@@ -92,10 +92,11 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 			opts = append(opts, livejournal.WithArtifactSource(bounded))
 		}
 	}
-	if observer := telemetryingest.RunIntakeObserverContext(watermarks, instanceLog); observer != nil {
+	if observer := telemetryingest.RunObserversContext(watermarks, l, instanceLog); observer != nil {
 		// The same read-model intake the local runner notifies per append —
 		// which is what makes a live engine run's stage transitions reach SSE
-		// and the portal through the existing machinery, mid-run.
+		// and the portal through the existing machinery, mid-run. It also
+		// queues Backprop stage checkpoints for stage-granular workflows.
 		opts = append(opts, livejournal.WithContextObserver(observer))
 	}
 	// #3876 (decision 005 D1): an engine-driven stage's rate-limited failure

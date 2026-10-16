@@ -114,9 +114,9 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 		t.Fatal(err)
 	}
 	span.End()
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	_ = client.Flush(ctx)
+	flushCtx, cancelFlush := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancelFlush()
+	_ = client.Flush(flushCtx)
 	waitNamedTelemetry(t, func() bool {
 		s := health.Snapshot()
 		return s.Destinations["bad"].Replay.ActiveFailure && s.Destinations["good"].Replay.LastSuccess != nil
@@ -125,7 +125,7 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 	if before.PendingRecords != 1 || before.FailureClass == "" {
 		t.Fatalf("lost per-destination replay health: %+v", before)
 	}
-	_ = client.Shutdown(ctx)
+	shutdownNamedTelemetry(t, client)
 	cfg.Telemetry.Exporters[0], cfg.Telemetry.Exporters[1] = cfg.Telemetry.Exporters[1], cfg.Telemetry.Exporters[0]
 	available.Store(true)
 	client, health = start()
@@ -133,7 +133,21 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 		s := health.Snapshot().Destinations["bad"].Replay
 		return !s.ActiveFailure && s.PendingRecords == 0 && s.LastSuccess != nil
 	})
+	shutdownNamedTelemetry(t, client)
+}
+
+// shutdownNamedTelemetry gives each Shutdown its own live deadline. Bounded
+// shutdown returns at an expired deadline and releases the replay index in the
+// background, so a budget consumed by earlier waits leaves .replay-index.db
+// open when TempDir cleanup runs on Windows (#6634).
+func shutdownNamedTelemetry(t *testing.T, client *telemetry.Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	_ = client.Shutdown(ctx)
+	if ctx.Err() != nil {
+		t.Fatalf("telemetry shutdown exceeded its deadline; replay cleanup may still be running: %v", ctx.Err())
+	}
 }
 
 func waitNamedTelemetry(t *testing.T, ready func() bool) {

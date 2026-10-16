@@ -3,6 +3,7 @@ package netpolrender
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"sort"
 	"strings"
@@ -68,6 +69,9 @@ func ParseBaseline(raw []byte) (Baseline, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&b); err != nil {
 		return Baseline{}, fmt.Errorf("parse coverage baseline: %w", err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return Baseline{}, fmt.Errorf("parse coverage baseline: trailing data after JSON document")
 	}
 	if b.Unit != BaselineUnit {
 		return Baseline{}, fmt.Errorf("coverage baseline declares unit %q; the only accepted unit is %q — "+

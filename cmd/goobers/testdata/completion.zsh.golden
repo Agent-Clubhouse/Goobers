@@ -24,7 +24,7 @@ _goobers_completion()
             'dashboard:serve and open the local operations portal'
             'run:trigger a run manually; --force bypasses cadence budgets'
             'signal:fire an external signal to subscribed workflows'
-            'workflow:inspect workflows'
+            'workflow:inspect workflows and validate child proposals'
             'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'
             'stats:show the instance lifetime summary card'
             'cost:show bounded cost attribution by pull request or issue'
@@ -183,9 +183,13 @@ _goobers_completion()
         rerun-stage)
             flags+=(--addendum --actor --api)
             ;;
+        signal)
+            flags+=(--request-id)
+            ;;
         workflow)
             case "${words[3]:-}" in
                 show) flags+=(--dot) ;;
+                validate-child) flags+=(--gaggle --parent --stage --backend --json) ;;
             esac
             ;;
         runs)
@@ -261,6 +265,9 @@ _goobers_completion()
                 errors) flags+=(--json --workflow --gaggle --class --limit --since --until --rebuild) ;;
                 export) flags+=(--since --until) ;;
                 mark-fix) flags+=(--finding --applied-at) ;;
+                label) flags+=(--run --outcome --reason --by --labeled-at) ;;
+                claim) flags+=(--kind --stage --attempt --agent --artifact --statement --evidence --confidence) ;;
+                shadow) flags+=(--json --gaggle --workflow --since --until) ;;
                 prune) flags+=(--dry-run) ;;
                 prune-orphans) flags+=(--delete --min-age) ;;
                 compact) flags+=(--dry-run) ;;
@@ -269,6 +276,11 @@ _goobers_completion()
         journal)
             case "${words[3]:-}" in
                 redact) flags+=(--run --path --reason --secret-file) ;;
+            esac
+            ;;
+        pr)
+            case "${words[3]:-}" in
+                retry) flags+=(--pr --route --reason --gaggle --actor --dry-run --json) ;;
             esac
             ;;
         backlog-health)
@@ -471,7 +483,7 @@ _goobers_completion()
             ;;
         workflow)
             if (( CURRENT == 3 )); then
-                candidates=(show)
+                candidates=(show validate-child)
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
@@ -550,7 +562,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( CURRENT == 3 )); then
-                candidates=(configure test merges stats errors export mark-fix prune prune-orphans compact)
+                candidates=(configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact)
                 _describe -V 'command' candidates
                 return
             fi
@@ -558,6 +570,13 @@ _goobers_completion()
         journal)
             if (( CURRENT == 3 )); then
                 candidates=(redact)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        pr)
+            if (( CURRENT == 3 )); then
+                candidates=(retry)
                 _describe -V 'command' candidates
                 return
             fi

@@ -19,9 +19,9 @@ function nodeStateLabel(state: RunNodeState): string {
 }
 
 // The full declared-branch state vocabulary (#1567): "running" while a
-// branch.started has fired with no branch.finished yet, then one of the five
-// BranchStatus terminal outcomes. Each gets its own dash cadence on the
-// fan-out edge — see workflow-graph-edge-branch-* in styles.css — so a
+// branch.started has fired with no branch.finished yet, then one of the six
+// BranchStatus terminal outcomes ("skipped": a selective parallel never
+// started it). Each gets its own dash cadence on the fan-out edge — see workflow-graph-edge-branch-* in styles.css — so a
 // cancelled branch reads differently from a failed one without relying on
 // color, matching #1430/#1431's established non-color-encoding convention.
 const BRANCH_STATES: { state: BranchState; className?: string }[] = [
@@ -31,6 +31,7 @@ const BRANCH_STATES: { state: BranchState; className?: string }[] = [
   { state: "timed-out", className: "workflow-graph-edge-branch-timed-out" },
   { state: "cancelled", className: "workflow-graph-edge-branch-cancelled" },
   { state: "no-output", className: "workflow-graph-edge-branch-no-output" },
+  { state: "skipped", className: "workflow-graph-edge-branch-skipped" },
 ];
 
 // WorkflowGraphLegend is #1431's accessible key for the run graph's visual
@@ -117,6 +118,11 @@ export function WorkflowGraphLegend() {
             A parallel node fans out into its declared branches; each fan-out edge is
             labelled with the branch name, and once the branch reaches a terminal state the
             label names it too — the word itself is the encoding, never color alone.
+          </p>
+          <p>
+            A map node (dashed border) runs one task per item of a frozen roster. Its single
+            fan-out edge counts the items by state, and selecting the map lists every item
+            with its identity and digest.
           </p>
           <ul aria-label="Branch state key" className="graph-legend-list">
             {BRANCH_STATES.map(({ state, className }) => (

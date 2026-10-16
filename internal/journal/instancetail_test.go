@@ -244,7 +244,7 @@ func TestInstanceLogAppendReadsBoundedBytes(t *testing.T) {
 	// The bound: one append reads at most a small multiple of the chunk size,
 	// regardless of journal size. Asserted against the file rather than a
 	// constant so it stays meaningful as the fixture grows.
-	if _, _, bytesRead, err := log.allocateSeqFromTail(filepath.Join(dir, fileEvents)); err != nil {
+	if _, _, bytesRead, err := sequenceFromTailOrFull(filepath.Join(dir, fileEvents)); err != nil {
 		t.Fatalf("allocate: %v", err)
 	} else if int64(bytesRead) > 4*tailChunkSize {
 		t.Errorf("an append read %d bytes of a %d-byte journal; the bound is %d",

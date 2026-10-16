@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,10 @@ const (
 	ADOFixtureTag = "goobers-fixture"
 	// adoFixtureListLimit bounds the filtered listing.
 	adoFixtureListLimit = 100
+	// normalizedADOWorkItem replaces the live fixture's work-item number in
+	// every recording, so a re-provisioned fixture (a new number) does not
+	// read as drift against the checked-in baseline.
+	normalizedADOWorkItem = "7"
 )
 
 // ADORefreshConfig selects the live Azure DevOps fixture source.
@@ -48,6 +53,7 @@ type adoRefreshBackend struct {
 	baseURL      string
 	organization string
 	client       HTTPClient
+	identity     adoIdentity
 }
 
 func (b *adoRefreshBackend) validate() error {
@@ -73,6 +79,7 @@ func (b *adoRefreshBackend) validate() error {
 	b.baseURL = baseURL
 	b.organization = organization
 	b.client = client
+	b.identity = newADOIdentity(organization, cfg.Project, cfg.WorkItem)
 	return nil
 }
 
@@ -85,7 +92,7 @@ func (b *adoRefreshBackend) repositoryIdentity() Repository {
 }
 
 func (b *adoRefreshBackend) targetIdentity() (string, string) {
-	return b.cfg.WorkItem, ""
+	return normalizedADOWorkItem, ""
 }
 
 func (b *adoRefreshBackend) requestSet(client HTTPClient) []refreshRequest {
@@ -108,7 +115,7 @@ func (b *adoRefreshBackend) requestSet(client HTTPClient) []refreshRequest {
 					}
 				}
 				return fmt.Errorf(
-					"list open ADO work items tagged %s did not return seeded work item %s (%d listed): the item must be open and tagged %s; re-run `go run ./test/adolive provision`",
+					"list open ADO work items tagged %s did not return seeded work item %s (%d listed): the item must be open and tagged %s; omit -work-item and pass -provision-fixture to resolve or recreate the fixture",
 					ADOFixtureTag, b.cfg.WorkItem, len(items), ADOFixtureTag)
 			},
 		},
@@ -131,11 +138,11 @@ func (b *adoRefreshBackend) httpClient() HTTPClient {
 func (b *adoRefreshBackend) decorateRequest(*http.Request) {}
 
 func (b *adoRefreshBackend) normalizePath(path string) string {
-	return replaceADOIdentity(path, b.organization, b.cfg.Project)
+	return b.identity.replace(path)
 }
 
 func (b *adoRefreshBackend) normalizeBody(body []byte) (json.RawMessage, error) {
-	return normalizeADOJSON(body, b.organization, b.cfg.Project)
+	return b.identity.normalizeJSON(body)
 }
 
 func (b *adoRefreshBackend) normalizeResponseHeaders(headers http.Header) map[string]string {
@@ -241,14 +248,35 @@ func parseADOOrganizationURL(raw string) (string, string, error) {
 	return strings.TrimRight(u.String(), "/"), organization, nil
 }
 
-func normalizeADOJSON(raw []byte, organization, project string) (json.RawMessage, error) {
+// adoIdentity replaces the live organization, project and fixture work-item
+// number with their normalized placeholders.
+type adoIdentity struct {
+	organization string
+	project      string
+	workItem     string
+	// workItemRef matches the fixture's number in work-item paths and URLs
+	// (.../workItems/N, .../_workitems/edit/N) but not as a prefix of a longer
+	// number.
+	workItemRef *regexp.Regexp
+}
+
+func newADOIdentity(organization, project, workItem string) adoIdentity {
+	return adoIdentity{
+		organization: organization,
+		project:      project,
+		workItem:     workItem,
+		workItemRef:  regexp.MustCompile(`(?i)(/workitems/|/_workitems/edit/)` + regexp.QuoteMeta(workItem) + `\b`),
+	}
+}
+
+func (a adoIdentity) normalizeJSON(raw []byte) (json.RawMessage, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
 	}
-	value = normalizeADOValue("", value, organization, project)
+	value = a.normalizeValue("", value)
 	normalized, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
@@ -256,20 +284,20 @@ func normalizeADOJSON(raw []byte, organization, project string) (json.RawMessage
 	return normalized, nil
 }
 
-func normalizeADOValue(key string, value any, organization, project string) any {
+func (a adoIdentity) normalizeValue(key string, value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		for childKey, childValue := range typed {
-			typed[childKey] = normalizeADOValue(childKey, childValue, organization, project)
+			typed[childKey] = a.normalizeValue(childKey, childValue)
 		}
 		return typed
 	case []any:
 		for i, childValue := range typed {
-			typed[i] = normalizeADOValue(key, childValue, organization, project)
+			typed[i] = a.normalizeValue(key, childValue)
 		}
 		return typed
 	case string:
-		typed = replaceADOIdentity(typed, organization, project)
+		typed = a.replace(typed)
 		lowerKey := strings.ToLower(key)
 		if lowerKey == "id" || strings.HasSuffix(lowerKey, ".id") ||
 			lowerKey == "descriptor" || strings.HasSuffix(lowerKey, "descriptor") {
@@ -283,8 +311,12 @@ func normalizeADOValue(key string, value any, organization, project string) any 
 		}
 		return typed
 	case json.Number:
-		if strings.EqualFold(key, "rev") || strings.HasSuffix(strings.ToLower(key), ".rev") {
+		lowerKey := strings.ToLower(key)
+		if lowerKey == "rev" || strings.HasSuffix(lowerKey, ".rev") {
 			return json.Number("0")
+		}
+		if (lowerKey == "id" || strings.HasSuffix(lowerKey, ".id")) && typed.String() == a.workItem {
+			return json.Number(normalizedADOWorkItem)
 		}
 		return typed
 	default:
@@ -296,7 +328,8 @@ func isADOTimestampField(key string) bool {
 	return key == "timestamp" || key == "asof" || strings.HasSuffix(key, "date") || strings.HasSuffix(key, "_at")
 }
 
-func replaceADOIdentity(value, organization, project string) string {
+func (a adoIdentity) replace(value string) string {
+	organization, project := a.organization, a.project
 	replacements := [][2]string{
 		{"/" + url.PathEscape(organization) + "/" + url.PathEscape(project), "/" + normalizedADOOrganization + "/" + normalizedADOProject},
 		{"/" + organization + "/" + project, "/" + normalizedADOOrganization + "/" + normalizedADOProject},
@@ -305,6 +338,9 @@ func replaceADOIdentity(value, organization, project string) string {
 	}
 	for _, replacement := range replacements {
 		value = strings.ReplaceAll(value, replacement[0], replacement[1])
+	}
+	if a.workItemRef != nil {
+		value = a.workItemRef.ReplaceAllString(value, "${1}"+normalizedADOWorkItem)
 	}
 	if value == organization {
 		return normalizedADOOrganization

@@ -1014,8 +1014,8 @@ func TestCIPollExecutor_RetryExhaustsAttemptsThenReportsFailure(t *testing.T) {
 
 // TestCIPollExecutor_RetryRerunErrorFallsThroughToOrdinaryFailure is
 // mega-puffin's case 1 from the #4750 design clarification: the rerun call
-// erroring (a transport failure, or the actions:write permission gap tracked
-// in #4751) must never become a new failure mode. ci-poll falls straight
+// erroring (a transport failure, or a credential missing Actions write,
+// #4751) must never become a new failure mode. ci-poll falls straight
 // through to the exact terminal "failing" outcome a workflow that never
 // declared retryFailedChecksMaxAttempts would reach — Run itself returns no
 // error — with the rerun failure recorded as evidence, not swallowed.

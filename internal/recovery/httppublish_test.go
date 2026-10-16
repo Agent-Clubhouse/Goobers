@@ -11,7 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/apicontract"
 )
 
 func TestHTTPArchivePublisherRequiresCompleteCustodyAcknowledgement(t *testing.T) {
@@ -112,4 +116,78 @@ func publicationArchiveFixture(t *testing.T) (Record, string) {
 		t.Fatal(err)
 	}
 	return record, path
+}
+
+func TestHTTPArchivePublisherClientTimeoutOutlastsServerBudget(t *testing.T) {
+	// The server cuts a request at budget + 5s write-deadline margin
+	// (httpapi.writeDeadlineMargin). The client must not give up before that.
+	const serverWriteDeadlineMargin = 5 * time.Second
+	if PublishTimeout <= apicontract.RecoveryPublishBudget+serverWriteDeadlineMargin {
+		t.Fatalf("PublishTimeout %s must exceed route budget %s plus %s margin",
+			PublishTimeout, apicontract.RecoveryPublishBudget, serverWriteDeadlineMargin)
+	}
+	// 90s was shorter than the 316s budget a maximum archive needs.
+	if PublishTimeout < apicontract.RecoveryPublishBudget {
+		t.Fatal("client timeout shorter than the route budget")
+	}
+}
+
+func TestHTTPArchivePublisherDiagnosesServerClosedStream(t *testing.T) {
+	record, path := publicationArchiveFixture(t)
+	client := &http.Client{Transport: publicationRoundTripper(func(r *http.Request) (*http.Response, error) {
+		_, _ = io.CopyN(io.Discard, r.Body, 8)
+		return nil, fmt.Errorf("Post \"https://claims-secret@example.invalid/private-archive\": %w", io.ErrUnexpectedEOF)
+	})}
+	publisher := HTTPArchivePublisher{BaseURL: "https://example.invalid", Token: "claims-secret", RunID: record.RunID, Client: client}
+	err := publisher.PublishArchive(context.Background(), "7", record, path)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	msg := err.Error()
+	for _, leak := range []string{"claims-secret", "private-archive", "example.invalid", path} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("error leaks %q: %v", leak, err)
+		}
+	}
+	for _, want := range []string{"server closed the stream", " after ", "bytes sent"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error %q lacks %q", msg, want)
+		}
+	}
+	if !strings.Contains(msg, fmt.Sprintf("of %d bytes sent", 4+int64(len(mustEncode(t, record)))+record.ArchiveBytes)) {
+		t.Fatalf("error %q lacks total byte count", msg)
+	}
+}
+
+func TestClassifyTransportDistinguishesCauses(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{io.EOF, "server closed the stream"},
+		{syscall.ECONNRESET, "server closed the stream"},
+		{context.DeadlineExceeded, "client timeout"},
+		{context.Canceled, "canceled"},
+		{fmt.Errorf("boom"), "transport error"},
+	} {
+		if got := classifyTransport(tc.err); got != tc.want {
+			t.Errorf("classifyTransport(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+func mustEncode(t *testing.T, record Record) []byte {
+	t.Helper()
+	metadata, err := Encode(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return metadata
+}
+
+func TestHTTPArchiveDownloadTimeoutOutlastsServerBudget(t *testing.T) {
+	const serverWriteDeadlineMargin = 5 * time.Second
+	if DownloadTimeout <= apicontract.RecoveryDownloadBudget+serverWriteDeadlineMargin {
+		t.Fatalf("DownloadTimeout %s must exceed route budget %s plus margin", DownloadTimeout, apicontract.RecoveryDownloadBudget)
+	}
 }

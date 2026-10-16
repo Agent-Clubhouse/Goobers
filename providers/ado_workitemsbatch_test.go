@@ -139,6 +139,14 @@ func (f *adoBatchTestServer) batchSizes() []int {
 	return sizes
 }
 
+// itemGetCount reads the per-item GET count under the lock the handler
+// increments it under.
+func (f *adoBatchTestServer) itemGetCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.itemGets
+}
+
 // TestADOListWorkItemsHydratesThroughWorkItemsBatch pins ADO-N33: 250 WIQL
 // hits hydrate in two workitemsbatch calls (200 + 50) with no per-item GET,
 // and the result keeps WIQL order even though the batch answers out of order.
@@ -155,8 +163,8 @@ func TestADOListWorkItemsHydratesThroughWorkItemsBatch(t *testing.T) {
 	if got := fake.batchSizes(); len(got) != 2 || got[0] != 200 || got[1] != 50 {
 		t.Fatalf("batch sizes = %v, want [200 50]", got)
 	}
-	if fake.itemGets != 0 {
-		t.Fatalf("per-item GETs = %d, want 0", fake.itemGets)
+	if gets := fake.itemGetCount(); gets != 0 {
+		t.Fatalf("per-item GETs = %d, want 0", gets)
 	}
 	if len(items) != 250 {
 		t.Fatalf("len(items) = %d, want 250", len(items))

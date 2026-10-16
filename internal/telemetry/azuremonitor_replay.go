@@ -175,6 +175,7 @@ type azureReplaySpool struct {
 	healthDone chan struct{}
 	wake       chan struct{}
 	done       chan struct{}
+	released   chan struct{} // closed when close, or its deadline fallback, has released the index reference
 	cancel     context.CancelFunc
 	closed     atomic.Bool
 
@@ -198,7 +199,7 @@ func newAzureReplaySpool(cfg azureReplayConfig, send func(context.Context, []byt
 		return nil, errors.New("azure monitor replay requires positive age and byte bounds")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &azureReplaySpool{cfg: cfg, send: send, now: time.Now, wake: make(chan struct{}, 1), done: make(chan struct{}), cancel: cancel}
+	s := &azureReplaySpool{cfg: cfg, send: send, now: time.Now, wake: make(chan struct{}, 1), done: make(chan struct{}), released: make(chan struct{}), cancel: cancel}
 	if err := s.ensureIndex(); err != nil {
 		cancel()
 		return nil, err
@@ -624,15 +625,21 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 		activeAzureReplaySpools.Unlock()
 	}()
 	s.cancel()
+	// Both workers query the manifest. sql.DB.Close defers closing a busy
+	// connection until its query returns, so releasing the index before they
+	// exit can leave the file open after close returns (#6684).
+	stopped := make(chan struct{})
+	go func() {
+		<-s.healthDone
+		<-s.done
+		close(stopped)
+	}()
 	select {
-	case <-s.healthDone:
-	case <-ctx.Done():
-	}
-	select {
-	case <-s.done:
+	case <-stopped:
 	case <-ctx.Done():
 		go func() {
-			<-s.done
+			defer close(s.released)
+			<-stopped
 			s.reportShutdownHealth(s.stats())
 			_ = s.index.release(context.Background())
 		}()
@@ -662,5 +669,7 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 	default:
 	}
 	s.reportShutdownHealth(s.stats())
-	return errors.Join(err, s.index.release(ctx))
+	err = errors.Join(err, s.index.release(ctx))
+	close(s.released)
+	return err
 }

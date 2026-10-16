@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/ephemeraltmp"
+	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/intervention"
@@ -310,7 +311,9 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
 	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
 	"stage needs a harness that fails its startup check is still refused, while\n" +
-	"other workflows keep running.\n\n" +
+	"other workflows keep running. A check that failed only because the model\n" +
+	"provider was rate limiting or unreachable is re-run with backoff, and the\n" +
+	"workflow is admitted again once it passes.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +
@@ -357,12 +360,7 @@ func daemonTriggerSweep(
 	options triggerSweepOptions,
 ) func() error {
 	return func() error {
-		var sweepErr error
-		if options == (triggerSweepOptions{}) {
-			sweepErr = sweepPendingTriggers(ctx, l.SchedulerDir(), log, sched, time.Now)
-		} else {
-			sweepErr = sweepPendingTriggersWithOptions(ctx, l.SchedulerDir(), log, sched, time.Now, options)
-		}
+		sweepErr := sweepPendingTriggersWithAdmission(ctx, l.SchedulerDir(), log, sched, time.Now, options, durableTriggers.delegatedAdmission())
 		err := errors.Join(durableTriggers.Drain(ctx), sweepErr)
 		return recordTriggerSweepProgress(heartbeat, err, time.Now())
 	}
@@ -756,7 +754,7 @@ func (u *upSession) prepare() int {
 	// has been rebuilt from ledger + liveness below.
 	u.claimRecoveryGate = localscheduler.NewRecoveryGate()
 	var setupOptions []schedulerSetupOption
-	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate)
+	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate, u.tracker)
 	buildSetup := buildSchedulerSetup
 	if *u.skipPreflight {
 		buildSetup = buildSchedulerSetupAllowingInvalidConfig
@@ -766,6 +764,9 @@ func (u *upSession) prepare() int {
 		return daemonStartupFailure(u.ctx, err, func() {
 			printValidationIssues(u.stderr, validationReportFromError(err))
 			pf(u.stderr, "error: initialize daemon scheduler: %v\n", err)
+			if errors.Is(err, instance.ErrInvalidConfig) {
+				instance.WriteInvalidConfigScope(u.stderr, u.l.ConfigDir(), validationReportFromError(err))
+			}
 		})
 	}
 	pf(u.stdout, "startup: scheduler initialized\n")
@@ -948,6 +949,8 @@ func (u *upSession) startServices() int {
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
 		ReadModel:                    u.setup.ReadModel,
+		ChildHistory:                 u.readChildHistory,
+		ChildPublications:            u.readChildPublications,
 		RetentionStats:               u.setup.RetentionStats,
 		InstanceLogStats:             u.setup.InstanceLog.Stats,
 		StorageHealthStats:           u.storageGate.Stats,
@@ -1032,7 +1035,7 @@ func (u *upSession) configureAPI() int {
 	// for local/mode-1 callers.
 	u.triggerPlane = newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
 		return runBelongsToGaggle(u.l, gaggle, runID)
-	}).withSchedulerReadyGate(u.ready.Load)
+	}).withSchedulerReadyGate(u.ready.Load).withStartupCatalog(u.setup.Entries)
 	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
 	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
 	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
@@ -1048,6 +1051,10 @@ func (u *upSession) configureAPI() int {
 		return 1
 	}
 	defer func() { _ = u.durableTriggers.queue.Close() }()
+	attachChildGenerationPins(u.setup.Generations, u.durableTriggers.queue)
+	if err := u.setup.installOrdinaryStarts(u.l, u.durableTriggers); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize ordinary start custody", err)
+	}
 	defer func() { _ = u.cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
@@ -1062,8 +1069,18 @@ func (u *upSession) configureAPI() int {
 	// handing raw secret material to any local caller. Local modes never need
 	// the plane; their resolution stays in-process via buildCredentialEnv.
 	u.credentialPlane = newDaemonCredentialService(u.l, u.setup.Config, u.setup.SecretStores, u.setup.SharedRegistry, u.setup.InstanceLog).withStageGrants(u.l.Root, u.apiServer.Address(), u.setup.Config.API.TLS != nil)
+	// The startup methods tail-call through supervise/finish: this scope stays
+	// alive for the daemon session, as do the queue-close defers above.
+	defer unregisterDaemonStageGrants(u.l.Root, u.credentialPlane)
+	if err := u.credentialPlane.enableChildWorkflows(u.durableTriggers.queue, u.setup.Definitions); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize child workflow authority", err)
+	}
+	u.credentialPlane.childDispatch = u.triggerPlane
 	u.credentialPlane.Replace(credentialPlaneDefinitionsFromSet(u.setup.Definitions))
 	u.setup.CredentialPlane = u.credentialPlane
+	if err := u.credentialPlane.installQueuedChildren(u.setup, u.durableTriggers, &u.wg); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize queued child execution", err)
+	}
 	// The surrender plane (#3699) rides beside the blob store, under the same
 	// instance-local root — the "<blob-store>/surrender" convention
 	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents
@@ -1098,7 +1115,10 @@ func (u *upSession) configureAPI() int {
 	u.cancelPlane.engine = newDaemonEngineCancelService(u.l, u.setup.Interventions, u.engineClient, u.engineGuards, u.setup.InstanceLog)
 	claimPlane := newDaemonClaimService(u.l, u.setup.InstanceLog, u.recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
+	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(u.engineClient.Temporal(), surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
+	journalService.reads = u.reads
+	journalService.definitions = u.setup.Interventions
 	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	u.apiHandlerOpts = append(u.apiHandlerOpts,
@@ -1109,7 +1129,8 @@ func (u *upSession) configureAPI() int {
 		httpapi.WithEscalationService(intervention.NewEscalationResolver(u.interventions)),
 		httpapi.WithCancelService(u.cancelPlane),
 		httpapi.WithCredentialService(u.credentialPlane),
-		httpapi.WithBlobService(u.blobStore),
+		httpapi.WithChildWorkflowService(u.credentialPlane.children.HTTPService()),
+		httpapi.WithBlobService(u.credentialPlane.childBlobPlane(u.blobStore)),
 		httpapi.WithRecoveryService(recoveryDeliveryService{layout: u.l, setup: u.setup}),
 		httpapi.WithSurrenderService(surrenderStore),
 		httpapi.WithStateService(statePlane),
@@ -1129,6 +1150,7 @@ func (u *upSession) configureAPI() int {
 		// tracker regardless of which optional services below it configures.
 		httpapi.WithInstanceReadinessService(&daemonInstanceReadinessService{instanceRoot: u.l.Root, tracker: u.tracker, ready: u.ready.Load}),
 		httpapi.WithRecoveryGate(u.ready.Load),
+		httpapi.WithRecoveryHints(u.tracker.setStartupHints),
 	)
 	if u.liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal
@@ -1195,7 +1217,7 @@ func (u *upSession) activateAPI() int {
 			pf(u.stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey())))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	} else if !instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) {
 		// Non-loopback with no human authenticator configured: serve the pod
@@ -1209,9 +1231,20 @@ func (u *upSession) activateAPI() int {
 			pf(u.stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey())))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	}
+	if instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) && (u.setup.Config.API.Auth == nil || u.setup.Config.API.Auth.OIDC == nil) {
+		// Local administrators remain anonymous. Signed machine callers retain their
+		// exact principal and route restrictions even on a loopback-only daemon.
+		chained, err := podauth.NewAuthenticator(podVerifier, httpapi.NullAuthenticator{})
+		if err != nil {
+			return reportDaemonStartupError(u.stderr, "initialize local pod authentication", err)
+		}
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
+		u.apiAuthorizer = httpapi.LocalAdminWithScopedPrincipals()
+	}
+
 	handler, err := httpapi.NewHandler(u.reads, u.apiAuthorizer, u.apiLog, u.apiHandlerOpts...)
 	if err != nil {
 		pf(u.stderr, "error: initialize HTTP API: %v\n", err)
@@ -1507,23 +1540,27 @@ func (u *upSession) startScheduler() int {
 		return 1
 	}
 	u.stalledSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "stalled_run_sweep_failed")
-	drainedDowntime := readDrainedDowntime(u.setup.InstanceLog, u.stderr)
+	drainedDowntime, hostSuspensions := readSweepDowntime(u.setup.InstanceLog, u.stderr)
+	sweepDeps := stalledSweepDependencies(u.setup, drainedDowntime, hostSuspensions, u.liveJournals)
 	u.sweepStalled = func(now time.Time, recoveryRunDirs ...[]string) error {
-		return sweepStalledRuns(
+		// Observe first, so a suspension that just ended is credited by the
+		// sweep that would otherwise read it as run time or silence.
+		observeErr := hostSuspensions.Observe(now)
+		return errors.Join(observeErr, sweepStalledRuns(
 			u.ctx,
 			u.l,
 			u.setup.RunnerRegistry,
 			u.setup.LegacyRunner,
 			u.engineGuards,
 			u.setup.InstanceLog,
-			stalledSweepDependencies(u.setup, drainedDowntime),
+			sweepDeps,
 			u.setup.TerminalNotifier,
 			u.sched.ReleaseRun,
 			now,
 			stalledRunTimeout,
 			maxRunDuration,
 			recoveryRunDirs...,
-		)
+		))
 	}
 	// Reap stale journals before crash-resume can refresh them with a new
 	// stage heartbeat.
@@ -1676,7 +1713,7 @@ func (u *upSession) recoverRuns() int {
 	// sweeps that share the delegation ticker.
 	u.cancelSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "cancel_sweep_failed")
 	u.cancelSweep = func() error {
-		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now)
+		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now, u.cancelPlane.fenceChildren)
 	}
 	u.cancelSweepErrors.report(runStartupPhase(u.stdout, u.tracker, "cancel-request-reconcile", "", u.cancelSweep))
 
@@ -1775,18 +1812,14 @@ func (u *upSession) startMaintenance() int {
 				} else {
 					claimRenewErrors.report(probeErr)
 				}
-				released, err := u.recoverExpiredClaims(now)
+				// Each reaped lease is journaled by the ledger itself as its own
+				// claim.released boundary carrying stall-swept (#4421), so the
+				// sweep adds no aggregate claim.released of its own.
+				_, err := u.recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
 					claimSweepErrors.report(nil)
 				} else {
 					claimSweepErrors.report(err)
-				}
-				if err == nil && len(released) > 0 {
-					u.setup.InstanceLog.AppendBestEffort(journal.Event{
-						Type:   journal.EventClaimReleased,
-						Reason: fmt.Sprintf("periodic recovery released %d expired claim(s)", len(released)),
-						Runner: map[string]any{"releasedClaims": len(released)},
-					})
 				}
 			}
 		}
@@ -2331,23 +2364,25 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 
 // stalledSweepDependencies is the daemon-owned wiring the stalled-run sweep
 // needs when it has to terminalize a run no live Runner owns.
-// readDrainedDowntime reads the graceful-drain downtime the stalled-run sweep
-// credits (#5601). The daemon has already journaled its own start, so the
-// newest interval ends at this lifetime's beginning. A read failure credits
-// nothing, which is the pre-#5601 behavior, and says so.
-func readDrainedDowntime(log *journal.InstanceLog, stderr io.Writer) []daemonDowntime {
+// readSweepDowntime reads the graceful-drain downtime (#5601) and the host
+// suspensions earlier daemon lifetimes journaled (#5891) that the stalled-run
+// sweep credits, and starts observing new suspensions. The daemon has already
+// journaled its own start, so the newest drain interval ends at this
+// lifetime's beginning. A read failure credits nothing, which is the
+// pre-#5601 behavior, and says so.
+func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDowntime, *hostsuspend.Ledger) {
 	if log == nil {
-		return nil
+		return nil, hostsuspend.NewLedger(nil, nil)
 	}
 	events, err := journal.ReadInstanceLog(log.Dir())
 	if err != nil {
 		pf(stderr, "warning: read daemon lifecycle for stalled-run downtime credit: %v\n", err)
-		return nil
+		return nil, hostsuspend.NewLedger(log, nil)
 	}
-	return cleanDaemonDowntime(events)
+	return cleanDaemonDowntime(events), hostsuspend.NewLedger(log, hostsuspend.FromEvents(events))
 }
 
-func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime) *stalledSweepDeps {
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, hostSuspensions *hostsuspend.Ledger, live *livejournal.Writer) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
@@ -2369,6 +2404,8 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		// projector never re-reads the run (#5278).
 		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
 		DrainedDowntime:        drainedDowntime,
+		HostSuspensions:        hostSuspensions,
+		CloseEngineRun:         closeTerminatedEngineRun(live),
 	}
 }
 
@@ -2574,7 +2611,7 @@ func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
 	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID string) (bool, error) {
 		phase, found, err := retainedWorktreePhase(owners, worktreeID, "")
-		return found && terminalRunPhase(phase), err
+		return found && phase.IsTerminal(), err
 	}
 }
 

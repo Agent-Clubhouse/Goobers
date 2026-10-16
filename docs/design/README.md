@@ -15,11 +15,11 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 14 |
-| `approved` | 24 |
+| `approved` | 25 |
 | `implemented` | 29 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **77** |
+| **Total** | **78** |
 
 ## `docs/adr/`
 
@@ -36,6 +36,7 @@ word — read the page, not this table, before depending on it.
 | [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | — | — | #2745 | — | — | — |
 | [Design: Agent-authored child workflows](agent-authored-child-workflows.md) | `approved` | DSL, agent tools, execution, workspaces, journal, Portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — | — | — | — |
+| [Design: Apply-time gaggle references and portable cloud adoption](apply-time-gaggle-references.md) | `draft` | config-as-code, shared gaggles, Workflow CD, cloud adoption | #3572, #3578 | — | — | — | ff826744e (2026-10-13) |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — | — | — | — |
 | [Design: Dashboard co-branding and support hooks](cobrand.md) | `implemented` | — | — | #1381 | — | — | — |
@@ -71,7 +72,7 @@ word — read the page, not this table, before depending on it.
 | [NetworkPolicy composition — the facts the egress model rests on](networkpolicy-composition.md) | `implemented` | — | #4294 | #3568, #4294 | — | — | eedb41ea6 (2026-10-02) |
 | [Notification output boundary](notification-output.md) | `historical` | — | — | — | — | — | — |
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
-| [Design: Plan-driven dynamic fan-out](plan-driven-dynamic-fan-out.md) | `draft` | workflow DSL, runner, journal, conformance | #1310 | — | — | — | — |
+| [Design: Conditional and plan-driven fan-out](plan-driven-dynamic-fan-out.md) | `approved` | workflow DSL, runner, journal, conformance | #1310 | — | — | — | 561268950 (2026-10-14) |
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | — | — | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | — | — | #2305, #2884 | — | — | — |
 | [Design: Provider access layer — unified providers, connections and explicit credentials (DSL 3.0)](provider-access-layer.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |
@@ -91,7 +92,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Versioning & Releases — DSL compatibility, tagged builds, feature matrix](versioning-and-compatibility.md) | `implemented` | — | — | #427, #428, #429, #430, #431, #432, #433, #434 | — | — | — |
 | [Windows Pod Restrictions](windows-pod-restrictions.md) | `implemented` | — | — | #3619 | — | — | — |
 | [Resident worker blob transport](worker-blob-transport.md) | `implemented` | — | — | #5293 | — | — | 2ea5900aa (2026-10-02) |
-| [Design: Workflow CD — GitOps config source for the local daemon](workflow-cd.md) | `implemented` | — | — | #454, #455, #456, #457, #458, #459, #460, #461 | — | — | — |
+| [Design: Workflow CD — GitOps config source for the local daemon](workflow-cd.md) | `implemented` | — | — | #454, #455, #456, #457, #458, #459, #460, #461 | — | — | ff826744e (2026-10-13) |
 
 ## `docs/design/v0/`
 

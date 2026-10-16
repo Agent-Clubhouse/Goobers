@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -35,8 +37,9 @@ func TestConnectADOSeedCLI(t *testing.T) {
 		return client
 	}
 	t.Cleanup(func() { newConnectADOSeeder = previous })
+	forbidGuidedADOClient(t)
 	for attempt := range 2 {
-		code, stdout, stderr := runArgs(t, "connect", "contoso/boards/web", "--seed", "--json", root)
+		code, stdout, stderr := runArgs(t, "connect", "contoso/boards/web", "--token-env", "GOOBERS_ADO_TOKEN", "--seed", "--json", root)
 		if code != 0 {
 			t.Fatalf("seed attempt %d: %d %s", attempt, code, stderr)
 		}
@@ -53,6 +56,59 @@ func TestConnectADOSeedCLI(t *testing.T) {
 	}
 	if len(client.created) != 1 || len(client.created[0].Labels) == 0 || slices.Contains(client.created[0].Labels, providers.LabelClaimed) {
 		t.Fatalf("incorrect starter task: %+v", client.created)
+	}
+}
+
+// forbidGuidedADOClient fails the test if anything builds an Azure DevOps
+// client from the configured credential source, which on a developer host
+// could reach the real service through a live Azure CLI login.
+func forbidGuidedADOClient(t *testing.T) {
+	t.Helper()
+	previous := newGuidedADOClient
+	newGuidedADOClient = func(repo instance.RepoRef, _ credentials.StoreResolver, _ providers.SecretRegistrar) (connectADOSeeder, error) {
+		t.Fatalf("unexpected configured-source ADO client for %+v", repo)
+		return nil, nil
+	}
+	t.Cleanup(func() { newGuidedADOClient = previous })
+}
+
+// With a kept non-PAT source, --seed files through that source (the client
+// the guided flow uses), never through the token variable the instance does
+// not name, and the token-based selector echo does not run.
+func TestConnectADOSeedThroughKeptAuth(t *testing.T) {
+	t.Setenv("GOOBERS_ADO_TOKEN", "test-pat")
+	stubConnectReachability(t, errors.New("token preflight must not run"))
+	root := filepath.Join(t.TempDir(), "ado")
+	code, _, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--ci-command=[\"dotnet\",\"test\"]", "--required-capabilities=dotnet@8", root)
+	if code != 0 {
+		t.Fatalf("init: %d %s", code, stderr)
+	}
+	previousSeeder := newConnectADOSeeder
+	newConnectADOSeeder = func(providers.RepositoryRef, string) connectADOSeeder {
+		t.Fatal("seeded through the token variable instead of the kept auth source")
+		return nil
+	}
+	t.Cleanup(func() { newConnectADOSeeder = previousSeeder })
+	client := &fakeADOSeedClient{list: func(providers.ListWorkItemsRequest) ([]providers.WorkItem, error) { return nil, nil }}
+	previous := newGuidedADOClient
+	newGuidedADOClient = func(repo instance.RepoRef, _ credentials.StoreResolver, registrar providers.SecretRegistrar) (connectADOSeeder, error) {
+		if repo.Owner != "contoso" || repo.Project != "boards" || repo.Name != "web" || repo.Auth == nil ||
+			repo.Auth.Kind != instance.ADOAuthAzureCLI || registrar == nil {
+			t.Fatalf("seed client built from %+v auth=%+v", repo, repo.Auth)
+		}
+		return client, nil
+	}
+	t.Cleanup(func() { newGuidedADOClient = previous })
+	code, stdout, stderr := runArgs(t, "connect", "contoso/boards/web", "--seed", "--json", root)
+	if code != 0 {
+		t.Fatalf("connect --seed: %d %s", code, stderr)
+	}
+	result := connectEnvelope(t, stdout)
+	if !slices.Contains(result.Created, "issue:hello-goobers") || len(client.created) != 1 {
+		t.Fatalf("seed not filed through the kept source: %+v created=%+v", result, client.created)
+	}
+	if strings.Contains(stderr, "match selector tags") {
+		t.Fatalf("token-based selector echo ran with a kept auth source: %s", stderr)
 	}
 }
 

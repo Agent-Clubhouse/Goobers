@@ -5,6 +5,7 @@ import (
 	"flag"
 	"io"
 
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -82,7 +83,7 @@ func (e stageCommandEnv) backlogRepoRef() providers.RepositoryRef {
 }
 
 func (e stageCommandEnv) backlogProviderRepoRef() providers.RepositoryRef {
-	return backlogProviderRepo(e.repo, e.backlogRepoRef())
+	return providerconfig.BacklogProviderRepo(e.repo, e.backlogRepoRef())
 }
 
 func providerForEnvAs[T any](e stageCommandEnv, readOnly bool, opts ...stageProviderOption) (T, error) {

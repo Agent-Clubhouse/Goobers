@@ -159,6 +159,11 @@ func (p *GitHubProvider) RefreshCIPollCredential(ctx context.Context) (bool, err
 }
 
 func (p *GitHubProvider) recordExternalRef(ctx context.Context, ref ExternalRef) {
+	// Attempt telemetry is not proof of an effect. Partial writes are observed
+	// by their successful sub-operations before a later failure is reported.
+	if ref.Outcome == "" || ref.Outcome == "success" {
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
+	}
 	if p.recorder != nil {
 		p.recorder.RecordExternalRef(ctx, ref)
 	}

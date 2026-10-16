@@ -34,13 +34,17 @@ import (
 // Tick/signal delivery evaluates whichever are set, since nothing prevents
 // a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
-	Workflow        string
-	WorkflowVersion int
-	WorkflowDigest  string
-	GooberDigest    string
-	Gaggle          string
-	Readiness       apiv1.ReadinessConditions
-	Schedules       []Schedule
+	ConfigGeneration string
+	Workflow         string
+	WorkflowVersion  int
+	WorkflowDigest   string
+	GooberDigest     string
+	Gaggle           string
+	Readiness        apiv1.ReadinessConditions
+	Schedules        []Schedule
+	// ScheduleCatchUpAll enables bounded independent discovery for a prepared entry.
+	// The daemon derives it from spec.scheduleCatchUp; omission keeps coalescing.
+	ScheduleCatchUpAll bool
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
 	ScheduleBackoffs []IdleBackoffConfig
@@ -96,14 +100,24 @@ type WorkflowEntry struct {
 	// byte-identical to previous releases.
 	PlacementRefusal string
 	// HarnessRefusal, when non-empty, marks only this workflow unavailable
-	// because a harness it references failed startup preflight. It is a
-	// permanent condition for the current configuration/startup snapshot;
-	// sibling workflows remain eligible (#5163).
+	// because a harness it references failed startup preflight. Without a
+	// HarnessRecheck it is a permanent condition for the current
+	// configuration/startup snapshot; sibling workflows remain eligible
+	// (#5163).
 	HarnessRefusal string
+	// HarnessRecheck, when set, marks HarnessRefusal as transient: the
+	// harness's sign-in probe failed because the provider could not answer
+	// (#6017). The scheduler asks it for the current refusal instead, and the
+	// workflow becomes eligible again once it reports none.
+	HarnessRecheck HarnessRecheck
 	// DisabledReason, when non-empty, marks this workflow or its gaggle
 	// disabled by spec.enabled=false (#5200): refused before admission with
 	// this named diagnostic, while in-flight runs finish normally.
 	DisabledReason string
+	// ProviderAuth evaluates provider authorization health before autonomous
+	// dispatch when Readiness.RequireProviderAuthorization is set (#5317).
+	// Nil with the readiness flag set fails closed.
+	ProviderAuth ProviderAuthGate
 }
 
 func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
@@ -227,27 +241,33 @@ type queueSaturationRecorder interface {
 }
 
 type runAdmission struct {
-	identity   WorkflowIdentity
-	generation uint64
-	owners     int
-	retained   bool
+	identity WorkflowIdentity
+	// executionWorkflow is a generated child name; identity remains its parent budget bucket.
+	executionWorkflow string
+	generation        uint64
+	owners            int
+	retained          bool
+	suspended         bool // durable child wait; owner remains, concurrency is released
 }
 
 // Scheduler is the embedded scheduler daemon (§7, SCH-001): it ties cron
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
-	workflows         map[WorkflowIdentity]WorkflowEntry
-	conditions        *Conditions
-	log               *journal.InstanceLog
-	now               func() time.Time
-	after             func(d time.Duration) <-chan time.Time
-	telemetry         SpanStarter
-	providerQuota     ProviderQuotaGate
-	demandPollTimeout time.Duration
-	afterTick         func(context.Context)
-	heartbeatInterval time.Duration
-	refreshHeartbeat  func(time.Time) error
+	harnessRechecks       harnessRecheckState
+	durableScheduleDemand bool
+	sourceQueue           SourceQueue
+	workflows             map[WorkflowIdentity]WorkflowEntry
+	conditions            *Conditions
+	log                   *journal.InstanceLog
+	now                   func() time.Time
+	after                 func(d time.Duration) <-chan time.Time
+	telemetry             SpanStarter
+	providerQuota         ProviderQuotaGate
+	demandPollTimeout     time.Duration
+	afterTick             func(context.Context)
+	heartbeatInterval     time.Duration
+	refreshHeartbeat      func(time.Time) error
 	// onPollProgress, if set, is called after every individual
 	// provider-backed demand poll Tick issues while holding tickMu (#3806) —
 	// not just once when Tick itself returns. A tick with several due
@@ -274,7 +294,7 @@ type Scheduler struct {
 	// reconciledRuns identifies the pre-existing runs represented in
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
-	reconciledRuns map[string]WorkflowIdentity
+	reconciledRuns map[string]reconciledRun
 	// admittedRuns identifies live dispatches and continuations whose shared
 	// condition slot remains reserved until every owner releases it or a
 	// watchdog terminalizes the run.
@@ -319,6 +339,10 @@ type Scheduler struct {
 	// silently stalled schedule trigger (#1868), so each stall episode
 	// journals one workflow.starved event instead of one per tick.
 	triggerStallNotified map[WorkflowIdentity]bool
+	// scheduleQuiet tracks, per workflow, how long due schedule slots have
+	// been sized to zero demand without a scheduled trigger.fired (#5564).
+	// See recordScheduleFire and recordScheduleDemandOutcome.
+	scheduleQuiet map[WorkflowIdentity]scheduleQuietWindow
 	// demandPollFailures counts consecutive failed demand polls per workflow
 	// and poll kind, so a lane whose counter keeps failing journals one
 	// workflow.starved event (#5605). See recordDemandPollFailure.
@@ -530,7 +554,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		after:                   time.After,
 		demandPollTimeout:       demandPollTimeout,
 		triggers:                make(map[WorkflowIdentity]TriggerState),
-		reconciledRuns:          make(map[string]WorkflowIdentity),
+		reconciledRuns:          make(map[string]reconciledRun),
 		admittedRuns:            make(map[string]runAdmission),
 		backlogLastCheck:        make(map[WorkflowIdentity]time.Time),
 		refillLastCheck:         make(map[WorkflowIdentity]time.Time),
@@ -543,6 +567,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		capacityRefusals:        make(map[WorkflowIdentity]capacityRefusal),
 		capacityStarvedNotified: make(map[WorkflowIdentity]bool),
 		triggerStallNotified:    make(map[WorkflowIdentity]bool),
+		scheduleQuiet:           make(map[WorkflowIdentity]scheduleQuietWindow),
 		demandPollFailures:      make(map[demandPollFailureKey]int),
 		quotaResumePacing:       make(map[apiv1.Provider]bool),
 		authCircuits:            make(map[WorkflowIdentity]authCircuit),
@@ -608,7 +633,7 @@ func (s *Scheduler) ReconcileRunDirs(runsDirs, recoveryRunDirs []string, now tim
 func (s *Scheduler) reconcileDurableState(
 	runsDirs []string,
 	active map[WorkflowIdentity]int,
-	runs map[string]WorkflowIdentity,
+	runs map[string]reconciledRun,
 	now time.Time,
 ) error {
 	s.conditions.ReconcileWorkflows(active)
@@ -721,13 +746,13 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	reconciledWorkflow, ok := s.reconciledRuns[runID]
-	if ok && reconciledWorkflow.Workflow == workflow {
+	if ok && reconciledWorkflow.workflow == workflow {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
-	if ok && reconciledWorkflow.Workflow == workflow {
-		s.conditions.ReleaseWorkflow(reconciledWorkflow)
-		s.wakeForDemand(reconciledWorkflow)
+	if ok && reconciledWorkflow.workflow == workflow && !reconciledWorkflow.suspended {
+		s.conditions.ReleaseWorkflow(reconciledWorkflow.identity)
+		s.wakeForDemand(reconciledWorkflow.identity)
 	}
 }
 
@@ -739,11 +764,11 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	admission, admitted := s.admittedRuns[runID]
-	if admitted && admission.identity.Workflow == workflow {
+	if admitted && admission.workflowName() == workflow {
 		delete(s.admittedRuns, runID)
 	}
 	reconciledIdentity, reconciled := s.reconciledRuns[runID]
-	if reconciled && reconciledIdentity.Workflow == workflow {
+	if reconciled && reconciledIdentity.workflow == workflow {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
@@ -751,14 +776,14 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	released := false
 	var releasedIdentity WorkflowIdentity
 	switch {
-	case admitted && admission.identity.Workflow == workflow:
+	case admitted && admission.workflowName() == workflow && !admission.suspended:
 		s.conditions.ReleaseWorkflow(admission.identity)
 		released = true
 		releasedIdentity = admission.identity
-	case reconciled && reconciledIdentity.Workflow == workflow:
-		s.conditions.ReleaseWorkflow(reconciledIdentity)
+	case reconciled && reconciledIdentity.workflow == workflow && !reconciledIdentity.suspended:
+		s.conditions.ReleaseWorkflow(reconciledIdentity.identity)
 		released = true
-		releasedIdentity = reconciledIdentity
+		releasedIdentity = reconciledIdentity.identity
 	}
 	if released {
 		s.wakeForDemand(releasedIdentity)
@@ -771,7 +796,7 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 
 	s.mu.Lock()
 	admission, admitted := s.admittedRuns[runID]
-	if !admitted || admission.identity.Workflow != workflow || admission.generation != generation {
+	if !admitted || admission.workflowName() != workflow || admission.generation != generation {
 		s.mu.Unlock()
 		return
 	}
@@ -784,8 +809,10 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
 
-	s.conditions.ReleaseWorkflow(admission.identity)
-	s.wakeForDemand(admission.identity)
+	if !admission.suspended {
+		s.conditions.ReleaseWorkflow(admission.identity)
+		s.wakeForDemand(admission.identity)
+	}
 }
 
 func (s *Scheduler) admissionOwnerRelease(runID, workflow string, generation uint64) func() {
@@ -806,7 +833,7 @@ func (s *Scheduler) RetainContinuation(runID, workflow string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	admission, admitted := s.admittedRuns[runID]
-	if !admitted || admission.identity.Workflow != workflow {
+	if !admitted || admission.workflowName() != workflow {
 		return
 	}
 	admission.retained = true
@@ -821,7 +848,7 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 
 	s.mu.Lock()
 	admission, admitted := s.admittedRuns[runID]
-	if !admitted || admission.identity.Workflow != workflow || !admission.retained {
+	if !admitted || admission.workflowName() != workflow || !admission.retained {
 		s.mu.Unlock()
 		return
 	}
@@ -834,8 +861,10 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
 
-	s.conditions.ReleaseWorkflow(admission.identity)
-	s.wakeForDemand(admission.identity)
+	if !admission.suspended {
+		s.conditions.ReleaseWorkflow(admission.identity)
+		s.wakeForDemand(admission.identity)
+	}
 }
 
 // ReserveContinuation reserves the configured workflow's concurrency slot for
@@ -854,6 +883,9 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 	case !configured:
 		s.mu.Unlock()
 		return func() {}, false, "workflow unavailable"
+	case admitted && admission.suspended:
+		s.mu.Unlock()
+		return func() {}, false, "run suspended awaiting child"
 	case admitted && admission.identity == identity:
 		admission.owners++
 		s.admittedRuns[runID] = admission
@@ -883,7 +915,7 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 
 func (s *Scheduler) wakeForDemand(identity WorkflowIdentity) {
 	s.mu.Lock()
-	pending := len(s.pendingScheduleDemand) > 0
+	pending := len(s.pendingScheduleDemand) > 0 || s.durableScheduleDemand
 	refill := false
 	if entry, ok := s.workflows[identity]; ok &&
 		entry.Readiness.DesiredConcurrentRuns > 0 &&
@@ -913,6 +945,7 @@ func (s *Scheduler) Wait() {
 // busy-polling, per the acceptance criterion. It returns when ctx is
 // cancelled.
 func (s *Scheduler) Run(ctx context.Context) error {
+	s.harnessRechecks.setLifetime(ctx)
 	for {
 		s.Tick(ctx, s.now())
 		if s.refreshHeartbeat != nil {
@@ -938,28 +971,32 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 type tickCandidate struct {
-	entry              WorkflowEntry
-	schedule           TickResult
-	scheduleRemaining  int
-	scheduleDemand     bool
-	schedulePollDue    bool
-	scheduleEnqueuedAt time.Time
-	scheduleMetricHeld int
-	backlogPollDue     bool
-	backlogRemaining   int
-	backlogEnqueuedAt  time.Time
-	backlogObserved    bool
-	backlogMetricHeld  int
-	refillRemaining    int
-	refillPollDue      bool
-	refillEligible     int
-	refillEnqueuedAt   time.Time
-	refillObserved     bool
-	refillMetricHeld   int
-	poolSkips          int
-	dispatchedThisTick bool
-	stopped            bool
-	scheduleIndexes    []int
+	demandWake          bool
+	catchUpWake         bool
+	queuedDemand        *QueuedScheduleDemand
+	scheduleDemandLease func()
+	entry               WorkflowEntry
+	schedule            TickResult
+	scheduleRemaining   int
+	scheduleDemand      bool
+	schedulePollDue     bool
+	scheduleEnqueuedAt  time.Time
+	scheduleMetricHeld  int
+	backlogPollDue      bool
+	backlogRemaining    int
+	backlogEnqueuedAt   time.Time
+	backlogObserved     bool
+	backlogMetricHeld   int
+	refillRemaining     int
+	refillPollDue       bool
+	refillEligible      int
+	refillEnqueuedAt    time.Time
+	refillObserved      bool
+	refillMetricHeld    int
+	poolSkips           int
+	dispatchedThisTick  bool
+	stopped             bool
+	scheduleIndexes     []int
 }
 
 type triggerSource uint8
@@ -1032,68 +1069,24 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	var evaluated []WorkflowEntry
+	defer func() { releaseScheduleDemands(allCandidates) }()
 	for _, entry := range entries {
-		if s.authCircuitOpen(entryIdentity(entry), now) {
+		if s.authCircuitOpen(entryIdentity(entry), now) || s.skipRefusedEntry(entry, now) {
+			if entry.ScheduleCatchUpAll && s.sourceQueue != nil {
+				candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
+				// Discovery keeps custody while admission is held; do not poll
+				// providers or transfer workers from this blocked candidate.
+				candidate.scheduleRemaining = 0
+				candidate.schedulePollDue = false
+				candidate.scheduleDemand = false
+				candidate.queuedDemand = nil
+				candidate.stopped = true
+				allCandidates = append(allCandidates, candidate)
+			}
 			continue
 		}
-		if skipPermanentRefusedEntry(entry) {
-			continue
-		}
+		candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
 		identity := entryIdentity(entry)
-		s.mu.Lock()
-		pending := s.pendingScheduleDemand[identity]
-		s.mu.Unlock()
-		candidate := &tickCandidate{
-			entry:              entry,
-			schedule:           pending.schedule,
-			scheduleRemaining:  pending.remaining,
-			scheduleDemand:     pending.remaining > 0,
-			schedulePollDue:    pending.repoll,
-			scheduleEnqueuedAt: pending.enqueuedAt,
-		}
-		if pending.remaining == 0 {
-			candidate.schedule = TickResult{LastEval: now}
-		}
-		if len(entry.Schedules) > 0 {
-			// Read, evaluate, and write the trigger state under a single lock
-			// acquisition. Tick is exported so a manual trigger and concurrent
-			// Tick calls (e.g. overlapping Run-loop iterations) can race here;
-			// dropping the lock between the read and the write let two callers
-			// both read the same pre-fire TriggerState, both compute Fire=true,
-			// and both dispatch the same due firing.
-			// Persisting the snapshot is batched to once per tick (#6010).
-			s.mu.Lock()
-			ts := s.triggers[identity]
-			lastEval := ts.LastEval
-			dueIndexes := dueScheduleIndexes(entry.Schedules, ts.LastEval, now)
-			res := Tick(ts, now)
-			if res.LastEval != ts.LastEval {
-				evaluated = append(evaluated, entry)
-			}
-			s.triggers[identity] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
-			s.mu.Unlock()
-			if res.Fire {
-				candidate.schedule = res
-				candidate.scheduleEnqueuedAt = oldestDueScheduleAt(entry.Schedules, lastEval, now)
-				candidate.scheduleIndexes = dueIndexes
-				if blocked, reason := s.scheduleBackedOff(identity, entry, dueIndexes, now); blocked {
-					s.journalEvent(journal.Event{
-						Type:     journal.EventTickSkipped,
-						Workflow: entry.Workflow,
-						Gaggle:   entry.Gaggle,
-						Reason:   reason,
-					})
-					candidate.scheduleIndexes = nil
-				} else if entry.ScheduleDemandCounter == nil {
-					// Coalesces with a retained fire; scheduleDemand stays set
-					// so admission consumes its marker (#6207).
-					candidate.scheduleRemaining = 1
-				} else {
-					candidate.schedulePollDue = true
-				}
-			}
-		}
-
 		if entry.BacklogCounter != nil {
 			candidate.backlogPollDue = s.backlogPollDue(entry, now)
 		}
@@ -1117,6 +1110,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.evaluateRefillOpportunities(allCandidates, now)
 	s.paceQuotaResumedCandidates(allCandidates)
 	s.recordQueueSaturation(ctx, allCandidates, now)
+	s.queueDemandWorkers(ctx, allCandidates, now)
+	s.queueCountWorkers(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 || candidate.refillRemaining > 0 {
@@ -1182,6 +1177,9 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 				}
 				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes, false, false, "")
 				s.recordDispatchOutcome(entryIdentity(candidate.entry), admitted, reason, now)
+				if kind == journal.TriggerSchedule {
+					s.recordScheduleFire(entryIdentity(candidate.entry), now)
+				}
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -1354,12 +1352,13 @@ func (s *Scheduler) queueSnapshot(kind string, identity WorkflowIdentity) (queue
 	}
 }
 
-func skipPermanentRefusedEntry(entry WorkflowEntry) bool {
+func (s *Scheduler) skipRefusedEntry(entry WorkflowEntry, now time.Time) bool {
 	// Disabled workflows/gaggles (#5200), broken harness dependencies (#5163),
-	// and startup placement refusals (#2860) are permanent until config changes.
+	// and startup placement refusals (#2860) are permanent until config changes;
+	// a transient harness refusal (#6017) lasts until its recheck clears it.
 	// Skip them silently so they do not spend polls or flood the journal;
 	// explicit triggers still receive a named refusal through dispatch.
-	return entry.DisabledReason != "" || entry.HarnessRefusal != "" || entry.PlacementRefusal != ""
+	return entry.DisabledReason != "" || s.currentHarnessRefusal(entry, now) != "" || entry.PlacementRefusal != ""
 }
 
 func (s *Scheduler) orderedGaggles(gaggles []string) []string {
@@ -1507,6 +1506,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
 	s.triggerStallNotified = triggerStallNotified
+	// A reload can lift a refusal that kept a lane from being polled; that
+	// span was not observed zero demand, so quiet episodes restart (#5564).
+	s.scheduleQuiet = make(map[WorkflowIdentity]scheduleQuietWindow, len(entries))
 	s.authCircuits = make(map[WorkflowIdentity]authCircuit)
 
 	select {
@@ -1837,6 +1839,7 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			entry := poll.candidate.entry
 			if s.authCircuitOpen(entryIdentity(entry), now) {
 				s.applyDemandSnapshot(poll, demandSnapshot{})
+				s.recordScheduleDemandOutcome(poll, demandSnapshot{}, now)
 				continue
 			}
 			if pacing && entryIdentity(entry) != pacedIdentity {
@@ -1863,16 +1866,21 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			}
 			if decision.Allowed > 0 {
 				pollCtx := WithProviderPollBudget(ctx, decision)
-				s.applyDemandSnapshot(poll, s.pollDemand(pollCtx, entry, poll))
+				snapshot := s.pollDemand(pollCtx, entry, poll)
+				s.applyDemandSnapshot(poll, snapshot)
+				s.recordScheduleDemandOutcome(poll, snapshot, now)
 				s.markPollProgress()
 				continue
 			}
 			if guarded, ok := poll.counter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
-				s.applyDemandSnapshot(poll, s.pollDemand(ctx, entry, poll))
+				snapshot := s.pollDemand(ctx, entry, poll)
+				s.applyDemandSnapshot(poll, snapshot)
+				s.recordScheduleDemandOutcome(poll, snapshot, now)
 				s.markPollProgress()
 				continue
 			}
 			s.applyDemandSnapshot(poll, demandSnapshot{})
+			s.recordScheduleDemandOutcome(poll, demandSnapshot{}, now)
 			s.journalPollShed(entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
 		}
 	}
@@ -2021,6 +2029,9 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	if s.applyQueuedDemand(poll, snapshot) {
+		return
+	}
 	ready := snapshot.ready
 	if poll.schedule {
 		identity := entryIdentity(poll.candidate.entry)
@@ -2264,15 +2275,7 @@ func (s *Scheduler) TriggerWithDispatchContextOptions(ctx, dispatchCtx context.C
 		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
 	}
 	if len(gaggles) > 1 {
-		sort.Strings(gaggles)
-		commands := make([]string, 0, len(gaggles))
-		for _, gaggle := range gaggles {
-			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
-		}
-		return "", fmt.Errorf(
-			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
-			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
-		)
+		return "", ambiguousWorkflowError(workflow, gaggles)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -2318,15 +2321,7 @@ func (s *Scheduler) TriggerSignalWithDispatchContextOptions(ctx, dispatchCtx con
 		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
 	}
 	if len(gaggles) > 1 {
-		sort.Strings(gaggles)
-		commands := make([]string, 0, len(gaggles))
-		for _, gaggle := range gaggles {
-			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
-		}
-		return "", fmt.Errorf(
-			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
-			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
-		)
+		return "", ambiguousWorkflowError(workflow, gaggles)
 	}
 	return s.TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx,
 		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now, options)
@@ -2752,6 +2747,10 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
+	if reason, refused := s.providerAuthDispatchRefusal(ctx, entry, identity, trigger, now, triggerReason); refused {
+		span.Complete(telemetry.OutcomeBlocked, false)
+		return "", false, reason
+	}
 	provider := quotaProvider(entry.RepoRef.Provider)
 	s.journalProviderQuotaReset(provider, now)
 	ok, reason := s.conditions.admitProviderWorkflow(
@@ -2867,12 +2866,15 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	return runID, true, ""
 }
 
+// permanentDispatchRefusal reports a refusal that holds for entry's whole
+// configuration. A transient harness refusal (#6017) is reported here too,
+// while it lasts: retrying the trigger cannot clear it, only its recheck can.
 func (s *Scheduler) permanentDispatchRefusal(entry WorkflowEntry) (string, bool) {
 	if entry.DisabledReason != "" {
 		return ReasonDisabled + ": " + entry.DisabledReason, true
 	}
-	if entry.HarnessRefusal != "" {
-		return ReasonHarnessUnavailable + ": " + entry.HarnessRefusal, true
+	if refusal := s.currentHarnessRefusal(entry, s.now()); refusal != "" {
+		return ReasonHarnessUnavailable + ": " + refusal, true
 	}
 	if entry.PlacementRefusal != "" {
 		return ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal, true
@@ -2949,6 +2951,8 @@ func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity, now time.Time) {
 	circuit.strikes++
 	circuit.retryAt = now.Add(authCircuitCooldown(circuit.strikes))
 	s.authCircuits[identity] = circuit
+	// Unpolled time behind an open circuit is not observed zero demand (#5564).
+	delete(s.scheduleQuiet, identity)
 	s.mu.Unlock()
 	s.journalEvent(journal.Event{
 		Type:     journal.EventTickSkipped,
@@ -3065,6 +3069,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		return minPoll
 	}
 	var earliest time.Time
+	if s.durableScheduleDemand {
+		earliest = now.Add(backlogPollInterval)
+	}
 	consider := func(next time.Time) {
 		if earliest.IsZero() || next.Before(earliest) {
 			earliest = next
@@ -3110,6 +3117,7 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 // configuration — New and Reload — so the instance journal and `goobers
 // status` name every refusal without waiting for a dispatch attempt.
 func (s *Scheduler) journalStartupRefusals(entries []WorkflowEntry) {
+	s.harnessRechecks.reset()
 	for _, entry := range entries {
 		reason := entry.HarnessRefusal
 		if reason == "" {

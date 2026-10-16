@@ -113,7 +113,7 @@ func (r *copilotControlledRunner) run(ctx context.Context, req ProcessRequest) (
 		}
 		r.ready = true
 	}
-	prompt, err := copilotControlledPrompt(req.Command, r.promptIndex)
+	prompt, err := copilotControlledPrompt(req.Stdin)
 	if err != nil {
 		return ProcessResult{ExitCode: -1}, err
 	}
@@ -158,16 +158,14 @@ func (r *copilotControlledRunner) close() {
 	}
 }
 
-func copilotControlledPrompt(argv []string, index int) (string, error) {
-	if index < 0 || index >= len(argv) {
+// copilotControlledPrompt takes the turn's prompt from the stdin payload the
+// adapter prepared for a direct CLI process; the controlled session sends it
+// over session RPC instead (#6871).
+func copilotControlledPrompt(stdin []byte) (string, error) {
+	if len(stdin) == 0 {
 		return "", fmt.Errorf("missing controlled Copilot prompt")
 	}
-	for i, b := range []byte(argv[index]) {
-		if b == '=' {
-			return argv[index][i+1:], nil
-		}
-	}
-	return "", fmt.Errorf("controlled Copilot prompt must be bound to its flag")
+	return string(stdin), nil
 }
 
 func runControlledCopilotPrompt(ctx context.Context, session *copilot.Session, prompt string, req ProcessRequest) (ProcessResult, error) {
@@ -250,9 +248,19 @@ func (r *copilotControlledRunner) sessionConfig(id string, req ProcessRequest, s
 		config.ConfigDirectory = home
 	}
 	if copilotDeclaresTool(r.request.Tools, "github") {
-		config.GitHubMCPToolConfig = &copilot.GitHubMCPToolConfig{AdditionalToolsets: []string{"issues"}}
+		config.GitHubMCPToolConfig = copilotGitHubMCPToolConfig(r.request.Envelope.Capabilities)
 	} else if len(r.request.MCPServers) > 0 {
 		config.DisabledMCPServers = []string{"github-mcp-server"}
 	}
 	return config
+}
+
+// copilotGitHubMCPToolConfig is the SDK-session form of
+// copilotGitHubMCPRegistrationArg.
+func copilotGitHubMCPToolConfig(capabilities []string) *copilot.GitHubMCPToolConfig {
+	if copilotGitHubNeedsFullCatalog(capabilities) {
+		enableAll := true
+		return &copilot.GitHubMCPToolConfig{EnableAllTools: &enableAll}
+	}
+	return &copilot.GitHubMCPToolConfig{AdditionalToolsets: []string{"issues"}}
 }

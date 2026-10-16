@@ -637,15 +637,11 @@ func TestDocsChurnResultFileFailureDoesNotAdvanceWatermark(t *testing.T) {
 	root := t.TempDir()
 	resultDir := t.TempDir()
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultDir)
-	writeErr := os.WriteFile(resultDir, []byte("probe"), 0o644)
-	if writeErr == nil {
-		t.Fatal("writing a directory unexpectedly succeeded")
-	}
 	code, stdout, stderr := runArgs(t, "docs-churn", "--repo", r.dir,
 		"--workflow", "docs-updater", "--gaggle", "goobers", root)
-	wantStderr := fmt.Sprintf("error: write result file %q: %v\n", resultDir, writeErr)
-	if code != 1 || stdout != "" || stderr != wantStderr {
-		t.Fatalf("code/stdout/stderr = %d/%q/%q, want 1/empty/%q", code, stdout, stderr, wantStderr)
+	wantPrefix := fmt.Sprintf("error: write result file %q: ", resultDir)
+	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, wantPrefix) {
+		t.Fatalf("code/stdout/stderr = %d/%q/%q, want 1/empty/prefix %q", code, stdout, stderr, wantPrefix)
 	}
 	if _, err := os.Stat(watermarkPath(root)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("watermark exists after result-file failure: %v", err)

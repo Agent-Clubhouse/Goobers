@@ -5,12 +5,36 @@ Program: [HITL and advanced workflows](hitl-advanced-workflows-program.md)
 Baseline: `04198152b63d228a9714ae2f92a7dca079ba5213` (2026-10-03)
 Task prefix: `HAW-EVT`; task identifiers are stable planning identifiers, not GitHub issues.
 
-> Design approved for incremental delivery on 2026-10-06. Implementation and
-> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
-> not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
+> Design approved for incremental delivery on 2026-10-06. The current-main
+> checkpoint below records merged delivery. The later implementation notes describe
+> the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807).
+> The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
 > remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
-Implementation checkpoint: the local stack implements bounded receipts, pinned
+## Current delivery on main (2026-10-14)
+
+Verified through `f9c15a7b3b4f43c7ef6a299d1dc50b642b45009e`. These merged slices
+advance the queue and shared-read contracts; the overall design remains approved
+and incomplete.
+
+| Area | Merged delivery | Remaining boundary |
+| --- | --- | --- |
+| Source admission | Durable file-delegated starts [#7197](https://github.com/Agent-Clubhouse/Goobers/pull/7197), signals/webhooks [#7198](https://github.com/Agent-Clubhouse/Goobers/pull/7198), plain schedules [#7202](https://github.com/Agent-Clubhouse/Goobers/pull/7202), counted workers [#7203](https://github.com/Agent-Clubhouse/Goobers/pull/7203), and schedule demand [#7205](https://github.com/Agent-Clubhouse/Goobers/pull/7205). | Shared human-session and affected-stage restart admission still belong to HITL delivery. |
+| Schedule discovery | Authored-revision cursors [#7327](https://github.com/Agent-Clubhouse/Goobers/pull/7327), one-hour default coalescing [#7339](https://github.com/Agent-Clubhouse/Goobers/pull/7339), and independent occurrence custody [#7354](https://github.com/Agent-Clubhouse/Goobers/pull/7354). | Public `scheduleCatchUp: all` discovery/runtime is a separate change; storage support alone does not enable it. |
+| Admission waits | Resettable budget, quota, capacity, and workflow-disable waits [#7342](https://github.com/Agent-Clubhouse/Goobers/pull/7342). | Typed public wait metadata, configurable deadlines, queue controls, and the complete lifecycle remain. |
+| Queue traversal | Bounded persistent candidate cursor [#7353](https://github.com/Agent-Clubhouse/Goobers/pull/7353). | Partial-pass progress, cancellable ownership, wall-clock admission budgets, and weighted fairness require follow-up. |
+| Provider read scope | Gaggle/source/policy and credential-separated reads [#7336](https://github.com/Agent-Clubhouse/Goobers/pull/7336); declared ADO read-only POST plans [#7341](https://github.com/Agent-Clubhouse/Goobers/pull/7341). | This does not supply interactive human authorization or a complete provider polling service. |
+| Read invalidation | Snapshot generation fences prevent late fills from reviving explicitly invalidated reads [#7352](https://github.com/Agent-Clubhouse/Goobers/pull/7352). | Connecting confirmed provider writes to those fences is a separate follow-up. |
+
+Generic event publication, subscriptions/debounce, external ingress, and their
+Portal controls have not landed through this checkpoint. Prepared branch tests
+and the reference snapshot do not establish delivery on main. Live authoring,
+provider, and deployment qualification must be reported separately from local
+fixtures and hosted CI.
+
+## Reference snapshot checkpoint
+
+The unmerged reference stack implements bounded receipts, pinned
 routing/debounce, host routing sweeps, archived local consumers, typed workflow
 publication and retained causal-root budgets. Manual, scheduled, demand-sized,
 signal, standalone/detached, direct-engine, child, shared-session and human restart
@@ -48,9 +72,9 @@ Related designs:
 
 ## 2. Original baseline and reuse
 
-This section records the original main-branch baseline. Installed local queue,
-event and shared-read behavior is described in the delivery sections below and
-the [review ledger](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/hitl-advanced-workflows-tracking.md).
+This section records the original main-branch baseline. Current merged delivery
+is listed above; reference-stack behavior is described in the later delivery
+sections and the [review ledger](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/hitl-advanced-workflows-tracking.md).
 
 `internal/triggerqueue` already durably accepts explicit trigger requests with actor/payload conflict detection.
 Its states are accepted, dispatching, dispatched, and rejected; uncertain dispatch requires reconciliation.
@@ -526,14 +550,18 @@ status projection. On first adoption, its historical baseline seeds the cursor;
 an outstanding legacy fire is transferred once with a durable adoption marker,
 so a crash before clearing the old file cannot resurrect it.
 
-This compatibility adapter retains the current scheduler's one coalesced worker
-per due evaluation interval across all declared schedules. Captured from/through
-times and workflow/configuration pins preserve the accepted occurrence. It does
-not implement the proposed one-hour lookback or configurable all-occurrences
-catch-up policy above. Those remain an explicit policy change; the existing
-catch-up semantics are preserved. Cursors are per gaggle/workflow, survive edits,
-and count against shared bounded custody; deletion/recreation does not silently
-reset them. Explicit retired-cursor cleanup remains follow-up work.
+The adapter coalesces eligible occurrences in the preceding hour into one worker
+per due observation across the declared schedules. Captured from/through times,
+window, occurrence count and configuration pins preserve that accepted work.
+Expired discoveries advance the durable cursor without new work; previously
+accepted starts and partial demand retain custody. The explicit all-occurrences
+policy, bounded to 100 occurrences per sweep, remains follow-up work.
+
+Cursors are per gaggle/workflow and normalized schedule/timezone revision. A
+schedule edit begins future discovery at its first observation; unrelated edits
+preserve the cursor, and old accepted work retains its original definition.
+Cursors count against shared bounded custody; deletion/recreation does not
+silently reset them. Explicit retired-cursor cleanup remains follow-up work.
 
 Authenticated GitHub webhooks retain delivery ID, full authenticated payload
 digest, and repository/event metadata. Acceptance freezes all matching recipients

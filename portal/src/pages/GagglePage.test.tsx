@@ -31,6 +31,20 @@ describe("tracked template updates", () => {
     expect(within(region).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("identifies an Azure DevOps gaggle by organization, project and repository (#6799)", async () => {
+    const fixtures = structuredClone(populatedDaemonFixtures());
+    fixtures.gaggles.items[1].project = {
+      provider: "ado",
+      owner: "example-org",
+      project: "Platform",
+      name: "Toolbox",
+    };
+    window.location.hash = `#/gaggle/${fixtures.gaggles.items[1].name}`;
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+    await screen.findByRole("heading", { name: "Developer tools" });
+    expect(screen.getByText("tools · example-org/Platform/Toolbox")).toBeInTheDocument();
+  });
+
   it("does not add template UI to legacy gaggles", async () => {
     window.location.hash = "#/gaggle/core";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);

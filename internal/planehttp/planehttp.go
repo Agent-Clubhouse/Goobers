@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Config configures a daemon-plane client.
@@ -23,6 +24,9 @@ type Config struct {
 	AllowNoToken bool
 	BaseURLError error
 	TokenError   error
+	// Retry tunes the transient-overload retry applied by DoRetrying and
+	// DoJSONRetrying. The zero value selects the defaults.
+	Retry RetryConfig
 }
 
 // Client builds authenticated requests against one daemon-plane base URL.
@@ -30,6 +34,7 @@ type Client struct {
 	baseURL string
 	token   string
 	client  *http.Client
+	retry   RetryConfig
 }
 
 // RequestError identifies which request phase failed.
@@ -61,7 +66,7 @@ func New(config Config) (*Client, error) {
 	if client == nil {
 		client = &http.Client{Timeout: config.Timeout}
 	}
-	return &Client{baseURL: baseURL, token: config.Token, client: client}, nil
+	return &Client{baseURL: baseURL, token: config.Token, client: client, retry: config.Retry}, nil
 }
 
 // BaseURL returns the normalized daemon API root.
@@ -150,7 +155,11 @@ func DecodeError(status int, raw []byte, factory ErrorFactory, fallback ErrorFal
 	if message == "" {
 		message = strings.TrimSpace(string(raw))
 		if fallback.DetailLimit > 0 && len(message) > fallback.DetailLimit {
-			message = message[:fallback.DetailLimit] + fallback.Ellipsis
+			cut := fallback.DetailLimit
+			for cut > 0 && !utf8.RuneStart(message[cut]) {
+				cut--
+			}
+			message = message[:cut] + fallback.Ellipsis
 		}
 	}
 	return factory(status, code, message)

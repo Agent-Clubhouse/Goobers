@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -71,6 +72,24 @@ func TestReleaseClaimsForRunReleasesAllOwnedClaims(t *testing.T) {
 	if released != 3 {
 		t.Fatalf("claim.released events = %d, want 3", released)
 	}
+	// No run journal exists for this holder: the cause is recorded as
+	// deliberately unknown, never guessed (#4421).
+	assertClaimReleaseReason(t, reopened, "terminal-run", claimrelease.Unknown)
+}
+
+// assertClaimReleaseReason pins the disposition terminal cleanup recorded on
+// every released history entry of runID.
+func assertClaimReleaseReason(t *testing.T, ledger *localscheduler.ClaimLedger, runID string, want claimrelease.Disposition) {
+	t.Helper()
+	history := ledger.HistoryForRun(runID)
+	if len(history) == 0 {
+		t.Fatalf("no claim history for %s", runID)
+	}
+	for _, entry := range history {
+		if entry.ReleasedAt == nil || entry.ReleaseReason.Disposition != want {
+			t.Fatalf("release reason for %s/%s = %+v, want %s", runID, entry.ItemID, entry.ReleaseReason, want)
+		}
+	}
 }
 
 func TestRunAbortReleasesOwnedClaims(t *testing.T) {
@@ -100,6 +119,7 @@ func TestRunAbortReleasesOwnedClaims(t *testing.T) {
 	if entry, ok := reopened.Lookup("498"); ok {
 		t.Fatalf("aborted run's claim leaked: %+v", entry)
 	}
+	assertClaimReleaseReason(t, reopened, runID, claimrelease.Cancelled)
 }
 
 func TestRunAbortRetryReleasesOwnedClaims(t *testing.T) {
@@ -173,6 +193,7 @@ func TestConfiguredRunnerReleasesClaimsAtTerminal(t *testing.T) {
 	if entry, ok := reopened.Lookup("498"); ok {
 		t.Fatalf("terminal run's claim leaked: %+v", entry)
 	}
+	assertClaimReleaseReason(t, reopened, runID, claimrelease.Completed)
 }
 
 func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {

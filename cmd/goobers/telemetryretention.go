@@ -231,7 +231,7 @@ func pruneConfiguredTelemetryRetentionPassWithWriter(
 		state.EnforceAt = now.Add(retentionGraceWindow)
 	}
 	if journalPass && pending == nil {
-		pending, err = newTelemetryRetentionPass(config, now, dryRun, results, state.EnforceAt, summary)
+		pending, err = newTelemetryRetentionPass(layout, config, now, dryRun, results, state.EnforceAt, summary)
 		if err != nil {
 			return results, dryRun, err
 		}
@@ -306,7 +306,7 @@ func executeTelemetryRetentionPass(
 				return nil, retention.Summary{}, nil, err
 			}
 		}
-		prepared, err := newTelemetryRetentionPass(config, now, false, precheckResults, state.EnforceAt, precheckSummary)
+		prepared, err := newTelemetryRetentionPass(layout, config, now, false, precheckResults, state.EnforceAt, precheckSummary)
 		if err != nil {
 			return nil, retention.Summary{}, nil, err
 		}
@@ -361,6 +361,7 @@ func pruneTelemetryRetentionCandidates(
 }
 
 func newTelemetryRetentionPass(
+	layout instance.Layout,
 	config instance.TelemetryRetentionConfig,
 	at time.Time,
 	dryRun bool,
@@ -376,10 +377,15 @@ func newTelemetryRetentionPass(
 	if _, err := rand.Read(id[:]); err != nil {
 		return nil, fmt.Errorf("telemetry retention: create pass id: %w", err)
 	}
+	journalSeq, err := journal.InstanceLogLastSeq(layout.SchedulerDir())
+	if err != nil {
+		return nil, fmt.Errorf("telemetry retention: read journal watermark: %w", err)
+	}
 	pass := &telemetryRetentionPass{
 		ID:               fmt.Sprintf("%x", id[:]),
 		Phase:            telemetryRetentionPassPrepared,
 		At:               at,
+		JournalSeq:       journalSeq,
 		DryRun:           dryRun,
 		CandidateCount:   len(candidates),
 		EnforceAt:        enforceAt,
@@ -429,7 +435,7 @@ func publishTelemetryRetentionPass(
 		return fmt.Errorf("telemetry retention: pass %s is not complete", pass.ID)
 	}
 	if dedupe {
-		journaled, err := telemetryRetentionPassJournaled(layout, pass.ID)
+		journaled, err := telemetryRetentionPassJournaled(layout, pass)
 		if err != nil {
 			return err
 		}
@@ -466,13 +472,17 @@ func acknowledgeTelemetryRetentionPass(layout instance.Layout, state telemetryRe
 	return nil
 }
 
-func telemetryRetentionPassJournaled(layout instance.Layout, passID string) (bool, error) {
-	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+func telemetryRetentionPassJournaled(layout instance.Layout, pass telemetryRetentionPass) (bool, error) {
+	// The summary can only have been appended after the pass was created, so
+	// reading from the watermark recorded then finds it without re-parsing the
+	// journal's history (#7031). A pass from before the watermark existed
+	// carries zero, which reads the whole journal.
+	events, err := journal.ReadInstanceLogAfterSeq(layout.SchedulerDir(), pass.JournalSeq)
 	if err != nil {
-		return false, fmt.Errorf("telemetry retention: inspect journal for pass %s: %w", passID, err)
+		return false, fmt.Errorf("telemetry retention: inspect journal for pass %s: %w", pass.ID, err)
 	}
 	for _, event := range events {
-		if event.Type == journal.EventTelemetryRetentionPass && runnerString(event.Runner, "passId") == passID {
+		if event.Type == journal.EventTelemetryRetentionPass && runnerString(event.Runner, "passId") == pass.ID {
 			return true, nil
 		}
 	}
@@ -736,27 +746,19 @@ func compactSchedulerRetention(
 	}
 
 	if db != nil && instanceLog != nil {
-		var compaction journal.InstanceEventsCompaction
-		compacted := false
+		var compactions []journal.InstanceEventsCompaction
 		err := db.MaintainSchedulerRetention(ctx, instanceLog.Dir(), cutoff, func() error {
-			result, err := instanceLog.Compact(cutoff, budgetCutoff)
-			if err != nil {
-				return err
-			}
-			compaction = result
-			compacted = true
-			return nil
-		})
-		if err != nil {
+			var err error
+			compactions, err = compactInstanceJournal(instanceLog, cutoff, budgetCutoff, now)
 			return err
-		}
+		})
 		// Only a compaction that actually ran carries a verdict about stale
 		// generations. Reporting the zero value when the closure never fired
 		// would clear a real consecutive-failure streak with no evidence.
-		if compacted {
+		for _, compaction := range compactions {
 			reportCleanup(compaction)
 		}
-		return nil
+		return err
 	}
 	if db != nil {
 		if _, err := db.PruneSchedulerBefore(ctx, cutoff); err != nil {
@@ -764,11 +766,41 @@ func compactSchedulerRetention(
 		}
 	}
 	if instanceLog != nil {
-		result, err := instanceLog.Compact(cutoff, budgetCutoff)
+		compactions, err := compactInstanceJournal(instanceLog, cutoff, budgetCutoff, now)
+		for _, compaction := range compactions {
+			reportCleanup(compaction)
+		}
 		if err != nil {
 			return fmt.Errorf("compact scheduler journal: %w", err)
 		}
-		reportCleanup(result)
 	}
 	return nil
+}
+
+// schedulerTickSkipBudget and schedulerTickSkipHorizon bound the scheduler
+// journal's tick.skipped churn independently of the telemetry window (#7031):
+// once the journal passes the budget, skips older than the horizon age out.
+const (
+	schedulerTickSkipBudget  = 64 << 20
+	schedulerTickSkipHorizon = 24 * time.Hour
+)
+
+// compactInstanceJournal applies the retention window and then the
+// tick.skipped budget. It returns the result of each pass that ran to a
+// verdict about stale generations: always the window pass, and the budget pass
+// only when it wrote a new generation.
+func compactInstanceJournal(instanceLog *journal.InstanceLog, cutoff, budgetCutoff, now time.Time) ([]journal.InstanceEventsCompaction, error) {
+	result, err := instanceLog.Compact(cutoff, budgetCutoff)
+	if err != nil {
+		return nil, err
+	}
+	compactions := []journal.InstanceEventsCompaction{result}
+	skips, err := instanceLog.CompactTickSkips(schedulerTickSkipBudget, now.Add(-schedulerTickSkipHorizon))
+	if err != nil {
+		return compactions, fmt.Errorf("compact scheduler tick skips: %w", err)
+	}
+	if skips.Dropped > 0 {
+		compactions = append(compactions, skips)
+	}
+	return compactions, nil
 }

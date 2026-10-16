@@ -82,6 +82,75 @@ type deltaPublication struct {
 	Tip     string
 	// Unchanged: a writable stage succeeded without moving its branch.
 	Unchanged bool
+	// PushedBranches names every branch the winning attempt published to the
+	// remote (the git branch-push mutation facts push-branch records). See
+	// retirePushedDeltas.
+	PushedBranches []string
+}
+
+// pushedBranches reads the branches a winning attempt published to origin
+// out of its mutation facts: the git branch-push fact `goobers push-branch`
+// appends once the push has landed. Order is the facts' own.
+func pushedBranches(facts []mutationFact) []string {
+	var out []string
+	for _, f := range facts {
+		if f.Provider == "git" && f.Kind == "branch" && f.Operation == "push" && f.ID != "" && f.ErrorCode == "" {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
+const retirePushedDeltasChange = "retire-pushed-deltas-v1"
+
+// retirePushedDeltas drops the continuity entries a branch push has made
+// redundant (#6902).
+//
+// A bundle is a handoff for work that exists ONLY in the run's pods. Once a
+// stage has pushed the branch the work exists on the remote as well, and every
+// later pod clones the remote branch before it applies a delta, so the remote
+// head — not the bundle — is the receiving ref's truth. Keeping the older
+// bundles is what broke the implementation lane's post-PR loop: push-branch
+// published the run branch at a commit that no recorded bundle carries (it
+// is not the bundle's tip, nor a descendant or patch-equivalent of it), and
+// the re-entered implement stage then cloned that head and was refused its own
+// run's pre-push delta as diverged. The guard was right to refuse — landing
+// the stale bundle would rewind the pushed head — which is exactly why the
+// bundle must not be handed over at all.
+//
+// pushed is the set of branches the stage published. The entries retired are
+// those keyed on the stage's own workspace binding (branch; "" is the run
+// branch, whose real name is runBranch) when that binding's checked-out
+// branch is among pushed, and an entry the SAME stage published is kept: the
+// stage may have committed after the push, and its bundle then carries work
+// the remote lacks. Entries on other bindings are untouched. A genuinely
+// diverged delta is still refused by the pod's ancestry guard; this only
+// stops handing it a bundle the push already superseded.
+func retirePushedDeltas(ctx workflow.Context, record []continuityEntry, pub deltaPublication, stage, branch, runBranch string) []continuityEntry {
+	checkedOut := branch
+	if checkedOut == "" {
+		checkedOut = runBranch
+	}
+	pushed := false
+	for _, b := range pub.PushedBranches {
+		if b == checkedOut {
+			pushed = true
+			break
+		}
+	}
+	// Consulted only when a push happened, and a history recorded before this
+	// change keeps handing the bundles it handed (replay must schedule the
+	// same activity payloads).
+	if !pushed || workflow.GetVersion(ctx, retirePushedDeltasChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		return record
+	}
+	kept := make([]continuityEntry, 0, len(record))
+	for _, e := range record {
+		if e.Branch != branch || (e.Stage == stage && !e.PassThrough && e.Attempt == pub.Attempt) {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 // RepoHandoffUndeclaredErrorCode is the journal error code for the runtime
@@ -257,9 +326,24 @@ func selectTaskDelta(ctx workflow.Context, t apiv1.Task, remote bool, record []c
 // inherits its subject's repo state (decision 001 on gates, ruling 4), so it
 // is handed the last entry whenever its reviewer evaluates in a writable repo
 // workspace.
-func selectGateDelta(ctx workflow.Context, g apiv1.Gate, record []continuityEntry, branch string, rec *runJournal) continuityEntry {
-	if g.Evaluator != apiv1.EvaluatorAgentic || !writableWorkspace(g.EffectiveWorkspace()) {
+//
+// An implementation-review gate (runner.ReviewsImplementation) whose reviewer
+// declared a non-writable workspace is handed the same entry, unjournaled
+// (#5414): the reviewer's own workspace never receives it, but ReviewGoober
+// lands it on a short-lived probe of the run branch to read the committed
+// diff the reviewer is owed. Not journaling keeps the walk's command sequence
+// for such a gate identical to the one histories recorded before this change
+// replay against.
+func selectGateDelta(ctx workflow.Context, g apiv1.Gate, reviewsImplementation bool, record []continuityEntry, branch string, rec *runJournal) continuityEntry {
+	if g.Evaluator != apiv1.EvaluatorAgentic {
 		return continuityEntry{}
+	}
+	if !writableWorkspace(g.EffectiveWorkspace()) {
+		if !reviewsImplementation {
+			return continuityEntry{}
+		}
+		selected, _ := selectDelta(record, g.Name, nil, branch)
+		return selected
 	}
 	selected, _ := selectDelta(record, g.Name, nil, branch)
 	if selected.Digest != "" {

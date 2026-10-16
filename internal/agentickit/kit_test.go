@@ -1,10 +1,12 @@
 package agentickit
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func sampleKit() *Kit {
@@ -71,9 +73,15 @@ func TestKitRefusesTruncatedPayload(t *testing.T) {
 // capabilities against the credential plane at stage start, exactly as a
 // deterministic stage does. Grants carry the SHAPE of an entitlement only.
 func TestKitGrantsCarryNoSecretMaterial(t *testing.T) {
-	data, _, err := Marshal(sampleKit())
+	kit := sampleKit()
+	kit.Envelope.ChildWorkflowOrigin = &apiv1.ChildWorkflowOrigin{StageOccurrence: journal.StageAttemptID("run-1", 2, "edit", 3), AttemptID: journal.StageAttemptID("run-1", 2, "edit", 8)}
+	data, digest, err := Marshal(kit)
 	if err != nil {
 		t.Fatal(err)
+	}
+	decoded, err := Unmarshal(data, digest)
+	if err != nil || !reflect.DeepEqual(decoded.Envelope.ChildWorkflowOrigin, kit.Envelope.ChildWorkflowOrigin) {
+		t.Fatalf("child origin lost through agentic dispatch kit: %+v %v", decoded, err)
 	}
 	for _, forbidden := range []string{"token", "secret", "password", "ghp_"} {
 		if strings.Contains(strings.ToLower(string(data)), forbidden) {

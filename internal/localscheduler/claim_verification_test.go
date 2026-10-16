@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 func TestClaimVerificationIsScopedAndLeaseBound(t *testing.T) {
@@ -29,7 +31,7 @@ func TestClaimVerificationIsScopedAndLeaseBound(t *testing.T) {
 	if got.Verification.State != "verified" || !got.ExpiresAt.Equal(entry.ExpiresAt) {
 		t.Fatalf("observation missing or lease extended: %+v", got)
 	}
-	if err := ledger.ReleaseScoped(key, "run-a"); err != nil {
+	if err := ledger.ReleaseScoped(key, "run-a", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _, err := ledger.ClaimScoped(key, "run-b", "implement", time.Hour); err != nil || !ok {

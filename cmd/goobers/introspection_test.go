@@ -200,9 +200,61 @@ func TestValidateJSONMultiDocumentYAMLLocation(t *testing.T) {
 	}
 	wantHuman := "ERROR   " +
 		filepath.ToSlash(filepath.Join("gaggles", "example", "workflows", "default-implement.yaml")) +
-		": " + wantMessage + "\n\nconfig directory failed validation\n"
+		": " + wantMessage + "\n\nconfig directory failed validation\n" +
+		"the config directory is loaded as one unit (fail closed): no gaggle, goober, or workflow in it loads until every error is fixed\n" +
+		"files with errors (1):\n" +
+		"  gaggles/example/workflows/default-implement.yaml\n" +
+		"files without errors of their own, also not loaded (3):\n" +
+		"  gaggles/example/gaggle.yaml (Gaggle/example)\n" +
+		"  gaggles/example/goobers/coder/goober.yaml (Goober/coder)\n" +
+		"  manifest.yaml (Manifest/example-instance)\n"
 	if humanStdout != wantHuman {
 		t.Fatalf("human output = %q, want byte-for-byte %q", humanStdout, wantHuman)
+	}
+}
+
+func TestInvalidWorkflowNamesBlockedSiblingFiles(t *testing.T) {
+	root := initIntrospectionInstance(t)
+	path := defaultWorkflowPath(root)
+	healthy, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	siblingPath := filepath.Join(filepath.Dir(path), "sibling.yaml")
+	sibling := strings.Replace(string(healthy), "name: default-implement", "name: sibling", 1)
+	if err := os.WriteFile(siblingPath, []byte(sibling), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, stdout, stderr := runArgs(t, "validate", root); code != 0 {
+		t.Fatalf("validate with healthy sibling: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	replaceInFile(t, path, "  start: query-backlog", "  start: missing")
+
+	wantScope := []string{
+		"loaded as one unit (fail closed)",
+		"files with errors (1):\n  gaggles/example/workflows/default-implement.yaml\n",
+		"also not loaded (4):",
+		"  gaggles/example/workflows/sibling.yaml (Workflow/sibling)\n",
+	}
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range wantScope {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+	for _, args := range [][]string{{"status", root}, {"workflow", "show", "sibling", root}} {
+		code, _, stderr = runArgs(t, args...)
+		if code != 1 {
+			t.Fatalf("%v: code=%d stderr=%q", args, code, stderr)
+		}
+		for _, want := range append(wantScope, "error: config directory failed validation\n") {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("%v stderr missing %q:\n%s", args, want, stderr)
+			}
+		}
 	}
 }
 

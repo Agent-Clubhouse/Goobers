@@ -155,6 +155,7 @@ func pullSummaryFromProjection(pr restPRProjection, checkState CheckState) PullR
 		ID:         strconv.Itoa(pr.Number),
 		Number:     pr.Number,
 		URL:        pr.URL,
+		Title:      pr.Title,
 		State:      pr.State,
 		Merged:     pr.Merged || pr.MergedAt != nil,
 		Head:       pr.HeadBranch,
@@ -542,7 +543,7 @@ func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, 
 			return c.GetWorkItem(ctx, req.Repository, req.ID)
 		},
 		postRelease: func(ctx context.Context, winner string) error {
-			return postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release")
+			return postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner, req.Reason), "claim-release")
 		},
 		hasLabel: func(item WorkItem, label string) bool {
 			return item.HasLabel(label)
@@ -621,6 +622,7 @@ type restClosedPull struct {
 type restOpenedPull struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
+	Draft   *bool  `json:"draft"`
 }
 
 func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks) (PullRequestResult, error) {
@@ -634,6 +636,10 @@ func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind Prov
 	} else if ok {
 		return updateRESTPullRequest(ctx, c, kind, baseURL, req, existing.Number, title, prBody)
 	}
+	return createRESTPullRequest(ctx, c, kind, baseURL, req, hooks, title, prBody)
+}
+
+func createRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks, title, prBody string) (PullRequestResult, error) {
 	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
 	if err != nil {
 		return PullRequestResult{}, err
@@ -648,7 +654,7 @@ func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind Prov
 		return PullRequestResult{}, err
 	}
 	recordRESTPullRequestMutation(ctx, c, kind, req, out, "open", title, prBody)
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL, Draft: out.Draft}, nil
 }
 
 func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, req PullRequestRequest, number int, title, prBody string) (PullRequestResult, error) {
@@ -661,7 +667,7 @@ func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind Pro
 		return PullRequestResult{}, err
 	}
 	recordRESTPullRequestMutation(ctx, c, kind, req, out, "update", title, prBody)
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL, Draft: out.Draft}, nil
 }
 
 func recordRESTPullRequestMutation(ctx context.Context, c restMutationRecorder, kind ProviderKind, req PullRequestRequest, out restOpenedPull, operation, title, body string) {

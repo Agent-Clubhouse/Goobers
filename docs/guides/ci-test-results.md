@@ -32,8 +32,50 @@ that failed without any failing test (a compile error, a panic in `TestMain`)
 gets a synthetic `[package]` case carrying the build or package output.
 
 Other jobs (`preflight`, `checks`, `lint`, `shipped`, `integration`,
-`windows-smoke`, `sandbox`, and the rest) do not publish JUnit yet; their logs
-remain the record.
+`windows-smoke`, `sandbox`, and the rest) do not publish JUnit yet. Every job
+that runs the CI driver does record [CI failure diagnostics](#ci-failure-diagnostics),
+however, so its failing check, tests, and output are available without the log.
+
+## CI failure diagnostics
+
+Every `ci.yml` job that runs `go run ./test/ci` (except `scope` and the
+cache-warming job), along with the macOS nightly `runtime` job, ends with two
+steps:
+
+- **Record CI diagnostics** (`go run ./test/ci diagnose`, `if: always()`)
+  writes a job summary: the failure class, an environment record (runner
+  OS/arch/name, image and version, Go version, CPUs, run/attempt/ref/SHA), one
+  row per driver invocation (result, start, duration, failed or unfinished
+  check, slowest checks), and the failing tests and packages with their output.
+  If no test is named, it shows the tail of the output instead.
+- **Upload CI diagnostics** (only on failure or cancellation) uploads the
+  `ci-diagnostics-<job>-<matrix-index>` artifact. It contains `summary.md`,
+  `diagnostics.json`, and, for each driver invocation, its full `output.log`
+  (capped at 64 MiB) and `state.json`.
+
+The driver records only on GitHub Actions (under `$RUNNER_TEMP`), or when
+`GOOBERS_CI_DIAGNOSTICS_DIR` is set, so local runs are unchanged. Both steps
+use `continue-on-error`. They never change a job's verdict, and no check is
+skipped or retried.
+
+| Class | Category | Meaning |
+|---|---|---|
+| `test-failure` | test | `--- FAIL:` lines, or a package `FAIL` with no named test |
+| `test-timeout` | test | a `panic: test timed out` in the failed check |
+| `build-failure` | check | `[build failed]` / `[setup failed]` in the failed check |
+| `check-failure` | check | a non-test check (lint, policy gate, …) failed |
+| `step-timeout` | infrastructure | the driver was stopped mid-check while the job failed (step or job timeout, runner shutdown) |
+| `cancelled` | infrastructure | the job was cancelled (superseded run, manual cancel) |
+| `outside-driver-failure` | outside-driver | the job failed and the driver never ran (setup, checkout, or toolchain step) |
+| `post-driver-failure` | outside-driver | every driver run passed, but a later step failed |
+
+When a runner is lost, no later step runs at all. A failed job with no
+`CI diagnostics` summary and no artifact therefore means runner loss.
+
+The diagnose step also writes one `CI failure class: <class>` notice
+annotation. That notice, and the job log, carry only the class: test names and
+`FAIL` lines go to the summary and artifact. Flake watch keeps fingerprinting
+the driver's own output exactly as before.
 
 ## Annotations
 
@@ -83,6 +125,10 @@ gh run download <run-id> -R Agent-Clubhouse/Goobers -n test-results-Linux -D res
 # List the failing test cases in the downloaded reports.
 grep -B1 '<failure' -r results --include '*.junit.xml' | grep -o 'classname="[^"]*" name="[^"]*"'
 
+# Failure diagnostics (failing check/tests, output, runner details) of failed jobs.
+# The artifact is available once the failed job's upload step finishes.
+gh run download <run-id> -R Agent-Clubhouse/Goobers -p 'ci-diagnostics-*' -D diagnostics
+
 # Annotations of one job, as JSON (the job id is in `gh run view --json jobs`).
 gh api repos/Agent-Clubhouse/Goobers/check-runs/<job-id>/annotations
 ```
@@ -96,7 +142,10 @@ have none left; rerun the job if you need fresh results.
    `escalate failed main validation` job also files or updates a
    `CI: main branch validation failed` issue linking it).
 2. Read the annotations on the summary page. For a unit job, they name the
-   failing tests and lines. For other jobs, open the failed step's log.
+   failing tests and lines. Every driver job's summary page shows its
+   `CI diagnostics` section, which gives the failure class (test vs.
+   infrastructure) and the failing tests with their output. The
+   `ci-diagnostics-*` artifact holds the full output log.
 3. For the full output of a unit failure, download its `test-results-*`
    artifact and read the `<failure>` element of the failing case.
 4. Decide flake versus break. Rerun the test locally with the CI flags

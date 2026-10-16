@@ -704,3 +704,46 @@ func TestDisconnectedRefreshCallerCannotPoisonExpiredKeyCache(t *testing.T) {
 		t.Fatalf("JWKS fetches = %d, want one initial and one shared refresh", got)
 	}
 }
+
+func TestFetchKeysSkipsMalformedKeys(t *testing.T) {
+	key, _ := testKeys(t)
+	public := key.Public().(*rsa.PublicKey)
+	good := map[string]string{
+		"kty": "RSA", "use": "sig", "kid": "good",
+		"n": base64.RawURLEncoding.EncodeToString(public.N.Bytes()),
+		"e": base64.RawURLEncoding.EncodeToString(big31(public.E)),
+	}
+	bad := map[string]string{"kty": "RSA", "use": "sig", "kid": "bad", "n": "!!!", "e": "AQAB"}
+	cases := []struct {
+		name    string
+		keys    []map[string]string
+		want    []string
+		wantErr bool
+	}{
+		{name: "mixed", keys: []map[string]string{bad, good}, want: []string{"good"}},
+		{name: "all malformed", keys: []map[string]string{bad}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			issuer := newFakeIssuer(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"keys": tc.keys})
+			}))
+			defer server.Close()
+			a := newTestAuthenticator(t, issuer, nil)
+			keys, _, err := a.fetchKeys(context.Background(), server.URL)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("fetchKeys() = nil error, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(keys) != len(tc.want) || keys["good"] == nil {
+				t.Fatalf("keys = %v, want %v", keys, tc.want)
+			}
+		})
+	}
+}

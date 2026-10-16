@@ -48,6 +48,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
+		return Result{}, err
+	}
 	if in.Stage == "" {
 		return Result{}, fmt.Errorf("runner: Stage is required")
 	}
@@ -117,12 +120,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, err
 		}
-		activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
-		if activeParallel != nil {
-			jr.SetBranchCursors(activeParallel.cursors())
-			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
-				jr.SetBranch(owner.id)
-			}
+		activeParallel, parallelStart, err := rerunParallelScope(jr, seedEvents, in.Machine, in.Stage)
+		if err != nil {
+			return Result{}, err
 		}
 		item, err := resumeItem(rd, id)
 		if err != nil {
@@ -143,18 +143,19 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Machine:          in.Machine,
 			GooberDigest:     in.GooberDigest,
 			Gaggle:           id.Gaggle,
+			Child:            id.Child,
 			Trigger:          id.Trigger,
 			RepoRef:          in.RepoRef,
 			Item:             item,
 			RunControls:      runControls,
 		}
 		branch := 0
-		if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 {
+		if activeParallel != nil && !parallelUsesDispatcher(in.Machine, activeParallel.spec) {
 			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
 				branch = owner.id
 			}
 		}
-		startIn, err = r.restoreResumeWorkspaceRevision(ctx, startIn, events, activeParallel, parallelStart, branch)
+		startIn, err = r.restoreExecutionWorkspace(ctx, rd, id, startIn, events, activeParallel, parallelStart, branch)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
 		}
@@ -190,10 +191,11 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws.visitedStages = stageVisitSeed(seedEvents)
 		ws.parallel = activeParallel
 		ws.fanIn = rerunFanIn(seedEvents, in.Machine, in.Stage)
+		ws.fanOutResults = assembleMapJoin(in.RunID, seedEvents, in.Machine, ws.fanIn)
 		if activeParallel != nil {
 			ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		}
-		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(seedEvents)
+		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(mapJoinSubjectEvents(seedEvents, ws.fanIn))
 		ws.lastResult = discardToleratedFailureOutputs(in.Machine, ws.lastStage, ws.lastResult)
 		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 		ws.branchRecorded = hasRunBranchRef(events)
@@ -229,6 +231,33 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 // falling back to current() only if resolution can't place it at all
 // (defensive; should not happen given compile-time rule 1's disjoint branch
 // subgraphs).
+// rerunParallelScope rebuilds the parallel a rerun target belongs to and
+// points the journal at the owning branch. A recorded selective visit is
+// verified first, a pending map visit is verified strictly against its
+// frozen roster, and a rerun into a branch its frozen selection skipped is
+// refused: all are typed workflow_integrity failures.
+func rerunParallelScope(jr *journal.Run, seedEvents []journal.Event, machine *workflow.Machine, stage string) (*parallelExec, int, error) {
+	if err := verifyRecordedSelections(seedEvents, machine); err != nil {
+		return nil, -1, err
+	}
+	activeParallel, parallelStart, err := pendingParallel(seedEvents, machine)
+	if err != nil {
+		return nil, -1, fmt.Errorf("runner: rerun: %w", err)
+	}
+	if activeParallel == nil {
+		return nil, parallelStart, nil
+	}
+	owner := rerunOwnerBranch(activeParallel, machine, stage)
+	if err := refuseSkippedBranchRerun(activeParallel, owner); err != nil {
+		return nil, -1, err
+	}
+	jr.SetBranchCursors(activeParallel.cursors())
+	if owner != nil {
+		jr.SetBranch(owner.id)
+	}
+	return activeParallel, parallelStart, nil
+}
+
 func rerunOwnerBranch(activeParallel *parallelExec, machine *workflow.Machine, stage string) *branchState {
 	owner := activeParallel.current()
 	if name := branchOwningState(machine, activeParallel.spec, stage); name != "" {

@@ -255,28 +255,75 @@ path with the bounded snapshot; they do not describe the current fleet writer.
 ## Pending issue observations
 
 The independent `backlog` condition consumes the scheduler's actual bounded
-issue-counter polls. Health sampling never queries a provider or acquires a
-claim. A complete first/only page can establish an empty matching backlog.
+issue-counter polls. Health sampling never lists provider queues or acquires a
+claim; its only provider reads are the bounded shared-lease reads described
+under claimability evidence. A complete first/only page can establish an empty matching backlog.
 Positive partial pages provide a lower bound; continuation pages, failures,
 and unknown counters never establish zero. Overlapping workflow selectors use
 the maximum observed page count, avoiding duplicate issue counts across workflows.
 
-Five scalar fields carry pending count, source time, coverage, state and reason.
+Six scalar fields carry pending count, verified claimable count, source time,
+coverage, state and reason.
 `attention / pending_without_confirmed_progress` means continuously observed
-matching issue work has outlasted the configured progress period without
-confirmed useful progress. It is independent of the main gaggle state and does
-not prove claim availability or a stuck worker. The existing last-useful-progress
+matching issue work of unknown claimability has outlasted the configured
+progress period without confirmed useful progress. It is independent of the
+main gaggle state and does not prove claim availability or a stuck worker. The existing last-useful-progress
 timestamp supplies context. Pauses, accepted definition changes, complete empty
 pages, partial coverage, stale evidence and observation gaps reset pending age.
 The source expires after 60 seconds, even if daemon heartbeats remain live.
 Sparse sampling therefore remains conservative and cannot bridge unobserved gaps.
 
-This counter does not apply the full stage claim transaction's blocked-item,
-local-lease and shared-lease policy. Positive work therefore remains explicitly
-claimability-unknown. A reusable bounded read-only claimability adapter is tracked in
-[#5489](https://github.com/Agent-Clubhouse/Goobers/issues/5489) for v0.6.0; this release does not assert definitive issue-work stalls from the
-provider label/field selector alone. No issue identifiers, titles or URLs are
-retained or exported by this observation.
+### Claimability evidence
+
+Each counter retains, in memory only, the identities of at most 20 matching
+items from its own actual poll page plus whether the provider showed the
+claimed marker. Once per poll, the daemon classifies them read-only against the
+sources the workflow's `backlog-query` admission consults, under the same
+gaggle namespace, provider and pinned claim visibility:
+
+- the local claim ledger: a live scoped or legacy lease is held; an expired
+  lease awaiting recovery is unknown; a recent provider disagreement inside the
+  shortest configured claim lease is waiting, and one only the longest still
+  covers is unknown;
+- learned dependency blocks for the polled repository are unknown: admission
+  re-checks every block against live provider state each cycle and clears
+  resolved ones, so a recorded block does not prove the item is still deferred;
+- for `claimVisibility: shared`, the shared lease, judged only by the provider
+  clock in each read: another deployment's live lease is held; a lease expired
+  by that clock (its owner may still renew), a missing clock, a corrupt or
+  unreadable record, or an unavailable store is unknown.
+
+An item carrying the provider claimed marker is unknown, because only the
+admission transaction's ownership confirmation can settle it. Observation never
+acquires, renews or releases a claim, takes no claim or state lock, and writes
+no ledger, blocked record or shared lease. It reads at most 10 shared leases per
+poll, each request reserved through the daemon's provider quota with no retries,
+reads at most 8 MiB from each of the local claim ledger and blocked-record
+files, and stops after 5 seconds even if a source read has not returned.
+Cancellation, timeouts, oversized local sources, truncated candidates,
+continuation pages, unreadable sources, workflows whose admission identity
+cannot be derived statically (including a backlog on another provider than the
+polled project), and replacement counters after a reload remain
+unknown; none can produce a claimable count or a held conclusion.
+
+`backlogClaimableCount` (`claimableCount` in reports) is present only with:
+
+- `pending / claimable_observed`: at least that many polled items were verified
+  admissible at observation time;
+- `attention / claimable_without_confirmed_progress`: verified admissible work
+  has outlasted the progress period without confirmed useful progress;
+- `pending / pending_held` with count `0`: the complete poll's every pending item
+  was observed held by a live lease or waiting out a disagreement backoff. This is deferral,
+  not a stall, so it resets pending age.
+
+The count is a lower bound and evidence, not an authorization guarantee or a
+reservation. Admission runs later and may observe a different ledger revision,
+blocked record, shared lease or provider label: another run can claim an item,
+a lease can lapse or a dependency can clear between observation and admission.
+Overlapping workflow selectors report the maximum verified count. Stale
+evidence drops the claimable count with the rest of the condition. No issue
+identifiers, titles, URLs or claim payloads are retained beyond the in-memory
+poll or exported.
 
 ### Export loss evidence
 

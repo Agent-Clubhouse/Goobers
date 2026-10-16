@@ -389,10 +389,10 @@ func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
 	}}}}
 
 	askedFor := map[apiv1.Harness]int{}
-	credentialFor := func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
+	credentialFor := &modelCredentialSource{resolve: func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
 		askedFor[h]++
 		return func(context.Context) (string, error) { return "token-for-" + string(h), nil }, nil
-	}
+	}}
 
 	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err != nil {
 		t.Fatalf("preflight: %v", err)

@@ -24,7 +24,9 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["create", "get", "delete", "list"]
+    # patch releases an isolated attempt's custody finalizer only after the
+    # worker observes exact pod termination and durable output surrender.
+    verbs: ["create", "get", "delete", "list", "patch"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get"]
