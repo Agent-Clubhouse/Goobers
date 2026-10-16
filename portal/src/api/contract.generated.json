@@ -416,7 +416,7 @@
       "capability": "approve",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -428,7 +428,7 @@
       "capability": "override",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -440,7 +440,7 @@
       "capability": "rerun",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -572,7 +572,7 @@
       "actionClass": "maintenance",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },

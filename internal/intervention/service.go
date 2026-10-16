@@ -192,7 +192,7 @@ func (s *Service) AcceptApprove(admission, execution context.Context, input http
 }
 
 func (s *Service) prepareIntervention(
-	execution context.Context,
+	admission context.Context,
 	action hitlAction,
 	replayAction string,
 	input httpapi.InterventionRequest,
@@ -205,7 +205,7 @@ func (s *Service) prepareIntervention(
 	// Engine runs deduplicate inside the workflow; they must never scan the
 	// daemon snapshot for runner-written replay markers.
 	if resolved.engineDriven {
-		result, err := s.deliverHITL(execution, action, resolved, input)
+		result, err := s.deliverHITL(admission, action, resolved, input)
 		return resolved, &result, true, err
 	}
 	if result, replayed, err := replayIntervention(resolved, replayAction, input); replayed || err != nil {
@@ -222,7 +222,7 @@ func finishIntervention(action string, resolved resolvedInterventionRun, err err
 }
 
 func (s *Service) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
-	resolved, result, done, err := s.prepareIntervention(execution, hitlActionApprove, "approve", input)
+	resolved, result, done, err := s.prepareIntervention(admission, hitlActionApprove, "approve", input)
 	if done {
 		return *result, err
 	}
@@ -315,7 +315,7 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 	if decision == "" {
 		decision = "pass"
 	}
-	resolved, result, done, err := s.prepareIntervention(execution, hitlActionOverride, "override", input)
+	resolved, result, done, err := s.prepareIntervention(admission, hitlActionOverride, "override", input)
 	if done {
 		return *result, err
 	}
@@ -370,7 +370,7 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 	if addendum == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("addendum_required", "instruction addendum is required")
 	}
-	resolved, result, done, err := s.prepareIntervention(execution, hitlActionRerun, "rerun", input)
+	resolved, result, done, err := s.prepareIntervention(admission, hitlActionRerun, "rerun", input)
 	if done {
 		return *result, err
 	}
@@ -450,7 +450,7 @@ func (s *Service) AcceptDenyEscalation(admission, execution context.Context, inp
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionDeny, resolved, input)
+		return s.deliverHITL(admission, hitlActionDeny, resolved, input)
 	}
 	return s.denyEscalation(resolved, input)
 }

@@ -465,9 +465,14 @@ const (
 	// transfer rather than query. A large artifact over a slow link legitimately
 	// takes longer than any query should.
 	BlobBudget = 60 * time.Second
-	// MutationBudget covers approve/override/rerun. Kept at the bounded budget:
-	// a mutation that cannot be accepted in 8s is not going to be accepted.
+	// MutationBudget covers ordinary bounded mutations: work that cannot be
+	// accepted in 8s is not going to be accepted.
 	MutationBudget = 8 * time.Second
+	// InterventionBudget contains one engine HITL update (60s) plus response
+	// margin. Engine-driven approve/override/rerun/resolve wait for the
+	// workflow's durable decision, rather than reporting success after only
+	// enqueueing it.
+	InterventionBudget = 65 * time.Second
 	// CredentialResolveBudget covers the credential plane's resolve route. Its
 	// time is an outbound token mint, not a query: a GitHub App installation
 	// token exchange is bounded at 30s (internal/githubapp mintTimeout), and
@@ -573,9 +578,9 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
-	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: InterventionBudget},
 
 	// RouteWorkflowEnabled edits a workflow definition source atomically to
 	// toggle the scheduler's honor bit for its non-manual triggers. It is
@@ -608,7 +613,7 @@ var v1Routes = []Route{
 	{ID: RouteClaimsActive, Method: http.MethodGet, Path: ClaimsActivePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerStatus, Method: http.MethodGet, Path: TriggerStatusPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: InterventionBudget},
 	// Cancelling a live run is operator recovery, like `run abort` and the
 	// HITL resolution above — maintenance, outside the runtime parity
 	// contract.
