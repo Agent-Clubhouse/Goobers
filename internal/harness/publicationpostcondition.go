@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/handoffcheck"
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // ErrorCodeInvalidPublication names a success completion whose declared,
@@ -24,8 +28,23 @@ const ErrorCodeInvalidPublication = "INVALID_PUBLICATION"
 var ErrInvalidPublication = errors.New(ErrorCodeInvalidPublication + ": the stage reported success but its declared output was not accepted")
 
 // publicationPostcondition is armed for an invoke whose publication contract
-// binds at least one slot to a JSON Schema.
-type publicationPostcondition struct{}
+// binds at least one slot to a JSON Schema. It remembers every completion-
+// boundary check so the outcome can be journaled.
+type publicationPostcondition struct {
+	slots []string
+	// schemaIDs keeps each declared slot's schema identity, so a rejection
+	// that names only the slot (an omitted output) still records its schema.
+	schemaIDs map[string]string
+	checks    []publicationCheck
+}
+
+func newPublicationPostcondition(schemas map[string]*handoffcheck.Schema) *publicationPostcondition {
+	p := &publicationPostcondition{slots: slices.Sorted(maps.Keys(schemas)), schemaIDs: make(map[string]string, len(schemas))}
+	for slot, schema := range schemas {
+		p.schemaIDs[slot] = schema.ID()
+	}
+	return p
+}
 
 // armPostconditions hands goobers-io the declared publication schemas and arms
 // both completion postconditions; the publication check wraps the commit check
@@ -34,6 +53,19 @@ func (e *Executor) armPostconditions(ctx context.Context, mode Mode, env apiv1.I
 	req.PublicationSchemas = publicationSchemasFor(ctx, env)
 	commit := armCommitPostcondition(ctx, mode, env, req)
 	return commit, e.armPublicationPostcondition(ctx, mode, env, req)
+}
+
+// runSettled runs the adapter and settles both completion postconditions. For
+// a stage with schema-bound slots it clears a prior invocation's publication
+// receipts first and journals this attempt's publication diagnostics after.
+func (e *Executor) runSettled(ctx context.Context, env apiv1.InvocationEnvelope, req RunRequest, nested NestedPolicyCapability, commit *commitPostcondition, publication *publicationPostcondition) (Outcome, error) {
+	if len(req.PublicationSchemas) > 0 {
+		if err := mcpio.ResetPublicationReceipts(req.Workspace, goobersIOPublicationReceiptFile()); err != nil {
+			return Outcome{}, fmt.Errorf("harness: reset goobers-io publication receipts: %w", err)
+		}
+	}
+	out, err := publication.settle(commit.settle(e.runAdapter(ctx, req, nested)))
+	return out, errors.Join(err, e.journalPublicationDiagnostics(env, req, publication))
 }
 
 // armPublicationPostcondition wraps req's completion validator so a success
@@ -48,6 +80,7 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 	if !ok || manifest == "" {
 		return nil
 	}
+	p := newPublicationPostcondition(declaredPublicationSchemas(ctx, env))
 	base := req.ValidateCompletion
 	req.ValidateCompletion = func(payload []byte) error {
 		var commitErr error
@@ -64,8 +97,13 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 		if !claimsSuccess(payload) {
 			return commitErr
 		}
-		err := e.checkDeclaredPublication(ctx, env, manifest)
-		if err == nil {
+		prepared, err := e.prepareDeclaredSet(ctx, env, manifest)
+		p.record(prepared, err)
+		// Diagnostics keep every completion-boundary failure, but only one
+		// liftArtifacts would report as a declared-artifact failure is
+		// repairable; anything else (I/O, cancellation) is left for the
+		// authoritative lift to surface.
+		if _, _, repairable := declaredArtifactFailure(err); err == nil || !repairable {
 			return commitErr
 		}
 		// One %w keeps this a single member, so withoutPostcondition strips it whole.
@@ -75,19 +113,7 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 		}
 		return errors.Join(commitErr, publicationErr)
 	}
-	return &publicationPostcondition{}
-}
-
-// checkDeclaredPublication runs the lift-time validation without recording
-// anything. Only failures liftArtifacts would report as a declared-artifact
-// failure are repairable; anything else (I/O, cancellation) is left for the
-// authoritative lift to surface.
-func (e *Executor) checkDeclaredPublication(ctx context.Context, env apiv1.InvocationEnvelope, manifest string) error {
-	_, err := e.prepareDeclaredSet(ctx, env, manifest)
-	if _, _, ok := declaredArtifactFailure(err); err != nil && ok {
-		return err
-	}
-	return nil
+	return p
 }
 
 // settle clears an adapter error that is only the publication postcondition:

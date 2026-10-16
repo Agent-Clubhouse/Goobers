@@ -45,6 +45,17 @@ type preparedEntry struct {
 	data      []byte
 }
 
+// Digest returns the digest of the sanitized bytes prepared for name — the
+// exact bytes CheckSchemas validates and Publish records.
+func (p *Prepared) Digest(name string) (string, bool) {
+	for i := range p.entries {
+		if p.entries[i].name == name {
+			return apiv1.Digest(p.entries[i].data), true
+		}
+	}
+	return "", false
+}
+
 // Prepare validates every entry and sanitizes every payload before the caller
 // can publish anything. Both raw and sanitized bytes have aggregate bounds.
 func Prepare(ctx context.Context, workspace, manifestPath string, sanitize Sanitize) (prepared *Prepared, retErr error) {
