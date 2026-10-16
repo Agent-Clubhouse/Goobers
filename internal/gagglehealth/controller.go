@@ -19,6 +19,7 @@ const (
 // ObservationStatus keeps absence, health, findings, and uncertainty distinct.
 type ObservationStatus string
 
+// Observation statuses a detector or evaluation can report.
 const (
 	ObservationNotObserved   ObservationStatus = "not-observed"
 	ObservationHealthy       ObservationStatus = "healthy"
@@ -29,6 +30,7 @@ const (
 // EvidenceDependency identifies one bounded snapshot section a detector needs.
 type EvidenceDependency string
 
+// Evidence dependencies a detector can declare.
 const (
 	EvidenceWorkflows      EvidenceDependency = "workflows"
 	EvidenceRuns           EvidenceDependency = "runs"

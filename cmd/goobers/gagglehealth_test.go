@@ -169,7 +169,7 @@ func TestDaemonGaggleHealthRepairTransitionWakesController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	source := &countingHealthSnapshotSource{}
 	controller, err := gagglehealth.NewController(store, source, gagglehealth.ControllerOptions{MaxConcurrent: 1})
 	if err != nil {
@@ -304,7 +304,7 @@ func TestDaemonGaggleHealthReplacePublishesDefinitionsBeforeEvaluation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	controller, err := gagglehealth.NewController(store, health, gagglehealth.ControllerOptions{MaxConcurrent: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -345,6 +345,20 @@ func TestDaemonGaggleHealthReplacePublishesDefinitionsBeforeEvaluation(t *testin
 	health.mu.RUnlock()
 	if current != replacement {
 		t.Fatal("failed replacement did not restore the published definitions")
+	}
+}
+
+func TestOpenDaemonHealthStoreAcceptsRelativeInstanceRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	health := &daemonGaggleHealth{definitions: &instance.ConfigSet{}}
+	store, err := openDaemonHealthStore(".", health.retention)
+	if err != nil {
+		t.Fatalf("openDaemonHealthStore(\".\") error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	if _, err := os.Stat(filepath.Join(dir, "health", "store.lock")); err != nil {
+		t.Fatalf("health store was not opened under the instance root: %v", err)
 	}
 }
 

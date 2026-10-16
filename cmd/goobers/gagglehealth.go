@@ -32,6 +32,7 @@ type gaggleHealthEvidenceReader interface {
 
 type daemonGaggleHealth struct {
 	mu           sync.RWMutex
+	replaceMu    sync.Mutex // serializes Replace so its rollback restores its own predecessor
 	root         string
 	config       *instance.Config
 	definitions  *instance.ConfigSet
@@ -46,6 +47,17 @@ type daemonGaggleHealth struct {
 	wg           sync.WaitGroup
 }
 
+// openDaemonHealthStore opens the health store under the daemon's instance
+// root. `goobers up` accepts a relative root (and defaults to "."), while the
+// store requires an absolute one.
+func openDaemonHealthStore(root string, retention gagglehealth.RetentionResolver) (*gagglehealth.Store, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve gaggle health instance root: %w", err)
+	}
+	return gagglehealth.OpenStore(abs, retention)
+}
+
 func startDaemonGaggleHealth(ctx context.Context, root string, setup *schedulerSetup, reads *readservice.Local) (*daemonGaggleHealth, error) {
 	watchCtx, cancel := context.WithCancel(ctx)
 	health := &daemonGaggleHealth{
@@ -53,7 +65,7 @@ func startDaemonGaggleHealth(ctx context.Context, root string, setup *schedulerS
 		instanceLog: setup.InstanceLog, cancel: cancel, instanceWake: make(chan struct{}, 1),
 	}
 	health.replaceDefinitions(setup.Definitions)
-	store, err := gagglehealth.OpenStore(root, health.retention)
+	store, err := openDaemonHealthStore(root, health.retention)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -85,6 +97,8 @@ func (h *daemonGaggleHealth) Replace(definitions *instance.ConfigSet) error {
 	if h == nil {
 		return nil
 	}
+	h.replaceMu.Lock()
+	defer h.replaceMu.Unlock()
 	registrations := h.registrations(definitions)
 	retentions := resolvedHealthRetentions(definitions)
 	h.mu.Lock()
@@ -92,13 +106,17 @@ func (h *daemonGaggleHealth) Replace(definitions *instance.ConfigSet) error {
 	previousRetentions := h.retentions
 	h.definitions = definitions
 	h.retentions = retentions
+	h.mu.Unlock()
+	// Reload must run without h.mu: a finishing evaluation holds the
+	// controller lock while it projects a snapshot, and projection reads
+	// retention under h.mu.
 	if err := h.controller.Reload(registrations); err != nil {
+		h.mu.Lock()
 		h.definitions = previousDefinitions
 		h.retentions = previousRetentions
 		h.mu.Unlock()
 		return fmt.Errorf("reload gaggle health controllers: %w", err)
 	}
-	h.mu.Unlock()
 	return nil
 }
 

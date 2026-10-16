@@ -292,7 +292,7 @@ func TestControllerDetectorTimeoutCancellationAndRestartDedupe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	after, err := store.Snapshot("alpha")
 	if err != nil {
 		t.Fatal(err)
