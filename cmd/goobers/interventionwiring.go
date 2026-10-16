@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/intervention"
 	"github.com/goobers/goobers/internal/journal"
@@ -118,11 +121,11 @@ func (c interventionClaims) History(runID string, fallbackProvider apiv1.Provide
 	return claimHistoryForRun(c.layout, runID, fallbackProvider)
 }
 
-func (c interventionClaims) Reclaim(claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (bool, string, error) {
+func (c interventionClaims) Reclaim(ctx context.Context, claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (bool, string, error) {
 	var acquired bool
 	var holder string
 	lockPath := filepath.Join(c.layout.SchedulerDir(), claimLockFileName)
-	err := withClaimLockForRun(lockPath, claimLockOperationIntervention, gaggle, runID, func() error {
+	err := withClaimLockForRunContext(ctx, lockPath, claimLockOperationIntervention, gaggle, runID, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			filepath.Join(c.layout.SchedulerDir(), claimLedgerFileName),
 			localscheduler.WithInstanceLog(c.instanceLog),
@@ -133,6 +136,15 @@ func (c interventionClaims) Reclaim(claims []localscheduler.ClaimEntry, gaggle, 
 		acquired, holder, err = ledger.ReclaimAll(claims, runID, workflowName, DefaultClaimLease)
 		return err
 	})
+	var timeoutErr *claimsLockTimeoutError
+	if errors.As(err, &timeoutErr) {
+		return false, "", httpapi.NewInterventionError(
+			http.StatusServiceUnavailable,
+			claimsLockTimeoutCode,
+			"run claims are busy; retry the intervention",
+			err,
+		)
+	}
 	return acquired, holder, err
 }
 

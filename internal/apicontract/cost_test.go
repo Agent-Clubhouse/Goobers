@@ -79,6 +79,13 @@ func TestEveryRouteIsClassified(t *testing.T) {
 			}
 			continue
 		}
+		// Intervention routes synchronously wait for one engine HITL update.
+		// Their current callers are the CLI verbs, whose dedicated transport
+		// timeout is pinned above InterventionBudget in cmd/goobers.
+		switch route.ID {
+		case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
+			continue
+		}
 		if route.Budget >= clientAbort {
 			t.Errorf("route %s has a %s budget, at or above the client's %s abort; the client "+
 				"would give up first and the user would see a generic network error instead "+
@@ -245,6 +252,28 @@ func TestCredentialResolveBudget(t *testing.T) {
 	}
 	if route.Budget != CredentialResolveBudget {
 		t.Errorf("credentialResolve budget = %s, want CredentialResolveBudget (%s)", route.Budget, CredentialResolveBudget)
+	}
+}
+
+func TestInterventionBudgetContainsEngineHITLDelivery(t *testing.T) {
+	const hitlUpdateTimeout = 60 * time.Second // internal/engine hitlUpdateTimeout
+	for _, id := range []RouteID{
+		RouteApproveStage,
+		RouteOverrideStage,
+		RouteRerunStage,
+		RouteResolveEscalation,
+	} {
+		route, ok := V1Route(id)
+		if !ok {
+			t.Fatalf("%s route is not in the V1 contract", id)
+		}
+		if route.Budget != InterventionBudget {
+			t.Errorf("%s budget = %s, want InterventionBudget (%s)", id, route.Budget, InterventionBudget)
+		}
+		if route.Budget <= hitlUpdateTimeout {
+			t.Errorf("%s budget %s does not contain an engine HITL delivery (%s ceiling)",
+				id, route.Budget, hitlUpdateTimeout)
+		}
 	}
 }
 
