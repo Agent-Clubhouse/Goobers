@@ -231,3 +231,15 @@ func configuredContext(request ConfiguredRequest, cfg *instance.Config, set *ins
 	context.ConfigDigest = digest(encoded)
 	return context, resolved.Warnings, nil
 }
+
+// ConfiguredAdmission derives advisory validation inputs from a trusted loaded
+// configuration snapshot. Runtime callers must additionally verify the exact
+// archive and parent journal pins and intersect current applied permissions.
+// This function neither authenticates a request nor grants execution authority.
+func ConfiguredAdmission(parent ParentSelection, backend Backend, cfg *instance.Config, set *instance.ConfigSet, admit GooberAdmission) (AdmissionContext, error) {
+	if cfg == nil || set == nil || admit == nil {
+		return AdmissionContext{}, errors.New("configured child admission requires loaded trusted configuration")
+	}
+	input, _, err := configuredContext(ConfiguredRequest{Gaggle: parent.Gaggle, ParentWorkflow: parent.Workflow, ParentStage: parent.Stage, Backend: backend}, cfg, set, admit)
+	return input, err
+}

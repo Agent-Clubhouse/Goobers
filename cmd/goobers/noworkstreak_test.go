@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -216,7 +217,7 @@ func reclaimForRun(t *testing.T, l instance.Layout, runID, itemID, priorRunID st
 	if err != nil {
 		t.Fatalf("OpenClaimLedger: %v", err)
 	}
-	if err := ledger.Release(itemID, priorRunID); err != nil {
+	if err := ledger.Release(itemID, priorRunID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("release %s from %s: %v", itemID, priorRunID, err)
 	}
 	if ok, holder, err := ledger.Claim(itemID, runID, "implementation", time.Hour); err != nil || !ok {

@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/prstatus"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -33,16 +35,16 @@ func TestParseStatusState(t *testing.T) {
 		{"", providers.CheckStatePending},
 	}
 	for _, tc := range cases {
-		got, err := parseStatusState(tc.input)
+		got, err := prstatus.ParseState(tc.input)
 		if err != nil {
-			t.Fatalf("parseStatusState(%q) error: %v", tc.input, err)
+			t.Fatalf("prstatus.ParseState(%q) error: %v", tc.input, err)
 		}
 		if got != tc.want {
-			t.Fatalf("parseStatusState(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Fatalf("prstatus.ParseState(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
-	if got, err := parseStatusState("bogus"); got != "" || err == nil || err.Error() != `unknown status state "bogus" (want succeeded|failed|pending)` {
-		t.Fatalf("parseStatusState(bogus) = %q, %v", got, err)
+	if got, err := prstatus.ParseState("bogus"); got != "" || err == nil || err.Error() != `unknown status state "bogus" (want succeeded|failed|pending)` {
+		t.Fatalf("prstatus.ParseState(bogus) = %q, %v", got, err)
 	}
 }
 
@@ -368,9 +370,11 @@ func TestReportPRStatusResultWriteFailureDoesNotRepublish(t *testing.T) {
 
 	code, stdout, stderr := runArgs(t, "report-pr-status", root)
 	writeError := directoryWriteError(t, resultFile)
-	wantStderr := "error: write " + resultFile + ": " + writeError + "\n" +
-		"warning: write provider-stage result " + resultFile + ": write typed result: " + writeError + "\n"
-	if code != 1 || stdout != "" || stderr != wantStderr {
+	// The result is written atomically (temp file + platform replace), so the
+	// replace error's wording is platform-specific; pin only the stable framing.
+	wantStderr := regexp.MustCompile("^" + regexp.QuoteMeta("error: write "+resultFile+": ") + `[^\n]+\n` +
+		regexp.QuoteMeta("warning: write provider-stage result "+resultFile+": write typed result: "+writeError+"\n") + "$")
+	if code != 1 || stdout != "" || !wantStderr.MatchString(stderr) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if posts != 1 {

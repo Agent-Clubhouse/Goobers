@@ -17,8 +17,10 @@ import type {
 import {
   branchStateLabel,
   edgeTraversed,
+  mapVisitSummary,
   traversedEdgeSeq,
   type BranchStateEntry,
+  type MapVisit,
   type RunNodeState,
   type TraversedEdges,
 } from "../runDetailData";
@@ -77,6 +79,7 @@ export function WorkflowTopologyGraph({
   stateSeq,
   traversedEdges,
   branchStates,
+  mapVisits,
   causalNodeId,
   fullscreenTargetRef,
   onFullscreenModeChange,
@@ -101,6 +104,9 @@ export function WorkflowTopologyGraph({
   // branch.started/branch.finished events directly, since a branch has no
   // single graph node of its own to hang a nodeStates entry off of.
   branchStates?: Map<string, BranchStateEntry>;
+  // Each map's latest visit (#7386), keyed by the map's node id: its frozen
+  // roster's per-item states label the map's single fan-out edge.
+  mapVisits?: Map<string, MapVisit>;
   // The single node the authoritative escalation cause points at (DASH-21).
   causalNodeId?: string;
   fullscreenTargetRef?: RefObject<HTMLElement | null>;
@@ -108,6 +114,10 @@ export function WorkflowTopologyGraph({
   analytics?: GraphAnalytics;
 }) {
   const layout = useMemo(() => layoutWorkflowGraph(graph), [graph]);
+  const mapNodeIds = useMemo(
+    () => new Set(graph.nodes.filter((node) => node.kind === "map").map((node) => node.id)),
+    [graph],
+  );
   const markerId = `workflow-arrow-${useId().replaceAll(":", "")}`;
   const instructionsId = `workflow-instructions-${useId().replaceAll(":", "")}`;
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -682,7 +692,9 @@ export function WorkflowTopologyGraph({
                   : undefined;
                 const label = edge.edge.branch
                   ? branchEdgeLabel(edge.edge.branch, branchState)
-                  : edge.edge.outcome;
+                  : mapNodeIds.has(edge.edge.source) && !edge.edge.outcome
+                    ? mapEdgeLabel(mapVisits?.get(edge.edge.source))
+                    : edge.edge.outcome;
                 return (
                 <g key={edge.id}>
                   <path
@@ -840,6 +852,8 @@ export function WorkflowTopologyGraph({
           branchStates={branchStates}
           graph={graph}
           layoutEdges={layout.edges}
+          mapNodeIds={mapNodeIds}
+          mapVisits={mapVisits}
           stageOrder={layout.stageOrder}
           traversedEdges={traversedEdges}
         />
@@ -889,6 +903,12 @@ function branchEdgeLabel(branchName: string, state: BranchStateEntry | undefined
   return state ? `${branchName} — ${branchStateLabel(state.state)}` : branchName;
 }
 
+// mapEdgeLabel is the text on a map's single fan-out edge: "per item" until
+// the map freezes a roster, then the visit's item count and states in words.
+function mapEdgeLabel(visit: MapVisit | undefined): string {
+  return visit ? mapVisitSummary(visit) : "per item";
+}
+
 // edgeDescription is the accessible, non-color-dependent explanation of one
 // edge's declared shape and (when a run overlay is active) execution state —
 // #1431's "Configured repass route; not traversed" / "Traversed at sequence
@@ -899,12 +919,18 @@ function edgeDescription(
   layoutEdge: WorkflowLayoutEdge,
   traversedEdges: TraversedEdges | undefined,
   branchStates: Map<string, BranchStateEntry> | undefined,
+  mapNodeIds: Set<string>,
+  mapVisits: Map<string, MapVisit> | undefined,
 ): string {
   const { edge } = layoutEdge;
   const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
+  const branchState = edge.branch ? branchStates?.get(edge.branch) : undefined;
+  const reason = branchState?.reason ? ` (${branchState.reason})` : "";
   const route = edge.branch
-    ? `branch ${branchEdgeLabel(edge.branch, branchStates?.get(edge.branch))} to ${target}`
-    : `${edge.outcome || "next"} to ${target}`;
+    ? `branch ${branchEdgeLabel(edge.branch, branchState)}${reason} to ${target}`
+    : mapNodeIds.has(edge.source) && !edge.outcome
+      ? `${mapEdgeLabel(mapVisits?.get(edge.source))} to ${target}`
+      : `${edge.outcome || "next"} to ${target}`;
   const shape = layoutEdge.repass ? "repass route" : "forward route";
   if (traversedEdges === undefined) {
     // No run overlay active (the configured-topology page): only the
@@ -922,19 +948,25 @@ function TopologyList({
   stageOrder,
   traversedEdges,
   branchStates,
+  mapNodeIds,
+  mapVisits,
 }: {
   graph: WorkflowGraph;
   layoutEdges: WorkflowLayoutEdge[];
   stageOrder: WorkflowGraphNode[];
   traversedEdges?: TraversedEdges;
   branchStates?: Map<string, BranchStateEntry>;
+  mapNodeIds: Set<string>;
+  mapVisits?: Map<string, MapVisit>;
 }) {
   return (
     <ol aria-label={`${graph.name} accessible topology`} className="sr-only">
       {stageOrder.map((node) => {
         const outgoing = layoutEdges
           .filter((layoutEdge) => layoutEdge.edge.source === node.id)
-          .map((layoutEdge) => edgeDescription(layoutEdge, traversedEdges, branchStates));
+          .map((layoutEdge) =>
+            edgeDescription(layoutEdge, traversedEdges, branchStates, mapNodeIds, mapVisits),
+          );
         return (
           <li key={`topology-${node.id}`}>
             {node.id === graph.start ? "Start stage. " : ""}
@@ -957,6 +989,8 @@ function nodeKindLabel(node: WorkflowGraphNode): string {
       return "Gate";
     case "parallel":
       return "Parallel";
+    case "map":
+      return "Map";
   }
 }
 
@@ -970,6 +1004,9 @@ function nodeActor(node: WorkflowGraphNode): string {
   }
   if (node.kind === "parallel") {
     return "Fans out into declared branches";
+  }
+  if (node.kind === "map") {
+    return "Runs one task per roster item";
   }
   return "Runs deterministically";
 }

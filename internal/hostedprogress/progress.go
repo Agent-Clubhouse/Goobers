@@ -104,16 +104,31 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
+const (
+	retryBaseDelay = time.Second
+	retryMaxDelay  = time.Minute
+)
+
 // Publisher owns one Check Run and updates it only when the journal advances.
 type Publisher struct {
-	env       GitHubEnvironment
-	client    *http.Client
-	runDir    string
+	env    GitHubEnvironment
+	client *http.Client
+	runDir string
+	now    func() time.Time
+	// checkID, lastSeq, disabled, finalized, failures, retryAt and lastErr
+	// are guarded by mu.
 	checkID   int64
 	lastSeq   uint64
 	disabled  error
 	finalized bool
-	mu        sync.Mutex
+	failures  int
+	retryAt   time.Time
+	lastErr   error
+	// identity and graph are immutable for a run and loaded once.
+	identity journal.RunIdentity
+	graph    json.RawMessage
+	loaded   bool
+	mu       sync.Mutex
 }
 
 // New creates a publisher. It performs no network operation until Publish.
@@ -122,50 +137,82 @@ func New(env GitHubEnvironment, runDir string) *Publisher {
 		env:    env,
 		client: &http.Client{Timeout: 15 * time.Second},
 		runDir: runDir,
+		now:    time.Now,
 	}
 }
 
+// PermanentError marks a publish failure that retrying cannot fix (bad
+// credentials, missing checks: write permission, unknown repository or a
+// rejected payload). The Publisher stops publishing after one.
+type PermanentError struct{ Err error }
+
+func (e *PermanentError) Error() string { return e.Err.Error() }
+func (e *PermanentError) Unwrap() error { return e.Err }
+
+// IsPermanent reports whether err is a publish failure that disabled the
+// Publisher; any other publish error is transient and retried with backoff.
+func IsPermanent(err error) bool {
+	var permanent *PermanentError
+	return errors.As(err, &permanent)
+}
+
+// statusError is a non-2xx GitHub API response.
+type statusError struct {
+	code        int
+	rateLimited bool
+	detail      string
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("publish GitHub progress: HTTP %d: %s", e.code, e.detail)
+}
+
+func (e *statusError) permanent() bool {
+	switch e.code {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusNotFound,
+		http.StatusGone, http.StatusUnprocessableEntity:
+		return true
+	case http.StatusForbidden:
+		return !e.rateLimited
+	}
+	return false
+}
+
 // Publish projects the complete committed journal prefix. Duplicate calls for
-// the same sequence are free and make the 200ms run watcher safe.
+// the same sequence are free and make the 200ms run watcher safe. A
+// transient GitHub failure (network error, timeout, 5xx, rate limit) is
+// returned and retried on a later call after an exponential backoff, so one
+// blip does not stop publishing for the rest of the run; only a
+// PermanentError disables the Publisher.
 func (p *Publisher) Publish(ctx context.Context, events []journal.Event) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.disabled != nil {
 		return p.disabled
 	}
-	revision := latestProjectedSequence(events)
-	if revision == 0 || revision <= p.lastSeq {
+	if p.now().Before(p.retryAt) {
+		return p.lastErr
+	}
+	return p.publishLocked(ctx, events)
+}
+
+func (p *Publisher) publishLocked(ctx context.Context, events []journal.Event) error {
+	projected := projectEvents(events)
+	if len(projected) == 0 {
 		return nil
 	}
-	contract, err := p.contract(events)
+	revision := projected[len(projected)-1].Seq
+	if revision <= p.lastSeq {
+		return nil
+	}
+	contract, err := p.contract(events, projected, revision)
 	if err != nil {
 		return err
 	}
-	if p.checkID == 0 {
-		// A fresh Publisher (process restart, retry, or the very first
-		// Publish for this run) has no in-memory checkID. Look up an
-		// existing Check Run for our stable external_id before creating,
-		// so a repeat run against the same (SHA, run, actions run) does
-		// not fan out to duplicate GitHub Check Runs. See
-		// TestPublisherReusesExistingCheckRunAcrossPublishers.
-		existing, lookupErr := p.findExisting(ctx, contract)
-		if lookupErr != nil {
-			p.disabled = lookupErr
-			return lookupErr
-		}
-		if existing != 0 {
-			p.checkID = existing
-			err = p.update(ctx, contract)
-		} else {
-			p.checkID, err = p.create(ctx, contract)
-		}
-	} else {
-		err = p.update(ctx, contract)
+	if err := p.write(ctx, contract); err != nil {
+		return p.recordFailure(err)
 	}
-	if err != nil {
-		p.disabled = err
-		return err
-	}
+	p.failures, p.retryAt, p.lastErr = 0, time.Time{}, nil
 	p.lastSeq = contract.Revision
 	if terminal(contract.Phase) {
 		p.finalized = true
@@ -173,17 +220,68 @@ func (p *Publisher) Publish(ctx context.Context, events []journal.Event) error {
 	return nil
 }
 
+func (p *Publisher) write(ctx context.Context, contract Contract) error {
+	if p.checkID != 0 {
+		return p.update(ctx, contract)
+	}
+	// A fresh Publisher (process restart, retry, or the very first Publish
+	// for this run) has no in-memory checkID. Look up an existing Check Run
+	// for our stable external_id before creating, so a repeat run against
+	// the same (SHA, run, actions run) does not fan out to duplicate GitHub
+	// Check Runs. A failed lookup never falls through to create. See
+	// TestPublisherReusesExistingCheckRunAcrossPublishers.
+	existing, err := p.findExisting(ctx, contract)
+	if err != nil {
+		return err
+	}
+	if existing != 0 {
+		p.checkID = existing
+		return p.update(ctx, contract)
+	}
+	p.checkID, err = p.create(ctx, contract)
+	return err
+}
+
+// recordFailure disables the Publisher on a permanent error and otherwise
+// schedules the next attempt with capped exponential backoff.
+func (p *Publisher) recordFailure(err error) error {
+	var status *statusError
+	if errors.As(err, &status) && status.permanent() {
+		p.disabled = &PermanentError{Err: err}
+		return p.disabled
+	}
+	delay := retryMaxDelay
+	if p.failures < 6 {
+		delay = min(retryBaseDelay<<p.failures, retryMaxDelay)
+	}
+	p.failures++
+	p.retryAt = p.now().Add(delay)
+	p.lastErr = err
+	return err
+}
+
 // Finalize closes the Check Run for the current run when the caller exits
-// without observing a terminal journal phase (context cancellation, timeout,
-// or wait error). It is a no-op when Publish was never able to create a
-// Check Run and when Publish has already published a terminal phase. On
-// success the Check Run is marked completed so it does not linger as
-// "in progress" after the workflow job ends. Failures are returned but
-// callers should treat them as best-effort — the run is already over.
+// without a terminal phase having been published (context cancellation,
+// timeout, wait error, or a terminal publish lost to a transient failure).
+// It is a no-op when Publish has already published a terminal phase, or when
+// a permanent failure disabled the Publisher before any Check Run existed. When
+// the journal on disk is terminal, Finalize publishes it so the Check Run
+// carries the run's real conclusion (a completed run is never mislabelled
+// "cancelled"); otherwise it marks an existing Check Run completed with
+// finalizeConclusion(waitErr), and is a no-op when no Check Run was ever
+// created. Failures are returned but callers should treat them as
+// best-effort — the run is already over.
 func (p *Publisher) Finalize(ctx context.Context, waitErr error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.checkID == 0 || p.finalized {
+	// A permanent publish failure still leaves an existing Check Run to close.
+	if p.finalized || (p.disabled != nil && p.checkID == 0) {
+		return nil
+	}
+	if events, ok := p.terminalEvents(); ok {
+		return p.publishLocked(ctx, events)
+	}
+	if p.checkID == 0 {
 		return nil
 	}
 	p.finalized = true
@@ -205,11 +303,27 @@ func (p *Publisher) Finalize(ctx context.Context, waitErr error) error {
 	)
 }
 
-// finalizeConclusion maps a wait-error into a GitHub Check Run conclusion.
-// A cancelled context (Ctrl-C, cancelled Actions job, deadline) becomes
-// "cancelled"; any other failure becomes "failure". Callers passing a nil
-// error (i.e. the wait exited abnormally without an explicit error) get
-// "cancelled" as the least-alarming terminal marker.
+// terminalEvents returns the run's journal when it has reached a terminal
+// phase.
+func (p *Publisher) terminalEvents() ([]journal.Event, bool) {
+	reader, err := journal.OpenRead(p.runDir)
+	if err != nil {
+		return nil, false
+	}
+	events, err := reader.Events()
+	if err != nil || !terminal(journal.PhaseFromEvents(events)) {
+		return nil, false
+	}
+	return events, true
+}
+
+// finalizeConclusion maps a wait-error for a run whose journal is not
+// terminal into a GitHub Check Run conclusion. A cancelled context (Ctrl-C,
+// cancelled Actions job, deadline) becomes "cancelled"; any other failure
+// becomes "failure". A nil error means the wait stopped without an explicit
+// error before the run finished, so "cancelled" is the least-alarming
+// terminal marker. Terminal journals never reach this mapping; Finalize
+// publishes their real conclusion instead.
 func finalizeConclusion(waitErr error) string {
 	if waitErr == nil {
 		return "cancelled"
@@ -220,14 +334,17 @@ func finalizeConclusion(waitErr error) string {
 	return "failure"
 }
 
-func (p *Publisher) contract(events []journal.Event) (Contract, error) {
+func (p *Publisher) loadStatic() error {
+	if p.loaded {
+		return nil
+	}
 	reader, err := journal.OpenRead(p.runDir)
 	if err != nil {
-		return Contract{}, err
+		return err
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return Contract{}, err
+		return err
 	}
 	var graph json.RawMessage
 	for _, input := range identity.Inputs {
@@ -236,44 +353,78 @@ func (p *Publisher) contract(events []journal.Event) (Contract, error) {
 		}
 		raw, readErr := reader.ArtifactBytes(input.Ref)
 		if readErr != nil {
-			return Contract{}, readErr
+			return readErr
 		}
 		if !json.Valid(raw) {
-			return Contract{}, errors.New("hosted progress: pinned workflow graph is not valid JSON")
+			return errors.New("hosted progress: pinned workflow graph is not valid JSON")
 		}
 		graph = raw
 		break
 	}
+	p.identity, p.graph, p.loaded = identity, graph, true
+	return nil
+}
+
+func (p *Publisher) contract(events, projected []journal.Event, revision uint64) (Contract, error) {
+	if err := p.loadStatic(); err != nil {
+		return Contract{}, err
+	}
 	contract := Contract{
 		Schema:        Schema,
-		Revision:      latestProjectedSequence(events),
+		Revision:      revision,
 		ActionsRunID:  p.env.ActionsRunID,
 		ActionsRunURL: strings.TrimRight(p.env.ServerURL, "/") + "/" + p.env.Repository + "/actions/runs/" + p.env.ActionsRunID,
-		Identity:      identity,
+		Identity:      p.identity,
 		Phase:         journal.PhaseFromEvents(events),
-		Graph:         graph,
-		Events:        projectEvents(events),
+		Graph:         p.graph,
+		Events:        projected,
 		UpdatedAt:     time.Now().UTC(),
 	}
 	boundContract(&contract)
 	return contract, nil
 }
 
+var marshalContract = json.Marshal
+
+// dropMiddleEvents binary-searches the fewest events to drop after the first
+// so the contract fits, keeping the marshal count logarithmic. Payload size
+// shrinks monotonically as more events are dropped.
+func dropMiddleEvents(contract *Contract) {
+	events := contract.Events
+	fits := func(drop int) bool {
+		candidate := *contract
+		candidate.TruncatedBefore = events[drop].Seq
+		candidate.Events = append([]journal.Event{events[0]}, events[drop+1:]...)
+		raw, err := marshalContract(&candidate)
+		return err != nil || len(raw) <= maxPayloadBytes
+	}
+	lo, hi := 1, len(events)-1
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if fits(mid) {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	contract.TruncatedBefore = events[lo].Seq
+	contract.Events = append([]journal.Event{events[0]}, events[lo+1:]...)
+}
+
 func boundContract(contract *Contract) {
 	for {
-		raw, err := json.Marshal(contract)
+		raw, err := marshalContract(contract)
 		if err != nil || len(raw) <= maxPayloadBytes {
 			return
 		}
 		switch {
 		case len(contract.Events) > 1:
-			contract.TruncatedBefore = contract.Events[1].Seq
-			contract.Events = append(contract.Events[:1], contract.Events[2:]...)
+			dropMiddleEvents(contract)
 		case contract.Graph != nil:
 			contract.Graph = nil
 		case len(contract.Events) == 1:
 			contract.Events = []journal.Event{compactEvent(contract.Events[0])}
-			raw, err := json.Marshal(contract)
+			raw, err := marshalContract(contract)
 			if err == nil && len(raw) <= maxPayloadBytes {
 				return
 			}
@@ -351,14 +502,6 @@ func projectEvents(events []journal.Event) []journal.Event {
 		}
 	}
 	return projected
-}
-
-func latestProjectedSequence(events []journal.Event) uint64 {
-	projected := projectEvents(events)
-	if len(projected) == 0 {
-		return 0
-	}
-	return projected[len(projected)-1].Seq
 }
 
 type checkOutput struct {
@@ -524,7 +667,13 @@ func (p *Publisher) request(ctx context.Context, method, endpoint string, body, 
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return fmt.Errorf("publish GitHub progress: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(detail)))
+		return &statusError{
+			code: resp.StatusCode,
+			rateLimited: resp.Header.Get("Retry-After") != "" ||
+				resp.Header.Get("X-RateLimit-Remaining") == "0" ||
+				strings.Contains(strings.ToLower(string(detail)), "rate limit"),
+			detail: strings.TrimSpace(string(detail)),
+		}
 	}
 	if response != nil {
 		return json.NewDecoder(resp.Body).Decode(response)

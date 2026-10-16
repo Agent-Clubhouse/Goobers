@@ -80,12 +80,13 @@ func TestVisitActiveRunsChecksCancellationBetweenJournals(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	visited := 0
-	err := visitActiveRunsContext(ctx, runsDir, func(journal.RunIdentity) {
+	err := visitActiveRunStatesContext(ctx, runsDir, func(journal.RunIdentity, *journal.Reader) error {
 		visited++
 		cancel()
+		return nil
 	})
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("visitActiveRunsContext error = %v, want context.Canceled", err)
+		t.Fatalf("visitActiveRunStatesContext error = %v, want context.Canceled", err)
 	}
 	if visited != 1 {
 		t.Fatalf("visited %d journals after cancellation, want 1", visited)

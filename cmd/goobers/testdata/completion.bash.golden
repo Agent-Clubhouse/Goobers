@@ -154,6 +154,9 @@ _goobers_completion()
         rerun-stage)
             flags+=" --addendum --actor --api"
             ;;
+        signal)
+            flags+=" --request-id"
+            ;;
         workflow)
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
@@ -233,6 +236,9 @@ _goobers_completion()
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
                 export) flags+=" --since --until" ;;
                 mark-fix) flags+=" --finding --applied-at" ;;
+                label) flags+=" --run --outcome --reason --by --labeled-at" ;;
+                claim) flags+=" --kind --stage --attempt --agent --artifact --statement --evidence --confidence" ;;
+                shadow) flags+=" --json --gaggle --workflow --since --until" ;;
                 prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
                 compact) flags+=" --dry-run" ;;
@@ -241,6 +247,11 @@ _goobers_completion()
         journal)
             case "${COMP_WORDS[2]:-}" in
                 redact) flags+=" --run --path --reason --secret-file" ;;
+            esac
+            ;;
+        pr)
+            case "${COMP_WORDS[2]:-}" in
+                retry) flags+=" --pr --route --reason --gaggle --actor --dry-run --json" ;;
             esac
             ;;
         backlog-health)
@@ -459,12 +470,17 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="configure test merges stats errors export mark-fix prune prune-orphans compact"
+                candidates="configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact"
             fi
             ;;
         journal)
             if (( COMP_CWORD == 2 )); then
                 candidates="redact"
+            fi
+            ;;
+        pr)
+            if (( COMP_CWORD == 2 )); then
+                candidates="retry"
             fi
             ;;
         help)

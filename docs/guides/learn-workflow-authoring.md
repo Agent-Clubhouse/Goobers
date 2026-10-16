@@ -309,6 +309,13 @@ The automated gate reads the normalized status and error classification of
 
 The gate receives the preceding result's `status`, error classification, and
 scalar outputs. It does not read the preceding stage's result file directly.
+
+Local run workcopies are linked worktrees of a mirror that keeps project
+branches as `refs/heads/*`; `refs/remotes/origin/*` does not exist there.
+Write `git diff --check main...HEAD`, not `origin/main...HEAD`. A git command
+that exits 128 on an unknown revision is classified `infra` by
+`failure-class`, so a wrong ref takes the gate's `infra` branch instead of
+repeatedly re-running `implement`.
 After a failure branch, a deterministic consumer may bind a preserved scalar
 with a qualified `inputsFrom` entry such as
 `validationState: local-ci.validationState`; the full result remains available
@@ -374,8 +381,18 @@ Use the narrowest channel matching the data:
 | Static stage configuration | `inputs` |
 | Scalar output consumed by another task | `inputsFrom` |
 | Rich artifact or verdict context | `contextFrom` and artifact pointers |
-| Durable non-repository files | `outbox` |
+| Files a later stage reads, such as fan-in reports | `inputs.artifactFile` plus `contextFrom` on the consumer |
+| Durable non-repository files exported out of the run | `outbox` |
 | Repository state in DSL 3.0 | `repoFrom` |
+
+Outbox is export-only: a later stage in the same run never receives outbox
+files, and `outboxMirrorPath` is a host-side copy, not a stage input. For
+fan-out/fan-in work such as several reviewers followed by an adjudicator, give
+each reviewer an `artifactFile` and list the reviewers in the adjudicator's
+`contextFrom`. See
+[Stage-to-stage fan-in](../reference/workflow-primitives/graph-and-execution.md#stage-to-stage-fan-in)
+and the
+[mirror layout](../reference/workflow-primitives/graph-and-execution.md#local-outbox-mirror-outboxmirrorpath).
 
 Keep outbox exports bounded: each attempt is limited to 200 files and 64 MiB.
 Each execution is stored under its own immutable occurrence within the attempt,

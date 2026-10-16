@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnersolve"
@@ -33,7 +34,8 @@ import (
 const (
 	// MaxProposalBytes bounds one submitted Workflow before YAML parsing.
 	MaxProposalBytes = 1 << 20
-	// MaxProposalStates bounds the total task, gate, and parallel state count.
+	// MaxProposalStates bounds the total task, gate, parallel and map state
+	// count. A map is one state however many roster items it runs.
 	MaxProposalStates = 128
 )
 
@@ -41,7 +43,7 @@ const (
 type Backend string
 
 const (
-	// BackendRunner selects the local runner's executable placement surface.
+	// BackendRunner selects a local coordinator with pinned stage placements.
 	BackendRunner Backend = "runner"
 	// BackendEngine selects engine placement and its supported-feature checks.
 	BackendEngine Backend = "engine"
@@ -65,6 +67,9 @@ type AdmissionContext struct {
 	KnownExternalTelemetryConnectors []string
 	AllowPreviewFeatures             bool
 	Backend                          Backend
+	// ExecutionRefusal preserves owned custody when current launch permission narrows.
+	ExecutionRefusal        string
+	WorkspaceMutationDenied bool
 }
 
 // Diagnostic identifies a refused boundary without returning proposal source.
@@ -91,14 +96,15 @@ func (e *ValidationError) Error() string {
 // SourceDigest preserves exact submitted bytes; CanonicalDigest ignores YAML
 // formatting, and Machine.Digest is the normal compiler's execution identity.
 type Proposal struct {
-	Source          []byte
-	SourceDigest    string
-	CanonicalDigest string
-	ConfigDigest    string
-	PolicyDigest    string
-	Workflow        apiv1.Workflow
-	Machine         *workflow.Machine
-	Placements      []engine.PinnedPlacement
+	credentialCeiling credentials.ChildCeiling
+	Source            []byte
+	SourceDigest      string
+	CanonicalDigest   string
+	ConfigDigest      string
+	PolicyDigest      string
+	Workflow          apiv1.Workflow
+	Machine           *workflow.Machine
+	Placements        []engine.PinnedPlacement
 }
 
 // Validator owns a deep copy of its trusted inputs. Caller mutations cannot
@@ -110,6 +116,9 @@ type Validator struct {
 
 // NewValidator snapshots trusted inputs for side-effect-free proposal checks.
 func NewValidator(input AdmissionContext) (*Validator, error) {
+	if input.ExecutionRefusal != "" {
+		return nil, refusal("current_policy", "", "childWorkflows", input.ExecutionRefusal)
+	}
 	if input.Config == nil || input.Gaggle.Name == "" || input.ConfigDigest == "" {
 		return nil, errors.New("child validation requires pinned config, gaggle, and config digest")
 	}
@@ -181,14 +190,26 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 	if err != nil {
 		return nil, err
 	}
+	return &Proposal{credentialCeiling: v.childCredentialCeiling(), Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
+		ConfigDigest: v.context.ConfigDigest, PolicyDigest: v.PolicyDigest(), Workflow: wf, Machine: machine, Placements: pins}, nil
+}
+
+// PolicyDigest identifies pinned policy, enclosing publication permission and
+// the existing Goober definitions. It grants no authority by itself.
+func (v *Validator) PolicyDigest() string { return AuthorityPolicyDigest(v.context) }
+
+// AuthorityPolicyDigest binds effective custody and execution permissions. It
+// does not assert that the current policy permits launching any new proposal.
+func AuthorityPolicyDigest(input AdmissionContext) string {
 	policyBytes, _ := json.Marshal(struct {
-		Policy      *apiv1.ChildWorkflowPolicy
-		Grants      []string
-		Publication bool
-		Goobers     map[string]apiv1.GooberSpec
-	}{v.context.ParentTask.ChildWorkflows, v.context.GrantedCapabilities, v.context.AllowPRPublication, v.context.Goobers})
-	return &Proposal{Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
-		ConfigDigest: v.context.ConfigDigest, PolicyDigest: digest(policyBytes), Workflow: wf, Machine: machine, Placements: pins}, nil
+		Policy                  *apiv1.ChildWorkflowPolicy
+		Grants                  []string
+		Publication             bool
+		Goobers                 map[string]apiv1.GooberSpec
+		ExecutionRefusal        string
+		WorkspaceMutationDenied bool
+	}{input.ParentTask.ChildWorkflows, input.GrantedCapabilities, input.AllowPRPublication, input.Goobers, input.ExecutionRefusal, input.WorkspaceMutationDenied})
+	return digest(policyBytes)
 }
 
 func (v *Validator) parseProposal(source []byte) (apiv1.Workflow, []byte, error) {
@@ -251,7 +272,7 @@ func (v *Validator) parseProposal(source []byte) (apiv1.Workflow, []byte, error)
 }
 
 func (v *Validator) checkScope(wf apiv1.Workflow) error {
-	if len(wf.Spec.Tasks)+len(wf.Spec.Gates)+len(wf.Spec.Parallels) > MaxProposalStates {
+	if proposalStates(wf.Spec) > MaxProposalStates {
 		return refusal("states", "", "spec", "a child may declare at most 128 states")
 	}
 	if wf.Spec.Gaggle != v.context.Gaggle.Name || (wf.Namespace != "" && wf.Namespace != v.context.Gaggle.Namespace) {
@@ -264,6 +285,13 @@ func (v *Validator) checkScope(wf apiv1.Workflow) error {
 		return refusal("preview", "", "metadata.annotations", "proposal cannot enable preview features beyond the pinned policy")
 	}
 	return nil
+}
+
+// proposalStates counts every addressable state a proposal declares. Maps
+// count like parallels (plan-driven-dynamic-fan-out.md §11); their per-item
+// instances are runtime data and are bounded by the map's own roster limit.
+func proposalStates(spec apiv1.WorkflowSpec) int {
+	return len(spec.Tasks) + len(spec.Gates) + len(spec.Parallels) + len(spec.Maps)
 }
 
 func (v *Validator) compileProposal(wf apiv1.Workflow, goobers map[string]apiv1.GooberSpec) (*workflow.Machine, error) {
@@ -293,6 +321,7 @@ func (v *Validator) compileProposal(wf apiv1.Workflow, goobers map[string]apiv1.
 		{"contracts", workflow.CheckStageContracts},
 		{"paths", workflow.CheckPathSimulation},
 		{"required_inputs", workflow.CheckStageRequiredInputs},
+		{"durations", workflow.CheckStageDurationInputs},
 		{"timeouts", workflow.CheckStageTimeoutCoherence},
 	} {
 		if problems := check.check(def); len(problems) != 0 {
@@ -318,9 +347,8 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 		return nil, refusal("placement", "", "spec", bounded(err.Error()))
 	}
 	placement := runnersolve.Solve(inventory, requirements)
-	if v.context.Backend == BackendRunner {
-		placement = runnersolve.SolveExecutable(inventory, requirements)
-	}
+	// The runner coordinates children; pinned stages execute on admitted workers.
+	// The child factory independently refuses unsupported or self placements.
 	if failures := placement.Unsatisfiable(); len(failures) != 0 {
 		return nil, refusal("placement", failures[0].Stage, "runsOn", bounded(failures[0].Unsat.Diagnostic))
 	}

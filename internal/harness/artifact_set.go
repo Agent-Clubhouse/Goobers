@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // InputArtifactManifestFile requests runner-authored multi-file lifting. It is
@@ -49,11 +52,8 @@ func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelo
 	if !ok || manifest == "" || legacy || len(reported) != 0 {
 		return nil, fmt.Errorf("%w: manifest mode requires a path, no artifactFile, and no self-reported pointers", artifactset.ErrInvalid)
 	}
-	prepared, err := e.prepareArtifactSet(ctx, env, manifest)
+	prepared, err := e.prepareDeclaredSet(ctx, env, manifest)
 	if err != nil {
-		return nil, err
-	}
-	if err := prepared.Bind(env.ArtifactPublication, env.Attempt); err != nil {
 		return nil, err
 	}
 	return prepared.Publish(ctx, func(name, media string, data []byte) (apiv1.ArtifactPointer, error) {
@@ -63,6 +63,23 @@ func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelo
 		}
 		return refToPointer(ref, media), nil
 	})
+}
+
+// prepareDeclaredSet validates, sanitizes, binds, and schema-checks the staged
+// set. The publication postcondition runs it before completion is accepted and
+// liftArtifacts runs it again authoritatively, so both judge identical rules.
+func (e *Executor) prepareDeclaredSet(ctx context.Context, env apiv1.InvocationEnvelope, manifest string) (*artifactset.Prepared, error) {
+	prepared, err := e.prepareArtifactSet(ctx, env, manifest)
+	if err != nil {
+		return nil, err
+	}
+	if err := prepared.Bind(env.ArtifactPublication, env.Attempt); err != nil {
+		return nil, err
+	}
+	if err := prepared.CheckSchemas(declaredPublicationSchemas(ctx, env)); err != nil {
+		return nil, err
+	}
+	return prepared, nil
 }
 
 func (e *Executor) recordPreparedArtifact(ctx context.Context, name, media string, data []byte) (journal.Ref, error) {
@@ -108,4 +125,49 @@ func (e *Executor) prepareArtifactSet(ctx context.Context, env apiv1.InvocationE
 		}
 		return investigation.PrepareDraft(ctx, clean, env.ContextPointers, reader, e.scrubber)
 	})
+}
+
+// declaredPublicationSchemas narrows the runner-supplied producer schemas to
+// the slots pinned on this invocation's publication contract, so a schema can
+// only constrain a slot this stage is actually required to publish.
+func declaredPublicationSchemas(ctx context.Context, env apiv1.InvocationEnvelope) map[string]*handoffcheck.Schema {
+	all := handoffcheck.PublicationSchemasFromContext(ctx)
+	if len(all) == 0 || env.ArtifactPublication == nil {
+		return nil
+	}
+	if _, manifestMode := env.Inputs[InputArtifactManifestFile]; !manifestMode {
+		return nil
+	}
+	var out map[string]*handoffcheck.Schema
+	for _, slot := range env.ArtifactPublication.Slots {
+		schema, ok := all[slot.Name]
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = map[string]*handoffcheck.Schema{}
+		}
+		out[slot.Name] = schema
+	}
+	return out
+}
+
+// publicationSchemasFor hands the declared schemas to goobers-io so
+// publish_output rejects a nonconforming payload while the session can still
+// repair it (#6868).
+func publicationSchemasFor(ctx context.Context, env apiv1.InvocationEnvelope) []mcpio.PublicationSchema {
+	schemas := declaredPublicationSchemas(ctx, env)
+	if len(schemas) == 0 {
+		return nil
+	}
+	slots := make([]string, 0, len(schemas))
+	for slot := range schemas {
+		slots = append(slots, slot)
+	}
+	sort.Strings(slots)
+	out := make([]mcpio.PublicationSchema, 0, len(slots))
+	for _, slot := range slots {
+		out = append(out, mcpio.PublicationSchema{Slot: slot, SchemaID: schemas[slot].ID(), Document: schemas[slot].Source()})
+	}
+	return out
 }

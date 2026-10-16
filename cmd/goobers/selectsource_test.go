@@ -555,3 +555,66 @@ func assertSelectSourceNoWork(t *testing.T, stdout, workDir string) {
 func itoa(n int) string {
 	return strconv.Itoa(n)
 }
+
+// TestSelectSourceObservedRevisionIncludesOwnClaimWrites is the #6903
+// regression: select-source's own claim comment and goobers:claimed label bump
+// the parent's updated_at, and the baseline publish-slices later guards must
+// be the post-claim revision, otherwise every run conflicts with itself. A
+// later foreign edit must still move the revision away from that baseline.
+func TestSelectSourceObservedRevisionIncludesOwnClaimWrites(t *testing.T) {
+	const trustLabel = "acme:maintainer-approved"
+	root := initDemo(t)
+	buildSelectSourceRun(t, root, selectSourceRunOptions{
+		runID:          "escalated-1",
+		startedAt:      time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC),
+		claimedIssueID: "501",
+		claimProvider:  "github",
+		finalPhase:     journal.PhaseEscalated,
+		events:         nonRetryableEscalationEvents("ISSUE_OVER_SCOPE", "too large to implement as one PR"),
+	})
+
+	server := newFakeGitHubServer(t, "acme", "widgets")
+	server.addIssue(501, "A very large issue", trustLabel)
+	server.bumpUpdatedAtOnWrite = true
+	server.mu.Lock()
+	preClaim := server.issues[501].updatedAt
+	server.mu.Unlock()
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	decompositionInstanceEnv(t, root)
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", trustLabel)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	if code, stdout, stderr := runArgs(t, "select-source", root); code != 0 {
+		t.Fatalf("select-source: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "selection.json"))
+	if err != nil {
+		t.Fatalf("read selection.json: %v", err)
+	}
+	var got decomposition.Selection
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal selection.json: %v", err)
+	}
+
+	server.mu.Lock()
+	postClaim := server.issues[501].updatedAt
+	server.mu.Unlock()
+	if !postClaim.After(preClaim) {
+		t.Fatalf("fixture did not bump updated_at on the claim writes: pre=%v post=%v", preClaim, postClaim)
+	}
+	if want := postClaim.UTC().Format(time.RFC3339Nano); got.Parent.ObservedRevision != want {
+		t.Fatalf("observedRevision = %q, want post-claim revision %q (pre-claim was %q)",
+			got.Parent.ObservedRevision, want, preClaim.UTC().Format(time.RFC3339Nano))
+	}
+
+	// A foreign edit after selection still diverges from the baseline.
+	server.setIssueUpdatedAt(501, postClaim.Add(time.Minute))
+	server.mu.Lock()
+	live := server.issues[501].updatedAt.UTC().Format(time.RFC3339Nano)
+	server.mu.Unlock()
+	if live == got.Parent.ObservedRevision {
+		t.Fatalf("foreign edit did not change the revision away from the baseline %q", got.Parent.ObservedRevision)
+	}
+}

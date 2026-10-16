@@ -167,6 +167,15 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
   `runner.podTmpfsSize` in `instance.yaml` (a Kubernetes quantity such as `1Gi`, validated at
   load and read by the worker's dispatcher at startup). Because the size is added to the
   memory limit, raise it only as far as real temp needs.
+- **Disk-backed `/tmp` for real builds (#6758):** Go's build work directory (`$WORK`) and
+  `t.TempDir()` land under `TMPDIR`, so a 512Mi tmpfs fails `make ci` with `no space left on
+  device`, and a tmpfs big enough for a build eats pod memory. `runner.podTmpMedium: disk`
+  makes the Linux `tmp:ephemeral` volume a node-disk `emptyDir` (no `medium: Memory`) that
+  keeps the explicit `sizeLimit` — `runner.podTmpfsSize`, or 4Gi when unset — and is not added
+  to the memory limit; it counts against the pod's ephemeral storage under the runner `disk`
+  ceiling instead. `/tmp` and `TMPDIR` stay where they are, so no tool needs a separate
+  `GOTMPDIR`. The default stays `memory`, so existing instances render unchanged. Windows
+  stage pods are always disk-backed; the setting changes only their default size.
 - **Egress proxy for allowlisted pods:** a stage pod under `network:allowlist` cannot dial
   module registries, and it inherits none of the daemon's `HTTPS_PROXY`; runner classes carry
   no `env` and an agentic stage has no `run.env`. `runner.podEgressProxy`

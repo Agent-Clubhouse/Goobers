@@ -210,9 +210,9 @@ func (p *GitHubProvider) Kind() ProviderKind {
 
 // Capabilities declares GitHub's current truth (design doc
 // docs/design/provider-contract-conformance.md §3.2, CONF-1 #2074): GitHub
-// is the V0 workload and reaches every optional surface except
-// pr.status.publish, which is an Azure DevOps / Gitea policy-evidence
-// surface (#772) GitHub has no equivalent for.
+// is the V0 workload and reaches every optional surface. Its
+// pr.status.publish is a commit status a required status check gates on: the
+// native enforcement surface of the merge-review verdict (#4199).
 func (p *GitHubProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRCompare,
@@ -220,7 +220,7 @@ func (p *GitHubProvider) Capabilities() CapabilitySet {
 		CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRMergeInventory, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRUpdateBranch, CapBranchDelete,
-		CapRepoPolicyRead, CapCICancel,
+		CapRepoPolicyRead, CapPRStatusPublish, CapCICancel,
 		CapRepoPushPreflight,
 		CapBacklogBlockers,
 		CapSecurityAlertsCodeScanning, CapSecurityAlertsDependabot,
@@ -638,6 +638,7 @@ func githubIssueFields(issue githubIssue) fieldpredicate.Fields {
 	fields := fieldpredicate.Fields{
 		"id":       issue.ID,
 		"number":   int64(issue.Number),
+		"title":    issue.Title,
 		"state":    issue.State,
 		"locked":   issue.Locked,
 		"comments": int64(issue.Comments),

@@ -150,6 +150,15 @@ func TestServiceHealthUsesUnifiedAzureMonitorDestination(t *testing.T) {
 	if exporter == nil {
 		t.Fatal("unified Azure Monitor destination did not enable diagnostics")
 	}
+	// Shutdown's bound cannot interrupt the replay index's in-flight SQLite
+	// start (#6886). Wait for replay accounting so the bound covers only
+	// shutdown work, not a slow index start on a loaded runner.
+	for deadline := time.Now().Add(30 * time.Second); !exporter.Stats().AzureReplay.AccountingReady; {
+		if time.Now().After(deadline) {
+			t.Fatalf("diagnostic replay accounting never became ready: %+v", exporter.Stats().AzureReplay)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := exporter.Shutdown(shutdown); err != nil {

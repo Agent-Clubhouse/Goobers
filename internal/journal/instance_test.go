@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 type instanceDropCounter struct{ count atomic.Uint64 }
@@ -358,6 +359,11 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventClaimAcquired, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
 		{Type: EventClaimReleased, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
 		{Type: EventClaimForceReleased, Name: "issue-9", RunID: testIdentity().RunID, Workflow: "implement"},
+		// #4421: a release carries its structured reason on the event itself.
+		{Type: EventClaimReleased, Name: "issue-10", RunID: testIdentity().RunID, Workflow: "implement", Reason: "failed",
+			ClaimRelease: &claimrelease.Reason{Disposition: claimrelease.Failed, Stage: "implement", Code: "agent_exit", Summary: "agent exited 2"}},
+		{Type: EventClaimForceReleased, Name: "issue-11", RunID: testIdentity().RunID, Workflow: "implement", Reason: "force-released",
+			Runner: map[string]any{"actor": "cli"}, ClaimRelease: &claimrelease.Reason{Disposition: claimrelease.ForceReleased, Actor: "cli"}},
 		{Type: EventClaimLockSlow, Runner: map[string]any{"operation": "backlog-query.claim", "pid": 42, "waitDuration": "6s", "holdDuration": "1ms"}},
 		{Type: EventConfigReloaded, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("new"))}},
 		{Type: EventConfigReloadRejected, Error: &ErrorDetail{Code: "config_reload_rejected", Message: "invalid workflow"}, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("invalid"))}},

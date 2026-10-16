@@ -16,6 +16,9 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
 source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+With an engine configured, it checks that the Temporal worker deployment routes tasks to the
+live engine workers and warns with the set-current-version command when it does not, or says
+unknown when Temporal cannot be read (JSON: engineRouting).
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
 Manual-only workflows are summarized by default; use --all or --workflow to show
@@ -39,6 +42,8 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 With --runs-only, skip workflow health and provider-backed status queries and return
 only the bounded run table, without recovery decoration; combine it with --json and
 --limit for fast operator probes. A ready, current status projection is required.
+The workflow summary's A/D/MAX column shows active, desired, and maximum runs;
+see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 .fi
 .SH EXAMPLES

@@ -6,7 +6,10 @@ import (
 
 // Shared infrastructure retry bound and durable budget-exhaustion reason codes.
 const (
-	DefaultMaxInfrastructureRepasses    = 2
+	DefaultMaxInfrastructureRepasses = 2
+	// DefaultMaxInfrastructureAttempts bounds one stage pass's transient
+	// infrastructure failures, including the triggering one.
+	DefaultMaxInfrastructureAttempts    = 2
 	DefaultMaxTimeoutPolls              = 12
 	ReasonRepassBudgetExhausted         = "REPASS_BUDGET_EXHAUSTED"
 	ReasonInfrastructureBudgetExhausted = "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"

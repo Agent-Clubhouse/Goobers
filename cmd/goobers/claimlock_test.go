@@ -131,6 +131,9 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = holder.Release() }()
+	if err := holder.Announce(claimLockOperationAdminList); err != nil {
+		t.Fatal(err)
+	}
 
 	called := false
 	started := time.Now()
@@ -142,6 +145,9 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 	var timeoutErr *claimsLockTimeoutError
 	if !errors.As(err, &timeoutErr) {
 		t.Fatalf("error = %v, want claimsLockTimeoutError", err)
+	}
+	if want := `(held by "` + claimLockOperationAdminList + `" pid `; !strings.Contains(err.Error(), want) {
+		t.Fatalf("timeout error %q does not name the holder (want %q)", err, want)
 	}
 	if called {
 		t.Fatal("timed-out caller ran the protected callback")
@@ -192,6 +198,10 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 	if event.RunID != "run-lock-timeout" || event.Runner["retryable"] != true || event.Runner["failureClass"] != "infra" {
 		t.Fatalf("timeout classification = %+v", event)
 	}
+	if event.Runner["holderOperation"] != claimLockOperationAdminList || event.Runner["holderPid"] != float64(os.Getpid()) {
+		t.Fatalf("timeout event does not name the holder: %+v", event.Runner)
+	}
+	_ = claimLockEventDuration(t, event, "holderHeldFor")
 
 	if err := holder.Release(); err != nil {
 		t.Fatal(err)
@@ -199,12 +209,40 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 	redispatched := false
 	if err := withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
 		redispatched = true
+		if got, ok := lock.ReadHolder(lockPath); !ok || got.Operation != claimLockOperationBacklogClaim {
+			t.Errorf("holder inside the section = %+v, %v; want %q", got, ok, claimLockOperationBacklogClaim)
+		}
 		return nil
 	}); err != nil {
 		t.Fatalf("later dispatch did not acquire released lock: %v", err)
 	}
 	if !redispatched {
 		t.Fatal("later dispatch did not run after actual holder released the lock")
+	}
+	if got, ok := lock.ReadHolder(lockPath); ok {
+		t.Fatalf("holder record outlived the section: %+v", got)
+	}
+}
+
+func TestClaimLockTimeoutWithoutAnnouncedHolderOmitsHolder(t *testing.T) {
+	schedulerDir := filepath.Join(t.TempDir(), "scheduler")
+	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(schedulerDir, claimLockFileName)
+	holder, err := lock.TryAcquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Release() }()
+
+	_, err = acquireClaimLock(lockPath, claimLockOperationBacklogClaim, 20*time.Millisecond, time.Now())
+	var timeoutErr *claimsLockTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("error = %v, want claimsLockTimeoutError", err)
+	}
+	if timeoutErr.Holder != nil || strings.Contains(err.Error(), "held by") {
+		t.Fatalf("unannounced holder was attributed: %v (%+v)", err, timeoutErr.Holder)
 	}
 }
 

@@ -81,8 +81,9 @@ func conformanceAdapters() []conformanceAdapter {
 			name: "claude-code",
 			build: func(runner ProcessRunner, selfBin string) Adapter {
 				return &ClaudeAdapter{
-					Command: []string{"claude"},
-					Runner:  runner,
+					KeychainReader: absentClaudeKeychain,
+					Command:        []string{"claude"},
+					Runner:         runner,
 					EnvCapabilities: map[string]string{
 						"agent:model":   "TEST_MODEL_TOKEN",
 						"contents:read": "TEST_CONTEXT_TOKEN",

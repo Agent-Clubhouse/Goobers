@@ -30,7 +30,78 @@ const (
 	// rule as the local runner's dispatchRetryFailureClass: everything
 	// unmarked is policy-driven.
 	FailureTypeStage = "GoobersStageFailure"
+	// FailureTypeWorkspaceHeadMoved marks a reviewer pod that refused to land
+	// the run's workspace delta because the pull request head the run rebound
+	// to moved under it (#6019, runner.WorkspaceHeadMovedErrorCode). Policy
+	// class to ClassifyDispatchFailure and non-retryable — a fresh pod clones
+	// the same moved head and re-derives the same refusal (#5948) — and the
+	// walk ends the run superseded on it instead of failing (IsWorkspaceHeadMoved).
+	FailureTypeWorkspaceHeadMoved = "GoobersWorkspaceHeadMoved"
 )
+
+// IsWorkspaceHeadMoved reports whether err is a reviewer evaluation that
+// ended on a pull request head moving under the run (#6019).
+func IsWorkspaceHeadMoved(err error) bool {
+	var appErr *temporal.ApplicationError
+	return errors.As(err, &appErr) && appErr.Type() == FailureTypeWorkspaceHeadMoved
+}
+
+// reservedHeadMovedCode is what admitWorkspaceHeadMoved renames a
+// workspace_head_moved code to when nothing vouches for it.
+const reservedHeadMovedCode = "workspace_head_moved_unattested"
+
+// admitWorkspaceHeadMoved enforces that only the pod runtime's own workspace
+// provisioning can end a run superseded (#6019): a workspace_head_moved code
+// the runtime did not attest (attested=false) is a stage's own claim — its
+// result file, or an in-process executor's — and is renamed so it fails like
+// any other stage failure instead of skipping gate routing and every streak.
+func admitWorkspaceHeadMoved(result *apiv1.ResultEnvelope, attested bool) {
+	if attested || result.Error == nil || result.Error.Code != runner.WorkspaceHeadMovedErrorCode {
+		return
+	}
+	result.Error.Code = reservedHeadMovedCode
+	result.Error.Message = "stage reported the runtime-reserved code " + runner.WorkspaceHeadMovedErrorCode + ": " + result.Error.Message
+}
+
+// workspaceHeadMovedResult reports whether a stage's surrendered failure is a
+// pull request head that moved under the run (#6019). Only an attested code
+// survives admitWorkspaceHeadMoved to reach here.
+func workspaceHeadMovedResult(result apiv1.ResultEnvelope) bool {
+	return result.Status == apiv1.ResultFailure && result.Error != nil && result.Error.Code == runner.WorkspaceHeadMovedErrorCode
+}
+
+// gateEvaluationFailed is the walk's answer to a gate evaluation that
+// returned an error: the walk fails with it — except when the gate's reviewer
+// pod could not land the run's delta on a pull request head that moved under
+// the run (#6019). Then there is no verdict to route on and nothing left to
+// review, and the run ends superseded at the gate. A completed terminal is
+// never HITL-resumable (hitlResumable), so the walk returns it directly rather
+// than through its settle hook.
+func gateEvaluationFailed(ctx workflow.Context, rec *runJournal, gate string, err error, upstream map[string]apiv1.ResultEnvelope, steps int) (RunResult, error) {
+	if !IsWorkspaceHeadMoved(err) {
+		return RunResult{}, err
+	}
+	rec.workspaceHeadMoved(ctx, gate, err.Error())
+	return supersededRunResult(gate, upstream, steps), nil
+}
+
+// supersededRunResult is the terminal a run reaches when its subject moved
+// under it (#6019): completed, never failed — nothing about the run's work
+// failed, the pull request it was working on simply is not at the revision
+// the work was built on any more. The claim is released by terminal
+// finalization like any other run's, so the next cycle selects the PR at its
+// new head, and the terminal handlers recognise the journaled
+// workspace_head_moved marker and neither charge nor credit the item.
+//
+// NoWork is deliberately NOT set. It is the scheduler's first-stage
+// "this tick found nothing" signal (taskOutcome's steps == 1, the local
+// runner's identical rule) and drives idle backoff for the whole lane; a
+// superseded run ran stages, often a full agent session, so it ends
+// `produced` exactly as pr-claim's mid-run stale_selection exit does. The
+// superseded outcome itself is the journaled workspace_head_moved marker.
+func supersededRunResult(state string, upstream map[string]apiv1.ResultEnvelope, steps int) RunResult {
+	return RunResult{Status: StatusCompleted, FinalState: state, Outputs: upstream, Steps: steps}
+}
 
 // dispatchWithRetry drives one task's attempt loop, mirroring
 // internal/runner.runTask's budget arithmetic exactly: Task.Retry bounds
@@ -65,7 +136,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	maxAttempts := policyMaxAttempts + runner.DefaultMaxInfrastructureAttempts - 1
 
 	var usageBudget runner.StageUsageBudget
-	var policyAttempts, infrastructureFailures int32
+	var policyAttempts, infrastructureFailures, priorAttemptDeferrals int32
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
@@ -127,7 +198,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				// Worker-loss timeouts may hide an attempt that already spent
 				// budget. Require usage in that case even though the activity
 				// could not report it; pre-execution failures remain retryable.
-				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLossTimeout(err), &res, &err)
+				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLoss(err), &res, &err)
 			}
 			if err == nil {
 				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {
@@ -136,6 +207,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				}
 				res.WorkspaceRevision = nil
 				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
+				res = enforceExpectedOutputs(ctx, in.DSLVersion, t, res)
 				// Attempt-scoped implementation-lane artifacts (#3882),
 				// committed BEFORE stage.finished exactly where the local
 				// runner's dispatchTask commits them. The ordering is
@@ -164,6 +236,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 							Base:      activityResult.WorkspaceDeltaBase,
 							Tip:       activityResult.WorkspaceDeltaTip,
 							Unchanged: activityResult.WorkspaceDeltaUnchanged,
+
+							PushedBranches: pushedBranches(activityResult.Mutations),
 						}
 					}
 					return res, nil
@@ -201,7 +275,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			rec.workspaceRevisionRefused(ctx, t.Name, int(attempt), class, rejection, attemptIdentityFromError(err))
 			return apiv1.ResultEnvelope{}, rejection
 		}
-		failureClass, cerr := ClassifyDispatchFailure(err)
+		failureClass, cerr := classifyAttemptFailure(ctx, t, err)
 		if cerr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
@@ -209,7 +283,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			identity = attemptIdentityFromError(err)
 		}
 		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity)
-		if isWorkerLossTimeout(err) && len(t.PolicyActions) > 0 {
+		if isWorkerLoss(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}
 
@@ -217,7 +291,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		shouldRetry := policyAttempts < policyMaxAttempts
 		nextRetryClass = journal.AttemptPolicy
 		if failureClass == journal.AttemptInfra {
-			infrastructureFailures++
+			chargeInfraFailure(err, &infrastructureFailures, &priorAttemptDeferrals, &maxAttempts)
 			retryLimit, retryCount = runner.DefaultMaxInfrastructureAttempts, infrastructureFailures
 			shouldRetry = infrastructureFailures < runner.DefaultMaxInfrastructureAttempts
 			nextRetryClass = journal.AttemptInfra
@@ -303,7 +377,9 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //     activity never began. StartToClose and Heartbeat are policy-classed
 //     because the worker may have been lost after the stage committed an
 //     external effect; a task
-//     declaring policyActions is therefore stopped before retry;
+//     declaring policyActions is therefore stopped before retry. The stage
+//     retry loop alone reclassifies a heartbeat loss on a stage without
+//     policyActions as infrastructure (classifyAttemptFailure, #6750);
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
@@ -326,14 +402,6 @@ func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
 		return journal.AttemptPolicy, nil
 	}
 	return "", fmt.Errorf("unclassifiable attempt failure (refusing a silent %q default): %w", journal.AttemptInfra, err)
-}
-
-func isWorkerLossTimeout(err error) bool {
-	var timeoutErr *temporal.TimeoutError
-	if !errors.As(err, &timeoutErr) {
-		return false
-	}
-	return timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE || timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_HEARTBEAT
 }
 
 // recordAttemptArtifacts commits the three attempt-scoped artifacts an

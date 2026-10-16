@@ -83,6 +83,13 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
+	if err := runner.VerifyChildWorkspaceCleanup(reader, identity, target); err != nil {
+		return err
+	}
+	retired, err := retiredParentCleanup(ctx, layout, cfg, manager, reader, key, target)
+	if err != nil {
+		return err
+	}
 	captureAt, terminal, err := recoveryCaptureWindow(ctx, reader, identity.StartedAt)
 	if err != nil {
 		return err
@@ -90,6 +97,9 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
 	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target.Path, target.OwnerRunID, captureAt, publication)
 	if err != nil {
+		return err
+	}
+	if gone, err := recovery.SettleGoneCleanupTarget(ctx, manager, target, request, publication); gone || err != nil {
 		return err
 	}
 	if terminal {
@@ -109,6 +119,9 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
 	}
+	if retired {
+		return nil
+	}
 	if !terminal && !target.RetainOnCleanup {
 		return nil
 	}
@@ -118,6 +131,10 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	// unborn HEAD and leave the cleanup deferred forever.
 	if err := worktree.VerifyCleanupTargetEmptyWithoutHEAD(ctx, target); err == nil {
 		return nil
+	}
+	request.ParentPolicy, err = parentCleanupPolicy(ctx, reader, target, key)
+	if err != nil {
+		return err
 	}
 	_, _, err = recovery.Retain(ctx, request, publication)
 	return err
@@ -175,6 +192,11 @@ func recoveryCleanupHistoricalTarget(ctx context.Context, layout instance.Layout
 	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target.Path, target.OwnerRunID, captureAt, publication)
 	if err != nil {
 		return retainUnknownBase(err)
+	}
+	if gone, err := recovery.SettleGoneCleanupTarget(ctx, manager, target, request, publication); err != nil {
+		return retainUnknownBase(err)
+	} else if gone {
+		return nil
 	}
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return retainUnknownBase(fmt.Errorf("abandoned recovery preparation could not be retained: %w", err))

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -28,12 +29,20 @@ type branchState struct {
 	timedOut  bool
 	started   bool
 	settled   bool
+	// reason is the selective-parallel reason recorded on this branch's
+	// completeness entry: the selection's reason for a selected optional
+	// branch, or why a skipped branch did not run. Empty otherwise.
+	reason string
 	// startedAt is when the branch's first stage began, reconstructed from
 	// its EventBranchStarted on resume rather than reset to "now" — a
 	// resumed branch gets its REMAINING budget, not a fresh one. Zero when
 	// the branch has not started or the parallel declares no
 	// branchTimeoutSeconds.
 	startedAt time.Time
+	// itemIdentity and itemDigest identify the frozen roster item a map
+	// branch runs (newMapExec). Both are empty for a static branch.
+	itemIdentity string
+	itemDigest   string
 }
 
 // deadline returns when this branch's declared branchTimeoutSeconds budget
@@ -53,6 +62,9 @@ type parallelExec struct {
 	spec     apiv1.Parallel
 	branches []*branchState
 	active   int
+	// mapVisit is the frozen roster this execution expands; nil for a
+	// static parallel (newMapExec).
+	mapVisit *mapVisit
 }
 
 // newParallelExec assigns branch ids by DECLARATION ORDER, from 1. Branch 0 is
@@ -69,6 +81,22 @@ func newParallelExec(spec apiv1.Parallel) *parallelExec {
 		})
 	}
 	return &parallelExec{spec: spec, branches: branches, active: 0}
+}
+
+// mapParallelSpec expands a map visit's frozen roster into the static parallel
+// representation the existing executor runs (design §6.3): one branch per
+// roster item in identity order, each starting at the mapped task, with
+// maxConcurrent and itemTimeoutSeconds as the branch bounds and the failure
+// policy, join and onFailure unchanged. A map is not a second scheduler.
+func mapParallelSpec(m apiv1.Map, items []journal.MapItem) apiv1.Parallel {
+	branches := make([]apiv1.Branch, 0, len(items))
+	for _, item := range items {
+		branches = append(branches, apiv1.Branch{Name: item.Identity, Start: m.Task})
+	}
+	return apiv1.Parallel{
+		Name: m.Name, FailurePolicy: m.FailurePolicy, Branches: branches, Join: m.Join, OnFailure: m.OnFailure,
+		BranchTimeoutSeconds: m.ItemTimeoutSeconds, MaxConcurrentBranches: fanout.EffectiveMaxConcurrent(m),
+	}
 }
 
 func (p *parallelExec) current() *branchState {
@@ -131,6 +159,19 @@ func (p *parallelExec) recordCurrent(outputs map[string]any, pointers []apiv1.Co
 
 func (p *parallelExec) recordCurrentPointer(pointer apiv1.ContextPointer) {
 	p.recordCurrent(nil, []apiv1.ContextPointer{pointer})
+}
+
+func (p *parallelExec) removeCurrentStageArtifactPointers(stage string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current := p.currentLocked()
+	if current == nil {
+		return
+	}
+	before := len(current.pointers)
+	current.pointers = removeStageArtifactPointers(current.pointers, stage)
+	removed := before - len(current.pointers)
+	current.artifacts = max(0, current.artifacts-removed)
 }
 
 func (p *parallelExec) markCurrentFailed() {
@@ -300,6 +341,8 @@ func (p *parallelExec) cursorsLocked() []journal.BranchCursor {
 			Parallel:     p.spec.Name,
 			MachineState: b.machine,
 			Status:       b.status,
+			ItemIdentity: b.itemIdentity,
+			ItemDigest:   b.itemDigest,
 		})
 	}
 	return out
@@ -321,7 +364,8 @@ func (p *parallelExec) completeness() []journal.BranchOutcome {
 			status = journal.BranchCancelled
 		}
 		out = append(out, journal.BranchOutcome{
-			Branch: b.id, Name: b.name, Status: status, Artifacts: b.artifacts,
+			Branch: b.id, Name: b.name, Status: status, Artifacts: b.artifacts, Reason: b.reason,
+			MapItemIdentity: b.itemIdentity, MapItemDigest: b.itemDigest,
 		})
 	}
 	return out

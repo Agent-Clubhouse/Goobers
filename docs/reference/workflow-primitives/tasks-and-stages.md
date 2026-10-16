@@ -116,8 +116,9 @@ placeholder; the runner dispatches by `inputs.kind` and does not shell out.
 | `pollMaxIntervalSeconds` | no | `2m` | Maximum backoff interval, as a Go duration string. |
 | `pollTimeoutSeconds` | no | `30m` | Overall poll timeout, bounded below the task's wall-clock limit. |
 | `humanPolicyConfigurationIds` | no | every blocking policy gates, except Azure DevOps reviewer, comment-resolution and work-item-linking policies | Comma-separated provider policy identifiers that require human action and therefore do not drive the fixable-CI branch. Azure DevOps minimum- and required-reviewer policies never gate CI and need no entry: an unmet one is reported as a human wait. |
-| `retryFailedChecksMaxAttempts` | no | `0` (disabled) | GitHub only. A positive integer count opts in to mechanically rerunning the pull request's currently-failing checks (via GitHub's rerun-failed-jobs API) up to this many times before reporting a terminal `failing` outcome — reduces repass churn on flaky checks. Reruns every failed job in each failed workflow run at the PR's head commit; GitHub's API has no per-check selection. Requires the credential behind `provider:pr:write` to also carry Actions: Read and write, which it does not by default — see [#4751](https://github.com/Agent-Clubhouse/Goobers/issues/4751). |
+| `retryFailedChecksMaxAttempts` | no | `0` (disabled) | GitHub only. A positive integer count opts in to mechanically rerunning the pull request's currently-failing checks (via GitHub's rerun-failed-jobs API) up to this many times before reporting a terminal `failing` outcome — reduces repass churn on flaky checks. Reruns every failed job in each failed workflow run at the PR's head commit; GitHub's API has no per-check selection. Requires the credential behind `provider:pr:write` to carry Actions: Read and write rather than the poll-only Actions: Read — see [GitHub token scopes](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-token-scopes.md). Without it the rerun is refused, the stage reports the ordinary `failing` outcome, and the artifact's `retryFailedChecksError` names the missing grant. |
 | `retryFailedChecksBackoffSeconds` | no | matches the effective `pollIntervalSeconds` | Go duration string; how long to wait after triggering a rerun before re-polling. Only meaningful when `retryFailedChecksMaxAttempts` is set. |
+| `noVerdict` | no | `fail` | What to do with a head whose CI finished without a verdict (cancelled, never started or stale) once any `retryFailedChecksMaxAttempts` reruns are spent. `fail` ends the stage with the infrastructure failure `ci_no_verdict`. `continue` reports `ciStatus: pending` as a determined result, names the checks in `ciNoVerdictChecks`, and records them in `ci-checks.json`. Use `continue` when the run goes on to fix other causes. See [checks that finished without a verdict](gates-and-checks.md#checks-that-finished-without-a-verdict-6817). |
 | `carryOutputs` | no | none | Comma-separated input keys copied unchanged to the poll result. Use this when inserting `ci-poll` between stages whose explicit scalar handoff must continue after the poll. Reserved poll outputs (`ciStatus`, `prNumber`) cannot be carried. |
 
 Required capability: `provider:pr:write`.
@@ -129,10 +130,11 @@ a task-level input with the same name is overwritten.
 
 | Output/artifact | Values or meaning |
 | --- | --- |
-| `ciStatus` | `passing`, `failing`, or `timeout` |
+| `ciStatus` | `passing`, `failing`, or `timeout`; `pending` for a no-verdict head under `noVerdict: continue` |
 | `ciFailedChecks` | Bounded scalar summary of failing checks |
+| `ciNoVerdictChecks` | Bounded scalar list of the checks that finished without a verdict, under `noVerdict: continue` |
 | `prNumber` | Resolved pull-request identifier |
-| `ci-checks.json` | Bounded detailed failure evidence artifact |
+| `ci-checks.json` | Bounded detailed evidence artifact for failing or no-verdict checks |
 
 Use the [`ci-status`](gates-and-checks.md#ci-status) gate check to branch on the
 result.
@@ -208,7 +210,7 @@ Required capability: `telemetry:read`.
 | `continueOnError` | Marks a failure as best-effort, discards its scalar outputs, and advances to `next`; a failed task already advances to a declared next gate without this flag, while preserving its outputs for classification/remediation. |
 | `workspace` | Task-level `repo`, `repo-readonly`, or `scratch`. |
 | `outbox` | Up to 32 workspace-relative files/directories to export durably. |
-| `outboxMirrorPath` | Task override for the local outbox mirror root. |
+| `outboxMirrorPath` | Task override for the local outbox mirror root. The task value overrides the workflow value, which overrides the gaggle value. See [Local outbox mirror](graph-and-execution.md#local-outbox-mirror-outboxmirrorpath) for the layout. |
 | `next` | Next task, gate, parallel, or reserved terminal; omission completes successfully. |
 | `requiredCapabilities` | DSL 2.0 runner/toolchain tags, not credential grants. |
 | `runsOn` | DSL 3.0 placement requirements. |
@@ -218,8 +220,10 @@ Required capability: `telemetry:read`.
 ### DSL 3.1 named artifact contracts
 
 `artifactSlots` and `artifactInputs` are additive in `dslVersion: "3.1"` only.
-DSL 2.0 and 3.0 documents neither accept nor require them, and
-`expectedOutputs` keeps its existing advisory meaning. The runtime artifact
+DSL 2.0 and 3.0 documents neither accept nor require them. `expectedOutputs`
+does not name artifact slots, but from DSL 3.1 a stage fails when it succeeds
+without a declared `expectedOutputs` key (see
+[`expectedOutputs`](graph-and-execution.md#expectedoutputs)). The runtime artifact
 transport remains the existing positional/context-pointer channel; DSL 3.1 only
 adds stable authoring names that future tooling can lower onto that transport.
 

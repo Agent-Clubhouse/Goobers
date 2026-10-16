@@ -26,9 +26,15 @@ and complete these fields before generating the token:
    selected workflow. The getting-started quickstart needs **Contents: Read
    and write**, **Issues: Read and write**, and **Pull requests: Read and
    write**. Add **Actions: Read-only** and **Commit statuses: Read-only** for
-   workflows that only poll hosted CI. Use **Actions: Read and write** when
+   workflows that only poll hosted CI. Use **Commit statuses: Read and write**
+   on the token that backs `github:pr:review` when `merge-review` runs, so it
+   can publish the `goobers/merge-review` verdict status (see
+   [Enforce the merge-review verdict as a required check](merge-review-verdict-status.md)).
+   Use **Actions: Read and write** when
    `merge-review` is configured to cancel obsolete pending runs after a
-   non-pass verdict.
+   non-pass verdict, or when a `ci-poll` stage sets
+   `retryFailedChecksMaxAttempts` to rerun failed checks (the shipped
+   `pr-remediation` workflow does).
 4. Select **Generate token**, copy it once, and store it in the environment
    variable named by the Goobers configuration. Never paste the token into
    YAML, source code, issue text, or a browser wizard.
@@ -78,10 +84,10 @@ for this page; see [`ado-authentication.md`](ado-authentication.md).
 | `github:issues:write` | Issues: Read and write | Create, claim, comment, ordinary-label, close. Does not authorize the `goobers:approved` trust decision. |
 | `github:milestones:write` | Issues: Read and write | Assign an existing milestone to an issue. Keep roadmap mutation out of stages that only perform ordinary issue writes. |
 | `github:issues:approve` | Issues: Read and write | Apply `goobers:approved` to nominated work. Keep this out of workflow stages unless self-approval is intentional. |
-| `provider:pr:write` | Pull requests: Read and write, Commit statuses: Read-only, Actions: Read | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. GitHub's fine-grained PAT UI has no separate Checks permission to grant, so a private repo whose CI is entirely GitHub Actions-based is otherwise unreadable on this token type: `commits/{ref}/status` reports empty (Actions doesn't bridge into legacy statuses) and `commits/{ref}/check-runs` 403s. Also granting **Actions: Read** lets `checkDetails` fall back to `GET /actions/runs` automatically on that specific 403 (#2685), restoring CI visibility without any config change. |
+| `provider:pr:write` | Pull requests: Read and write, Commit statuses: Read-only, Actions: Read (**Read and write** when a `ci-poll` stage sets `retryFailedChecksMaxAttempts`) | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. GitHub's fine-grained PAT UI has no separate Checks permission to grant, so a private repo whose CI is entirely GitHub Actions-based is otherwise unreadable on this token type: `commits/{ref}/status` reports empty (Actions doesn't bridge into legacy statuses) and `commits/{ref}/check-runs` 403s. Also granting **Actions: Read** lets `checkDetails` fall back to `GET /actions/runs` automatically on that specific 403 (#2685), restoring CI visibility without any config change. A `ci-poll` stage that opts into `retryFailedChecksMaxAttempts` (the shipped `pr-remediation` workflow sets it) calls GitHub's rerun-failed-jobs endpoint, which needs **Actions: Read and write**; on a GitHub App installation grant the same Actions permission. Without it the rerun is refused with 403, ci-poll reports the ordinary `failing` outcome, and `retryFailedChecksError` names the missing grant (#4751). |
 | `github:pr:read` | Pull requests: Read-only | Forge merge-inventory comparison. Explicit credential only; it does not inherit a write token or authorize any mutation. |
 | `github:pr:write` | Pull requests: Read and write, Contents: Read and write | GitHub-specific stages that open or update PRs. |
-| `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
+| `github:pr:review` | Pull requests: Read and write, Commit statuses: Read and write | Submit native approve/request-changes reviews, and publish the `goobers/merge-review` verdict status a required check enforces ([Enforce the merge-review verdict as a required check](merge-review-verdict-status.md)). Without Commit statuses write, `apply-verdict` warns and the verdict is enforced only by `merge-pr`. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `provider:ci:cancel` | Actions: Read and write | Cancel a bounded set of pending GitHub Actions runs only after re-checking the open PR and its exact reviewed head SHA. Providers without a safe cancellation API report unsupported without changing the published verdict. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:read` | Contents: Read-only | A read-only worktree of the stage's **own** target repo, with no push. This is the capability the work-nomination lane uses; there is no `repo:clone`. |
@@ -281,6 +287,25 @@ credentials:
       env: GOOBERS_COPILOT_TOKEN     # Copilot Requests: read-only; no repo access
 ```
 
+Guided setup and `goobers init --template=standard` write a similar shape for
+GitHub: the pull-request token backs `provider:pr:write` (not `github:pr:write`)
+for implementation and backlog-curation, and the push token backs `repo:push`.
+When `merge-review` is selected they also grant the pull-request token
+(`GOOBERS_GITHUB_PR_TOKEN`, `--pr-token-env`) to `github:pr:write`,
+`github:pr:review`, `github:pr:merge` and `github:branch:delete`, so every
+capability merge-review declares has a write-capable grant; `github:issues:write`
+stays on the issues token. That token then needs **Pull requests: Read and
+write** and **Contents: Read and write** (merging and deleting the merged
+branch). Because it is also the identity that opens the pull requests, GitHub
+refuses its native approve/request-changes review, and merge-review publishes
+the verdict through its comment and label handoff instead. To get native
+reviews, point the `github:pr:review` entry at a second identity's token.
+Only merge-review's stages declare `github:pr:merge`, but the secret itself is
+shared: implementation's and backlog-curation's pull-request stages now hold a
+token that can merge and delete branches. For separation at the credential
+level, point the `github:pr:merge` and `github:branch:delete` entries at a
+separate token that only merge-review uses.
+
 Each `credentials:` entry sources one capability from its own token ref; an
 entry for a capability the repo token would otherwise back **overrides** it (so
 an issues-only stage never receives a token carrying code or PR authority).
@@ -340,6 +365,8 @@ variable, which carries the Gitea repository token. An MCP server is different: 
 the credential, so a `capability:` reference that does not fit the run's
 provider fails the stage before the harness starts, and the error names the
 server and the reference. Give such a server a `kind: byo` credential instead.
+`goobers validate` reports such a reference ahead of the first run (MCP002),
+naming the goober, the server and the gaggle whose provider it does not fit.
 
 ### Mixed-harness instances: scoping `agent:model` per harness
 
@@ -463,7 +490,11 @@ expose a Checks permission. Grant the App the union of what the selected
 workflows' capabilities need: Contents (Read and write
 for `repo:push`, Read-only for clone-only), Issues (Read and write), Pull
 requests (Read and write), Checks + Commit statuses (Read-only, for
-`ci-poll`). Install it on **only the target repositories**.
+`ci-poll`; Commit statuses **Read and write** when the App backs
+`github:pr:review` for `merge-review`, which publishes the
+`goobers/merge-review` verdict status), and Actions (Read and write when a `ci-poll` stage sets
+`retryFailedChecksMaxAttempts` or a stage declares `provider:ci:cancel`).
+Install it on **only the target repositories**.
 
 **Limits.**
 

@@ -53,33 +53,18 @@ func captureParallelBranchBinding(result *parallelBranchResult, initial, current
 }
 
 func cancelQueuedParallelBranches(
-	jr *journal.Run,
 	par *parallelExec,
-	p apiv1.Parallel,
 	queue []int,
 	next *int,
 	outcomes []*parallelBranchResult,
 	baseCompleted stageOutputs,
 	branchEvents parallelBranchEventIndex,
 	in StartInput,
+	settle func(parallelBranchResult) error,
 ) error {
 	for *next < len(queue) {
 		index := queue[*next]
 		branch := par.branchSnapshot(index)
-		cursors := par.settleBranch(
-			branch.id, journal.BranchCancelled, branch.artifacts, branch.pointers,
-			branch.produced, branch.failed, branch.noOutput,
-		)
-		jr.SetBranchCursors(cursors)
-		if err := jr.Append(journal.Event{
-			Type:         journal.EventBranchFinished,
-			Branch:       branch.id,
-			Parallel:     p.Name,
-			BranchName:   branch.name,
-			BranchStatus: journal.BranchCancelled,
-		}); err != nil {
-			return err
-		}
 		outcomes[index] = &parallelBranchResult{
 			index:     index,
 			status:    journal.BranchCancelled,
@@ -90,16 +75,12 @@ func cancelQueuedParallelBranches(
 			failed:    branch.failed,
 			noOutput:  branch.noOutput,
 		}
+		if err := settle(*outcomes[index]); err != nil {
+			return err
+		}
 		*next = *next + 1
 	}
 	return nil
-}
-
-func cancelQueuedWhenTriggered(triggered bool, jr *journal.Run, par *parallelExec, p apiv1.Parallel, queue []int, next *int, outcomes []*parallelBranchResult, baseCompleted stageOutputs, branchEvents parallelBranchEventIndex, in StartInput) error {
-	if !triggered {
-		return nil
-	}
-	return cancelQueuedParallelBranches(jr, par, p, queue, next, outcomes, baseCompleted, branchEvents, in)
 }
 
 func (r *Runner) acceptTaskWorkspaceRevision(
@@ -159,11 +140,15 @@ func (r *Runner) prepareTaskResult(
 	attempt int,
 	class journal.AttemptClass,
 ) error {
+	if err := validateChildWorkspaceResult(*in, *result); err != nil {
+		return err
+	}
 	if err := workspacerevision.NormalizeResult(result, task.Type == apiv1.TaskDeterministic); err != nil {
 		return recordWorkspaceRevisionRejection(jr, task.Name, attempt, class, err)
 	}
 	result.Artifacts = normalizeArtifactIntegrity(task.Type, result.Artifacts)
 	*result = r.validateDependencyResult(jr, task.Name, *result, upstream)
+	*result = EnforceExpectedOutputs(in.dslVersion(), task, *result)
 	if result.Status != apiv1.ResultSuccess {
 		result.WorkspaceRevision = nil
 	}

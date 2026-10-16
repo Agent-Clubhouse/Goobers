@@ -65,7 +65,7 @@ func Acquire(ctx context.Context, store Store, key string, owner Owner, ttl time
 	if err := validateObservation(observed); err != nil {
 		return err
 	}
-	if observed.Record.Owner != (Owner{}) && observed.Record.Owner != owner && observed.Now.Before(observed.Record.ExpiresAt) {
+	if observed.Held() && observed.Record.Owner != owner {
 		return ErrHeld
 	}
 	expires := observed.Now.Add(ttl)
@@ -152,6 +152,31 @@ func ConfirmOwnerGone(ctx context.Context, store Store, key string, owner Owner)
 	}
 	return nil
 }
+
+// Inspect is the read-only half of Acquire: one provider read validated by
+// the same protocol checks, with no transition. It is observation evidence,
+// never admission; a later Acquire may still observe a different revision.
+func Inspect(ctx context.Context, store Store, key string) (Observation, error) {
+	if store == nil || !validKey(key) {
+		return Observation{}, fmt.Errorf("invalid shared claim inspection")
+	}
+	if err := ctx.Err(); err != nil {
+		return Observation{}, err
+	}
+	observed, err := store.Read(ctx, key)
+	if err != nil {
+		return Observation{}, err
+	}
+	if err := validateObservation(observed); err != nil {
+		return Observation{}, err
+	}
+	return observed, nil
+}
+
+// Held reports whether, by the provider clock, some owner still holds the
+// lease — the condition under which Acquire by any other owner returns
+// ErrHeld.
+func (o Observation) Held() bool { return visibleOwner(o) }
 
 func validOwner(owner Owner) bool {
 	return validIdentityText(owner.Instance, 256) && validIdentityText(owner.Run, 256) && validIdentityText(owner.Token, 256)

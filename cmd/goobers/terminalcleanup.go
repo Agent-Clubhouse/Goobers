@@ -54,7 +54,9 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 	if err := installTerminalRecoveryGuard(l, wtMgr); err != nil {
 		return err
 	}
+	parentErr := releaseTerminalParentArchives(l, wtMgr, runID)
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
+	worktreeErr = errors.Join(worktreeErr, parentErr)
 	// After existing worktrees are finalized, and before renewal: a run whose
 	// worktrees were all removed while it was still nonterminal has its only
 	// implementation on the mirror's run branch, and nothing but this capture

@@ -105,16 +105,10 @@ const workflowChoices: Array<{
 type GuidedProvider = "github" | "ado";
 
 // Guided setup refuses work-nomination on Azure DevOps (its file-issues stage
-// files GitHub issues only) and offers merge-review on Azure DevOps only.
+// files GitHub issues only). Merge-review is offered on both providers; on
+// GitHub it uses the pull-request token.
 function workflowOffered(workflow: GuidedWorkflow, provider: GuidedProvider): boolean {
-  switch (workflow) {
-    case "work-nomination":
-      return provider !== "ado";
-    case "merge-review":
-      return provider === "ado";
-    default:
-      return true;
-  }
+  return workflow !== "work-nomination" || provider !== "ado";
 }
 
 /** The shell the host platform most likely uses; the user can override it. */
@@ -308,7 +302,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
 
   const state = query.status === "ready" ? query.state : null;
   const implementationSelected = workflows.includes("implementation");
-  const pullRequestsNeeded = implementationSelected || workflows.includes("backlog-curation");
+  const pullRequestsNeeded =
+    implementationSelected ||
+    workflows.includes("backlog-curation") ||
+    workflows.includes("merge-review");
   const customizationPrompt = `Use the goobers-dsl-author skill to inspect ${repo.trim() || "my application repository"} and customize the generated gaggle in the Goobers Instance at ${instancePath.trim() || state?.instancePath || "my instance folder"} for the repository's actual contribution, CI, and review conventions. Explain the proposed state graph and least-privilege capabilities before changing files, then update the configuration and validate it.`;
 
   useEffect(() => {

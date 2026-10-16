@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type testError struct {
@@ -99,5 +100,17 @@ func TestReadBoundedAndDecodeError(t *testing.T) {
 	})
 	if !errors.As(err, &decoded) || decoded.code != "http_502" || decoded.message != "xxxxx..." {
 		t.Fatalf("fallback error = %#v", decoded)
+	}
+}
+
+func TestDecodeErrorFallbackTruncatesOnRuneBoundary(t *testing.T) {
+	var got string
+	factory := func(_ int, _ string, message string) error {
+		got = message
+		return errors.New(message)
+	}
+	_ = DecodeError(500, []byte("ab世界"), factory, ErrorFallback{Code: "x", DetailLimit: 4, Ellipsis: "..."})
+	if !utf8.ValidString(got) || got != "ab..." {
+		t.Fatalf("message = %q", got)
 	}
 }

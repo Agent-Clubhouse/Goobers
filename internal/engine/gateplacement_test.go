@@ -21,6 +21,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -240,6 +241,26 @@ func TestPlacedAgenticGateEvaluatesThroughDispatchActivity(t *testing.T) {
 	}
 	if proj.Identity.RunID != in.RunID {
 		t.Fatalf("projection identity = %+v", proj.Identity)
+	}
+}
+
+// #5414 on the pod path: a review pod that surrenders the synthesized
+// empty-diff verdict must force escalation exactly as ReviewGoober's
+// short-circuit does, not take the gate's ordinary fail branch.
+func TestPlacedGateEmptyDiffVerdictForcesEscalation(t *testing.T) {
+	in := placedGateInput("placed-gate-empty-diff")
+	in.Placements = []PinnedPlacement{remoteGatePin()}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "review", 1, reviewSurrender(gate.EmptyDiffVerdict()))
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-agentic", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	proj := executeForProjection(t, in, &Activities{
+		Goober: refusingReviewer(t), Det: &fakeRunner{}, Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders,
+	}, false)
+
+	evaluated := gateEvaluatedEvents(proj)
+	if len(evaluated) != 1 || !evaluated[0].Escalated {
+		t.Fatalf("gate.evaluated = %+v, want one escalated evaluation: an empty diff forces escalation on every substrate", evaluated)
 	}
 }
 

@@ -108,3 +108,26 @@ func (c *RunnerConfig) ResolvePodTmpfsSize() (resource.Quantity, error) {
 	}
 	return quantity, nil
 }
+
+// PodTmpMedium is the storage backing a stage pod's tmp:ephemeral volume.
+type PodTmpMedium string
+
+const (
+	// PodTmpMediumMemory backs /tmp with a memory tmpfs (the default).
+	PodTmpMediumMemory PodTmpMedium = "memory"
+	// PodTmpMediumDisk backs /tmp with a node-disk emptyDir.
+	PodTmpMediumDisk PodTmpMedium = "disk"
+)
+
+// PodTmpDiskBacked reports whether runner.podTmpMedium selects disk.
+func (c *RunnerConfig) PodTmpDiskBacked() bool {
+	return c != nil && c.PodTmpMedium == PodTmpMediumDisk
+}
+
+func (c RunnerConfig) validatePodTmpMedium() error {
+	switch c.PodTmpMedium {
+	case "", PodTmpMediumMemory, PodTmpMediumDisk:
+		return nil
+	}
+	return fmt.Errorf("runner.podTmpMedium %q must be %q or %q", c.PodTmpMedium, PodTmpMediumMemory, PodTmpMediumDisk)
+}

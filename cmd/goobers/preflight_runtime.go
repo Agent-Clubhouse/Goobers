@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -223,7 +224,7 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
-	runnerFacts, err := runtimePreflightStageRunnerFacts(cfg, machine.Def, placements, inventory)
+	runnerFacts, err := runtimePreflightStageRunnerFacts(cfg, gaggle, machine.Def, placements, inventory)
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
@@ -342,7 +343,7 @@ func runtimePreflightGaggleSpec(set *instance.ConfigSet, name string) (apiv1.Gag
 	return apiv1.GaggleSpec{}, fmt.Errorf("workflow gaggle %q is not defined", name)
 }
 
-func runtimePreflightStageRunnerFacts(cfg *instance.Config, def workflow.Definition, requirements []runnersolve.StageRequirement, inventory runnersolve.Inventory) (map[string]runtimePreflightStageRunner, error) {
+func runtimePreflightStageRunnerFacts(cfg *instance.Config, gaggle apiv1.GaggleSpec, def workflow.Definition, requirements []runnersolve.StageRequirement, inventory runnersolve.Inventory) (map[string]runtimePreflightStageRunner, error) {
 	facts := make(map[string]runtimePreflightStageRunner, len(requirements))
 	if cfg == nil || (len(cfg.Runners) == 0 && !cfg.HasIsolationMandates() && !cfg.SelfExecutionDenied()) || (inventory.LocalMode() && !cfg.HasIsolationMandates() && !cfg.SelfExecutionDenied()) {
 		for _, req := range requirements {
@@ -391,7 +392,7 @@ func runtimePreflightStageRunnerFacts(cfg *instance.Config, def workflow.Definit
 			}
 			eligible = append(eligible, spec)
 		}
-		selected, err := dispatcher.SelectRunner(dispatcher.Attempt{
+		selected, err := bootstrap.SelectStageRunner(gaggle, dispatcher.Attempt{
 			RunID: def.Name, Stage: placement.Stage, Number: 1, LedgerTouching: ledgerFor[placement.Stage],
 		}, eligible)
 		if err != nil {

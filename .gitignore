@@ -67,3 +67,8 @@ CLAUDE.md
 /goober-runtime
 /validate
 .clubhouse/plugin-data-local/
+
+# Agent workspace artifacts written by the harness (prompt, Copilot invocation
+# record and debug logs, MCP configs). Copilot debug logs dump the stage
+# environment including short-lived credentials; #7270 committed one to main.
+/.goobers/

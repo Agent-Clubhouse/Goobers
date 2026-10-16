@@ -340,3 +340,15 @@ func TestArtifactFetchRefusesASubstitutedArtifact(t *testing.T) {
 		}
 	})
 }
+
+// TestDefaultHTTPTimeoutContainsTheScanBudget pins that the client never cuts
+// off the daemon's cross-run scan before the server's own budget fires.
+func TestDefaultHTTPTimeoutContainsTheScanBudget(t *testing.T) {
+	if DefaultHTTPTimeout <= apicontract.JournalScanBudget {
+		t.Fatalf("DefaultHTTPTimeout %s must exceed apicontract.JournalScanBudget %s", DefaultHTTPTimeout, apicontract.JournalScanBudget)
+	}
+	route, ok := apicontract.V1Route(apicontract.RouteJournalEscalationCandidates)
+	if !ok || route.Budget != apicontract.JournalScanBudget || DefaultHTTPTimeout <= route.Budget {
+		t.Fatalf("escalation-candidates route budget %s not contained by client timeout %s", route.Budget, DefaultHTTPTimeout)
+	}
+}

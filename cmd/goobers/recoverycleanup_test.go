@@ -253,10 +253,14 @@ func TestRecoveryCleanupTerminalFinalizationNoWorkTargets(t *testing.T) {
 		repoLess   bool
 		dirtyFile  string
 		disposable bool
-		wantErr    bool
+		// danglingGit leaves only a .git file naming the pruned admin entry,
+		// as a Windows removal blocked on the directory itself can (#6940).
+		danglingGit bool
+		wantErr     bool
 	}{
 		{name: "unborn-repository"},
 		{name: "repositoryless-empty", repoLess: true},
+		{name: "repositoryless-dangling-gitdir", repoLess: true, danglingGit: true},
 		{name: "repositoryless-disposable-artifact", repoLess: true, disposable: true},
 		{name: "repositoryless-unknown-result", repoLess: true, dirtyFile: "analysis-result.json", wantErr: true},
 		{name: "unborn-dirty", dirtyFile: "evidence.txt", wantErr: true},
@@ -294,6 +298,16 @@ func TestRecoveryCleanupTerminalFinalizationNoWorkTargets(t *testing.T) {
 			}
 			if tc.repoLess {
 				makeWorkspaceRepositoryless(t, manager, source, workspace.Path)
+				if tc.danglingGit {
+					shared, ok := manager.LinkedWorktreeRepository(workspace.Path)
+					if !ok {
+						t.Fatalf("%s is not a linked run worktree", workspace.Path)
+					}
+					admin := filepath.ToSlash(filepath.Join(shared, "worktrees", filepath.Base(workspace.Path)))
+					if err := os.WriteFile(filepath.Join(workspace.Path, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if tc.disposable {
 					if err := os.WriteFile(filepath.Join(workspace.Path, "claimed-item.json"), []byte("{}\n"), 0o600); err != nil {
 						t.Fatal(err)

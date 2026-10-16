@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -90,6 +91,7 @@ func (p *ADOProvider) SetMutationRecorder(recorder MutationRecorder) {
 // here alone would leave ADO receipts in two shapes for no gain, since the URL
 // already carries the org/project scope that identity resolution needs.
 func (p *ADOProvider) recordMutation(ctx context.Context, kind, id, operation string, repo RepositoryRef) {
+	observeProviderMutation(ctx, p.Client, ProviderADO)
 	if p.mutationRecorder == nil {
 		return
 	}
@@ -341,6 +343,9 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 	if len(out.Value) == 0 {
 		return BranchResult{}, fmt.Errorf("ado branch creation returned no refs")
 	}
+	if update := out.Value[0]; update.Success == nil || *update.Success {
+		observeProviderMutation(ctx, p.Client, ProviderADO)
+	}
 	return BranchResult{Name: strings.TrimPrefix(out.Value[0].Name, "refs/heads/"), SHA: out.Value[0].ObjectID, URL: out.Value[0].URL}, nil
 }
 
@@ -396,6 +401,16 @@ func (p *ADOProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest)
 		}
 		return DeleteBranchResult{Deleted: false}, nil
 	}
+	if update := out.Value[0]; update.Success != nil && !*update.Success {
+		// ADO answers a rejected ref update with HTTP 200 and a per-ref
+		// failure; a stale oldObjectId is a lost lease, anything else is a
+		// failed delete — never a confirmed one.
+		if strings.EqualFold(update.UpdateStatus, "staleOldObjectId") {
+			return DeleteBranchResult{}, &BranchTipChangedError{Name: req.Name, ExpectedSHA: expected}
+		}
+		return DeleteBranchResult{}, fmt.Errorf("ado delete branch %q rejected: %s", req.Name, update.UpdateStatus)
+	}
+	observeProviderMutation(ctx, p.Client, ProviderADO)
 	return DeleteBranchResult{Deleted: true}, nil
 }
 
@@ -453,6 +468,9 @@ func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResu
 	if len(out.Commits) > 0 {
 		commitID = out.Commits[0].CommitID
 	}
+	if commitID != "" {
+		observeProviderMutation(ctx, p.Client, ProviderADO)
+	}
 	return CommitResult{SHA: commitID, URL: out.URL}, nil
 }
 
@@ -497,24 +515,15 @@ func (p *ADOProvider) branchSHA(ctx context.Context, repo RepositoryRef, branch 
 
 // lookupBranchSHA is branchSHA's found-or-not-found counterpart (CONF-3
 // #2076): DeleteBranch needs to tell "ref absent" apart from "lookup
-// failed" without branchSHA's caller-facing error-on-absent behavior.
+// failed" without branchSHA's caller-facing error-on-absent behavior. The
+// match is exact: the refs filter is a starts-with match, so the first
+// returned ref may be a longer sibling branch (#5900).
 func (p *ADOProvider) lookupBranchSHA(ctx context.Context, repo RepositoryRef, branch string) (string, bool, error) {
-	endpoint, err := p.repoURL(repo, "refs")
-	if err != nil {
+	ref, found, err := p.findHeadRef(ctx, repo, strings.TrimPrefix(branch, adoHeadsRefPrefix))
+	if err != nil || !found {
 		return "", false, err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{"filter": []string{"heads/" + strings.TrimPrefix(branch, "refs/heads/")}})
-	if err != nil {
-		return "", false, err
-	}
-	var out adoRefsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return "", false, err
-	}
-	if len(out.Value) == 0 || out.Value[0].ObjectID == "" {
-		return "", false, nil
-	}
-	return out.Value[0].ObjectID, true, nil
+	return ref.ObjectID, true, nil
 }
 
 func (p *ADOProvider) repoURL(repo RepositoryRef, elems ...string) (string, error) {
@@ -662,7 +671,7 @@ func (p *ADOProvider) doPatch(ctx context.Context, method, endpoint string, body
 }
 
 func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body interface{}, contentType string) (*http.Response, error) {
-	return sendJSONWithPolicy(ctx, restSendPolicy{
+	return sendJSONWithPolicy(declaredADOReadContext(ctx, method, endpoint, body), restSendPolicy{
 		client:              p.Client,
 		providerHTTPName:    "ado",
 		maxTransientRetries: p.maxRetries,
@@ -797,22 +806,14 @@ func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
 // reported as unknown (ok=false), never as a remaining value of 0 (ADO-N40):
 // callers must not confuse "no header" with "quota exhausted".
 func adoRemainingHeader(resp *http.Response) (remaining int, ok bool) {
-	raw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining"))
-	if raw == "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return 0, false
-	}
-	return n, true
+	return parseRemainingHeader(resp.Header.Get("X-RateLimit-Remaining"))
 }
 
 func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
 	if p.quotaObserver == nil {
 		return
 	}
-	observation := QuotaObservation{Provider: ProviderADO}
+	observation := QuotaObservation{Provider: ProviderADO, Cached: resp.Header.Get(QuotaCacheHitHeader) == "true"}
 	remaining, remainingKnown := adoRemainingHeader(resp)
 	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
 	if remainingKnown && resetErr == nil && resetSeconds > 0 {
@@ -847,14 +848,14 @@ func (p *ADOProvider) observeRateLimitDelay(ctx context.Context, resp *http.Resp
 	if raw == "" {
 		return
 	}
-	seconds, err := strconv.ParseFloat(raw, 64)
-	if err != nil || seconds <= 0 {
+	delay, ok := adoRateLimitDelay(raw)
+	if !ok {
 		return
 	}
 	ev := RateLimitEvent{
 		Provider: ProviderADO,
 		Scope:    rateLimitScope(endpoint),
-		Delay:    time.Duration(seconds * float64(time.Second)),
+		Delay:    delay,
 		Outcome:  RateLimitOutcomeDelayed,
 		Endpoint: endpoint,
 		Status:   resp.StatusCode,
@@ -866,6 +867,27 @@ func (p *ADOProvider) observeRateLimitDelay(ctx context.Context, resp *http.Resp
 	p.observeRateLimit(ctx, ev)
 }
 
+// adoRateLimitDelay parses X-RateLimit-Delay, a (possibly fractional) count
+// of seconds. Anything that is not a finite positive number of seconds that a
+// time.Duration can represent is rejected rather than coerced: ParseFloat
+// accepts "NaN", "Inf" and "1e300", and converting any of those to a Duration
+// is undefined or overflows into a nonsensical delay_ms in the stage sidecar
+// (#5960). The bound is the same one retryAfterDelay applies to Retry-After.
+func adoRateLimitDelay(raw string) (time.Duration, bool) {
+	seconds, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 {
+		return 0, false
+	}
+	if seconds >= float64(maxDurationSeconds) {
+		return 0, false
+	}
+	delay := time.Duration(seconds * float64(time.Second))
+	if delay <= 0 {
+		return 0, false
+	}
+	return delay, true
+}
+
 type adoPatchOperation struct {
 	Op    string      `json:"op"`
 	Path  string      `json:"path"`
@@ -873,11 +895,7 @@ type adoPatchOperation struct {
 }
 
 type adoRefsResponse struct {
-	Value []struct {
-		Name     string `json:"name"`
-		ObjectID string `json:"objectId"`
-		URL      string `json:"url"`
-	} `json:"value"`
+	Value []adoRef `json:"value"`
 }
 
 type adoRefUpdate struct {

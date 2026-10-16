@@ -157,6 +157,7 @@ func appendStaticRealityWarnings(
 	appendWindowsAVExclusionWarnings(instanceFile, cfg, add)
 	appendDaemonIdentitySlugWarning(instanceFile, cfg, add)
 	appendCrossProviderCredentialOverrideWarnings(instanceFile, cfg, set, add)
+	appendCrossProviderBacklogUnboundWarnings(root, configDir, cfg, set, add)
 	appendCobrandAssetWarnings(filepath.Dir(configFile), instanceFile, cfg, add)
 	return warnings
 }
@@ -373,6 +374,8 @@ func appendPlacementFindings(
 			}
 			if ti, ok := taskIndex[placement.Stage]; ok {
 				appendInstanceRootFinding(&wf.Spec.Tasks[ti], placement, selfRunnerNames,
+					wf.Name, file, pathFor(placement.Stage), add, cfg.SelfExecutionDenied())
+				appendCrossProviderBacklogPlacementFinding(gaggleSpecs[wf.Spec.Gaggle], placement, selfRunnerNames,
 					wf.Name, file, pathFor(placement.Stage), add, cfg.SelfExecutionDenied())
 			}
 			if placement.Unsat == nil {

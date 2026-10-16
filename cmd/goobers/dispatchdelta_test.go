@@ -15,6 +15,9 @@ import (
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
@@ -690,6 +693,9 @@ func TestReboundBranchMovedUnderTheRunIsRefusedAndNamed(t *testing.T) {
 		stage      func(t *testing.T, digest string) (string, error)
 		implDigest string
 		implTip    string
+		// rebasedDigest is rebase-pr's unpushed delta, for a replay that
+		// diverges from the PR's history itself (#6019).
+		rebasedDigest string
 	}
 	// setup replays gather-pr-context's rebind, rebase-pr and implement.
 	setup := func(t *testing.T) replay {
@@ -759,7 +765,7 @@ func TestReboundBranchMovedUnderTheRunIsRefusedAndNamed(t *testing.T) {
 		if err != nil || impl.Digest == "" {
 			t.Fatalf("implement publish = %+v, %v; want a delta carrying its commit", impl, err)
 		}
-		return replay{origin: origin, stage: stage, implDigest: impl.Digest, implTip: impl.Tip}
+		return replay{origin: origin, stage: stage, implDigest: impl.Digest, implTip: impl.Tip, rebasedDigest: rebased.Digest}
 	}
 
 	t.Run("undisturbed: the run's own post-rebind delta lands on the rebound branch", func(t *testing.T) {
@@ -806,6 +812,87 @@ func TestReboundBranchMovedUnderTheRunIsRefusedAndNamed(t *testing.T) {
 		}
 		if substrateRetryable(err) {
 			t.Error("substrateRetryable = true for a diverged delta; a fresh pod clones the same moved branch and refuses identically")
+		}
+		// #6019: the pod surrenders the refusal under its own code, so the
+		// engine ends the run superseded instead of failed.
+		if got := workspaceProvisionFailureCode(err); got != runner.WorkspaceHeadMovedErrorCode {
+			t.Errorf("surrendered code = %q, want %q", got, runner.WorkspaceHeadMovedErrorCode)
+		}
+	})
+
+	// #6019's negative case: nobody pushed, but implement rewrote the PR's own
+	// history (here an amend that changes the PR commit's content — the same
+	// shape as a conflict-resolved rebase: a patch id the checkout carries and
+	// the delta lacks). The guard still refuses, and that refusal is the run's
+	// own failure — it must NOT surrender as a moved head, or every cycle of a
+	// loop that can never succeed would be refunded and never parked.
+	t.Run("the run's own history rewrite is not a moved head", func(t *testing.T) {
+		r := setup(t)
+		implWS, err := r.stage(t, r.rebasedDigest)
+		if err != nil {
+			t.Fatalf("implement could not land rebase-pr's delta: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(implWS, "pr.txt"), []byte("pr, reworked\n"), 0o644); err != nil {
+			t.Fatalf("rewrite pr.txt: %v", err)
+		}
+		runGitT(t, implWS, "commit", "-a", "--amend", "--no-edit")
+		rewritten, err := publishWorkspaceDelta(context.Background(), implWS, os.Stderr)
+		if err != nil || rewritten.Digest == "" {
+			t.Fatalf("implement publish = %+v, %v; want a delta carrying the rewrite", rewritten, err)
+		}
+
+		_, err = r.stage(t, rewritten.Digest)
+		var diverged *workspacedelta.DivergedError
+		if !errors.As(err, &diverged) {
+			t.Fatalf("refusal = %v, want the guard to refuse a rewrite of the PR's own commit", err)
+		}
+		if got := workspaceProvisionFailureCode(err); got != telemetry.ErrCodeWorkspaceProvisionFailed {
+			t.Fatalf("surrendered code = %q, want %q: the PR head never moved (origin %s, checkout %s)", got, telemetry.ErrCodeWorkspaceProvisionFailed, diverged.Origin, diverged.Current)
+		}
+		if diverged.Origin == "" || !strings.EqualFold(diverged.Origin, diverged.Current) {
+			t.Fatalf("origin = %q, checkout = %q; want the producer's recorded origin equal to the unmoved head", diverged.Origin, diverged.Current)
+		}
+	})
+
+	// The shape the implement goal actually invites ("if the rebase
+	// conflicted, resolving it IS the work"): the base edits the PR's own
+	// file, implement rebases onto it, resolves the conflict and continues.
+	// The resolved commit has a new patch id, so the guard refuses — and with
+	// nobody having pushed, the refusal stays the run's own failure.
+	t.Run("the run's own conflict-resolved rebase is not a moved head", func(t *testing.T) {
+		r := setup(t)
+		base := filepath.Join(t.TempDir(), "base")
+		runGitT(t, filepath.Dir(base), "clone", "--branch", "main", r.origin, base)
+		runGitT(t, base, "config", "user.name", "maintainer")
+		runGitT(t, base, "config", "user.email", "maintainer@example.com")
+		writeCommitT(t, base, "pr.txt", "base\n", "the base edits the PR's file")
+		runGitT(t, base, "push", r.origin, "main")
+
+		implWS, err := r.stage(t, "")
+		if err != nil {
+			t.Fatalf("implement checkout: %v", err)
+		}
+		runGitT(t, implWS, "fetch", "origin", "main:refs/remotes/origin/main")
+		if out, err := testgit.Command("-C", implWS, "rebase", "origin/main").CombinedOutput(); err == nil {
+			t.Fatalf("rebase onto the conflicting base succeeded without a conflict: %s", out)
+		}
+		if err := os.WriteFile(filepath.Join(implWS, "pr.txt"), []byte("base\npr\n"), 0o644); err != nil {
+			t.Fatalf("resolve pr.txt: %v", err)
+		}
+		runGitT(t, implWS, "add", "pr.txt")
+		runGitT(t, implWS, "-c", "core.editor=true", "rebase", "--continue")
+		resolved, err := publishWorkspaceDelta(context.Background(), implWS, os.Stderr)
+		if err != nil || resolved.Digest == "" {
+			t.Fatalf("implement publish = %+v, %v; want a delta carrying the resolved rebase", resolved, err)
+		}
+
+		_, err = r.stage(t, resolved.Digest)
+		var diverged *workspacedelta.DivergedError
+		if !errors.As(err, &diverged) {
+			t.Fatalf("refusal = %v, want the guard to refuse the conflict-resolved rewrite of the PR's commit", err)
+		}
+		if got := workspaceProvisionFailureCode(err); got != telemetry.ErrCodeWorkspaceProvisionFailed {
+			t.Fatalf("surrendered code = %q, want %q: nobody pushed (origin %s, checkout %s)", got, telemetry.ErrCodeWorkspaceProvisionFailed, diverged.Origin, diverged.Current)
 		}
 	})
 }

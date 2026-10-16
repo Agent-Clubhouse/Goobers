@@ -48,6 +48,9 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
+	// ChildDispatchCompletion commits a stopped worker's final custody report
+	// through its existing Temporal connection before the activity returns.
+	ChildDispatchCompletion ChildDispatchCompletion
 	// AdmitSelfExecution checks current instance policy before any local stage side effect.
 	AdmitSelfExecution func(stage string) error
 	Goober             invoke.Goober
@@ -141,6 +144,11 @@ type DispatchStageResult struct {
 	// from "could not publish" (an error) and from "not a repo stage" (no
 	// flag), and journaled explicitly so the record's silence is a fact.
 	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
+	// WorkspaceHeadMoved carries the pod runtime's provenance for a
+	// workspace_head_moved failure (#6019,
+	// dispatcher.SurrenderedResult.WorkspaceHeadMoved). Without it the code is
+	// a stage's own claim and admitWorkspaceHeadMoved rewrites it.
+	WorkspaceHeadMoved bool `json:"workspaceHeadMoved,omitempty"`
 	// Placement is where this attempt actually ran, when it ran in a pod and
 	// the attempt SETTLED. Nil for every in-process arm (InvokeGoober,
 	// RunDeterministic, ReviewGoober): those execute on the host that is
@@ -659,7 +667,7 @@ func captureUnpushedDiff(ctx context.Context, ws Workspace, mode apiv1.Workspace
 // never publishes: it returns a Verdict, not a stage result, and must not
 // commit. Both new arguments are trailing positionals for the replay reason
 // InvokeGoober documents.
-func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, subjectAgentic bool) (GateReviewResult, error) {
+func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, requireDiff bool) (GateReviewResult, error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
 			return GateReviewResult{}, classifySelfAdmissionError(err)
@@ -674,6 +682,11 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
 	}
+	// #5414: a reviewer off the run branch reads the run's diff from a probe.
+	probed, err := a.probeRunBranchDiff(ctx, env, workspace, workspaceBranch, workspaceDelta, requireDiff)
+	if err != nil {
+		return GateReviewResult{}, classifySeamError(err)
+	}
 	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
 		return GateReviewResult{}, classifySeamError(err)
@@ -685,6 +698,9 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// reviewer judges and — through the two short-circuits below — the reason
 	// a reviewer sometimes must not be asked at all.
 	out := captureGateDiff(ctx, ws, workspace, env)
+	if probed != nil {
+		out = *probed
+	}
 	if a.Canary != nil && len(out.Diff) > 0 {
 		// Defence in depth, as in the local runner's recordReviewerDiff: a
 		// commit that captured a registered credential must not carry it into
@@ -713,10 +729,11 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// places them: after the diff is known and BEFORE the reviewer is called.
 	// A synthesized verdict here is the whole point — the negative assertion
 	// the parity rows make is that a.Goober.Review is never reached.
-	if out.Observed && len(out.Diff) == 0 && subjectAgentic {
+	if out.Observed && len(out.Diff) == 0 && requireDiff {
 		// #415: an agentic stage asked to change something changed nothing.
 		// No reviewer can turn that into a pass. Scoped to an agentic subject
-		// because a DETERMINISTIC one legitimately produces no diff.
+		// — or, since #5414, a gate that reviews implementation work — because
+		// a DETERMINISTIC one legitimately produces no diff.
 		verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
 		out.Verdict = verdict
 		out.EmptyDiff = true
@@ -935,6 +952,7 @@ func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.Workspa
 }
 
 func (a *Activities) scrubStageActivityResult(ctx context.Context, result stageActivityResult) (stageActivityResult, error) {
+	admitWorkspaceHeadMoved(&result.ResultEnvelope, result.WorkspaceHeadMoved)
 	if identity, ok := attemptidentity.FromContext(ctx); ok {
 		result.AttemptIdentity = &identity
 	}

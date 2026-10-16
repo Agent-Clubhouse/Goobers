@@ -21,8 +21,13 @@ func TestSafetyCompiledValidationBothDSLVersions(t *testing.T) {
 				}},
 				DSLVersion: version,
 				Spec: apiv1.WorkflowSpec{Gaggle: "example", Start: "custom",
-					Tasks: []apiv1.Task{{Name: "custom", Type: apiv1.TaskDeterministic,
+					// The unknown stage is the only possible change in a
+					// rejection cycle, so it blocks proving that obligation.
+					Tasks: []apiv1.Task{{Name: "custom", Type: apiv1.TaskDeterministic, Next: "verify",
 						Goal: "Test", Run: &apiv1.DeterministicRun{Command: []string{"never-execute-this-command"}}}},
+					Gates: []apiv1.Gate{{Name: "verify", Evaluator: apiv1.EvaluatorAutomated,
+						Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+						Branches:  map[string]string{"pass": "", "fail": "custom"}}},
 				},
 			}
 			ix.workflows[workflowIdentity{"example", w.Name}] = indexedWorkflow{

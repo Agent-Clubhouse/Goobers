@@ -285,7 +285,7 @@ func TestSweepStalledRunsCancelsARewrittenRunID(t *testing.T) {
 	}
 	defer func() { _ = instanceLog.Close() }()
 	runID := scheduledRunID()
-	createDriverRun(t, layout.RunsDir(), runID, "implementation", "", journal.DriverEngine, now.Add(-2*time.Hour), nil)
+	createDriverRun(t, layout.RunsDir(), runID, "implementation", "", journal.DriverEngine, now.Add(-time.Hour), nil)
 
 	fake := &fakeEngineWorkflows{workflowIDs: map[string]string{runID: testScheduleChildID}}
 	guards := (&engineRunGuards{client: fake}).withWorkflowIDResolver(engineWorkflowIDResolverFor(
@@ -311,7 +311,7 @@ func TestSweepStalledRunsReportsAnEngineRunItCannotName(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	layout := instance.NewLayout(t.TempDir())
 	runID := scheduledRunID()
-	createDriverRun(t, layout.RunsDir(), runID, "implementation", "", journal.DriverEngine, now.Add(-2*time.Hour), nil)
+	createDriverRun(t, layout.RunsDir(), runID, "implementation", "", journal.DriverEngine, now.Add(-time.Hour), nil)
 
 	guards := (&engineRunGuards{client: &fakeEngineWorkflows{cancelErr: serviceerror.NewNotFound("workflow not found")}}).
 		withWorkflowIDResolver(engineWorkflowIDResolverFor(&fakeOpenWorkflowLister{}, ""))

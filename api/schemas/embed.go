@@ -77,6 +77,14 @@ const GaggleBundle = "gaggle-bundle.schema.json"
 // GaggleHealth is the versioned health read, finding, event, and history contract.
 const GaggleHealth = "gaggle-health-v1alpha1.schema.json"
 
+// FanOutSelection is the DSL 3.1 selective-parallel selection envelope, the
+// effective schema of a selection source slot that declares no schemaPath.
+const FanOutSelection = "fanout-selection.schema.json"
+
+// FanOutRoster is the DSL 3.1 map roster envelope, the effective schema of a
+// roster source slot that declares no schemaPath.
+const FanOutRoster = "fanout-roster.schema.json"
+
 // StageArtifactManifest is the workspace-relative artifact staging contract.
 const StageArtifactManifest = "stage-artifact-manifest.schema.json"
 
@@ -85,6 +93,10 @@ const StageArtifactSet = "stage-artifact-set.schema.json"
 
 // PRQueueEligibility is the bounded historical PR-selection observation.
 const PRQueueEligibility = "pr-queue-eligibility-v1.schema.json"
+
+// BackpropClaim is one agent-authored line of a stage attempt's Backprop
+// claim log.
+const BackpropClaim = "backprop-claim-v1.schema.json"
 
 // InvestigationEvidenceDraft is the semantic-reference evidence input contract.
 const InvestigationEvidenceDraft = "investigation-evidence-draft.schema.json"

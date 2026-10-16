@@ -14,7 +14,14 @@ newest comment with goobers:needs-remediation, so pr-remediation updates
 that PR in place. A PR parked for a human (needs-human / merge-escalated)
 is un-parked when a fresh human comment lands: the park label is cleared
 and needs-remediation added, since the human the PR was parked for has
-now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
+now weighed in. With blockUnansweredFeedback "true" (declare policy
+action disarm-landing) a PR that is landing (goobers:merge-ready) is
+scanned too, by its open feedback: fresh human feedback first disarms
+its armed landing — on Azure DevOps it cancels the auto-complete; on
+GitHub queue-watch withdraws the queued PR once it is routed — then
+removes merge-ready and routes it. Default false: landing PRs are
+skipped, as before; set it false to merge over comments.
+Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
 general comments and review-thread replies both count; deleted comments
 and system threads (votes, pushes, policy status) never do.
 
@@ -23,9 +30,21 @@ attribution footer or a review-thread response marker) on a line of its
 own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
-identity, such a comment is that person's and counts as human. Comments
-landing mid-remediation after the brief snapshot can be masked by
-Goobers' response until the human comments again (accepted v1 limit).
+identity, such a comment is that person's and counts as human.
+rebase-pr and update-behind-pr classify comments by this same rule
+before they clear needs-remediation; give them the same identityMode and
+excludeAuthors.
+
+Remediation responses carry a feedback-ack frontier: the newest
+timestamp in the feedback snapshot the run assessed, to the second. Such
+a response acknowledges only human comments within that second or
+earlier, so feedback that lands after the snapshot stays fresh until a
+run assesses it; comments sharing the frontier's second count as
+assessed, and edits never re-route. Azure DevOps verdict thread comments
+carry an empty frontier and acknowledge nothing. A Goobers comment
+without a frontier keeps the legacy rule (it acknowledges every earlier
+human comment); PRs whose newest human comment only such a comment
+acknowledges are listed as unboundAcknowledged in the result.
 
 Inputs: maxPullRequests (default 20), headPrefixes (default the branch
 namespace), base (default the gaggle base branch), excludeLabels (labels

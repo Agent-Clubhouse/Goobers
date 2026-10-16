@@ -52,6 +52,8 @@ Starts when a cron or supported interval expression becomes due.
 | `idleBackoff.ceiling` | no | Positive Go duration not below `floor`; defaults to `15m`. |
 
 Multiple schedule triggers are allowed. The scheduler fires when any is due.
+Plain schedules use [durable queued acceptance](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md);
+readiness limits apply when the accepted firing is dispatched.
 
 ```yaml
 triggers:
@@ -62,18 +64,43 @@ triggers:
       ceiling: "30m"
 ```
 
+### Missed schedule occurrences
+
+`spec.scheduleCatchUp` applies to all schedules in the workflow:
+
+| Value | Behavior |
+| --- | --- |
+| Omitted or `coalesce` | One catch-up firing from occurrences in the preceding hour. |
+| `all` | Retain each nominal occurrence, discovering at most 100 per sweep. |
+
+```yaml
+spec:
+  scheduleCatchUp: all
+  triggers:
+    - type: schedule
+      schedule: "@every 30m"
+```
+
+`all` supports 1–1,000 authored schedule declarations and keeps interval phases
+and simultaneous occurrences across restarts. Admission limits still apply;
+paused or backed-off work stays queued. Policy edits affect future discovery,
+while accepted work keeps its captured definition. Execution order is not
+promised. See [durable scheduled starts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md).
+
 ## `backlog-item`
 
 Starts from provider backlog eligibility. This trigger does not claim an item;
 an autonomous consumer normally begins with a deterministic
-`goobers backlog-query --claim` task.
+`goobers backlog-query --claim` task. Counted worker starts use
+[durable queued acceptance](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-counted-workers.md), including accounting
+for workers already queued while waiting for capacity.
 
 | Parameter | Required | Description |
 | --- | --- | --- |
 | `selector` | no | Map whose keys are required backlog labels. Values are reserved and currently ignored for matching. |
 | `trustLabel` | no | Maintainer-applied label that classifies directly triggered content as maintainer integrity. Valid only here. |
 | `labelPredicate` | no | CEL expression over `labels`, ANDed with `selector`. |
-| `fieldPredicate` | no | CEL expression over provider-native scalar `fields`, ANDed with the other filters. |
+| `fieldPredicate` | no | CEL expression over provider-native scalar `fields` plus the normalized `fields["title"]`, ANDed with the other filters. |
 
 All backlog-item triggers in one workflow must use the same `trustLabel`.
 
@@ -91,6 +118,22 @@ triggers:
     labelPredicate: '!("tracking" in labels)'
     fieldPredicate: 'fields["number"] > 100'
 ```
+
+Every backlog provider projects the item title as `fields["title"]` (Azure
+DevOps keeps `System.Title` as well). Besides scalar comparisons, a string field
+supports `contains`, `startsWith` and `endsWith`, which are case-sensitive, and
+`containsIgnoreCase`, `startsWithIgnoreCase` and `endsWithIgnoreCase`, which
+compare lowercased text. The argument must be a string literal:
+
+```yaml
+fieldPredicate: 'fields["title"].startsWithIgnoreCase("[ui]") && !fields["title"].contains("WIP")'
+```
+
+These operations are additive: existing predicates and configs without a
+predicate select exactly what they did before. A title predicate fails closed
+when an item has no title (an Azure DevOps item without a string
+`System.Title`), and other CEL functions such as `matches` remain validation
+errors.
 
 ## `signal`
 

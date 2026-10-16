@@ -201,7 +201,7 @@ var defectAggregateQueryParameters = []string{
 	"gaggle", "workflow", "since", "aggregates",
 	"minSamples", "maxFailureRate", "minErrorSignatureCount",
 	"minGateEvaluations", "maxGateEscalationRate", "maxFlaggedRuns",
-	"minCreditRuns", "minCreditFailureShare",
+	"minCreditRuns", "minCreditFailureShare", "minCICheckFailureRuns",
 }
 
 func parseDefectAggregateQuery(values url.Values, now time.Time) (TelemetryDefectAggregateRequest, error) {
@@ -245,8 +245,8 @@ func parseDefectAggregateQuery(values url.Values, now time.Time) (TelemetryDefec
 	}, nil
 }
 
-// parseDefectAggregates resolves the requested families, defaulting to all
-// four admitted ones only when the parameter is ABSENT. An unadmitted name is
+// parseDefectAggregates resolves the requested families, defaulting to every
+// admitted one only when the parameter is ABSENT. An unadmitted name is
 // REFUSED rather than dropped: a lane that asked for `learning-episode` and
 // silently got three families back would file fewer nominations and never
 // learn why. An empty value is refused for the same reason — a caller that
@@ -328,6 +328,9 @@ func parseDefectAggregateThresholds(values url.Values) (telemetryclient.Threshol
 		return telemetryclient.Thresholds{}, err
 	}
 	if thresholds.MinCreditFailureShare, err = rate("minCreditFailureShare"); err != nil {
+		return telemetryclient.Thresholds{}, err
+	}
+	if thresholds.MinCICheckFailureRuns, err = count("minCICheckFailureRuns", telemetryclient.MaxThresholdCount); err != nil {
 		return telemetryclient.Thresholds{}, err
 	}
 	if err := telemetryclient.ValidateThresholds(thresholds); err != nil {

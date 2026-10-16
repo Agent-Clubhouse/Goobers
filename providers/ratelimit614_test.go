@@ -132,3 +132,90 @@ func TestGitHubRateLimitResetBeyondBudgetFailsFastTyped(t *testing.T) {
 		t.Fatal("typed rate-limit error must classify as transient (quota resets on the clock)")
 	}
 }
+
+// TestGitHubRateLimitWaitPastCallerDeadlineFailsFastTyped is #5572: a reset
+// inside the wait budget but past the caller's context deadline must not be
+// slept toward. The sleep could only end in cancellation (or the stage being
+// killed as stage_timeout), so it returns the typed rate-limit error at once.
+func TestGitHubRateLimitWaitPastCallerDeadlineFailsFastTyped(t *testing.T) {
+	fixed := time.Unix(1_784_200_000, 0)
+	reset := fixed.Add(4 * time.Minute)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	var waits []time.Duration
+	observer := &recordingObserver{}
+	p := NewGitHubProvider("token", func(p *GitHubProvider) {
+		p.BaseURL = srv.URL
+		p.now = func() time.Time { return fixed }
+		p.sleep = func(_ context.Context, d time.Duration) error {
+			waits = append(waits, d)
+			return nil
+		}
+	}, WithRateLimitObserver(observer))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err := p.GetWorkItem(ctx, RepositoryRef{Owner: "acme", Name: "app"}, "7")
+	var rl *RateLimitError
+	if !errors.As(err, &rl) {
+		t.Fatalf("err = %v (%T), want *RateLimitError", err, err)
+	}
+	if !rl.Reset.Equal(time.Unix(reset.Unix(), 0)) {
+		t.Fatalf("Reset = %v, want %v", rl.Reset, time.Unix(reset.Unix(), 0))
+	}
+	if len(waits) != 0 {
+		t.Fatalf("slept %v toward a reset past the caller's deadline", waits)
+	}
+	if observer.count() != 1 || observer.events[0].Outcome != RateLimitOutcomeExhausted {
+		t.Fatalf("rate-limit events = %#v, want one exhausted event", observer.events)
+	}
+}
+
+// TestGitHubRateLimitWaitWithinCallerDeadlineStillSleeps pins the other side
+// of #5572's guard: a deadline far enough out to absorb the wait keeps the
+// #614 wait-until-reset behavior.
+func TestGitHubRateLimitWaitWithinCallerDeadlineStillSleeps(t *testing.T) {
+	fixed := time.Unix(1_784_200_000, 0)
+	reset := fixed.Add(90 * time.Second)
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":123,"number":7,"title":"ok","state":"open"}`))
+	}))
+	defer srv.Close()
+
+	var waits []time.Duration
+	p := NewGitHubProvider("token", func(p *GitHubProvider) {
+		p.BaseURL = srv.URL
+		p.now = func() time.Time { return fixed }
+		p.sleep = func(_ context.Context, d time.Duration) error {
+			waits = append(waits, d)
+			return nil
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	if _, err := p.GetWorkItem(ctx, RepositoryRef{Owner: "acme", Name: "app"}, "7"); err != nil {
+		t.Fatalf("GetWorkItem within the caller's deadline: %v", err)
+	}
+	if len(waits) != 1 || waits[0] < 90*time.Second {
+		t.Fatalf("waits = %v, want one reset-length sleep", waits)
+	}
+}

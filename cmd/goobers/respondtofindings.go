@@ -149,7 +149,12 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "PR #%d: remediated branch was not published, so no finding response was posted\n", selectedNumber)
 		return 0
 	}
-	comment := renderRemediationResponse(runID, result)
+	brief, err := readLatestRemediationBrief(root, runID)
+	if err != nil {
+		pf(stderr, "error: read remediation brief: %v\n", err)
+		return 1
+	}
+	comment := withFeedbackAck(renderRemediationResponse(runID, result), remediationFeedbackAck(brief))
 
 	repo, err := providerRepo(root)
 	if err != nil {

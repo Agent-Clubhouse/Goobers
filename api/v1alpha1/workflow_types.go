@@ -180,6 +180,16 @@ type ReadinessConditions struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	DesiredConcurrentRuns int32 `json:"desiredConcurrentRuns,omitempty" yaml:"desiredConcurrentRuns,omitempty"`
+	// RequireProviderAuthorization makes provider authorization health a
+	// pre-claim readiness predicate (#5317). When true, autonomous dispatch
+	// first verifies, without mutating anything, that the instance's resolved
+	// credential for the gaggle's provider repository is valid and can read the
+	// repository and its issues. An invalid, revoked, insufficient, unsupported,
+	// or unverifiable credential fails closed: no run starts, no work is
+	// claimed, and the scheduler reports a stable provider-auth-unhealthy
+	// reason. Manual `goobers run` stays available for diagnosis.
+	// +optional
+	RequireProviderAuthorization bool `json:"requireProviderAuthorization,omitempty" yaml:"requireProviderAuthorization,omitempty"`
 }
 
 // TaskType is the execution kind of a task: code-driven or goober-executed.
@@ -360,14 +370,15 @@ type Task struct {
 	// +kubebuilder:validation:Enum=fail;salvage
 	// +optional
 	OnTimeout string `json:"onTimeout,omitempty" yaml:"onTimeout,omitempty"`
-	// ExpectedOutputs declares intended task postconditions. The V0 local runner
-	// accepts but does not enforce this field; validation emits VER003 when set.
+	// ExpectedOutputs declares intended task postconditions. Through DSL 3.0 it
+	// is advisory and validation emits VER003 when set. From DSL 3.1 a stage
+	// fails when it succeeds without emitting every declared key.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
 	// ArtifactSlots declares named artifact positions this producer may publish
 	// in DSL 3.1 and later. The names are producer-local stable handles; runtime
 	// resolution still uses the existing positional/context-pointer artifact
-	// transport. ExpectedOutputs remains advisory and unchanged.
+	// transport. ExpectedOutputs does not name artifact slots.
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
 	ArtifactSlots []ArtifactSlot `json:"artifactSlots,omitempty" yaml:"artifactSlots,omitempty"`
@@ -624,8 +635,14 @@ type RetryPolicy struct {
 // RunControls tunes runner-level safety budgets. An omitted field inherits from
 // the next broader scope: workflow, then gaggle, then instance defaults.
 type RunControls struct {
-	// MaxRepasses bounds how many times gates may route a run back to the same
-	// already-completed stage before escalation, regardless of gate or outcome.
+	// MaxRepasses bounds how many times a run may be routed back to the same
+	// already-completed stage before escalation. The count is cumulative per
+	// target stage across the run, charged by automated and agentic gate
+	// outcomes that route back to that stage and by producer retries after an
+	// invalid handoff. Only policy outcomes (anything other than pass, infra,
+	// or timeout) are charged: a pass branch into a completed stage is a
+	// forward step, infra and timeout outcomes spend their own retry and
+	// polling budgets, and human-gate decisions are never charged.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
@@ -634,7 +651,8 @@ type RunControls struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
-	// MaxRunDuration is the maximum total wall-clock age of a run. Empty
+	// MaxRunDuration is the maximum active execution time of a run: its age
+	// less time the host spent suspended and durable child waits. Empty
 	// disables the total-duration limit. It uses Go duration syntax.
 	// +kubebuilder:validation:MinLength=1
 	// +optional
@@ -938,6 +956,12 @@ type WorkflowSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="!self.exists(t, t.type == 'manual') || size(self) == 1",message="type=manual must be the only trigger"
 	Triggers []Trigger `json:"triggers" yaml:"triggers"`
+	// ScheduleCatchUp selects missed schedule handling. Omitted or coalesce
+	// captures one firing for the preceding hour. All retains every nominal
+	// occurrence, discovering at most 100 per sweep; admission still applies.
+	// +kubebuilder:validation:Enum=coalesce;all
+	// +optional
+	ScheduleCatchUp string `json:"scheduleCatchUp,omitempty" yaml:"scheduleCatchUp,omitempty"`
 	// Readiness bounds when a run may start (WF-011).
 	// +optional
 	Readiness ReadinessConditions `json:"readiness,omitempty" yaml:"readiness,omitempty"`
@@ -947,8 +971,9 @@ type WorkflowSpec struct {
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 	// Backprop explicitly enrolls terminal runs in provenance-aware credit
-	// attribution. Omitted and enabled=false both preserve legacy execution
-	// without attribution work.
+	// attribution, either actively or in shadow mode. Omitted, mode=off, and
+	// enabled=false without a mode all preserve legacy execution without
+	// attribution work.
 	// +optional
 	Backprop *BackpropConfig `json:"backprop,omitempty" yaml:"backprop,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where this
@@ -1013,18 +1038,95 @@ type WorkflowSpec struct {
 	// (docs/design/static-fan-out-fan-in.md).
 	// +optional
 	Parallels []Parallel `json:"parallels,omitempty" yaml:"parallels,omitempty"`
+	// Maps are DSL 3.1 preview data-driven fan-out states: each runs one
+	// declared task once per entry of a frozen roster document
+	// (docs/design/plan-driven-dynamic-fan-out.md).
+	// +kubebuilder:validation:MaxItems=128
+	// +optional
+	Maps []Map `json:"maps,omitempty" yaml:"maps,omitempty"`
 }
 
 // BackpropConfig is the versioned workflow-level enrollment contract for
 // post-outcome credit attribution.
+// +kubebuilder:validation:XValidation:rule="has(self.enabled) || has(self.mode)",message="backprop requires enabled or mode"
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || !has(self.mode) || self.mode == 'active'",message="backprop.enabled=true requires mode to be omitted or active"
 type BackpropConfig struct {
-	// Enabled opts terminal runs into attribution.
-	// +kubebuilder:validation:Required
+	// Enabled is the legacy enrollment switch: true means active mode when
+	// Mode is omitted.
+	// +optional
 	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Mode selects off, shadow, or active attribution. When set it is
+	// authoritative over Enabled. Shadow does no work at run end; its
+	// attribution is computed on demand from the run journal and filing
+	// passes, gates, and default read surfaces
+	// never consume. Enabled=true is accepted only with mode=active.
+	// +kubebuilder:validation:Enum=off;shadow;active
+	// +optional
+	Mode BackpropMode `json:"mode,omitempty" yaml:"mode,omitempty"`
 	// Version pins the attribution contract interpreted for the run.
 	// +kubebuilder:validation:Enum=v1
 	// +kubebuilder:validation:Required
 	Version string `json:"version" yaml:"version"`
+	// Granularity selects when attribution is recorded. run (the default)
+	// writes only the end-of-run record; stage additionally writes a
+	// best-effort, read-only checkpoint after each stage finishes, and the
+	// end-of-run record composes those checkpoints. Applies only to active
+	// mode: shadow runs write no checkpoints. Preview.
+	// +kubebuilder:validation:Enum=run;stage
+	// +optional
+	Granularity BackpropGranularity `json:"granularity,omitempty" yaml:"granularity,omitempty"`
+}
+
+// BackpropGranularity is how often an enrolled run records attribution.
+type BackpropGranularity string
+
+// Backprop granularities. Run records attribution once at terminalization;
+// stage also checkpoints attribution after every finished stage.
+const (
+	BackpropGranularityRun   BackpropGranularity = "run"
+	BackpropGranularityStage BackpropGranularity = "stage"
+)
+
+// BackpropMode is how a workflow participates in Backprop attribution.
+type BackpropMode string
+
+// Backprop modes. Off performs no attribution work; shadow computes
+// attribution on demand from the run journal, never at run end; active
+// publishes the record
+// consumed by the fault audit and other Backprop read surfaces.
+const (
+	BackpropModeOff    BackpropMode = "off"
+	BackpropModeShadow BackpropMode = "shadow"
+	BackpropModeActive BackpropMode = "active"
+)
+
+// EffectiveMode resolves Mode, falling back to the legacy Enabled switch. A
+// nil config is off.
+func (c *BackpropConfig) EffectiveMode() BackpropMode {
+	if c == nil {
+		return BackpropModeOff
+	}
+	if c.Mode != "" {
+		return c.Mode
+	}
+	if c.Enabled {
+		return BackpropModeActive
+	}
+	return BackpropModeOff
+}
+
+// ResolveBackpropMode applies Backprop precedence for one workflow: an
+// explicit workflow mode (including off, which opts out of any override),
+// then legacy enabled=true (active), then the gaggle override, then off. The
+// gaggle override can only resolve to shadow.
+func ResolveBackpropMode(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropMode {
+	if workflow != nil && (workflow.Mode != "" || workflow.Enabled) {
+		return workflow.EffectiveMode()
+	}
+	if gaggle != nil && gaggle.Mode == BackpropModeShadow {
+		return BackpropModeShadow
+	}
+	return BackpropModeOff
 }
 
 // BranchFailurePolicy declares what a parallel does when one of its branches
@@ -1057,10 +1159,39 @@ type Branch struct {
 	// Start is the name of the branch's first state (task or gate).
 	// +kubebuilder:validation:Required
 	Start string `json:"start" yaml:"start"`
+	// Optional marks a DSL 3.1 preview branch that runs only when its
+	// parallel's frozen selection names it. Non-optional branches always run.
+	// Optional requires Parallel.Selection, and Selection requires at least one
+	// optional branch.
+	// +optional
+	Optional bool `json:"optional,omitempty" yaml:"optional,omitempty"`
+}
+
+// FanOutSource names the frozen JSON document a selective parallel or a map
+// reads: one DSL 3.1 artifact slot declared by a task that runs before the
+// fan-out on every path.
+type FanOutSource struct {
+	// Task names the producing task.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Required
+	Task string `json:"task" yaml:"task"`
+	// Slot names an application/json artifactSlots entry on Task.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,128}$`
+	// +kubebuilder:validation:Required
+	Slot string `json:"slot" yaml:"slot"`
+}
+
+// ParallelSelection is the DSL 3.1 preview selection contract of a selective
+// parallel: the source document names which optional branches run.
+type ParallelSelection struct {
+	// Source is the producer slot holding the selection document
+	// (api/schemas/fanout-selection.schema.json).
+	// +kubebuilder:validation:Required
+	Source FanOutSource `json:"source" yaml:"source"`
 }
 
 // Parallel is a fan-out/fan-in state. Branch width is fixed at author time;
-// dynamic (data-driven) width is deliberately not supported (#817).
+// data-driven width is the separate Map state, never a parallel (#817).
 type Parallel struct {
 	// Name identifies this state; it is a valid next/branches target like any
 	// other state name.
@@ -1102,6 +1233,76 @@ type Parallel struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MaxConcurrentBranches int32 `json:"maxConcurrentBranches,omitempty" yaml:"maxConcurrentBranches,omitempty"`
+	// Selection makes this a DSL 3.1 preview selective parallel: branches
+	// marked optional run only when the frozen selection document names them.
+	// Runtimes refuse a selective parallel at run start until they implement it.
+	// +optional
+	Selection *ParallelSelection `json:"selection,omitempty" yaml:"selection,omitempty"`
+}
+
+// MapBinding is the closed set of per-item values a map binds into its
+// mapped task's invocation inputs.
+type MapBinding string
+
+const (
+	// MapBindingItem binds the roster entry's item object.
+	MapBindingItem MapBinding = "item"
+	// MapBindingIdentity binds the roster entry's identity string.
+	MapBindingIdentity MapBinding = "identity"
+	// MapBindingDigest binds the roster entry's canonical digest.
+	MapBindingDigest MapBinding = "digest"
+)
+
+// Map is a DSL 3.1 preview data-driven fan-out state: it runs one statically
+// declared task once per entry of a frozen roster document, through the
+// static parallel executor, and joins at a single successor. Runtimes refuse
+// a map at run start until they implement it.
+type Map struct {
+	// Name identifies this state; it is a valid next/branches target like any
+	// other state name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+	// Source is the producer slot holding the roster document
+	// (api/schemas/fanout-roster.schema.json).
+	// +kubebuilder:validation:Required
+	Source FanOutSource `json:"source" yaml:"source"`
+	// Task names the mapped task, declared once in spec.tasks. Only this map
+	// may enter it, and it must end at @join, @abort, or @escalate.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Required
+	Task string `json:"task" yaml:"task"`
+	// Bindings maps mapped-task invocation input names to item, identity, or
+	// digest. A binding name must not collide with a static task input.
+	// +optional
+	Bindings map[string]MapBinding `json:"bindings,omitempty" yaml:"bindings,omitempty"`
+	// FailurePolicy declares what happens when an item fails, with static
+	// parallel semantics. Required.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=fail_fast;all_or_nothing;continue_on_error
+	FailurePolicy BranchFailurePolicy `json:"failurePolicy" yaml:"failurePolicy"`
+	// Join is the state that runs exactly once after every item has settled.
+	// It may only be entered through this map.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Required
+	Join string `json:"join" yaml:"join"`
+	// OnFailure is the failure target under fail_fast or all_or_nothing, with
+	// static parallel rules: required for those policies and forbidden under
+	// continue_on_error.
+	// +optional
+	OnFailure string `json:"onFailure,omitempty" yaml:"onFailure,omitempty"`
+	// ItemTimeoutSeconds bounds one item, with static branchTimeoutSeconds
+	// semantics.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ItemTimeoutSeconds int32 `json:"itemTimeoutSeconds,omitempty" yaml:"itemTimeoutSeconds,omitempty"`
+	// MaxConcurrent bounds how many items execute at once, with static
+	// maxConcurrentBranches semantics. Unset means 1; the ceiling is the
+	// static parallel width bound.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=32
+	// +optional
+	MaxConcurrent int32 `json:"maxConcurrent,omitempty" yaml:"maxConcurrent,omitempty"`
 }
 
 // TutorScopeTier is the topology tier of a Tutor-role workflow (TUT-A4).

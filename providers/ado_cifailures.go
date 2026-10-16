@@ -49,7 +49,7 @@ func (p *ADOProvider) PullRequestCIFailures(ctx context.Context, repo Repository
 	if err != nil {
 		return PullRequestCIFailures{}, err
 	}
-	evals, err := p.pullRequestEvaluations(ctx, repo, pullID, detail)
+	evals, err := p.pullRequestCIEvaluations(ctx, repo, pullID, detail)
 	if err != nil {
 		return PullRequestCIFailures{}, err
 	}
@@ -104,24 +104,46 @@ func (p *ADOProvider) ciFailuresFromEvaluations(ctx context.Context, scope *adoC
 }
 
 // failingCIEvaluations keeps the enabled, blocking, rejected or broken
-// evaluations of CI-gating policy kinds.
+// evaluations of CI-gating policy kinds. A build policy rejected for a
+// canceled build (markCanceledBuilds) is no verdict on the code, so it is not
+// a failure (#6817).
 func failingCIEvaluations(evals []adoPolicyEvaluation) []adoPolicyEvaluation {
 	var out []adoPolicyEvaluation
 	for _, ev := range evals {
-		if !adoEvaluationBlocks(ev) || adoPolicyCheckState(ev.Status) != CheckStateFailing {
+		kind := adoPolicyKindOf(ev.Configuration.Type.ID)
+		if !adoEvaluationBlocks(ev) || adoEvaluationState(ev, kind) != CheckStateFailing {
 			continue
 		}
-		if adoPolicyKindOf(ev.Configuration.Type.ID).gatesCI() {
+		if kind.gatesCI() {
 			out = append(out, ev)
 		}
 	}
 	return out
 }
 
+// pullRequestCIEvaluations reads the pull request's policy evaluations with
+// canceled builds marked, as the CI-poll gate reads them, so the failures
+// reported here and the gate never disagree about a canceled build.
+func (p *ADOProvider) pullRequestCIEvaluations(ctx context.Context, repo RepositoryRef, pullID string, detail adoPullRequestDetail) ([]adoPolicyEvaluation, error) {
+	evals, err := p.pullRequestEvaluations(ctx, repo, pullID, detail)
+	if err != nil {
+		return nil, err
+	}
+	projectName := detail.Repository.Project.Name
+	if projectName == "" {
+		projectName = p.project(repo)
+	}
+	if err := p.markCanceledBuilds(ctx, projectName, evals); err != nil {
+		return nil, err
+	}
+	return evals, nil
+}
+
 // HasPullRequestCIFailures reports whether PullRequestCIFailures would report
 // at least one failure for the pull request, from the same policy
-// evaluations but without reading any build, timeline or log. It costs the
-// same two GETs as before #5652.
+// evaluations but without reading any timeline or log. It costs two GETs
+// (the pull request and its evaluations) plus one build read per rejected
+// build policy, to tell a canceled build from a failed one (#6817).
 func (p *ADOProvider) HasPullRequestCIFailures(ctx context.Context, repo RepositoryRef, pullID string) (bool, error) {
 	if err := requireRepo(repo); err != nil {
 		return false, err
@@ -130,7 +152,7 @@ func (p *ADOProvider) HasPullRequestCIFailures(ctx context.Context, repo Reposit
 	if err != nil {
 		return false, err
 	}
-	evals, err := p.pullRequestEvaluations(ctx, repo, pullID, detail)
+	evals, err := p.pullRequestCIEvaluations(ctx, repo, pullID, detail)
 	if err != nil {
 		return false, err
 	}

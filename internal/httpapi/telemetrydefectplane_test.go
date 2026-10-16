@@ -320,8 +320,8 @@ func TestDefectAggregateScopeNamesRejectTraversal(t *testing.T) {
 // family outside it is REFUSED rather than dropped: a lane that asked for one
 // and silently got fewer would file fewer defects and never learn why.
 func TestDefectAggregateAdmittedFamiliesOnly(t *testing.T) {
-	admitted := []string{"stage-failure-rate", "gate-noise", "credit-assignment", "error-signature"}
-	refused := []string{"all", "ci-check-failure", "workflow-untriggered", "stage-unreached", "learning-episode", "", "STAGE-FAILURE-RATE"}
+	admitted := []string{"stage-failure-rate", "gate-noise", "credit-assignment", "error-signature", "ci-check-failure"}
+	refused := []string{"all", "workflow-untriggered", "stage-unreached", "learning-episode", "", "STAGE-FAILURE-RATE"}
 	for _, name := range admitted {
 		t.Run("admitted/"+name, func(t *testing.T) {
 			service := &fakeDefectService{}
@@ -358,7 +358,7 @@ func TestDefectAggregateAdmittedFamiliesOnly(t *testing.T) {
 			}
 		})
 	}
-	t.Run("omitted means the admitted four", func(t *testing.T) {
+	t.Run("omitted means every admitted family", func(t *testing.T) {
 		service := &fakeDefectService{}
 		handler := defectHandler(t, service,
 			WithAuthenticator(podPrincipalFor("run-1")),
@@ -371,7 +371,7 @@ func TestDefectAggregateAdmittedFamiliesOnly(t *testing.T) {
 			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
 		}
 		if len(service.request.Aggregates) != len(telemetryclient.AdmittedAggregates()) {
-			t.Fatalf("aggregates = %v, want the admitted four", service.request.Aggregates)
+			t.Fatalf("aggregates = %v, want every admitted family", service.request.Aggregates)
 		}
 	})
 }
@@ -399,6 +399,10 @@ func TestDefectAggregateBoundsAreEnforced(t *testing.T) {
 		{name: "maxFailureRate above one", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&maxFailureRate=2", status: http.StatusBadRequest},
 		{name: "maxFailureRate NaN", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&maxFailureRate=NaN", status: http.StatusBadRequest},
 		{name: "maxFailureRate Inf", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&maxFailureRate=Inf", status: http.StatusBadRequest},
+		{name: "minCICheckFailureRuns in range", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&minCICheckFailureRuns=2", status: http.StatusOK},
+		{name: "minCICheckFailureRuns zero", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&minCICheckFailureRuns=0", status: http.StatusBadRequest},
+		{name: "minCICheckFailureRuns above the ceiling", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&minCICheckFailureRuns=1000000", status: http.StatusBadRequest},
+		{name: "minCICheckFailureRuns not a number", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&minCICheckFailureRuns=many", status: http.StatusBadRequest},
 		{name: "maxFlaggedRuns above the ceiling", query: "since=" + now.Add(-time.Hour).Format(time.RFC3339) + "&maxFlaggedRuns=100000", status: http.StatusBadRequest},
 		{name: "maxFlaggedRuns at the ceiling", query: fmt.Sprintf("since=%s&maxFlaggedRuns=%d", now.Add(-time.Hour).Format(time.RFC3339), telemetryclient.MaxFlaggedRuns), status: http.StatusOK},
 	}

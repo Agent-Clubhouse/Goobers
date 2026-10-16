@@ -2194,6 +2194,32 @@ func TestWorktree_Diff(t *testing.T) {
 }
 
 // TestWorktree_Diff_RequiresBaseRef guards the empty-baseRef fail-closed path.
+// TestEvidenceDiffArgsDisableOrderFileBelowRepositoryRoot is #6297: Git
+// resolves a relative -O path against the repository prefix, so a null-device
+// name like Windows "NUL" became "<prefix>/NUL" and the diff exited 128.
+func TestEvidenceDiffArgsDisableOrderFileBelowRepositoryRoot(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	runTestGit(t, repo, "checkout", "-b", "feature")
+	mustWriteFile(t, filepath.Join(repo, "a.txt"), "a\n")
+	mustWriteFile(t, filepath.Join(repo, "sub", "b.txt"), "b\n")
+	runTestGit(t, repo, "add", "-A")
+	runTestGit(t, repo, "commit", "-m", "change")
+	root, err := rawGitOutput(ctx, repo, nil, evidenceDiffArgs("main")...)
+	if err != nil {
+		t.Fatalf("diff at repository root: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, "order"), "sub/*\n")
+	runTestGit(t, repo, "config", "diff.orderFile", filepath.Join(repo, "order"))
+	nested, err := rawGitOutput(ctx, filepath.Join(repo, "sub"), nil, evidenceDiffArgs("main")...)
+	if err != nil {
+		t.Fatalf("diff below repository root: %v", err)
+	}
+	if string(nested) != string(root) || strings.Index(string(root), "a.txt") > strings.Index(string(root), "sub/b.txt") {
+		t.Fatalf("configured order or working directory changed evidence bytes:\n%s\nwant:\n%s", nested, root)
+	}
+}
+
 func TestWorktree_Diff_RequiresBaseRef(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

@@ -1,0 +1,42 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS PR RETRY" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers pr retry \- route an escalated or parked PR to merge-review, remediation, or human hold (audited)
+.SH SYNOPSIS
+\fBgoobers pr retry\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers pr retry --pr <number> --route merge-review|remediation|hold --reason <text>
+                        [--gaggle <name>] [--actor <identity>] [--dry-run] [--json] [path]
+
+Move a parked or escalated pull request to an explicit lifecycle route
+without hand-editing provider labels or durable remediation state:
+  merge-review  clear escalation and remediation labels and reset the
+                durable retry state so merge-review can elect a lander
+  remediation   clear escalation labels, reset the durable retry state
+                and apply goobers:needs-remediation
+  hold          park the PR for a human (goobers:merge-escalated and
+                goobers:needs-human); remediation labels are cleared
+
+--dry-run reports the PR's current labels, claim lease, remediation
+checkpoint and escalation generation, head/base SHA, and the proposed
+transition without mutating anything. Otherwise the transition is applied,
+an audit comment naming the operator and reason is recorded on the PR, and
+the provider state is re-read to verify the result. Re-running a completed
+retry changes nothing. The command refuses a closed, merged, or healthy
+PR, a PR whose claim lease is still live, and a merge-review route for a PR
+with failing CI or both goobers:needs-remediation and
+goobers:blocked-on-sibling.
+--reason is required; --actor defaults to the invoking user. The provider
+credential is read like any stage's (github:pr:write).
+The resulting eligibility is printed and is immediately visible in
+goobers status, which reads the same provider labels.
+Exit codes: 0 = applied, already applied, or dry-run reported; 1 = refused or
+provider error; 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers pr retry --pr 533 --route remediation --reason 'review contract corrected' --dry-run
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

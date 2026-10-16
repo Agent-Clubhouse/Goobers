@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -41,7 +42,7 @@ func adoNativeWorkItemLink(root string, repo providers.RepositoryRef, haveIssue 
 	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
 		return false
 	}
-	return !backlogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
+	return !providerconfig.BacklogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
 }
 
 // textOnlyADOWorkItemLink stands in for the native linker when native linking
@@ -124,6 +125,9 @@ func openPullRequestWithADOLink(
 ) (providers.PullRequestResult, int) {
 	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
 		prReq.Body = textOnlyWorkItemLinkNote(prReq.Body, issueID)
+	}
+	if screen := publicationLeakScreenForRoot(root, nil); screen != nil {
+		screen(ctx, "pull-request", prReq.Title, prReq.Body)
 	}
 	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
@@ -586,7 +590,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	extras := requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr)
 
-	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, extras); err != nil {
+	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, withOpenPRDraft(extras, result.Draft)); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -692,6 +696,20 @@ func writeOpenPRResult(resultFile string, opened bool, prNumber int, url string,
 		return fmt.Errorf("write %s: %w", resultFile, err)
 	}
 	return nil
+}
+
+// withOpenPRDraft records the provider-reported draft state so status can show
+// the retained PR's draft state (#5313); unreported state stays absent.
+func withOpenPRDraft(extras map[string]string, draft *bool) map[string]string {
+	if draft == nil {
+		return extras
+	}
+	out := make(map[string]string, len(extras)+1)
+	for k, v := range extras {
+		out[k] = v
+	}
+	out["draft"] = strconv.FormatBool(*draft)
+	return out
 }
 
 // openPRReviewRequester is the optional provider surface open-pr uses to

@@ -189,11 +189,13 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.readiness.maxOpenPRs` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxRunsPerDay` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxRunsPerHour` | 2.0 | ga | supported | dev |
+| `workflow.spec.readiness.requireProviderAuthorization` | 2.0 | ga | supported | dev |
 | `workflow.spec.requires.capabilities` | 2.0 | ga | supported | dev |
 | `workflow.spec.runControls` | 2.0 | ga | supported | dev |
 | `workflow.spec.runControls.maxRepasses` | 2.0 | ga | supported | dev |
 | `workflow.spec.runControls.maxRunDuration` | 2.0 | ga | supported | dev |
 | `workflow.spec.runControls.stalledRunTimeout` | 2.0 | ga | supported | dev |
+| `workflow.spec.scheduleCatchUp` | 2.0 | ga | supported | dev |
 | `workflow.spec.start` | 2.0 | ga | supported | dev |
 | `workflow.spec.tasks` | 2.0 | ga | supported | dev |
 | `workflow.spec.triggers` | 2.0 | ga | supported | dev |
@@ -217,6 +219,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.backlog.provider.ado` | 3.0 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.gitea` | 3.0 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.github` | 3.0 | ga | preview | dev |
+| `gaggle.spec.backprop.mode` | 3.0 | ga | preview | dev |
 | `gaggle.spec.branchNamespace` | 3.0 | ga | preview | dev |
 | `gaggle.spec.ciCommand` | 3.0 | ga | preview | dev |
 | `gaggle.spec.cost.enabled` | 3.0 | ga | preview | v0.4.0 |
@@ -380,6 +383,8 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.signal` | 3.0 | ga | preview | dev |
 | `trigger.webhook` | 3.0 | ga | preview | dev |
 | `workflow.spec.backprop.enabled` | 3.0 | ga | preview | dev |
+| `workflow.spec.backprop.granularity` | 3.0 | ga | preview | dev |
+| `workflow.spec.backprop.mode` | 3.0 | ga | preview | dev |
 | `workflow.spec.backprop.version` | 3.0 | ga | preview | dev |
 | `workflow.spec.displayName` | 3.0 | ga | preview | dev |
 | `workflow.spec.docsRoots` | 3.0 | ga | preview | dev |
@@ -402,11 +407,13 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.readiness.maxOpenPRs` | 3.0 | ga | preview | dev |
 | `workflow.spec.readiness.maxRunsPerDay` | 3.0 | ga | preview | dev |
 | `workflow.spec.readiness.maxRunsPerHour` | 3.0 | ga | preview | dev |
+| `workflow.spec.readiness.requireProviderAuthorization` | 3.0 | ga | preview | dev |
 | `workflow.spec.requires.capabilities` | 3.0 | ga | preview | dev |
 | `workflow.spec.runControls` | 3.0 | ga | preview | dev |
 | `workflow.spec.runControls.maxRepasses` | 3.0 | ga | preview | dev |
 | `workflow.spec.runControls.maxRunDuration` | 3.0 | ga | preview | dev |
 | `workflow.spec.runControls.stalledRunTimeout` | 3.0 | ga | preview | dev |
+| `workflow.spec.scheduleCatchUp` | 3.0 | ga | preview | dev |
 | `workflow.spec.start` | 3.0 | ga | preview | dev |
 | `workflow.spec.tasks` | 3.0 | ga | preview | dev |
 | `workflow.spec.triggers` | 3.0 | ga | preview | dev |
@@ -430,6 +437,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.backlog.provider.ado` | 3.1 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.gitea` | 3.1 | ga | preview | dev |
 | `gaggle.spec.backlog.provider.github` | 3.1 | ga | preview | dev |
+| `gaggle.spec.backprop.mode` | 3.1 | ga | preview | dev |
 | `gaggle.spec.branchNamespace` | 3.1 | ga | preview | dev |
 | `gaggle.spec.ciCommand` | 3.1 | ga | preview | dev |
 | `gaggle.spec.cost.enabled` | 3.1 | ga | preview | v0.4.0 |
@@ -607,20 +615,34 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.signal` | 3.1 | ga | preview | dev |
 | `trigger.webhook` | 3.1 | ga | preview | dev |
 | `workflow.spec.backprop.enabled` | 3.1 | ga | preview | dev |
+| `workflow.spec.backprop.granularity` | 3.1 | ga | preview | dev |
+| `workflow.spec.backprop.mode` | 3.1 | ga | preview | dev |
 | `workflow.spec.backprop.version` | 3.1 | ga | preview | dev |
 | `workflow.spec.displayName` | 3.1 | ga | preview | dev |
 | `workflow.spec.docsRoots` | 3.1 | ga | preview | dev |
 | `workflow.spec.enabled` | 3.1 | ga | preview | v0.4.0 |
 | `workflow.spec.gaggle` | 3.1 | ga | preview | dev |
 | `workflow.spec.gates` | 3.1 | ga | preview | dev |
+| `workflow.spec.maps` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.bindings` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.failurePolicy` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.itemTimeoutSeconds` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.join` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.maxConcurrent` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.onFailure` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.source` | 3.1 | preview | preview | dev |
+| `workflow.spec.maps.task` | 3.1 | preview | preview | dev |
 | `workflow.spec.outboxMirrorPath` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.branchTimeoutSeconds` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.branches` | 3.1 | ga | preview | dev |
+| `workflow.spec.parallels.branches.optional` | 3.1 | preview | preview | dev |
 | `workflow.spec.parallels.failurePolicy` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.join` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.maxConcurrentBranches` | 3.1 | ga | preview | dev |
 | `workflow.spec.parallels.onFailure` | 3.1 | ga | preview | dev |
+| `workflow.spec.parallels.selection` | 3.1 | preview | preview | dev |
+| `workflow.spec.parallels.selection.source` | 3.1 | preview | preview | dev |
 | `workflow.spec.readiness` | 3.1 | ga | preview | dev |
 | `workflow.spec.readiness.claimVisibility` | 3.1 | ga | preview | dev |
 | `workflow.spec.readiness.desiredConcurrentRuns` | 3.1 | ga | preview | dev |
@@ -629,11 +651,13 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.readiness.maxOpenPRs` | 3.1 | ga | preview | dev |
 | `workflow.spec.readiness.maxRunsPerDay` | 3.1 | ga | preview | dev |
 | `workflow.spec.readiness.maxRunsPerHour` | 3.1 | ga | preview | dev |
+| `workflow.spec.readiness.requireProviderAuthorization` | 3.1 | ga | preview | dev |
 | `workflow.spec.requires.capabilities` | 3.1 | ga | preview | dev |
 | `workflow.spec.runControls` | 3.1 | ga | preview | dev |
 | `workflow.spec.runControls.maxRepasses` | 3.1 | ga | preview | dev |
 | `workflow.spec.runControls.maxRunDuration` | 3.1 | ga | preview | dev |
 | `workflow.spec.runControls.stalledRunTimeout` | 3.1 | ga | preview | dev |
+| `workflow.spec.scheduleCatchUp` | 3.1 | ga | preview | dev |
 | `workflow.spec.start` | 3.1 | ga | preview | dev |
 | `workflow.spec.tasks` | 3.1 | ga | preview | dev |
 | `workflow.spec.triggers` | 3.1 | ga | preview | dev |
@@ -648,18 +672,18 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 1.4 -> 2.0
 
-- Added: `gaggle.spec.additionalRepos`, `gaggle.spec.additionalRepos.baseUrl`, `gaggle.spec.additionalRepos.checkout.sparse`, `gaggle.spec.additionalRepos.provider.ado`, `gaggle.spec.additionalRepos.provider.gitea`, `gaggle.spec.additionalRepos.provider.github`, `gaggle.spec.backlog`, `gaggle.spec.backlog.baseUrl`, `gaggle.spec.backlog.fieldPredicate`, `gaggle.spec.backlog.labelPredicate`, `gaggle.spec.backlog.labels`, `gaggle.spec.backlog.provider.ado`, `gaggle.spec.backlog.provider.gitea`, `gaggle.spec.backlog.provider.github`, `gaggle.spec.branchNamespace`, `gaggle.spec.ciCommand`, `gaggle.spec.cost.enabled`, `gaggle.spec.displayName`, `gaggle.spec.enabled`, `gaggle.spec.health`, `gaggle.spec.isolation.identityRef`, `gaggle.spec.isolation.namespace`, `gaggle.spec.isolation.serviceAccount`, `gaggle.spec.issueOwnershipScope`, `gaggle.spec.issueOwnershipScope.assignees`, `gaggle.spec.issueOwnershipScope.unassigned`, `gaggle.spec.outboxMirrorPath`, `gaggle.spec.project`, `gaggle.spec.project.baseUrl`, `gaggle.spec.project.checkout.sparse`, `gaggle.spec.project.provider.ado`, `gaggle.spec.project.provider.gitea`, `gaggle.spec.project.provider.github`, `gaggle.spec.requireLabels`, `gaggle.spec.requiredCapabilities`, `gaggle.spec.runControls`, `gaggle.spec.runControls.maxRepasses`, `gaggle.spec.runControls.maxRunDuration`, `gaggle.spec.runControls.stalledRunTimeout`, `gaggle.spec.sandbox`, `gaggle.spec.selfIdentity`, `gaggle.spec.siblings`, `gaggle.spec.workcopies.root`, `gate.branch.escalate`, `gate.branches`, `gate.evaluator.agentic`, `gate.evaluator.agentic.goober`, `gate.evaluator.agentic.retry`, `gate.evaluator.agentic.retry.backoff`, `gate.evaluator.agentic.retry.maxAttempts`, `gate.evaluator.agentic.timeoutSeconds`, `gate.evaluator.agentic.workspace`, `gate.evaluator.automated`, `gate.evaluator.automated.check`, `gate.evaluator.automated.check.ci-status`, `gate.evaluator.automated.check.failure-class`, `gate.evaluator.automated.check.land-outcome`, `gate.evaluator.automated.check.output-equals`, `gate.evaluator.automated.check.output-matches`, `gate.evaluator.automated.check.output-not-equals`, `gate.evaluator.automated.check.output-numeric-gte`, `gate.evaluator.automated.check.output-numeric-lt`, `gate.evaluator.automated.check.output-numeric-lte`, `gate.evaluator.automated.check.queue-outcome`, `gate.evaluator.automated.check.status-equals`, `gate.evaluator.automated.maxTimeoutPolls`, `gate.evaluator.automated.params`, `gate.evaluator.automated.pollIntervalSeconds`, `gate.evaluator.automated.retry`, `gate.evaluator.automated.retry.backoff`, `gate.evaluator.automated.retry.maxAttempts`, `gate.evaluator.automated.timeoutSeconds`, `gate.evaluator.human`, `gate.evaluator.human.approvers`, `gate.evaluator.human.onTimeout.escalate`, `gate.evaluator.human.onTimeout.reject`, `gate.evaluator.human.onTimeout.remind`, `gate.evaluator.human.timeout`, `gate.maxRepasses`, `gate.name`, `goober.spec.capabilities`, `goober.spec.conditionalPolicyActions`, `goober.spec.displayName`, `goober.spec.gaggle`, `goober.spec.harness.claude-code`, `goober.spec.harness.codex`, `goober.spec.harness.copilot`, `goober.spec.harnessOptions`, `goober.spec.instructions`, `goober.spec.mcpServers`, `goober.spec.model`, `goober.spec.policyActions`, `goober.spec.role`, `goober.spec.scaleFactor`, `goober.spec.skills`, `goober.spec.timeoutSeconds`, `goober.spec.tools`, `goober.spec.workflows`, `stage.ci-poll`, `stage.external-telemetry`, `stage.resultFile`, `stage.run.command`, `stage.run.env`, `stage.run.injectRunContext`, `stage.run.network.none`, `stage.run.script`, `stage.run.syncBase`, `stage.run.workspace.repo`, `stage.run.workspace.scratch`, `stage.shell`, `stage.workspace`, `stage.workspace.repo-readonly`, `task.agentic`, `task.capabilities`, `task.contextFrom`, `task.continueOnError`, `task.deterministic`, `task.expectedOutputs`, `task.experiment`, `task.goal`, `task.goober`, `task.inputs`, `task.inputs.fieldOrder`, `task.inputsFrom`, `task.inputsFrom.stageQualified`, `task.limits`, `task.limits.maxCostUSD`, `task.limits.maxDurationSeconds`, `task.limits.maxTokens`, `task.minimumIntegrity`, `task.name`, `task.nestedAgentPolicy`, `task.next`, `task.onTimeout.fail`, `task.onTimeout.salvage`, `task.outbox`, `task.outboxMirrorPath`, `task.policyActions`, `task.requiredCapabilities`, `task.retry`, `task.retry.backoff`, `task.retry.maxAttempts`, `task.timeoutSeconds`, `trigger.backlog-item`, `trigger.backlog-item.selector`, `trigger.backlog-item.trustLabel`, `trigger.enabled`, `trigger.fieldPredicate`, `trigger.idleBackoff`, `trigger.idleBackoff.ceiling`, `trigger.idleBackoff.enabled`, `trigger.idleBackoff.floor`, `trigger.labelPredicate`, `trigger.manual`, `trigger.priority`, `trigger.schedule`, `trigger.signal`, `trigger.webhook`, `workflow.spec.displayName`, `workflow.spec.docsRoots`, `workflow.spec.enabled`, `workflow.spec.gaggle`, `workflow.spec.gates`, `workflow.spec.outboxMirrorPath`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`, `workflow.spec.readiness`, `workflow.spec.readiness.claimVisibility`, `workflow.spec.readiness.desiredConcurrentRuns`, `workflow.spec.readiness.maxChainDepth`, `workflow.spec.readiness.maxConcurrentRuns`, `workflow.spec.readiness.maxOpenPRs`, `workflow.spec.readiness.maxRunsPerDay`, `workflow.spec.readiness.maxRunsPerHour`, `workflow.spec.requires.capabilities`, `workflow.spec.runControls`, `workflow.spec.runControls.maxRepasses`, `workflow.spec.runControls.maxRunDuration`, `workflow.spec.runControls.stalledRunTimeout`, `workflow.spec.start`, `workflow.spec.tasks`, `workflow.spec.triggers`, `workflow.spec.tutorScope`, `workflow.spec.tutorScope.target`, `workflow.spec.tutorScope.tier`, `workflow.terminal.abort`, `workflow.terminal.complete`, `workflow.terminal.escalate`
+- Added: `gaggle.spec.additionalRepos`, `gaggle.spec.additionalRepos.baseUrl`, `gaggle.spec.additionalRepos.checkout.sparse`, `gaggle.spec.additionalRepos.provider.ado`, `gaggle.spec.additionalRepos.provider.gitea`, `gaggle.spec.additionalRepos.provider.github`, `gaggle.spec.backlog`, `gaggle.spec.backlog.baseUrl`, `gaggle.spec.backlog.fieldPredicate`, `gaggle.spec.backlog.labelPredicate`, `gaggle.spec.backlog.labels`, `gaggle.spec.backlog.provider.ado`, `gaggle.spec.backlog.provider.gitea`, `gaggle.spec.backlog.provider.github`, `gaggle.spec.branchNamespace`, `gaggle.spec.ciCommand`, `gaggle.spec.cost.enabled`, `gaggle.spec.displayName`, `gaggle.spec.enabled`, `gaggle.spec.health`, `gaggle.spec.isolation.identityRef`, `gaggle.spec.isolation.namespace`, `gaggle.spec.isolation.serviceAccount`, `gaggle.spec.issueOwnershipScope`, `gaggle.spec.issueOwnershipScope.assignees`, `gaggle.spec.issueOwnershipScope.unassigned`, `gaggle.spec.outboxMirrorPath`, `gaggle.spec.project`, `gaggle.spec.project.baseUrl`, `gaggle.spec.project.checkout.sparse`, `gaggle.spec.project.provider.ado`, `gaggle.spec.project.provider.gitea`, `gaggle.spec.project.provider.github`, `gaggle.spec.requireLabels`, `gaggle.spec.requiredCapabilities`, `gaggle.spec.runControls`, `gaggle.spec.runControls.maxRepasses`, `gaggle.spec.runControls.maxRunDuration`, `gaggle.spec.runControls.stalledRunTimeout`, `gaggle.spec.sandbox`, `gaggle.spec.selfIdentity`, `gaggle.spec.siblings`, `gaggle.spec.workcopies.root`, `gate.branch.escalate`, `gate.branches`, `gate.evaluator.agentic`, `gate.evaluator.agentic.goober`, `gate.evaluator.agentic.retry`, `gate.evaluator.agentic.retry.backoff`, `gate.evaluator.agentic.retry.maxAttempts`, `gate.evaluator.agentic.timeoutSeconds`, `gate.evaluator.agentic.workspace`, `gate.evaluator.automated`, `gate.evaluator.automated.check`, `gate.evaluator.automated.check.ci-status`, `gate.evaluator.automated.check.failure-class`, `gate.evaluator.automated.check.land-outcome`, `gate.evaluator.automated.check.output-equals`, `gate.evaluator.automated.check.output-matches`, `gate.evaluator.automated.check.output-not-equals`, `gate.evaluator.automated.check.output-numeric-gte`, `gate.evaluator.automated.check.output-numeric-lt`, `gate.evaluator.automated.check.output-numeric-lte`, `gate.evaluator.automated.check.queue-outcome`, `gate.evaluator.automated.check.status-equals`, `gate.evaluator.automated.maxTimeoutPolls`, `gate.evaluator.automated.params`, `gate.evaluator.automated.pollIntervalSeconds`, `gate.evaluator.automated.retry`, `gate.evaluator.automated.retry.backoff`, `gate.evaluator.automated.retry.maxAttempts`, `gate.evaluator.automated.timeoutSeconds`, `gate.evaluator.human`, `gate.evaluator.human.approvers`, `gate.evaluator.human.onTimeout.escalate`, `gate.evaluator.human.onTimeout.reject`, `gate.evaluator.human.onTimeout.remind`, `gate.evaluator.human.timeout`, `gate.maxRepasses`, `gate.name`, `goober.spec.capabilities`, `goober.spec.conditionalPolicyActions`, `goober.spec.displayName`, `goober.spec.gaggle`, `goober.spec.harness.claude-code`, `goober.spec.harness.codex`, `goober.spec.harness.copilot`, `goober.spec.harnessOptions`, `goober.spec.instructions`, `goober.spec.mcpServers`, `goober.spec.model`, `goober.spec.policyActions`, `goober.spec.role`, `goober.spec.scaleFactor`, `goober.spec.skills`, `goober.spec.timeoutSeconds`, `goober.spec.tools`, `goober.spec.workflows`, `stage.ci-poll`, `stage.external-telemetry`, `stage.resultFile`, `stage.run.command`, `stage.run.env`, `stage.run.injectRunContext`, `stage.run.network.none`, `stage.run.script`, `stage.run.syncBase`, `stage.run.workspace.repo`, `stage.run.workspace.scratch`, `stage.shell`, `stage.workspace`, `stage.workspace.repo-readonly`, `task.agentic`, `task.capabilities`, `task.contextFrom`, `task.continueOnError`, `task.deterministic`, `task.expectedOutputs`, `task.experiment`, `task.goal`, `task.goober`, `task.inputs`, `task.inputs.fieldOrder`, `task.inputsFrom`, `task.inputsFrom.stageQualified`, `task.limits`, `task.limits.maxCostUSD`, `task.limits.maxDurationSeconds`, `task.limits.maxTokens`, `task.minimumIntegrity`, `task.name`, `task.nestedAgentPolicy`, `task.next`, `task.onTimeout.fail`, `task.onTimeout.salvage`, `task.outbox`, `task.outboxMirrorPath`, `task.policyActions`, `task.requiredCapabilities`, `task.retry`, `task.retry.backoff`, `task.retry.maxAttempts`, `task.timeoutSeconds`, `trigger.backlog-item`, `trigger.backlog-item.selector`, `trigger.backlog-item.trustLabel`, `trigger.enabled`, `trigger.fieldPredicate`, `trigger.idleBackoff`, `trigger.idleBackoff.ceiling`, `trigger.idleBackoff.enabled`, `trigger.idleBackoff.floor`, `trigger.labelPredicate`, `trigger.manual`, `trigger.priority`, `trigger.schedule`, `trigger.signal`, `trigger.webhook`, `workflow.spec.displayName`, `workflow.spec.docsRoots`, `workflow.spec.enabled`, `workflow.spec.gaggle`, `workflow.spec.gates`, `workflow.spec.outboxMirrorPath`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`, `workflow.spec.readiness`, `workflow.spec.readiness.claimVisibility`, `workflow.spec.readiness.desiredConcurrentRuns`, `workflow.spec.readiness.maxChainDepth`, `workflow.spec.readiness.maxConcurrentRuns`, `workflow.spec.readiness.maxOpenPRs`, `workflow.spec.readiness.maxRunsPerDay`, `workflow.spec.readiness.maxRunsPerHour`, `workflow.spec.readiness.requireProviderAuthorization`, `workflow.spec.requires.capabilities`, `workflow.spec.runControls`, `workflow.spec.runControls.maxRepasses`, `workflow.spec.runControls.maxRunDuration`, `workflow.spec.runControls.stalledRunTimeout`, `workflow.spec.scheduleCatchUp`, `workflow.spec.start`, `workflow.spec.tasks`, `workflow.spec.triggers`, `workflow.spec.tutorScope`, `workflow.spec.tutorScope.target`, `workflow.spec.tutorScope.tier`, `workflow.terminal.abort`, `workflow.terminal.complete`, `workflow.terminal.escalate`
 - Removed: none
 - Level changes: none
 
 ### 2.0 -> 3.0
 
-- Added: `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.capabilities.privilege.windows-admin`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.capabilities.privilege.windows-admin`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.capabilities.privilege.windows-admin`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`, `workflow.spec.backprop.enabled`, `workflow.spec.backprop.version`
+- Added: `gaggle.spec.backprop.mode`, `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.capabilities.privilege.windows-admin`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.capabilities.privilege.windows-admin`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.capabilities.privilege.windows-admin`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`, `workflow.spec.backprop.enabled`, `workflow.spec.backprop.granularity`, `workflow.spec.backprop.mode`, `workflow.spec.backprop.version`
 - Removed: `gaggle.spec.requiredCapabilities`, `gaggle.spec.sandbox`, `stage.run.network.none`, `task.experiment`, `task.requiredCapabilities`
 - Level changes: none
 
 ### 3.0 -> 3.1
 
-- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`
+- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`, `workflow.spec.maps`, `workflow.spec.maps.bindings`, `workflow.spec.maps.failurePolicy`, `workflow.spec.maps.itemTimeoutSeconds`, `workflow.spec.maps.join`, `workflow.spec.maps.maxConcurrent`, `workflow.spec.maps.onFailure`, `workflow.spec.maps.source`, `workflow.spec.maps.task`, `workflow.spec.parallels.branches.optional`, `workflow.spec.parallels.selection`, `workflow.spec.parallels.selection.source`
 - Removed: none
 - Level changes: none

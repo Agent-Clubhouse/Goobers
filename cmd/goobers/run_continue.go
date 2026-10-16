@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
@@ -263,19 +264,26 @@ func (policy *continuationEligibilityPolicy) comparedLabels() []string {
 	return append(labels, policy.labelFilter.Labels()...)
 }
 
+// validateContinuationClaims re-reads every claim the source run held before a
+// continuation reacquires it. A pull-request claim is keyed by, and re-read
+// from, the code repository's provider. A work-item claim is keyed by the
+// backlog's provider: the code provider for every same-provider gaggle, and
+// the backlog provider in topology (b) (a GitHub or Gitea backlog for Azure
+// DevOps code, docs/design/ado-parity-dsl-2-0.md §7.2), where the claimed
+// issue is re-read from the backlog repository (continuationWorkItemProvider).
 func validateContinuationClaims(root string, claims []localscheduler.ClaimEntry, sourceIdentity journal.RunIdentity, provider providers.Provider, repo providers.RepositoryRef) error {
 	if len(claims) == 0 {
 		return nil
 	}
-	workItemProvider, ok := provider.(continuationEligibilityProvider)
-	if !ok {
-		return fmt.Errorf("revalidate continuation claims: provider %q cannot read claimed work items", repo.Provider)
-	}
-	pullRequestProvider, _ := provider.(continuationPullRequestProvider)
 	workItemRepo, err := continuationWorkItemRepository(root, sourceIdentity.Gaggle, repo)
 	if err != nil {
 		return fmt.Errorf("revalidate continuation claims: %w", err)
 	}
+	workItemProvider, err := continuationWorkItemProvider(root, provider, repo, workItemRepo, claims)
+	if err != nil {
+		return fmt.Errorf("revalidate continuation claims: %w", err)
+	}
+	pullRequestProvider, _ := provider.(continuationPullRequestProvider)
 	policy, err := continuationEligibilityPolicyFor(root, sourceIdentity)
 	if err != nil {
 		return fmt.Errorf("revalidate continuation claims: %w", err)
@@ -284,41 +292,96 @@ func validateContinuationClaims(root string, claims []localscheduler.ClaimEntry,
 	defer cancel()
 	for _, claim := range claims {
 		claimID := continuationClaimID(claim)
-		if claim.Provider != "" && !strings.EqualFold(claim.Provider, string(repo.Provider)) {
-			return fmt.Errorf("revalidate continuation claims: source claim %q uses provider %q, configured repository uses %q", claimID, claim.Provider, repo.Provider)
-		}
 		if strings.HasPrefix(claimID, pullRequestClaimPrefix) {
-			if pullRequestProvider == nil {
-				return fmt.Errorf("revalidate continuation claims: provider %q cannot read claimed pull requests", repo.Provider)
-			}
-			poll, err := pullRequestProvider.PollPullRequest(ctx, providers.PullRequestPollRequest{
-				Repository: repo,
-				PullID:     strings.TrimPrefix(claimID, pullRequestClaimPrefix),
-			})
-			switch {
-			case providers.IsNotFoundError(err):
-				return fmt.Errorf("revalidate continuation claims: source claim %q no longer resolves in %s", claimID, repositoryDisplayName(repo))
-			case err != nil:
-				return fmt.Errorf("revalidate continuation claims: read claimed pull request %q: %w", claimID, err)
-			case poll.State != "" && !strings.EqualFold(poll.State, "open"):
-				return fmt.Errorf("revalidate continuation claims: source claim %q is no longer open (state %q)", claimID, poll.State)
-			}
-			continue
+			err = validateContinuationPullRequestClaim(ctx, pullRequestProvider, repo, claim, claimID)
+		} else {
+			err = validateContinuationWorkItemClaim(ctx, workItemProvider, workItemRepo, claim, claimID, policy)
 		}
-		item, err := workItemProvider.GetWorkItem(ctx, workItemRepo, claimID)
-		switch {
-		case providers.IsNotFoundError(err):
-			return fmt.Errorf("revalidate continuation claims: source claim %q no longer resolves in %s", claimID, repositoryDisplayName(workItemRepo))
-		case err != nil:
-			return fmt.Errorf("revalidate continuation claims: read claimed item %q: %w", claimID, err)
-		case item.State != "" && !strings.EqualFold(item.State, "open"):
-			return fmt.Errorf("revalidate continuation claims: source claim %q is no longer open (state %q)", claimID, item.State)
-		}
-		if err := validateContinuationEligibility(item, workItemRepo.Provider, claimID, policy); err != nil {
+		if err != nil {
 			return fmt.Errorf("revalidate continuation claims: %w", err)
 		}
 	}
 	return nil
+}
+
+// continuationClaimProviderMatches refuses a claim keyed by another provider
+// than the repository it is re-read from. A claim with no recorded provider
+// predates provider keying and is re-read as before.
+func continuationClaimProviderMatches(claim localscheduler.ClaimEntry, claimID string, repo providers.RepositoryRef) error {
+	if claim.Provider != "" && !strings.EqualFold(claim.Provider, string(repo.Provider)) {
+		return fmt.Errorf("source claim %q uses provider %q, configured repository uses %q", claimID, claim.Provider, repo.Provider)
+	}
+	return nil
+}
+
+func validateContinuationPullRequestClaim(ctx context.Context, pullRequestProvider continuationPullRequestProvider, repo providers.RepositoryRef, claim localscheduler.ClaimEntry, claimID string) error {
+	if err := continuationClaimProviderMatches(claim, claimID, repo); err != nil {
+		return err
+	}
+	if pullRequestProvider == nil {
+		return fmt.Errorf("provider %q cannot read claimed pull requests", repo.Provider)
+	}
+	poll, err := pullRequestProvider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     strings.TrimPrefix(claimID, pullRequestClaimPrefix),
+	})
+	switch {
+	case providers.IsNotFoundError(err):
+		return fmt.Errorf("source claim %q no longer resolves in %s", claimID, repositoryDisplayName(repo))
+	case err != nil:
+		return fmt.Errorf("read claimed pull request %q: %w", claimID, err)
+	case poll.State != "" && !strings.EqualFold(poll.State, "open"):
+		return fmt.Errorf("source claim %q is no longer open (state %q)", claimID, poll.State)
+	}
+	return nil
+}
+
+func validateContinuationWorkItemClaim(ctx context.Context, workItemProvider continuationEligibilityProvider, workItemRepo providers.RepositoryRef, claim localscheduler.ClaimEntry, claimID string, policy *continuationEligibilityPolicy) error {
+	if err := continuationClaimProviderMatches(claim, claimID, workItemRepo); err != nil {
+		return err
+	}
+	item, err := workItemProvider.GetWorkItem(ctx, workItemRepo, claimID)
+	switch {
+	case providers.IsNotFoundError(err):
+		return fmt.Errorf("source claim %q no longer resolves in %s", claimID, repositoryDisplayName(workItemRepo))
+	case err != nil:
+		return fmt.Errorf("read claimed item %q: %w", claimID, err)
+	case item.State != "" && !strings.EqualFold(item.State, "open"):
+		return fmt.Errorf("source claim %q is no longer open (state %q)", claimID, item.State)
+	}
+	return validateContinuationEligibility(item, workItemRepo.Provider, claimID, policy)
+}
+
+// continuationWorkItemProvider is the provider the source run's work-item
+// claims are re-read through: the code repository's own provider, unless the
+// backlog lives on another provider (topology (b)) and the run claimed a work
+// item. Then it is the backlog provider, opened for the backlog repository
+// with the github:issues:read credential, as the backlog stages read it; the
+// Azure DevOps provider is never asked for a GitHub or Gitea issue.
+func continuationWorkItemProvider(root string, code providers.Provider, repo, workItemRepo providers.RepositoryRef, claims []localscheduler.ClaimEntry) (continuationEligibilityProvider, error) {
+	if providerconfig.BacklogOnOtherProvider(repo, workItemRepo) && continuationClaimsWorkItem(claims) {
+		backlog, err := newProviderForStage(root, workItemRepo, true)
+		if err != nil {
+			return nil, fmt.Errorf("open backlog provider for %s: %w", repositoryDisplayName(workItemRepo), err)
+		}
+		code, repo = backlog, workItemRepo
+	}
+	reader, ok := code.(continuationEligibilityProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %q cannot read claimed work items", repo.Provider)
+	}
+	return reader, nil
+}
+
+// continuationClaimsWorkItem reports whether any claim names a work item
+// rather than a pull request.
+func continuationClaimsWorkItem(claims []localscheduler.ClaimEntry) bool {
+	for _, claim := range claims {
+		if !strings.HasPrefix(continuationClaimID(claim), pullRequestClaimPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func createOrReuseContinuation(root, runsDir string, sourceIdentity journal.RunIdentity, claims []localscheduler.ClaimEntry, req journal.ContinuationRequest) (string, error) {
@@ -643,7 +706,7 @@ func continuationWorkItemRepository(root, gaggle string, routed providers.Reposi
 	if set == nil || report == nil {
 		return routed, nil
 	}
-	return applyBacklogProject(set, gaggle, routed), nil
+	return providerconfig.ApplyBacklogProject(set, gaggle, routed)
 }
 
 func deleteContinuationRun(dir string) error {

@@ -382,7 +382,10 @@
     "capabilities": [
       {
         "capability": "provider:pr:write",
-        "consequence": "the capability-scoped credential is not injected, so pull-request selection fails at runtime"
+        "consequence": "the capability-scoped credential is not injected, so pull-request selection fails at runtime",
+        "alternatives": [
+          "github:pr:write"
+        ]
       }
     ]
   },

@@ -23,7 +23,7 @@ import (
 
 func TestSchedulerTelemetryReplayStartOptionsPreserveLifecycle(t *testing.T) {
 	recovery := localscheduler.NewRecoveryGate()
-	options, release := daemonStartupSetupOptions(notifyFlag{}, io.Discard, io.Discard, recovery)
+	options, release := daemonStartupSetupOptions(notifyFlag{}, io.Discard, io.Discard, recovery, nil)
 	var configured schedulerSetupOptions
 	for _, option := range options {
 		option(&configured)

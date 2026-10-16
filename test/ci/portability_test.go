@@ -518,7 +518,7 @@ func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
 	// profile policy is fail-closed on selected jobs, and it must still run
 	// after the run is cancelled, which is what always() guarantees.
 	requiredCI := workflowJob(workflow, "required-ci")
-	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' && !" + ciMetadataEdit + " }}", "run: go run ./test/cipolicy gate", "CI_NEEDS: ${{ toJSON(needs) }}"} {
+	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' }}", "run: go run ./test/cipolicy gate", "CI_NEEDS: ${{ toJSON(needs) }}"} {
 		if !strings.Contains(requiredCI, want) {
 			t.Errorf("required-ci must contain %q so a cancelled job reds the required check", want)
 		}
@@ -567,10 +567,10 @@ func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
 
 	// Repository ruleset 19093039 pins this exact required-check name:
 	// https://github.com/Agent-Clubhouse/Goobers/rules/19093039
-	// The name is an expression only so a skipped title/body-edit run cannot
-	// shadow it (#6360); every run that validates code renders the pinned name,
-	// which TestCIRunsOnBaseRetargetNotMetadataEdits evaluates per event.
-	const requiredCheckName = "    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (skipped for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}"
+	// TestCIRetargetValidatesNewMergeNotMetadataEdits checks that every run
+	// that validates code, including a retarget dispatch, reports it, and that
+	// a title/body edit starts no CI run.
+	const requiredCheckName = "    name: " + pinnedRequiredCheck
 	requiredCI := workflowJob(string(data), "required-ci")
 	if !slices.Contains(strings.Split(requiredCI, "\n"), requiredCheckName) {
 		t.Errorf("required-ci name must remain %q because repository ruleset 19093039 pins that exact required-check context", strings.TrimSpace(requiredCheckName))

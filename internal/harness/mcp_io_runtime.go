@@ -23,8 +23,10 @@ func prepareGoobersIOMCPRuntime(req RunRequest, selfBin string) (goobersIOMCPRun
 	artifactManifestFile, _ := req.Envelope.Inputs[InputArtifactManifestFile].(string)
 	cfg := mcpio.Config{
 		Workspace:            req.Workspace,
+		ChildWorkflows:       req.ChildWorkflows,
 		ArtifactFile:         artifactFile,
 		ArtifactManifestFile: artifactManifestFile,
+		PublicationSchemas:   req.PublicationSchemas,
 		ReceiptFile:          goobersIOReceiptFile(),
 		Inputs:               req.ContextPaths,
 		RunID:                req.Envelope.RunID,
@@ -45,6 +47,6 @@ func prepareGoobersIOMCPRuntime(req RunRequest, selfBin string) (goobersIOMCPRun
 		ConfigPath: configPath,
 		Command:    selfBin,
 		Args:       []string{"mcp-io", "--config", configPath},
-		Tools:      append([]string(nil), goobersIOTools...),
+		Tools:      goobersIOToolsFor(req),
 	}, true, nil
 }

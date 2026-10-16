@@ -32,8 +32,11 @@ type Store struct {
 	now              func() time.Time
 	lock             *platformlock.Handle
 
-	mu      sync.Mutex
-	events  []apiv1.GaggleHealthEvent
+	mu     sync.Mutex
+	events []apiv1.GaggleHealthEvent
+	// broken is set when a failed append left the journal in an unknown
+	// state; Append refuses until the store is reopened.
+	broken  error
 	observe func(apiv1.GaggleHealthEvent)
 }
 
@@ -152,13 +155,20 @@ func (s *Store) appendLocked(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthS
 	if err != nil {
 		return apiv1.GaggleHealthSnapshot{}, fmt.Errorf("gagglehealth: validate event: %w", err)
 	}
+	if s.broken != nil {
+		return apiv1.GaggleHealthSnapshot{}, s.broken
+	}
 	if err := appendEvent(s.eventsPath(), event); err != nil {
+		if errors.Is(err, errJournalUncertain) {
+			s.broken = err
+		}
 		return apiv1.GaggleHealthSnapshot{}, err
 	}
 	s.events = candidate
-	if err := s.writeSnapshot(snapshot); err != nil {
-		return apiv1.GaggleHealthSnapshot{}, err
-	}
+	// The journal is authoritative and the projection is rebuilt on Open and
+	// rewritten on the next Append, so a failed projection write must not
+	// report the committed event as failed.
+	_ = s.writeSnapshot(snapshot)
 	return snapshot, nil
 }
 
@@ -275,6 +285,21 @@ func (s *Store) writeSnapshot(snapshot apiv1.GaggleHealthSnapshot) error {
 	return nil
 }
 
+// Journal durability hooks, replaceable in tests to inject failures.
+var (
+	syncJournal    = func(f *os.File) error { return f.Sync() }
+	syncJournalDir = durability.SyncDir
+)
+
+// errJournalUncertain marks an append failure after which the on-disk journal
+// may or may not hold the record. The in-memory view can no longer be trusted
+// to allocate the next sequence, so the store refuses further appends until it
+// is reopened and the journal is re-read as the authority.
+var errJournalUncertain = errors.New("gagglehealth: journal state uncertain after failed append; reopen the store")
+
+// appendEvent durably appends one record. On failure it either rolls the
+// journal back to its prior length, so a retry with the same sequence is safe,
+// or returns an error wrapping errJournalUncertain.
 func appendEvent(path string, event apiv1.GaggleHealthEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -283,23 +308,39 @@ func appendEvent(path string, event apiv1.GaggleHealthEvent) error {
 	if len(data) > maxHealthEventBytes {
 		return errors.New("gagglehealth: event exceeds size limit")
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	// Not O_APPEND: the store lock makes this the only writer, and an
+	// append-only handle cannot be truncated on Windows.
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("gagglehealth: open journal: %w", err)
 	}
-	if _, err := file.Write(append(data, '\n')); err != nil {
+	size, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
 		_ = file.Close()
-		return fmt.Errorf("gagglehealth: append journal: %w", err)
+		return fmt.Errorf("gagglehealth: seek journal end: %w", err)
 	}
-	if err := file.Sync(); err != nil {
+	rollback := func(cause error) error {
+		rbErr := file.Truncate(size)
+		if rbErr == nil {
+			rbErr = syncJournal(file)
+		}
 		_ = file.Close()
-		return fmt.Errorf("gagglehealth: sync journal: %w", err)
+		if rbErr != nil {
+			return fmt.Errorf("%w (journal rollback failed: %w): %w", cause, rbErr, errJournalUncertain)
+		}
+		return cause
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		return rollback(fmt.Errorf("gagglehealth: append journal: %w", err))
+	}
+	if err := syncJournal(file); err != nil {
+		return rollback(fmt.Errorf("gagglehealth: sync journal: %w", err))
+	}
+	if err := syncJournalDir(filepath.Dir(path)); err != nil {
+		return rollback(fmt.Errorf("gagglehealth: sync journal directory: %w", err))
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("gagglehealth: close journal: %w", err)
-	}
-	if err := durability.SyncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("gagglehealth: sync journal directory: %w", err)
+		return fmt.Errorf("gagglehealth: close journal: %w: %w", err, errJournalUncertain)
 	}
 	return nil
 }
@@ -320,14 +361,8 @@ func readEvents(path string) ([]apiv1.GaggleHealthEvent, error) {
 		record, readErr := reader.ReadSlice('\n')
 		if errors.Is(readErr, io.EOF) {
 			if len(record) != 0 {
-				if err := file.Truncate(completeBytes); err != nil {
-					return nil, fmt.Errorf("gagglehealth: truncate torn journal tail: %w", err)
-				}
-				if err := file.Sync(); err != nil {
-					return nil, fmt.Errorf("gagglehealth: sync repaired journal: %w", err)
-				}
-				if err := durability.SyncDir(filepath.Dir(path)); err != nil {
-					return nil, fmt.Errorf("gagglehealth: sync repaired journal directory: %w", err)
+				if err := truncateJournal(file, path, completeBytes); err != nil {
+					return nil, err
 				}
 			}
 			return events, nil
@@ -338,18 +373,43 @@ func readEvents(path string) ([]apiv1.GaggleHealthEvent, error) {
 		if readErr != nil {
 			return nil, fmt.Errorf("gagglehealth: read journal: %w", readErr)
 		}
-		completeBytes += int64(len(record))
 		var event apiv1.GaggleHealthEvent
 		decoder := json.NewDecoder(strings.NewReader(string(record[:len(record)-1])))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&event); err != nil {
-			return nil, fmt.Errorf("gagglehealth: decode journal event %d: %w", len(events)+1, err)
+		decodeErr := decoder.Decode(&event)
+		if decodeErr == nil && !errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
+			decodeErr = errors.New("trailing data")
 		}
-		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("gagglehealth: decode journal event %d: trailing data", len(events)+1)
+		if decodeErr != nil {
+			// Only a syntactically broken final record is a torn write. A
+			// well-formed record that fails strict decoding (for example one
+			// written by a newer binary) is real data and must fail loudly,
+			// never be truncated away.
+			torn := !json.Valid(record[:len(record)-1])
+			if _, peekErr := reader.Peek(1); torn && errors.Is(peekErr, io.EOF) {
+				if err := truncateJournal(file, path, completeBytes); err != nil {
+					return nil, err
+				}
+				return events, nil
+			}
+			return nil, fmt.Errorf("gagglehealth: decode journal event %d: %w", len(events)+1, decodeErr)
 		}
+		completeBytes += int64(len(record))
 		events = append(events, event)
 	}
+}
+
+func truncateJournal(file *os.File, path string, size int64) error {
+	if err := file.Truncate(size); err != nil {
+		return fmt.Errorf("gagglehealth: truncate torn journal tail: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("gagglehealth: sync repaired journal: %w", err)
+	}
+	if err := durability.SyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("gagglehealth: sync repaired journal directory: %w", err)
+	}
+	return nil
 }
 
 func validateStoreGaggle(gaggle string) error {

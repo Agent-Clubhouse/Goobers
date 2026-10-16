@@ -74,9 +74,18 @@ type findingResolution = FindingResolution
 // the parity surface, so a reworded copy on one side is a journal divergence.
 func EmptyDiffVerdict() apiv1.Verdict {
 	return apiv1.Verdict{
-		Decision:  apiv1.VerdictFail,
-		Rationale: "runner: the implement stage produced no committed changes — failing without review, since an empty diff offers nothing to evaluate and a repass can only reproduce it",
+		Decision:    apiv1.VerdictFail,
+		Rationale:   "runner: the implement stage produced no committed changes — failing without review, since an empty diff offers nothing to evaluate and a repass can only reproduce it",
+		Synthesized: true,
 	}
+}
+
+// IsEmptyDiffVerdict reports whether v is EmptyDiffVerdict, before or after
+// MechanicalVerdict rewrote its decision. A review pod surrenders it when the
+// run diff a gate requires is empty (#5414), and the engine must then apply
+// the same forced escalation the self-placed arm does.
+func IsEmptyDiffVerdict(v apiv1.Verdict) bool {
+	return v.Synthesized && v.Rationale == EmptyDiffVerdict().Rationale
 }
 
 // DuplicateDiffVerdict is the verdict Evaluate synthesizes for #316's
@@ -89,7 +98,7 @@ func DuplicateDiffVerdict(diffDigest string, cause *RepassCause) apiv1.Verdict {
 	if cause != nil {
 		rationale = cause.String() + "; the implementer produced no change in response"
 	}
-	return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Rationale: rationale}
+	return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Rationale: rationale, Synthesized: true}
 }
 
 // ReconcileLearningFindings applies the learning-episode finding lifecycle to

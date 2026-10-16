@@ -397,6 +397,8 @@ describe("GettingStartedPage", () => {
       screen.getByText(/production-oriented canonical modules/i),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: /Work nomination/ }));
+    // Merge review is offered on GitHub too, but is not a GitHub default.
+    expect(screen.getByRole("checkbox", { name: /Merge review/ })).not.toBeChecked();
     await continueWizard(user);
     expect(
       screen.getByRole("heading", {
@@ -443,6 +445,40 @@ describe("GettingStartedPage", () => {
         },
       },
     ]);
+  });
+
+  it("offers merge review on GitHub and sends the pull-request token with it", async () => {
+    const user = userEvent.setup();
+    const initBodies: unknown[] = [];
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => ({ body: inspection }),
+          "/guided/actions/init-instance": (init) => {
+            initBodies.push(parseBody(init));
+            return { body: { exitCode: 2, stdout: "", stderr: "init refused the selected options" } };
+          },
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    await screen.findByText("GitHub CLI authentication is ready as octocat.");
+    await continueWizard(user);
+    await continueWizard(user);
+    expect(screen.getByRole("heading", { name: "Set up your first gaggle" })).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: /Merge review/ }));
+    for (let page = 0; page < 3; page += 1) await continueWizard(user);
+    expect(screen.getByRole("heading", { name: "Review and create the instance" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create Goobers instance" }));
+
+    expect(initBodies).toHaveLength(1);
+    const guided = (initBodies[0] as { guided: { workflows: string[]; pullRequestTokenEnv?: string } }).guided;
+    expect(guided.workflows).toContain("merge-review");
+    expect(guided.pullRequestTokenEnv).toBe("GOOBERS_GITHUB_PR_TOKEN");
   });
 
   it("starts GitHub device authorization from the repository step", async () => {

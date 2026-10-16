@@ -266,6 +266,33 @@ func TestPushBranchEnvironmentADOUsesDeliveredRepoPush(t *testing.T) {
 	})
 }
 
+// TestPushBranchEnvironmentUnmatchedADOSSHOriginFailsClosed pins #5960: an
+// ADO SSH origin the routed repository does not match is refused with the
+// mismatch error, exactly as an HTTPS one is, rather than falling through to
+// the GitHub-token path because the classifier did not know the SSH host.
+func TestPushBranchEnvironmentUnmatchedADOSSHOriginFailsClosed(t *testing.T) {
+	for _, origin := range []string{
+		"git@ssh.dev.azure.com:v3/example-org/example-project/example-repo",
+		"ssh://example-org@vs-ssh.visualstudio.com/v3/example-org/example-project/example-repo",
+	} {
+		t.Run(origin, func(t *testing.T) {
+			dir := t.TempDir()
+			runGitT(t, dir, "init", "-b", "work")
+			runGitT(t, dir, "remote", "add", "origin", origin)
+			t.Setenv("GOOBERS_INSTANCE_ROOT", "")
+			t.Setenv(executor.RepoProviderEnvVar, "ado")
+			t.Setenv(executor.RepoOwnerEnvVar, "other-org")
+			t.Setenv(executor.RepoProjectEnvVar, "example-project")
+			t.Setenv(executor.RepoNameEnvVar, "example-repo")
+			t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "delivered-push-token")
+			env, err := pushBranchEnvironment(dir)
+			if err == nil || !strings.Contains(err.Error(), "does not match the routed repository other-org/example-project/example-repo") {
+				t.Fatalf("pushBranchEnvironment() = %q, %v; want a routed-repository mismatch", env, err)
+			}
+		})
+	}
+}
+
 func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
 	repo := instance.RepoRef{
 		Provider: "ado",
@@ -284,7 +311,10 @@ func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
 	}
 	if !isADORemote("https://dev.azure.com/other/project/_git/repository") ||
 		!isADORemote("https://organization.visualstudio.com/project/_git/repository") ||
-		isADORemote("https://github.com/organization/repository") {
+		!isADORemote("git@ssh.dev.azure.com:v3/other/project/repository") ||
+		!isADORemote("ssh://organization@vs-ssh.visualstudio.com/v3/organization/project/repository") ||
+		isADORemote("https://github.com/organization/repository") ||
+		isADORemote("git@github.com:organization/repository.git") {
 		t.Fatal("ADO remote classification is incorrect")
 	}
 

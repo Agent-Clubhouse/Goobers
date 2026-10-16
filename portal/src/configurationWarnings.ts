@@ -6,6 +6,7 @@ import type {
   ValidationWarning,
   WorkflowDetail,
 } from "./api/types";
+import { useConfigurationWarningDismissals } from "./configurationWarningDismissals";
 import { useLiveData } from "./liveData";
 
 export type ConfigurationWarningSource =
@@ -56,9 +57,11 @@ export function useConfigurationWarnings(
   const sourceGaggle = source.kind === "workflow" ? source.gaggle : "";
   const sourceWorkflow = source.kind === "workflow" ? source.workflow : "";
   const { subscribe } = useLiveData();
-  const [dismissedWarningKeys, setDismissedWarningKeys] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const {
+    dismiss: dismissKeys,
+    dismissedWarningKeys,
+    restore: restoreKeys,
+  } = useConfigurationWarningDismissals();
   const [query, setQuery] = useState<{
     sourceKey: string;
     state: QueryState<readonly ValidationWarning[]>;
@@ -142,15 +145,17 @@ export function useConfigurationWarnings(
     subscribe,
   ]);
 
-  const dismiss = useCallback((warning: ValidationWarning) => {
-    setDismissedWarningKeys((current) => {
-      const next = new Set(current);
-      next.add(configurationWarningKey(warning));
-      return next;
-    });
-  }, []);
+  const dismiss = useCallback(
+    (warnings: readonly ValidationWarning[]) => dismissKeys(warnings.map(configurationWarningKey)),
+    [dismissKeys],
+  );
+  const restore = useCallback(
+    (warnings: readonly ValidationWarning[]) => restoreKeys(warnings.map(configurationWarningKey)),
+    [restoreKeys],
+  );
+  // Refresh rereads warnings only; acknowledgements persist until restored or
+  // until the finding identity changes.
   const refresh = useCallback(() => {
-    setDismissedWarningKeys(new Set());
     void refreshWarnings();
   }, [refreshWarnings]);
 
@@ -159,9 +164,10 @@ export function useConfigurationWarnings(
       dismissedWarningKeys,
       onDismiss: dismiss,
       onRefresh: refresh,
+      onRestore: restore,
       state: query.sourceKey === sourceKey ? query.state : ({ status: "loading" } as const),
     }),
-    [dismiss, dismissedWarningKeys, query, refresh, sourceKey],
+    [dismiss, dismissedWarningKeys, query, refresh, restore, sourceKey],
   );
 }
 

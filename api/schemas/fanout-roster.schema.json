@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/fanout-roster.schema.json",
+  "title": "FanOutRoster",
+  "description": "DSL 3.1 preview roster document a map freezes before any item starts. Each entry runs the mapped task once. Duplicate identities and mismatched digests are rejected when the runner freezes the document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "items"],
+  "properties": {
+    "schemaVersion": { "const": 1, "description": "Roster envelope version. Always 1." },
+    "items": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Roster entries. The runner sorts them by identity, bytewise UTF-8, before execution. An empty array enters the join once.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["identity", "item"],
+        "properties": {
+          "identity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Stable author-chosen item identity, used for ordering, display and branch-scoped names." },
+          "item": { "type": "object", "description": "Item payload bound into the mapped task through the item binding." },
+          "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Optional SHA-256 over the RFC 8785 serialization of {identity, item}. The runner always computes it and requires a supplied value to match." }
+        }
+      }
+    }
+  }
+}

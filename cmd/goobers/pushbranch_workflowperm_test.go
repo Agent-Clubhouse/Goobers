@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -56,6 +57,9 @@ func TestClassifyProviderError_WorkflowPermissionPush(t *testing.T) {
 // remote branch that was never created. Asserts exactly one push, no
 // ref-race warning, and the typed error.
 func TestPushBranchWithRetrySingleAttemptOnWorkflowPermissionPush(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to reproduce GitHub's push rejection")
+	}
 	const branch = "goobers/implementation/run-5502"
 	origin := initBareOrigin(t)
 
@@ -108,6 +112,9 @@ func TestPushBranchWithRetrySingleAttemptOnWorkflowPermissionPush(t *testing.T) 
 // acceptance for rebase-pr / pr-remediation's force-push: the same GitHub
 // refusal surfaces as a pushrejection.WorkflowPermissionError, never a lease race.
 func TestForcePushWithLeaseClassifiesWorkflowPermissionRejection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to reproduce GitHub's push rejection")
+	}
 	const prBranch = "goobers/impl/run-5502-force"
 	origin, headSHA, _ := initPRBranchOrigin(t, prBranch)
 

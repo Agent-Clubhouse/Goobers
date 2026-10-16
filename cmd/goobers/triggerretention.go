@@ -37,6 +37,9 @@ func openTriggerPruneGuard(layout instance.Layout, dryRun bool, now time.Time) (
 	return func(candidate retention.Result) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if err := preserveChildFamilyJournal(ctx, queue, candidate); err != nil {
+			return err
+		}
 		return acknowledgeTriggerBeforePrune(ctx, queue, candidate, now)
 	}, func() { _ = queue.Close() }, nil
 }
@@ -79,4 +82,29 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 		}
 	}
 	return err
+}
+
+func preserveChildFamilyJournal(ctx context.Context, queue *triggerqueue.Store, candidate retention.Result) error {
+	reader, err := journal.OpenReadOnly(candidate.RunDir)
+	if errors.Is(err, os.ErrNotExist) && candidate.Reason == "interrupted" {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return err
+	}
+	if id.RunID != candidate.RunID {
+		return errors.New("child journal prune identity differs")
+	}
+	held, err := queue.RetainsRunJournal(ctx, id.Gaggle, id.RunID)
+	if err != nil {
+		return err
+	}
+	if held {
+		return fmt.Errorf("%w: run %s still owns child family custody", retention.ErrCustodyHeld, candidate.RunID)
+	}
+	return nil
 }

@@ -137,6 +137,27 @@ func TestInputsFromErrorNamesWhatTheStageActuallyEmitted(t *testing.T) {
 	}
 }
 
+// #6890: a stage that FAILED and advanced through a gate leaves its consumer
+// with a missing input; the error must name the failure that caused it rather
+// than read as if the producer forgot to emit.
+func TestInputsFromErrorNamesTheUpstreamFailureThatCausedTheMiss(t *testing.T) {
+	failed := apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Outputs: map[string]any{"integrity": "unapproved", "stderr": "x"},
+		Error:   &apiv1.ErrorInfo{Code: "github_server_error", Message: "select pull requests: 503 class_saturated"},
+	}
+	msg := inputsFromError("gather-pr-context", "selectedNumber", "selectedNumber", failed, stageOutputs{}, false).Error()
+	for _, want := range []string{"selectedNumber", "integrity, stderr", "FAILED", "github_server_error", "class_saturated"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q should mention %q", msg, want)
+		}
+	}
+	ok := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"x": "y"}}
+	if msg := inputsFromError("gather-pr-context", "selectedNumber", "selectedNumber", ok, stageOutputs{}, false).Error(); strings.Contains(msg, "FAILED") {
+		t.Errorf("a successful producer must not be blamed: %q", msg)
+	}
+}
+
 // Resume must rebuild the same map the live walk accumulated, or a qualified
 // reference resolves before a crash and fails after one.
 func TestReconstructStageOutputsFromJournal(t *testing.T) {

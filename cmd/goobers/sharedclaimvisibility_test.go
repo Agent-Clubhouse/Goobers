@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/providers"
@@ -36,7 +37,7 @@ func TestLegacyMarkerRequiresAnOwnedLocalLease(t *testing.T) {
 			if allowed, err := legacyClaimMarkerAllowed(t.Context(), file, key, "other-run"); err != nil || allowed {
 				t.Fatalf("another run authorized marker: %v %v", allowed, err)
 			}
-			if err := file.ReleaseScoped(t.Context(), key, "shared-run"); err != nil {
+			if err := file.ReleaseScoped(t.Context(), key, "shared-run", claimrelease.Completed.Reason()); err != nil {
 				t.Fatal(err)
 			}
 			if allowed, err := legacyClaimMarkerAllowed(t.Context(), file, key, "shared-run"); err != nil || allowed {
@@ -69,7 +70,7 @@ func TestSharedRollbackUsesCoordinationWithoutLegacyProvider(t *testing.T) {
 	// panic instead of delegating to the authoritative transition callback.
 	session := backlogClaimSession{env: backlogQueryEnv{layout: layout, repo: providers.RepositoryRef{Provider: providers.ProviderGitHub}},
 		ledger: file, runID: "shared-run", gaggle: "example"}
-	if err := session.rollback(t.Context(), providers.WorkItem{ID: "42"}); err != nil {
+	if err := session.rollback(t.Context(), providers.WorkItem{ID: "42"}, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := file.ForRunAll(t.Context(), "shared-run")
@@ -99,7 +100,7 @@ func TestSharedVisibilityCredentialFailureDoesNotChangeLifecycle(t *testing.T) {
 			t.Fatalf("acquire/renew depended on label credential: %v %v", ok, err)
 		}
 	}
-	if err := file.ReleaseScoped(t.Context(), key, "shared-run"); err != nil {
+	if err := file.ReleaseScoped(t.Context(), key, "shared-run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("release depended on label credential: %v", err)
 	}
 	if attempts != 3 || store.record.Owner != (sharedclaim.Owner{}) {

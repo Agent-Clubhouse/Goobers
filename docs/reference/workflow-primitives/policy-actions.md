@@ -45,11 +45,12 @@ off to a task.
 | `comment-on-issue` | `github:issues:write` | Publish an issue comment. |
 | `create-issue` | `github:issues:write` | Create an issue. |
 | `delete-branch` | `github:branch:delete` | Delete a remote branch after its lifecycle permits cleanup. |
+| `disarm-landing` | `github:pr:write` | Withdraw a landing PR from landing on fresh human feedback: cancel its armed Azure DevOps auto-complete, remove `goobers:merge-ready` and route it to remediation. |
 | `demote-pr` | `github:pr:write` | Remove a PR from landing priority. |
 | `edit-issue` | `github:issues:write` | Edit issue content or metadata. |
 | `escalate-pr` | `github:pr:write` | Mark a PR for human escalation. |
 | `fan-out-remediation` | `github:pr:write` | Create or update remediation routing after merge/reconciliation. |
-| `flag-foundation-coupling` | `provider:pr:write` | Mark a PR as coupled to foundational work. |
+| `flag-foundation-coupling` | `provider:pr:write` (or `github:pr:write`, accepted for configs written before v0.6.0-alpha.3) | Mark a PR as coupled to foundational work. |
 | `flag-scope-drift` | `github:pr:write` | Mark detected overlap or scope drift. |
 | `label-issue` | `github:issues:write` | Add or remove ordinary issue labels. |
 | `merge-pr` | `github:pr:merge` | Merge a pull request. |
@@ -87,6 +88,7 @@ Some command modes change the required action set:
 | `backlog-health` feedback mode | `update-issue` |
 | `reconcile-branches --delete` or `inputs.deleteBranches: "true"` | `delete-branch` |
 | `file-issues` with `inputs.autoApprove: "deterministic-only"` | `approve-issue` in addition to its normal publication actions |
+| `pr-comment-watch` with `inputs.blockUnansweredFeedback` true (any value `strconv.ParseBool` accepts as true) | `disarm-landing` in addition to `label-issue` |
 | `file-issues --check` | No mutation actions |
 | `respond-to-findings --check` | No mutation actions |
 

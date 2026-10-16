@@ -178,3 +178,44 @@ func stageTerminatedStatus(finished time.Time) corev1.PodStatus {
 		}},
 	}
 }
+
+// On a graph repass the journal attempt repeats; the sweep must read custody
+// under the pod's physical attempt, not another visit's acknowledgment.
+func TestOrphanSweepReadsCustodyUnderPhysicalAttempt(t *testing.T) {
+	cfg := testConfig()
+	pods := &fakePodAPI{}
+	attempt := testAttempt()
+	attempt.Workspace = "repo"
+	attempt.PodAttempt = 3
+	pod, err := RenderPod(cfg, attempt, linuxRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pods.CreatePod(t.Context(), pod); err != nil {
+		t.Fatal(err)
+	}
+	plane := testPlane(t)
+	acknowledge := func(key int) {
+		data, err := json.Marshal(SurrenderedResult{RecoveryAcknowledged: true, Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure,
+			Error: &apiv1.ErrorInfo{Code: "failed", Message: "stage failed"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := plane.Put(t.Context(), attempt.RunID, attempt.Stage, key, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, err := New(cfg, pods, nil, PlaneSurrenderGate{Plane: plane}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := stateTable{attempt.RunID: RunStateTerminal}
+	acknowledge(attempt.Number)
+	if deleted, err := d.SweepOrphans(t.Context(), states); !errors.Is(err, ErrRecoveryUnconfirmed) || len(deleted) != 0 {
+		t.Fatalf("another visit's acknowledgment released the pod: %v %v", deleted, err)
+	}
+	acknowledge(attempt.PodAttempt)
+	if deleted, err := d.SweepOrphans(t.Context(), states); err != nil || len(deleted) != 1 || deleted[0] != pod.Name {
+		t.Fatalf("the pod's own acknowledgment must release it: %v %v", deleted, err)
+	}
+}

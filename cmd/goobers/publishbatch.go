@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 )
@@ -133,7 +134,7 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 	key := claimsclient.Key{
 		Gaggle: providerGaggle(), Provider: string(repo.Provider), ExternalID: plan.Parent.ID,
 	}
-	if err := ledger.ReleaseScoped(ctx, key, runID); err != nil {
+	if err := ledger.ReleaseScoped(ctx, key, runID, claimrelease.Completed.Because("decomposition_published", "")); err != nil {
 		pf(stderr, "error: release parent claim: %v\n", err)
 		return 1
 	}

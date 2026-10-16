@@ -98,6 +98,13 @@ type RunRequest struct {
 	// eligibility alone (#2774) — an adapter that never registers the server
 	// must never instruct the model to call tools that don't exist there.
 	GoobersIORegistered bool
+	// ChildWorkflows is trusted launcher access, never model/config-authored policy.
+	// It is excluded from generic request serialization and rendered prompts.
+	ChildWorkflows *mcpio.ChildWorkflowAccess `json:"-"`
+	// PublicationSchemas are the stage's own schema-bound artifact slots, from
+	// trusted workflow configuration. goobers-io's publish_output rejects a
+	// payload that does not satisfy them (#6868).
+	PublicationSchemas []mcpio.PublicationSchema `json:"-"`
 	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
 	MCPReadinessSink func(MCPReadiness) error
 	// Workspace is the working directory the harness runs in — normally
@@ -168,6 +175,10 @@ type Outcome struct {
 	// uncommitted is set by the Executor (never an adapter) when a success
 	// completion failed the #5182 commit postcondition.
 	uncommitted *uncommittedWork
+	// execution is set by the Executor (never an adapter): the deadline the
+	// invocation actually ran under, when the completion came back, and the
+	// goobers-io readiness report (#5871).
+	execution executionEvidence
 	// Metrics contains adapter-observed numeric measures under canonical
 	// telemetry names. An absent measure is omitted; an observed zero is kept.
 	Metrics map[string]float64
@@ -487,10 +498,10 @@ func validateCompletion(req RunRequest, payload []byte, readErr error) error {
 		return nil
 	}
 	if err := req.ValidateCompletion(payload); err != nil {
-		if errors.Is(err, ErrUncommittedChanges) {
+		if isCompletionPostcondition(err) {
 			// A schema-valid completion that failed only the #5182 commit
-			// postcondition is not an invalid completion: it must not be
-			// captured or recorded as one.
+			// or #6868 publication postcondition is not an invalid
+			// completion: it must not be captured or recorded as one.
 			return err
 		}
 		return fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
@@ -499,5 +510,5 @@ func validateCompletion(req RunRequest, payload []byte, readErr error) error {
 }
 
 func repairableCompletionError(err error) bool {
-	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion) || errors.Is(err, ErrUncommittedChanges)
+	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion) || isCompletionPostcondition(err)
 }

@@ -31,9 +31,9 @@ func (e *Error) Error() string {
 }
 
 // DefaultHTTPTimeout bounds one round trip. The daemon's own budget on the
-// same-run read routes is 8s (apicontract.BoundedBudget) and 60s on the
-// artifact route (BlobBudget); this contains the larger of the two plus
-// margin, so a client timeout is never the first thing to fire.
+// same-run read routes is 8s (apicontract.BoundedBudget), 60s on the
+// artifact route (BlobBudget) and on the cross-run scan route
+// (JournalScanBudget); this contains the largest plus margin, so a client timeout is never the first thing to fire.
 const DefaultHTTPTimeout = 90 * time.Second
 
 // MaxEventListBytes bounds one Events() response. A run journal's scrubbed
@@ -121,9 +121,11 @@ func (h *HTTP) do(ctx context.Context, method, path string, body any, limit int6
 	var response *http.Response
 	var err error
 	if body != nil {
-		response, err = h.plane.DoJSON(ctx, method, path, body, nil)
+		// Every journal POST is a cross-run READ carried in a body, so a replay
+		// has no effect to duplicate.
+		response, err = h.plane.DoJSONRetrying(ctx, method, path, body, nil, true)
 	} else {
-		response, err = h.plane.DoRaw(ctx, method, path, nil, nil)
+		response, err = h.plane.DoRetrying(ctx, method, path, nil, nil, true)
 	}
 	if err != nil {
 		var requestErr *planehttp.RequestError

@@ -155,6 +155,29 @@ describe("overview page", () => {
     expect(completionTime).toHaveAttribute("title", `Completed ${preciseTime}`);
   });
 
+  it("labels active and attention runs with a published display title", async () => {
+    const fixtures = populatedDaemonFixtures();
+    for (const run of fixtures.runs.runs) {
+      if (run.operator?.issue || run.phase === "failed" || run.phase === "escalated") {
+        run.operator = {
+          liveness: "finished",
+          trajectory: "blocked",
+          claim: { leaseStatus: "released", providerMarker: "verified" },
+          potentialBlockers: [],
+          ...run.operator,
+          issue: { number: "4449", title: "Repeated implementation failure" },
+          displayTitle: "Investigate #4449: Repeated implementation failure",
+        };
+      }
+    }
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      (await screen.findAllByText("Investigate #4449: Repeated implementation failure")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("#4449 Repeated implementation failure")).not.toBeInTheDocument();
+  });
+
   it("groups repeated attention runs by linked issue and expands direct run links", async () => {
     const fixtures = populatedDaemonFixtures();
     const repeated = fixtures.runs.runs.filter(
@@ -461,6 +484,41 @@ describe("overview page", () => {
       ),
     ).toBeInTheDocument();
     expect(active.queryByText(/Blockers:/)).not.toBeInTheDocument();
+  });
+
+  // #5404: each blocker is listed once with how old its evidence is, so a
+  // condition that stopped recurring is not read as a current outage.
+  it("shows each blocker once with the age of its evidence", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((summary) => summary.id === "01JZ441DAEMONAPI");
+    if (!running?.operator) {
+      throw new Error("fixture is missing the running run's operator summary");
+    }
+    running.operator = {
+      ...running.operator,
+      latestError: undefined,
+      review: undefined,
+      potentialBlockers: ["recovery_observation_failed: inventory full", "provider quota is exhausted"],
+      blockers: [
+        {
+          code: "recovery_observation_failed",
+          source: "error",
+          message: "recovery_observation_failed: inventory full",
+          observedAt: "2026-09-18T09:01:00Z",
+          ageMillis: 7_260_000,
+        },
+        { code: "provider_quota", source: "error", message: "provider quota is exhausted" },
+      ],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const active = within(await screen.findByRole("region", { name: "Active runs" }));
+    expect(
+      active.getByText(
+        "Blockers: recovery_observation_failed: inventory full (observed 2h 1m ago); provider quota is exhausted",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("renders a completed retention sweep status", async () => {

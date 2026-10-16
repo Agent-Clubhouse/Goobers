@@ -17,11 +17,14 @@ describe("external cost view model", () => {
       { ...costRun("run-3"), gaggle: "alpha" },
       costRun("run-4"),
     ];
-    rows[1].runs = [{ ...costRun("run-5"), gaggle: "beta" }];
+    rows[1].runs = [
+      { ...costRun("run-5"), gaggle: "beta", triggerKind: "schedule", triggerRef: "nightly-sweep" },
+    ];
 
     expect(externalCostGaggles(rows[0])).toEqual(["alpha", "zeta"]);
     expect(externalCostGaggles(rows[2])).toEqual([]);
     expect(filterExternalCostRows(rows, "zeta", "all")).toEqual([rows[0]]);
+    expect(filterExternalCostRows(rows, "nightly-sweep", "all")).toEqual([rows[1]]);
     expect(sortExternalCostRows(rows.slice(0, 2), "gaggle", "asc"))
       .toEqual([rows[0], rows[1]]);
     expect(sortExternalCostRows(rows.slice(0, 2), "gaggle", "desc"))

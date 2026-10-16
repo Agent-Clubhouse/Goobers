@@ -89,11 +89,7 @@ type electionPRSource struct {
 }
 
 func listElectionPRs(ctx context.Context, source electionPRSource, repo providers.RepositoryRef, stderr io.Writer) ([]providers.PullRequestSummary, int, bool) {
-	prs, err := source.lister.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo,
-		Base:       providerInput("base", providerBaseBranch()),
-		HeadPrefix: providerInput("headPrefix", providerBranchNamespace()),
-	})
+	prs, err := source.lister.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: providerInput("base", providerBaseBranch()), HeadPrefix: providerInput("headPrefix", providerBranchNamespace()), SkipCheckState: true})
 	if err != nil {
 		return nil, failProviderStage(stderr, "list pull requests", err, source.resultFile), false
 	}

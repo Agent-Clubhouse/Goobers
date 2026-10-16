@@ -21,8 +21,9 @@ type supersededCheckCase struct {
 	// actionsJobs maps a workflow run id to its jobs' conclusions; a run not
 	// listed has one successful job, and a nil entry answers 404.
 	actionsJobs map[int64][]string
-	// wantJobLookups is how many workflow runs' job lists are fetched: only a
-	// passing run newer than a cancelled run of its workflow needs one.
+	// wantJobLookups is how many workflow runs' job lists are fetched: a
+	// passing run newer than a cancelled run of its workflow needs one, and so
+	// does a cancelled run nothing supersedes (#6817: did one of its jobs fail?).
 	wantJobLookups int32
 	wantErr        bool
 	wantState      CheckState
@@ -49,6 +50,12 @@ func passing(name string) CheckDetail {
 
 func failing(name, conclusion string) CheckDetail {
 	return CheckDetail{Name: name, State: CheckStateFailing, Conclusion: conclusion}
+}
+
+// noVerdict is a run that ended without judging the code (#6817): it reads as
+// pending, never as failing.
+func noVerdict(name, conclusion string) CheckDetail {
+	return CheckDetail{Name: name, State: CheckStatePending, Conclusion: conclusion, NoVerdict: true}
 }
 
 // TestGitHubProviderCheckDetailsDropsSupersededCancelledRun covers #6360: a
@@ -86,13 +93,13 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 			wantChecks: []CheckDetail{{Name: "unit", State: CheckStatePending}},
 		},
 		{
-			name: "newest run cancelled still fails",
+			name: "newest run cancelled waits for a rerun",
 			checkRuns: []map[string]interface{}{
 				checkRunFixture(101, "unit", actionsAppID, "completed", "success"),
 				checkRunFixture(102, "unit", actionsAppID, "completed", "cancelled"),
 			},
-			wantState:  CheckStateFailing,
-			wantChecks: []CheckDetail{passing("unit"), failing("unit", "cancelled")},
+			wantState:  CheckStatePending,
+			wantChecks: []CheckDetail{passing("unit"), noVerdict("unit", "cancelled")},
 		},
 		{
 			name: "older same-named failure is never hidden by a newer success",
@@ -109,8 +116,8 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 				checkRunFixture(101, "lint", 1, "completed", "cancelled"),
 				checkRunFixture(102, "lint", 2, "completed", "success"),
 			},
-			wantState:  CheckStateFailing,
-			wantChecks: []CheckDetail{failing("lint", "cancelled"), passing("lint")},
+			wantState:  CheckStatePending,
+			wantChecks: []CheckDetail{noVerdict("lint", "cancelled"), passing("lint")},
 		},
 		{
 			name: "distinct checks keep API order and worst-case-wins",
@@ -138,8 +145,10 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
 				actionsRunFixture(202, "CI", 8, "completed", "success"),
 			},
-			wantState:  CheckStateFailing,
-			wantChecks: []CheckDetail{failing("CI", "cancelled"), passing("CI")},
+			actionsJobs:    map[int64][]string{201: {"cancelled"}},
+			wantJobLookups: 1,
+			wantState:      CheckStatePending,
+			wantChecks:     []CheckDetail{noVerdict("CI", "cancelled"), passing("CI")},
 		},
 		{
 			name: "skipped check run does not supersede a cancelled one",
@@ -147,8 +156,8 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 				checkRunFixture(101, "preflight", actionsAppID, "completed", "cancelled"),
 				checkRunFixture(102, "preflight", actionsAppID, "completed", "skipped"),
 			},
-			wantState:  CheckStateFailing,
-			wantChecks: []CheckDetail{failing("preflight", "cancelled"), {Name: "preflight", State: CheckStatePassing, Conclusion: "skipped"}},
+			wantState:  CheckStatePending,
+			wantChecks: []CheckDetail{noVerdict("preflight", "cancelled"), {Name: "preflight", State: CheckStatePassing, Conclusion: "skipped"}},
 		},
 		{
 			name: "actions fallback: self-cancelled red run then an all-skipped edit run still fails",
@@ -156,8 +165,8 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
 				actionsRunFixture(202, "CI", 7, "completed", "success"),
 			},
-			actionsJobs:    map[int64][]string{202: {"skipped", "skipped", "skipped"}},
-			wantJobLookups: 1,
+			actionsJobs:    map[int64][]string{201: {"failure", "cancelled"}, 202: {"skipped", "skipped", "skipped"}},
+			wantJobLookups: 2,
 			wantState:      CheckStateFailing,
 			wantChecks:     []CheckDetail{failing("CI", "cancelled"), passing("CI")},
 		},
@@ -167,8 +176,10 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
 				actionsRunFixture(202, "CI", 7, "completed", "skipped"),
 			},
-			wantState:  CheckStateFailing,
-			wantChecks: []CheckDetail{failing("CI", "cancelled"), {Name: "CI", State: CheckStatePassing, Conclusion: "skipped"}},
+			actionsJobs:    map[int64][]string{201: {"cancelled"}},
+			wantJobLookups: 1,
+			wantState:      CheckStatePending,
+			wantChecks:     []CheckDetail{noVerdict("CI", "cancelled"), {Name: "CI", State: CheckStatePassing, Conclusion: "skipped"}},
 		},
 		{
 			name: "actions fallback: a newer run that executed one job supersedes",
@@ -238,10 +249,66 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
 				actionsRunFixture(202, "CI", 7, "completed", "neutral"),
 			},
-			actionsJobs:    map[int64][]string{202: {"skipped"}},
-			wantJobLookups: 1,
+			actionsJobs:    map[int64][]string{201: {"failure"}, 202: {"skipped"}},
+			wantJobLookups: 2,
 			wantState:      CheckStateFailing,
 			wantChecks:     []CheckDetail{failing("CI", "cancelled"), {Name: "CI", State: CheckStatePassing, Conclusion: "neutral"}},
+		},
+		{
+			name: "outage: every check run cancelled before running reads pending",
+			checkRuns: []map[string]interface{}{
+				checkRunFixture(101, "build", actionsAppID, "completed", "cancelled"),
+				checkRunFixture(102, "test", actionsAppID, "completed", "cancelled"),
+				checkRunFixture(103, "lint", actionsAppID, "completed", "cancelled"),
+			},
+			wantState:  CheckStatePending,
+			wantChecks: []CheckDetail{noVerdict("build", "cancelled"), noVerdict("test", "cancelled"), noVerdict("lint", "cancelled")},
+		},
+		{
+			name: "startup_failure and stale check runs read pending",
+			checkRuns: []map[string]interface{}{
+				checkRunFixture(101, "build", actionsAppID, "completed", "startup_failure"),
+				checkRunFixture(102, "test", actionsAppID, "completed", "stale"),
+			},
+			wantState:  CheckStatePending,
+			wantChecks: []CheckDetail{noVerdict("build", "startup_failure"), noVerdict("test", "stale")},
+		},
+		{
+			name: "a real failure beside cancelled runs still fails",
+			checkRuns: []map[string]interface{}{
+				checkRunFixture(101, "build", actionsAppID, "completed", "cancelled"),
+				checkRunFixture(102, "test", actionsAppID, "completed", "timed_out"),
+			},
+			wantState:  CheckStateFailing,
+			wantChecks: []CheckDetail{noVerdict("build", "cancelled"), failing("test", "timed_out")},
+		},
+		{
+			name: "a superseded stale run does not hold a newer success pending",
+			checkRuns: []map[string]interface{}{
+				checkRunFixture(101, "test", actionsAppID, "completed", "stale"),
+				checkRunFixture(102, "test", actionsAppID, "completed", "success"),
+			},
+			wantState:  CheckStatePassing,
+			wantChecks: []CheckDetail{passing("test")},
+		},
+		{
+			name: "actions fallback: outage-cancelled run with no failed job reads pending",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+			},
+			actionsJobs:    map[int64][]string{201: {"cancelled", "cancelled"}},
+			wantJobLookups: 1,
+			wantState:      CheckStatePending,
+			wantChecks:     []CheckDetail{noVerdict("CI", "cancelled")},
+		},
+		{
+			name: "actions fallback: an unreadable job list of a cancelled run is an error, not a verdict",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+			},
+			actionsJobs:    map[int64][]string{201: nil},
+			wantJobLookups: 1,
+			wantErr:        true,
 		},
 		{
 			name: "actions fallback: no cancelled run means no job lookups",

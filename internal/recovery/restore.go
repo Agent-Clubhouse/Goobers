@@ -46,7 +46,7 @@ func RestoreSnapshot(ctx context.Context, repository string, record Record, curr
 // restoredSnapshotTree uses a private index for both initial restoration and
 // replay verification. It never changes a branch or the current checkout.
 func restoredSnapshotTree(ctx context.Context, repository string, record Record, currentMain string, maxPatchBytes int64) (string, error) {
-	if err := record.validateRestorable(); err != nil {
+	if err := record.ValidateRestorable(); err != nil {
 		return "", err
 	}
 	if maxPatchBytes <= 0 || !gitObjectID.MatchString(currentMain) {
@@ -64,6 +64,18 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	if err := recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", record.BaseSHA, currentMain); err != nil {
 		return "", fmt.Errorf("retained checkpoint is stale: its base is not an ancestor of current main: %w", ErrIncompatibleSnapshot)
 	}
+	return applySnapshotTree(ctx, repository, record, currentMain, maxPatchBytes)
+}
+
+// applySnapshotTree only prepares a tree in a private index. Callers validate
+// the record, protected paths and their own ancestry contract before entering.
+func applySnapshotTree(ctx context.Context, repository string, record Record, currentMain string, maxPatchBytes int64) (string, error) {
+	return applySnapshotTrees(ctx, repository, []Record{record}, currentMain, maxPatchBytes)
+}
+
+// A single private index accumulates fork-relative patches in declaration order.
+// The byte budget is shared across all patches, including empty results.
+func applySnapshotTrees(ctx context.Context, repository string, records []Record, currentMain string, maxPatchBytes int64) (string, error) {
 	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-restore-*")
 	if err != nil {
 		return "", err
@@ -73,11 +85,25 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	if err != nil {
 		return "", err
 	}
+	// Git's three-way add/add path can write working files even with --cached.
+	// Isolate its worktree and process directory as well as its index.
+	privateWorktree := filepath.Join(directory, "worktree")
+	if err := os.Mkdir(privateWorktree, 0o700); err != nil {
+		return "", err
+	}
+	for index, value := range environment {
+		if strings.HasPrefix(value, "GIT_WORK_TREE=") {
+			environment[index] = "GIT_WORK_TREE=" + privateWorktree
+		}
+	}
 	if err := recoveryGitWithEnv(ctx, repository, io.Discard, environment, "read-tree", currentMain); err != nil {
 		return "", err
 	}
-	if err := applyRetainedPatch(ctx, repository, directory, environment, record, maxPatchBytes); err != nil {
-		return "", err
+	budget := maxPatchBytes
+	for index, record := range records {
+		if err := applyRetainedPatch(ctx, repository, directory, environment, record, &budget); err != nil {
+			return "", fmt.Errorf("result %d: %w", index+1, err)
+		}
 	}
 	var tree boundedRefOutput
 	if err := recoveryGitWithEnv(ctx, repository, &tree, environment, "write-tree"); err != nil {
@@ -90,23 +116,28 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	return id, nil
 }
 
-func applyRetainedPatch(ctx context.Context, repository, directory string, environment []string, record Record, budget int64) error {
-	file, err := os.OpenFile(filepath.Join(directory, "retained.patch"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+func applyRetainedPatch(ctx context.Context, repository, directory string, environment []string, record Record, budget *int64) error {
+	file, err := os.OpenFile(filepath.Join(directory, "retained.patch"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = file.Close() }()
-	digest, err := WriteSnapshotPatch(ctx, repository, record.BaseSHA, record.SnapshotSHA, &archiveBudgetWriter{destination: file, remaining: budget})
+	writer := &archiveBudgetWriter{destination: file, remaining: *budget}
+	digest, err := WriteSnapshotPatch(ctx, repository, record.BaseSHA, record.SnapshotSHA, writer)
+	*budget = writer.remaining
 	if err != nil {
 		return err
 	}
 	if digest != record.PatchDigest {
 		return fmt.Errorf("retained patch digest changed before restore")
 	}
+	if digest == emptyPatchDigest {
+		return nil
+	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if err := recoveryGitIO(ctx, repository, io.Discard, file, environment,
+	if err := recoveryGitIO(ctx, filepath.Join(directory, "worktree"), io.Discard, file, environment,
 		"apply", "--cached", "--3way", "--binary", "--whitespace=nowarn", "-"); err != nil {
 		return fmt.Errorf("retained patch cannot be applied cleanly to current main: %w: %w", ErrIncompatibleSnapshot, err)
 	}

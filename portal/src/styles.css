@@ -2856,6 +2856,12 @@ summary:focus-visible {
   position: relative;
 }
 
+.work-item-link {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
 .data-row-stretch-link {
   inset: 0;
   position: absolute;
@@ -3248,6 +3254,33 @@ summary:focus-visible {
 
 .configuration-warning-empty strong {
   color: var(--ink);
+}
+
+.configuration-warning-dismissed {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.configuration-warning-dismissed > header {
+  align-items: center;
+  background: var(--panel);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.configuration-warning-dismissed > .configuration-warning-list {
+  border-top: 1px solid var(--line);
+}
+
+.configuration-warning-dismissed-scope {
+  color: var(--muted);
+  font-size: var(--font-label);
+  overflow-wrap: anywhere;
 }
 
 .filter-bar {
@@ -6080,6 +6113,13 @@ code,
   border-width: 4px;
 }
 
+/* A map runs one task per roster item: a dashed border sets it apart from a
+   parallel's double border without relying on color. */
+.workflow-node-map {
+  border-style: dashed;
+  border-width: 3px;
+}
+
 .workflow-node-actor {
   color: var(--muted);
   font-size: 8px;
@@ -6409,6 +6449,13 @@ code,
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.run-secondary-id {
+  color: var(--muted-strong);
+  font-size: var(--font-ui);
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
 }
 
 .run-stale-state {
@@ -8496,6 +8543,11 @@ code,
 }
 .workflow-graph-edge-branch-no-output {
   opacity: 0.5;
+}
+/* A selective parallel's skipped branch never started: sparse dots, faded. */
+.workflow-graph-edge-branch-skipped {
+  stroke-dasharray: 1 5;
+  opacity: 0.4;
 }
 
 /* #1431: the accessible key for the encoding above — a collapsible details
@@ -12741,4 +12793,36 @@ select {
     min-height: 44px;
     min-width: 44px;
   }
+}
+
+.child-activity { overflow-wrap: anywhere; }
+.child-activity ul { padding-inline-start: 1.25rem; }
+.child-activity li + li { margin-top: 8px; }
+
+/* #7386: a map's frozen roster in the run inspector, one row per item. */
+.map-items-summary {
+  margin: 0 0 8px;
+}
+
+.map-items-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.map-item {
+  align-items: baseline;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.map-item strong {
+  overflow-wrap: anywhere;
+}
+
+.map-item code {
+  color: var(--muted);
 }

@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/childpublication"
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -19,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -100,9 +106,17 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 // daemonCredentialService is the credential plane over the daemon's own
 // credential wiring. It implements httpapi.CredentialService.
 type daemonCredentialService struct {
-	layout instance.Layout
-	config *instance.Config
-	stores credentials.StoreResolver
+	childPublisher func(childpublication.Target, string, httpapi.MintedCredential, string) (childpublication.Publisher, error)
+	// Installed before serving. Current child authority lease spans materialization.
+	childCredentials    func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
+	childExecutors      childExecutorProvider
+	parentRecovery      func(context.Context, journal.RunIdentity) error
+	parentExecutors     runner.NewAgenticFunc
+	parentBorrowJournal func(string, string, *journal.Run) (func(), error)
+	childPodRecovery    func(context.Context, *journal.Reader, string, childPodScope) error
+	layout              instance.Layout
+	config              *instance.Config
+	stores              credentials.StoreResolver
 	// shared is the instance-global exact-value scrubber registry. Every
 	// value the plane materializes is registered here (the Injector registers
 	// each value before returning it), which is what makes later journal/log
@@ -113,7 +127,10 @@ type daemonCredentialService struct {
 	// grants signs and admits stage credential-refresh grants (Goobers#6120,
 	// credentialrefresh.go). Nil disables mid-stage refresh: no grant is
 	// minted and the refresh route answers 503.
-	grants *stageGrantIssuer
+	grants        *stageGrantIssuer
+	children      *childworkflow.Runtime
+	childQueue    *triggerqueue.Store
+	childDispatch *daemonTriggerService
 
 	// buildSources overrides gaggle credential-source construction in tests;
 	// nil uses buildCredentials — the same composition the runner wiring uses.
@@ -173,7 +190,40 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 	if request.Grant {
 		response.Grant = s.mintPodStageGrant(request, resolved)
 	}
+	response.PublicationLeakScreen = s.publicationLeakScreenDelivery(request, resolved)
 	return response, nil
+}
+
+func (s *daemonCredentialService) publicationLeakScreenDelivery(request httpapi.CredentialResolveRequest, resolved stageResolution) *httpapi.PublicationLeakScreenDelivery {
+	if s.config == nil {
+		return nil
+	}
+	settings := s.config.DecisionGate
+	if !resolved.profile.deterministic || settings == nil ||
+		settings.EffectiveMode() != decisiongate.ModeShadow || !settings.PublicationLeakScreen ||
+		!publicationCapability(request.Capabilities) {
+		return nil
+	}
+	delivery := &httpapi.PublicationLeakScreenDelivery{
+		Settings: *settings,
+		BaseURL:  strings.TrimSpace(os.Getenv(settings.BaseURLEnv)),
+		APIKey:   strings.TrimSpace(os.Getenv(settings.KeyEnv)),
+		Model:    strings.TrimSpace(os.Getenv(settings.ModelEnv)),
+	}
+	if s.shared != nil && delivery.APIKey != "" {
+		s.shared.Register([]byte(delivery.APIKey))
+	}
+	return delivery
+}
+
+func publicationCapability(names []string) bool {
+	for _, name := range names {
+		switch capability.Capability(name) {
+		case capability.ProviderPRWrite, capability.GitHubPRWrite, capability.ADOPRWrite, capability.GitHubIssuesWrite:
+			return true
+		}
+	}
+	return false
 }
 
 // stageResolveMode distinguishes a stage-start resolve from a mid-stage
@@ -209,6 +259,11 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, err
 	}
 	defer pinned.release()
+	ctx, childLease, err := s.applyChildCredentialCeiling(ctx, pinned, request.Stage)
+	if err != nil {
+		return stageResolution{}, err
+	}
+	defer childLease.release()
 	if mode.deterministicOnly && !pinned.profile.deterministic {
 		return stageResolution{}, credentialPlaneError(http.StatusForbidden, "credential_refresh_agentic_stage",
 			fmt.Sprintf("stage %q is not a deterministic task; mid-stage credential refresh serves deterministic stages only", request.Stage))
@@ -230,6 +285,9 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 	}
 	resolved, err := s.mintStageCredentials(ctx, pinned, requested)
 	if err != nil {
+		return stageResolution{}, err
+	}
+	if err := childLease.finish(ctx); err != nil {
 		return stageResolution{}, err
 	}
 	if err := s.journalResolution(pinned, request, mode, requested, resolved.materialized); err != nil {
@@ -359,6 +417,7 @@ func gateRequestedCapabilities(profile stageProfile, request httpapi.CredentialR
 // registered with the shared scrubber registry inside Materialize, BEFORE
 // this returns.
 func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinned pinnedStage, requested []string) (stageResolution, error) {
+	requested = credentials.FilterChildCredentialKeys(ctx, requested)
 	connectorCredential, err := s.stageConnectorCredential(ctx, pinned.profile, requested)
 	if err != nil {
 		return stageResolution{}, err
@@ -369,7 +428,7 @@ func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinn
 			http.StatusConflict, "gaggle_unavailable",
 			fmt.Sprintf("gaggle %q for run %q is no longer configured", pinned.identity.Gaggle, pinned.identity.RunID))
 	}
-	injector, err := s.stageInjector(scope, pinned.profile)
+	injector, schemes, err := s.stageInjector(scope, pinned.profile)
 	if err != nil {
 		return stageResolution{}, credentialPlaneError(
 			http.StatusInternalServerError, "credential_wiring_failed", "stage credential sources could not be constructed")
@@ -381,6 +440,9 @@ func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinn
 			"a granted credential for the stage could not be resolved")
 	}
 	resolved := collectMintedCredentials(ctx, set, requested, pinned.profile.implicitKeys)
+	// Only the injector's credentials carry an Azure DevOps scheme; the
+	// external-telemetry connector secret appended below is not one.
+	stateMintedCredentialSchemes(resolved.minted, schemes)
 	if connectorCredential != nil {
 		resolved.minted = append(resolved.minted, *connectorCredential)
 		resolved.materialized = append(resolved.materialized, connectorCredential.Capability)
@@ -434,6 +496,17 @@ func collectMintedCredentials(ctx context.Context, set *credentials.Set, request
 		resolved.materialized = append(resolved.materialized, key)
 	}
 	return resolved
+}
+
+// stateMintedCredentialSchemes stamps each minted Azure DevOps credential with
+// the scheme its own source is sent in (adoCredentialSchemes, #5957). A key
+// with no stated scheme is left empty, so the response's RepoAuthScheme
+// applies to it. schemes is nil for a gaggle not on Azure DevOps, which
+// stamps nothing.
+func stateMintedCredentialSchemes(minted []httpapi.MintedCredential, schemes map[string]string) {
+	for i := range minted {
+		minted[i].Scheme = schemes[minted[i].Capability]
+	}
 }
 
 // journalResolution is the audit trail (§11): WHICH capabilities were
@@ -702,7 +775,9 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 // (BYO MCP sources excluded), goober-scoped grants for agentic work — a
 // capability granted only to another goober stays unreachable even if this
 // stage declares the same capability name.
-func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, profile stageProfile) (*credentials.Injector, error) {
+// The returned map is each grant's Azure DevOps scheme (adoCredentialSchemes),
+// nil for a gaggle not on Azure DevOps.
+func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, profile stageProfile) (*credentials.Injector, map[string]string, error) {
 	build := s.buildSources
 	if build == nil {
 		build = func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
@@ -711,10 +786,12 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	}
 	resolver, grants, err := build(scope)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	schemes := adoCredentialSchemes(s.config, scope.Project, grants)
 	if profile.goober == "" {
-		return credentials.NewInjector(resolver, deterministicCredentialGrants(grants), s.shared)
+		injector, err := credentials.NewInjector(resolver, deterministicCredentialGrants(grants), s.shared)
+		return injector, schemes, err
 	}
 	credentialKeys := append([]string(nil), profile.capabilities...)
 	credentialKeys = append(credentialKeys, profile.implicitKeys...)
@@ -723,5 +800,8 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 		harnessName = string(apiv1.HarnessCopilot)
 	}
 	gooberGrants := buildGooberCredentialGrants(profile.goober, harnessName, credentialKeys, grants)
-	return credentials.NewGooberInjectorWithCredentialKeys(resolver, profile.goober, gooberGrants, profile.implicitKeys, s.shared)
+	injector, err := credentials.NewGooberInjectorWithCredentialKeys(resolver, profile.goober, gooberGrants, profile.implicitKeys, s.shared)
+	// A goober's grants are keyed by the plain capability but may resolve to
+	// a harness-scoped source, so its schemes follow its own grants.
+	return injector, adoCredentialSchemes(s.config, scope.Project, gooberGrants), err
 }

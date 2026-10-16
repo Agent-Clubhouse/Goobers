@@ -18,6 +18,15 @@
     },
     {
       "if": {
+        "properties": { "type": { "description": "Selects the map visit start record.", "const": "map.started" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["parallel", "mapRoster"]
+      }
+    },
+    {
+      "if": {
         "properties": { "type": { "const": "notification.requested" } },
         "required": ["type"]
       },
@@ -80,7 +89,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, daemon.*, and telemetry.retention.pass (a bounded automatic-retention pass summary) are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, workflow.readmitted, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, daemon.*, and telemetry.retention.pass (a bounded automatic-retention pass summary) are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -117,6 +126,8 @@
         "branch.started",
         "branch.finished",
         "parallel.finished",
+        "map.started",
+        "map.finished",
         "agent.lifecycle",
         "agent.message",
         "agent.progress",
@@ -125,6 +136,7 @@
         "tick.skipped",
         "workflow.starved",
         "workflow.refused",
+        "workflow.readmitted",
         "provider.quota.reset",
         "poll.shed",
         "claim.acquired",
@@ -324,17 +336,33 @@
       "$ref": "#/$defs/redactionInfo"
     },
     "parallel": {
-      "description": "Name of the parallel state a branch belongs to. Normative.",
+      "description": "Name of the fan-out state the event concerns: the parallel on parallel.*, the map on map.*, and the owning parallel or map on branch.*. Normative.",
       "type": "string"
     },
     "branchName": {
-      "description": "Declared name of the branch this event concerns; the numeric id is in `branch`. Normative.",
+      "description": "Declared name of the branch this event concerns, or a map item's roster identity; the numeric id is in `branch`. Normative.",
       "type": "string"
     },
-    "branchStatus": {
-      "description": "Terminal status of a branch on branch.finished. Normative.",
+    "mapItemIdentity": {
+      "description": "Roster identity of the map item a branch.started or branch.finished concerns. Absent for a static branch. Normative.",
       "type": "string",
-      "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"]
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "x-conformance": "normative"
+    },
+    "mapItemDigest": {
+      "description": "Canonical digest of the map item a branch.started or branch.finished concerns: SHA-256 over the RFC 8785 form of {identity, item}. Absent for a static branch. Normative.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "x-conformance": "normative"
+    },
+    "mapRoster": {
+      "description": "Frozen, normalized roster on map.started: the durable source of truth for the map visit. Resume rebuilds item branches from it and never rereads the producer.",
+      "$ref": "#/$defs/mapRoster"
+    },
+    "branchStatus": {
+      "description": "Terminal status of a branch on branch.finished. Normative. A skipped branch never starts, so it appears only in the completeness record, never on branch.finished.",
+      "type": "string",
+      "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output", "skipped"]
     },
     "completeness": {
       "description": "Branch completeness record on parallel.finished: one entry per DECLARED branch, in declaration order (which is what assigns branch ids). Normative — it, not the interleaving, is what a parallel means.",
@@ -346,10 +374,17 @@
         "properties": {
           "branch": { "description": "Numeric branch id assigned from declaration order.", "type": "integer", "minimum": 1 },
           "name": { "description": "Declared branch name from the workflow's parallel block.", "type": "string", "minLength": 1 },
-          "status": { "description": "Terminal outcome recorded for the branch.", "type": "string", "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output"] },
-          "artifacts": { "description": "Count of artifacts recorded by the branch before it finished.", "type": "integer", "minimum": 0 }
+          "status": { "description": "Terminal outcome recorded for the branch. 'skipped' means a selective parallel's frozen selection did not choose this optional branch.", "type": "string", "enum": ["succeeded", "failed", "timed-out", "cancelled", "no-output", "skipped"] },
+          "artifacts": { "description": "Count of artifacts recorded by the branch before it finished.", "type": "integer", "minimum": 0 },
+          "reason": { "description": "Optional human-facing reason a selective parallel records: the selection's reason for a selected branch, or why a skipped branch did not run. Excluded from conformance.", "type": "string", "x-conformance": "excluded" },
+          "mapItemIdentity": { "description": "Roster identity of a map completeness entry on map.finished. Absent for a static branch.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+          "mapItemDigest": { "description": "Canonical item digest of a map completeness entry on map.finished. Absent for a static branch.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
         }
       }
+    },
+    "selection": {
+      "description": "Frozen selection of a DSL 3.1 selective parallel, present only on that parallel's parallel.started. Resume rebuilds the skip set from it alone. Normative except reasons and source.visit.",
+      "$ref": "#/$defs/parallelSelection"
     },
     "runner": {
       "description": "Runner-specific annotations. The ONLY sanctioned runner-specific divergence and ALWAYS excluded from conformance.",
@@ -412,7 +447,7 @@
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },
     "reason": {
-      "description": "Instance-journal only: short, stable explanation for a scheduler decision or daemon lifecycle event.",
+      "description": "Instance-journal only: short, stable explanation for a scheduler decision or daemon lifecycle event. On claim.released and claim.force_released it is the release disposition code (claimRelease.disposition).",
       "type": "string",
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },
@@ -421,9 +456,92 @@
       "type": "integer",
       "minimum": 1,
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+    },
+    "claimRelease": {
+      "description": "Instance-journal only: why a claim ended, on claim.released and claim.force_released (#4421). Absent on events written before the field existed, which readers treat as an unknown release.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition"],
+      "x-conformance": "not applicable (instance journal, not a run's conformance set)",
+      "properties": {
+        "disposition": {
+          "description": "Stable release class.",
+          "type": "string",
+          "enum": ["completed", "failed", "escalated", "cancelled", "abandoned", "no-work", "stall-swept", "reconciled", "force-released", "superseded", "unknown"],
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "stage": {
+          "description": "Workflow stage or gate the holding run ended at, when known.",
+          "type": "string",
+          "maxLength": 64,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "code": {
+          "description": "Stable error or disposition code, when known.",
+          "type": "string",
+          "maxLength": 64,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "summary": {
+          "description": "Bounded, scrubbed, single-line human explanation.",
+          "type": "string",
+          "maxLength": 240,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        },
+        "actor": {
+          "description": "Operator identity behind a force-release, when known.",
+          "type": "string",
+          "maxLength": 64,
+          "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+        }
+      }
     }
   },
   "$defs": {
+    "mapRoster": {
+      "description": "Frozen roster of one map visit (plan-driven-dynamic-fan-out.md §6.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "failurePolicy", "maxConcurrent", "items"],
+      "properties": {
+        "source": {
+          "description": "Immutable reference to the frozen source document and the producer attempt the journal bound it to.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["task", "slot", "visit", "attempt", "digest", "integrity"],
+          "properties": {
+            "task": { "description": "Declared source task.", "type": "string", "minLength": 1, "x-conformance": "normative" },
+            "slot": { "description": "Declared source artifact slot.", "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$", "x-conformance": "normative" },
+            "visit": { "description": "Producer stage.started sequence the artifact publication was bound to; a runner-local journal sequence.", "type": "integer", "minimum": 1, "x-conformance": "excluded" },
+            "attempt": { "description": "Producer attempt number that published the source.", "type": "integer", "minimum": 1, "x-conformance": "normative" },
+            "digest": { "description": "Content digest of the source artifact.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
+            "integrity": { "description": "Provenance grade of the source artifact, inherited by every mapped binding.", "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "x-conformance": "normative" },
+            "path": { "description": "Source blob location relative to the run directory. Not normative.", "type": "string", "x-conformance": "excluded" },
+            "size": { "description": "Source blob length in bytes. Not normative.", "type": "integer", "minimum": 0, "x-conformance": "excluded" },
+            "mediaType": { "description": "Source blob media type. Not normative.", "type": "string", "x-conformance": "excluded" }
+          }
+        },
+        "failurePolicy": { "description": "Map failure policy at freeze time.", "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"], "x-conformance": "normative" },
+        "itemTimeoutSeconds": { "description": "Per-item budget in seconds at freeze time; absent when unbounded.", "type": "integer", "minimum": 0, "x-conformance": "normative" },
+        "maxConcurrent": { "description": "Effective concurrency bound at freeze time.", "type": "integer", "minimum": 1, "maximum": 32, "x-conformance": "normative" },
+        "items": {
+          "description": "Normalized roster: unique identities sorted by bytewise UTF-8 order; item i runs as branch i+1.",
+          "type": "array",
+          "maxItems": 32,
+          "x-conformance": "normative",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["identity", "digest", "item"],
+            "properties": {
+              "identity": { "description": "Author-chosen stable item identity.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+              "digest": { "description": "SHA-256 over the RFC 8785 serialization of {identity, item}.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "item": { "description": "Canonical item object bound into the mapped task.", "type": "object" }
+            }
+          }
+        }
+      }
+    },
     "terminalBudget": {
       "type": "object",
       "additionalProperties": false,
@@ -777,6 +895,41 @@
         "oldDigest": { "description": "Digest of the original content before redaction.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
         "newDigest": { "description": "Digest of the scrubbed content after redaction.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
         "reason": { "description": "Human-facing explanation of why the content was redacted.", "type": "string", "x-conformance": "excluded" }
+      }
+    },
+    "parallelSelection": {
+      "description": "Normalized selection a selective parallel froze from its source slot before any branch started.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "sourceDigest", "integrity", "selected"],
+      "properties": {
+        "source": {
+          "description": "Journal-bound producer attempt the selection document came from.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["task", "slot", "visit", "attempt"],
+          "properties": {
+            "task": { "description": "Producing task.", "type": "string", "minLength": 1, "x-conformance": "normative" },
+            "slot": { "description": "Producer's DSL 3.1 artifact slot.", "type": "string", "minLength": 1, "x-conformance": "normative" },
+            "visit": { "description": "Producer's artifact publication visit, a runner-local journal sequence.", "type": "integer", "minimum": 1, "x-conformance": "excluded" },
+            "attempt": { "description": "Producer attempt that published the document.", "type": "integer", "minimum": 1, "x-conformance": "normative" }
+          }
+        },
+        "sourceDigest": { "description": "Digest of the frozen source document.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
+        "integrity": { "description": "Integrity of the source artifact, recorded for audit; the selection is never branch input.", "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "x-conformance": "normative" },
+        "selected": {
+          "description": "Selected optional branch names in branch-id order. Non-optional branches always run and are never listed.",
+          "type": "array",
+          "maxItems": 32,
+          "items": { "description": "Declared optional branch name.", "type": "string", "minLength": 1 },
+          "x-conformance": "normative"
+        },
+        "reasons": {
+          "description": "Optional human-facing reason per selected branch, at most 512 bytes each.",
+          "type": "object",
+          "additionalProperties": { "description": "Reason recorded for one selected branch.", "type": "string", "maxLength": 512 },
+          "x-conformance": "excluded"
+        }
       }
     }
   }

@@ -57,9 +57,13 @@ func CheckWarnings(def Definition) []string {
 		// executor and never through a result file, so expectedOutputs
 		// there is neither inert nor missing anything.
 		if len(task.ExpectedOutputs) > 0 && isShellStage(task) && strings.TrimSpace(task.Inputs["resultFile"]) == "" {
+			consequence := "so it is inert"
+			if EnforcesExpectedOutputs(def.DSLVersion, task) {
+				consequence = "so every successful run of it fails with missing_expected_outputs"
+			}
 			warnings = append(warnings, fmt.Sprintf(
-				`task %q: expectedOutputs is declared but the stage has no inputs.resultFile to emit it through, so it is inert`,
-				task.Name,
+				`task %q: expectedOutputs is declared but the stage has no inputs.resultFile to emit it through, %s`,
+				task.Name, consequence,
 			))
 		}
 		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
@@ -100,16 +104,20 @@ func overPrivilegeWarnings(task apiv1.Task) []string {
 	}
 	requiredSet := map[capability.Capability]bool{}
 	var requiredOrder []capability.Capability
+	accepted := map[capability.Capability]bool{}
 	for _, use := range required {
 		if !requiredSet[use.Capability] {
 			requiredSet[use.Capability] = true
 			requiredOrder = append(requiredOrder, use.Capability)
 		}
+		for _, alternative := range use.AcceptedCapabilities() {
+			accepted[alternative] = true
+		}
 	}
 	var warnings []string
 	for _, declared := range task.Capabilities {
 		held := capability.Capability(declared)
-		if requiredSet[held] {
+		if accepted[held] {
 			continue
 		}
 		strictlySubsumesAll := true
@@ -453,6 +461,15 @@ func triggerFieldProblems(def Definition) []string {
 // is no longer needed.)
 func scheduleProblems(def Definition) []string {
 	var problems []string
+	declarations := 0
+	for _, trigger := range def.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerSchedule {
+			declarations++
+		}
+	}
+	if err := scheduleexpr.ValidateCatchUp(def.Spec.ScheduleCatchUp, declarations); err != nil {
+		problems = append(problems, err.Error())
+	}
 	for i, tr := range def.Spec.Triggers {
 		if tr.Type != apiv1.TriggerSchedule {
 			continue
@@ -509,10 +526,11 @@ func validateSchedule(expr string) error {
 	return err
 }
 
-// stateNames returns every defined state name in definition order (tasks then
-// gates) — a deterministic order for stable problem reporting.
+// stateNames returns every defined state name in definition order (tasks,
+// gates, parallels, then DSL 3.1 maps) — a deterministic order for stable
+// problem reporting.
 func stateNames(def Definition) []string {
-	names := make([]string, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
+	names := make([]string, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels)+len(def.Spec.Maps))
 	for _, t := range def.Spec.Tasks {
 		names = append(names, t.Name)
 	}
@@ -521,6 +539,9 @@ func stateNames(def Definition) []string {
 	}
 	for _, p := range def.Spec.Parallels {
 		names = append(names, p.Name)
+	}
+	for _, m := range def.Spec.Maps {
+		names = append(names, m.Name)
 	}
 	return names
 }

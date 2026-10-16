@@ -54,6 +54,13 @@ func publishPodRecovery(ctx context.Context, repository string, trace podRecover
 		claims[0].ItemID == "" || claims[0].ReleasedAt != nil || !claims[0].ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("pod recovery requires exactly one current issue claim")
 	}
+	// A stage that failed before its checkout created .git (credential or
+	// declaration failure, a clone that never started) left no repository to
+	// take into custody. Probing one would fail with "not a git repository"
+	// and stop the pod from surrendering the stage's real failure (#6920).
+	if materialized, err := podRepositoryMaterialized(repository); err != nil || !materialized {
+		return err
+	}
 	ctx, cancel := context.WithDeadline(ctx, claims[0].ExpiresAt)
 	defer cancel()
 	repo := providers.RepositoryRef{
@@ -138,6 +145,19 @@ func publishPodRecovery(ctx context.Context, repository string, trace podRecover
 		_, _, err := recovery.Retain(ctx, request, publication)
 		return err
 	})
+}
+
+// podRepositoryMaterialized reports whether the checkout created a git
+// directory (or gitfile) at repository. Only absence means "nothing to
+// recover"; any other stat failure is returned so custody fails closed.
+func podRepositoryMaterialized(repository string) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(repository, ".git")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect workspace repository for recovery custody: %w", err)
+	}
+	return true, nil
 }
 
 func podRecoveryPhase(ctx context.Context, trace podRecoveryTrace, phase string, run func(context.Context) error) error {
@@ -288,16 +308,18 @@ func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
 // A credential that cannot be resolved leaves the fetch anonymous, as before.
 func recoveryFetchAuthEnv(ctx context.Context, url string) ([]string, error) {
 	creds, scheme, credErr := resolveCheckoutCredential(ctx)
-	var token string
+	var cred dispatcher.MintedCredential
 	if credErr == nil {
-		token = gitToken(creds)
+		cred, _ = gitCredential(creds)
 	}
-	if token == "" {
+	if cred.Value == "" {
 		return nil, nil
 	}
 	provider := apiv1.Provider(os.Getenv(executor.RepoProviderEnvVar))
 	if ado := adoCheckoutAuthFor(apiv1.RepoRef{Provider: provider}, scheme, url); ado.scheme != "" {
-		return adoCheckoutGitAuthEnv(ctx, token, ado)
+		// The value's own stated scheme wins over the repository's (#5957).
+		ado.scheme = cred.SchemeOr(ado.scheme)
+		return adoCheckoutGitAuthEnv(ctx, cred.Value, ado)
 	}
-	return gitAuthEnv(token), nil
+	return gitAuthEnv(cred.Value), nil
 }

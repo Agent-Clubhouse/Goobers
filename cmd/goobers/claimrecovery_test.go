@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -129,15 +130,22 @@ func TestUpRecoversExpiredClaimPeriodically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawSummary bool
+	// One boundary per reaped lease, carrying why it ended — and no
+	// reasonless aggregate claim.released beside it (#4421).
+	var swept int
 	for _, event := range events {
-		if event.Type == journal.EventClaimReleased && strings.Contains(event.Reason, "periodic recovery released 1 expired claim") {
-			sawSummary = true
-			break
+		if event.Type != journal.EventClaimReleased {
+			continue
+		}
+		if event.ClaimRelease == nil {
+			t.Fatalf("claim.released without a reason: %+v", event)
+		}
+		if event.Name == "issue-2" && event.ClaimRelease.Disposition == claimrelease.StallSwept {
+			swept++
 		}
 	}
-	if !sawSummary {
-		t.Fatalf("instance journal has no compact periodic recovery summary: %+v", events)
+	if swept != 1 {
+		t.Fatalf("stall-swept releases of issue-2 = %d, want 1: %+v", swept, events)
 	}
 }
 

@@ -146,7 +146,7 @@ func (s *Server) handle(req rpcRequest, stderr io.Writer) (rpcResponse, bool) {
 	case "notifications/initialized", "notifications/cancelled":
 		return rpcResponse{}, false
 	case "tools/list":
-		return s.reply(req, map[string]interface{}{"tools": toolDefs()}, nil), !isNotification
+		return s.reply(req, map[string]interface{}{"tools": s.toolDefs()}, nil), !isNotification
 	case "tools/call":
 		result, err := s.callTool(req.Params)
 		if err != nil {
@@ -320,6 +320,9 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, fmt.Errorf("invalid tools/call params: %w", err)
 	}
+	if isChildWorkflowTool(params.Name) {
+		return s.callChildWorkflowTool(params.Name, params.Arguments)
+	}
 	switch params.Name {
 	case "get_run_info":
 		data, err := json.Marshal(s.tools.GetRunInfo())
@@ -345,22 +348,7 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 		return textResult(fmt.Sprintf(`{"status":"ok","bytesWritten":%d,"digest":%q}`, n, digest)), nil
 
 	case "list_inputs":
-		items, err := s.tools.ListInputs()
-		receipt := InputInspectionReceipt{Tool: "list_inputs", Success: err == nil}
-		if err != nil {
-			receipt.Error = err.Error()
-		}
-		if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
-			err = errors.Join(err, receiptErr)
-		}
-		if err != nil {
-			return nil, err
-		}
-		data, err := json.Marshal(items)
-		if err != nil {
-			return nil, err
-		}
-		return textResult(string(data)), nil
+		return s.callListInputs()
 
 	case "read_input":
 		var args struct {
@@ -522,4 +510,23 @@ func toolDefs() []toolDef {
 			},
 		},
 	}
+}
+
+func (s *Server) callListInputs() (map[string]interface{}, error) {
+	items, err := s.tools.ListInputs()
+	receipt := InputInspectionReceipt{Tool: "list_inputs", Success: err == nil}
+	if err != nil {
+		receipt.Error = err.Error()
+	}
+	if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
+		err = errors.Join(err, receiptErr)
+	}
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return nil, err
+	}
+	return textResult(string(data)), nil
 }

@@ -62,7 +62,7 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	if err := os.Mkdir(subdirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	pathList, err := snapshotPaths(context.Background(), repository, t.TempDir())
+	pathList, err := snapshotPathsWithPolicy(context.Background(), repository, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

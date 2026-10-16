@@ -30,6 +30,22 @@ var authorSchemaFiles = map[string]string{
 // TestEmbeddedSchemaLeavesMapToFeatureRegistry; entries that become
 // registered (or leave the schemas) fail it too.
 var schemaLeafExceptions = map[string]string{
+	// DSL 3.1-only fan-out preview (#7382); registered in internal/workflow and
+	// rejected for older pins by the version router.
+	"workflow.spec.maps.bindings":                   "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.failurePolicy":              "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.itemTimeoutSeconds":         "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.join":                       "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.maxConcurrent":              "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.name":                       "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.onFailure":                  "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.source.slot":                "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.source.task":                "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.task":                       "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.parallels.branches.optional":     "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.parallels.selection.source.slot": "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.parallels.selection.source.task": "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+
 	// DSL 3.1-only policy; the version router rejects it for this interpreter.
 	"workflow.spec.tasks.childWorkflows.allowedGoobers":      "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
 	"workflow.spec.tasks.childWorkflows.allowedCapabilities": "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
@@ -39,11 +55,15 @@ var schemaLeafExceptions = map[string]string{
 	// Publication policy belongs to the binary, not this interpreter.
 	// The public registry and TestCostPublicationFeatureIsIndependentOfWorkflowPin
 	// cover its registration and availability across supported workflow pins.
-	"gaggle.spec.cost.enabled":       "binary-layer publication policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"gaggle.spec.enabled":            "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"workflow.spec.enabled":          "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"workflow.spec.backprop.enabled": "binary-layer terminal analysis policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"workflow.spec.backprop.version": "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.cost.enabled":                             "binary-layer publication policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.enabled":                                  "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.enabled":                                "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.readiness.requireProviderAuthorization": "binary-layer scheduling policy (#5317); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.enabled":                       "binary-layer terminal analysis policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.granularity":                   "binary-layer terminal analysis cadence (#7118); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.mode":                          "binary-layer terminal analysis mode; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.backprop.mode":                            "binary-layer gaggle Backprop shadow override; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.version":                       "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	// Gaggle-health policy is one binary-layer feature (gaggle.spec.health);
 	// its leaves are payload, not separately versioned DSL capabilities.
 	"gaggle.spec.health.enabled":                         "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",

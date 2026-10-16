@@ -733,13 +733,13 @@ func redactedRemote(remote string) string {
 	return parsed.Redacted()
 }
 
+// isADORemote is the fail-closed classifier for an origin push-branch did not
+// route: true for every Azure DevOps host spelling adoRepoForOrigin's parser
+// (providers.ParseADORemoteURL) anchors, including the SSH hosts, so an
+// unmatched ADO origin gets a clear mismatch error instead of falling through
+// to the GitHub-token path (#5960).
 func isADORemote(remote string) bool {
-	parsed, err := url.Parse(remote)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	return host == "dev.azure.com" || strings.HasSuffix(host, ".visualstudio.com")
+	return providers.IsADORemoteURL(remote)
 }
 
 // gitAuthEnv builds the env-var-injected git credential (shared by every git

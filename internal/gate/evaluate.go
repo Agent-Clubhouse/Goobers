@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -744,7 +745,7 @@ func (e *Evaluator) invalidNeedsHumanVerdict(g apiv1.Gate, verdict apiv1.Verdict
 func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, env *apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, g apiv1.Gate, verdict *apiv1.Verdict) (bool, error) {
 	_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 	env.ReviewerMechanicalEscalationAllowed = StructuredMechanicalEscalation(g)
-	maxAttempts, backoff := retryBounds(policy)
+	maxAttempts, backoff := RetryBounds(policy)
 	previous, err := e.reviewerContinuation(gateName)
 	if err != nil {
 		return false, err
@@ -767,6 +768,9 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 		current, err := e.Reviewer.Review(attemptCtx, *env, subjectStage, subject)
 		if cancel != nil {
 			cancel()
+		}
+		if errors.Is(err, invoke.ErrChildCustodyPending) {
+			return false, err
 		}
 		invalid := err == nil && e.invalidNeedsHumanVerdict(g, current)
 		if jerr := recordReviewerFinish(e.Journal, gateName, number, class, current, err, invalid); jerr != nil {
@@ -828,12 +832,12 @@ func gateRetryPolicy(g apiv1.Gate) *apiv1.RetryPolicy {
 	return nil
 }
 
-// retryBounds resolves a RetryPolicy into a total attempt count and constant
+// RetryBounds resolves a RetryPolicy into a total attempt count and constant
 // backoff. A nil policy — or MaxAttempts <= 1 — means a single attempt, so a
 // gate that declares no retry is byte-identical to the pre-#765 fail-fast
 // behavior. This is what bounds the blast radius: only a gate that opts in via
 // `retry:` ever retries.
-func retryBounds(policy *apiv1.RetryPolicy) (maxAttempts int, backoff time.Duration) {
+func RetryBounds(policy *apiv1.RetryPolicy) (maxAttempts int, backoff time.Duration) {
 	maxAttempts = 1
 	if policy != nil && policy.MaxAttempts > 1 {
 		maxAttempts = int(policy.MaxAttempts)
@@ -854,7 +858,7 @@ func retryBounds(policy *apiv1.RetryPolicy) (maxAttempts int, backoff time.Durat
 // transient attempt is journaled (recordEvaluatorRetry), and each attempt runs
 // under its own timeoutSeconds deadline so a retry gets a fresh window.
 func (e *Evaluator) evaluateWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, call func(context.Context) error) error {
-	maxAttempts, backoff := retryBounds(policy)
+	maxAttempts, backoff := RetryBounds(policy)
 	for attempt := 1; ; attempt++ {
 		attemptCtx := ctx
 		var cancel context.CancelFunc

@@ -163,6 +163,11 @@ Apply the complete checklist in `references/dsl-reference.md`. In particular:
 - Put only canonical capabilities on tasks. Every capability on an agentic
   task must also be granted by its goober. Include `agent:model` on a
   Copilot-backed goober and on tasks that invoke it.
+- Choose control flow with the construct-selection guide in
+  `references/dsl-reference.md`: a gate for one path out of several, a static
+  parallel when every branch always runs, a selective parallel when a subset of
+  declared branches runs, a map for one task over a data-determined list, and a
+  child workflow only when the composition can't be known in advance.
 - Give a gate exactly one evaluator block. Define every outcome the evaluator
   can return, including `pass`, `fail`, and `needs-changes` for an agentic
   gate.

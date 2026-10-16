@@ -155,8 +155,7 @@ func TestCILinuxJournalOTLPRaceCoverage(t *testing.T) {
 	step := job.step(t, "Unit suite (-race, shard ${{ matrix.shard }})")
 	// Portal-only PRs skip backend race shards, but every full-profile code
 	// event retains the complete journal race selection.
-	unitGate := "${{ !" + ciMetadataEdit + " && needs.scope.outputs.profile == 'full' }}"
-	if job.RunsOn != "ubuntu-latest" || job.If != unitGate || !slices.Contains(job.Needs, "scope") || job.ContinueOnError ||
+	if job.RunsOn != "ubuntu-latest" || job.If != ciFullGate || !slices.Contains(job.Needs, "scope") || job.ContinueOnError ||
 		step.If != "" || step.ContinueOnError || !slices.Contains(workflow.Jobs["required-ci"].Needs, "unit") {
 		t.Fatal("Linux race shards must remain a full-profile required gate")
 	}

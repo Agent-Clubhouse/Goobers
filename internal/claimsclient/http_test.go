@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // fakePlane is a claims plane that records every request and answers from a
@@ -121,7 +122,7 @@ func TestHTTPClaimScopedWire(t *testing.T) {
 	if _, _, err := client.ClaimScoped(ctx, Key{ExternalID: "legacy"}, "run-1", "w", time.Hour); !errors.Is(err, ErrLegacyKeyOverPlane) {
 		t.Fatalf("legacy key over the plane: err = %v", err)
 	}
-	if err := client.ReleaseScoped(ctx, Key{ExternalID: "legacy"}, "run-1"); !errors.Is(err, ErrLegacyKeyOverPlane) {
+	if err := client.ReleaseScoped(ctx, Key{ExternalID: "legacy"}, "run-1", claimrelease.Completed.Reason()); !errors.Is(err, ErrLegacyKeyOverPlane) {
 		t.Fatalf("legacy release over the plane: err = %v", err)
 	}
 	if _, err := client.ListNamespace(ctx, "", ""); !errors.Is(err, ErrLegacyKeyOverPlane) {
@@ -219,10 +220,10 @@ func TestHTTPReleaseAndListWire(t *testing.T) {
 		return http.StatusNotFound, map[string]any{}
 	})
 	ctx := context.Background()
-	if err := client.ReleaseScoped(ctx, Key{Gaggle: "g", Provider: "github", ExternalID: "7"}, "run-1"); err != nil {
+	if err := client.ReleaseScoped(ctx, Key{Gaggle: "g", Provider: "github", ExternalID: "7"}, "run-1", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
-	all, err := client.ReleaseAllForRun(ctx, "run-1")
+	all, err := client.ReleaseAllForRun(ctx, "run-1", claimrelease.Completed.Reason())
 	if err != nil || len(all) != 1 || all[0].ItemID != "7" {
 		t.Fatalf("ReleaseAllForRun = %+v, %v", all, err)
 	}

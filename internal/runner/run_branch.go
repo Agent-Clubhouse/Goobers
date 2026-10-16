@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -202,6 +203,28 @@ func (r *Runner) journalReboundBranch(jr journalAppender, in StartInput, tf task
 	}
 	*tf.reboundRecorded = checkedOut
 	return nil
+}
+
+// readOnlyRebindError explains, from the workflow author's side, why stage's
+// repo-readonly workspace cannot be created: the run's workspace branch is
+// rebound, and a detached read-only checkout cannot follow it. It names the
+// rebinding stage(s) when the workflow declares any upstream of stage, and
+// both ways to fix the ordering; `goobers validate` reports the same shape
+// statically (workflow.ReadOnlyWorkspacesAfterRebind).
+func readOnlyRebindError(in StartInput, stageName, branch string) error {
+	culprit := "an earlier stage's " + WorkspaceBranchOutput + " output or the run's source branch"
+	if rebinders := workflow.WorkspaceRebindersReaching(in.Machine, stageName); len(rebinders) > 0 {
+		quoted := make([]string, len(rebinders))
+		for i, name := range rebinders {
+			quoted[i] = fmt.Sprintf("%q", name)
+		}
+		culprit = "stage " + quoted[0]
+		if len(quoted) > 1 {
+			culprit = "stages " + strings.Join(quoted, ", ")
+		}
+	}
+	return fmt.Errorf("create read-only workspace: stage %q declares workspace: repo-readonly, but the run's workspace branch was rebound to %q by %s; a repo-readonly workspace cannot be created on a rebound branch. Move %q before the rebinding stage, or set its workspace to repo",
+		stageName, branch, culprit, stageName)
 }
 
 func deferRunBranchProvenance(kind journal.TriggerKind) bool {

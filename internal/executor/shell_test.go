@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -456,6 +457,83 @@ func TestShellExecutor_StampsADORepoAuthSchemeWithTheCredentials(t *testing.T) {
 				t.Fatalf("stdout = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestShellExecutor_StampsSchemesFromMaterializedCredentials covers #5957's
+// two local scheme fixes. The schemes follow the credentials the executor
+// materialized, not a scan of the merged environment, so a GOOBERS_CRED_*
+// value a stage sets by hand in run.env earns no scheme (a stage pod, which
+// stamps from the credentials the plane minted, never gave it one either).
+// And each materialized credential carries its own scheme: a credentials:
+// entry's PAT stays "basic" on an executor whose repository scheme is
+// "bearer", while a credential with no stated scheme gets no variable and
+// uses GOOBERS_REPO_AUTH_SCHEME.
+func TestShellExecutor_StampsSchemesFromMaterializedCredentials(t *testing.T) {
+	const script = "printf '%s|%s|%s' \"${GOOBERS_REPO_AUTH_SCHEME-unset}\" \"${GOOBERS_CREDENTIAL_SCHEME_REPO_PUSH-unset}\" \"${GOOBERS_CREDENTIAL_SCHEME_GITHUB_PR_WRITE-unset}\""
+	for _, tc := range []struct {
+		name         string
+		schemes      map[string]string
+		capabilities []string
+		runEnv       map[string]string
+		want         string
+	}{
+		{
+			name:         "hand-set credential in run.env earns no scheme",
+			capabilities: []string{"github:pr:write"},
+			runEnv:       map[string]string{"GOOBERS_CRED_GITHUB_PR_WRITE": "hand-set-value"},
+			want:         "unset|unset|unset",
+		},
+		{
+			name:         "materialized credential without its own scheme uses the repository's",
+			capabilities: []string{"repo:push"},
+			want:         "bearer|unset|unset",
+		},
+		{
+			name:         "materialized credential with its own scheme keeps it",
+			schemes:      map[string]string{"repo:push": "basic"},
+			capabilities: []string{"repo:push"},
+			want:         "bearer|basic|unset",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, rec := newTestExecutor(t, newTestInjector(t, "repo:push", "GOOBERS_TEST_REPO_PUSH", "repo-token-value"))
+			exec.RepoAuthScheme = "bearer"
+			exec.CredentialSchemes = tc.schemes
+			env := baseEnvelope(t)
+			env.Capabilities = tc.capabilities
+
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", script}, Env: tc.runEnv})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success", result.Status)
+			}
+			if got := string(rec.recorded["task-1/stdout.log"]); got != tc.want {
+				t.Fatalf("stdout = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShellExecutor_RedactsTheBasicFormOfAPerCapabilityPAT: a credential sent
+// as Basic is redacted in its bare base64 form too, as a stage pod redacts it
+// (#5957), so a credentials: PAT on an Entra executor cannot leak encoded.
+func TestShellExecutor_RedactsTheBasicFormOfAPerCapabilityPAT(t *testing.T) {
+	exec, rec := newTestExecutor(t, newTestInjector(t, "repo:push", "GOOBERS_TEST_REPO_PUSH", "repo-token-value"))
+	exec.RepoAuthScheme = "bearer"
+	exec.CredentialSchemes = map[string]string{"repo:push": "basic"}
+	env := baseEnvelope(t)
+	env.Capabilities = []string{"repo:push"}
+	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:repo-token-value"))
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", "printf '%s' " + encoded}})
+	if err != nil || result.Status != apiv1.ResultSuccess {
+		t.Fatalf("Run = %+v, %v", result, err)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); strings.Contains(got, encoded) {
+		t.Fatalf("stdout = %q, want the Basic form redacted", got)
 	}
 }
 

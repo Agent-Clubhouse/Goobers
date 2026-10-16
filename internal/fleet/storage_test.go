@@ -162,3 +162,115 @@ func TestFileStorageRejectsUnknownAssociationSchema(t *testing.T) {
 		t.Fatalf("LoadAssociation error = %v", err)
 	}
 }
+
+func saveTestAssociation(t *testing.T) (*FileStorage, string, string) {
+	t.Helper()
+	store, err := NewFileStorage(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := store.Save(root, Record{
+		Association: Association{InstanceID: "instance", ProtocolVersion: ProtocolVersion},
+		PrivateKey:  []byte("key"),
+		Credential:  "credential",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := store.InstanceDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, root, dir
+}
+
+func TestFileStorageUpdatePersistsChange(t *testing.T) {
+	store, root, _ := saveTestAssociation(t)
+	if err := store.Update(root, func(a *Association) error {
+		a.InstanceID = "updated"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadAssociation(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InstanceID != "updated" || got.SchemaVersion != AssociationSchemaVersion {
+		t.Fatalf("association = %+v", got)
+	}
+}
+
+func TestFileStorageUpdateRejectsUnknownSchema(t *testing.T) {
+	store, root, dir := saveTestAssociation(t)
+	path := filepath.Join(dir, associationFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"schemaVersion": "1"`), []byte(`"schemaVersion": "999"`), 1)
+	if err := atomicWrite(path, data); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err = store.Update(root, func(*Association) error { called = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "unsupported association schema version") {
+		t.Fatalf("Update error = %v", err)
+	}
+	if called {
+		t.Fatal("update callback ran despite unsupported schema")
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(after, data) {
+		t.Fatal("association file modified")
+	}
+}
+
+func TestFileStorageUpdateErrorPaths(t *testing.T) {
+	store, root, dir := saveTestAssociation(t)
+	path := filepath.Join(dir, associationFileName)
+	want := errors.New("boom")
+	if err := store.Update(root, func(*Association) error { return want }); !errors.Is(err, want) {
+		t.Fatalf("callback error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(root, func(*Association) error { return nil }); err == nil || !strings.Contains(err.Error(), "decode association metadata") {
+		t.Fatalf("decode error = %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(root, func(*Association) error { return nil }); !errors.Is(err, ErrNotAssociated) {
+		t.Fatalf("missing file error = %v", err)
+	}
+}
+
+func TestAtomicWriteErrorPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := atomicWrite(filepath.Join(dir, "missing", "file"), []byte("x")); err == nil || !strings.Contains(err.Error(), "create temporary") {
+		t.Fatalf("missing dir error = %v", err)
+	}
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "child"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(target, []byte("x")); err == nil || !strings.Contains(err.Error(), "publish") {
+		t.Fatalf("publish error = %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("temp files left behind: %v", entries)
+	}
+	good := filepath.Join(dir, "good")
+	if err := atomicWrite(good, []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(good); string(b) != "ok" {
+		t.Fatalf("content = %q", b)
+	}
+}

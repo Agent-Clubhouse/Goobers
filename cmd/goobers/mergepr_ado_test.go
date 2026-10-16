@@ -31,10 +31,17 @@ type adoMergePRServer struct {
 	// threadComments is the PR's thread comments the pre-lock verdict recovery
 	// reads (#2746) — empty until setVerdictThread seeds one.
 	threadComments atomic.Value // []map[string]any
+	// feedbackThreads are further PR threads (each a raw ADO thread object)
+	// served after the verdict thread: review feedback for the #6134 gate.
+	feedbackThreads atomic.Value // []map[string]any
 	// stackedOnHead, when set, is an open pull request whose target is PR
 	// 359's source branch (a stacked PR), served by the list endpoint.
 	stackedOnHead atomic.Bool
 	listCalls     int64
+	// refs is the repository's Git Refs surface the post-merge source-branch
+	// backstop reads (#5957). The source branch starts absent: Azure DevOps
+	// honoured deleteSourceBranch.
+	refs *fakeADORefs
 }
 
 // adoMergePRAuthor is the display name the fake connectionData endpoint reports,
@@ -49,9 +56,15 @@ func (s *adoMergePRServer) setVerdictThread(author, body string) {
 		"id":          1,
 		"commentType": "text",
 		"content":     body,
-		"author":      map[string]string{"displayName": author},
+		"author":      map[string]string{"displayName": author, "id": adoMergePRSelfID},
+		// The unanswered-feedback gate (#6134) reads every thread and fails
+		// closed on a comment whose author id or publish time it cannot read.
+		"publishedDate": "2026-09-01T10:00:00Z",
 	}})
 }
+
+// adoMergePRSelfID is the identity id the fake connectionData endpoint reports.
+const adoMergePRSelfID = "id"
 
 // newADOMergePRServer stands up the fake ADO endpoints for org/project/repo,
 // polling for pull request 359. The PR is a clean pass: active, not draft, head
@@ -61,8 +74,9 @@ func (s *adoMergePRServer) setVerdictThread(author, body string) {
 // merge and the completion PATCH lands it.
 func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Server, *adoMergePRServer) {
 	t.Helper()
-	state := &adoMergePRServer{}
+	state := &adoMergePRServer{refs: newFakeADORefs(map[string]string{})}
 	mux := http.NewServeMux()
+	state.refs.registerRefs(t, mux, "myorg", "myproject", "myrepo")
 	mux.HandleFunc("/myorg/myproject/_apis/git/repositories/myrepo/pullrequests/359", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -141,8 +155,10 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Serve
 		comments, _ := state.threadComments.Load().([]map[string]any)
 		threads := []map[string]any{}
 		if len(comments) > 0 {
-			threads = append(threads, map[string]any{"id": 11, "comments": comments})
+			threads = append(threads, map[string]any{"id": 11, "status": "closed", "comments": comments})
 		}
+		extra, _ := state.feedbackThreads.Load().([]map[string]any)
+		threads = append(threads, extra...)
 		_ = json.NewEncoder(w).Encode(map[string]any{"value": threads})
 	})
 	mux.HandleFunc("/myorg/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
@@ -350,7 +366,60 @@ func TestMergePRADOSetsDeleteSourceBranchWithGrant(t *testing.T) {
 		if result["branchCleanup"] != "skipped-stacked" || result["headBranch"] != "goobers/tb-ado-implementation/wire-merge" {
 			t.Fatalf("result = %+v, want branchCleanup=skipped-stacked for the head branch", result)
 		}
+		if _, updates, auths := state.refs.snapshot(); len(updates) != 0 || len(auths) != 0 {
+			t.Fatalf("refs touched for a stacked branch: updates = %v, reads = %d", updates, len(auths))
+		}
 	})
+}
+
+// TestMergePRADOBackstopsSourceBranchDeletion is #5957's post-merge backstop on
+// the direct-completion path: Azure DevOps was asked to delete the source
+// branch, and merge-pr confirms it did. A branch ADO left at the merged head
+// is deleted by a ref update conditional on that head; one ADO removed is
+// only confirmed.
+func TestMergePRADOBackstopsSourceBranchDeletion(t *testing.T) {
+	const head = "goobers/tb-ado-implementation/wire-merge"
+	const headSHA = "5555555555555555555555555555555555555555"
+	for _, tc := range []struct {
+		name       string
+		leftBehind bool
+	}{
+		{name: "azure devops deleted it"},
+		{name: "azure devops left it", leftBehind: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, state := newADOMergePRServer(t, headSHA, "basesha1")
+			if tc.leftBehind {
+				state.refs.tips[head] = headSHA
+			}
+			root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
+				"pullNumber": "359", "verdict": "pass", "headSha": headSHA, "baseSha": "basesha1",
+			})
+			t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "branch-delete-token")
+
+			code, stdout, stderr := runArgs(t, "merge-pr", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			result := readMergeResult(t, dir)
+			if result["branchCleanup"] != "deleted" || result["headBranch"] != head {
+				t.Fatalf("result = %+v, want branchCleanup=deleted for %q", result, head)
+			}
+			tips, updates, _ := state.refs.snapshot()
+			if _, kept := tips[head]; kept {
+				t.Fatalf("source branch %q survived the backstop", head)
+			}
+			if !tc.leftBehind {
+				if len(updates) != 0 {
+					t.Fatalf("ref updates = %v, want none when azure devops already deleted the branch", updates)
+				}
+				return
+			}
+			if len(updates) != 1 || updates[0]["oldObjectId"] != headSHA || updates[0]["newObjectId"] != adoZeroObjectIDForTest {
+				t.Fatalf("ref updates = %v, want one delete conditional on the merged head %s", updates, headSHA)
+			}
+		})
+	}
 }
 
 // landingGrantTokens gives every grant a landing matrix case can deliver a

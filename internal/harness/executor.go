@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -196,6 +197,7 @@ type Executor struct {
 	transcriptLimit int64
 	sandboxEnforced bool
 	observer        Observer
+	childAccess     ChildWorkflowAccessProvider
 	newSandbox      func() (sandbox.Sandbox, error)
 
 	guardedCredentialFiles bool
@@ -384,6 +386,11 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// capability backstop so a missing-tool code keeps its own, more specific
 	// classification rather than being absorbed into the operational one.
 	reclassifyOperationalFailureBlock(&result)
+	// #5871: an agent claiming its execution window ran out long before the
+	// deadline the runtime enforced stopped early; it did not time out. Judged
+	// against the observed deadline, with the input-inspection and goobers-io
+	// readiness evidence in the failure, and never accepting the claim.
+	reclassifyPrematureExhaustionClaim(&result, env.ContextPointers, out)
 	// #5182: a success that left its work uncommitted goes back through the
 	// stage's retry budget with a typed reason instead of reaching review as
 	// an empty diff. The work is never committed on the agent's behalf.
@@ -455,7 +462,7 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	}
 	out, _, _, err := e.run(ctx, ModeReview, env, e.verdictPath)
 	if err != nil {
-		return apiv1.Verdict{}, err
+		return apiv1.Verdict{}, classifyReviewSessionError(err)
 	}
 	if err := e.validator.ValidateEnvelope("verdict", out.Payload); err != nil {
 		validationErr := fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
@@ -467,6 +474,9 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
 	}
 	verdict = undeclaredDeferralAsNeedsChanges(verdict, env.ReviewerDeferralAllowed)
+	// Only the runner may mark a verdict synthesized (#5894); a reviewer
+	// that claims it would make its own review read as one that never ran.
+	verdict.Synthesized = false
 	verdict.Evidence, err = e.liftArtifacts(ctx, env, verdict.Evidence)
 	if err != nil {
 		if _, summary, ok := declaredArtifactFailure(err); ok {
@@ -585,6 +595,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
 		}
 	}
+	childAccess, closeChildAccess, err := e.prepareChildWorkflowAccess(ctx, env)
+	if err != nil {
+		return Outcome{}, nil, nil, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, closeChildAccess()) }()
 	skills, skillsErr := e.prepareSkills(ctx, env.Workspace)
 	if skillsErr != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize skills: %w", skillsErr)
@@ -595,7 +610,6 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
 	var creds *credentials.Set
-	var err error
 	if envEffectivePolicy != nil {
 		creds, err = e.injector.MaterializeRestricted(ctx, envEffectivePolicy.PlatformPolicy.Credentials)
 	} else {
@@ -616,7 +630,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			fmt.Errorf("harness: materialize credentials: %w", err),
 		))
 	}
-	contextPaths, err := e.materializeContext(env)
+	contextPaths, err := e.materializeStageInputs(mode, env)
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
@@ -641,13 +655,14 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Attempt:                  int(env.Attempt),
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
+		ChildWorkflows:           childAccess,
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {
 			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
 		}
 	}
-	postcondition := armCommitPostcondition(ctx, mode, env, &req)
+	postcondition, publication := e.armPostconditions(ctx, mode, env, &req)
 	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
@@ -694,7 +709,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
-	out, runErr = postcondition.settle(e.runAdapter(ctx, req, nestedAdapter))
+	out, runErr = publication.settle(postcondition.settle(e.runAdapter(ctx, req, nestedAdapter)))
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
@@ -767,7 +782,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			))
 		}
 	}
-	runErr = errors.Join(runErr, e.journalMCPServerFailures(env.TaskID, out.MCPServerFailures))
+	runErr = errors.Join(runErr, e.journalStageAnnotations(mode, env, req.TelemetryDir, agentEvents, out.MCPServerFailures))
 	if out.TranscriptSchema == "" {
 		prompt := out.RenderedPrompt
 		if len(prompt) == 0 {
@@ -875,6 +890,96 @@ func (e *Executor) journalMCPServerFailures(stage string, failures []MCPServerFa
 	return nil
 }
 
+// journalStageAnnotations appends the post-invocation, annotation-only journal
+// records: MCP servers that were unavailable and the attempt's Backprop claims.
+func (e *Executor) journalStageAnnotations(mode Mode, env apiv1.InvocationEnvelope, telemetryDir string, agentEvents []journal.Event, failures []MCPServerFailure) error {
+	var claimsErr error
+	if mode == ModeInvoke {
+		claimsErr = e.journalBackpropClaims(env, telemetryDir, agentEvents)
+	}
+	return errors.Join(claimsErr, e.journalMCPServerFailures(env.TaskID, failures))
+}
+
+// journalBackpropClaims journals the bounded, sanitized claims the agent
+// appended to its stage telemetry directory (#7119) as one runner annotation.
+// The writer is attributed by the runner — the stage attempt and, when
+// unambiguous, its root nested agent — never by the claim text. A claim the
+// agent recorded must not vanish silently, so a recorder that cannot journal
+// it, or a failed append, fails the attempt like any other lost journal record.
+func (e *Executor) journalBackpropClaims(env apiv1.InvocationEnvelope, telemetryDir string, agentEvents []journal.Event) error {
+	claims, dropped := creditgraph.ReadClaimFile(telemetryDir)
+	if len(claims) == 0 && dropped == 0 {
+		return nil
+	}
+	appender, ok := e.recorder.(EventAppender)
+	if !ok {
+		return fmt.Errorf("harness: journal Backprop claims for %q: %T cannot append journal events", env.TaskID, e.recorder)
+	}
+	for i := range claims {
+		claims[i].Statement = e.scrubClaimStatement(claims[i].Statement)
+	}
+	if err := appender.Append(journal.Event{
+		Type:    journal.EventRunnerAnnotation,
+		Stage:   env.TaskID,
+		Attempt: int(env.Attempt),
+		Runner:  creditgraph.ClaimsAnnotationPayload(claims, dropped, transcriptRootAgentID(agentEvents, env.TaskID)),
+	}); err != nil {
+		return fmt.Errorf("harness: journal Backprop claims for %q: %w", env.TaskID, err)
+	}
+	return nil
+}
+
+// materializeStageInputs materializes what a stage reads before it starts:
+// its declared context and, for an agentic stage, the run's earlier claims.
+func (e *Executor) materializeStageInputs(mode Mode, env apiv1.InvocationEnvelope) (map[string]string, error) {
+	contextPaths, err := e.materializeContext(env)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.materializeRunClaims(mode, telemetry.PrepareStageTelemetryDir(env.Workspace)); err != nil {
+		return nil, err
+	}
+	return contextPaths, nil
+}
+
+// materializeRunClaims gives an agentic stage the claims journaled earlier in
+// its run (#7119): a bounded, re-validated snapshot in its telemetry directory
+// that `goobers telemetry claims` prints. A journal the runner cannot read is
+// recorded in the snapshot as an error, never as an empty log.
+func (e *Executor) materializeRunClaims(mode Mode, telemetryDir string) error {
+	if mode != ModeInvoke || telemetryDir == "" || e.contextResolver == nil {
+		return nil
+	}
+	view := creditgraph.RunClaims{Schema: creditgraph.RunClaimsSchemaVersion, Claims: []creditgraph.RunClaim{}}
+	reader, err := journal.OpenReadOnly(e.contextResolver.Dir())
+	if err == nil {
+		var events []journal.Event
+		if events, err = reader.Events(); err == nil {
+			view = creditgraph.CollectRunClaims(events)
+		}
+	}
+	if err != nil {
+		// Includes a resolver directory that is not a run journal, as on a
+		// dispatched worker: its stage must not mistake that for no claims.
+		view.Error = "run journal unavailable to this runner"
+	}
+	if err := creditgraph.WriteRunClaims(telemetryDir, view); err != nil {
+		return fmt.Errorf("harness: materialize run claims: %w", err)
+	}
+	return nil
+}
+
+// scrubClaimStatement redacts secrets from agent-written claim text before it
+// reaches the journal, then re-applies the statement bound because a
+// redaction marker may be longer than the secret it replaced.
+func (e *Executor) scrubClaimStatement(statement string) string {
+	scrubbed := creditgraph.SanitizeClaimText(string(e.scrubber.Scrub([]byte(statement))))
+	if len(scrubbed) <= creditgraph.MaxClaimStatementBytes {
+		return scrubbed
+	}
+	return strings.ToValidUTF8(scrubbed[:creditgraph.MaxClaimStatementBytes], "")
+}
+
 func (e *Executor) finalizeAdapterFailure(stage string, out Outcome, runErr error) (Outcome, *apiv1.ArtifactPointer, error) {
 	out, runErr = e.recordInvalidCompletion(stage, out, runErr)
 	var stderr *apiv1.ArtifactPointer
@@ -938,6 +1043,43 @@ func classifyHarnessRunError(runErr, wrapped error) error {
 	default:
 		return wrapped
 	}
+}
+
+// classifyReviewSessionError marks a reviewer session that ENDED without a
+// verdict — its harness process exited non-zero, or it ran out its session
+// timeout — as an invoke.InfrastructureFailure, the same class
+// classifyHarnessRunError already gives a session that exited cleanly without
+// writing one (ErrNoCompletion). All three say only that the reviewer never
+// answered, not anything about the change under review, and a reviewer never
+// publishes, so a fresh session is safe; the gate's declared evaluator retry
+// bound (retry.maxAttempts) is what decides whether it gets one (#5543).
+// Without this, a declared retry was inert for the two most common transient
+// reviewer failures.
+//
+// Failures that WOULD recur are left unmarked and still fail fast: a verdict
+// the schema refused, a required MCP server the harness rejected, an
+// enterprise policy blocked, or a declared one that failed to start, a
+// canceled session, and every refusal that
+// precedes the harness process (sandbox, policy admission, configuration).
+// Only Review applies this; a task stage's timeout keeps its own OnTimeout
+// salvage semantics and its failures stay the stage's business outcome.
+func classifyReviewSessionError(err error) error {
+	if err == nil || invoke.IsInfrastructureFailure(err) {
+		return err
+	}
+	switch {
+	case errors.Is(err, ErrCanceled),
+		errors.Is(err, ErrInvalidCompletion),
+		errors.Is(err, errRequiredMCPEnterpriseBlocked),
+		errors.Is(err, errRequiredMCPRejected),
+		errors.Is(err, errRequiredMCPDeclaredStartupFailed):
+		return err
+	}
+	var exitErr *exec.ExitError
+	if errors.Is(err, ErrTimeout) || errors.As(err, &exitErr) {
+		return invoke.InfrastructureFailure(err)
+	}
+	return err
 }
 
 func applyNestedExecutionPolicy(env apiv1.InvocationEnvelope, effective apiv1.ChildExecutionPolicy) apiv1.InvocationEnvelope {

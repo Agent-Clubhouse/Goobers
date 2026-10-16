@@ -6,6 +6,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -30,7 +31,7 @@ func refuseBacklogCredentialOnCodeProvider(cfg stageProviderConfig) error {
 		return nil
 	}
 	backlog := backlogRepoRefForStage(cfg.root, cfg.repo)
-	if !backlogOnOtherProvider(cfg.repo, backlog) {
+	if !providerconfig.BacklogOnOtherProvider(cfg.repo, backlog) {
 		return nil
 	}
 	return fmt.Errorf(
@@ -65,7 +66,7 @@ func decompositionIssueRepo(root string) (providers.RepositoryRef, error) {
 	if err != nil {
 		return providers.RepositoryRef{}, err
 	}
-	return backlogProviderRepo(repo, backlogRepoRefForStage(root, repo)), nil
+	return providerconfig.BacklogProviderRepo(repo, backlogRepoRefForStage(root, repo)), nil
 }
 
 // isBacklogRoleCapability reports whether c is in the capability family that

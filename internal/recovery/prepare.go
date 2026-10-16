@@ -15,6 +15,18 @@ import (
 // and supplies a stable run timestamp plus a bounded retention deadline.
 // This prepares objects only; PublishRetainedState must succeed before cleanup.
 func PrepareRecord(ctx context.Context, repository, repositoryKey, runID, baseRef string, identityTime, retainUntil time.Time) (Record, error) {
+	record, err := prepareRecordBase(ctx, repository, repositoryKey, runID, baseRef, identityTime, retainUntil)
+	if err != nil {
+		return Record{}, err
+	}
+	snapshot, err := CaptureSnapshot(ctx, repository, runID, identityTime)
+	if err != nil {
+		return Record{}, err
+	}
+	return completePreparedRecord(ctx, repository, record, snapshot)
+}
+
+func prepareRecordBase(ctx context.Context, repository, repositoryKey, runID, baseRef string, identityTime, retainUntil time.Time) (Record, error) {
 	if !validRepositoryKey(repositoryKey) || baseRef == "" || strings.HasPrefix(baseRef, "-") || strings.ContainsAny(baseRef, "\x00\r\n") {
 		return Record{}, fmt.Errorf("invalid recovery preparation identity or base ref")
 	}
@@ -34,19 +46,20 @@ func PrepareRecord(ctx context.Context, repository, repositoryKey, runID, baseRe
 	if !gitObjectID.MatchString(baseSHA) {
 		return Record{}, fmt.Errorf("recovery requires one unambiguous common ancestor")
 	}
-	snapshot, err := CaptureSnapshot(ctx, repository, runID, identityTime)
+	return Record{Version: 1, RunID: runID, RepositoryKey: repositoryKey, BaseRef: remoteRecoveryBaseRef(baseRef), BaseSHA: baseSHA, CreatedAt: identityTime, RetainUntil: retainUntil}, nil
+}
+
+func completePreparedRecord(ctx context.Context, repository string, record Record, snapshot string) (Record, error) {
+	digest, err := WriteSnapshotPatch(ctx, repository, record.BaseSHA, snapshot, io.Discard)
 	if err != nil {
 		return Record{}, err
 	}
-	digest, err := WriteSnapshotPatch(ctx, repository, baseSHA, snapshot, io.Discard)
+	ref, err := RefForSnapshot(record.RunID, snapshot)
 	if err != nil {
 		return Record{}, err
 	}
-	ref, err := RefForSnapshot(runID, snapshot)
-	if err != nil {
-		return Record{}, err
-	}
-	return Record{Version: 1, RunID: runID, RepositoryKey: repositoryKey, Ref: ref, BaseRef: remoteRecoveryBaseRef(baseRef), BaseSHA: baseSHA, SnapshotSHA: snapshot, PatchDigest: digest, CreatedAt: identityTime, RetainUntil: retainUntil}, nil
+	record.Ref, record.SnapshotSHA, record.PatchDigest = ref, snapshot, digest
+	return record, nil
 }
 
 // remoteRecoveryBaseRef converts a local remote-tracking namespace into the

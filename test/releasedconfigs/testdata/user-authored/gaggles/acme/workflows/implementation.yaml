@@ -1,0 +1,27 @@
+# Claims on the trust label alone, with no goobers:ready gate. Valid at
+# runtime under DSL 2.0; v0.6.0-alpha.1 and alpha.2 rejected it (LCL001).
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: implementation
+spec:
+  gaggle: acme
+  triggers:
+    - type: schedule
+      schedule: "*/15 * * * *"
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one trust-approved item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approved"
+        excludeLabels: "goobers/status:in-review,goobers:needs-human"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items

@@ -104,12 +104,22 @@ func TestGetDSLForReleaseOmitsFutureVersions(t *testing.T) {
 		t.Fatalf("v0.4.0 release matrix should validate: %v", err)
 	}
 
+	// v0.5.0 was cut from a release branch before DSL 3.1 landed (#6133), so
+	// its matrix omits 3.1; the first release line carrying it is v0.6.0.
 	v050, err := GetDSLForRelease("v0.5.0")
 	if err != nil {
 		t.Fatalf("GetDSLForRelease(v0.5.0): %v", err)
 	}
-	if _, ok := v050.Lookup(V31DSLVersion); !ok {
-		t.Fatalf("v0.5.0 release matrix omits DSL %s", V31DSLVersion)
+	if _, ok := v050.Lookup(V31DSLVersion); ok {
+		t.Fatalf("v0.5.0 release matrix includes DSL %s, which shipped after it", V31DSLVersion)
+	}
+
+	v060, err := GetDSLForRelease("v0.6.0")
+	if err != nil {
+		t.Fatalf("GetDSLForRelease(v0.6.0): %v", err)
+	}
+	if _, ok := v060.Lookup(V31DSLVersion); !ok {
+		t.Fatalf("v0.6.0 release matrix omits DSL %s", V31DSLVersion)
 	}
 }
 

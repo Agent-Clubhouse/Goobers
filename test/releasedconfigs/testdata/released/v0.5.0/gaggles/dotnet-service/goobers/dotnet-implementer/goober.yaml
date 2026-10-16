@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: dotnet-implementer
+spec:
+  gaggle: dotnet-service
+  role: implementer
+  displayName: Implementer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  # Implement-only: repo:push covers repository writes and agent:model
+  # authenticates the harness (the PR/issue stages remain deterministic).
+  capabilities:
+    - repo:push
+    - agent:model
+  policyActions:
+    - modify-repository
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - dotnet-implementation

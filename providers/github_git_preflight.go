@@ -41,7 +41,7 @@ func (p *GitHubProvider) preflightGitReceivePack(ctx context.Context, repo Repos
 	// enterprise CA), but never follow redirects or inherit cookies. In
 	// particular, Go's default redirect policy forwards auth to subdomains.
 	client := newProviderHTTPClient(defaultProviderHTTPTimeout)
-	if configured, ok := p.Client.(*http.Client); ok {
+	if configured := configuredHTTPClient(p.Client); configured != nil {
 		client.Transport = configured.Transport
 		if configured.Timeout > 0 && configured.Timeout < client.Timeout {
 			client.Timeout = configured.Timeout

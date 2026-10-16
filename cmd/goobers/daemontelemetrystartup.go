@@ -12,12 +12,12 @@ import (
 // and accounting stay active; only background Azure uploads wait for release.
 // Failed startup leaves the signal unreleased and exporter shutdown cancels its
 // waiters. Retrying setup shares this daemon's signal, not any process-global one.
-func daemonStartupSetupOptions(notifications notifyFlag, stdout, stderr io.Writer, recovery *localscheduler.RecoveryGate) ([]schedulerSetupOption, func()) {
+func daemonStartupSetupOptions(notifications notifyFlag, stdout, stderr io.Writer, recovery *localscheduler.RecoveryGate, tracker *startupPhaseTracker) ([]schedulerSetupOption, func()) {
 	started := time.Now()
 	replayStart := make(chan struct{})
 	return []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
-		withStartupProgress(newSchedulerSetupProgress(stdout, started, time.Now)),
+		withStartupProgress(trackStartupProgress(tracker, newSchedulerSetupProgress(stdout, started, time.Now))),
 		withClaimRecoveryGate(recovery),
 		withTelemetryReplayStart(replayStart),
 	}, sync.OnceFunc(func() { close(replayStart) })

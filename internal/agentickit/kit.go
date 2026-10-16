@@ -32,6 +32,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Grant mirrors credentials.Grant as data. Restated rather than imported so
@@ -72,10 +73,19 @@ type Kit struct {
 	// Mode is the completion contract this stage owes (invoke | review);
 	// empty reads as invoke. See Mode.
 	Mode Mode `json:"mode,omitempty"`
+	// ReviewRequiresDiff is set on a review kit whose gate reviews
+	// implementation work (#5414): the pod fails the review closed when the
+	// run diff it computes for the reviewer is empty, instead of asking the
+	// reviewer to judge a checkout that does not carry the run's commits.
+	// Omitted (false) in every kit that predates it.
+	ReviewRequiresDiff bool `json:"reviewRequiresDiff,omitempty"`
 	// Goobers are the specs the executor routes on, keyed by goober name.
 	Goobers map[string]apiv1.GooberSpec `json:"goobers"`
 	// Instructions are each goober's system instructions.
 	Instructions map[string]string `json:"instructions"`
+	// SkillPackages are the selected Goober's resolved, captured skill bytes.
+	// They share the kit's content identity; no pod reads the instance config.
+	SkillPackages map[string][]workflow.SkillFile `json:"skillPackages,omitempty"`
 	// Assets are each goober's asset bundle, materialised into the workspace
 	// before invocation.
 	Assets map[string]*gooberassets.WireBundle `json:"assets,omitempty"`

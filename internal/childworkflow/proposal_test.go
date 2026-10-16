@@ -268,14 +268,17 @@ func TestNormalContractChecksApplyToGeneratedMachines(t *testing.T) {
 	requireCode(t, validator(t, testContext()), source, "contracts")
 }
 
-func TestEngineAndRunnerUseDifferentExecutablePlacement(t *testing.T) {
+func TestEngineAndRunnerPinRemoteExecutablePlacement(t *testing.T) {
 	context := testContext()
 	context.Config.Runners = []instance.RunnerEntry{
 		{Name: "self", Host: "self", Provides: instance.RunnerProvides{OS: instance.RunnerOSLinux}},
 		{Name: "tools", Host: "ghcr.io/example/tools:v1", Provides: instance.RunnerProvides{OS: instance.RunnerOSLinux, Shell: true, Capabilities: []string{"special-tool"}}},
 	}
 	source := strings.Replace(validProposal, "type: deterministic", "type: deterministic\n      runsOn: {capabilities: [special-tool]}", 1)
-	requireCode(t, validator(t, context), source, "placement")
+	local, err := validator(t, context).Validate([]byte(source))
+	if err != nil || len(local.Placements) != 1 || local.Placements[0].Self {
+		t.Fatal("coordinator lost isolated worker pin", local, err)
+	}
 	context.Backend = BackendEngine
 	v := validator(t, context)
 	result, err := v.Validate([]byte(source))

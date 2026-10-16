@@ -171,6 +171,9 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	}
 	// ADO has no queue-entry ID. Record the acknowledged auto-complete
 	// mutation, but do not invent a GitHub-style admission or merge receipt.
+	if adoAutoCompleteAcknowledged(out, identity.ID) {
+		observeProviderMutation(ctx, p.Client, ProviderADO)
+	}
 	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == identity.ID {
 		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
@@ -182,6 +185,88 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 		return EnqueuePullRequestResult{Number: out.PullRequestID, Merged: true, MergeSHA: out.LastMergeCommit.CommitID}, nil
 	}
 	return EnqueuePullRequestResult{Number: out.PullRequestID}, nil
+}
+
+// adoNoAutoCompleteIdentity is the empty identity id ADO accepts in
+// autoCompleteSetBy to clear an armed auto-complete.
+const adoNoAutoCompleteIdentity = "00000000-0000-0000-0000-000000000000"
+
+// AutoCompleteCancel is what CancelAutoComplete did.
+type AutoCompleteCancel string
+
+const (
+	// AutoCompleteCancelled means an armed auto-complete was cleared, confirmed
+	// by a fresh read.
+	AutoCompleteCancelled AutoCompleteCancel = "cancelled"
+	// AutoCompleteNotArmed means nothing was armed (or the pull request is no
+	// longer active and not completed); nothing was changed.
+	AutoCompleteNotArmed AutoCompleteCancel = "not-armed"
+)
+
+// ErrLandedBeforeDisarm reports a pull request that completed before its
+// landing could be disarmed: the feedback arrived too late, and the caller
+// must say so rather than treat the PR as withdrawn.
+var ErrLandedBeforeDisarm = errors.New("pull request completed before its landing could be disarmed")
+
+// CancelAutoComplete disarms an armed Azure DevOps auto-complete (#6134): a
+// pull request whose landing EnqueuePullRequest armed while a blocking policy
+// was still pending must not complete over review feedback that arrived
+// afterwards. The outcome is reported honestly:
+//
+//   - AutoCompleteCancelled only when a fresh read after the cancel shows the
+//     pull request still active with no auto-complete armed and no
+//     completion queued;
+//   - AutoCompleteNotArmed, with no mutation, when nothing was armed;
+//   - ErrLandedBeforeDisarm when the pull request completed (before, or
+//     while, the cancel ran);
+//   - an error when ADO has already queued the completion, which a cancel
+//     cannot recall, or the cancel did not take.
+func (p *ADOProvider) CancelAutoComplete(ctx context.Context, repo RepositoryRef, pullID string) (AutoCompleteCancel, error) {
+	if err := requireRepo(repo); err != nil {
+		return "", err
+	}
+	detail, err := p.getPullRequestDetail(ctx, repo, pullID)
+	if err != nil {
+		return "", err
+	}
+	if err := adoLandingDisarmable(detail, pullID); err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(detail.Status, "active") || detail.AutoCompleteSetBy == nil {
+		return AutoCompleteNotArmed, nil
+	}
+	endpoint, err := p.repoURL(repo, "pullrequests", pullID)
+	if err != nil {
+		return "", err
+	}
+	body := map[string]interface{}{"autoCompleteSetBy": map[string]string{"id": adoNoAutoCompleteIdentity}}
+	if err := p.do(ctx, http.MethodPatch, endpoint, body, nil); err != nil {
+		return "", err
+	}
+	p.recordMutation(ctx, "pr", pullID, "auto-complete-cancel", repo)
+	after, err := p.getPullRequestDetail(ctx, repo, pullID)
+	if err != nil {
+		return "", fmt.Errorf("confirm the auto-complete cancel on ado pull request %s: %w", pullID, err)
+	}
+	if err := adoLandingDisarmable(after, pullID); err != nil {
+		return "", err
+	}
+	if after.AutoCompleteSetBy != nil && after.AutoCompleteSetBy.ID != "" && after.AutoCompleteSetBy.ID != adoNoAutoCompleteIdentity {
+		return "", fmt.Errorf("ado pull request %s still has auto-complete armed after the cancel", pullID)
+	}
+	return AutoCompleteCancelled, nil
+}
+
+// adoLandingDisarmable fails for a pull request whose landing can no longer be
+// disarmed: completed, or with a completion ADO has already queued.
+func adoLandingDisarmable(detail adoPullRequestDetail, pullID string) error {
+	if strings.EqualFold(detail.Status, "completed") {
+		return fmt.Errorf("ado pull request %s: %w", pullID, ErrLandedBeforeDisarm)
+	}
+	if strings.EqualFold(detail.Status, "active") && detail.AutoCompleteSetBy == nil && adoCompletionInFlight(detail) {
+		return fmt.Errorf("ado pull request %s completion is already queued and cannot be disarmed", pullID)
+	}
+	return nil
 }
 
 // PollMergeQueueEntry reports whether a pull request previously enqueued
@@ -206,7 +291,11 @@ func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueu
 	labels := adoLabelNames(detail.Labels)
 	switch {
 	case strings.EqualFold(detail.Status, "completed"):
-		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: detail.LastMergeCommit.CommitID, Labels: labels}, nil
+		return PollMergeQueueEntryResult{
+			State: MergeQueueEntryMerged, MergeSHA: detail.LastMergeCommit.CommitID, Labels: labels,
+			HeadBranch: strings.TrimPrefix(detail.SourceRefName, adoHeadsRefPrefix),
+			HeadSHA:    detail.LastMergeSourceCommit.CommitID,
+		}, nil
 	case strings.EqualFold(detail.Status, "abandoned"):
 		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted, Labels: labels}, nil
 	case detail.AutoCompleteSetBy != nil:
@@ -336,6 +425,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if strconv.Itoa(final.PullRequestID) != req.PullID {
 		return MergePullRequestResult{}, fmt.Errorf("merge response identifies a different pull request; completion is unconfirmed")
 	}
+	observeProviderMutation(ctx, p.Client, ProviderADO)
 	if p.mutationRecorder != nil {
 		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, final.LastMergeCommit.CommitID)
 		if intent != nil {

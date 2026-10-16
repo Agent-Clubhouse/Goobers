@@ -119,6 +119,7 @@ func sweepPendingCancelRequests(
 	log *journal.InstanceLog,
 	release func(runID, workflow string),
 	now func() time.Time,
+	fences ...func(context.Context, httpapi.CancelRunRequest) error,
 ) error {
 	return sweepDelegateRequests(
 		schedulerDir,
@@ -137,6 +138,11 @@ func sweepPendingCancelRequests(
 			}
 		},
 		func(req cancelRequest) cancelResponse {
+			if len(fences) > 0 && fences[0] != nil {
+				if err := fences[0](context.Background(), httpapi.CancelRunRequest{RunID: req.RunID, Gaggle: req.Gaggle, Workflow: req.Workflow, Actor: req.Actor}); err != nil {
+					return cancelResponse{Error: err.Error()}
+				}
+			}
 			return executeCancelRequest(runners, release, req, now())
 		},
 	)
@@ -162,6 +168,8 @@ func executeCancelRequest(
 	}
 	result, cancelled, err := owner.CancelRun(req.RunID, now)
 	switch {
+	case cancelled && deferredFamilyCancellation(result.Phase, err):
+		return cancelResponse{Code: httpapi.CancelCodeRequested, Phase: string(result.Phase)}
 	case err != nil:
 		return cancelResponse{Error: err.Error()}
 	case cancelled:
@@ -183,10 +191,11 @@ func executeCancelRequest(
 // daemonCancelService preserves the local Runner/file-drop cancellation path
 // and routes retained engine runs through the engine's own cancellation guard.
 type daemonCancelService struct {
-	runners  *daemonRunnerRegistry
-	engine   *daemonEngineCancelService
-	auditLog *journal.InstanceLog
-	receipts *cancelreceipt.Store
+	fenceChildren func(context.Context, httpapi.CancelRunRequest) error
+	runners       *daemonRunnerRegistry
+	engine        *daemonEngineCancelService
+	auditLog      *journal.InstanceLog
+	receipts      *cancelreceipt.Store
 
 	mu      sync.RWMutex
 	release func(runID, workflow string)
@@ -215,6 +224,11 @@ func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRu
 func (s *daemonCancelService) cancelOnce(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
 	if err := s.auditCancellation(input); err != nil {
 		return httpapi.CancelRunResult{}, err
+	}
+	if s.fenceChildren != nil {
+		if err := s.fenceChildren(ctx, input); err != nil {
+			return httpapi.CancelRunResult{}, err
+		}
 	}
 	s.mu.RLock()
 	release := s.release
@@ -328,7 +342,7 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 		pf(stderr, "error: %s\n", result.Error)
 		return 1
 	case result.Code == httpapi.CancelCodeRequested:
-		pf(stdout, "requested cancellation of engine-driven run %s via daemon API; the engine reports the terminal outcome\n", runID)
+		pf(stdout, "requested cancellation of run %s via daemon API; check recorded run and child outcomes for confirmation\n", runID)
 		return 0
 	case result.Code == httpapi.CancelCodeAborted:
 		pf(stdout, "%s run %s (aborted via daemon API)\n", action, runID)

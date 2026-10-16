@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func linearSpec() apiv1.WorkflowSpec {
@@ -461,8 +462,13 @@ func TestCheckWarningsAcceptedButInertField(t *testing.T) {
 		t.Fatalf("warnings = %v, want expectedOutputs warning", warnings)
 	}
 	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
-	if !strings.Contains(warnings[0], want) {
+	if !strings.Contains(warnings[0], want) || !strings.Contains(warnings[0], "so it is inert") {
 		t.Errorf("warnings = %v, want warning containing %q", warnings, want)
+	}
+
+	def.DSLVersion = supportmatrix.V31DSLVersion
+	if warnings := CheckWarnings(def); len(warnings) != 1 || !strings.Contains(warnings[0], "fails with missing_expected_outputs") {
+		t.Errorf("DSL 3.1 warnings = %v, want the enforced consequence", warnings)
 	}
 }
 
@@ -1269,7 +1275,7 @@ func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
 	spec.Tasks[0].PolicyActions = []string{"flag-foundation-coupling"}
 	spec.Tasks[0].Capabilities = nil
 	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "provider:pr:write", but the task does not declare it`
+	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "provider:pr:write" (or "github:pr:write"), but the task does not declare it`
 	if err == nil || !strings.Contains(err.Error(), wantCapability) {
 		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
 	}
@@ -1277,6 +1283,13 @@ func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
 	spec.Tasks[0].Capabilities = []string{string(capability.ProviderPRWrite)}
 	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("declared pr-select action and capability should compile: %v", err)
+	}
+
+	// Configs written before v0.6.0-alpha.3 declare github:pr:write; they
+	// must keep compiling.
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubPRWrite)}
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("pr-select declaring the pre-alpha.3 github:pr:write should compile: %v", err)
 	}
 }
 

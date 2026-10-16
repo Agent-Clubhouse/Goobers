@@ -186,6 +186,7 @@ func instanceUsedFeaturesWithResolver(
 		printValidationIssues(stderr, report)
 		if errors.Is(err, instance.ErrInvalidConfig) {
 			pf(stderr, "error: instance config failed validation: %v\n", err)
+			instance.WriteInvalidConfigScope(stderr, l.ConfigDir(), report)
 			return nil, 1
 		}
 		pf(stderr, "error: %v\n", err)

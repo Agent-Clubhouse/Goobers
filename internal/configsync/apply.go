@@ -115,7 +115,7 @@ func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 	if err := a.validateGeneration(ctx, objects, keys, generation); err != nil {
 		return ledger.fail(generation, "validate", err)
 	}
-	previousGeneration, err := a.switchGeneration(ctx, rs.Namespace, generation, ledger)
+	previousGeneration, err := a.switchGeneration(ctx, rs.Namespace, generation, desired, ledger)
 	if err != nil {
 		return ledger.fail(generation, "switch", err)
 	}
@@ -245,8 +245,9 @@ func (a *ClientApplier) validateGeneration(ctx context.Context, objects []client
 }
 
 // switchGeneration atomically moves the authoritative pointer to the validated
-// generation. Until it succeeds, consumers keep selecting the previous one.
-func (a *ClientApplier) switchGeneration(ctx context.Context, namespace, generation string, ledger *mutationLedger) (string, error) {
+// generation, first completing any pending prune of an older generation.
+// Until it succeeds, consumers keep selecting the previous one.
+func (a *ClientApplier) switchGeneration(ctx context.Context, namespace, generation string, desired map[string]bool, ledger *mutationLedger) (string, error) {
 	key := client.ObjectKey{Namespace: namespace, Name: GenerationConfigMapName}
 	var pointer corev1.ConfigMap
 	err := a.Client.Get(ctx, key, &pointer)
@@ -280,8 +281,13 @@ func (a *ClientApplier) switchGeneration(ctx context.Context, namespace, generat
 		}
 		return previous, nil
 	}
-	if _, ok := pointer.Data[PreviousGenerationConfigMapKey]; ok {
-		return "", fmt.Errorf("pending prune generation %q must complete before publishing generation %s", pointer.Data[PreviousGenerationConfigMapKey], generation)
+	// A prior apply switched generations but its prune never finished. Finish
+	// that prune before superseding the pointer so the older generation's
+	// objects are not orphaned.
+	if pending, ok := pointer.Data[PreviousGenerationConfigMapKey]; ok && pending != "" {
+		if err := a.prune(ctx, namespace, desired, pending, ledger); err != nil {
+			return "", fmt.Errorf("complete pending prune of generation %q before publishing generation %s: %w", pending, generation, err)
+		}
 	}
 	if pointer.Data == nil {
 		pointer.Data = map[string]string{}

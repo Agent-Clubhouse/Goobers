@@ -75,6 +75,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.branchNamespace",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -985,6 +990,16 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.backprop.granularity",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.backprop.version",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -1015,6 +1030,51 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.maps",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.bindings",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.failurePolicy",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.itemTimeoutSeconds",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.join",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.maxConcurrent",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.onFailure",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.source",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.maps.task",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.outboxMirrorPath",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -1035,6 +1095,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.parallels.branches.optional",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.parallels.failurePolicy",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -1052,6 +1117,16 @@
     {
       "name": "workflow.spec.parallels.onFailure",
       "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.selection",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.selection.source",
+      "stability": "preview",
       "sinceVersion": "dev"
     },
     {
@@ -1095,6 +1170,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.readiness.requireProviderAuthorization",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.requires.capabilities",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -1116,6 +1196,11 @@
     },
     {
       "name": "workflow.spec.runControls.stalledRunTimeout",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.scheduleCatchUp",
       "stability": "ga",
       "sinceVersion": "dev"
     },

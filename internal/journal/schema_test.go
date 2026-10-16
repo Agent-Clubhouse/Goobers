@@ -38,6 +38,8 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	identity := testIdentity()
 	identity.Driver = DriverEngine
 	identity.ConfigGeneration = Digest([]byte("execution-config"))
+	identity.GooberDigest = Digest([]byte("goobers"))
+	identity.Child = testChildLineage(identity)
 	run, err := Create(root, identity, map[string][]byte{
 		"issue.md": []byte("issue body"),
 	}, WithScrubber(scrub), WithClock(fixedClock()))

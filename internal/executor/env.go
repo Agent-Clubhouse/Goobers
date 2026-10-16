@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"sort"
@@ -32,6 +33,13 @@ func CredentialEnvVar(capabilityName string) string {
 // (capability.CredentialExpiryEnvVar).
 func CredentialExpiryEnvVar(capabilityName string) string {
 	return capability.CredentialExpiryEnvVar(capabilityName)
+}
+
+// CredentialSchemeEnvVar returns the variable that carries the non-secret
+// Azure DevOps authorization scheme of the credential delivered for
+// capabilityName (capability.CredentialSchemeEnvVar, #5957).
+func CredentialSchemeEnvVar(capabilityName string) string {
+	return capability.CredentialSchemeEnvVar(capabilityName)
 }
 
 // InputEnvVar returns the deterministic env var name a stage's declared
@@ -95,6 +103,15 @@ const (
 	// started the run. Only goobers CLI stages receive it.
 	TriggerRefEnvVar = "GOOBERS_TRIGGER_REF"
 
+	// StageTimeoutEnvVar carries the stage's effective execution deadline —
+	// the Go duration string the executor itself enforces, whichever surface
+	// (limits.maxDurationSeconds, inputs.timeout, or a default) supplied it —
+	// to goobers CLI stages (#5572). Without it a provider subcommand could
+	// only see a declared inputs.timeout and budgeted its own context (and
+	// so its rate-limit waits) against the built-in default instead of the
+	// clock that actually kills it.
+	StageTimeoutEnvVar = "GOOBERS_EFFECTIVE_STAGE_TIMEOUT"
+
 	// RepoProviderEnvVar carries the scheduler-routed repository provider to
 	// goobers CLI stages.
 	RepoProviderEnvVar = "GOOBERS_REPO_PROVIDER"
@@ -126,6 +143,13 @@ const (
 	// routing identity to the close-out CLI stage without exposing instance
 	// configuration files to a pod.
 	NeedsHumanAssigneeEnvVar = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
+
+	// GaggleBacklogEnvVar is the gaggle backlog settings stamp the dispatcher
+	// puts on a goobers-CLI stage pod (dispatcher.GaggleBacklogEnv, #5957).
+	// The CLI trusts it over any config it can read, so only the dispatcher
+	// may set it: the local executor never stamps it, refuses a declared
+	// environment that names it, and drops it from the operator passthrough.
+	GaggleBacklogEnvVar = "GOOBERS_GAGGLE_BACKLOG"
 
 	// AdditionalReposEnvVar carries the comma-separated names of the gaggle's
 	// read-only reference-repo checkouts (MGV-11 #1286) available to this stage,
@@ -188,8 +212,14 @@ func baseEnv(extra []string) []string {
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, error) {
-	env := baseEnv(extraEnvAllowlist)
+//
+// The second result names the capabilities whose credential was materialized
+// into the env, in declaration order. It is what the executor stamps the
+// non-secret scheme variables from (appendRepoEnv), so a GOOBERS_CRED_*
+// variable a stage set by hand in run.env never earns one: the count matches
+// the stage pod's, which stamps from the credentials the plane minted (#5957).
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, []string, error) {
+	env := baseEnv(withoutDispatcherStamps(extraEnvAllowlist))
 	keys := make([]string, 0, len(declaredEnv))
 	for key := range declaredEnv {
 		keys = append(keys, key)
@@ -198,7 +228,13 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	for _, key := range keys {
 		value := declaredEnv[key]
 		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, '\x00') {
-			return nil, errors.New("executor: declared environment contains an invalid name or value")
+			return nil, nil, errors.New("executor: declared environment contains an invalid name or value")
+		}
+		if key == GaggleBacklogEnvVar {
+			// A stage pod refuses the same override (dispatcher
+			// refuseControlEnvOverrides): a workflow must not author its
+			// gaggle's backlog settings.
+			return nil, nil, fmt.Errorf("executor: declared environment may not set %s: it carries the gaggle's backlog settings, which only the dispatcher stamps", GaggleBacklogEnvVar)
 		}
 		env = append(env, key+"="+value)
 	}
@@ -248,7 +284,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		}
 	}
 	if injector == nil || len(declared) == 0 {
-		return env, nil
+		return env, nil, nil
 	}
 	// A credential that cannot be materialized is an infrastructure fault, not
 	// evidence about the work (#3361): typed with its own code AND marked via
@@ -258,8 +294,9 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	// classification converted a transient 403 into a terminal work failure.
 	set, err := injector.Materialize(ctx, declared)
 	if err != nil {
-		return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
+		return nil, nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 	}
+	var materialized []string
 	for _, capability := range declared {
 		token, err := set.Token(ctx, capability)
 		if err != nil {
@@ -268,13 +305,27 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 			}
 			// Same seam as Materialize above: a granted capability whose token
 			// resolution fails at env-build time is credential infrastructure.
-			return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
+			return nil, nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 		}
 		registrar.Register([]byte(token))
 		env = append(env, CredentialEnvVar(capability)+"="+token)
 		env = appendCredentialExpiry(env, set, capability)
+		materialized = append(materialized, capability)
 	}
-	return env, nil
+	return env, materialized, nil
+}
+
+// withoutDispatcherStamps drops dispatcher-owned stamps from the operator's
+// passthrough list, so the daemon's own environment cannot hand a local stage
+// a value only the dispatcher may set.
+func withoutDispatcherStamps(names []string) []string {
+	kept := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != GaggleBacklogEnvVar {
+			kept = append(kept, name)
+		}
+	}
+	return kept
 }
 
 // appendCredentialExpiry appends CredentialExpiryEnvVar for capability when
