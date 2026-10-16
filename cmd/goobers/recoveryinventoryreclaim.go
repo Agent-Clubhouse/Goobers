@@ -41,7 +41,7 @@ func (c *recoveryRunPhaseCache) phase(layout instance.Layout, runID string) (jou
 	if err != nil {
 		return "", false
 	}
-	if terminalRunPhase(phase) {
+	if phase.IsTerminal() {
 		c.mu.Lock()
 		if c.terminal == nil {
 			c.terminal = make(map[string]journal.RunPhase)
@@ -107,7 +107,7 @@ func attachRecoveryReclaimGuidance(layout instance.Layout, cfg *instance.Config,
 	abandonments, _ := instanceannotations.ForInstance(layout.SchedulerDir()).RecoveryAbandonments(layout.SchedulerDir())
 	for _, candidate := range records {
 		phase, ok := phases.phase(layout, candidate.record.RunID)
-		if !ok || !terminalRunPhase(phase) {
+		if !ok || !phase.IsTerminal() {
 			continue
 		}
 		status.ReclaimCandidatesTotal++
@@ -160,6 +160,11 @@ func recoveryReclaimHold(layout instance.Layout, cfg *instance.Config, now time.
 		hold.Reason, hold.Setting = readservice.RecoveryReclaimHoldDisabled, "retention.enabled: true"
 	case retention.DryRun:
 		hold.Reason, hold.Setting = readservice.RecoveryReclaimHoldDryRun, "retention.dryRun: false"
+		if !retention.EnabledEffective() {
+			// Dry-run is what keeps a disabled retention pass running; clearing
+			// it alone stops the pass entirely, so both settings must change.
+			hold.Setting = "retention.enabled: true, retention.dryRun: false"
+		}
 	default:
 		state, _, err := readRetentionGraceState(layout, worktreeRetentionStateFile)
 		if err != nil || !retentionPassIsDryRun(state, retention.ImmediateFirstEnable(), now) {

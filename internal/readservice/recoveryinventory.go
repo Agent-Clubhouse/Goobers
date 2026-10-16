@@ -131,9 +131,11 @@ type RecoveryReclaimHold struct {
 	// Until is when the first-enable grace window ends. Absent for a grace
 	// window that has not started: it starts at the first pass that finds a
 	// candidate and then holds deletion for a week.
-	Until      *time.Time `json:"until,omitempty"`
-	Setting    string     `json:"setting"`
-	ConfigFile string     `json:"configFile,omitempty"`
+	Until *time.Time `json:"until,omitempty"`
+	// Setting is the instance.yaml change that releases the hold; it names
+	// more than one setting when one change alone would not.
+	Setting    string `json:"setting"`
+	ConfigFile string `json:"configFile,omitempty"`
 }
 
 // ClassifyRecoveryInventory names the occupancy state for used slots against

@@ -162,6 +162,12 @@ func TestRecoveryReclaimHoldNamesTheBlockingSetting(t *testing.T) {
 			t.Fatalf("hold = %+v; want dry-run", hold)
 		}
 	})
+	t.Run("disabled dry-run", func(t *testing.T) {
+		hold := recoveryReclaimHold(writeConfig(t, "retention:\n  enabled: false\n  dryRun: true\n"), nil, now)
+		if hold == nil || hold.Reason != readservice.RecoveryReclaimHoldDryRun || hold.Setting != "retention.enabled: true, retention.dryRun: false" {
+			t.Fatalf("hold = %+v; want dry-run naming both settings", hold)
+		}
+	})
 	t.Run("grace not started", func(t *testing.T) {
 		layout := writeConfig(t, "")
 		hold := recoveryReclaimHold(layout, nil, now)
