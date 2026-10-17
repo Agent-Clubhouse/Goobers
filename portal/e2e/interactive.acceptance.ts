@@ -421,7 +421,7 @@ test("helper authors and applies a native workflow, tweaks its gaggle and observ
   }, null, 2));
 });
 
-test("DSL reload rejects invalid policy and fences existing work before new sessions use changed policy", async ({ page, request }) => {
+test("DSL reload rejects invalid policy and fences existing work before new sessions use changed policy", async ({ page, request, browser, baseURL }) => {
   const startup = JSON.parse(await readFile(`${evidenceDirectory}/startup.json`, "utf8"));
   const fixtureConfig = await realpath(resolve(evidenceDirectory, "config"));
   expect(await realpath(startup.config), "reload qualification must only edit the launcher's copied config").toBe(fixtureConfig);
@@ -429,6 +429,20 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
   const original = await readFile(gagglePath, "utf8");
   const updated = original.replace(/maxChildren:\s*3\b/g, "maxChildren: 2");
   expect(updated).not.toBe(original);
+  const { session: helper } = await createSession(request, "helper");
+  await page.goto(`/#/interactive/${helper.id}`);
+  await sendMessage(page, "fix");
+  expect((await awaitTurn(request, helper.id, 1)).status).toBe("idle");
+  const proposed = await request.post(`${api}/operations/proposals?sessionId=${helper.id}`, { data: {
+    kind: "tweak_gaggle", gaggle: "interactive", displayName: "Retained qualification receipt", idempotencyKey: crypto.randomUUID(),
+  } });
+  expect(proposed.ok(), await proposed.text()).toBeTruthy();
+  const helperAction = await proposed.json();
+  const receiptURL = `${api}/operations/actions/${helperAction.id}?sessionId=${helper.id}`;
+  const stateURL = `${api}/operations/state?sessionId=${helper.id}`;
+  const applied = await request.post(`${api}/operations/actions/${helperAction.id}/apply?sessionId=${helper.id}`);
+  expect(applied.ok(), await applied.text()).toBeTruthy();
+  expect((await applied.json()).status).toBe("succeeded");
   const { session } = await createSession(request);
   const surfaceBefore = (await surfaces(request)).find(surface => surface.id === "interactive--workbench")!;
   expect(surfaceBefore.maxChildren).toBe(3);
@@ -469,6 +483,37 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
     await expect(page.getByText("Recovery required", { exact: true })).toBeVisible();
     await capture(page, "interactive-dsl-reload-fenced");
 
+    const retainedReceipts: unknown[] = [];
+    for (const phase of ["after policy reload", "after explicit stop"]) {
+      if (phase === "after explicit stop") {
+        const current = await snapshot(request, helper.id);
+        const stopped = await request.post(`${api}/sessions/${helper.id}/commands`, { data: {
+          commandId: crypto.randomUUID(), type: "stop", expectedSequence: current.sequence, expectedFence: current.fence,
+        } });
+        expect(stopped.ok(), await stopped.text()).toBeTruthy();
+        await expect.poll(async () => (await snapshot(request, helper.id)).status).toBe("stopped");
+      }
+      const retainedAction = await request.get(receiptURL);
+      expect(retainedAction.ok(), `${phase}: ${await retainedAction.text()}`).toBeTruthy();
+      const receipt = await retainedAction.json();
+      expect(receipt).toMatchObject({ id: helperAction.id, status: "succeeded", operationStatus: "confirmed" });
+      const retainedState = await request.get(stateURL);
+      expect(retainedState.ok(), `${phase}: ${await retainedState.text()}`).toBeTruthy();
+      const state = await retainedState.json();
+      expect(state.readOnly).toBe(true);
+      expect(state.actions).toEqual(expect.arrayContaining([expect.objectContaining({ id: helperAction.id })]));
+      retainedReceipts.push({ phase, receipt });
+    }
+    const foreignContext = await browser.newContext({ baseURL });
+    try {
+      expect((await foreignContext.request.post(`${api}/identity/select`, { data: { name: "Alex" } })).ok()).toBeTruthy();
+      for (const url of [receiptURL, stateURL]) {
+        const hidden = await foreignContext.request.get(url);
+        expect(hidden.status()).toBe(403);
+        expect(await hidden.text()).not.toContain(helperAction.id);
+      }
+    } finally { await foreignContext.close(); }
+
     const surfaceAfter = (await surfaces(request)).find(surface => surface.id === surfaceBefore.id)!;
     expect(surfaceAfter.maxChildren).toBe(2);
     const { session: fresh } = await createSession(request);
@@ -482,7 +527,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
     await expect(page.getByText("Configured limit: 2", { exact: true })).toBeVisible();
     await capture(page, "interactive-dsl-reload-new-session");
     await writeFile(`${evidenceDirectory}/dsl-reload.json`, JSON.stringify({
-      fixtureConfig, before, afterInvalid, reloadReceipt, fenced, surfaceAfter, fresh: completed,
+      fixtureConfig, before, afterInvalid, reloadReceipt, fenced, surfaceAfter, fresh: completed, retainedReceipts,
       evidenceBoundary: "actual DSL validation, policy publication, running-turn fencing and new-session execution; controlled provider; no model",
     }, null, 2));
   } finally {
