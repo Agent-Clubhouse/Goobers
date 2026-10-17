@@ -203,7 +203,7 @@ func (b *Broker) Execute(ctx context.Context, p Principal, req OperationRequest)
 		return out, nil
 	}
 	for _, op := range b.data.Operations {
-		if op.Authority == req.Authority && op.IdempotencyKey == req.IdempotencyKey {
+		if op.Authority.ID == req.Authority.ID && op.IdempotencyKey == req.IdempotencyKey {
 			b.mu.Unlock()
 			return Operation{}, fault("idempotency_conflict", "idempotency key is already bound to another operation")
 		}
@@ -290,7 +290,7 @@ func (b *Broker) dispatchControlled(ctx context.Context, req OperationRequest) (
 		op.State = "failed"
 		op.ErrorCode = ErrorCode(err)
 		op.Message = "Controlled provider rejected the request without applying an effect."
-	} else if req.SimulateLostResponse || b.loseResponse {
+	} else if req.SimulateLostResponse {
 		op.State = "outcome_unknown"
 		op.ErrorCode = "outcome_unknown"
 		op.Message = "Controlled provider response was deliberately lost; reconcile the original operation."

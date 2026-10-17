@@ -532,3 +532,123 @@ func TestPayloadCredentialDefenseAndExplicitProviderLabel(t *testing.T) {
 		t.Fatalf("authority file permissions %o", info.Mode().Perm())
 	}
 }
+
+func TestRecoveryRevisionPreservesBudgetDeadlineAndFencesPriorChildren(t *testing.T) {
+	f := newFixture(t, 4)
+	ctx := context.Background()
+	original := f.read("before-recovery")
+	if _, err := f.b.Execute(ctx, f.p, original); err != nil {
+		t.Fatal(err)
+	}
+	child, err := f.b.DeriveChild(ctx, f.p, f.a.Ref, f.childRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := f.b.RebindExecution(ctx, f.p, f.a.Ref, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Ref.ID != f.a.Ref.ID || next.Ref.Version != 2 || next.SharedBudgetID != f.a.SharedBudgetID || !next.NotAfter.Equal(f.a.NotAfter) || next.ExecutionFence != 4 {
+		t.Fatalf("recovery widened/reset grant: %+v", next)
+	}
+	again, err := f.b.RebindExecution(ctx, f.p, f.a.Ref, 4)
+	if err != nil || again.Ref != next.Ref {
+		t.Fatalf("rebind replay: %+v %v", again, err)
+	}
+	_, err = f.b.RebindExecution(ctx, f.p, f.a.Ref, 5)
+	requireCode(t, err, "idempotency_conflict")
+	_, err = f.b.Execute(ctx, f.p, f.read("old-attempt"))
+	requireCode(t, err, "authority_stopped")
+	r := f.read("old-child")
+	r.Authority = child.Ref
+	r.ExecutionID = child.ExecutionID
+	_, err = f.b.Execute(ctx, f.p, r)
+	requireCode(t, err, "authority_stopped")
+	r = f.read("recovered")
+	r.Authority = next.Ref
+	r.ExecutionFence = 4
+	if _, err = f.b.Execute(ctx, f.p, r); err != nil {
+		t.Fatal(err)
+	}
+	reused := r
+	reused.OperationID = "duplicate-after-recovery"
+	reused.IdempotencyKey = original.IdempotencyKey
+	_, err = f.b.Execute(ctx, f.p, reused)
+	requireCode(t, err, "idempotency_conflict")
+	states, _ := f.b.ListAuthorities(f.p)
+	if len(states) != 3 {
+		t.Fatal("immutable revision history was replaced")
+	}
+	for _, state := range states {
+		if state.Budget.Used != 2 {
+			t.Fatal("recovery created or reset shared budget")
+		}
+	}
+	if err = f.b.StopAuthority(ctx, f.p, next.Ref); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.b.RebindExecution(ctx, f.p, next.Ref, 5)
+	requireCode(t, err, "authority_stopped")
+}
+
+func TestRecoveryCannotReviveRevokedOrExpiredAuthority(t *testing.T) {
+	t.Run("revoked", func(t *testing.T) {
+		f := newFixture(t, 4)
+		ctx := context.Background()
+		if err := f.b.RevokeConnection(ctx, f.p, f.ado.Ref); err != nil {
+			t.Fatal(err)
+		}
+		_, err := f.b.RebindExecution(ctx, f.p, f.a.Ref, 4)
+		requireCode(t, err, "connection_revoked")
+	})
+	t.Run("expired", func(t *testing.T) {
+		f := newFixture(t, 4)
+		f.now = f.a.NotAfter
+		_, err := f.b.RebindExecution(context.Background(), f.p, f.a.Ref, 4)
+		requireCode(t, err, "authority_expired")
+	})
+}
+
+func TestFinalAdmissionChecksVerifiedIdentityAndCurrentExecution(t *testing.T) {
+	f := newFixture(t, 4)
+	ctx := context.Background()
+	allow := false
+	calls := 0
+	f.b.checkExecution = func(_ context.Context, identity Identity, req OperationRequest) error {
+		calls++
+		if identity != f.p.Identity() {
+			t.Fatal("callback did not receive verified broker actor")
+		}
+		if req.TurnID != "current-turn" || req.LeaseID != "current-lease" {
+			return fault("stale_fence", "private lease error")
+		}
+		if !allow {
+			return fault("unavailable", "provider Bearer "+strings.Repeat("a", 32))
+		}
+		return nil
+	}
+	r := f.read("lease-checked")
+	_, err := f.b.Execute(ctx, f.p, r)
+	requireCode(t, err, "execution_unavailable")
+	if calls != 0 {
+		t.Fatal("missing runtime binding reached lease callback")
+	}
+	r.TurnID = "current-turn"
+	r.LeaseID = "current-lease"
+	_, err = f.b.Execute(ctx, f.p, r)
+	requireCode(t, err, "execution_unavailable")
+	if strings.Contains(err.Error(), "Bearer") {
+		t.Fatal("callback's unsafe diagnostic escaped broker")
+	}
+	states, _ := f.b.ListAuthorities(f.p)
+	if states[0].Budget.Used != 0 {
+		t.Fatal("failed lease check admitted or charged operation")
+	}
+	allow = true
+	if _, err = f.b.Execute(ctx, f.p, r); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected final lease check, got %d calls", calls)
+	}
+}

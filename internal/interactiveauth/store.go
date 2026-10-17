@@ -46,7 +46,6 @@ type Broker struct {
 	// Tests exercise revocation in the admission-to-send window. This callback
 	// is private; production callers cannot bypass the typed provider path.
 	afterAdmission func()
-	loseResponse   bool
 }
 
 func Open(cfg Config) (*Broker, error) {
