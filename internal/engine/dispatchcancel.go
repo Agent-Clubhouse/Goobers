@@ -23,6 +23,13 @@ const (
 	dispatchSurrenderReadTimeout    = 30 * time.Second
 )
 
+// DispatchHeartbeatThrottleInterval keeps cancellation delivery at the prior
+// eight-second cadence even when the server heartbeat timeout is longer. The
+// SDK otherwise batches at 80% of that timeout (48s for v2). Worker hosts must
+// set this maximum; generating a heartbeat every second does not bypass batching.
+// The SDK also uses this interval as its heartbeat RPC retry budget.
+const DispatchHeartbeatThrottleInterval = 8 * time.Second
+
 // Only remote dispatch waits for cancellation cleanup and requires heartbeats.
 // Older histories retain their exact options and immediate cancellation result.
 func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue string) workflow.Context {

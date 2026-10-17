@@ -39,6 +39,10 @@ func TestCIWindowsRecoveryCoverage(t *testing.T) {
 			"TestHeartbeatRPCDiagnosticsBoundRetainedDispatchTasks",
 			"TestOptionsUnsetIsTodaysDial",
 		},
+		"./internal/workerhost": {
+			"TestWorkerOptionsBoundHeartbeatCancellationLatency",
+			"TestRunServesEveryQueueAndDrains",
+		},
 		"./internal/recovery": {
 			"TestHTTPArchivePublisherRequiresCompleteCustodyAcknowledgement",
 			"TestHTTPArchivePublisherRejectsPrematureSuccess",

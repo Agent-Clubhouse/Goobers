@@ -1028,9 +1028,9 @@
     },
     {
       "package": "internal/workerhost",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "The Windows heartbeat/recovery selection checks the cancellation transmission cap for versioned and unversioned workers and every served queue; remaining host tests run on Linux."
     },
     {
       "package": "internal/workerrouting",

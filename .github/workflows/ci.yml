@@ -2056,7 +2056,7 @@ jobs:
       # custody fences on the affected host OS. Keep the large CLI/engine
       # suites filtered; the lifecycle fixture uses in-process service fakes.
       - name: Windows dispatch heartbeat and recovery fences
-        run: go test ./internal/engine ./internal/temporaldial ./internal/recovery ./cmd/goobers -run '^(TestDispatchCancellation.*|TestReviewerDispatchReceivesCancellationOptions|TestDispatchHeartbeat.*|TestConfirmedSurrenderReadSurvivesCancellationDuringGetWithBound|TestHeartbeatRPCDiagnostics.*|TestOptionsUnsetIsTodaysDial|TestHTTPArchive.*|TestClassifyTransportDistinguishesCauses|TestRecoveryDelivery.*|TestRecoveryPublicationReleased.*)$' -count=1 -timeout=3m
+        run: go test ./internal/engine ./internal/temporaldial ./internal/workerhost ./internal/recovery ./cmd/goobers -run '^(TestDispatchCancellation.*|TestReviewerDispatchReceivesCancellationOptions|TestDispatchHeartbeat.*|TestConfirmedSurrenderReadSurvivesCancellationDuringGetWithBound|TestHeartbeatRPCDiagnostics.*|TestOptionsUnsetIsTodaysDial|TestWorkerOptionsBoundHeartbeatCancellationLatency|TestRunServesEveryQueueAndDrains|TestHTTPArchive.*|TestClassifyTransportDistinguishesCauses|TestRecoveryDelivery.*|TestRecoveryPublicationReleased.*)$' -count=1 -timeout=3m
 
       - name: Windows recovery publication custody
         timeout-minutes: 7
