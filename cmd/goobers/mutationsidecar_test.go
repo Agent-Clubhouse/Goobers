@@ -204,7 +204,7 @@ func TestOpenPRWritesMutationSidecar(t *testing.T) {
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "open-pr", root)
+	code, _, stderr := runOpenPRArgs(t, root)
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stderr = %q", code, stderr)
 	}

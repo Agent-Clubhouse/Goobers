@@ -403,6 +403,7 @@ func TestOpenPRStampsTutorReviewPath(t *testing.T) {
 			t.Setenv(executor.RepoNameEnvVar, "your-repo")
 			wt := gitRepoWithRunBranchChanges(t, map[string]string{tc.file: "proposed content\n"})
 			t.Chdir(wt)
+			server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 			if code, _, stderr := runArgs(t, "open-pr", root); code != 0 {
 				t.Fatalf("open-pr: code = %d, stderr = %q", code, stderr)

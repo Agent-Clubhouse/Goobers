@@ -44,7 +44,7 @@ func TestOpenPRDerivesTitleAndFixesFromClaimedIssue(t *testing.T) {
 	seedClaimedIssueJournal(t, root, runID, "42", "Fix the flaky login test")
 
 	t.Chdir(t.TempDir())
-	if code, _, stderr := runArgs(t, "open-pr", root); code != 0 {
+	if code, _, stderr := runOpenPRArgs(t, root); code != 0 {
 		t.Fatalf("open-pr: code = %d, stderr = %q", code, stderr)
 	}
 
@@ -70,7 +70,7 @@ func TestOpenPRDerivesTitleAndFixesFromClaimedIssue(t *testing.T) {
 
 	// Repass: same run, same stable branch — updates the same PR, not a duplicate.
 	t.Chdir(t.TempDir())
-	if code, _, stderr := runArgs(t, "open-pr", root); code != 0 {
+	if code, _, stderr := runOpenPRArgs(t, root); code != 0 {
 		t.Fatalf("open-pr repass: code = %d, stderr = %q", code, stderr)
 	}
 	server.mu.Lock()
@@ -90,7 +90,7 @@ func TestOpenPRFallsBackToGenericWithoutClaimedIssue(t *testing.T) {
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	// No journal seeded.
 	t.Chdir(t.TempDir())
-	if code, _, stderr := runArgs(t, "open-pr", root); code != 0 {
+	if code, _, stderr := runOpenPRArgs(t, root); code != 0 {
 		t.Fatalf("open-pr: code = %d, stderr = %q", code, stderr)
 	}
 	var pr *fakePR

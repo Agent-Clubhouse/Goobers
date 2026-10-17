@@ -167,6 +167,9 @@ func failNthStageClaimLedger(t *testing.T, failAt int) {
 // fake server — the harness these CLI-level integration tests share.
 func providerCmdEnv(t *testing.T, server *fakeGitHubServer, credCapability, runID string) {
 	t.Helper()
+	previousFixture := openPRFixtureGitHubServer
+	openPRFixtureGitHubServer = server
+	t.Cleanup(func() { openPRFixtureGitHubServer = previousFixture })
 	prev := newGitHubProvider
 	newGitHubProvider = server.newGitHubProvider
 	t.Cleanup(func() { newGitHubProvider = prev })

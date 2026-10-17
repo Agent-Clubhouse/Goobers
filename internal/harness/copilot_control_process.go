@@ -85,7 +85,7 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	case port = <-capture.ready:
 	case <-done:
 		cancel()
-		return nil, "", copilotControlExitError(process.result, process.err)
+		return nil, "", copilotControlExitError(process.result, process.err, req.Env)
 	case <-startup.Done():
 		process.close()
 		return nil, "", fmt.Errorf("%w: Copilot control startup timed out", errRequiredMCPUnavailable)
@@ -119,12 +119,19 @@ func (p *copilotControlProcess) close() {
 // port. The CLI rejects a bad argv on stderr and exits within a second (#5636:
 // --usage-output-file with --headless), so a bare "exited" reads the same as a
 // crash; the exit status and a redacted stderr tail name the rejected option.
-func copilotControlExitError(result ProcessResult, runErr error) error {
+func copilotControlExitError(result ProcessResult, runErr error, env []string) error {
+	registry, scrubber := journal.DefaultScrubber()
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && (name == "GH_TOKEN" || name == "GITHUB_TOKEN" || name == "COPILOT_GITHUB_TOKEN" || name == "COPILOT_CONNECTION_TOKEN") {
+			registry.Register([]byte(value))
+		}
+	}
 	status := fmt.Sprintf("exit %d", result.ExitCode)
 	if result.ExitCode <= 0 && runErr != nil {
-		status = runErr.Error()
+		status = copilotControlStderrTail([]byte(runErr.Error()), scrubber)
 	}
-	detail := copilotControlStderrTail(result.Stderr)
+	detail := copilotControlStderrTail(result.Stderr, scrubber)
 	if detail != "" {
 		detail = ": " + detail
 	}
@@ -134,8 +141,8 @@ func copilotControlExitError(result ProcessResult, runErr error) error {
 // copilotControlStderrTail scrubs before clipping so a credential straddling
 // the cut is never half-quoted, and keeps the tail: the CLI's last line is why
 // it exited.
-func copilotControlStderrTail(stderr []byte) string {
-	detail := strings.TrimSpace(string(journal.NewPatternScrubber().Scrub(stderr)))
+func copilotControlStderrTail(stderr []byte, scrubber journal.Scrubber) string {
+	detail := strings.TrimSpace(string(scrubber.Scrub(stderr)))
 	if len(detail) <= copilotControlExitDetailBytes {
 		return detail
 	}
