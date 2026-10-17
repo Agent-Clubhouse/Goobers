@@ -427,6 +427,10 @@ func TestReconcilePostMergeRejectsUnboundedBatch(t *testing.T) {
 func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 	var polls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/contoso/_apis/connectionData" {
+			writeJSONResp(t, w, map[string]interface{}{"authenticatedUser": map[string]string{"id": "goobers-guid", "providerDisplayName": "goobers"}})
+			return
+		}
 		if r.URL.Path == "/contoso/project/_apis/policy/evaluations" {
 			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 			return
@@ -498,6 +502,10 @@ func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 func TestReconcilePostMergeADOReturnsCloseOutFailure(t *testing.T) {
 	var workItemCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/contoso/_apis/connectionData" {
+			writeJSONResp(t, w, map[string]interface{}{"authenticatedUser": map[string]string{"id": "goobers-guid", "providerDisplayName": "goobers"}})
+			return
+		}
 		if strings.Contains(r.URL.Path, "/wit/workitems/") {
 			workItemCalls++
 			http.Error(w, "work item id is not valid", http.StatusBadRequest)
