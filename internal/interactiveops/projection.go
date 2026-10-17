@@ -126,7 +126,10 @@ func (s *Service) projectConfig(scope Scope, dst, repo string, p Policy) error {
 		if !safeConfigRel(g.Spec.Instructions) {
 			return errors.New("unsafe goober instruction path")
 		}
-		sourceDir := filepath.Dir(source)
+		assetRoot, sourceDir, err := gooberAssetSource(src, source, g.Name)
+		if err != nil {
+			return err
+		}
 		// Rehome shared personas into this isolated gaggle, preserving only the
 		// selected workflow backlinks. Source instruction content stays unchanged.
 		g.Spec.Gaggle = p.Gaggle
@@ -140,10 +143,10 @@ func (s *Service) projectConfig(scope Scope, dst, repo string, p Policy) error {
 		}
 		g.Spec.Workflows = visible
 		targetDir := filepath.Join("gaggles", p.Gaggle, "goobers", g.Name)
-		if err = copyConfigFile(src, filepath.Join(sourceDir, g.Spec.Instructions), dst, filepath.Join(targetDir, g.Spec.Instructions)); err != nil {
+		if err = copyConfigFile(assetRoot, filepath.Join(sourceDir, g.Spec.Instructions), dst, filepath.Join(targetDir, g.Spec.Instructions)); err != nil {
 			return fmt.Errorf("goober instructions: %w", err)
 		}
-		if err = copyConfigAssetTree(src, filepath.Join(sourceDir, "assets"), dst, filepath.Join(targetDir, "assets")); err != nil {
+		if err = copyConfigAssetTree(assetRoot, filepath.Join(sourceDir, "assets"), dst, filepath.Join(targetDir, "assets")); err != nil {
 			return err
 		}
 		for _, skill := range g.Spec.Skills {
@@ -167,6 +170,32 @@ func (s *Service) projectConfig(scope Scope, dst, repo string, p Policy) error {
 		return fmt.Errorf("filtered native configuration is unsupported: %w", err)
 	}
 	return nil
+}
+
+// Native configuration permits shared personas in the single sibling goobers/
+// root. Select that root explicitly from validated provenance; never loosen the
+// relative asset guard to permit arbitrary parent traversal.
+func gooberAssetSource(config, source, name string) (string, string, error) {
+	root, rel := config, source
+	sharedPrefix := filepath.Join("..", "goobers") + string(filepath.Separator)
+	if strings.HasPrefix(source, sharedPrefix) {
+		rel = strings.TrimPrefix(source, sharedPrefix)
+		if filepath.Dir(rel) != name || !namePattern.MatchString(name) {
+			return "", "", errors.New("shared goober source does not match its persona")
+		}
+		root = filepath.Join(filepath.Dir(config), "goobers")
+	}
+	if !safeConfigRel(rel) {
+		return "", "", errors.New("unsafe goober source provenance")
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", "", errors.New("goober source root must be an ordinary directory")
+	}
+	return root, filepath.Dir(rel), nil
 }
 func writeProjected(root, rel string, value any, registration bool) error {
 	data, err := marshalConfig(value)

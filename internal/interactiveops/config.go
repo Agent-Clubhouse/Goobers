@@ -278,10 +278,11 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 			if err != nil {
 				return "", "", err
 			}
-			if v := view.validateWorkflow(string(b), repo); !v.Valid {
+			v := view.validateWorkflow(string(b), repo)
+			if !v.Valid {
 				return "", "", validationError(v)
 			}
-			return "Submit " + req.Gaggle + "/" + req.Workflow + " through the native Goobers scheduler", "Admission is distinct from completion. Observe the run journal for actual test results. No provider credentials or remote effects are authorized.", nil
+			return "Submit " + req.Gaggle + "/" + req.Workflow + " through the native Goobers scheduler", "Admission is distinct from completion. Observe the run journal for actual test results. No provider credentials or remote effects are authorized.\n\nReviewed workflow definition:\n" + v.NormalizedYAML, nil
 		}
 		return "", "", errors.New("unknown workflow")
 	case "stop_run":

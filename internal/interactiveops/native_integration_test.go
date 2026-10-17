@@ -376,3 +376,81 @@ func TestIntegrationNativeDSL3StopAfterPolicyRevocation(t *testing.T) {
 	}
 	t.Logf("revoked native DSL3 worker run=%s cleanup=true historical-read=true", receipt.RunID)
 }
+
+func TestIntegrationNativeRunSnapshotIsolatesLaterParentEdits(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_INTERACTIVE_TEST_BINARY")
+	testdep.Require(t, "node")
+	s, scope, _ := scopedNativeService(t, os.Getenv("GOOBERS_INTERACTIVE_TEST_BINARY"))
+	ctx := context.Background()
+	state, err := s.Snapshot(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalTest := `import {test} from 'node:test'; import assert from 'node:assert/strict'; import {writeFileSync} from 'node:fs'; import {add} from '../src/arithmetic.mjs'; writeFileSync(new URL('./worker-write.txt',import.meta.url),'private execution write'); test('captured revision passed',()=>assert.equal(add(2,3),5));`
+	if err = os.WriteFile(filepath.Join(state.Repository, "tests/arithmetic.test.mjs"), []byte(originalTest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	captured := t.TempDir()
+	calls := 0
+	s.opts.RunRepositoryForScope = func(_ context.Context, got Scope, key string) (string, error) {
+		calls++
+		if got != scope || key == "" {
+			t.Fatal("snapshot callback lost action identity")
+		}
+		if err := copyTree(state.Repository, captured); err != nil {
+			return "", err
+		}
+		// This mutation models a new chat turn after the host's idle capture fence.
+		if err := os.WriteFile(filepath.Join(state.Repository, "src/arithmetic.mjs"), []byte("export const add=()=>0;\n"), 0600); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(state.Repository, "tests/arithmetic.test.mjs"), []byte("throw new Error('later parent revision must not execute');\n"), 0600); err != nil {
+			return "", err
+		}
+		return captured, nil
+	}
+	before, err := configDigest(filepath.Join(state.InstanceRoot, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Propose(ctx, scope, Request{Kind: "submit_run", Workflow: "selected-check", IdempotencyKey: "immutable-run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = s.Apply(ctx, scope, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+		current, getErr := s.Get(ctx, scope, a.ID)
+		if getErr == nil {
+			a = current
+			if a.CleanupConfirmed {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if a.Status != "succeeded" || !a.CleanupConfirmed || a.ExecutionRoot == "" || a.ExecutionRepository == state.Repository || a.ExecutionPayloadDigest == "" || !strings.Contains(a.Output, "captured revision passed") || strings.Contains(a.Output, "later parent revision must not execute") {
+		t.Fatalf("run did not isolate capture: %+v", a)
+	}
+	if _, err = os.Stat(filepath.Join(captured, "tests/worker-write.txt")); err != nil {
+		t.Fatalf("worker did not write its own captured tree: %v", err)
+	}
+	if _, err = os.Stat(filepath.Join(state.Repository, "tests/worker-write.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("test worker mutated parent repository")
+	}
+	after, err := configDigest(filepath.Join(state.InstanceRoot, "config"))
+	if err != nil || before != after {
+		t.Fatal("run snapshot mutated authoring config")
+	}
+	replay, err := s.Apply(ctx, scope, a.ID)
+	if err != nil || replay.RunID != a.RunID || calls != 1 {
+		t.Fatalf("replay recaptured workspace: %+v calls=%d %v", replay, calls, err)
+	}
+	history, err := s.SnapshotRecorded(ctx, scope)
+	if err != nil || len(history.Runs) != 1 || history.Runs[0].ID != a.RunID {
+		t.Fatalf("per-action native journal missing from history: %+v %v", history, err)
+	}
+	t.Logf("snapshot run=%s root=%s payload=%s cleanup=true parent-edits-isolated=true", a.RunID, a.ExecutionRoot, a.ExecutionPayloadDigest)
+}

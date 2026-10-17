@@ -175,6 +175,9 @@ func readAction(dir, id string) (Action, error) {
 	}
 	var a Action
 	err = json.Unmarshal(b, &a)
+	if err == nil && a.ID != id {
+		return Action{}, errors.New("action receipt identity mismatch")
+	}
 	return a, err
 }
 func allActions(dir string) ([]Action, error) {
@@ -247,7 +250,7 @@ func (s *Service) Snapshot(ctx context.Context, scope Scope) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	runs, err := readRuns(root)
+	runs, err := scopeRuns(dir)
 	if err != nil {
 		return State{}, err
 	}
@@ -345,7 +348,7 @@ func (s *Service) Get(ctx context.Context, scope Scope, id string) (Action, erro
 	if err != nil {
 		return a, err
 	}
-	runs, err := readRuns(filepath.Join(dir, "instance"))
+	runs, err := scopeRuns(dir)
 	if err != nil {
 		return a, err
 	}
@@ -419,7 +422,7 @@ func (s *Service) Apply(ctx context.Context, scope Scope, id string) (Action, er
 			a.Output = "Native Goobers configuration validation passed; durable config transaction committed."
 		}
 	case "submit_run":
-		if err = s.startRun(scope, dir, &a); err != nil {
+		if err = s.startRun(ctx, scope, dir, &a); err != nil {
 			a.Status = "failed"
 			a.OperationStatus = "failed"
 			if errors.Is(err, ErrCapacity) {

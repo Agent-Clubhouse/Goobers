@@ -29,7 +29,7 @@ func (s *Service) SnapshotRecorded(ctx context.Context, scope Scope) (State, err
 	if err != nil {
 		return State{}, err
 	}
-	runs, err := readRuns(root)
+	runs, err := scopeRuns(dir)
 	if err != nil {
 		return State{}, err
 	}

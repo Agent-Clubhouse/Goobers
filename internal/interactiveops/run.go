@@ -58,7 +58,11 @@ func readRuns(root string) ([]Run, error) {
 	return runs, nil
 }
 func nativeReceipt(dir string, a *Action) (state, runID, reason string) {
-	path := filepath.Join(dir, "instance", "scheduler", "accepted-triggers.db")
+	root, err := actionExecutionRoot(dir, a)
+	if err != nil {
+		return "", "", ""
+	}
+	path := filepath.Join(root, "scheduler", "accepted-triggers.db")
 	if _, err := os.Stat(path); err != nil {
 		return "", "", ""
 	}
@@ -140,7 +144,7 @@ func (s *Service) reconcile(dir string, a *Action, runs []Run) {
 		_ = saveAction(dir, a)
 	}
 }
-func (s *Service) startRun(scope Scope, dir string, a *Action) error {
+func (s *Service) startRun(ctx context.Context, scope Scope, dir string, a *Action) error {
 	worker, err := s.reserveWorker(scope, dir)
 	if err != nil {
 		return err
@@ -148,6 +152,24 @@ func (s *Service) startRun(scope Scope, dir string, a *Action) error {
 	if _, err = os.Stat(s.opts.Binary); err != nil {
 		_ = worker.Release()
 		return fmt.Errorf("native binary unavailable: %w", err)
+	}
+	if err = s.prepareRunSnapshot(ctx, scope, dir, a); err != nil {
+		_ = worker.Release()
+		return err
+	}
+	if err = ctx.Err(); err != nil {
+		_ = worker.Release()
+		return err
+	}
+	// Snapshot capture releases the host coordinator fence before returning.
+	// Recheck the pinned live authority before the external process is dispatched.
+	binding, bindingErr := s.binding(scope, dir)
+	if bindingErr != nil || (a.BindingDigest != "" && a.BindingDigest != binding) {
+		_ = worker.Release()
+		if bindingErr != nil {
+			return bindingErr
+		}
+		return errors.New("scope authority changed during snapshot capture")
 	}
 	a.Status = "running"
 	a.OperationStatus = "dispatched"
@@ -187,7 +209,10 @@ func (s *Service) execute(scope Scope, dir, id string, worker *lock.Handle) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.RunTimeout)
 	defer cancel()
-	root := filepath.Join(dir, "instance")
+	root, err := actionExecutionRoot(dir, &a)
+	if err != nil {
+		return
+	}
 	cmd := exec.Command(s.opts.Binary, "run", "--no-api", "--request-id", a.OperationID, a.Request.Gaggle+"/"+a.Request.Workflow, root)
 	// Private HOME prevents discovery of developer CLI credentials. Only a
 	// nonsecret executable search path is inherited; no process environment token

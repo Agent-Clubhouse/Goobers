@@ -23,9 +23,11 @@ type Options struct {
 	ConfigDirForScope func(Scope) (string, error)
 	// RepositoryForScope is trusted host wiring, never a browser-supplied path.
 	RepositoryForScope func(Scope) (string, error)
-	RunTimeout         time.Duration
-	MaxActive          int
-	MaxActivePerOwner  int
+	// RunRepositoryForScope captures a private run snapshot under the host's atomic idle/session fence. It must not call helper APIs while holding it.
+	RunRepositoryForScope func(context.Context, Scope, string) (string, error)
+	RunTimeout            time.Duration
+	MaxActive             int
+	MaxActivePerOwner     int
 	// Nil enables both built-in capabilities; an empty slice disables all.
 	CommandCapabilities []CommandCapability
 }
@@ -41,30 +43,34 @@ type Request struct {
 	Message        string  `json:"message,omitempty"`
 }
 type Action struct {
-	ID                   string     `json:"id"`
-	OperationID          string     `json:"operationId"`
-	ActorID              string     `json:"actorId"`
-	SessionID            string     `json:"sessionId"`
-	Kind                 string     `json:"kind"`
-	Waiting              string     `json:"waiting,omitempty"`
-	Status               string     `json:"status"`
-	OperationStatus      string     `json:"operationStatus"`
-	Summary              string     `json:"summary"`
-	Preview              string     `json:"preview"`
-	ExpectedConfigDigest string     `json:"expectedConfigDigest,omitempty"`
-	ConfigDigest         string     `json:"configDigest"`
-	BindingDigest        string     `json:"bindingDigest,omitempty"`
-	PayloadDigest        string     `json:"payloadDigest"`
-	Request              Request    `json:"request"`
-	AuthorizedBy         string     `json:"authorizedBy,omitempty"`
-	AuthorizedAt         *time.Time `json:"authorizedAt,omitempty"`
-	CreatedAt            time.Time  `json:"createdAt"`
-	UpdatedAt            time.Time  `json:"updatedAt"`
-	RunID                string     `json:"runId,omitempty"`
-	Output               string     `json:"output,omitempty"`
-	Error                string     `json:"error,omitempty"`
-	CleanupConfirmed     bool       `json:"cleanupConfirmed,omitempty"`
-	StopRequested        bool       `json:"stopRequested,omitempty"`
+	ID                     string     `json:"id"`
+	OperationID            string     `json:"operationId"`
+	ActorID                string     `json:"actorId"`
+	SessionID              string     `json:"sessionId"`
+	Kind                   string     `json:"kind"`
+	Waiting                string     `json:"waiting,omitempty"`
+	Status                 string     `json:"status"`
+	OperationStatus        string     `json:"operationStatus"`
+	Summary                string     `json:"summary"`
+	Preview                string     `json:"preview"`
+	ExpectedConfigDigest   string     `json:"expectedConfigDigest,omitempty"`
+	ConfigDigest           string     `json:"configDigest"`
+	BindingDigest          string     `json:"bindingDigest,omitempty"`
+	PayloadDigest          string     `json:"payloadDigest"`
+	Request                Request    `json:"request"`
+	AuthorizedBy           string     `json:"authorizedBy,omitempty"`
+	AuthorizedAt           *time.Time `json:"authorizedAt,omitempty"`
+	CreatedAt              time.Time  `json:"createdAt"`
+	UpdatedAt              time.Time  `json:"updatedAt"`
+	ExecutionRoot          string     `json:"executionRoot,omitempty"`
+	ExecutionRepository    string     `json:"executionRepository,omitempty"`
+	ExecutionPayloadDigest string     `json:"executionPayloadDigest,omitempty"`
+	ExecutionBindingDigest string     `json:"executionBindingDigest,omitempty"`
+	RunID                  string     `json:"runId,omitempty"`
+	Output                 string     `json:"output,omitempty"`
+	Error                  string     `json:"error,omitempty"`
+	CleanupConfirmed       bool       `json:"cleanupConfirmed,omitempty"`
+	StopRequested          bool       `json:"stopRequested,omitempty"`
 }
 type Run struct {
 	ID          string    `json:"id"`

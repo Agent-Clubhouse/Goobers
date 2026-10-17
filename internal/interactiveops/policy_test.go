@@ -258,3 +258,65 @@ func TestRecordedSnapshotSurvivesRetiredPolicyWithoutEffects(t *testing.T) {
 		t.Fatal("absent history read created directory")
 	}
 }
+
+func TestNativeSharedGooberProjectionUsesOnlyDeclaredSiblingRoot(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "config")
+	if err := copyTree(nativePolicySource(t), source); err != nil {
+		t.Fatal(err)
+	}
+	for rel, text := range map[string]string{
+		"goobers/helper/goober.yaml":          "apiVersion: goobers.dev/v1alpha1\nkind: Goober\nmetadata: {name: helper}\nspec:\n  role: helper\n  instructions: instructions.md\n",
+		"goobers/helper/instructions.md":      "Read the selected repository.\n",
+		"goobers/helper/assets/checklist.txt": "Check the workflow result.\n",
+		"secrets/token.txt":                   "must never be copied\n",
+	} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(source, "team.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte("  interactive:\n    surfaces:\n      - name: helper\n        mode: helper\n        gooberRef: helper\n        executionModes: [local-tools]\n        defaultExecutionMode: local-tools\n        tools: [session_context]\n        workflows: [selected-check]\n        session: {leaseSeconds: 30, maxTurnSeconds: 600, maxChildren: 1, maxActive: 2, maxActivePerOwner: 1}\n")...)
+	if err = os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := Policy{Revision: "shared-source", Gaggle: "team", Workflows: []string{"selected-check"}, CommandCapabilities: []CommandCapability{CommandNodeCheck, CommandNodeTest}}
+	s, err := New(Options{Root: t.TempDir(), Repository: customRepository(t), ConfigDir: source, PolicyForScope: func(Scope) (Policy, error) { return p, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.Snapshot(context.Background(), Scope{ActorID: "reader", SessionID: "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Goobers) != 1 || state.Goobers[0].Name != "helper" || state.Goobers[0].Spec.Gaggle != "team" {
+		t.Fatalf("shared persona not rehomed into selected gaggle: %+v", state.Goobers)
+	}
+	for _, rel := range []string{"instructions.md", "assets/checklist.txt"} {
+		if _, err = os.Stat(filepath.Join(state.InstanceRoot, "config/gaggles/team/goobers/helper", rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rel := range []string{"../secrets/token.txt", "../other/helper/goober.yaml", "../../goobers/helper/goober.yaml", "../goobers/other/goober.yaml"} {
+		if _, _, err = gooberAssetSource(source, rel, "helper"); err == nil {
+			t.Fatalf("foreign source accepted: %s", rel)
+		}
+	}
+	if err = os.Rename(filepath.Join(root, "goobers"), filepath.Join(root, "saved-goobers")); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(filepath.Join(root, "saved-goobers"), filepath.Join(root, "goobers")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = gooberAssetSource(source, "../goobers/helper/goober.yaml", "helper"); err == nil {
+		t.Fatal("symlink shared root accepted")
+	}
+}
