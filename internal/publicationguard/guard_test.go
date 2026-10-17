@@ -7,6 +7,21 @@ import (
 	"testing"
 )
 
+func TestCheckPreservesShallowInspectionError(t *testing.T) {
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded, errors.New("inspection unavailable")} {
+		t.Run(want.Error(), func(t *testing.T) {
+			calls := 0
+			git := func(context.Context, ...string) ([]byte, error) {
+				calls++
+				return nil, want
+			}
+			if tip, err := Check(t.Context(), git, "base", "head"); tip != "" || !errors.Is(err, want) || calls != 1 {
+				t.Fatalf("publication tip=%q error=%v reads=%d, want refusal preserving %v", tip, err, calls, want)
+			}
+		})
+	}
+}
+
 func TestCredentialScreen(t *testing.T) {
 	for _, input := range []string{
 		"ghs_" + strings.Repeat("A", 36),
