@@ -104,6 +104,7 @@ func openAPIRemoteReadSchemas() map[string]any {
 				"infraRetryCount":  map[string]any{"type": "integer", "minimum": 0},
 				"noWork":           map[string]any{"type": "boolean"},
 				"terminalReason":   stringSchema(),
+				"terminalSummary":  map[string]any{"type": "object", "additionalProperties": true},
 				"operator":         map[string]any{"type": "object", "additionalProperties": true},
 			},
 		),

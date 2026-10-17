@@ -135,6 +135,7 @@ type OperatorFacts struct {
 	WorkspaceBranchSHA    string
 	InjectedInputs        []journal.InputRef
 	Reliability           ReliabilityFacts
+	Terminal              TerminalFacts
 
 	// LatestErrorAt is when LatestError was recorded: the observed-at time of
 	// the blocker status derives from it (#5404). Nil for an event without a
@@ -148,6 +149,7 @@ func (o *OperatorFacts) foldObservations(event journal.Event) {
 	o.Activity = o.Activity.After(event)
 	o.RetryBackoff = o.RetryBackoff.After(event)
 	o.Reliability = o.Reliability.After(event)
+	o.Terminal = o.Terminal.After(event)
 }
 
 // StageRow is one projected (run, stage) pair.
