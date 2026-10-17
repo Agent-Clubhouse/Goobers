@@ -32,6 +32,14 @@ func (s *Service) Handler(resolve ScopeResolver) http.Handler {
 		switch {
 		case r.Method == "GET" && (path == "state" || path == ""):
 			result, err = s.Snapshot(r.Context(), scope)
+		case r.Method == "POST" && path == "validate-workflow":
+			var req struct {
+				WorkflowYAML string `json:"workflowYaml"`
+			}
+			err = decode(r, &req)
+			if err == nil {
+				result, err = s.ValidateWorkflow(r.Context(), scope, req.WorkflowYAML)
+			}
 		case r.Method == "POST" && path == "proposals":
 			var req Request
 			err = decode(r, &req)
@@ -114,15 +122,24 @@ func (s *Service) Chat(ctx context.Context, scope Scope, text, key string) (Acti
 	}
 	return s.Propose(ctx, scope, req)
 }
-func workflowFromText(text string, _ State) string {
+func workflowFromText(text string, state State) string {
+	defaultName := "invoice-check"
+	if len(state.Workflows) > 0 {
+		defaultName = state.Workflows[0].Name
+		for _, wf := range state.Workflows {
+			if wf.Name == "invoice-check" {
+				defaultName = wf.Name
+			}
+		}
+	}
 	lower := strings.ToLower(text)
 	at := strings.Index(lower, "workflow")
 	if at < 0 {
-		return "invoice-check"
+		return defaultName
 	}
 	fields := strings.Fields(strings.TrimSpace(text[at+len("workflow"):]))
 	if len(fields) == 0 {
-		return "invoice-check"
+		return defaultName
 	}
 	return fields[0]
 }

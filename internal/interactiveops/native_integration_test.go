@@ -205,3 +205,70 @@ func TestIntegrationNativeReviewChildCancellationIsScoped(t *testing.T) {
 	}
 	t.Logf("cancelled child %s cleanup confirmed; parent scope remains available", result.RunID)
 }
+
+func TestIntegrationNativeDynamicChildExactDefinition(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_INTERACTIVE_TEST_BINARY")
+	testdep.Require(t, "node")
+	s, parent := customService(t, os.Getenv("GOOBERS_INTERACTIVE_TEST_BINARY"))
+	ctx := context.Background()
+	validation, err := s.ValidateWorkflow(ctx, parent, dynamicWorkflow)
+	if err != nil || !validation.Valid {
+		t.Fatalf("parent validation: %+v %v", validation, err)
+	}
+	child := Scope{ActorID: parent.ActorID, SessionID: "dynamic-child"}
+	var definition ReviewChildEvent
+	result, err := s.RunReviewChildWithOptions(ctx, child, "approved-dynamic-review", "Check syntax and both selected tests", ReviewChildOptions{WorkflowYAML: validation.NormalizedYAML, ApprovedPayloadDigest: validation.PayloadDigest}, func(event ReviewChildEvent) error {
+		if event.Kind == "proposal" {
+			definition = event
+		}
+		return nil
+	})
+	if err != nil || result.Status != "succeeded" || !result.CleanupConfirmed || result.RunID == "" {
+		t.Fatalf("native dynamic child: %+v %v", result, err)
+	}
+	if definition.WorkflowYAML != validation.NormalizedYAML || definition.PayloadDigest != validation.PayloadDigest || definition.BindingDigest == validation.BindingDigest || !strings.Contains(result.Output, "dynamic arithmetic result") || !strings.Contains(result.Output, "dynamic second approved file") {
+		t.Fatalf("exact dynamic payload/outputs missing: event=%+v result=%+v", definition, result)
+	}
+	replay, err := s.RunReviewChildWithOptions(ctx, child, "approved-dynamic-review", "Check syntax and both selected tests", ReviewChildOptions{WorkflowYAML: validation.NormalizedYAML, ApprovedPayloadDigest: validation.PayloadDigest}, nil)
+	if err != nil || replay.RunID != result.RunID {
+		t.Fatalf("dynamic replay: %+v %v", replay, err)
+	}
+	childState, err := s.Snapshot(ctx, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childState.Runs) != 1 {
+		t.Fatalf("replay duplicated run: %+v", childState.Runs)
+	}
+	parentState, err := s.Snapshot(ctx, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parentState.Actions) != 0 || len(parentState.Runs) != 0 {
+		t.Fatal("child changed parent config/run ledger")
+	}
+	t.Logf("native two-stage exact child run=%s payload=%s binding=%s cleanup=%v", result.RunID, validation.PayloadDigest, definition.BindingDigest, result.CleanupConfirmed)
+}
+
+func TestIntegrationNativeDynamicSyntaxStopsBeforeRegression(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_INTERACTIVE_TEST_BINARY")
+	testdep.Require(t, "node")
+	s, scope := customService(t, os.Getenv("GOOBERS_INTERACTIVE_TEST_BINARY"))
+	ctx := context.Background()
+	state, err := s.Snapshot(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(state.Repository, "src/arithmetic.mjs"), []byte("export const = ;\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	validation, err := s.ValidateWorkflow(ctx, scope, dynamicWorkflow)
+	if err != nil || !validation.Valid {
+		t.Fatalf("validate: %+v %v", validation, err)
+	}
+	result, err := s.RunReviewChildWithOptions(ctx, scope, "bad-syntax", "Check syntax first", ReviewChildOptions{WorkflowYAML: validation.NormalizedYAML, ApprovedPayloadDigest: validation.PayloadDigest}, nil)
+	if err != nil || result.Status != "failed" || !result.CleanupConfirmed || !strings.Contains(result.Output, "SyntaxError") || strings.Contains(result.Output, "dynamic arithmetic result") {
+		t.Fatalf("real syntax stage did not stop chain: %+v %v", result, err)
+	}
+	t.Logf("native syntax failure run=%s cleanup=%v", result.RunID, result.CleanupConfirmed)
+}

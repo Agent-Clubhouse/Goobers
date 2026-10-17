@@ -23,6 +23,8 @@ type Options struct {
 	RunTimeout         time.Duration
 	MaxActive          int
 	MaxActivePerOwner  int
+	// Nil enables both built-in capabilities; an empty slice disables all.
+	CommandCapabilities []CommandCapability
 }
 type Request struct {
 	Kind           string  `json:"kind"`
@@ -48,6 +50,7 @@ type Action struct {
 	Preview              string     `json:"preview"`
 	ExpectedConfigDigest string     `json:"expectedConfigDigest,omitempty"`
 	ConfigDigest         string     `json:"configDigest"`
+	BindingDigest        string     `json:"bindingDigest,omitempty"`
 	PayloadDigest        string     `json:"payloadDigest"`
 	Request              Request    `json:"request"`
 	AuthorizedBy         string     `json:"authorizedBy,omitempty"`
@@ -76,20 +79,21 @@ type BacklogItem struct {
 	Source string `json:"source"`
 }
 type State struct {
-	Mode          string           `json:"mode"`
-	ActorID       string           `json:"actorId"`
-	SessionID     string           `json:"sessionId"`
-	InstanceRoot  string           `json:"instanceRoot"`
-	Repository    string           `json:"repository"`
-	ConfigDigest  string           `json:"configDigest"`
-	Gaggles       []apiv1.Gaggle   `json:"gaggles"`
-	Workflows     []apiv1.Workflow `json:"workflows"`
-	Runs          []Run            `json:"runs"`
-	Actions       []Action         `json:"actions"`
-	Backlog       []BacklogItem    `json:"backlog"`
-	WorkflowDraft string           `json:"workflowDraft"`
-	Capabilities  []string         `json:"capabilities"`
-	Limitations   []string         `json:"limitations"`
+	Mode                string              `json:"mode"`
+	ActorID             string              `json:"actorId"`
+	SessionID           string              `json:"sessionId"`
+	InstanceRoot        string              `json:"instanceRoot"`
+	Repository          string              `json:"repository"`
+	ConfigDigest        string              `json:"configDigest"`
+	Gaggles             []apiv1.Gaggle      `json:"gaggles"`
+	Workflows           []apiv1.Workflow    `json:"workflows"`
+	Runs                []Run               `json:"runs"`
+	Actions             []Action            `json:"actions"`
+	Backlog             []BacklogItem       `json:"backlog"`
+	CommandCapabilities []CommandCapability `json:"commandCapabilities"`
+	WorkflowDraft       string              `json:"workflowDraft"`
+	Capabilities        []string            `json:"capabilities"`
+	Limitations         []string            `json:"limitations"`
 }
 
 // ScopeResolver must derive the actor from authentication and verify session

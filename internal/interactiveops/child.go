@@ -18,10 +18,20 @@ var ErrChildCustodyPending = errors.New("native child custody pending")
 // ReviewChildEvent reports the exact bounded definition and observed native
 // receipts. Prompt is descriptive metadata and is never interpreted as code.
 type ReviewChildEvent struct {
-	Kind         string  `json:"kind"`
-	Prompt       string  `json:"prompt,omitempty"`
-	WorkflowYAML string  `json:"workflowYaml,omitempty"`
-	Action       *Action `json:"action,omitempty"`
+	Kind              string  `json:"kind"`
+	Prompt            string  `json:"prompt,omitempty"`
+	WorkflowYAML      string  `json:"workflowYaml,omitempty"`
+	BoundWorkflowYAML string  `json:"boundWorkflowYaml,omitempty"`
+	PayloadDigest     string  `json:"payloadDigest,omitempty"`
+	BindingDigest     string  `json:"bindingDigest,omitempty"`
+	Action            *Action `json:"action,omitempty"`
+}
+
+type ReviewChildOptions struct {
+	// WorkflowYAML is the exact portable reviewed definition. No command is
+	// derived from the description. Empty preserves the default review wrapper.
+	WorkflowYAML          string
+	ApprovedPayloadDigest string
 }
 
 // RunReviewChild authors and executes one test-only native workflow in a scope
@@ -31,7 +41,14 @@ type ReviewChildEvent struct {
 // test is a normal returned Action; errors mean admission, custody, observation,
 // or cancellation failed. No model, provider action, or prompt-derived command
 // is supported.
-func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, prompt string, emit func(ReviewChildEvent) error) (result Action, resultErr error) {
+func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, prompt string, emit func(ReviewChildEvent) error) (Action, error) {
+	return s.RunReviewChildWithOptions(ctx, scope, requestID, prompt, ReviewChildOptions{}, emit)
+}
+
+// RunReviewChildWithOptions runs the exact approved bounded workflow, binding
+// only relative command paths to the child snapshot. It preserves all authored
+// stages and the workflow name; the caller owns parent/child authorization.
+func (s *Service) RunReviewChildWithOptions(ctx context.Context, scope Scope, requestID, prompt string, options ReviewChildOptions, emit func(ReviewChildEvent) error) (result Action, resultErr error) {
 	if strings.TrimSpace(requestID) == "" || len(requestID) > 128 {
 		return result, errors.New("child request ID must contain 1–128 characters")
 	}
@@ -48,7 +65,24 @@ func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, pr
 	if err != nil {
 		return result, err
 	}
-	workflowYAML := strings.Replace(state.WorkflowDraft, "name: invoice-check-custom", "name: review-child", 1)
+	workflowYAML := options.WorkflowYAML
+	if workflowYAML == "" {
+		workflowYAML = strings.Replace(state.WorkflowDraft, "name: invoice-check-custom", "name: review-child", 1)
+		workflowYAML = strings.Replace(workflowYAML, "name: repository-check-custom", "name: review-child", 1)
+	}
+	validated, err := s.ValidateWorkflow(ctx, scope, workflowYAML)
+	if err != nil {
+		return result, err
+	}
+	if !validated.Valid {
+		return result, validationError(validated)
+	}
+	if options.ApprovedPayloadDigest != "" && (digest([]byte(workflowYAML)) != options.ApprovedPayloadDigest || validated.PayloadDigest != options.ApprovedPayloadDigest) {
+		return result, errors.New("child workflow differs from exact approved normalized payload")
+	}
+	// The stored request binds the exact source bytes, while the event also
+	// exposes normalized and execution digests for review/replay verification.
+
 	key := "review-child-" + digest([]byte(requestID))[:32]
 	var runID string
 	owned := false
@@ -81,7 +115,7 @@ func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, pr
 		return result, err
 	}
 	owned = true
-	if err = emitEvent(ReviewChildEvent{Kind: "proposal", Prompt: prompt, WorkflowYAML: workflowYAML, Action: &author}); err != nil {
+	if err = emitEvent(ReviewChildEvent{Kind: "proposal", Prompt: prompt, WorkflowYAML: validated.NormalizedYAML, BoundWorkflowYAML: validated.BoundYAML, PayloadDigest: validated.PayloadDigest, BindingDigest: validated.BindingDigest, Action: &author}); err != nil {
 		return result, err
 	}
 	author, err = s.Apply(ctx, scope, author.ID)
@@ -94,7 +128,7 @@ func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, pr
 	if author.Status != "succeeded" {
 		return author, fmt.Errorf("native child workflow was not applied: %s (%s)", author.Status, author.Error)
 	}
-	result, err = s.Propose(ctx, scope, Request{Kind: "submit_run", Workflow: "review-child", Message: prompt, IdempotencyKey: key + "-run"})
+	result, err = s.Propose(ctx, scope, Request{Kind: "submit_run", Workflow: validated.Name, Message: prompt, IdempotencyKey: key + "-run"})
 	if err != nil {
 		return result, err
 	}

@@ -25,6 +25,17 @@ func New(opts Options) (*Service, error) {
 	if opts.Root == "" {
 		return nil, errors.New("helper operations root is required")
 	}
+	if opts.CommandCapabilities == nil {
+		opts.CommandCapabilities = []CommandCapability{CommandNodeTest, CommandNodeCheck}
+	}
+	seen := map[CommandCapability]bool{}
+	for _, c := range opts.CommandCapabilities {
+		if (c != CommandNodeTest && c != CommandNodeCheck) || seen[c] {
+			return nil, errors.New("unknown or duplicate command capability")
+		}
+		seen[c] = true
+	}
+	opts.CommandCapabilities = append([]CommandCapability{}, opts.CommandCapabilities...)
 	var err error
 	opts.Root, err = filepath.Abs(opts.Root)
 	if err != nil {
@@ -213,7 +224,7 @@ func (s *Service) Snapshot(ctx context.Context, scope Scope) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	return State{Mode: "isolated-local-fixture", ActorID: scope.ActorID, SessionID: scope.SessionID, InstanceRoot: root, Repository: repo, ConfigDigest: dg, Gaggles: set.Gaggles, Workflows: set.Workflows, Runs: runs, Actions: actions, Backlog: readBacklog(repo), WorkflowDraft: workflowDraft("invoice-check-custom", repo), Capabilities: []string{"read configured gaggle/workflow/run state", "propose/apply gaggle and workflow displayName/enabled", "author/add validated bounded local workflows", "submit real Goobers workflow and observe journal", "request stop of an owned run"}, Limitations: []string{"local fixture provider; no live ADO/Azure authority", "deterministic workflow steering unsupported; steer the interactive workspace session instead", fmt.Sprintf("native helper limits: %d active globally, %d per owner, one per session; bounded process; no cloud-scale claim", s.opts.MaxActive, s.opts.MaxActivePerOwner), "configuration applies only to this isolated session fixture"}}, nil
+	return State{Mode: "isolated-local-fixture", ActorID: scope.ActorID, SessionID: scope.SessionID, InstanceRoot: root, Repository: repo, ConfigDigest: dg, Gaggles: set.Gaggles, Workflows: set.Workflows, Runs: runs, Actions: actions, Backlog: readBacklog(repo), WorkflowDraft: s.defaultDraft(repo, true), CommandCapabilities: append([]CommandCapability{}, s.opts.CommandCapabilities...), Capabilities: []string{"read configured gaggle/workflow/run state", "propose/apply gaggle and workflow displayName/enabled", "author/add validated bounded local workflows", "submit real Goobers workflow and observe journal", "request stop of an owned run"}, Limitations: []string{"local fixture provider; no live ADO/Azure authority", "deterministic workflow steering unsupported; steer the interactive workspace session instead", fmt.Sprintf("native helper limits: %d active globally, %d per owner, one per session; bounded process; no cloud-scale claim", s.opts.MaxActive, s.opts.MaxActivePerOwner), "configuration applies only to this isolated session fixture"}}, nil
 }
 func (s *Service) Propose(ctx context.Context, scope Scope, req Request) (Action, error) {
 	if err := ctx.Err(); err != nil {
@@ -252,8 +263,12 @@ func (s *Service) Propose(ctx context.Context, scope Scope, req Request) (Action
 	if err != nil {
 		return Action{}, err
 	}
+	binding, err := s.binding(scope, dir)
+	if err != nil {
+		return Action{}, err
+	}
 	now := time.Now().UTC()
-	a := Action{ID: id, OperationID: id, ActorID: scope.ActorID, SessionID: scope.SessionID, Kind: req.Kind, Status: "proposed", OperationStatus: "prepared", Summary: summary, Preview: preview, ConfigDigest: dg, PayloadDigest: digest(payload), Request: req, CreatedAt: now, UpdatedAt: now}
+	a := Action{ID: id, OperationID: id, ActorID: scope.ActorID, SessionID: scope.SessionID, Kind: req.Kind, Status: "proposed", OperationStatus: "prepared", Summary: summary, Preview: preview, ConfigDigest: dg, PayloadDigest: digest(payload), BindingDigest: binding, Request: req, CreatedAt: now, UpdatedAt: now}
 	if isConfigAction(a.Kind) {
 		candidate, err := s.stageConfig(scope, dir, req)
 		if err != nil {
@@ -309,6 +324,13 @@ func (s *Service) Apply(ctx context.Context, scope Scope, id string) (Action, er
 	if a.Status != "proposed" {
 		return a, nil
 	} // including uncertain: never blind retry.
+	binding, err := s.binding(scope, dir)
+	if err != nil {
+		return a, err
+	}
+	if a.BindingDigest != "" && a.BindingDigest != binding {
+		return a, errors.New("repository or command authority changed since preview")
+	}
 	root := filepath.Join(dir, "instance")
 	dg, err := configDigest(filepath.Join(root, "config"))
 	if err != nil {

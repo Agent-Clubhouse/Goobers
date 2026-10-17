@@ -7,11 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"sigs.k8s.io/yaml"
 )
@@ -20,9 +18,13 @@ var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 func (s *Service) repository(scope Scope, dir string) (string, error) {
 	if s.opts.RepositoryForScope != nil {
-		return s.opts.RepositoryForScope(scope)
+		path, err := s.opts.RepositoryForScope(scope)
+		if err != nil {
+			return "", err
+		}
+		return canonicalRepository(path)
 	}
-	return filepath.Join(dir, "repository"), nil
+	return canonicalRepository(filepath.Join(dir, "repository"))
 }
 func copyTree(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
@@ -59,6 +61,9 @@ func (s *Service) ensure(scope Scope, dir string) error {
 		if json.Unmarshal(b, &got) != nil || got != scope {
 			return errors.New("fixture ownership mismatch")
 		}
+		if _, err := s.binding(scope, dir); err != nil {
+			return err
+		}
 		return instance.RecoverConfigTransaction(instance.NewLayout(filepath.Join(dir, "instance")))
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -66,10 +71,8 @@ func (s *Service) ensure(scope Scope, dir string) error {
 	if err := os.MkdirAll(filepath.Join(dir, "actions"), 0700); err != nil {
 		return err
 	}
-	repo, err := s.repository(scope, dir)
-	if err != nil {
-		return err
-	}
+	repo := filepath.Join(dir, "repository")
+	var err error
 	if s.opts.RepositoryForScope == nil {
 		if s.opts.Repository == "" {
 			return errors.New("fixture repository is required")
@@ -78,8 +81,12 @@ func (s *Service) ensure(scope Scope, dir string) error {
 			return err
 		}
 	}
-	if _, err = os.Stat(filepath.Join(repo, "invoice.test.mjs")); err != nil {
-		return fmt.Errorf("fixture invoice.test.mjs is required: %w", err)
+	repo, err = s.repository(scope, dir)
+	if err != nil {
+		return err
+	}
+	if _, err = s.binding(scope, dir); err != nil {
+		return err
 	}
 	root := filepath.Join(dir, "instance")
 	if _, err = instance.InitDemo(root); err != nil {
@@ -91,9 +98,18 @@ func (s *Service) ensure(scope Scope, dir string) error {
 	}
 	defer os.RemoveAll(staging)
 	files := map[string]string{
-		"manifest.yaml":      "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\nmetadata:\n  name: interactive-fixture\nspec:\n  instance: {name: interactive-fixture, environment: dev}\n  gaggles: [interactive]\n",
-		"gaggle.yaml":        "apiVersion: goobers.dev/v1alpha1\nkind: Gaggle\nmetadata:\n  name: interactive\nspec:\n  displayName: Interactive invoice workspace\n  project: {provider: github, owner: controlled-fixture, name: invoice, branch: main}\n  backlog: {provider: github, project: controlled-fixture/invoice}\n  isolation: {namespace: interactive-fixture}\n",
-		"invoice-check.yaml": workflowDraft("invoice-check", repo),
+		"manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\nmetadata:\n  name: interactive-fixture\nspec:\n  instance: {name: interactive-fixture, environment: dev}\n  gaggles: [interactive]\n",
+		"gaggle.yaml":   "apiVersion: goobers.dev/v1alpha1\nkind: Gaggle\nmetadata:\n  name: interactive\nspec:\n  displayName: Interactive invoice workspace\n  project: {provider: github, owner: controlled-fixture, name: invoice, branch: main}\n  backlog: {provider: github, project: controlled-fixture/invoice}\n  isolation: {namespace: interactive-fixture}\n",
+	}
+	if _, _, err := scopedFile(repo, "invoice.test.mjs", CommandNodeTest); err != nil {
+		files["gaggle.yaml"] = strings.ReplaceAll(files["gaggle.yaml"], "invoice", "repository")
+	}
+	if draft := s.defaultDraft(repo, false); draft != "" {
+		v := s.validateWorkflow(draft, repo)
+		if !v.Valid {
+			return validationError(v)
+		}
+		files[v.Name+".yaml"] = v.BoundYAML
 	}
 	for name, b := range files {
 		if err = os.WriteFile(filepath.Join(staging, name), []byte(b), 0600); err != nil {
@@ -143,56 +159,6 @@ func onlyKeys(m map[string]any, keys ...string) error {
 	}
 	return nil
 }
-func validateLocalWorkflow(content, repo string) (apiv1.Workflow, error) {
-	var wf apiv1.Workflow
-	if len(content) > 32768 {
-		return wf, errors.New("workflow exceeds 32 KiB")
-	}
-	if err := yaml.UnmarshalStrict([]byte(content), &wf); err != nil {
-		return wf, err
-	}
-	if wf.Kind != "Workflow" || wf.APIVersion != "goobers.dev/v1alpha1" || !namePattern.MatchString(wf.Name) || wf.Spec.Gaggle != "interactive" {
-		return wf, errors.New("workflow must target the interactive fixture gaggle with a safe name")
-	}
-	var raw map[string]any
-	if err := yaml.UnmarshalStrict([]byte(content), &raw); err != nil {
-		return wf, err
-	}
-	spec, ok := raw["spec"].(map[string]any)
-	if !ok {
-		return wf, errors.New("workflow spec missing")
-	}
-	if err := onlyKeys(spec, "gaggle", "displayName", "enabled", "triggers", "readiness", "start", "tasks"); err != nil {
-		return wf, err
-	}
-	if len(wf.Spec.Triggers) != 1 || wf.Spec.Triggers[0].Type != apiv1.TriggerManual {
-		return wf, errors.New("only manual trigger is authorized")
-	}
-	if len(wf.Spec.Tasks) == 0 || len(wf.Spec.Tasks) > 8 {
-		return wf, errors.New("workflow must have 1–8 bounded tasks")
-	}
-	tasks, _ := spec["tasks"].([]any)
-	for _, task := range tasks {
-		m, ok := task.(map[string]any)
-		if !ok {
-			return wf, errors.New("invalid task")
-		}
-		if err := onlyKeys(m, "name", "type", "goal", "timeoutSeconds", "run", "next"); err != nil {
-			return wf, err
-		}
-	}
-	for _, task := range wf.Spec.Tasks {
-		if task.Type != apiv1.TaskDeterministic || task.TimeoutSeconds <= 0 || task.TimeoutSeconds > 30 || task.Run == nil {
-			return wf, errors.New("only deterministic tasks with 1–30 second limits are authorized")
-		}
-		run := task.Run
-		expected := []string{"node", "--test", filepath.Join(repo, "invoice.test.mjs")}
-		if !reflect.DeepEqual(run.Command, expected) || run.Network != apiv1.NetworkNone || run.Workspace != apiv1.WorkspaceScratch || run.Script != "" || len(run.Env) > 0 || run.InjectRunContext || run.SyncBase {
-			return wf, errors.New("task must use the exact session invoice test command, network:none and scratch; credentials and arbitrary commands are forbidden")
-		}
-	}
-	return wf, nil
-}
 func (s *Service) preview(scope Scope, dir string, req Request) (string, string, error) {
 	root := filepath.Join(dir, "instance")
 	set, _, err := instance.LoadConfigDir(filepath.Join(root, "config"))
@@ -231,12 +197,12 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 		if err != nil {
 			return "", "", err
 		}
-		wf, err := validateLocalWorkflow(req.WorkflowYAML, repo)
-		if err != nil {
-			return "", "", err
+		v := s.validateWorkflow(req.WorkflowYAML, repo)
+		if !v.Valid {
+			return "", "", validationError(v)
 		}
 		for _, existing := range set.Workflows {
-			if existing.Name == wf.Name {
+			if existing.Name == v.Name {
 				return "", "", errors.New("workflow already exists; choose a new name")
 			}
 		}
@@ -245,7 +211,7 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 			return "", "", err
 		}
 		defer os.RemoveAll(stage)
-		return "Add validated workflow " + wf.Name + " to the local fixture", req.WorkflowYAML, nil
+		return "Add validated workflow " + v.Name + " to the local fixture", v.BoundYAML, nil
 	case "submit_run":
 		if s.opts.Binary == "" {
 			return "", "", errors.New("native Goobers binary unavailable; build cmd/goobers and configure Binary")
@@ -266,12 +232,12 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 			if err != nil {
 				return "", "", err
 			}
-			b, err := yaml.Marshal(wf)
+			b, err := marshalConfig(wf)
 			if err != nil {
 				return "", "", err
 			}
-			if _, err = validateLocalWorkflow(string(b), repo); err != nil {
-				return "", "", err
+			if v := s.validateWorkflow(string(b), repo); !v.Valid {
+				return "", "", validationError(v)
 			}
 			return "Submit " + req.Gaggle + "/" + req.Workflow + " through the native Goobers scheduler", "Admission is distinct from completion. Observe the run journal for actual test results. No provider credentials or remote effects are authorized.", nil
 		}
@@ -320,15 +286,15 @@ func (s *Service) stageConfig(scope Scope, dir string, req Request) (string, err
 		if err != nil {
 			return "", err
 		}
-		wf, err := validateLocalWorkflow(req.WorkflowYAML, repo)
-		if err != nil {
-			return "", err
+		v := s.validateWorkflow(req.WorkflowYAML, repo)
+		if !v.Valid {
+			return "", validationError(v)
 		}
-		file = wf.Name + ".yaml"
+		file = v.Name + ".yaml"
 		if _, err = os.Lstat(filepath.Join(stage, file)); !errors.Is(err, os.ErrNotExist) {
 			return "", errors.New("workflow path already exists")
 		}
-		data = []byte(req.WorkflowYAML)
+		data = []byte(v.BoundYAML)
 	case "tweak_gaggle":
 		g := set.Gaggles[0]
 		if req.DisplayName != nil {
