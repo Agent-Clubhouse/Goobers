@@ -123,6 +123,11 @@ func TestMain(m *testing.M) {
 	}
 	copilotModelLister = testCopilotModelLister{}
 	detectCopilotAppForInit = func() bool { return false }
+	// Disable disk admission for every in-process daemon fixture, including
+	// callers that do not use initDeterministicDemo (#7484). Zero YAML floors
+	// would resolve back to production defaults, so disable the constructed
+	// gate instead. Storage-policy tests use the real constructor explicitly.
+	newDaemonStorageGate = disabledDaemonStorageGate
 
 	// Keep the daemon suite hermetic against the machine's own memory (#3960).
 	// newDaemonScheduler wires the cgroup-aware admission gate by default, so
