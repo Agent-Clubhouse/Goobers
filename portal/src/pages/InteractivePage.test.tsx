@@ -57,6 +57,42 @@ describe("interactive workspace", () => {
     act(() => fx.event({sequence: 3, sessionId: "s-1", turnId: "t1", commandId: command.commandId, type: "steering.delivered", time: turn.startedAt, data: {}}));
     expect(screen.getByText("Steering delivered")).toBeInTheDocument();
   });
+  it("refreshes only a definitely rejected sequence while preserving the steering intent and fence", async () => {
+    const turn = { id: "t1", text: "Wait", status: "running", attempt: 1, fence: 1, startedAt: "2026-10-17T09:00:00Z" };
+    const fx = fixture(makeSession({status: "running", activeTurnId: "t1", turns: [turn]}));
+    vi.mocked(fx.client.command).mockImplementationOnce(async () => {
+      fx.setSession(makeSession({status: "running", activeTurnId: "t1", turns: [turn], sequence: 12}));
+      throw new InteractiveError("refresh session", "stale_sequence", 409);
+    });
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    fireEvent.change(await screen.findByLabelText("Steer this turn"), {target: {value: "Focus on tests"}});
+    fireEvent.click(screen.getByRole("button", {name: "Send steering"}));
+    await waitFor(() => expect(fx.client.command).toHaveBeenCalledTimes(2));
+    const [first, second] = vi.mocked(fx.client.command).mock.calls.map(call => call[1]);
+    expect(second).toEqual({...first, expectedSequence: 12});
+    expect(second).toMatchObject({turnId: "t1", expectedFence: 1, text: "Focus on tests"});
+  });
+  it("does not redirect rejected steering when the active turn changes", async () => {
+    const turn = { id: "t1", text: "Wait", status: "running", attempt: 1, fence: 1, startedAt: "2026-10-17T09:00:00Z" };
+    const fx = fixture(makeSession({status: "running", activeTurnId: "t1", turns: [turn]}));
+    vi.mocked(fx.client.command).mockImplementationOnce(async () => {
+      fx.setSession(makeSession({status: "running", activeTurnId: "t2", turns: [turn], sequence: 12}));
+      throw new InteractiveError("refresh session", "stale_sequence", 409);
+    });
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    fireEvent.change(await screen.findByLabelText("Steer this turn"), {target: {value: "Focus on tests"}});
+    fireEvent.click(screen.getByRole("button", {name: "Send steering"}));
+    expect(await screen.findByText(/Your steering was not sent to another turn/)).toBeInTheDocument();
+    expect(fx.client.command).toHaveBeenCalledTimes(1);
+  });
+  it("does not automatically retry an uncertain command response", async () => {
+    const fx = fixture(); vi.mocked(fx.client.command).mockRejectedValue(new InteractiveError("Lost response", "network", 0));
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    fireEvent.change(await screen.findByLabelText("Message"), {target: {value: "Investigate"}});
+    fireEvent.click(screen.getByRole("button", {name: "Send message"}));
+    expect(await screen.findByRole("button", {name: "Retry same command"})).toBeInTheDocument();
+    expect(fx.client.command).toHaveBeenCalledTimes(1);
+  });
   it("disconnects and replays without dispatching new work", async () => {
     const fx = fixture(); render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
     fireEvent.click(await screen.findByRole("button", {name: "Disconnect stream"}));

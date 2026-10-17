@@ -130,7 +130,24 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient }:
     commandLock.current = true; setBusy(true); setActionError(undefined);
     writePending(`pending.${target}`, { sessionId: target, command });
     try {
-      const result = await client.command(target, command);
+      let result: Receipt | undefined;
+      for (let retry = 0; retry < 4; retry++) {
+        try { result = await client.command(target, command); break; }
+        catch (error) {
+          // The server rejects stale_sequence before recording or dispatching a
+          // command. Only that definite rejection can refresh the precondition.
+          // Unknown responses must retain the exact attempted payload instead.
+          if (!(error instanceof InteractiveError) || error.code !== "stale_sequence" || error.status !== 409 || retry === 3) throw error;
+          const fresh = await client.session(target);
+          if (currentGeneration !== generation.current) return;
+          if (fresh.fence !== command.expectedFence) throw new InteractiveError("The execution fence changed. Review the current session before submitting again.", "stale_fence", 409);
+          if (command.type === "steer" && (fresh.status !== "running" || fresh.activeTurnId !== command.turnId)) throw new InteractiveError("The targeted turn ended or changed. Your steering was not sent to another turn.", "stale_turn", 409);
+          setSession(fresh);
+          command = { ...command, expectedSequence: fresh.sequence };
+          writePending(`pending.${target}`, { sessionId: target, command });
+        }
+      }
+      if (!result) throw new InteractiveError("The session is changing too quickly. Refresh and submit again.", "stale_sequence", 409);
       writePending(`pending.${target}`, undefined);
       if (currentGeneration !== generation.current) return;
       setReceipt(result); setPending(undefined);
