@@ -431,7 +431,8 @@ func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 			writeJSONResp(t, w, map[string]interface{}{"authenticatedUser": map[string]string{"id": "goobers-guid", "providerDisplayName": "goobers"}})
 			return
 		}
-		if r.URL.Path == "/contoso/project/_apis/policy/evaluations" {
+		switch r.URL.Path {
+		case "/contoso/project/_apis/policy/evaluations", "/contoso/project/_apis/git/repositories/repo/pullrequests/359/threads":
 			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 			return
 		}
@@ -511,8 +512,12 @@ func TestReconcilePostMergeADOReturnsCloseOutFailure(t *testing.T) {
 			http.Error(w, "work item id is not valid", http.StatusBadRequest)
 			return
 		}
-		if r.URL.Path == "/contoso/project/_apis/policy/evaluations" {
+		switch r.URL.Path {
+		case "/contoso/project/_apis/policy/evaluations", "/contoso/project/_apis/git/repositories/repo/pullrequests/359/threads":
 			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		case "/contoso/project/_apis/wit/workItems/42/comments":
+			writeJSONResp(t, w, map[string]interface{}{"comments": []interface{}{}})
 			return
 		}
 		if r.URL.Path != "/contoso/project/_apis/git/repositories/repo/pullrequests/359" {
