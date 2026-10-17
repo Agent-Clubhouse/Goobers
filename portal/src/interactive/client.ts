@@ -7,11 +7,14 @@ export interface Turn {
   startedAt: string; finishedAt?: string; error?: string;
 }
 export interface Child {
+  lease?: Lease; executionKind?: string; readOnly?: boolean;
   id: string; prompt: string; status: string; result?: string;
   requestedAt: string; reviewedAt?: string;
 }
 export interface Change { path: string; status: string; additions: number; deletions: number }
+export interface Lease { workerId: string; leaseId: string; fence: number; expiresAt: string; status: string }
 export interface Session {
+  lease?: Lease; configDigest?: string; members?: {principal: string; role: string}[]; custodyPending?: boolean; stopFencePending?: boolean;
   id: string; owner: string; surfaceId: string; mode: "helper" | "workbench";
   title: string; status: string; sequence: number; fence: number; createdAt: string;
   updatedAt: string; activeTurnId?: string; turns: Turn[]; children: Child[];
