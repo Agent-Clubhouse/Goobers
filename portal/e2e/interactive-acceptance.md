@@ -1,12 +1,15 @@
 # Interactive prototype qualification
 
 This suite contacts the real `interactive-prototype` HTTP server. It does not
-mock browser responses. Keep the evidence directory outside the repository.
+substitute canned browser responses. One recovery test deliberately loses a
+response after the real backend has accepted the command. Keep the evidence directory outside the repository.
 The dedicated config avoids accidentally running these tests against the
 ordinary portal fixture daemon.
 
 After building the portal and starting the prototype server as described in
-the prototype launch documentation:
+the prototype launch documentation, use a fresh state directory. The final
+test permanently revokes a controlled ADO connection; re-running requires
+fresh state or different controlled identities.
 
 ```sh
 cd portal
@@ -22,6 +25,7 @@ npx playwright test --config e2e/interactive.config.ts
 | Browser | Real portal controls, HTTP command admission, event replay, responsive rendering, visible activity and errors. |
 | Session backend | Durable IDs, command replay, conflicting payload rejection, stale fence rejection and preserved history. |
 | Local tools executor | Actual checkout inspection, file edit, test process, cumulative diff and bounded child process; deterministic planning is explicitly disclosed. |
+| Helper operations | Actual Goobers configuration validation and transaction, authored workflow submission through the native CLI, and observed journal completion in an isolated instance. |
 | Controlled provider | ADO-shaped data, credential lifecycle and local authority enforcement against a fake provider. This is not a live Azure or ADO delegated sign-in. |
 | Native Codex adapter | Only a separately recorded run with `--executor codex-local` demonstrates native model work. Default local-tools tests cannot establish that claim. |
 
@@ -42,6 +46,10 @@ npx playwright test --config e2e/interactive.config.ts
 8. Stop an active process; wait for confirmed stop and retain workspace changes.
 9. At narrow viewport widths, verify the message composer and critical controls
    remain accessible without document-wide horizontal overflow.
+10. Use two explicitly controlled local personas to execute concurrently, reject
+    cross-owner session reads/commands, and verify their workspace changes differ.
+11. In Helper, design and apply a bounded native workflow, edit the gaggle display
+    name, submit the new workflow, and observe the native completed run receipt.
 
 ## Independent checks
 
