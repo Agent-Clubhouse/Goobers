@@ -530,18 +530,17 @@ func buildCausalDAG(runs []*causalRunFact, graph *workflow.Graph) error {
 			}
 		}
 
-		// For each node, compute all nodes that are its descendants
-		// (nodes it can confound through data/control flow)
-		descendants := make(map[string]map[string]struct{})
+		// Invert the parent edges once to find each node's immediate children.
+		// Both endpoints must be present in this run; declared-only nodes do
+		// not participate in its descendant sets.
+		descendants := make(map[string]map[string]struct{}, len(run.nodes))
 		for node := range run.nodes {
 			descendants[node] = make(map[string]struct{})
-			// A node's immediate descendants are any nodes whose parents include this node
-			for otherNode := range run.nodes {
-				for parentKey := range parents[otherNode] {
-					if parentKey == node {
-						descendants[node][otherNode] = struct{}{}
-						break
-					}
+		}
+		for child := range run.nodes {
+			for parent := range parents[child] {
+				if children, ok := descendants[parent]; ok {
+					children[child] = struct{}{}
 				}
 			}
 		}
