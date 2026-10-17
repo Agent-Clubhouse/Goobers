@@ -45,3 +45,9 @@ GOOBERS_INTERACTIVE_TEST_BINARY=/absolute/path/to/goobers go test -tags=integrat
 ```
 
 They author/add a real workflow, observe a genuine failing Node test, edit the scoped repository, observe a passing rerun, and stop a genuinely running native task with process-tree cleanup proof. On macOS this requires permission to invoke Goobers' nested `network:none` sandbox and inspect owned process identities. A restrictive outer execution sandbox can make the native stage fail before Node starts; that is an environment failure, not a simulated pass. These tests never invoke a hosted model or live ADO/Azure API.
+
+## Bounded native review children
+
+`RunReviewChild(ctx, scope, requestID, prompt, emit)` executes an already-admitted parent's exact test-only review contract. The caller supplies a distinct child scope and independent repository snapshot. The method renames the canonical validated draft to `review-child`, applies that native workflow, submits it through the same helper worker pool, and emits the immutable YAML plus real action/run/output receipts. The prompt is descriptive metadata bound to the idempotency key; it never supplies command arguments or workflow instructions.
+
+Capacity waits are bounded by the caller's context and an additional service timeout. Exact replay returns the original native run. A failed regression test is a normal returned action whose status is `failed`; uncertain effects, unconfirmed custody, admission failures, and cancellation return errors. Cancellation or an event sink failure calls `StopSession` for that exact child scope and waits for cleanup proof. It never calls `Close` on the shared service root or fences the parent scope.
