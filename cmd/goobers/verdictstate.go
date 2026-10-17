@@ -113,55 +113,6 @@ func migrateVerdictState(root string, repo providers.RepositoryRef, prNumber int
 	})
 }
 
-// prepareVerdictComment validates verdict, writes it to the authoritative KV
-// key, and renders the comment projection — in that order, so the sticky
-// status comment is never posted for a verdict that failed validation or
-// could not be persisted. Consolidated into one call (rather than three
-// separate branches at the call site) to keep runApplyVerdict's own
-// complexity flat: the three checks collapse into the single error this
-// returns.
-func prepareVerdictComment(root string, repo providers.RepositoryRef, selectedNumber int, verdict apiv1.Verdict, scopeGateParked bool) (string, error) {
-	if err := validateVerdictForPublish(verdict); err != nil {
-		return "", err
-	}
-	if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
-		return "", err
-	}
-	return renderScopeGateStateComment(renderVerdictComment(verdict), scopeGateParked), nil
-}
-
-// writeVerdictState is the record's authoritative write, called BEFORE the
-// caller posts the human-visible comment projection. Appends a journal audit
-// event on success via the stage-pod-safe annotation seam (#3898) — the same
-// mechanism failurestreakstate.go uses, which already works identically
-// whether this stage is running in the daemon's own process, on a
-// type-1/type-2 shared host, or in a pod.
-func writeVerdictState(root string, repo providers.RepositoryRef, prNumber int, verdict apiv1.Verdict) error {
-	l := instance.NewLayout(root)
-	store, err := openStageStateStore(l)
-	if err != nil {
-		return fmt.Errorf("open remediation-verdict state: %w", err)
-	}
-	key := verdictRecordKey(repo, prNumber)
-	if err := updateVerdictRecord(stateContext(), store, key, func(apiv1.Verdict, bool) (apiv1.Verdict, bool, error) {
-		return verdict, true, nil
-	}); err != nil {
-		return fmt.Errorf("persist remediation-verdict state for PR #%d: %w", prNumber, err)
-	}
-	if annotations, aerr := openStageAnnotator(l); aerr == nil {
-		_ = annotations.Append(journal.Event{
-			Type: journal.EventRunnerAnnotation,
-			Runner: map[string]any{
-				"annotation": "remediation-verdict",
-				"key":        key,
-				"decision":   string(verdict.Decision),
-			},
-		})
-		_ = annotations.Close()
-	}
-	return nil
-}
-
 // verdictRecordsForPR returns a pull request's published merge-review verdict
 // records in publication order (#5890), for findingledger to replay:
 //
@@ -239,58 +190,6 @@ func carryOutstandingFindings(records []apiv1.Verdict, latest apiv1.Verdict, prN
 	return folded, result.Standing
 }
 
-// foldPriorVerdicts makes the verdict apply-verdict is about to publish on
-// GitHub or Gitea carry the ledger of every earlier verdict on its head
-// (#5890), then reads the finding-set history from the same comments. A pass
-// that leaves a finding standing is published as needs-changes: the label
-// routes the pull request to remediation and merge-pr never runs. Every other
-// decision publishes unchanged apart from its StandingFindings. A ledger read
-// failure fails the publication.
-func foldPriorVerdicts(root string, repo providers.RepositoryRef, number int, comments []providers.Comment, author string, posted, effective *apiv1.Verdict, stdout io.Writer) (findingSetHistory, error) {
-	folded, err := foldForPublication(root, repo, number, comments, author, *posted, stdout)
-	if err != nil {
-		return findingSetHistory{}, err
-	}
-	*posted = folded
-	effective.Findings = folded.Findings
-	return findingSetHistoryFromComments(comments, author)
-}
-
-// foldForPublication folds the earlier verdict records on next's head into
-// next and journals a standing finding as a merge-safety event.
-func foldForPublication(root string, repo providers.RepositoryRef, number int, comments []providers.Comment, author string, next apiv1.Verdict, stdout io.Writer) (apiv1.Verdict, error) {
-	records, err := verdictRecordsForPR(root, repo, number, comments, author)
-	if err != nil {
-		return next, fmt.Errorf("read earlier merge-review verdicts: %w", err)
-	}
-	folded, standing := carryOutstandingFindings(records, next, number, false)
-	if len(standing) == 0 {
-		return folded, nil
-	}
-	action := "carry-findings"
-	if next.Decision == apiv1.VerdictPass && folded.Decision != apiv1.VerdictPass {
-		action = "downgrade-pass"
-		pf(stdout, "PR #%d: review passed without resolving or rejecting %d earlier finding(s) on this head (%s); publishing %s\n",
-			number, len(standing), strings.Join(standing, ", "), folded.Decision)
-	}
-	recordMergeSafetyBlock(root, "apply-verdict", action, number, folded.HeadSHA, folded.BaseSHA, standing)
-	return folded, nil
-}
-
-// foldAdvisoryVerdict folds the ledger into an advisory publication, which
-// writes the same single-slot records as any other (#5890).
-func foldAdvisoryVerdict(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, number int, verdict apiv1.Verdict, stdout io.Writer) (apiv1.Verdict, error) {
-	author, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return verdict, fmt.Errorf("resolve merge-review verdict author: %w", err)
-	}
-	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(number))
-	if err != nil {
-		return verdict, fmt.Errorf("list merge-review status comments: %w", err)
-	}
-	return foldForPublication(root, repo, number, comments, author, verdict, stdout)
-}
-
 // publishADOReviewedVerdict publishes a merge-review verdict on Azure DevOps
 // after folding the earlier verdict records on the PR's threads into it
 // (#5890). A pass that left a finding on its head standing is published
@@ -300,7 +199,7 @@ func foldAdvisoryVerdict(ctx context.Context, root string, provider remediationP
 // alone, which every publication keeps cumulative; merge-pr reads the threads
 // again under its lock and refuses if it cannot. A scheduler-state read
 // failure fails the publication.
-func publishADOReviewedVerdict(ctx context.Context, root string, provider *providers.ADOProvider, repo providers.RepositoryRef, number int, current providers.PullRequestSummary, verdict apiv1.Verdict, resultFile string, stdout, stderr io.Writer) int {
+func publishADOReviewedVerdict(ctx context.Context, root string, provider *providers.ADOProvider, repo providers.RepositoryRef, number int, current providers.PullRequestSummary, verdict apiv1.Verdict, publication verdictPublication, resultFile string, stdout, stderr io.Writer) int {
 	var comments []providers.Comment
 	self, err := provider.AuthenticatedIdentity(ctx)
 	if err == nil {
@@ -311,7 +210,11 @@ func publishADOReviewedVerdict(ctx context.Context, root string, provider *provi
 		comments = nil
 	}
 	verdict.HeadSHA, verdict.BaseSHA = current.HeadSHA, current.BaseSHA
-	folded, err := foldForPublication(root, repo, number, adoAttributeCommentsByID(comments, self), self.DisplayName, verdict, stdout)
+	legacy, err := verdictRecordsForPR("", repo, number, adoAttributeCommentsByID(comments, self), self.DisplayName)
+	if err != nil {
+		return failProviderStage(stderr, "read legacy verdicts", err, resultFile)
+	}
+	folded, err := publication.commit(verdict, legacy, nil, stdout)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("fold earlier verdicts for PR #%d", number), err, resultFile)
 	}

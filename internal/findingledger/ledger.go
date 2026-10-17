@@ -119,8 +119,10 @@ func Fold(prior []apiv1.Verdict, next apiv1.Verdict, substantive Substantive) (a
 	var result FoldResult
 	var standing []apiv1.Finding
 	for _, finding := range Outstanding(prior, head, substantive) {
-		switch id := finding.ID; {
-		case answered[id]:
+		id := finding.ID
+		generation, answeredHere := answered[id]
+		switch {
+		case answeredHere && generation == finding.LedgerGeneration:
 			result.Answered = append(result.Answered, id)
 		case ownRaised[id] && !alreadyStanding[id]:
 			// next raises it again itself; its own copy stands.
@@ -213,8 +215,8 @@ func replay(records []apiv1.Verdict, head string, substantive Substantive) *ledg
 
 func (l *ledger) apply(record apiv1.Verdict, substantive Substantive) {
 	for _, disposition := range record.Dispositions {
-		if disposition.Answers() {
-			delete(l.open, strings.TrimSpace(disposition.FindingID))
+		if finding, ok := l.open[strings.TrimSpace(disposition.FindingID)]; ok && disposition.Answers() && disposition.FindingGeneration == finding.LedgerGeneration {
+			delete(l.open, finding.ID)
 		}
 	}
 	l.raise(record.StandingFindings, substantive)
@@ -251,11 +253,11 @@ func (l *ledger) findings() []apiv1.Finding {
 	return out
 }
 
-func answeredIDs(dispositions []apiv1.FindingDisposition) map[string]bool {
-	answered := map[string]bool{}
+func answeredIDs(dispositions []apiv1.FindingDisposition) map[string]uint64 {
+	answered := map[string]uint64{}
 	for _, disposition := range dispositions {
 		if disposition.Answers() {
-			answered[strings.TrimSpace(disposition.FindingID)] = true
+			answered[strings.TrimSpace(disposition.FindingID)] = disposition.FindingGeneration
 		}
 	}
 	return answered
@@ -283,7 +285,9 @@ func mergeDispositions(base, next []apiv1.FindingDisposition) []apiv1.FindingDis
 		}
 		disposition.FindingID = strings.TrimSpace(disposition.FindingID)
 		if i := slices.IndexFunc(out, func(d apiv1.FindingDisposition) bool { return d.FindingID == disposition.FindingID }); i >= 0 {
-			out[i] = disposition
+			if disposition.FindingGeneration >= out[i].FindingGeneration {
+				out[i] = disposition
+			}
 			continue
 		}
 		out = append(out, disposition)

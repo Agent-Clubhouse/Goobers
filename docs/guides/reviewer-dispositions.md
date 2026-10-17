@@ -105,7 +105,7 @@ finding.
   "headSha": "…",
   "baseSha": "…",
   "dispositions": [
-    {"findingId": "unbounded-lineage-lookup", "outcome": "rejected", "reason": "The scan is bounded by the caller's page size."}
+    {"findingId": "unbounded-lineage-lookup", "findingGeneration": 7, "outcome": "rejected", "reason": "The scan is bounded by the caller's page size."}
   ]
 }
 ```
@@ -134,6 +134,37 @@ ignored, such as a remediation response quoting agent text. On GitHub and
 Gitea the canonical status comment is edited in place, so it is read as the
 newest comment. On Azure DevOps the thread order is publication order. The
 scheduler-state record is read last.
+
+### Concurrent publications and generations
+
+The runner folds each candidate against the latest scheduler-state record inside
+its locked update or compare-and-swap retry. The committed verdict has a
+`ledgerGeneration`; every newly raised finding has its own `ledgerGeneration`.
+An unchanged finding that remains open keeps its generation. A changed finding,
+or one raised again after it was answered, receives a new generation. Reviewer
+input cannot assign these generations or inject `standingFindings`.
+
+Copy the standing finding's generation into the disposition's
+`findingGeneration`. An answer for an older instance cannot clear a newer one
+with the same ID. A missing generation answers only a legacy finding that also
+has no generation. A pass that omits or miscopies a generation stays blocked;
+rerun the reviewer with current standing-finding context to answer it.
+
+Publication captures the previous record before checking the live PR. Replacing
+another head requires that predecessor to remain unchanged. If it changed,
+publication fails and a new run must check the live PR again. Concurrent reviews
+of the same head instead retry and preserve each other's findings. This does
+not infer chronology from commit hashes or make provider reads atomic with state.
+
+Native reviews, comments, labels, statuses and stage results all use the committed
+fold. ADO commits before choosing its pass or non-pass transport. A failed state
+write submits no verdict projection. Native projection is still eventually
+consistent: a delayed request already submitted to a provider can finish after a
+newer commit. This transaction does not fence remote HTTP completion or establish
+cross-gaggle publisher ownership; one logical publisher must own the repository
+status context. Goobers-controlled landing checks authoritative findings under
+its lock. Native-only landing requiring zero stale exposure needs a separate
+publication-custody policy; no provider policy is changed by this feature.
 
 ### Enforcement
 

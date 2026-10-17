@@ -1,6 +1,13 @@
 # #5890: an unanswered review finding blocks healers, publication and merge
 
-Growth: about +400 non-test lines and no new files in `cmd/goobers`.
+Growth: about +450 non-test lines and one new file in `cmd/goobers`.
+
+The atomicity follow-up adds `verdictcommit.go` and removes the former separate
+read/fold/write helpers. It captures the predecessor before the live-head check,
+folds inside the existing state CAS, returns the committed value to all provider
+projections, and records post-commit annotations. Finding instance-generation
+semantics remain in `internal/findingledger`. The command file needs the existing
+state-record, annotation, finding-history and provider-policy seams.
 
 ## Why the growth belongs in the command package
 
@@ -30,8 +37,8 @@ writes the stages' own records:
   `gather-sibling-context`) therefore share one answer.
 - **`updatebehindpr.go`, `prsiblingcontext.go`, `mergepr.go`,
   `applyverdict.go`.** One call or a few lines each. `runApplyVerdict`,
-  `runMergePR` and `runGatherSiblingContextCore` are at their frozen
-  complexity and body-length baselines and gained no lines or branches. The
+  `runMergePR` and `runGatherSiblingContextCore` remain subject to the frozen
+  complexity and body-length baselines. The
   wiring replaces an existing line or moves an existing block into a helper.
 - **Help text.** The four stages document the new behavior.
 

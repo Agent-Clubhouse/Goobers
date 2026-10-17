@@ -242,7 +242,9 @@ populate differs.
   `selectedBaseSha` from your invocation context verbatim. Omit entirely in
   single-diff mode, which has no PR of its own to pin against.
 - `dispositions` — **holistic mode only**, and only to answer
-  `standingFindings` (see "Holistic mode" 10). Each entry has exactly
+  `standingFindings` (see "Holistic mode" 10). Copy the standing finding's
+  `ledgerGeneration` into `findingGeneration`; omit it only for legacy findings
+  with no generation. Each entry has
   `findingId` (the standing finding's `id`, verbatim), `outcome` (`resolved`
   or `rejected`), and `evidence` (required for `resolved`) or `reason`
   (required for `rejected`). Do not set `standingFindings` yourself: the

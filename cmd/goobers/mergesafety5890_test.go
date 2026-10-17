@@ -321,14 +321,16 @@ func TestApplyVerdictCarriesUnansweredFindingIntoLaterPass(t *testing.T) {
 	// The escape hatch: a re-review on the same head (an operator rerun with
 	// instructions, or --no-verdict-cache) that rejects the finding with a
 	// reason publishes the pass and clears merge-pr's conjunct.
+	answer := rejectUnboundedLineage()
+	answer[0].FindingGeneration = posted.StandingFindings[0].LedgerGeneration
 	result, posted = publish("review-answers", apiv1.Verdict{
 		Decision: apiv1.VerdictPass, Summary: "Ready to merge.", Rationale: "The lineage finding does not hold.",
-		Dispositions: rejectUnboundedLineage(),
+		Dispositions: answer,
 	})
 	if result["decision"] != string(apiv1.VerdictPass) || posted.Decision != apiv1.VerdictPass || len(posted.Findings) != 0 {
 		t.Fatalf("answered pass: result=%v verdict=%+v, want a clean pass", result, posted)
 	}
-	if !reflect.DeepEqual(posted.Dispositions, rejectUnboundedLineage()) {
+	if !reflect.DeepEqual(posted.Dispositions, answer) {
 		t.Fatalf("published dispositions = %+v, want the rejection recorded", posted.Dispositions)
 	}
 	comments, _ := fakeIssueComments(t, server, prNumber)
