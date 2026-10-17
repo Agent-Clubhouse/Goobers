@@ -8,10 +8,37 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestPublicationSafetyPreservesContextError(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(map[bool]string{false: "canceled", true: "deadline"}[expired], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			want := context.Canceled
+			if expired {
+				cancel()
+				ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				defer cancel()
+				want = context.DeadlineExceeded
+			}
+			calls := 0
+			p := Publisher{readGit: func(context.Context, string, ...string) ([]byte, error) {
+				calls++
+				cancel()
+				return nil, ctx.Err()
+			}}
+			err := p.checkPublication(ctx, Target{Base: "main"}, strings.Repeat("b", 40))
+			if !errors.Is(err, want) || calls != 1 {
+				t.Fatalf("publication error=%v reads=%d, want %v without fallback", err, calls, want)
+			}
+		})
+	}
+}
 
 func publicationSafetyFixture(t *testing.T, baseRef, tree, blob string) func(context.Context, string, ...string) ([]byte, error) {
 	t.Helper()
