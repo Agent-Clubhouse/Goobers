@@ -80,38 +80,80 @@ func NewServer(tools *Toolset) *Server {
 	return &Server{tools: tools}
 }
 
+const maxFrameBytes = 16 * 1024 * 1024
+
 // Serve runs the read-dispatch-write loop until stdin closes or an
-// unrecoverable I/O error occurs. Malformed individual messages are logged
-// to stderr and skipped — the same JSON-RPC-per-line framing this protocol
-// requires means one bad line must not take down the whole session.
+// unrecoverable I/O error occurs. Malformed or oversized frames receive a
+// parse error with an unknown (null) id. Oversized frames are drained through
+// their newline without retaining excess bytes, so later requests still work.
 func (s *Server) Serve(stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
-	scanner := bufio.NewScanner(stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	reader := bufio.NewReaderSize(stdin, 64*1024)
 	enc := json.NewEncoder(stdout)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(bytesTrimSpace(line)) == 0 {
-			continue
+	for {
+		line, oversized, readErr := readFrame(reader, maxFrameBytes)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return fmt.Errorf("mcpio: read stdin: %w", readErr)
 		}
-		var req rpcRequest
-		if err := json.Unmarshal(line, &req); err != nil {
-			_, _ = fmt.Fprintf(stderr, "mcpio: invalid JSON-RPC line: %v\n", err)
-			continue
+		if resp, ok := s.handleFrame(line, oversized, stderr); ok {
+			if err := enc.Encode(resp); err != nil {
+				return fmt.Errorf("mcpio: write response: %w", err)
+			}
 		}
-		resp, ok := s.handle(req, stderr)
-		if !ok {
-			// Notification (no id) — MCP forbids a response.
-			continue
-		}
-		if err := enc.Encode(resp); err != nil {
-			return fmt.Errorf("mcpio: write response: %w", err)
+		if errors.Is(readErr, io.EOF) {
+			return nil
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("mcpio: read stdin: %w", err)
+}
+
+func (s *Server) handleFrame(line []byte, oversized bool, stderr io.Writer) (rpcResponse, bool) {
+	var req rpcRequest
+	var err error
+	if oversized {
+		err = fmt.Errorf("frame exceeds %d bytes", maxFrameBytes)
+	} else if len(bytesTrimSpace(line)) == 0 {
+		return rpcResponse{}, false
+	} else {
+		err = json.Unmarshal(line, &req)
 	}
-	return nil
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "mcpio: invalid JSON-RPC line: %v\n", err)
+		return rpcResponse{
+			JSONRPC: "2.0", ID: json.RawMessage("null"),
+			Error: &rpcError{Code: -32700, Message: "Parse error"},
+		}, true
+	}
+	return s.handle(req, stderr)
+}
+
+// readFrame excludes the newline from the byte limit. It keeps at most limit
+// bytes and drains an oversized frame using the reader's fixed-size buffer.
+// Data returned with io.EOF is the final, unterminated frame and must be served.
+func readFrame(reader *bufio.Reader, limit int) ([]byte, bool, error) {
+	var line []byte
+	oversized := false
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) > 0 && chunk[len(chunk)-1] == '\n' {
+			chunk = chunk[:len(chunk)-1]
+		}
+		if !oversized {
+			if len(chunk) > limit-len(line) {
+				oversized = true
+				line = nil
+			} else {
+				if needed := len(line) + len(chunk); needed > cap(line) {
+					grown := make([]byte, len(line), min(limit, max(needed, 2*cap(line))))
+					copy(grown, line)
+					line = grown
+				}
+				line = append(line, chunk...)
+			}
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, oversized, err
+		}
+	}
 }
 
 func bytesTrimSpace(b []byte) []byte {
