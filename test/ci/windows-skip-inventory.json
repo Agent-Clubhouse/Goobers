@@ -34,7 +34,7 @@
       "package": "cmd/goobers",
       "coverage": "partial",
       "category": "cost",
-      "reason": "Whole package exceeds 30min on Windows (PR #2364 measurement: panic: test timed out after 30m0s). Entered by named tests in the 'Windows CLI runtime' and 'Windows journal OTLP export' steps."
+      "reason": "Whole package exceeds 30min on Windows (PR #2364 measurement: panic: test timed out after 30m0s). Entered by named CLI runtime, journal export, child ownership and recovery fence tests; recovery custody integration runs separately."
     },
     {
       "package": "deploy/reference/authenticated",
@@ -364,7 +364,7 @@
       "package": "internal/engine",
       "coverage": "partial",
       "category": "seam-selection",
-      "reason": "Only the journal projection export tests run, in the 'Windows journal OTLP export' step."
+      "reason": "Named journal projection, child stage identity, dispatch heartbeat and cancellation regressions run; the remaining engine suite runs on Linux."
     },
     {
       "package": "internal/ephemeraltmp",
@@ -758,9 +758,9 @@
     },
     {
       "package": "internal/recovery",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "HTTP archive publication, refusal and transport regressions run in the Windows dispatch heartbeat and recovery fences step; other recovery tests run on Linux."
     },
     {
       "package": "internal/releaseversion",
@@ -950,9 +950,9 @@
     },
     {
       "package": "internal/temporaldial",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Heartbeat generation/transport/acceptance diagnostics, retention bounds and default interceptor wiring run in the Windows dispatch heartbeat and recovery fences step; remaining dial tests run on Linux."
     },
     {
       "package": "internal/temporaltest",
