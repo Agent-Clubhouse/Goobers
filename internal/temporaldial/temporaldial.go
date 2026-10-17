@@ -4,10 +4,10 @@
 // engine-start/-project/-queues commands and the k8s preflight — goes through
 // Options, so transport security is configured once rather than five times.
 //
-// TLS is opt-in. A nil *TLS yields exactly the options every site built before
-// this package existed ({HostPort, Namespace}), which is the plaintext dial a
-// local dev Temporal expects. There is deliberately no "prefer" mode: when TLS
-// is configured and the frontend does not speak it, the dial fails.
+// TLS is opt-in. A nil *TLS keeps the plaintext transport a local dev Temporal
+// expects; every dial also carries heartbeat transport diagnostics. There is
+// deliberately no "prefer" mode: when TLS is configured and the frontend does
+// not speak it, the dial fails.
 package temporaldial
 
 import (
@@ -16,10 +16,12 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"google.golang.org/grpc"
 )
 
 // TLS is the client transport security for the Temporal frontend connection:
@@ -99,13 +101,16 @@ func (t *TLS) Config() (*tls.Config, error) {
 }
 
 // Options builds one Temporal dial. The optional converter is explicitly owned
-// by the instance. Without TLS or a converter, the result remains exactly
-// client.Options{HostPort, Namespace}.
+// by the instance. Heartbeat transport diagnostics distinguish SDK generation
+// from the actual RPC and record acceptance latency.
 func Options(hostPort, namespace string, t *TLS, dc ...converter.DataConverter) (client.Options, error) {
 	opts := client.Options{HostPort: hostPort, Namespace: namespace}
 	if len(dc) > 0 {
 		opts.DataConverter = dc[0]
 	}
+	diagnostics := newHeartbeatRPCDiagnostics(opts.DataConverter, log.Printf)
+	opts.ConnectionOptions.DialOptions = append(opts.ConnectionOptions.DialOptions,
+		grpc.WithChainUnaryInterceptor(diagnostics.interceptor))
 	cfg, err := t.Config()
 	if err != nil {
 		return client.Options{}, err
