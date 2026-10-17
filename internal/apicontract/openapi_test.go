@@ -304,3 +304,10 @@ func lowerMethod(method string) string {
 		return method
 	}
 }
+
+func TestRunAttributionOpenAPIRequiresScopedLookup(t *testing.T) {
+	parameters := openAPIServiceParameters(RouteRunAttribution)
+	if len(parameters) != 1 || parameters[0]["name"] != "gaggle" || parameters[0]["in"] != "query" || parameters[0]["required"] != true {
+		t.Fatalf("scope parameter missing: %#v", parameters)
+	}
+}
