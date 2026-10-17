@@ -243,6 +243,7 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   await expect(page.getByRole("radio", { name: "Agent (Codex)", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeDisabled();
   await expect(page.getByText("Not live-qualified", { exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: "Agent (Codex)", exact: true }).scrollIntoViewIfNeeded();
   await capture(page, "interactive-agent-unavailable-no-fallback");
   await page.getByRole("radio", { name: new RegExp(workbench.name) }).check();
   await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeDisabled();
@@ -441,7 +442,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
   const helperAction = await proposed.json();
   const receiptURL = `${api}/operations/actions/${helperAction.id}?sessionId=${helper.id}`;
   const stateURL = `${api}/operations/state?sessionId=${helper.id}`;
-  const applied = await request.post(`${api}/operations/actions/${helperAction.id}/apply?sessionId=${helper.id}`);
+  const applied = await request.post(`${api}/operations/actions/${helperAction.id}/apply?sessionId=${helper.id}`, { data: {} });
   expect(applied.ok(), await applied.text()).toBeTruthy();
   expect((await applied.json()).status).toBe("succeeded");
   const { session } = await createSession(request);
@@ -455,7 +456,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
   let changedPublished = false;
   try {
     await writeFile(gagglePath, "invalid: [\n");
-    const invalidReload = await request.post(`${api}/config/reload`);
+    const invalidReload = await request.post(`${api}/config/reload`, { data: {} });
     expect(invalidReload.status()).toBe(409);
     const afterInvalid = await snapshot(request, session.id);
     expect(afterInvalid.status).toBe("running");
@@ -463,7 +464,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
     expect((await surfaces(request)).find(surface => surface.id === surfaceBefore.id)?.configRevision).toBe(surfaceBefore.configRevision);
 
     await writeFile(gagglePath, updated);
-    const reload = await request.post(`${api}/config/reload`);
+    const reload = await request.post(`${api}/config/reload`, { data: {} });
     expect(reload.ok(), await reload.text()).toBeTruthy();
     changedPublished = true;
     const reloadReceipt = await reload.json();
@@ -534,7 +535,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
   } finally {
     await writeFile(gagglePath, original);
     if (changedPublished) {
-      const restored = await request.post(`${api}/config/reload`);
+      const restored = await request.post(`${api}/config/reload`, { data: {} });
       expect(restored.ok(), await restored.text()).toBeTruthy();
     }
   }
