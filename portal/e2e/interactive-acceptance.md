@@ -61,7 +61,9 @@ npx playwright test --config e2e/interactive.config.ts
    provider read has completed; resume the same turn. Revoke the connection
    during active work, verify cancellation and test that a new session cannot
    bypass the revoked connection.
-8. Stop an active process; wait for confirmed stop and retain workspace changes.
+8. Stop the executor's active bounded-wait turn; wait for confirmed stop and
+   retain workspace changes. Actual subprocess cancellation and process-tree
+   cleanup are separately exercised by the native integration tests.
 9. At narrow viewport widths, verify the message composer and critical controls
    remain accessible without document-wide horizontal overflow.
 10. Use two explicitly controlled local personas to execute concurrently, reject

@@ -366,10 +366,14 @@ test("helper authors and applies a native workflow, tweaks its gaggle and observ
   await expect.poll(async () => (await readState()).runs.some((run: {workflow: string; phase: string}) => run.workflow === "invoice-check-custom" && run.phase === "completed"), { timeout: 90_000 }).toBeTruthy();
   const final = await readState();
   expect(final.actions.find((action: {kind: string}) => action.kind === "submit_run").status).toBe("succeeded");
+  const runReceipt = page.getByRole("region", { name: "Action proposals", exact: true }).locator("article").filter({ hasText: "Submit interactive/invoice-check-custom" });
+  await expect(runReceipt.locator(".ix-status")).toHaveText("succeeded");
+  await runReceipt.locator(".ix-status").scrollIntoViewIfNeeded();
+  await capture(page, "interactive-helper-native-run-completed");
   const observedRun = page.getByRole("region", { name: "Observed runs", exact: true });
   await expect(observedRun).toContainText("completed");
   await observedRun.scrollIntoViewIfNeeded();
-  await capture(page, "interactive-helper-native-run-completed");
+  await capture(page, "interactive-helper-native-journal-completed");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
   await capture(page, "interactive-helper-actions-mobile");
