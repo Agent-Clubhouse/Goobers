@@ -37,13 +37,15 @@ const (
 )
 
 var (
-	testFailurePattern   = regexp.MustCompile(`(?i)^(?:FAIL\s+.+|--- FAIL:\s*.+|Failed\s+.+|\S.*\s[>›]\s.+)$`)
-	compilerErrorPattern = regexp.MustCompile(`(?i)(?:^|[\s:])(?:fatal\s+)?error(?:\[[A-Z0-9]+\]|\s+[A-Z]+\d+)?:|(?:^|\s)\S+\.go:\d+(?::\d+)?:\s+(?:undefined:|cannot |assignment mismatch|declared and not used|imported and not used|invalid operation|not enough arguments|too many arguments|syntax error:)`)
-	buildFailurePattern  = regexp.MustCompile(`(?i)(?:make(?:\[\d+\])?: \*\*\*|Execution failed for task\b|error: command failed|\[ERROR\].*failed to execute goal)`)
-	buildSummaryPattern  = regexp.MustCompile(`(?i)(?:BUILD FAILED|FAILURE: Build failed|ninja: build stopped|npm error|ELIFECYCLE)`)
-	warningPattern       = regexp.MustCompile(`(?i)(?:^|[\s:])warn(?:ing)?(?:\s|:|\[)`)
-	assertionPattern     = regexp.MustCompile(`(?i)(?:AssertionError|Error Message:|Assert\.|Expected:|Received:|expected .+ (?:to|but)|panic:|\.go:\d+|error\s+[A-Z]+\d+:)`)
-	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	successfulTestPattern = regexp.MustCompile(`^ok(?:\s|$)`)
+	runtimeFailurePattern = regexp.MustCompile(`^(?:panic:|fatal error:)`)
+	testFailurePattern    = regexp.MustCompile(`(?i)^(?:FAIL\s+.+|--- FAIL:\s*.+|Failed\s+.+|\S.*\s[>›]\s.+)$`)
+	compilerErrorPattern  = regexp.MustCompile(`(?i)(?:^|[\s:])(?:fatal\s+)?error(?:\[[A-Z0-9]+\]|\s+[A-Z]+\d+)?:|(?:^|\s)\S+\.go:\d+(?::\d+)?:\s+(?:undefined:|cannot |assignment mismatch|declared and not used|imported and not used|invalid operation|not enough arguments|too many arguments|syntax error:)`)
+	buildFailurePattern   = regexp.MustCompile(`(?i)(?:make(?:\[\d+\])?: \*\*\*|Execution failed for task\b|error: command failed|\[ERROR\].*failed to execute goal)`)
+	buildSummaryPattern   = regexp.MustCompile(`(?i)(?:BUILD FAILED|FAILURE: Build failed|ninja: build stopped|npm error|ELIFECYCLE)`)
+	warningPattern        = regexp.MustCompile(`(?i)(?:^|[\s:])warn(?:ing)?(?:\s|:|\[)`)
+	assertionPattern      = regexp.MustCompile(`(?i)(?:AssertionError|Error Message:|Assert\.|Expected:|Received:|expected .+ (?:to|but)|panic:|\.go:\d+|error\s+[A-Z]+\d+:)`)
+	ansiPattern           = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	// "FAIL\tpkg\t1315.643s" / "FAIL\tpkg [build failed]" — go test's
 	// package-level verdict, which names no individual test.
 	sourceFindingPattern  = regexp.MustCompile(`^\S+:\d+(?::\d+)?:\s+\S`)
@@ -216,6 +218,7 @@ const (
 	specificityPackageFailure   = 20
 	specificitySourceFinding    = 25
 	specificityTestFailure      = 30
+	specificityRuntimeFailure   = 35
 	specificityDependencyDenial = 40
 	specificityStaleWorktree    = 45
 )
@@ -282,6 +285,11 @@ func collectFailureDigest(stdout, stderr []byte) ([]string, int) {
 func failureLineSpecificity(line string) int {
 	line = cleanOutputLine(line)
 	switch {
+	// TAP/Playwright success records can contain source locations, runner
+	// separators, and error-related test names. Their explicit verdict takes
+	// precedence over every diagnostic heuristic below (#7521).
+	case successfulTestPattern.MatchString(line):
+		return specificityNone
 	// A cached linter result can retain the absolute path of a managed
 	// worktree after that checkout has been removed (#5371). The missing
 	// checkout is runner state, not a finding the implementation can repair.
@@ -295,6 +303,10 @@ func failureLineSpecificity(line string) int {
 	// infrastructure classifier could not see one).
 	case failureclass.IsDependencyTransportDenial(line):
 		return specificityDependencyDenial
+	// Go panics and test timeouts explain the package verdict that follows.
+	// Keep that cause ahead of stack locations and the trailing FAIL record.
+	case runtimeFailurePattern.MatchString(line):
+		return specificityRuntimeFailure
 	case testFailurePattern.MatchString(line) &&
 		!strings.HasPrefix(strings.ToLower(line), "failed tests") &&
 		!strings.HasPrefix(line, "FAIL\t"):
@@ -358,7 +370,7 @@ func failureSection(lines []outputLine, index int) string {
 		if line == "" {
 			continue
 		}
-		if assertionPattern.MatchString(line) || strings.HasPrefix(line, ">") {
+		if !successfulTestPattern.MatchString(line) && (assertionPattern.MatchString(line) || strings.HasPrefix(line, ">")) {
 			selected = append(selected, line)
 		}
 	}
@@ -369,7 +381,7 @@ func failureSectionEnd(lines []outputLine, index int) int {
 	end := lines[index].end
 	for i := index + 1; i < len(lines) && i <= index+8; i++ {
 		line := cleanOutputLine(lines[i].text)
-		if assertionPattern.MatchString(line) || strings.HasPrefix(line, ">") {
+		if !successfulTestPattern.MatchString(line) && (assertionPattern.MatchString(line) || strings.HasPrefix(line, ">")) {
 			end = lines[i].end
 		}
 	}
