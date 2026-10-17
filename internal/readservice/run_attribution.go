@@ -102,7 +102,8 @@ func (s *Local) RunAttribution(ctx context.Context, runID, gaggle string) (RunAt
 	if err != nil {
 		return out, err
 	}
-	if len(data) > attributionRecordBytes {
+	// The HTTP JSON encoder appends a newline.
+	if len(data)+1 > attributionRecordBytes {
 		out.Availability = "limit-exceeded"
 		out.Record = nil
 		out.Evidence = []AttributionEvidenceCheck{}
