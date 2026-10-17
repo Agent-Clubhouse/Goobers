@@ -1,0 +1,368 @@
+package interactive
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+)
+
+func (s *Service) newLease(req ExecutionRequest) *Lease {
+	return &Lease{WorkerID: req.WorkerID, LeaseID: req.LeaseID, Fence: req.Fence, ExpiresAt: s.opts.Now().Add(s.opts.LeaseDuration), Status: "active"}
+}
+func runKey(req ExecutionRequest) string {
+	if req.ChildID != "" {
+		return req.ChildID
+	}
+	return req.TurnID
+}
+func leaseFor(rec *sessionRecord, childID string) *Lease {
+	if childID == "" {
+		return rec.Session.Lease
+	}
+	for i := range rec.Session.Children {
+		if rec.Session.Children[i].ID == childID {
+			return rec.Session.Children[i].Lease
+		}
+	}
+	return nil
+}
+func (s *Service) heartbeat(req ExecutionRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.state.Sessions[req.SessionID]
+	lease := leaseFor(rec, req.ChildID)
+	if s.closed || rec.Session.Fence != req.Fence || lease == nil || lease.LeaseID != req.LeaseID || lease.Status != "active" || !lease.ExpiresAt.After(s.opts.Now()) {
+		return problem(409, "stale_lease", "worker lease expired or was fenced")
+	}
+	return s.mutate(func(state *diskState) error {
+		leaseFor(state.Sessions[req.SessionID], req.ChildID).ExpiresAt = s.opts.Now().Add(s.opts.LeaseDuration)
+		return nil
+	})
+}
+func (s *Service) watchLeases() {
+	interval := s.opts.LeaseDuration / 4
+	if interval > time.Second {
+		interval = time.Second
+	}
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.SweepLeases()
+		case <-s.stopSweep:
+			return
+		}
+	}
+}
+
+// SweepLeases is safe to invoke from an embedded scheduler. Tests can advance
+// Options.Now before calling it. It is deliberately not an HTTP debug endpoint.
+func (s *Service) SweepLeases() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	expired := map[string]bool{}
+	for sessionID, runs := range s.active {
+		rec := s.state.Sessions[sessionID]
+		for _, run := range runs {
+			lease := leaseFor(rec, run.request.ChildID)
+			if lease != nil && lease.Status == "active" && !lease.ExpiresAt.After(s.opts.Now()) {
+				expired[sessionID] = true
+			}
+		}
+	}
+	if len(expired) == 0 {
+		return
+	}
+	err := s.mutate(func(state *diskState) error {
+		for sessionID := range expired {
+			rec := state.Sessions[sessionID]
+			rec.Session.Fence++
+			rec.Session.Status = "recovery_required"
+			rec.Session.RecoveryReason = "Worker lease expired; prior writer must stop before explicit recovery."
+			if rec.Session.Lease != nil && rec.Session.Lease.Status == "active" {
+				rec.Session.Lease.Status = "expired"
+			}
+			for i := range rec.Session.Children {
+				if rec.Session.Children[i].Status == "running" {
+					rec.Session.Children[i].Status = "uncertain"
+					if rec.Session.Children[i].Lease != nil {
+						rec.Session.Children[i].Lease.Status = "expired"
+					}
+				}
+			}
+			for i := range rec.Session.Turns {
+				if rec.Session.Turns[i].Status == "running" {
+					rec.Session.Turns[i].Status = "interrupted"
+				}
+			}
+			appendEvent(rec, "lease.expired", rec.Session.ActiveTurnID, "", map[string]any{"fence": rec.Session.Fence, "reason": rec.Session.RecoveryReason})
+		}
+		return nil
+	})
+	if err == nil {
+		for sessionID := range expired {
+			for _, run := range s.active[sessionID] {
+				run.cancel()
+			}
+		}
+	}
+}
+
+func (s *Service) start(req ExecutionRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.opts.MaxTurnDuration)
+	steering := make(chan Steering, 16)
+	req.Steering = steering
+	req.Heartbeat = func() error { return s.heartbeat(req) }
+	run := &activeRun{cancel: cancel, request: req, steering: steering}
+	if s.active[req.SessionID] == nil {
+		s.active[req.SessionID] = map[string]*activeRun{}
+	}
+	s.active[req.SessionID][runKey(req)] = run
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer cancel()
+		// Preserve potentially split credential patterns across streamed deltas.
+		var emitMu sync.Mutex
+		pending := map[string]ExecutionEvent{}
+		emit := func(event ExecutionEvent) error {
+			emitMu.Lock()
+			defer emitMu.Unlock()
+			if event.Type == "assistant.delta" || event.Type == "tool.output" {
+				key := event.Type + "/" + fmt.Sprint(event.Data["name"]) + "/" + fmt.Sprint(event.Data["stream"])
+				previous := pending[key]
+				before, _ := previous.Data["text"].(string)
+				text, _ := event.Data["text"].(string)
+				text = before + text
+				if len(text) > 256<<10 {
+					return errors.New("unsafe unfinished output exceeds streaming buffer")
+				}
+				boundary := s.scrubber.SafePrefix([]byte(text))
+				retained := clone(event.Data)
+				retained["text"] = text[boundary:]
+				pending[key] = ExecutionEvent{Type: event.Type, Data: retained}
+				if boundary == 0 {
+					return nil
+				}
+				event.Data = clone(event.Data)
+				event.Data["text"] = text[:boundary]
+			}
+			return s.emit(req, event)
+		}
+		var result ExecutionResult
+		var err error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = fmt.Errorf("executor panicked: %v", recovered)
+				}
+			}()
+			result, err = s.opts.Executor.Execute(ctx, req, emit)
+		}()
+		emitMu.Lock()
+		for _, event := range pending {
+			if text, _ := event.Data["text"].(string); text != "" {
+				_ = s.emit(req, event)
+			}
+		}
+		emitMu.Unlock()
+		if err == nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		s.finish(req, result, err)
+	}()
+}
+
+func (s *Service) cleanData(data map[string]any) map[string]any {
+	result := map[string]any{}
+	for key, value := range data {
+		// Credentials must never be passed to this API. Drop explicit sensitive
+		// fields as a second boundary in addition to broker custody and scrubbing.
+		lower := strings.ToLower(key)
+		if strings.Contains(lower, "token") || strings.Contains(lower, "authorization") || strings.Contains(lower, "secret") || strings.Contains(lower, "password") {
+			result[key] = "[REDACTED]"
+			continue
+		}
+		switch value := value.(type) {
+		case string:
+			if len(value) > 128<<10 {
+				value = value[:128<<10] + "\n[output truncated]"
+			}
+			result[key] = s.clean(value)
+		case map[string]any:
+			result[key] = s.cleanData(value)
+		case []any:
+			items := make([]any, len(value))
+			for i, item := range value {
+				items[i] = s.cleanData(map[string]any{"item": item})["item"]
+			}
+			result[key] = items
+		default:
+			result[key] = value
+		}
+	}
+	return result
+}
+func (s *Service) emit(req ExecutionRequest, event ExecutionEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.state.Sessions[req.SessionID]
+	lease := leaseFor(rec, req.ChildID)
+	if rec.Session.Fence != req.Fence || lease == nil || lease.LeaseID != req.LeaseID || lease.Status != "active" || !lease.ExpiresAt.After(s.opts.Now()) {
+		return problem(409, "stale_fence", "execution event belongs to an expired attempt")
+	}
+	switch event.Type {
+	case "assistant.delta", "assistant.message", "tool.started", "tool.output", "tool.completed", "test.result", "context.loaded", "execution.note", "auth.required":
+	default:
+		return problem(400, "invalid_event", "executor cannot emit coordinator state transitions")
+	}
+	data := s.cleanData(event.Data)
+	if req.ChildID != "" {
+		data["childId"] = req.ChildID
+	}
+	if len(rec.Events) > 20000 {
+		return problem(409, "capacity", "prototype event retention limit reached")
+	}
+	return s.mutate(func(state *diskState) error {
+		appendEvent(state.Sessions[req.SessionID], event.Type, req.TurnID, "", data)
+		return nil
+	})
+}
+func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.active[req.SessionID], runKey(req))
+	if len(s.active[req.SessionID]) == 0 {
+		delete(s.active, req.SessionID)
+	}
+	_ = s.mutate(func(state *diskState) error {
+		rec := state.Sessions[req.SessionID]
+		current := rec.Session.Fence == req.Fence
+		lease := leaseFor(rec, req.ChildID)
+		if lease != nil && lease.Status == "active" {
+			lease.Status = "released"
+		}
+		// A fenced writer cannot publish more events or claim success. Its
+		// final stopped-workspace snapshot is still custody evidence worth
+		// retaining, including partial edits made before cancellation.
+		if req.ChildID == "" && lease != nil && lease.LeaseID == req.LeaseID {
+			if result.WorkspacePath != "" {
+				rec.Session.WorkspacePath = result.WorkspacePath
+			}
+			if result.Changes != nil {
+				rec.Session.Changes = clone(result.Changes)
+				rec.Session.Diff = s.clean(result.Diff)
+				appendEvent(rec, "changes.updated", req.TurnID, "", map[string]any{"changes": rec.Session.Changes, "diff": rec.Session.Diff, "writerStopped": true})
+			}
+		}
+		now := time.Now().UTC()
+		for key, cmd := range rec.Commands {
+			if cmd.Receipt.Type == "steer" && cmd.Receipt.Status == "accepted" && cmd.Receipt.TurnID == req.TurnID {
+				cmd.Receipt.Status = "rejected"
+				rec.Commands[key] = cmd
+				appendEvent(rec, "steering.rejected", req.TurnID, key, map[string]any{"reason": "attempt ended before delivery confirmation"})
+			}
+		}
+		if req.ChildID != "" {
+			for i := range rec.Session.Children {
+				child := &rec.Session.Children[i]
+				if child.ID != req.ChildID {
+					continue
+				}
+				if rec.Session.Status == "stopping" {
+					child.Status = "cancelled"
+				} else if current {
+					child.Status = "succeeded"
+					child.Result = s.clean(result.Message)
+					if runErr != nil {
+						child.Status = "failed"
+						child.Result = s.clean(runErr.Error())
+					}
+					if result.WaitingAuth {
+						child.Status = "failed"
+						child.Result = "Authentication required; child did not complete."
+					}
+				}
+				appendEvent(rec, "child.completed", req.TurnID, "", map[string]any{"childId": child.ID, "status": child.Status, "result": child.Result, "readOnly": true})
+			}
+		} else if current {
+			status := "completed"
+			rec.Session.Status = "idle"
+			rec.Session.ActiveTurnID = ""
+			if result.WaitingAuth {
+				status = "waiting_auth"
+				rec.Session.Status = "waiting_auth"
+				rec.Session.ActiveTurnID = req.TurnID
+				appendEvent(rec, "auth.required", req.TurnID, "", map[string]any{"reason": s.clean(result.AuthReason)})
+			} else if runErr != nil {
+				status = "failed"
+				rec.Session.Status = "error"
+				if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+					status = "interrupted"
+					rec.Session.Status = "recovery_required"
+					rec.Session.ActiveTurnID = req.TurnID
+					rec.Session.RecoveryReason = "Execution interrupted; writer stopped, explicit recovery required."
+				}
+				appendEvent(rec, "turn.failed", req.TurnID, "", map[string]any{"error": s.clean(runErr.Error()), "status": status})
+			} else {
+				if result.Message != "" {
+					appendEvent(rec, "assistant.message", req.TurnID, "", map[string]any{"text": s.clean(result.Message)})
+				}
+				appendEvent(rec, "turn.completed", req.TurnID, "", map[string]any{"status": "completed"})
+			}
+			for i := range rec.Session.Turns {
+				turn := &rec.Session.Turns[i]
+				if turn.ID == req.TurnID {
+					turn.Status = status
+					turn.FinishedAt = &now
+					if runErr != nil {
+						turn.Error = s.clean(runErr.Error())
+					}
+				}
+			}
+		}
+		if rec.Session.Status == "stopping" && !rec.Session.StopFencePending && len(s.active[req.SessionID]) == 0 {
+			markStopped(rec)
+		}
+		return nil
+	})
+}
+
+// CheckExecution is the final broker admission check. It never trusts a lease
+// merely because its signature or original grant was once valid. A dispatched
+// operation may still finish after this check and a subsequent fence; providers
+// cannot participate in the coordinator's local transaction.
+func (s *Service) CheckExecution(owner, sessionID, turnID, leaseID string, fence uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.fatal != nil {
+		return problem(503, "unavailable", "execution coordinator unavailable")
+	}
+	rec, err := s.record(owner, sessionID)
+	if err != nil {
+		return err
+	}
+	if rec.Session.Fence != fence || rec.Session.Status == "stopping" || rec.Session.Status == "stopped" || rec.Session.Status == "recovery_required" {
+		return problem(409, "stale_fence", "execution is fenced")
+	}
+	for _, run := range s.active[sessionID] {
+		if run.request.LeaseID != leaseID || run.request.TurnID != turnID {
+			continue
+		}
+		lease := leaseFor(rec, run.request.ChildID)
+		if lease != nil && lease.LeaseID == leaseID && lease.Status == "active" && lease.ExpiresAt.After(s.opts.Now()) {
+			return nil
+		}
+	}
+	return problem(409, "stale_lease", "execution attempt has no current writer lease")
+}
