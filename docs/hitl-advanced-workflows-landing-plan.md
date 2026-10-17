@@ -9,7 +9,7 @@ and green required CI before landing on main.
 | Review artifact | Intended disposition |
 | --- | --- |
 | [Child workflows design #6803](https://github.com/Agent-Clubhouse/Goobers/pull/6803) | Merged to main in `6c30300d4a83b198dd09c0fa919d5c85c9b2ae15`. |
-| [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Refreshed against main after the other three designs merged; Jeff’s requested-changes review remains open. Auto-merge is off; review resolution and passing CI on the refreshed head are required. |
+| [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Refreshed against main after the other three designs merged, then revised to the deployment authority model from Jeff’s requested-changes review: Fleet owns human identity and the Goobers dashboard behind it is trusted admin. Auto-merge is off; his re-review and passing CI on the refreshed head are required. |
 | [Events/queues design #6805](https://github.com/Agent-Clubhouse/Goobers/pull/6805) | Merged to main in `1141d5db1cc5c45e6aa46f0dbfb3a3a0e5ce6f95`. |
 | [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Merged to main in `24481a5c9c59bf26f8d6800ad801ada6e5a10b10`. |
 | [Implementation review #6807](https://github.com/Agent-Clubhouse/Goobers/pull/6807) | Keep as a draft reference snapshot. Extract reviewed slices; do not merge wholesale. Close as superseded only when all intended behavior is accounted for by landed work or explicit deferrals. |
@@ -56,7 +56,7 @@ Largest implementation areas by changed file count:
 | `internal/workbenchservice` | 46 | Split reads, native edits, PR proposals and relationship curation. |
 | `internal/childworkflow` | 35 | Separate authoring/admission, execution, workspace results and lifecycle qualification. |
 | `internal/workbench` | 32 | Keep source ownership and portable relationships together with provider support. |
-| `internal/interactiveaccess` | 31 | Land exact credential and human authorization boundaries before interactive effects. |
+| `internal/interactiveaccess` | 31 | Land exact credential and gaggle authorization boundaries before interactive effects; per-user grants only on the optional H02 path. |
 
 An initial integration inventory must classify every source change as retained,
 adapted to current main, already supplied by main, superseded, or intentionally
@@ -151,9 +151,9 @@ must land with that shape, not wait for C07.
 
 | ID | Boundary / likely files | Dependencies and acceptance |
 | --- | --- | --- |
-| LAND-H01 | Explicit interactive credentials, human grants and exact-target source access: `internal/interactiveaccess`, instance/config and API capabilities | F03; missing config stays non-interactive, no credential fallback, permission narrowing and human/service distinction tested. |
-| LAND-H02 | Direct-mode browser authentication, if delivering direct Portal access | H01; new work missing from #6807. Login/callback/logout/token lifecycle and browser→daemon authorization must be exercised. Fleet-only deployments instead require the A-series below. |
-| LAND-H03 | Run intervention and affected-stage restart with fresh allowance: `internal/intervention`, `internal/restartintent`, runner/queue/HTTP wiring | H01 and selected auth mode; immutable history, exact stage occurrence, prior context, fresh retry/repass budget, queued dispatch, cancellation and recovery. Include child restart epochs as a separately reviewable dependent PR if needed. |
+| LAND-H01 | Explicit interactive credentials, gaggle action/target ceiling, attribution and exact-target source access: `internal/interactiveaccess`, instance/config and API capabilities | F03; missing config stays non-interactive, no credential fallback, permission narrowing and human/service distinction tested. Fleet-asserted principals are recorded and scope-checked, not authenticated locally. |
+| LAND-H02 | Optional direct browser sign-in for non-Fleet (standalone) deployments; a separate track | H01; new work missing from #6807. Login/callback/logout/token lifecycle and browser→daemon authorization must be exercised. Not a prerequisite for H03–H07 or Fleet qualification, and must not shape Fleet-path contracts. Default standalone stays a trusted local/admin surface. |
+| LAND-H03 | Run intervention and affected-stage restart with fresh allowance: `internal/intervention`, `internal/restartintent`, runner/queue/HTTP wiring | H01 and, for Fleet deployments, the A-series attribution path; immutable history, exact stage occurrence, prior context, fresh retry/repass budget, queued dispatch, cancellation and recovery. Include child restart epochs as a separately reviewable dependent PR if needed. |
 | LAND-H04 | Attributed shared agent sessions and bounded durable turns: `internal/sessioning`, `internal/interactivesession`, session records and runtime | H01; two users, per-turn authority, disconnect, duplicate input, worker loss and retained uncertainty. API, actual runner and minimal usable Portal controls travel together. |
 | LAND-H05 | Backlog field edits and needs-human resolution through typed source tools | H01/H04; bring forward only the provider operations needed for this journey. Verify the blocker is resolved before clearance; do not require the full backlog workbench. |
 | LAND-H06 | Selected-PR repair, receipt inspection and publication reconciliation: sessionops/provider/queue/host adapters | H04; exact selected repo/PR/head, policy checks, isolated workspace, no silent retarget, uncertain effect handling. Split provider adapters from UI only when the exposed surface remains honest. |
@@ -173,9 +173,10 @@ service in this repository.
 | LAND-A04 | Fleet permission leases, executor enforcement, revocation and confirmed cancellation | A03/H03–H04; preserve initiating user and service; stale connection/lease cannot create effects. Socket closure never proves work stopped. Supported executor tests and live qualification required. |
 | LAND-A05 | Explicit workload-identity enrollment/runtime for a headless cloud service | Separate HAW-AUTH-010 dependency on supported Fleet behavior. Agree the external service work and ownership first; no arbitrary app credential substitution. Fleet-only headless readiness stays blocked until qualified. |
 
-Direct browser login is not a prerequisite for fleet-only deployment. Conversely,
-shipping direct login does not establish Agent/workload enrollment support. Select
-the deployment being qualified in each PR and in release acceptance.
+Fleet-managed deployment qualifies first (section 6). Direct browser login (H02)
+is not a prerequisite for Fleet deployment. Conversely, shipping direct login does
+not establish Agent/workload enrollment support. Select the deployment being
+qualified in each PR and in release acceptance.
 
 ### Wave 3 — broader durable starts, events and shared reads
 
@@ -262,12 +263,15 @@ Create numbered backlog items and backlink the accepted designs as the units
 become dispatchable; identifiers here are planning references, not invented issue
 numbers or assertions that issues have been filed.
 
-The remaining product decision is which HITL deployment to qualify first: direct
-browser sign-in, production Fleet with supported delegated enrollment, or a fully
-headless Fleet service that also requires A05. Child workflow delivery can proceed
-while that is decided. External Fleet workload identity and local provenance need
-an agreed compatibility contract; no estimated completion date is credible before
-that boundary is confirmed.
+Product decision (2026-10-14): Fleet-managed deployment qualifies first. Fleet
+owns human identity and enterprise sign-in; the Goobers dashboard/API behind it is
+a trusted admin surface that records and scope-checks Fleet-asserted attribution
+without authenticating humans itself ([deployment authority model](design/interactive-factory-operations.md#41-deployment-authority-model)).
+Direct browser sign-in (HAW-AUTH-009/H02) becomes a separate optional track for
+non-Fleet deployments. A fully headless Fleet service (A05) stays a later separate
+track. Child workflow delivery proceeds independently. Delivery of Fleet-asserted
+facts to the daemon still needs the agreed compatibility contract from #6865; no
+estimated completion date is credible before that boundary is confirmed.
 
 Completion means each accepted capability is implemented, integrated, tested and
 documented on main, with qualified deployment shapes and every snapshot item
@@ -310,7 +314,7 @@ PR descriptions and link actual merges back to the design ledgers.
 | HAW-CHD-008 | C07/H03/H07: visible lineage and common human intervention |
 | HAW-CHD-009 | C06–C07: shipped authoring skill and backend qualification |
 | HAW-HITL-001 | F03/H01/H03–H04: versioned policy, operation, session and attention contracts |
-| HAW-HITL-002 | H01 and selected authentication track: credentials and human grants |
+| HAW-HITL-002 | H01 (plus A-series for Fleet): credentials, gaggle ceiling and attribution |
 | HAW-HITL-003 | H04: durable session ledger and admission |
 | HAW-HITL-004 | H04: session coordinator and harness continuation |
 | HAW-HITL-005 | H03/H05/H07: canonical attention and resolution projection |
@@ -318,7 +322,7 @@ PR descriptions and link actual merges back to the design ledgers.
 | HAW-HITL-007 | H03: local stage restart and allowance epochs |
 | HAW-HITL-008 | H03/H07: Temporal continuation and occurrence-bound decisions |
 | HAW-HITL-009 | C04/H03/H07: child capacity, continuation and family settlement |
-| HAW-HITL-010 | H04/H06/H07 plus selected auth: shared Portal sessions and actions |
+| HAW-HITL-010 | H04/H06/H07 plus Fleet-path A-series: shared Portal sessions and actions |
 | HAW-HITL-011 | H05–H07: CLI/tool parity and integrated backend/provider evidence |
 | HAW-HITL-012 | H07 and each owning slice: operator docs, migrations and release gates |
 | HAW-EVT-001 | F02/E02/E04: envelopes, scoped auth, receipts and migrations |
@@ -347,8 +351,8 @@ PR descriptions and link actual merges back to the design ledgers.
 | HAW-AUTH-006 | A04/H03/H04: executor enforcement, revocation and cancellation |
 | HAW-AUTH-007 | A04/H07: audit, capabilities, streams and operator guidance |
 | HAW-AUTH-008 | A04/H07: production-compatible Fleet qualification |
-| HAW-AUTH-009 | H02: separate direct browser sign-in |
-| HAW-AUTH-010 | A05: separately supported headless workload identity |
+| HAW-AUTH-009 | H02: separate optional direct browser sign-in for non-Fleet deployments |
+| HAW-AUTH-010 | A05: separately supported headless workload identity (later track) |
 
 Unit names in this table omit the common `LAND-` prefix. Fleet tasks remain
 conditional on acceptance of draft #6865. The current state of referenced provider
