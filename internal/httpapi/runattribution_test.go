@@ -2,11 +2,12 @@ package httpapi
 
 import (
 	"context"
-	"github.com/goobers/goobers/internal/apicontract"
-	"github.com/goobers/goobers/internal/readservice"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 type attributionReaderFake struct {

@@ -5,11 +5,13 @@ package readservice
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/internal/instance"
-	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 func TestRunAttributionRejectsEscapingAncestorAndFIFO(t *testing.T) {

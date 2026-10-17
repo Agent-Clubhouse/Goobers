@@ -1,10 +1,11 @@
 package httpapi
 
 import (
-	"github.com/goobers/goobers/internal/apicontract"
-	"github.com/goobers/goobers/internal/readservice"
 	"log"
 	"net/http"
+
+	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 func registerRunAttributionRoute(router *Router, reader readservice.Reader, errorLog *log.Logger) {
