@@ -593,9 +593,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	publication, err := beginVerdictPublication(root, repo, selectedNumber)
-	if err != nil {
-		return failProviderStage(stderr, "capture verdict predecessor", err, resultFile)
+	var publication verdictPublication
+	// A local-only advisory never commits a verdict. Keep it independent of
+	// ledger availability; publishing paths still capture before live checks.
+	if !selectedPR.Advisory || publishAdvisory {
+		publication, err = beginVerdictPublication(root, repo, selectedNumber)
+		if err != nil {
+			return failProviderStage(stderr, "capture verdict predecessor", err, resultFile)
+		}
 	}
 	if selectedPR.Advisory {
 		if !providerRouted {
