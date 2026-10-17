@@ -19,6 +19,7 @@ type testExecution struct {
 	done   chan struct{}
 }
 type testExecutor struct {
+	cancelResult ExecutionResult
 	started      chan *testExecution
 	delayStop    chan struct{}
 	recoverErr   error
@@ -37,7 +38,7 @@ func (e *testExecutor) Execute(ctx context.Context, req ExecutionRequest, emit f
 		if e.delayStop != nil {
 			<-e.delayStop
 		}
-		return ExecutionResult{}, ctx.Err()
+		return e.cancelResult, ctx.Err()
 	}
 }
 func (e *testExecutor) Recover(context.Context, ExecutionRequest) error {
@@ -563,36 +564,28 @@ func TestStopAfterCrashWaitsForOrphanCustody(t *testing.T) {
 	waitStatus(t, s2, "alice", session.ID, "stopped")
 }
 
-func TestChildCompletionDoesNotRejectParentSteering(t *testing.T) {
+func TestChildProposalWhileRunningWaitsForParentCheckpoint(t *testing.T) {
 	e := newExecutor()
 	s := openTest(t, options(t, e))
 	session := createTest(t, s, "alice")
-	parentReceipt := commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
+	commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
 	parent := receiveRun(t, e)
-	childReceipt := commandTest(t, s, "alice", session.ID, Command{Type: "child.request", Text: "review"})
-	commandTest(t, s, "alice", session.ID, Command{Type: "child.review", ChildID: childReceipt.ChildID, Decision: "approve"})
-	child := receiveRun(t, e)
-	steer := commandTest(t, s, "alice", session.ID, Command{Type: "steer", TurnID: parentReceipt.TurnID, Text: "adjust"})
-	child.result <- ExecutionResult{}
-	<-child.done
-	for i := 0; i < 100; i++ {
-		s.mu.Lock()
-		_, active := s.active[session.ID][child.req.ChildID]
-		s.mu.Unlock()
-		if !active {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	child := commandTest(t, s, "alice", session.ID, Command{Type: "child.request", Text: "review after checkpoint"})
+	current, _ := s.Session("alice", session.ID)
+	_, err := s.Command(context.Background(), "alice", session.ID, Command{CommandID: "too-early", Type: "child.review", ChildID: child.ChildID, Decision: "approve", ExpectedSequence: current.Sequence, ExpectedFence: current.Fence})
+	requireCode(t, err, "checkpoint_required")
+	if current.Children[0].Status != "proposed" {
+		t.Fatal("early approval lost the proposal")
 	}
-	s.mu.Lock()
-	status := s.state.Sessions[session.ID].Commands[steer.CommandID].Receipt.Status
-	s.mu.Unlock()
-	if status != "accepted" {
-		t.Fatalf("child completion changed parent steering to %s", status)
-	}
-	(<-parent.req.Steering).Ack(nil)
 	parent.result <- ExecutionResult{}
 	waitStatus(t, s, "alice", session.ID, "idle")
+	commandTest(t, s, "alice", session.ID, Command{Type: "child.review", ChildID: child.ChildID, Decision: "approve"})
+	review := receiveRun(t, e)
+	current, _ = s.Session("alice", session.ID)
+	_, err = s.Command(context.Background(), "alice", session.ID, Command{CommandID: "parent-race", Type: "message", Text: "edit during snapshot", ExpectedSequence: current.Sequence, ExpectedFence: current.Fence})
+	requireCode(t, err, "checkpoint_required")
+	review.result <- ExecutionResult{}
+	<-review.done
 }
 
 func TestTypedToolResultsAndPinnedInstructionsAreSanitized(t *testing.T) {
@@ -688,4 +681,69 @@ func TestCheckControlSharesSessionAndSurfaceAdmission(t *testing.T) {
 	opts.Surfaces[0].Instructions = "new configuration"
 	restarted := openTest(t, opts)
 	requireCode(t, restarted.CheckControl("alice", another.ID), "surface_changed")
+}
+
+func TestUnverifiedCustodyFencesCompletionAndRetainsCapacityUntilRecovery(t *testing.T) {
+	e := newExecutor()
+	e.recoverErr = errors.New("writer marker remains")
+	opts := options(t, e)
+	opts.MaxActive = 1
+	s := openTest(t, opts)
+	session := createTest(t, s, "alice")
+	commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "edit"})
+	run := receiveRun(t, e)
+	run.result <- ExecutionResult{Message: "not safe to complete", CustodyPending: true, WorkspacePath: "/pending", Changes: []Change{{Path: "partial", Status: "added"}}, Diff: "+ still writing"}
+	pending := waitStatus(t, s, "alice", session.ID, "recovery_required")
+	if !pending.CustodyPending || pending.Lease.Status != "custody_pending" || pending.ActiveTurnID == "" {
+		t.Fatalf("custody result discarded: %+v", pending)
+	}
+	requireCode(t, s.CheckControl("alice", session.ID), "invalid_state")
+	events, _ := s.Events("alice", session.ID, 0)
+	for _, event := range events {
+		if event.Type == "turn.completed" || event.Type == "session.stopped" {
+			t.Fatal("unverified custody claimed completion")
+		}
+		if event.Type == "changes.updated" && event.Data["writerStopped"] == true {
+			t.Fatal("unstable snapshot claimed stopped writer")
+		}
+	}
+	_, err := s.Command(context.Background(), "alice", session.ID, Command{CommandID: "unsafe-resume", Type: "resume", ExpectedSequence: pending.Sequence, ExpectedFence: pending.Fence})
+	requireCode(t, err, "recovery_required")
+	other := createTest(t, s, "bob")
+	_, err = s.Command(context.Background(), "bob", other.ID, Command{CommandID: "unknown-capacity", Type: "message", Text: "work", ExpectedSequence: other.Sequence, ExpectedFence: other.Fence})
+	requireCode(t, err, "capacity")
+	e.recoverErr = nil
+	commandTest(t, s, "alice", session.ID, Command{Type: "resume"})
+	replacement := receiveRun(t, e)
+	recovered, _ := s.Session("alice", session.ID)
+	if recovered.CustodyPending {
+		t.Fatal("verified recovery retained custody wait")
+	}
+	replacement.result <- ExecutionResult{}
+	waitStatus(t, s, "alice", session.ID, "idle")
+}
+
+func TestStopWithUnverifiedCustodyRequiresRecoveryBeforeTerminalStop(t *testing.T) {
+	e := newExecutor()
+	e.cancelResult = ExecutionResult{CustodyPending: true}
+	e.recoverErr = errors.New("writer still alive")
+	s := openTest(t, options(t, e))
+	session := createTest(t, s, "alice")
+	commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
+	receiveRun(t, e)
+	commandTest(t, s, "alice", session.ID, Command{Type: "stop"})
+	pending := waitStatus(t, s, "alice", session.ID, "recovery_required")
+	if !pending.CustodyPending || !pending.StopRequested {
+		t.Fatal("stop discarded custody or intent")
+	}
+	_, err := s.Command(context.Background(), "alice", session.ID, Command{CommandID: "revive", Type: "resume", ExpectedSequence: pending.Sequence, ExpectedFence: pending.Fence})
+	requireCode(t, err, "invalid_state")
+	commandTest(t, s, "alice", session.ID, Command{Type: "stop"})
+	waitStatus(t, s, "alice", session.ID, "stopping")
+	e.recoverErr = nil
+	commandTest(t, s, "alice", session.ID, Command{Type: "stop"})
+	stopped := waitStatus(t, s, "alice", session.ID, "stopped")
+	if stopped.CustodyPending || stopped.Lease.Status != "released" {
+		t.Fatal("verified final stop did not release custody")
+	}
 }

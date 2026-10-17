@@ -300,6 +300,9 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 	text := s.clean(strings.TrimSpace(cmd.Text))
 	switch cmd.Type {
 	case "message":
+		if len(s.active[sessionID]) > 0 && rec.Session.Status == "idle" {
+			return receipt, problem(409, "checkpoint_required", "wait for child snapshot work to finish before editing the parent")
+		}
 		if text == "" {
 			return receipt, problem(400, "invalid", "message text is required")
 		}
@@ -349,6 +352,9 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		stop = true
 		receipt.TurnID = rec.Session.ActiveTurnID
 	case "resume":
+		if rec.Session.StopRequested {
+			return receipt, problem(409, "invalid_state", "stop was requested; retry stop to verify remaining custody")
+		}
 		if rec.Session.Status != "recovery_required" && rec.Session.Status != "waiting_auth" {
 			return receipt, problem(409, "invalid_state", "only waiting or interrupted sessions can resume")
 		}
@@ -375,6 +381,17 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 			}
 			if err := recovery.Recover(ctx, request); err != nil {
 				return receipt, problem(409, "recovery_required", s.clean(err.Error()))
+			}
+			for _, child := range rec.Session.Children {
+				if child.Status == "uncertain" {
+					childRequest := request
+					childRequest.ChildID = child.ID
+					childRequest.TurnID = child.ID
+					childRequest.ReadOnly = true
+					if err := recovery.Recover(ctx, childRequest); err != nil {
+						return receipt, problem(409, "recovery_required", s.clean(err.Error()))
+					}
+				}
 			}
 		}
 		launch = &request
@@ -403,7 +420,10 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		receipt.ChildID = child.ID
 		switch cmd.Decision {
 		case "approve":
-			if child.Status != "proposed" || (rec.Session.Status != "idle" && rec.Session.Status != "running") {
+			if rec.Session.Status != "idle" {
+				return receipt, problem(409, "checkpoint_required", "wait for the parent turn to finish before approving a child snapshot")
+			}
+			if child.Status != "proposed" {
 				return receipt, problem(409, "invalid_state", "child is not eligible for approval")
 			}
 			if s.opts.Executor == nil {
@@ -435,6 +455,26 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 				}
 			}
 		}
+		// Unknown physical writers continue consuming admission capacity.
+		// A successful resume has just verified this session's custody, so its
+		// old reservations may be exchanged for the replacement attempt.
+		for id, record := range s.state.Sessions {
+			if cmd.Type == "resume" && id == sessionID {
+				continue
+			}
+			leases := []*Lease{record.Session.Lease}
+			for _, child := range record.Session.Children {
+				leases = append(leases, child.Lease)
+			}
+			for _, lease := range leases {
+				if lease != nil && lease.Status == "custody_pending" {
+					total++
+					if record.Session.Owner == owner {
+						owned++
+					}
+				}
+			}
+		}
 		if total >= s.opts.MaxActive || owned >= s.opts.MaxActivePerOwner {
 			return receipt, problem(409, "capacity", "interactive execution budget is occupied; retry when active work finishes")
 		}
@@ -452,6 +492,12 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 			current.Session.Turns = append(current.Session.Turns, Turn{ID: launch.TurnID, Text: text, Status: "running", Attempt: 1, Fence: launch.Fence, StartedAt: time.Now().UTC()})
 			appendEvent(current, "turn.started", launch.TurnID, cmd.CommandID, map[string]any{"attempt": 1, "fence": launch.Fence})
 		case "resume":
+			current.Session.CustodyPending = false
+			for i := range current.Session.Children {
+				if current.Session.Children[i].Lease != nil && current.Session.Children[i].Lease.Status == "custody_pending" {
+					current.Session.Children[i].Lease.Status = "released"
+				}
+			}
 			current.Session.Lease = s.newLease(*launch)
 			current.Session.Status = "running"
 			current.Session.Fence = launch.Fence
@@ -467,9 +513,10 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 			}
 			appendEvent(current, "turn.started", launch.TurnID, cmd.CommandID, map[string]any{"attempt": launch.Attempt, "fence": launch.Fence, "resumed": true})
 		case "stop":
+			current.Session.StopRequested = true
 			current.Session.Fence++
 			current.Session.StopFencePending = s.opts.OnStop != nil
-			current.Session.CustodyPending = len(custody) > 0
+			current.Session.CustodyPending = current.Session.CustodyPending || len(custody) > 0
 			current.Session.Status = "stopping"
 			appendEvent(current, "session.stopping", current.Session.ActiveTurnID, cmd.CommandID, map[string]any{"fence": current.Session.Fence})
 			for i := range current.Session.Children {

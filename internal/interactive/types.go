@@ -74,6 +74,8 @@ type ExecutionEvent struct {
 }
 
 type ExecutionResult struct {
+	// CustodyPending means Execute returned without proving all workspace writers stopped.
+	CustodyPending               bool
 	Message, WorkspacePath, Diff string
 	Changes                      []Change
 	WaitingAuth                  bool
@@ -99,6 +101,7 @@ type Lease struct {
 	Status    string    `json:"status"`
 }
 type Session struct {
+	StopRequested    bool      `json:"stopRequested,omitempty"`
 	OutputBytes      int       `json:"outputBytes"`
 	CustodyPending   bool      `json:"custodyPending,omitempty"`
 	StopFencePending bool      `json:"stopFencePending,omitempty"`

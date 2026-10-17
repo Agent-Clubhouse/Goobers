@@ -269,9 +269,14 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 		rec := state.Sessions[req.SessionID]
 		current := rec.Session.Fence == req.Fence
 		lease := leaseFor(rec, req.ChildID)
-		if lease != nil && lease.Status == "active" {
-			lease.Status = "released"
+		if lease != nil {
+			if result.CustodyPending {
+				lease.Status = "custody_pending"
+			} else if lease.Status == "active" {
+				lease.Status = "released"
+			}
 		}
+
 		// A fenced writer cannot publish more events or claim success. Its
 		// final stopped-workspace snapshot is still custody evidence worth
 		// retaining, including partial edits made before cancellation.
@@ -282,7 +287,7 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 			if result.Changes != nil {
 				rec.Session.Changes = clone(result.Changes)
 				rec.Session.Diff = s.clean(result.Diff)
-				appendEvent(rec, "changes.updated", req.TurnID, "", map[string]any{"changes": rec.Session.Changes, "diff": rec.Session.Diff, "writerStopped": true})
+				appendEvent(rec, "changes.updated", req.TurnID, "", map[string]any{"changes": rec.Session.Changes, "diff": rec.Session.Diff, "writerStopped": !result.CustodyPending})
 			}
 		}
 		now := time.Now().UTC()
@@ -292,6 +297,40 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 				rec.Commands[key] = cmd
 				appendEvent(rec, "steering.rejected", req.TurnID, key, map[string]any{"reason": "attempt ended before delivery confirmation"})
 			}
+		}
+		if result.CustodyPending {
+			rec.Session.CustodyPending = true
+			rec.Session.Status = "recovery_required"
+			rec.Session.Fence++
+			rec.Session.RecoveryReason = "Executor could not verify workspace quiescence; prior writer custody remains pending."
+			for i := range rec.Session.Children {
+				if rec.Session.Children[i].Status == "running" {
+					rec.Session.Children[i].Status = "uncertain"
+				}
+			}
+
+			if runErr != nil {
+				rec.Session.RecoveryReason = s.clean(runErr.Error())
+			}
+			if req.ChildID == "" {
+				rec.Session.ActiveTurnID = req.TurnID
+				for i := range rec.Session.Turns {
+					if rec.Session.Turns[i].ID == req.TurnID {
+						rec.Session.Turns[i].Status = "interrupted"
+						rec.Session.Turns[i].Error = rec.Session.RecoveryReason
+						rec.Session.Turns[i].FinishedAt = nil
+					}
+				}
+			} else {
+				for i := range rec.Session.Children {
+					if rec.Session.Children[i].ID == req.ChildID {
+						rec.Session.Children[i].Status = "uncertain"
+						rec.Session.Children[i].Result = rec.Session.RecoveryReason
+					}
+				}
+			}
+			appendEvent(rec, "recovery.required", req.TurnID, "", map[string]any{"reason": rec.Session.RecoveryReason, "custodyPending": true, "childId": req.ChildID})
+			return nil
 		}
 		if req.ChildID != "" {
 			for i := range rec.Session.Children {
@@ -356,6 +395,11 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 		}
 		return nil
 	})
+	if result.CustodyPending {
+		for _, run := range s.active[req.SessionID] {
+			run.cancel()
+		}
+	}
 }
 
 // CheckExecution is the final broker admission check. It never trusts a lease

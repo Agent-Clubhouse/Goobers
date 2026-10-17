@@ -55,7 +55,12 @@ children become uncertain; no turn or child is replayed automatically. Explicit
 resume requires `RecoveryExecutor.Recover` to confirm old writer custody and
 reconcile ambiguous effects. An executor without that capability cannot resume.
 Likewise, stopping an interrupted session does not report `writersStopped` while
-orphan custody remains unverified. `custodyPending` describes that wait.
+orphan custody remains unverified. `custodyPending` describes that wait. An executor that cannot verify workspace
+quiescence returns `ExecutionResult.CustodyPending`; the coordinator retains a
+`custody_pending` lease reservation, advances the fence, and requires recovery
+instead of treating process return as proof of custody. A stop request remains
+recorded and cannot be converted into resumed editing. Only successful custody
+verification permits terminal stop or a new eligible attempt.
 
 Stop first persists the session fence. It then propagates broker revocation
 through `OnStop`, outside the session mutex so final broker admission does not
@@ -94,7 +99,10 @@ to application identity.
 The current child is a dynamically requested, explicitly reviewed,
 `executionKind: interactive-review` operation. It runs through the same bounded
 executor interface with `ReadOnly: true`, a separate lease, and a separate
-workspace supplied by the execution adapter. A completed result requires an
+workspace supplied by the execution adapter. A proposal can be created during
+a parent turn, but approval requires an idle parent. New parent turns wait for
+active children to finish, because this first adapter has no atomic snapshot
+barrier; `checkpoint_required` explains either refusal. A completed result requires an
 explicit `accept` review. No patch is automatically applied to the parent.
 Children cannot recursively invoke the session command API or create grants.
 
