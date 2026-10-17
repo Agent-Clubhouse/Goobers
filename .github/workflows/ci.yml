@@ -2032,6 +2032,9 @@ jobs:
       - name: Windows credential files
         run: go test ./internal/credentials ./internal/fleet
 
+      - name: Windows test partitioning
+        run: go test ./internal/testshard -count=1
+
       - name: Windows child proposal validation
         run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook -count=1
 
