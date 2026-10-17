@@ -57,6 +57,7 @@ const (
 	defaultPollInterval  = time.Second
 	maxArchiveBytes      = 1 << 30
 	maxMetadataBytes     = 1 << 20
+	maxReferenceFiles    = 10000
 )
 
 // Request is the durable workflow-to-supervisor handoff.
@@ -515,7 +516,7 @@ func newStageDir(root, target string) (string, func() error, error) {
 	return dir, func() error { return os.RemoveAll(dir) }, nil
 }
 
-func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versionInfo, error) {
+func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (_ versionInfo, retErr error) {
 	info, err := readVersion(ctx, opts.Runner, opts.WorkDir, binary)
 	if err != nil {
 		return info, fmt.Errorf("staged --version smoke check: %w", err)
@@ -523,15 +524,109 @@ func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versio
 	if _, err := opts.Runner.Run(ctx, opts.WorkDir, nil, binary, "validate", opts.Root); err != nil {
 		return info, fmt.Errorf("staged validate smoke check: %w", err)
 	}
-	canonical := opts.Root
-	candidate := filepath.Join(opts.WorkDir, "reference-workflows")
-	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-		canonical = candidate
+	canonical, cleanup, err := downloadReferenceCatalog(ctx, opts, filepath.Dir(binary), info.Commit)
+	if err != nil {
+		return info, fmt.Errorf("target/reference-version mismatch: cannot obtain canonical reference-workflows for candidate commit %q: %w", info.Commit, err)
 	}
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
 	if _, err := opts.Runner.Run(ctx, opts.WorkDir, nil, binary, "config", "diff", "--against", canonical, opts.Root); err != nil {
 		return info, fmt.Errorf("staged config diff smoke check: %w", err)
 	}
 	return info, nil
+}
+
+func downloadReferenceCatalog(ctx context.Context, opts PrepareOptions, stageDir, commit string) (_ string, cleanup func() error, retErr error) {
+	commit = strings.TrimSpace(commit)
+	if commit == "" || commit == "none" {
+		return "", nil, errors.New("candidate did not report a usable commit")
+	}
+	archivePath := filepath.Join(stageDir, "reference-source.tar.gz")
+	catalogPath := filepath.Join(stageDir, "reference-workflows")
+	cleanup = func() error {
+		archiveErr := os.Remove(archivePath)
+		if errors.Is(archiveErr, os.ErrNotExist) {
+			archiveErr = nil
+		}
+		return errors.Join(archiveErr, os.RemoveAll(catalogPath))
+	}
+	defer func() {
+		if retErr != nil {
+			retErr = errors.Join(retErr, cleanup())
+		}
+	}()
+	endpoint := repositoryEndpoint(opts) + "/tarball/" + url.PathEscape(commit)
+	if err := download(ctx, opts, endpoint, archivePath, maxArchiveBytes); err != nil {
+		return "", cleanup, fmt.Errorf("download candidate source archive: %w", err)
+	}
+	if err := extractReferenceCatalog(archivePath, catalogPath); err != nil {
+		return "", cleanup, err
+	}
+	if err := os.Remove(archivePath); err != nil {
+		return "", cleanup, fmt.Errorf("remove candidate source archive: %w", err)
+	}
+	return catalogPath, cleanup, nil
+}
+
+func extractReferenceCatalog(archivePath, destination string) error {
+	found := false
+	files := 0
+	var expanded int64
+	err := readTarGz(archivePath, func(header *tar.Header, reader *tar.Reader) (bool, error) {
+		name := filepath.ToSlash(header.Name)
+		const marker = "/reference-workflows/"
+		index := strings.Index(name, marker)
+		if index < 0 {
+			return false, nil
+		}
+		found = true
+		relative := strings.TrimPrefix(name[index+len(marker):], "/")
+		if relative == "" {
+			return false, nil
+		}
+		clean := filepath.Clean(filepath.FromSlash(relative))
+		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return false, fmt.Errorf("candidate reference catalog contains unsafe path %q", relative)
+		}
+		target := filepath.Join(destination, clean)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			return false, os.MkdirAll(target, 0o755)
+		case tar.TypeReg, tar.TypeRegA:
+			files++
+			if files > maxReferenceFiles {
+				return false, fmt.Errorf("candidate reference catalog exceeds %d files", maxReferenceFiles)
+			}
+			if header.Size < 0 || expanded+header.Size > maxArchiveBytes {
+				return false, fmt.Errorf("candidate reference catalog exceeds %d bytes", maxArchiveBytes)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return false, err
+			}
+			output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			if err != nil {
+				return false, err
+			}
+			written, copyErr := io.Copy(output, io.LimitReader(reader, header.Size))
+			closeErr := output.Close()
+			if err := errors.Join(copyErr, closeErr); err != nil {
+				return false, err
+			}
+			if written != header.Size {
+				return false, io.ErrUnexpectedEOF
+			}
+			expanded += written
+			return false, nil
+		default:
+			return false, fmt.Errorf("candidate reference catalog contains unsupported archive entry %q", relative)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("extract candidate reference catalog: %w", err)
+	}
+	if !found || files == 0 {
+		return errors.New("candidate source archive does not contain reference-workflows")
+	}
+	return nil
 }
 
 var errVersionOutputIncomplete = errors.New("version output is missing version or commit")
