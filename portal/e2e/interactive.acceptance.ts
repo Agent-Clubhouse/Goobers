@@ -405,7 +405,13 @@ test("helper authors and applies a native workflow, tweaks its gaggle and observ
   await page.getByRole("button", { name: "Start run", exact: true }).click();
   await expect.poll(async () => (await readState()).runs.some((run: {workflow: string; phase: string}) => run.workflow === "invoice-check-custom" && run.phase === "completed"), { timeout: 90_000 }).toBeTruthy();
   const final = await readState();
-  expect(final.actions.find((action: {kind: string}) => action.kind === "submit_run").status).toBe("succeeded");
+  const nativeAction = final.actions.find((action: {kind: string}) => action.kind === "submit_run");
+  expect(nativeAction).toMatchObject({ status: "succeeded", operationStatus: "confirmed", cleanupConfirmed: true });
+  expect(nativeAction.executionRepository).toBeTruthy();
+  expect(nativeAction.executionRepository).not.toBe(final.repository);
+  expect(nativeAction.executionRoot).toContain(`/executions/${nativeAction.id}/instance`);
+  expect(nativeAction.executionBindingDigest).toBeTruthy();
+  expect(nativeAction.executionPayloadDigest).toBeTruthy();
   const runReceipt = page.getByRole("region", { name: "Action proposals", exact: true }).locator("article").filter({ hasText: "Submit interactive/invoice-check-custom" });
   await expect(runReceipt.locator(".ix-status")).toHaveText("succeeded");
   await runReceipt.locator(".ix-status").scrollIntoViewIfNeeded();
@@ -529,7 +535,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
     const completed = await awaitTurn(request, fresh.id, 1);
     expect(completed.status).toBe("idle");
     await page.getByRole("tab", { name: /^Children/ }).click();
-    await expect(page.getByText("Configured limit: 2", { exact: true })).toBeVisible();
+    await expect(page.getByText("Configured limit: 2 children", { exact: true })).toBeVisible();
     await capture(page, "interactive-dsl-reload-new-session");
     await writeFile(`${evidenceDirectory}/dsl-reload.json`, JSON.stringify({
       fixtureConfig, before, afterInvalid, reloadReceipt, fenced, surfaceAfter, fresh: completed, retainedReceipts,
