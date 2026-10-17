@@ -25,17 +25,20 @@ type activeRun struct {
 	steering chan Steering
 }
 type Service struct {
-	mu        sync.Mutex
-	opts      Options
-	state     diskState
-	active    map[string]map[string]*activeRun
-	changed   chan struct{}
-	held      *lock.Handle
-	scrubber  *secretpattern.Scrubber
-	wg        sync.WaitGroup
-	closed    bool
-	stopSweep chan struct{}
-	fatal     error
+	mu         sync.Mutex
+	reloadMu   sync.Mutex
+	reloading  bool
+	opts       Options
+	state      diskState
+	active     map[string]map[string]*activeRun
+	changed    chan struct{}
+	held       *lock.Handle
+	scrubber   *secretpattern.Scrubber
+	wg         sync.WaitGroup
+	closed     bool
+	stopSweep  chan struct{}
+	policyWake chan struct{}
+	fatal      error
 }
 
 func Open(opts Options) (*Service, error) {
@@ -83,17 +86,10 @@ func Open(opts Options) (*Service, error) {
 	if opts.MaxSessionOutputBytes <= 0 {
 		opts.MaxSessionOutputBytes = 8 << 20
 	}
-	opts.Surfaces = clone(opts.Surfaces)
-	scrubber := secretpattern.NewScrubber()
-	for i := range opts.Surfaces {
-		opts.Surfaces[i].Instructions = string(scrubber.Scrub([]byte(opts.Surfaces[i].Instructions)))
-	}
-	seen := map[string]bool{}
-	for _, surface := range opts.Surfaces {
-		if surface.ID == "" || seen[surface.ID] || (surface.Mode != "helper" && surface.Mode != "workbench") || surface.MaxChildren < 0 || surface.MaxChildren > 8 {
-			return nil, errors.New("invalid or duplicate interactive surface")
-		}
-		seen[surface.ID] = true
+	var err error
+	opts.Surfaces, err = prepareSurfaces(opts.Surfaces)
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(opts.StateDir, 0700); err != nil {
 		return nil, err
@@ -102,7 +98,7 @@ func Open(opts Options) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("interactive coordinator already owned or inaccessible: %w", err)
 	}
-	s := &Service{opts: opts, state: emptyState(), active: map[string]map[string]*activeRun{}, changed: make(chan struct{}), held: held, scrubber: secretpattern.NewScrubber(), stopSweep: make(chan struct{})}
+	s := &Service{opts: opts, state: emptyState(), active: map[string]map[string]*activeRun{}, changed: make(chan struct{}), held: held, scrubber: secretpattern.NewScrubber(), stopSweep: make(chan struct{}), policyWake: make(chan struct{}, 1)}
 	b, err := os.ReadFile(filepath.Join(opts.StateDir, "sessions.json"))
 	if err == nil {
 		err = json.Unmarshal(b, &s.state)
@@ -229,7 +225,7 @@ func (s *Service) ListSessions(owner string) []Session {
 func (s *Service) Create(owner string, req CreateRequest) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || s.reloading {
 		return Session{}, problem(503, "unavailable", "coordinator is closed")
 	}
 	if owner == "" || !validCommandID(req.CommandID) || len(req.Title) > 200 {
@@ -243,16 +239,19 @@ func (s *Service) Create(owner string, req CreateRequest) (Session, error) {
 		}
 		return clone(s.state.Sessions[old.SessionID].Session), nil
 	}
-	executionMode := req.ExecutionMode
-	if executionMode == "" {
-		executionMode = s.opts.DefaultExecutionMode
-	}
-	if !s.executionModeAvailable(executionMode) {
-		return Session{}, problem(409, "execution_mode_unavailable", "requested execution mode is not enabled by this host")
-	}
 	surface, ok := s.surface(req.SurfaceID)
 	if !ok || !surface.Enabled {
 		return Session{}, problem(404, "surface_unavailable", "configured surface is unavailable")
+	}
+	executionMode := req.ExecutionMode
+	if executionMode == "" {
+		executionMode = surface.DefaultExecutionMode
+	}
+	if executionMode == "" {
+		executionMode = s.opts.DefaultExecutionMode
+	}
+	if !s.executionModeAvailable(executionMode) || !surfaceAllowsMode(surface, executionMode) {
+		return Session{}, problem(409, "execution_mode_unavailable", "requested execution mode is not enabled by this surface and host")
 	}
 	if len(s.state.Sessions) >= 1000 {
 		return Session{}, problem(409, "capacity", "prototype session retention limit reached")
@@ -262,7 +261,7 @@ func (s *Service) Create(owner string, req CreateRequest) (Session, error) {
 	if title == "" {
 		title = "New " + surface.Name + " session"
 	}
-	session := Session{ExecutionMode: executionMode, ConfigDigest: digest(surface), Members: []Member{{Principal: owner, Role: "owner"}}, ID: id("ses_"), Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Title: title, Status: "idle", Fence: 1, CreatedAt: now, UpdatedAt: now, Turns: []Turn{}, Children: []Child{}, Changes: []Change{}}
+	session := Session{ConfigRevision: surface.ConfigRevision, ExecutionMode: executionMode, ConfigDigest: digest(surface), Members: []Member{{Principal: owner, Role: "owner"}}, ID: id("ses_"), Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Title: title, Status: "idle", Fence: 1, CreatedAt: now, UpdatedAt: now, Turns: []Turn{}, Children: []Child{}, Changes: []Change{}}
 	err := s.mutate(func(state *diskState) error {
 		rec := &sessionRecord{Session: session, Events: []Event{}, Commands: map[string]storedCommand{}}
 		appendEvent(rec, "session.created", "", req.CommandID, map[string]any{"mode": surface.Mode, "surfaceId": surface.ID, "executionMode": executionMode})
@@ -328,7 +327,10 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 	}
 	surface, exists := s.surface(rec.Session.SurfaceID)
 	reviewOnly := cmd.Type == "child.review" && (cmd.Decision == "deny" || cmd.Decision == "accept")
-	if cmd.Type != "stop" && !reviewOnly && !s.executionModeAvailable(rec.Session.ExecutionMode) {
+	if s.reloading && cmd.Type != "stop" && !reviewOnly {
+		return CommandReceipt{}, problem(503, "policy_reloading", "surface policy reload is in progress")
+	}
+	if cmd.Type != "stop" && !reviewOnly && (!s.executionModeAvailable(rec.Session.ExecutionMode) || !surfaceAllowsMode(surface, rec.Session.ExecutionMode)) {
 		return CommandReceipt{}, problem(409, "execution_mode_unavailable", "session execution mode is unpinned or unavailable; create a new session with an enabled mode")
 	}
 
@@ -337,6 +339,9 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 	}
 	if cmd.Type != "stop" && !reviewOnly && (!exists || !surface.Enabled) {
 		return CommandReceipt{}, problem(409, "surface_unavailable", "surface is disabled; stop remains available")
+	}
+	if cmd.Type != "stop" && !reviewOnly && rec.Session.StopFencePending {
+		return CommandReceipt{}, problem(409, "invalid_state", "external authority fence is pending; retry stop before any new work")
 	}
 	if cmd.Type == "resume" && len(s.active[sessionID]) > 0 {
 		return CommandReceipt{}, problem(409, "recovery_required", "prior writer is still stopping")
@@ -426,6 +431,7 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 			return receipt, problem(409, "recovery_required", "interrupted turn is unavailable")
 		}
 		request := ExecutionRequest{SessionID: sessionID, TurnID: turn.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: turn.Text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence + 1, Attempt: turn.Attempt + 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
+		s.bindSurfaceRequest(&request, surface)
 		if rec.Session.Status == "recovery_required" {
 			recovery, ok := s.opts.Executor.(RecoveryExecutor)
 			if !ok {
@@ -440,6 +446,7 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 					childRequest.ChildID = child.ID
 					childRequest.TurnID = child.ID
 					childRequest.ReadOnly = true
+					s.bindSurfaceRequest(&childRequest, surface)
 					if err := recovery.Recover(ctx, childRequest); err != nil {
 						return receipt, problem(409, "recovery_required", s.clean(err.Error()))
 					}
@@ -499,41 +506,11 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 		return receipt, problem(400, "invalid", "unknown interactive command type")
 	}
 	if launch != nil {
-		if !s.executionModeAvailable(rec.Session.ExecutionMode) {
-			return receipt, problem(409, "execution_mode_unavailable", "session execution mode is unpinned or unavailable; create a new session with an enabled mode")
+		s.bindSurfaceRequest(launch, surface)
+		if err := s.checkCapacity(surface, owner, sessionID, cmd.Type == "resume"); err != nil {
+			return receipt, err
 		}
-		total, owned := 0, 0
-		for _, runs := range s.active {
-			for _, run := range runs {
-				total++
-				if run.request.Owner == owner {
-					owned++
-				}
-			}
-		}
-		// Unknown physical writers continue consuming admission capacity.
-		// A successful resume has just verified this session's custody, so its
-		// old reservations may be exchanged for the replacement attempt.
-		for id, record := range s.state.Sessions {
-			if cmd.Type == "resume" && id == sessionID {
-				continue
-			}
-			leases := []*Lease{record.Session.Lease}
-			for _, child := range record.Session.Children {
-				leases = append(leases, child.Lease)
-			}
-			for _, lease := range leases {
-				if lease != nil && lease.Status == "custody_pending" {
-					total++
-					if record.Session.Owner == owner {
-						owned++
-					}
-				}
-			}
-		}
-		if total >= s.opts.MaxActive || owned >= s.opts.MaxActivePerOwner {
-			return receipt, problem(409, "capacity", "interactive execution budget is occupied; retry when active work finishes")
-		}
+
 		launch.WorkerID = s.opts.WorkerID
 		launch.LeaseID = id("lease_")
 	}
@@ -756,7 +733,11 @@ func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64,
 func (s *Service) CheckControl(owner, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.fatal != nil {
+	return s.checkControlLocked(owner, sessionID)
+}
+
+func (s *Service) checkControlLocked(owner, sessionID string) error {
+	if s.closed || s.fatal != nil || s.reloading {
 		return problem(503, "unavailable", "interactive coordinator is unavailable")
 	}
 	rec, err := s.record(owner, sessionID)
@@ -770,7 +751,7 @@ func (s *Service) CheckControl(owner, sessionID string) error {
 	if rec.Session.ConfigDigest != digest(surface) {
 		return problem(409, "surface_changed", "surface policy changed; create a new session for the new configuration")
 	}
-	if !s.executionModeAvailable(rec.Session.ExecutionMode) {
+	if !s.executionModeAvailable(rec.Session.ExecutionMode) || !surfaceAllowsMode(surface, rec.Session.ExecutionMode) {
 		return problem(409, "execution_mode_unavailable", "session execution mode is unpinned or unavailable; create a new session with an enabled mode")
 	}
 

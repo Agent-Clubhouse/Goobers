@@ -11,7 +11,18 @@ import (
 )
 
 func (s *Service) newLease(req ExecutionRequest) *Lease {
-	return &Lease{WorkerID: req.WorkerID, LeaseID: req.LeaseID, Fence: req.Fence, ExpiresAt: s.opts.Now().Add(s.opts.LeaseDuration), Status: "active"}
+	return &Lease{WorkerID: req.WorkerID, LeaseID: req.LeaseID, Fence: req.Fence, ExpiresAt: s.leaseExpiry(req), Status: "active"}
+}
+func (s *Service) leaseExpiry(req ExecutionRequest) time.Time {
+	duration := req.leaseDuration
+	if duration <= 0 {
+		duration = s.opts.LeaseDuration
+	}
+	expiry := s.opts.Now().Add(duration)
+	if !req.turnExpiresAt.IsZero() && req.turnExpiresAt.Before(expiry) {
+		expiry = req.turnExpiresAt
+	}
+	return expiry
 }
 func runKey(req ExecutionRequest) string {
 	if req.ChildID != "" {
@@ -39,24 +50,35 @@ func (s *Service) heartbeat(req ExecutionRequest) error {
 		return problem(409, "stale_lease", "worker lease expired or was fenced")
 	}
 	return s.mutate(func(state *diskState) error {
-		leaseFor(state.Sessions[req.SessionID], req.ChildID).ExpiresAt = s.opts.Now().Add(s.opts.LeaseDuration)
+		leaseFor(state.Sessions[req.SessionID], req.ChildID).ExpiresAt = s.leaseExpiry(req)
 		return nil
 	})
 }
-func (s *Service) watchLeases() {
-	interval := s.opts.LeaseDuration / 4
+func (s *Service) leaseSweepInterval() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	duration := s.opts.LeaseDuration
+	for _, surface := range s.opts.Surfaces {
+		duration = boundedDuration(surface.LeaseSeconds, duration)
+	}
+	interval := duration / 4
 	if interval > time.Second {
 		interval = time.Second
 	}
 	if interval < 10*time.Millisecond {
 		interval = 10 * time.Millisecond
 	}
-	ticker := time.NewTicker(interval)
+	return interval
+}
+func (s *Service) watchLeases() {
+	ticker := time.NewTicker(s.leaseSweepInterval())
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			s.SweepLeases()
+		case <-s.policyWake:
+			ticker.Reset(s.leaseSweepInterval())
 		case <-s.stopSweep:
 			return
 		}
@@ -120,7 +142,11 @@ func (s *Service) SweepLeases() {
 }
 
 func (s *Service) start(req ExecutionRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.opts.MaxTurnDuration)
+	duration := req.maxTurnDuration
+	if duration <= 0 {
+		duration = s.opts.MaxTurnDuration
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	steering := make(chan Steering, 16)
 	req.Steering = steering
 	req.Heartbeat = func() error { return s.heartbeat(req) }
@@ -269,12 +295,25 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 		rec := state.Sessions[req.SessionID]
 		current := rec.Session.Fence == req.Fence
 		lease := leaseFor(rec, req.ChildID)
-		if lease != nil {
+		wasPolicyFenced := lease != nil && lease.LeaseID == req.LeaseID && lease.Status == "policy_fenced"
+		if lease != nil && lease.LeaseID == req.LeaseID {
 			if result.CustodyPending {
 				lease.Status = "custody_pending"
-			} else if lease.Status == "active" {
+			} else {
 				lease.Status = "released"
 			}
+		}
+		if wasPolicyFenced && !result.CustodyPending {
+			pending := len(s.active[req.SessionID]) > 0
+			if rec.Session.Lease != nil && rec.Session.Lease.Status == "custody_pending" {
+				pending = true
+			}
+			for _, child := range rec.Session.Children {
+				if child.Lease != nil && (child.Lease.Status == "custody_pending" || child.Lease.Status == "policy_fenced") {
+					pending = true
+				}
+			}
+			rec.Session.CustodyPending = pending
 		}
 
 		// A fenced writer cannot publish more events or claim success. Its
@@ -422,6 +461,10 @@ func (s *Service) checkExecutionLocked(owner, sessionID, turnID, leaseID string,
 	}
 	if rec.Session.Fence != fence || rec.Session.Status == "stopping" || rec.Session.Status == "stopped" || rec.Session.Status == "recovery_required" {
 		return problem(409, "stale_fence", "execution is fenced")
+	}
+	surface, exists := s.surface(rec.Session.SurfaceID)
+	if !exists || !surface.Enabled || rec.Session.ConfigDigest != digest(surface) || !surfaceAllowsMode(surface, rec.Session.ExecutionMode) || !s.executionModeAvailable(rec.Session.ExecutionMode) {
+		return problem(409, "surface_changed", "execution policy is no longer current")
 	}
 	for _, run := range s.active[sessionID] {
 		if run.request.LeaseID != leaseID || run.request.TurnID != turnID {

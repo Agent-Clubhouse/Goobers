@@ -47,12 +47,14 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			methodError(w)
 			return
 		}
+		s.mu.Lock()
 		surfaces := []Surface{}
 		for _, surface := range s.opts.Surfaces {
 			if surface.Enabled {
-				surfaces = append(surfaces, surface)
+				surfaces = append(surfaces, clone(surface))
 			}
 		}
+		s.mu.Unlock()
 		writeJSON(w, 200, map[string]any{"surfaces": surfaces, "executionModes": s.ExecutionModes(), "defaultExecutionMode": s.opts.DefaultExecutionMode})
 		return
 	case "/sessions":

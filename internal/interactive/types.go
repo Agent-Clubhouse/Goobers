@@ -15,13 +15,30 @@ const (
 )
 
 type Surface struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	Mode         string `json:"mode"`
-	Enabled      bool   `json:"enabled"`
-	MaxChildren  int    `json:"maxChildren"`
-	Instructions string `json:"instructions,omitempty"`
+	// ConfigRevision covers the resolved non-secret DSL snapshot, including
+	// authority reference mappings which are not carried as prompt material.
+	ConfigRevision           string   `json:"configRevision,omitempty"`
+	Gaggle                   string   `json:"gaggle,omitempty"`
+	Goober                   string   `json:"goober,omitempty"`
+	Model                    string   `json:"model,omitempty"`
+	Harness                  string   `json:"harness,omitempty"`
+	Tools                    []string `json:"tools,omitempty"`
+	Workflows                []string `json:"workflows,omitempty"`
+	AuthorityRefs            []string `json:"authorityRefs,omitempty"`
+	ChildCommandCapabilities []string `json:"childCommandCapabilities,omitempty"`
+	ExecutionModes           []string `json:"executionModes,omitempty"`
+	DefaultExecutionMode     string   `json:"defaultExecutionMode,omitempty"`
+	MaxTurnSeconds           int      `json:"maxTurnSeconds,omitempty"`
+	LeaseSeconds             int      `json:"leaseSeconds,omitempty"`
+	MaxActive                int      `json:"maxActive,omitempty"`
+	MaxActivePerOwner        int      `json:"maxActivePerOwner,omitempty"`
+	ID                       string   `json:"id"`
+	Name                     string   `json:"name"`
+	Description              string   `json:"description"`
+	Mode                     string   `json:"mode"`
+	Enabled                  bool     `json:"enabled"`
+	MaxChildren              int      `json:"maxChildren"`
+	Instructions             string   `json:"instructions,omitempty"`
 }
 
 type Options struct {
@@ -59,6 +76,11 @@ type RecoveryExecutor interface {
 }
 
 type ExecutionRequest struct {
+	ConfigRevision, Gaggle, Goober, Model, Harness            string
+	Tools, Workflows, AuthorityRefs, ChildCommandCapabilities []string
+	// Limits are resolved once from the admitted policy, never widened by reload.
+	leaseDuration, maxTurnDuration                                 time.Duration
+	turnExpiresAt                                                  time.Time
 	ExecutionMode                                                  string
 	WorkflowYAML                                                   string
 	SessionID, TurnID, Owner, SurfaceID, Mode, Text, WorkspacePath string
@@ -112,6 +134,7 @@ type Lease struct {
 	Status    string    `json:"status"`
 }
 type Session struct {
+	ConfigRevision   string    `json:"configRevision,omitempty"`
 	ExecutionMode    string    `json:"executionMode"`
 	StopRequested    bool      `json:"stopRequested,omitempty"`
 	OutputBytes      int       `json:"outputBytes"`
