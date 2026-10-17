@@ -7,8 +7,8 @@ const surfaces: Surface[] = [
   { id: "helper", name: "Gaggle helper", description: "Scope work using configured workflows", mode: "helper", enabled: true, maxChildren: 1 },
   { id: "workbench", name: "Agent workbench", description: "Investigate, edit and test", mode: "workbench", enabled: true, maxChildren: 2 },
 ];
-const runtime: RuntimeStatus = { providerMode: "controlled-local", executionMode: "local-tools", identity: { name: "Mason", subject: "local:mason", issuer: "loopback-demo" }, connections: [{id: "ado", provider: "ado", label: "ADO demo", status: "active", resources: ["demo/project"]}], limits: { maxTurnSeconds: 120, maxChildren: 2 }, capabilities: { liveModel: false, liveDelegatedAuth: false } };
-function makeSession(overrides: Partial<Session> = {}): Session { return { id: "s-1", owner: "local:mason", surfaceId: "workbench", mode: "workbench", title: "Inspect application", status: "idle", sequence: 1, fence: 1, createdAt: "2026-10-17T09:00:00Z", updatedAt: "2026-10-17T09:00:00Z", turns: [], children: [], changes: [], ...overrides }; }
+const runtime: RuntimeStatus = { defaultMode: "codex-local", executionModes: [{id: "codex-local", label: "Agent · Codex", available: false, reason: "Host must opt in with --trusted-local-model-login", liveQualified: false}, {id: "local-tools", label: "Deterministic demo", available: true, liveQualified: false}], providerMode: "controlled-local", executionMode: "local-tools", identity: { name: "Mason", subject: "local:mason", issuer: "loopback-demo" }, connections: [{id: "ado", provider: "ado", label: "ADO demo", status: "active", resources: ["demo/project"]}], limits: { maxTurnSeconds: 120, maxChildren: 2 }, capabilities: { liveModel: false, liveDelegatedAuth: false } };
+function makeSession(overrides: Partial<Session> = {}): Session { return { id: "s-1", owner: "local:mason", surfaceId: "workbench", mode: "workbench", executionMode: "local-tools", title: "Inspect application", status: "idle", sequence: 1, fence: 1, createdAt: "2026-10-17T09:00:00Z", updatedAt: "2026-10-17T09:00:00Z", turns: [], children: [], changes: [], ...overrides }; }
 function fixture(initial = makeSession()) {
   let session = initial;
   let onEvent: (event: InteractiveEvent) => void = () => {};
@@ -33,11 +33,77 @@ describe("interactive workspace", () => {
     render(<InteractivePage client={client} navigate={navigate} />);
     await screen.findByRole("radio", {name: /Agent workbench/});
     fireEvent.click(screen.getByRole("radio", {name: /Agent workbench/}));
+    fireEvent.click(screen.getByRole("radio", {name: "Deterministic demo"}));
     fireEvent.change(screen.getByLabelText(/Session name/), {target: {value: "Fix task"}});
     fireEvent.click(screen.getByRole("button", {name: "Start session"}));
-    await waitFor(() => expect(client.create).toHaveBeenCalledWith(expect.objectContaining({surfaceId: "workbench", title: "Fix task"})));
+    await waitFor(() => expect(client.create).toHaveBeenCalledWith(expect.objectContaining({surfaceId: "workbench", executionMode: "local-tools", title: "Fix task"})));
     expect(navigate).toHaveBeenCalledWith({page: "interactive", sessionId: "s-1"});
     expect(screen.getByText(/Controlled local provider · no live Azure authentication/)).toBeInTheDocument();
+  });
+  it("requires an explicit demo choice when the default agent lacks host opt-in", async () => {
+    const fx = fixture(); render(<InteractivePage client={fx.client} navigate={vi.fn()} />);
+    const agent = await screen.findByRole("radio", {name: "Agent (Codex)"});
+    expect(agent).toBeChecked(); expect(agent).toBeDisabled();
+    expect(screen.getByRole("radio", {name: "Deterministic demo"})).not.toBeChecked();
+    expect(screen.getByRole("button", {name: "Start session"})).toBeDisabled();
+    expect(screen.getByText("Not live-qualified")).toBeInTheDocument();
+    expect(fx.client.create).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", {name: "Deterministic demo"}));
+    fireEvent.click(screen.getByRole("button", {name: "Start session"}));
+    await waitFor(() => expect(fx.client.create).toHaveBeenCalledWith(expect.objectContaining({executionMode: "local-tools"})));
+  });
+  it("supports an explicit agent choice for either surface without running a model in the UI", async () => {
+    for (const [surfaceName, surfaceId] of [[/Gaggle helper/, "helper"], [/Agent workbench/, "workbench"]] as const) {
+      const fx = fixture();
+      vi.mocked(fx.client.status).mockResolvedValue({...runtime, executionModes: runtime.executionModes!.map(option => ({...option, available: true}))});
+      const view = render(<InteractivePage client={fx.client} navigate={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("radio", {name: surfaceName}));
+      await waitFor(() => expect(screen.getByRole("button", {name: "Start session"})).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", {name: "Start session"}));
+      await waitFor(() => expect(fx.client.create).toHaveBeenCalledWith(expect.objectContaining({surfaceId, executionMode: "codex-local"})));
+      expect(fx.client.command).not.toHaveBeenCalled();
+      view.unmount();
+    }
+  });
+  it("preserves an explicit agent choice after rejection without falling back to the demo", async () => {
+    const fx = fixture();
+    vi.mocked(fx.client.status).mockResolvedValue({...runtime, executionModes: runtime.executionModes!.map(option => ({...option, available: true}))});
+    vi.mocked(fx.client.create).mockRejectedValue(new InteractiveError("Model unavailable", "unavailable", 503));
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", {name: "Start session"})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", {name: "Start session"}));
+    expect(await screen.findByText("Model unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("radio", {name: "Agent (Codex)"})).toBeChecked();
+    expect(fx.client.create).toHaveBeenCalledTimes(1);
+    expect(fx.client.create).toHaveBeenCalledWith(expect.objectContaining({executionMode: "codex-local"}));
+  });
+  it("pins session copy to the saved execution mode instead of the server default", async () => {
+    const fx = fixture(); render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    expect(await screen.findByText("Try the sample investigation.")).toBeInTheDocument();
+    expect(screen.getByText(/It does not reason about arbitrary requests/)).toBeInTheDocument();
+    expect(screen.queryByRole("radio", {name: "Agent (Codex)"})).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", {name: "Actions"})).toBeInTheDocument();
+  });
+  it("uses free-text agent suggestions and distinguishes availability from qualification", async () => {
+    const fx = fixture(makeSession({executionMode: "codex-local"}));
+    vi.mocked(fx.client.status).mockResolvedValue({...runtime, executionModes: runtime.executionModes!.map(option => ({...option, available: true}))});
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    expect(await screen.findByText(/Agent mode is not live-qualified/)).toBeInTheDocument();
+    expect(screen.getByRole("button", {name: /Investigate this repository, choose a small improvement/})).toBeInTheDocument();
+    expect(screen.queryByText("Try the sample investigation.")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Message")).toHaveAttribute("placeholder", "Describe the work you want the agent to do…");
+  });
+  it("shows the exact immutable child definition and sends only a human review decision", async () => {
+    const definition = "apiVersion: goobers/v1\nkind: Workflow\nmetadata:\n  name: model-review\n";
+    const fx = fixture(makeSession({executionMode: "codex-local", children: [{id: "child-dynamic", prompt: "Review the implementation", workflowYaml: definition, status: "proposed", requestedAt: "2026-10-17T09:00:00Z"}]}));
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    fireEvent.click(await screen.findByRole("tab", {name: /Children/}));
+    expect(screen.getByLabelText("Workflow definition for child-dynamic").textContent).toBe(definition);
+    expect(screen.queryByRole("textbox", {name: /Workflow definition/})).not.toBeInTheDocument();
+    expect(fx.client.command).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", {name: "Run child"}));
+    await waitFor(() => expect(fx.client.command).toHaveBeenCalledWith("s-1", expect.objectContaining({type: "child.review", childId: "child-dynamic", decision: "approve"})));
+    expect(vi.mocked(fx.client.command).mock.calls[0][1]).not.toHaveProperty("workflowYaml");
   });
   it("shows an actionable unavailable state on an ordinary daemon without interactive routes", async () => {
     const {client} = fixture(); vi.mocked(client.surfaces).mockRejectedValue(new InteractiveError("missing", "unavailable", 404));

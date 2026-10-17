@@ -24,6 +24,13 @@ describe("helper action controls", () => {
     fireEvent.click(screen.getByRole("button", {name: "Start run"}));
     await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/api/v1/interactive/operations/actions/action-1/apply?sessionId=s-1", expect.objectContaining({method: "POST"})));
   });
+  it("keeps agent proposals separate from the deterministic intent parser", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(state))));
+    render(<OperationsPanel executionMode="codex-local" sessionId="s-1" disabled={false} />);
+    expect(await screen.findByText(/Agent-proposed workflow and management actions appear here/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Describe a gaggle action")).not.toBeInTheDocument();
+    expect(await screen.findByText("Configure an action yourself")).toBeInTheDocument();
+  });
   it("edits the server-provided workflow draft before asking for a preview", async () => {
     const fetcher = vi.fn().mockImplementation(async (url: string) => new Response(JSON.stringify(url.includes("/proposals") ? {summary: "Add workflow", status: "proposed"} : state)));
     vi.stubGlobal("fetch", fetcher);

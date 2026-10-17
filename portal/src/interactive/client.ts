@@ -1,3 +1,6 @@
+export type ExecutionModeId = "codex-local" | "local-tools";
+export interface ExecutionModeOption { id: ExecutionModeId; label: string; available: boolean; reason?: string; liveQualified: boolean }
+export interface CreateSessionRequest { commandId: string; surfaceId: string; title?: string; executionMode: ExecutionModeId }
 export interface Surface {
   id: string; name: string; description: string; mode: "helper" | "workbench";
   enabled: boolean; maxChildren: number; instructions?: string;
@@ -7,7 +10,7 @@ export interface Turn {
   startedAt: string; finishedAt?: string; error?: string;
 }
 export interface Child {
-  lease?: Lease; executionKind?: string; readOnly?: boolean;
+  lease?: Lease; executionKind?: string; readOnly?: boolean; workflowYaml?: string; workflowDigest?: string;
   id: string; prompt: string; status: string; result?: string;
   requestedAt: string; reviewedAt?: string;
 }
@@ -16,7 +19,7 @@ export interface Lease { workerId: string; leaseId: string; fence: number; expir
 export interface Session {
   lease?: Lease; configDigest?: string; members?: {principal: string; role: string}[]; custodyPending?: boolean; stopFencePending?: boolean;
   id: string; owner: string; surfaceId: string; mode: "helper" | "workbench";
-  title: string; status: string; sequence: number; fence: number; createdAt: string;
+  executionMode?: ExecutionModeId; title: string; status: string; sequence: number; fence: number; createdAt: string;
   updatedAt: string; activeTurnId?: string; turns: Turn[]; children: Child[];
   changes: Change[]; diff?: string; workspacePath?: string; recoveryReason?: string;
 }
@@ -27,7 +30,7 @@ export interface InteractiveEvent {
 export interface Command {
   commandId: string; type: "message" | "steer" | "stop" | "resume" | "child.request" | "child.review";
   expectedSequence: number; expectedFence: number; text?: string; turnId?: string;
-  childId?: string; decision?: "approve" | "accept" | "deny";
+  workflowYaml?: string; childId?: string; decision?: "approve" | "accept" | "deny";
 }
 export interface Receipt {
   commandId: string; sessionId: string; type: string; status: string;
@@ -37,6 +40,7 @@ export interface Changes { changes: Change[]; diff: string; workspacePath: strin
 export interface Connection { id: string; provider: string; label: string; status: string; resources: string[]; expiresAt?: string }
 export interface InteractiveShellStatus { prototype: boolean; name: string; connection: string; worker: string }
 export interface RuntimeStatus {
+  executionModes?: ExecutionModeOption[]; defaultMode?: ExecutionModeId;
   localActors?: string[]; providerMode: string; executionMode: string; identity: {name: string; subject: string; issuer: string};
   connections: Connection[]; limits: {maxTurnSeconds: number; maxChildren: number};
   capabilities: {liveModel: boolean; liveDelegatedAuth: boolean};
@@ -49,7 +53,7 @@ export interface InteractiveClient {
   connectionAction(id: string, action: "expire" | "reauthenticate" | "revoke"): Promise<unknown>;
   surfaces(): Promise<Surface[]>;
   sessions(): Promise<Session[]>;
-  create(input: {commandId: string; surfaceId: string; title?: string}): Promise<Session>;
+  create(input: CreateSessionRequest): Promise<Session>;
   session(id: string): Promise<Session>;
   events(id: string, after: number): Promise<InteractiveEvent[]>;
   changes(id: string): Promise<Changes>;
@@ -81,7 +85,7 @@ export class HttpInteractiveClient implements InteractiveClient {
   connectionAction(id: string, action: "expire" | "reauthenticate" | "revoke") { return this.request<unknown>(`/connections/${encodeURIComponent(id)}/${action}`, {}); }
   async surfaces() { return (await this.request<{surfaces: Surface[]}>("/surfaces")).surfaces ?? []; }
   async sessions() { return (await this.request<{sessions: Session[]}>("/sessions")).sessions ?? []; }
-  create(input: {commandId: string; surfaceId: string; title?: string}) { return this.request<Session>("/sessions", input); }
+  create(input: CreateSessionRequest) { return this.request<Session>("/sessions", input); }
   session(id: string) { return this.request<Session>(`/sessions/${encodeURIComponent(id)}`); }
   async events(id: string, after: number) { return (await this.request<{events: InteractiveEvent[]}>(`/sessions/${encodeURIComponent(id)}/events?after=${after}`)).events ?? []; }
   changes(id: string) { return this.request<Changes>(`/sessions/${encodeURIComponent(id)}/changes`); }
