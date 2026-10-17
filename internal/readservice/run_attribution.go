@@ -81,7 +81,7 @@ func (s *Local) RunAttribution(ctx context.Context, runID, gaggle string) (RunAt
 	}
 	runRoot, err := instanceRoot.OpenRoot(dir)
 	if err != nil {
-		return out, fmt.Errorf("%w: %v", ErrArtifactIntegrity, err)
+		return out, fmt.Errorf("%w: %s", ErrArtifactIntegrity, err.Error())
 	}
 	defer func() { _ = runRoot.Close() }()
 	budget := &attributionReadBudget{ctx: ctx, root: runRoot, remaining: attributionInputBytes}
@@ -128,7 +128,7 @@ func attributionRunDir(root *os.Root, layout instance.Layout, runID, gaggle stri
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("%w: %v", ErrArtifactIntegrity, err)
+			return "", fmt.Errorf("%w: %s", ErrArtifactIntegrity, err.Error())
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", ErrArtifactIntegrity
@@ -336,7 +336,7 @@ func (b *attributionReadBudget) read(name string, maximum int64) ([]byte, error)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: %v", ErrArtifactIntegrity, err)
+		return nil, fmt.Errorf("%w: %s", ErrArtifactIntegrity, err.Error())
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
