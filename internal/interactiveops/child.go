@@ -11,6 +11,10 @@ import (
 	"github.com/goobers/goobers/internal/platform/lock"
 )
 
+// ErrChildCustodyPending means child cleanup could not be confirmed. Callers
+// must retain custody independently of the returned Action's shape or status.
+var ErrChildCustodyPending = errors.New("native child custody pending")
+
 // ReviewChildEvent reports the exact bounded definition and observed native
 // receipts. Prompt is descriptive metadata and is never interpreted as code.
 type ReviewChildEvent struct {
@@ -63,7 +67,7 @@ func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, pr
 			}
 		}
 		if cleanupErr != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("native child cleanup unconfirmed: %w", cleanupErr))
+			resultErr = errors.Join(resultErr, fmt.Errorf("%w: cleanup unconfirmed: %w", ErrChildCustodyPending, cleanupErr))
 		}
 	}()
 	emitEvent := func(event ReviewChildEvent) error {
@@ -100,16 +104,20 @@ func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, pr
 		if err = ctx.Err(); err != nil {
 			return result, err
 		}
+		// An observation error can return a zero Action even though dispatch
+		// already happened. Retain the last receipt until a new read succeeds.
+		var observed Action
 		if result.Status == "proposed" {
-			result, err = s.Apply(ctx, scope, runID)
+			observed, err = s.Apply(ctx, scope, runID)
 		} else {
-			result, err = s.Get(ctx, scope, runID)
+			observed, err = s.Get(ctx, scope, runID)
 		}
 		if err != nil {
 			if !errors.Is(err, lock.ErrHeld) {
 				return result, err
 			}
 		} else {
+			result = observed
 			snapshot := result
 			snapshot.UpdatedAt = time.Time{}
 			data, _ := json.Marshal(snapshot)
