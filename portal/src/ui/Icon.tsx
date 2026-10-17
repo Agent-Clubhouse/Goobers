@@ -5,6 +5,7 @@ export type IconName =
   | "check"
   | "chevron"
   | "clock"
+  | "chat"
   | "chart"
   | "cost"
   | "close"
@@ -57,6 +58,7 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M10 17h5" />
       </>
     ),
+    chat: <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2V11.5a9.5 9.5 0 0 1 19 0ZM7 10h9M7 14h6" />,
     check: <path d="m5 12 4 4L19 6" />,
     chevron: <path d="m9 18 6-6-6-6" />,
     clock: (

@@ -26,6 +26,7 @@ const compactShellQuery =
 
 const areaLabels: Record<PrimaryArea, string> = {
   overview: "Overview",
+  interactive: "Interactive",
   workflows: "Workflows",
   goobers: "Goobers",
   runs: "Runs",
@@ -349,6 +350,16 @@ export function PortalShell({
             <span className="nav-label">Overview</span>
           </button>
           <button
+            aria-current={activeArea === "interactive" ? "page" : undefined}
+            aria-label="Interactive"
+            className={activeArea === "interactive" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "interactive" })}
+            type="button"
+          >
+            <Icon name="chat" />
+            <span className="nav-label">Interactive</span>
+          </button>
+          <button
             aria-current={activeArea === "workflows" ? "page" : undefined}
             aria-label="Workflows"
             className={activeArea === "workflows" ? "nav-item nav-item-active" : "nav-item"}
@@ -471,6 +482,12 @@ export function PortalShell({
                 icon="overview"
                 label="Overview"
                 onClick={() => navigateFromMobileMenu({ page: "overview" })}
+              />
+              <MobileDestination
+                active={activeArea === "interactive"}
+                icon="chat"
+                label="Interactive"
+                onClick={() => navigateFromMobileMenu({ page: "interactive" })}
               />
               <MobileDestination
                 active={activeArea === "workflows"}

@@ -21,6 +21,7 @@ import {
   type PortalDiagnostics,
 } from "./portalDiagnostics";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
+import { InteractivePage } from "./pages/InteractivePage";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
@@ -424,6 +425,9 @@ function Portal({
               navigate={navigate}
               standalone={standalone}
             />
+          )}
+          {route.page === "interactive" && (
+            <InteractivePage sessionId={route.sessionId} navigate={navigate} />
           )}
           {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
           {route.page === "goobers" && (
