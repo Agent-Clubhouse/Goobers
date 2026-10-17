@@ -265,7 +265,7 @@ func (r *GaggleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // is retried in place with a short bounded backoff before being dropped.
 const generationListAttempts = 3
 
-var generationListBackoff = 200 * time.Millisecond
+const generationListBackoff = 200 * time.Millisecond
 
 func (r *GaggleReconciler) generationPointerToGaggles(ctx context.Context, obj client.Object) []reconcile.Request {
 	if obj.GetName() != configsync.GenerationConfigMapName {

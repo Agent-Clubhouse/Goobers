@@ -1,10 +1,14 @@
 package operator
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
-	"time"
+
+	"github.com/go-logr/logr"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -18,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/configsync"
@@ -541,10 +546,6 @@ func TestApplyDeployment_NoUpdateWhenSpecUnchanged(t *testing.T) {
 }
 
 func TestGenerationPointerToGaggles_RetriesListFailure(t *testing.T) {
-	old := generationListBackoff
-	generationListBackoff = time.Millisecond
-	t.Cleanup(func() { generationListBackoff = old })
-
 	gaggle := publishedGaggleFixture("web", "gnew")
 	scheme, err := NewScheme()
 	if err != nil {
@@ -565,15 +566,46 @@ func TestGenerationPointerToGaggles_RetriesListFailure(t *testing.T) {
 		return &GaggleReconciler{Client: c}, &calls
 	}
 
+	var logs bytes.Buffer
+	ctx := log.IntoContext(context.Background(), logr.FromSlogHandler(slog.NewJSONHandler(&logs, nil)))
 	r, calls := build(1)
-	reqs := r.generationPointerToGaggles(context.Background(), generationPointer("gnew"))
+	reqs := r.generationPointerToGaggles(ctx, generationPointer("gnew"))
 	if len(reqs) != 1 || *calls != 2 {
 		t.Fatalf("transient failure: reqs=%+v calls=%d, want 1 request after 2 calls", reqs, *calls)
 	}
+	if reqs[0].Name != gaggle.Name || reqs[0].Namespace != gaggle.Namespace {
+		t.Fatalf("request = %+v, want %s/%s", reqs[0], gaggle.Namespace, gaggle.Name)
+	}
+	for _, want := range []string{"listing gaggles for generation pointer failed", "boom", `"namespace":"goobers-system"`, `"generation":"gnew"`, `"attempt":1`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log = %s, want %q", logs.String(), want)
+		}
+	}
 
+	logs.Reset()
 	r, calls = build(100)
-	reqs = r.generationPointerToGaggles(context.Background(), generationPointer("gnew"))
+	reqs = r.generationPointerToGaggles(ctx, generationPointer("gnew"))
 	if len(reqs) != 0 || *calls != generationListAttempts {
 		t.Fatalf("persistent failure: reqs=%+v calls=%d, want none after %d calls", reqs, *calls, generationListAttempts)
+	}
+	if got := strings.Count(logs.String(), "listing gaggles for generation pointer failed"); got != generationListAttempts {
+		t.Errorf("logged %d failures, want %d", got, generationListAttempts)
+	}
+}
+
+func TestGenerationPointerToGaggles_CancellationStopsRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	c := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			calls++
+			cancel()
+			return errors.New("boom")
+		},
+	}).Build()
+	r := &GaggleReconciler{Client: c}
+	if reqs := r.generationPointerToGaggles(ctx, generationPointer("gnew")); len(reqs) != 0 || calls != 1 {
+		t.Fatalf("cancelled retry: reqs=%+v calls=%d, want none after one call", reqs, calls)
 	}
 }
