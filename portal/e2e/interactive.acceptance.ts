@@ -244,8 +244,9 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeDisabled();
   await expect(page.getByText("Not live-qualified", { exact: true })).toBeVisible();
   await capture(page, "interactive-agent-unavailable-no-fallback");
-  await page.getByRole("radio", { name: "Deterministic demo", exact: true }).check();
   await page.getByRole("radio", { name: new RegExp(workbench.name) }).check();
+  await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeDisabled();
+  await page.getByRole("radio", { name: "Deterministic demo", exact: true }).check();
   await page.getByRole("textbox", { name: /Session name/ }).fill("Invoice investigation acceptance");
   await page.getByRole("button", { name: "Start session", exact: true }).click();
   await expect(page).toHaveURL(/#\/interactive\/ses_/);
