@@ -53,7 +53,7 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				surfaces = append(surfaces, surface)
 			}
 		}
-		writeJSON(w, 200, map[string]any{"surfaces": surfaces})
+		writeJSON(w, 200, map[string]any{"surfaces": surfaces, "executionModes": s.ExecutionModes(), "defaultExecutionMode": s.opts.DefaultExecutionMode})
 		return
 	case "/sessions":
 		switch r.Method {

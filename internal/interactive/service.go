@@ -45,6 +45,23 @@ func Open(opts Options) (*Service, error) {
 	if opts.Principal == nil {
 		return nil, errors.New("interactive Principal resolver is required")
 	}
+	if opts.AvailableExecutionModes == nil {
+		opts.AvailableExecutionModes = []string{ExecutionModeLocalTools}
+	}
+	opts.AvailableExecutionModes = append([]string{}, opts.AvailableExecutionModes...)
+	if opts.DefaultExecutionMode == "" {
+		opts.DefaultExecutionMode = ExecutionModeLocalTools
+	}
+	modes := map[string]bool{}
+	for _, mode := range opts.AvailableExecutionModes {
+		if (mode != ExecutionModeLocalTools && mode != ExecutionModeCodexLocal) || modes[mode] {
+			return nil, errors.New("invalid or duplicate interactive execution mode")
+		}
+		modes[mode] = true
+	}
+	if opts.DefaultExecutionMode != ExecutionModeLocalTools && opts.DefaultExecutionMode != ExecutionModeCodexLocal {
+		return nil, errors.New("invalid interactive default execution mode")
+	}
 	if opts.MaxTurnDuration <= 0 {
 		opts.MaxTurnDuration = 10 * time.Minute
 	}
@@ -226,6 +243,13 @@ func (s *Service) Create(owner string, req CreateRequest) (Session, error) {
 		}
 		return clone(s.state.Sessions[old.SessionID].Session), nil
 	}
+	executionMode := req.ExecutionMode
+	if executionMode == "" {
+		executionMode = s.opts.DefaultExecutionMode
+	}
+	if !s.executionModeAvailable(executionMode) {
+		return Session{}, problem(409, "execution_mode_unavailable", "requested execution mode is not enabled by this host")
+	}
 	surface, ok := s.surface(req.SurfaceID)
 	if !ok || !surface.Enabled {
 		return Session{}, problem(404, "surface_unavailable", "configured surface is unavailable")
@@ -238,10 +262,10 @@ func (s *Service) Create(owner string, req CreateRequest) (Session, error) {
 	if title == "" {
 		title = "New " + surface.Name + " session"
 	}
-	session := Session{ConfigDigest: digest(surface), Members: []Member{{Principal: owner, Role: "owner"}}, ID: id("ses_"), Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Title: title, Status: "idle", Fence: 1, CreatedAt: now, UpdatedAt: now, Turns: []Turn{}, Children: []Child{}, Changes: []Change{}}
+	session := Session{ExecutionMode: executionMode, ConfigDigest: digest(surface), Members: []Member{{Principal: owner, Role: "owner"}}, ID: id("ses_"), Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Title: title, Status: "idle", Fence: 1, CreatedAt: now, UpdatedAt: now, Turns: []Turn{}, Children: []Child{}, Changes: []Change{}}
 	err := s.mutate(func(state *diskState) error {
 		rec := &sessionRecord{Session: session, Events: []Event{}, Commands: map[string]storedCommand{}}
-		appendEvent(rec, "session.created", "", req.CommandID, map[string]any{"mode": surface.Mode, "surfaceId": surface.ID})
+		appendEvent(rec, "session.created", "", req.CommandID, map[string]any{"mode": surface.Mode, "surfaceId": surface.ID, "executionMode": executionMode})
 		state.Sessions[session.ID] = rec
 		state.Creates[key] = storedCreate{hash, session.ID}
 		return nil
@@ -252,9 +276,21 @@ func (s *Service) Create(owner string, req CreateRequest) (Session, error) {
 	return clone(s.state.Sessions[session.ID].Session), nil
 }
 
+type commandOrigin struct {
+	source string
+	turnID string
+	digest string
+}
+
 func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Command) (CommandReceipt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.commandLocked(ctx, owner, sessionID, cmd, commandOrigin{source: "owner"})
+}
+
+// commandLocked holds the same coordinator lock as admission/replay. Stop
+// temporarily releases it only around broker/custody callbacks.
+func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cmd Command, origin commandOrigin) (CommandReceipt, error) {
 	if s.closed {
 		return CommandReceipt{}, problem(503, "unavailable", "coordinator is closed")
 	}
@@ -265,7 +301,19 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 	if !validCommandID(cmd.CommandID) || len(cmd.Text) > 32768 {
 		return CommandReceipt{}, problem(400, "invalid", "commandId and text size must be valid")
 	}
+	if len(cmd.WorkflowYAML) > 32<<10 {
+		return CommandReceipt{}, problem(400, "invalid_workflow", "child workflow definition exceeds 32 KiB")
+	}
+	if cmd.WorkflowYAML != "" && cmd.Type != "child.request" {
+		return CommandReceipt{}, problem(400, "invalid_workflow", "workflow definition is immutable and may only be supplied when proposing a child")
+	}
+	if cmd.WorkflowYAML != "" && s.clean(cmd.WorkflowYAML) != cmd.WorkflowYAML {
+		return CommandReceipt{}, problem(400, "secret_in_workflow", "child workflow definition contains credential-shaped material")
+	}
 	hash := digest(cmd)
+	if origin.digest != "" {
+		hash = origin.digest
+	}
 	if old, ok := rec.Commands[cmd.CommandID]; ok {
 		if old.Digest != hash {
 			return CommandReceipt{}, problem(409, "idempotency_conflict", "commandId was used with different content")
@@ -280,6 +328,10 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 	}
 	surface, exists := s.surface(rec.Session.SurfaceID)
 	reviewOnly := cmd.Type == "child.review" && (cmd.Decision == "deny" || cmd.Decision == "accept")
+	if cmd.Type != "stop" && !reviewOnly && !s.executionModeAvailable(rec.Session.ExecutionMode) {
+		return CommandReceipt{}, problem(409, "execution_mode_unavailable", "session execution mode is unpinned or unavailable; create a new session with an enabled mode")
+	}
+
 	if cmd.Type != "stop" && !reviewOnly && rec.Session.ConfigDigest != digest(surface) {
 		return CommandReceipt{}, problem(409, "surface_changed", "surface policy changed; create a new session for the new configuration")
 	}
@@ -320,7 +372,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		}
 		turnID := id("turn_")
 		receipt.TurnID = turnID
-		launch = &ExecutionRequest{SessionID: sessionID, TurnID: turnID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Text: text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
+		launch = &ExecutionRequest{SessionID: sessionID, TurnID: turnID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
 	case "steer":
 		if text == "" || cmd.TurnID == "" {
 			return receipt, problem(400, "invalid", "steering text and exact turnId are required")
@@ -338,7 +390,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		receipt.TurnID = cmd.TurnID
 	case "stop":
 		if len(s.active[sessionID]) == 0 && (rec.Session.Status == "recovery_required" || rec.Session.CustodyPending) {
-			base := ExecutionRequest{SessionID: sessionID, Owner: owner, SurfaceID: rec.Session.SurfaceID, Mode: rec.Session.Mode, TurnID: rec.Session.ActiveTurnID, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence}
+			base := ExecutionRequest{SessionID: sessionID, Owner: owner, SurfaceID: rec.Session.SurfaceID, Mode: rec.Session.Mode, ExecutionMode: rec.Session.ExecutionMode, TurnID: rec.Session.ActiveTurnID, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence}
 			custody = append(custody, base)
 			for _, child := range rec.Session.Children {
 				if child.Status == "uncertain" {
@@ -373,7 +425,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		if turn == nil {
 			return receipt, problem(409, "recovery_required", "interrupted turn is unavailable")
 		}
-		request := ExecutionRequest{SessionID: sessionID, TurnID: turn.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Text: turn.Text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence + 1, Attempt: turn.Attempt + 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
+		request := ExecutionRequest{SessionID: sessionID, TurnID: turn.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: turn.Text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence + 1, Attempt: turn.Attempt + 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
 		if rec.Session.Status == "recovery_required" {
 			recovery, ok := s.opts.Executor.(RecoveryExecutor)
 			if !ok {
@@ -407,6 +459,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 			return receipt, problem(409, "child_limit", "surface child budget is exhausted")
 		}
 		receipt.ChildID = id("child_")
+		receipt.TurnID = origin.turnID
 	case "child.review":
 		var child *Child
 		for i := range rec.Session.Children {
@@ -430,7 +483,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 				return receipt, problem(503, "executor_unavailable", "no interactive executor is configured")
 			}
 			receipt.TurnID = child.ID
-			launch = &ExecutionRequest{SessionID: sessionID, TurnID: child.ID, ChildID: child.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Text: child.Prompt, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions, ReadOnly: true}
+			launch = &ExecutionRequest{SessionID: sessionID, TurnID: child.ID, ChildID: child.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, WorkflowYAML: child.WorkflowYAML, Text: child.Prompt, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions, ReadOnly: true}
 		case "deny":
 			if child.Status != "proposed" {
 				return receipt, problem(409, "invalid_state", "only proposed children can be denied")
@@ -446,6 +499,9 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		return receipt, problem(400, "invalid", "unknown interactive command type")
 	}
 	if launch != nil {
+		if !s.executionModeAvailable(rec.Session.ExecutionMode) {
+			return receipt, problem(409, "execution_mode_unavailable", "session execution mode is unpinned or unavailable; create a new session with an enabled mode")
+		}
 		total, owned := 0, 0
 		for _, runs := range s.active {
 			for _, run := range runs {
@@ -483,6 +539,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 	}
 	err = s.mutate(func(state *diskState) error {
 		current := state.Sessions[sessionID]
+		firstEvent := len(current.Events)
 		appendEvent(current, "command.accepted", receipt.TurnID, cmd.CommandID, map[string]any{"commandType": cmd.Type, "text": text})
 		switch cmd.Type {
 		case "message":
@@ -528,8 +585,12 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 				markStopped(current)
 			}
 		case "child.request":
-			current.Session.Children = append(current.Session.Children, Child{ExecutionKind: "interactive-review", ReadOnly: true, ID: receipt.ChildID, Prompt: text, Status: "proposed", RequestedAt: time.Now().UTC()})
-			appendEvent(current, "child.proposed", "", cmd.CommandID, map[string]any{"childId": receipt.ChildID, "prompt": text, "readOnly": true})
+			executionKind := "interactive-review"
+			if cmd.WorkflowYAML != "" {
+				executionKind = "interactive-workflow"
+			}
+			current.Session.Children = append(current.Session.Children, Child{WorkflowYAML: cmd.WorkflowYAML, WorkflowDigest: workflowDigest(cmd.WorkflowYAML), ActorSource: origin.source, SourceTurnID: origin.turnID, ExecutionKind: executionKind, ReadOnly: true, ID: receipt.ChildID, Prompt: text, Status: "proposed", RequestedAt: time.Now().UTC()})
+			appendEvent(current, "child.proposed", receipt.TurnID, cmd.CommandID, map[string]any{"childId": receipt.ChildID, "prompt": text, "readOnly": true, "workflowYaml": cmd.WorkflowYAML, "workflowDigest": workflowDigest(cmd.WorkflowYAML), "sourceTurnId": origin.turnID})
 		case "child.review":
 			for i := range current.Session.Children {
 				child := &current.Session.Children[i]
@@ -553,6 +614,9 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 				kind = "child.started"
 			}
 			appendEvent(current, kind, receipt.TurnID, cmd.CommandID, map[string]any{"childId": cmd.ChildID, "decision": cmd.Decision})
+		}
+		for i := firstEvent; i < len(current.Events); i++ {
+			current.Events[i].ActorSource = origin.source
 		}
 		receipt.Sequence = current.Session.Sequence
 		current.Commands[cmd.CommandID] = storedCommand{hash, receipt}
@@ -706,6 +770,10 @@ func (s *Service) CheckControl(owner, sessionID string) error {
 	if rec.Session.ConfigDigest != digest(surface) {
 		return problem(409, "surface_changed", "surface policy changed; create a new session for the new configuration")
 	}
+	if !s.executionModeAvailable(rec.Session.ExecutionMode) {
+		return problem(409, "execution_mode_unavailable", "session execution mode is unpinned or unavailable; create a new session with an enabled mode")
+	}
+
 	if rec.Session.Status == "stopped" || rec.Session.Status == "stopping" || rec.Session.Status == "recovery_required" || rec.Session.CustodyPending || rec.Session.StopFencePending {
 		return problem(409, "invalid_state", "session control is fenced or awaiting recovery")
 	}

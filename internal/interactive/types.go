@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	ExecutionModeCodexLocal = "codex-local"
+	ExecutionModeLocalTools = "local-tools"
+)
+
 type Surface struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -20,17 +25,21 @@ type Surface struct {
 }
 
 type Options struct {
-	StateDir              string
-	Surfaces              []Surface
-	Executor              Executor
-	Principal             func(*http.Request) (string, error)
-	MaxTurnDuration       time.Duration
-	WorkerID              string
-	LeaseDuration         time.Duration
-	MaxActive             int
-	MaxActivePerOwner     int
-	MaxSessionOutputBytes int
-	Now                   func() time.Time
+	// AvailableExecutionModes is the host adapter allowlist. Nil preserves the
+	// package's local-tools default; it never enables a model-backed adapter.
+	AvailableExecutionModes []string
+	DefaultExecutionMode    string
+	StateDir                string
+	Surfaces                []Surface
+	Executor                Executor
+	Principal               func(*http.Request) (string, error)
+	MaxTurnDuration         time.Duration
+	WorkerID                string
+	LeaseDuration           time.Duration
+	MaxActive               int
+	MaxActivePerOwner       int
+	MaxSessionOutputBytes   int
+	Now                     func() time.Time
 	// OnStop must commit any external authority fence before returning. It is
 	// invoked after the durable session fence, outside the coordinator mutex.
 	// Failure leaves stop pending until a subsequent stop retries propagation.
@@ -50,6 +59,8 @@ type RecoveryExecutor interface {
 }
 
 type ExecutionRequest struct {
+	ExecutionMode                                                  string
+	WorkflowYAML                                                   string
 	SessionID, TurnID, Owner, SurfaceID, Mode, Text, WorkspacePath string
 	Fence                                                          uint64
 	Attempt                                                        int
@@ -101,6 +112,7 @@ type Lease struct {
 	Status    string    `json:"status"`
 }
 type Session struct {
+	ExecutionMode    string    `json:"executionMode"`
 	StopRequested    bool      `json:"stopRequested,omitempty"`
 	OutputBytes      int       `json:"outputBytes"`
 	CustodyPending   bool      `json:"custodyPending,omitempty"`
@@ -139,29 +151,35 @@ type Turn struct {
 }
 
 type Child struct {
-	Lease         *Lease     `json:"lease,omitempty"`
-	ExecutionKind string     `json:"executionKind"`
-	ReadOnly      bool       `json:"readOnly"`
-	ID            string     `json:"id"`
-	Prompt        string     `json:"prompt"`
-	Status        string     `json:"status"`
-	Result        string     `json:"result,omitempty"`
-	RequestedAt   time.Time  `json:"requestedAt"`
-	ReviewedAt    *time.Time `json:"reviewedAt,omitempty"`
+	WorkflowYAML   string     `json:"workflowYaml,omitempty"`
+	WorkflowDigest string     `json:"workflowDigest,omitempty"`
+	ActorSource    string     `json:"actorSource"`
+	SourceTurnID   string     `json:"sourceTurnId,omitempty"`
+	Lease          *Lease     `json:"lease,omitempty"`
+	ExecutionKind  string     `json:"executionKind"`
+	ReadOnly       bool       `json:"readOnly"`
+	ID             string     `json:"id"`
+	Prompt         string     `json:"prompt"`
+	Status         string     `json:"status"`
+	Result         string     `json:"result,omitempty"`
+	RequestedAt    time.Time  `json:"requestedAt"`
+	ReviewedAt     *time.Time `json:"reviewedAt,omitempty"`
 }
 
 type Event struct {
-	Actor     string         `json:"actor"`
-	Sequence  uint64         `json:"sequence"`
-	SessionID string         `json:"sessionId"`
-	TurnID    string         `json:"turnId,omitempty"`
-	CommandID string         `json:"commandId,omitempty"`
-	Type      string         `json:"type"`
-	Time      time.Time      `json:"time"`
-	Data      map[string]any `json:"data"`
+	ActorSource string         `json:"actorSource,omitempty"`
+	Actor       string         `json:"actor"`
+	Sequence    uint64         `json:"sequence"`
+	SessionID   string         `json:"sessionId"`
+	TurnID      string         `json:"turnId,omitempty"`
+	CommandID   string         `json:"commandId,omitempty"`
+	Type        string         `json:"type"`
+	Time        time.Time      `json:"time"`
+	Data        map[string]any `json:"data"`
 }
 
 type Command struct {
+	WorkflowYAML     string `json:"workflowYaml,omitempty"`
 	CommandID        string `json:"commandId"`
 	Type             string `json:"type"`
 	Text             string `json:"text,omitempty"`
@@ -183,9 +201,10 @@ type CommandReceipt struct {
 }
 
 type CreateRequest struct {
-	CommandID string `json:"commandId"`
-	SurfaceID string `json:"surfaceId"`
-	Title     string `json:"title,omitempty"`
+	ExecutionMode string `json:"executionMode,omitempty"`
+	CommandID     string `json:"commandId"`
+	SurfaceID     string `json:"surfaceId"`
+	Title         string `json:"title,omitempty"`
 }
 
 type APIError struct {

@@ -409,6 +409,10 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 func (s *Service) CheckExecution(owner, sessionID, turnID, leaseID string, fence uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.checkExecutionLocked(owner, sessionID, turnID, leaseID, fence)
+}
+
+func (s *Service) checkExecutionLocked(owner, sessionID, turnID, leaseID string, fence uint64) error {
 	if s.closed || s.fatal != nil {
 		return problem(503, "unavailable", "execution coordinator unavailable")
 	}
