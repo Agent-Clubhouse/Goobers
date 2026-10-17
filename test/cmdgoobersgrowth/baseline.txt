@@ -2,7 +2,7 @@
 # Physical lines (including blanks/comments) in direct non-test .go files, all build tags.
 # Informational snapshot; PR enforcement compares head against merge-base.
 # Snapshot updates require !<dimension>-justification\t<exact target>\t<why>.
-!non-test-line-count-justification	153990	Temporal inspection adds 14 net registry/completion lines; implementation remains in internal/temporalops. Refresh the historical snapshot to the current tree.
-!non-test-line-count 153990
-!non-test-file-count-justification	569	Refresh the historical snapshot; this change adds no cmd/goobers production files.
-!non-test-file-count 569
+!non-test-line-count-justification	136792	LAND-C01 adds a thin child-validation CLI adapter and command registration; reusable validation remains in internal/childworkflow.
+!non-test-line-count 136792
+!non-test-file-count-justification	464	LAND-C01 adds one thin child-validation CLI adapter; see justifications/haw-child-validation-cli.md.
+!non-test-file-count 464
