@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/stringpolicy"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -143,10 +144,10 @@ func observeToolPermissions(captures ...[]byte) toolPermissionEvidence {
 				continue
 			}
 			lower := strings.ToLower(line)
-			if containsAny(lower, contentExclusionRuntimeMarkers) {
+			if stringpolicy.ContainsAny(lower, contentExclusionRuntimeMarkers...) {
 				ev.contentExclusionSignalled = true
 			}
-			if !containsAny(lower, toolPermissionMarkers) {
+			if !stringpolicy.ContainsAny(lower, toolPermissionMarkers...) {
 				continue
 			}
 			ev.denied = true
@@ -180,7 +181,7 @@ func matchesClaimMarkers(result apiv1.ResultEnvelope, markers []string) bool {
 		}
 	}
 	for _, field := range fields {
-		if containsAny(strings.ToLower(field), markers) {
+		if stringpolicy.ContainsAny(strings.ToLower(field), markers...) {
 			return true
 		}
 	}
@@ -330,15 +331,6 @@ func authoredCause(result apiv1.ResultEnvelope) string {
 		return "(no detail)"
 	}
 	return truncateRunes(strings.Join(parts, ": "), 800)
-}
-
-func containsAny(haystack string, needles []string) bool {
-	for _, needle := range needles {
-		if strings.Contains(haystack, needle) {
-			return true
-		}
-	}
-	return false
 }
 
 func truncateRunes(s string, max int) string {

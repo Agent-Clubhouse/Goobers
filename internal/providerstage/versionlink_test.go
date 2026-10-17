@@ -183,6 +183,7 @@ func cloneTable(table map[string]Command) map[string]Command {
 	for name, entry := range table {
 		entry.Capabilities = append([]CapabilityUse(nil), entry.Capabilities...)
 		entry.claimMutationFlags = append([]string(nil), entry.claimMutationFlags...)
+		entry.valueFlags = append([]string(nil), entry.valueFlags...)
 		out[name] = entry
 	}
 	return out
