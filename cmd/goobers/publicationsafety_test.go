@@ -1,13 +1,36 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/diagnostictmp"
 )
+
+func TestPublicationSafetyPreservesContextError(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(map[bool]string{false: "canceled", true: "deadline"}[expired], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			want := context.Canceled
+			if expired {
+				cancel()
+				ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				want = context.DeadlineExceeded
+			}
+			cancel()
+			// No Git process is needed once the caller's budget is exhausted.
+			t.Setenv("PATH", t.TempDir())
+			if tip, err := checkPublicationSafety(ctx, t.TempDir(), "main", "HEAD"); tip != "" || !errors.Is(err, want) {
+				t.Fatalf("publication tip=%q error=%v, want refusal preserving %v", tip, err, want)
+			}
+		})
+	}
+}
 
 func TestPublicationReadLimitFailsClosed(t *testing.T) {
 	b := &publicationBuffer{}

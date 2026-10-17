@@ -33,12 +33,18 @@ func checkPublicationSafety(ctx context.Context, dir, base, head string) (string
 		out := &publicationBuffer{}
 		command.Stdout = out
 		if err := command.Run(); err != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			return nil, fmt.Errorf("local git inspection failed: %w", err)
 		}
 		return out.Bytes(), nil
 	}
 	for _, ref := range []string{"refs/remotes/origin/" + base, "refs/heads/" + base, base} {
 		out, err := read(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("publication safety: resolve base: %w", ctx.Err())
+		}
 		if sha := strings.TrimSpace(string(out)); err == nil && publicationCommitID.MatchString(sha) {
 			return publicationguard.Check(ctx, read, sha, head)
 		}
