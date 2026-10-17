@@ -94,6 +94,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Export to multiple named destinations](telemetry-destinations.md)
 - [Telemetry load and v0.5.0 validation](telemetry-load-validation.md)
 - [Temporal payload encryption](temporal-payload-codec.md)
+- [Temporal rollout and contract inspection](temporal-rollout-inspection.md)
 - [Test timing artifacts and budgets](test-timing.md)
 - [Tutor config-only write-boundary](tutor-write-boundary.md)
 - [Windows large-repo runbook](windows-large-repo-runbook.md)

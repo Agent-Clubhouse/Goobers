@@ -1,0 +1,29 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TEMPORAL WORKER CONTRACT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers temporal worker-contract \- inspect this binary's runtime contracts and exact workflow IR source
+.SH SYNOPSIS
+\fBgoobers temporal worker-contract\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers temporal worker-contract [--workflow-ir file.json] [--allow-preview]
+
+Emit this executable's digest and declared interpreter contracts as JSON.
+Optionally check a canonical workflow IR (maximum 1 MiB) against this binary.
+The IR must retain its exact source definition and match its normalization.
+Preview support requires --allow-preview; this is an offline inspection flag.
+
+Evidence only: no admission, remote-worker attestation, placement, credential
+or readiness guarantee. The runtime still executes the DSL source. Effective
+versions and build IDs are equality identities, not compatibility ranges.
+
+Exit codes: 0 = manifest emitted / compatible source, 1 = inspection failed
+or source incompatible/unverifiable, 2 = invalid flags or input file.
+.fi
+.SH EXAMPLES
+.nf
+goobers temporal worker-contract
+goobers temporal worker-contract --workflow-ir workflow.json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

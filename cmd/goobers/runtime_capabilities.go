@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/temporalops"
 )
 
 type cliCommandHandler func([]string, io.Writer, io.Writer) int
@@ -500,10 +501,16 @@ func init() {
 			withHelp("install and manage the platform-supervised daemon", serviceHelp).
 			withExamples("goobers service install", "goobers service status", "goobers service uninstall"),
 		groupCommand("temporal", runTemporal,
+			subcommand("temporal rollout-status", "rollout-status", apicontract.ActionReadOnlyNavigation, (temporalops.Commands{NewFlagSet: newCLIFlagSet}).RunRollout).
+				withHelp("inspect native routing and drainage without changing the deployment", temporalops.RolloutHelp).
+				withExamples("goobers temporal rollout-status --timeout 30s ./instance"),
+			subcommand("temporal worker-contract", "worker-contract", apicontract.ActionReadOnlyNavigation, (temporalops.Commands{NewFlagSet: newCLIFlagSet}).RunContract).
+				withHelp("inspect this binary's runtime contracts and exact workflow IR source", temporalops.ContractHelp).
+				withExamples("goobers temporal worker-contract", "goobers temporal worker-contract --workflow-ir workflow.json"),
 			subcommand("temporal codec-server", "codec-server", apicontract.ActionDaemonLifecycle, runTemporalCodecServer).
 				withHelp("serve authenticated Temporal payload decoding over TLS", temporalCodecHelp).
 				withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
-		).withSynopsis(synopsisByID["temporal"]).withHelp("operate Temporal payload services", temporalHelp).
+		).withSynopsis(synopsisByID["temporal"]).withHelp("inspect Temporal workers and operate payload services", temporalHelp).
 			withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
 		command("engine-start", apicontract.ActionDaemonLifecycle, runEngineStart).
 			withSynopsis(synopsisByID["engine-start"]).
