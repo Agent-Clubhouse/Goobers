@@ -35,6 +35,7 @@ export interface Receipt {
 }
 export interface Changes { changes: Change[]; diff: string; workspacePath: string }
 export interface Connection { id: string; provider: string; label: string; status: string; resources: string[]; expiresAt?: string }
+export interface InteractiveShellStatus { prototype: boolean; name: string; connection: string; worker: string }
 export interface RuntimeStatus {
   localActors?: string[]; providerMode: string; executionMode: string; identity: {name: string; subject: string; issuer: string};
   connections: Connection[]; limits: {maxTurnSeconds: number; maxChildren: number};

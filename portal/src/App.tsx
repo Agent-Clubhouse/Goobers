@@ -21,6 +21,7 @@ import {
   type PortalDiagnostics,
 } from "./portalDiagnostics";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
+import type { InteractiveShellStatus } from "./interactive/client";
 import { InteractivePage } from "./pages/InteractivePage";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
@@ -212,6 +213,7 @@ function Portal({
   const standalone = mode === "standalone";
   const { theme, toggleTheme } = useTheme();
   const [route, setRoute] = useState<Route>(() => parseRoute());
+  const [interactiveStatus, setInteractiveStatus] = useState<InteractiveShellStatus>();
   const cachedConfig = useMemo(readCachedPortalConfig, []);
   const [config, setConfig] = useState<PortalConfig>(cachedConfig ?? defaultPortalConfig);
   const [loading, setLoading] = useState(cachedConfig === undefined);
@@ -399,6 +401,7 @@ function Portal({
     <CobrandContext.Provider value={{ config, loading }}>
       <PortalShell
         activeArea={activeArea(route)}
+        interactiveStatus={interactiveStatus}
         activeGaggle={activeRouteGaggle(route)}
         client={client}
         currentScope={currentScope}
@@ -427,7 +430,7 @@ function Portal({
             />
           )}
           {route.page === "interactive" && (
-            <InteractivePage sessionId={route.sessionId} navigate={navigate} />
+            <InteractivePage sessionId={route.sessionId} navigate={navigate} onShellStatus={setInteractiveStatus} />
           )}
           {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
           {route.page === "goobers" && (
