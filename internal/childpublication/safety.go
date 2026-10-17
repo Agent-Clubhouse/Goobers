@@ -32,6 +32,9 @@ func (p Publisher) checkPublication(ctx context.Context, t Target, commit string
 	var base string
 	for _, ref := range []string{"refs/remotes/origin/" + t.Base, "refs/heads/" + t.Base} {
 		out, err := git(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+		if ctx.Err() != nil {
+			return fmt.Errorf("child publication safety: resolve target base: %w", ctx.Err())
+		}
 		if err == nil && commitID.MatchString(strings.TrimSpace(string(out))) {
 			base = strings.TrimSpace(string(out))
 			break
@@ -64,6 +67,9 @@ func publicationReadGit(ctx context.Context, directory string, args ...string) (
 	var out publicationReadBuffer
 	command.Stdout = &out
 	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return nil, fmt.Errorf("child publication local git inspection failed: %w", err)
 	}
 	return out.Bytes(), nil
