@@ -69,7 +69,7 @@ func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
 			}
 			out := &sourceReportingBuffer{}
 			err = (recoveryDeliveryService{layout: layout}).StreamRecovery(context.Background(), "receiving-run", repo.CanonicalKey(), "7", out)
-			if mode == "valid" || mode == "released" {
+			if mode == "valid" {
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -153,7 +153,7 @@ func TestRecoveryDeliveryRequiresExclusiveIssueLease(t *testing.T) {
 				requestedKey = "github|||another-team|repo|"
 			}
 			deadline, err := authorizeRecoveryDelivery(context.Background(), layout, requestedRun, requestedKey, "7", at)
-			if mode == "live" || mode == "released" {
+			if mode == "live" {
 				if err != nil || !deadline.Equal(now.Add(time.Hour)) {
 					t.Fatalf("exclusive lease refused: %s %v", deadline, err)
 				}
@@ -190,7 +190,7 @@ func TestRecoveryDeliveryAcknowledgementHoldsExclusiveClaimFence(t *testing.T) {
 			}
 			ackFailure := errors.New("durable acknowledgement failed")
 			called := false
-			deadline, err := withAuthorizedRecoveryDelivery(context.Background(), layout, runID, repo.CanonicalKey(), "7", time.Now().UTC(), func() error {
+			deadline, err := withAuthorizedRecoveryDelivery(context.Background(), layout, runID, repo.CanonicalKey(), "7", time.Now().UTC(), true, func() error {
 				called = true
 				// A competing release uses this same lock. It cannot enter between
 				// authorization and the journal's durable acknowledgement.

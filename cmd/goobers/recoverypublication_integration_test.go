@@ -82,7 +82,7 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	}
 	seedItemRepositoryForTest(t, layout, runID, "7", repo)
 	if mode == "cold-pending-times-out-before-terminal-release" {
-		runHeartbeatTimeoutLifecycle(t, layout, runID, false)
+		runHeartbeatTimeoutLifecycle(t, layout, run, runID, false)
 	}
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
@@ -129,7 +129,7 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	service := recoveryDeliveryService{layout: layout, setup: &schedulerSetup{LegacyWorktrees: manager}}
 	var body io.Reader = bytes.NewReader(wire.Bytes())
 	if mode == "warm-ready-finishes-before-terminal-release" {
-		runHeartbeatTimeoutLifecycle(t, layout, runID, true)
+		runHeartbeatTimeoutLifecycle(t, layout, run, runID, true)
 	}
 	if mode == "successor-owns-before-late-publication" {
 		if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
@@ -173,7 +173,7 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		return
 	}
 	deadline := started.Add(30 * 24 * time.Hour)
-	if mode == "finished-during-transfer" {
+	if mode == "finished-during-transfer" || mode == "cold-pending-times-out-before-terminal-release" || mode == "warm-ready-finishes-before-terminal-release" {
 		deadline = finished.Add(30 * 24 * time.Hour)
 	}
 	if len(captures) != 1 || !captures[0].CreatedAt.Equal(started) || !captures[0].RetainUntil.Equal(deadline) {
@@ -222,7 +222,7 @@ func (g *heartbeatLifecycleGate) Confirmed(ctx context.Context, _ dispatcher.Att
 	return false, ctx.Err()
 }
 
-func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, runID string, warm bool) {
+func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *journal.Run, runID string, warm bool) {
 	t.Helper()
 	api := fake.NewSimpleClientset()
 	var pod *corev1.Pod
@@ -311,6 +311,11 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, runID st
 	if !warm && (relay.ready || gate.completed) {
 		t.Fatalf("cold lifecycle ready=%t agentCompleted=%t, want timeout while Pending", relay.ready, gate.completed)
 	}
+	// Production terminal hooks run only after the workflow's durable finish.
+	// Preserve that order so claim release records Failed rather than Unknown.
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
 	hooks := &engineTerminalHooks{
 		finalize: func(id string, _ journal.RunPhase) error {
 			return releaseClaimsForRun(layout, nil, id)
@@ -326,6 +331,9 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, runID st
 	}
 	if held := ledger.ForRunAll(runID); len(held) != 0 {
 		t.Fatalf("terminal workflow retained claims: %+v", held)
+	}
+	if released := ledger.HistoryForRun(runID); len(released) != 1 || released[0].ReleaseReason.Disposition != claimrelease.Failed {
+		t.Fatalf("terminal claim release did not preserve failed outcome: %+v", released)
 	}
 }
 
