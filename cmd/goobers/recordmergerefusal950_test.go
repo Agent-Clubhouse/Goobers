@@ -311,36 +311,29 @@ func TestRecordMergeRefusalADOUsesADOProviderPath(t *testing.T) {
 
 func TestRecordMergeRefusalDispatchesADOAndRecordsComment(t *testing.T) {
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	commentsPath := "/" + repo.Owner + "/" + repo.Project + "/_apis/wit/workItems/359/comments"
-	var posted bool
+	var threadPosted bool
 	mux := http.NewServeMux()
-	mux.HandleFunc(commentsPath, func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			_, _ = w.Write([]byte(`{"comments":[]}`))
-		case http.MethodPost:
-			var body map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode comment request: %v", err)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/_apis/wit/"):
+			t.Errorf("work-item API called with a PR id: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected work-item call", http.StatusTeapot)
+		case strings.HasSuffix(r.URL.Path, "/pullrequests/359/threads") && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"value":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/pullrequests/359/threads") && r.Method == http.MethodPost:
+			var body struct {
+				Comments []struct {
+					Content string `json:"content"`
+				} `json:"comments"`
 			}
-			if body["text"] == "" {
-				t.Error("comment request has empty text")
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Comments) != 1 || body.Comments[0].Content == "" {
+				t.Errorf("bad thread request: %v %+v", err, body)
 			}
-			posted = true
-			_, _ = w.Write([]byte(`{"id":1,"text":"recorded"}`))
+			threadPosted = true
+			_, _ = w.Write([]byte(`{"id":7,"comments":[{"id":1,"content":"recorded","commentType":"text"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
-	})
-	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/359", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"id":359,"rev":1,"url":"https://ado.test/workitems/359","fields":{"System.Title":"ADO refusal","System.Description":"","System.State":"Active","System.WorkItemType":"Bug","System.Tags":""}}`))
-			return
-		}
-		http.NotFound(w, r)
-	})
-	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitemtypes/Bug/states", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"value":[{"name":"Active","category":"InProgress"}]}`))
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -366,8 +359,8 @@ func TestRecordMergeRefusalDispatchesADOAndRecordsComment(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("record-merge-refusal: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !posted {
-		t.Fatal("ADO work-item comment endpoint was not called")
+	if !threadPosted {
+		t.Fatal("ADO PR thread endpoint was not called")
 	}
 	if !strings.Contains(stdout, "recorded merge refusal 1/") {
 		t.Fatalf("stdout = %q, want refusal recorded message", stdout)
