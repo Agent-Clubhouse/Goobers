@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -27,7 +26,11 @@ const (
 )
 
 var errAttributionLimit = errors.New("attribution read limit exceeded")
-var attributionGaggle = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
+// Match the existing runtime path-component contract, including spaces.
+func validAttributionGaggle(name string) bool {
+	return name != "" && name != "." && name != ".." && len(name) <= 255 && filepath.Base(name) == name && !strings.ContainsAny(name, "/\\\x00")
+}
 
 // RunAttributionReader is a pure, bounded read of one persisted analysis.
 type RunAttributionReader interface {
@@ -61,7 +64,7 @@ type AttributionEvidenceCheck struct {
 // RunAttribution neither scans other runs nor computes attribution or audit state.
 func (s *Local) RunAttribution(ctx context.Context, runID, gaggle string) (RunAttributionResult, error) {
 	out := RunAttributionResult{Schema: "goobers.dev/backprop/read/v1", RunID: runID, Gaggle: gaggle, ObservedAt: time.Now().UTC(), Evidence: []AttributionEvidenceCheck{}}
-	if !apiv1.ValidRunID(runID) || !attributionGaggle.MatchString(gaggle) {
+	if !apiv1.ValidRunID(runID) || !validAttributionGaggle(gaggle) {
 		return out, ErrInvalidArgument
 	}
 	if err := ctx.Err(); err != nil {

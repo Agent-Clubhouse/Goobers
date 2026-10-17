@@ -285,3 +285,23 @@ func TestRunAttributionReadsScopedRunWithoutNamespaceScan(t *testing.T) {
 		t.Fatalf("scoped lookup failed: %+v %v", got, err)
 	}
 }
+
+func TestRunAttributionSupportsRuntimeNamesAndCompatibilityAlias(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	gaggle := "core team"
+	runID := "alias-attribution"
+	scoped := layout.ForGaggle(gaggle).RunsDir()
+	run, err := journal.Create(scoped, journal.RunIdentity{RunID: runID, Gaggle: gaggle, Workflow: "work"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := instance.CreateLegacyRuntimeAlias(layout.RunsDir(), scoped); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (&Local{sources: LocalSources{Layout: layout}}).RunAttribution(context.Background(), runID, gaggle)
+	if err != nil || got.Availability != "pending" {
+		t.Fatalf("runtime name/alias rejected: %+v %v", got, err)
+	}
+}
