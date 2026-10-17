@@ -17,7 +17,7 @@ spec:
       type: deterministic
       goal: Run invoice regression tests in the selected workspace
       timeoutSeconds: 30
+      runsOn: {cpu: 250m, memory: 128Mi, restrictions: [network:none]}
       run:
         workspace: scratch
-        network: none
         command: [node, --test, invoice.test.mjs]

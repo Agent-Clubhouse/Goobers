@@ -171,14 +171,16 @@
           "maxItems": 16,
           "items": {
             "$ref": "#/$defs/interactiveSurface"
-          }
+          },
+          "description": "Optional named chat entry points. Empty or omitted exposes no interactive surface."
         },
         "authorities": {
           "type": "array",
           "maxItems": 32,
           "items": {
             "$ref": "#/$defs/interactiveAuthority"
-          }
+          },
+          "description": "Local non-secret names mapped to host broker lookup keys; this creates no connection, credential or grant."
         }
       }
     },
@@ -197,29 +199,35 @@
         "name": {
           "type": "string",
           "maxLength": 63,
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Stable name unique within this gaggle; runtime surface identity includes the gaggle."
         },
         "displayName": {
           "type": "string",
-          "maxLength": 120
+          "maxLength": 120,
+          "description": "Human-facing portal label."
         },
         "description": {
           "type": "string",
-          "maxLength": 1024
+          "maxLength": 1024,
+          "description": "Human-facing explanation of the surface."
         },
         "mode": {
           "enum": [
             "helper",
             "workbench"
-          ]
+          ],
+          "description": "helper manages configured work; workbench investigates and edits a workspace directly."
         },
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Admission switch; omitted means enabled. Disabling stops new work through this surface."
         },
         "gooberRef": {
           "type": "string",
           "maxLength": 63,
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Existing Goober name in this gaggle or the instance-shared scope; binds harness, model and Markdown instructions."
         },
         "tools": {
           "type": "array",
@@ -237,7 +245,8 @@
               "read_work_item",
               "query_telemetry"
             ]
-          }
+          },
+          "description": "Default-deny allowlist for mediated host MCP tools, distinct from Goober harness builtin tools."
         },
         "workflows": {
           "type": "array",
@@ -247,7 +256,8 @@
             "type": "string",
             "maxLength": 63,
             "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-          }
+          },
+          "description": "Allowed Workflow names resolved within this gaggle only. Omitted permits none."
         },
         "authorityRefs": {
           "type": "array",
@@ -257,7 +267,8 @@
             "type": "string",
             "maxLength": 63,
             "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-          }
+          },
+          "description": "Local names resolved only in this interactive.authorities list. Omitted permits none."
         },
         "executionModes": {
           "type": "array",
@@ -270,19 +281,23 @@
               "codex-local",
               "local-tools"
             ]
-          }
+          },
+          "description": "Declared execution adapters further restricted by the host. local-tools is an explicit controlled fixture, never a silent fallback."
         },
         "defaultExecutionMode": {
           "enum": [
             "codex-local",
             "local-tools"
-          ]
+          ],
+          "description": "Requested default adapter; must belong to executionModes. Host unavailability is an error."
         },
         "session": {
-          "$ref": "#/$defs/interactiveSession"
+          "$ref": "#/$defs/interactiveSession",
+          "description": "Explicit session ceilings; workers may narrow but must not expand them."
         },
         "childWorkflows": {
-          "$ref": "#/$defs/interactiveChildren"
+          "$ref": "#/$defs/interactiveChildren",
+          "description": "Optional reviewed interactive child policy, separate from Workflow DSL 3.1 task.childWorkflows."
         }
       },
       "allOf": [
@@ -338,27 +353,32 @@
         "leaseSeconds": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 3600
+          "maximum": 3600,
+          "description": "Worker lease duration in seconds, renewed by a valid active execution; must not exceed maxTurnSeconds."
         },
         "maxTurnSeconds": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 86400
+          "maximum": 86400,
+          "description": "Maximum duration of one interactive turn in seconds."
         },
         "maxChildren": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 8
+          "maximum": 8,
+          "description": "Maximum reviewed child proposals admitted within a session; zero disables admission."
         },
         "maxActive": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 64
+          "maximum": 64,
+          "description": "Maximum active worker leases for this surface across owners."
         },
         "maxActivePerOwner": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 64
+          "maximum": 64,
+          "description": "Maximum active worker leases per owner on this surface; must not exceed maxActive."
         }
       }
     },
@@ -370,7 +390,8 @@
       ],
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Explicitly enables reviewed bounded child execution."
         },
         "commandCapabilities": {
           "type": "array",
@@ -383,7 +404,8 @@
               "node-test",
               "node-check"
             ]
-          }
+          },
+          "description": "Allowed host-validated child command families. Empty permits no command workflow; never grants arbitrary shell commands."
         }
       }
     },
@@ -399,7 +421,8 @@
         "name": {
           "type": "string",
           "maxLength": 63,
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Local authority binding name unique within this gaggle."
         },
         "brokerRef": {
           "type": "string",
@@ -411,7 +434,8 @@
           "enum": [
             "ado",
             "app-insights"
-          ]
+          ],
+          "description": "Provider expected from the external broker binding; does not configure a new provider connection."
         }
       }
     },

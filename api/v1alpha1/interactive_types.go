@@ -48,17 +48,22 @@ type InteractiveSurface struct {
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=7
+	// +kubebuilder:validation:items:Enum=session_context;inspect_action;validate_workflow;propose_action;propose_child_workflow;read_work_item;query_telemetry
 	// +kubebuilder:validation:XValidation:rule="self.all(x, x in ['session_context', 'inspect_action', 'validate_workflow', 'propose_action', 'propose_child_workflow', 'read_work_item', 'query_telemetry'])",message="unknown interactive mediated tool"
 	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 	// Workflows resolves within this gaggle, never by global name alone.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Workflows []string `json:"workflows,omitempty" yaml:"workflows,omitempty"`
 	// AuthorityRefs resolves against this GaggleInteractive.Authorities only.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	AuthorityRefs []string `json:"authorityRefs,omitempty" yaml:"authorityRefs,omitempty"`
 	// ExecutionModes cannot expand the host's independently permitted modes.
 	// local-tools is an explicitly selected fixture adapter, never a fallback.
@@ -66,6 +71,7 @@ type InteractiveSurface struct {
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=codex-local;local-tools
 	// +kubebuilder:validation:XValidation:rule="self.all(x, x in ['codex-local', 'local-tools'])",message="unknown interactive execution mode"
 	ExecutionModes []string `json:"executionModes" yaml:"executionModes"`
 	// +kubebuilder:validation:Required
@@ -116,6 +122,7 @@ type InteractiveChildWorkflowPolicy struct {
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=node-test;node-check
 	// +kubebuilder:validation:XValidation:rule="self.all(x, x in ['node-test', 'node-check'])",message="unknown child command capability"
 	CommandCapabilities []string `json:"commandCapabilities,omitempty" yaml:"commandCapabilities,omitempty"`
 }
