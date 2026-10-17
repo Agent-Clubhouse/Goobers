@@ -525,7 +525,29 @@ export const goWireFixtures = {
       "earliestRetainUntil": "2026-07-18T12:36:56Z",
       "inventoryRoot": "/instances/fixture/recovery",
       "policySource": "instance-config",
-      "observedAt": "2026-07-18T12:32:56Z"
+      "observedAt": "2026-07-18T12:32:56Z",
+      "reclaimCandidates": [
+        {
+          "runId": "run-fixture",
+          "phase": "completed",
+          "ref": "refs/goobers/recovery/run-fixture",
+          "patchDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "repositoryKey": "github|||team|repo|",
+          "createdAt": "2026-07-18T12:32:56Z",
+          "retainUntil": "2026-07-18T12:36:56Z",
+          "inspectCommand": "goobers trace --summary run-fixture /instances/fixture",
+          "restoreCommand": "goobers recovery-restore --record /instances/fixture/recovery/entry/record.json --repository . --branch recovered/run-fixture /instances/fixture",
+          "abandonCommand": "goobers recovery-abandon --run run-fixture --ref refs/goobers/recovery/run-fixture --confirm-digest sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /instances/fixture"
+        }
+      ],
+      "reclaimCandidatesTotal": 1,
+      "reclaimHold": {
+        "reason": "grace",
+        "until": "2026-07-18T12:36:56Z",
+        "setting": "retention.firstEnable: immediate",
+        "configFile": "/instances/fixture/instance.yaml"
+      },
+      "statusCommand": "goobers status --all /instances/fixture"
     },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,
@@ -1402,15 +1424,42 @@ export const goWireFixtures = {
             "branch": 1,
             "name": "security-lens",
             "status": "succeeded",
-            "artifacts": 1
+            "artifacts": 1,
+            "reason": "touches internal/auth"
           },
           {
             "branch": 2,
             "name": "perf-lens",
             "status": "failed",
             "artifacts": 0
+          },
+          {
+            "branch": 3,
+            "name": "unit-a",
+            "status": "succeeded",
+            "artifacts": 1,
+            "mapItemIdentity": "unit-a",
+            "mapItemDigest": "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"
           }
         ],
+        "mapItemIdentity": "unit-a",
+        "mapItemDigest": "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102",
+        "mapRoster": {
+          "sourceTask": "plan",
+          "sourceSlot": "shards",
+          "sourceDigest": "sha256:roster",
+          "integrity": "derived",
+          "failurePolicy": "continue_on_error",
+          "itemTimeoutSeconds": 1800,
+          "maxConcurrent": 4,
+          "items": [
+            {
+              "branch": 1,
+              "identity": "unit-a",
+              "digest": "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"
+            }
+          ]
+        },
         "raw": {
           "futureField": "preserved"
         }

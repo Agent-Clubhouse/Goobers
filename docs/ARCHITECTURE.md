@@ -287,8 +287,8 @@ Rules:
   `scheduler/events.jsonl` in the instance root (§6), under the same envelope and
   append-only rules — so the portal, telemetry, and Tutor read scheduling history
   the same way they read runs.
-- **Gaggle health is an instance projection** (contract defined by #4424; the
-  daemon controller that produces these transitions is #4425): versioned health transitions
+- **Gaggle health is an instance projection** (`internal/gagglehealth` owns the
+  daemon controller and durable store): versioned health transitions
   (`evaluation`, finding open/update/resolve, repair start/finish, and escalation)
   append beneath `health/events.jsonl` in the instance root. Each event carries a
   gaggle partition key and a complete bounded, scrubbed finding snapshot. The
@@ -681,7 +681,7 @@ and implemented into PRs by the instance running on your own machine.
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop. The `reference-workflows/` reference config
 now defines the full self-hosting workflow set and
-currently loads **11 goobers and 16 workflows**; the CI-guarded inventory in
+currently loads **11 goobers and 17 workflows**; the CI-guarded inventory in
 [`reference-workflows/README.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/reference-workflows/README.md)
 is the count and roster of record. Together those workflows provide the canonical
 patterns for curating and

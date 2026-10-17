@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/readprobe"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // stalledEngineSweepFixture is an engine run whose journal holds only
@@ -357,7 +358,7 @@ func TestEngineCancelHistoryFoldsOnlyNewJournalPerSweep(t *testing.T) {
 	cancel := func(runID string) {
 		t.Helper()
 		now = now.Add(time.Minute)
-		if err := appendEngineRecovery(log, journal.RunIdentity{RunID: runID, Workflow: "w"}, "stalled", journal.RecoveryActionEngineCancelRequested); err != nil {
+		if err := appendEngineRecovery(log, journal.RunIdentity{RunID: runID, Workflow: "w"}, "stalled", journal.RecoveryActionEngineCancelRequested, runner.RunStalledErrorCode); err != nil {
 			t.Fatal(err)
 		}
 	}

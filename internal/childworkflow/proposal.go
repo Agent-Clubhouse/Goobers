@@ -34,7 +34,8 @@ import (
 const (
 	// MaxProposalBytes bounds one submitted Workflow before YAML parsing.
 	MaxProposalBytes = 1 << 20
-	// MaxProposalStates bounds the total task, gate, and parallel state count.
+	// MaxProposalStates bounds the total task, gate, parallel and map state
+	// count. A map is one state however many roster items it runs.
 	MaxProposalStates = 128
 )
 
@@ -271,7 +272,7 @@ func (v *Validator) parseProposal(source []byte) (apiv1.Workflow, []byte, error)
 }
 
 func (v *Validator) checkScope(wf apiv1.Workflow) error {
-	if len(wf.Spec.Tasks)+len(wf.Spec.Gates)+len(wf.Spec.Parallels) > MaxProposalStates {
+	if proposalStates(wf.Spec) > MaxProposalStates {
 		return refusal("states", "", "spec", "a child may declare at most 128 states")
 	}
 	if wf.Spec.Gaggle != v.context.Gaggle.Name || (wf.Namespace != "" && wf.Namespace != v.context.Gaggle.Namespace) {
@@ -284,6 +285,13 @@ func (v *Validator) checkScope(wf apiv1.Workflow) error {
 		return refusal("preview", "", "metadata.annotations", "proposal cannot enable preview features beyond the pinned policy")
 	}
 	return nil
+}
+
+// proposalStates counts every addressable state a proposal declares. Maps
+// count like parallels (plan-driven-dynamic-fan-out.md §11); their per-item
+// instances are runtime data and are bounded by the map's own roster limit.
+func proposalStates(spec apiv1.WorkflowSpec) int {
+	return len(spec.Tasks) + len(spec.Gates) + len(spec.Parallels) + len(spec.Maps)
 }
 
 func (v *Validator) compileProposal(wf apiv1.Workflow, goobers map[string]apiv1.GooberSpec) (*workflow.Machine, error) {

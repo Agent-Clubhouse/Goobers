@@ -7,6 +7,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -42,6 +43,50 @@ type AuthoringCatalog struct {
 	MaxChildren         int32              `json:"maxChildren"`
 	MaxProposalBytes    int                `json:"maxProposalBytes"`
 	MaxStates           int                `json:"maxStates"`
+	// PreviewFeatures is the parent's pinned preview policy. A child may use
+	// preview constructs (selective parallels, maps) only when it is true.
+	PreviewFeatures bool `json:"previewFeatures"`
+	// Constructs is the construct-selection guide
+	// (plan-driven-dynamic-fan-out.md §3) with each row's availability to
+	// this child, so the author can pick the cheapest construct that fits.
+	Constructs []AuthoringConstruct `json:"constructs"`
+}
+
+// AuthoringConstruct is one row of the construct-selection guide.
+type AuthoringConstruct struct {
+	Need      string `json:"need"`
+	Construct string `json:"construct"`
+	DecidedBy string `json:"decidedBy"`
+	FixedBy   string `json:"fixedByAuthor"`
+	Preview   bool   `json:"preview,omitempty"`
+	Available bool   `json:"available"`
+	// Unavailable says why Available is false.
+	Unavailable string `json:"unavailable,omitempty"`
+}
+
+// authoringConstructs projects the §3 guide in its documented order. A
+// generated child never opens child workflows itself, and preview constructs
+// follow the parent's pinned preview policy.
+func authoringConstructs(preview bool) []AuthoringConstruct {
+	rows := []AuthoringConstruct{
+		{Need: "One path out of several", Construct: "gate branches", DecidedBy: "Gate verdict", FixedBy: "All paths"},
+		{Need: "A fixed set of branches, all run", Construct: "static parallel (spec.parallels)", DecidedBy: "Nothing; every branch runs", FixedBy: "Branches and width"},
+		{Need: "A fixed set of different branches, a subset run", Construct: "selective parallel (spec.parallels[].selection, branches[].optional)", DecidedBy: "Selection artifact", FixedBy: "Branches; width at most the declared count", Preview: true},
+		{Need: "The same task over a data-determined list", Construct: "map (spec.maps)", DecidedBy: "Roster artifact", FixedBy: "Task template; width at most 32", Preview: true},
+		{Need: "A composition nobody can know until run time", Construct: "child workflow (task.childWorkflows)", DecidedBy: "The parent agent writes a Workflow", FixedBy: "Policy ceiling only"},
+		{Need: "Skip the whole fan-out", Construct: "gate before the parallel or map", DecidedBy: "Gate verdict", FixedBy: "Both paths"},
+	}
+	for i := range rows {
+		switch {
+		case strings.HasPrefix(rows[i].Construct, "child workflow"):
+			rows[i].Unavailable = "a generated child cannot open child workflows"
+		case rows[i].Preview && !preview:
+			rows[i].Unavailable = "preview; the parent's pinned policy does not allow preview features"
+		default:
+			rows[i].Available = true
+		}
+	}
+	return rows
 }
 
 // AuthoringGoober exposes declared composition inputs without persona content.
@@ -117,6 +162,7 @@ func parentAuthoringCatalog(authority Authority) ([]byte, error) {
 	ceiling := credentials.NewChildCeiling(policy.AllowPRPublication && input.AllowPRPublication, input.GrantedCapabilities, policy.AllowedCapabilities)
 	catalog := AuthoringCatalog{SchemaVersion: "goobers-child-authoring/v1", DSLVersion: supportmatrix.V31DSLVersion, Gaggle: input.Gaggle.Name, ConfigDigest: input.ConfigDigest, PolicyDigest: authority.Origin.PolicyDigest,
 		AllowPRPublication: ceiling.AllowPublication, AllowedCapabilities: ceiling.AllowedKeys, MaxChildren: policy.EffectiveMaxChildren(), MaxProposalBytes: MaxProposalBytes, MaxStates: MaxProposalStates,
+		PreviewFeatures: input.AllowPreviewFeatures, Constructs: authoringConstructs(input.AllowPreviewFeatures),
 		Goobers: []AuthoringGoober{}, Runners: []AuthoringRunner{}}
 	_, validationErr := NewValidator(input)
 	catalog.NewSubmissions = validationErr == nil

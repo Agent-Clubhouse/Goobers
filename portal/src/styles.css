@@ -1771,6 +1771,38 @@ summary:focus-visible {
   user-select: all;
 }
 
+.recovery-reclaim {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.recovery-reclaim-list {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recovery-reclaim-list li {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.recovery-reclaim-list .recovery-action {
+  margin-top: 4px;
+}
+
+.recovery-reclaim .recovery-action code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.recovery-reclaim-hold code {
+  font-size: 12px;
+}
+
 .gaggle-section {
   border-top: 1px solid var(--line-strong);
   margin-top: 28px;
@@ -6111,6 +6143,13 @@ code,
 .workflow-node-parallel {
   border-style: double;
   border-width: 4px;
+}
+
+/* A map runs one task per roster item: a dashed border sets it apart from a
+   parallel's double border without relying on color. */
+.workflow-node-map {
+  border-style: dashed;
+  border-width: 3px;
 }
 
 .workflow-node-actor {
@@ -12791,3 +12830,31 @@ select {
 .child-activity { overflow-wrap: anywhere; }
 .child-activity ul { padding-inline-start: 1.25rem; }
 .child-activity li + li { margin-top: 8px; }
+
+/* #7386: a map's frozen roster in the run inspector, one row per item. */
+.map-items-summary {
+  margin: 0 0 8px;
+}
+
+.map-items-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.map-item {
+  align-items: baseline;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.map-item strong {
+  overflow-wrap: anywhere;
+}
+
+.map-item code {
+  color: var(--muted);
+}
