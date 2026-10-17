@@ -64,7 +64,7 @@ func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endp
 		featureusage.RecordProviderHTTP(policy.providerHTTPName)
 		resp, err := httpClientOrDefault(policy.client).Do(req)
 		if err != nil {
-			if policy.retryable && transientRetries < policy.maxTransientRetries {
+			if !isRequestAdmissionError(err) && policy.retryable && transientRetries < policy.maxTransientRetries {
 				if serr := policy.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
 					return nil, serr
 				}

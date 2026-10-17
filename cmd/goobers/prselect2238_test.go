@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -462,7 +463,8 @@ func TestPRSelectLeavesRunAbortedPRWithApprovedReviewParked(t *testing.T) {
 
 func TestPRSelectLeavesRunAbortedPRParkedWhenReviewAttentionReadFails(t *testing.T) {
 	server := newReviewedRunAbortedPRFixture(t, 5442)
-	server.setPullRequestReviewThreadsFailure(5442, 500)
+	// A failed review read must leave the PR parked regardless of retryability.
+	server.setPullRequestReviewThreadsFailure(5442, http.StatusForbidden)
 
 	runPRSelectExpectingRunAbortedPark(t, server, 5442)
 }

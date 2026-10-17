@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/testshard"
 )
 
 // shardSplitsPath holds the packages the Linux race shards run in pieces, and
@@ -248,38 +250,7 @@ func assignShards(items []shardItem, total int) []shardSelection {
 // Every enumerated test lands in exactly one group, measured or not; the
 // result depends only on the set of names, never on their order.
 func partitionTests(names []string, split splitPackage) [][]string {
-	unique := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		unique[name] = struct{}{}
-	}
-	ordered := make([]string, 0, len(unique))
-	for name := range unique {
-		ordered = append(ordered, name)
-	}
-	weigh := split.weigher()
-	sort.Slice(ordered, func(i, j int) bool {
-		left, right := weigh(ordered[i]), weigh(ordered[j])
-		if left != right {
-			return left > right
-		}
-		return ordered[i] < ordered[j]
-	})
-	groups := make([][]string, split.Pieces)
-	totals := make([]int64, split.Pieces)
-	for _, name := range ordered {
-		target := 0
-		for index := 1; index < len(groups); index++ {
-			if totals[index] < totals[target] {
-				target = index
-			}
-		}
-		groups[target] = append(groups[target], name)
-		totals[target] += weigh(name)
-	}
-	for _, group := range groups {
-		sort.Strings(group)
-	}
-	return groups
+	return testshard.Partition(names, split.Pieces, split.weigher())
 }
 
 // runPattern anchors an exact alternation of top-level names. go test splits

@@ -1173,11 +1173,9 @@ func TestTelemetryRetentionPassJournaledReadsFromPassWatermark(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	for i := 0; i < 1000; i++ {
-		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "w", Reason: "conditions: max-parallel"}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	appendInstanceJournalFixture(t, log, 1000, journal.Event{
+		Type: journal.EventTickSkipped, Workflow: "w", Reason: "conditions: max-parallel",
+	})
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}
 	pass, err := newTelemetryRetentionPass(layout, config, now, true, nil, time.Time{}, retention.Summary{})
