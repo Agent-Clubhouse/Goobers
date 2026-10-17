@@ -1,5 +1,3 @@
-//go:build integration
-
 package main
 
 import (
@@ -10,27 +8,28 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
-// This integration fixture executes this already-built test binary, not an
+// This process-isolation regression executes this already-built test binary, not an
 // external tool: no Go/Git/cloud executable or network service is required.
-func TestIntegrationVerdictCommitAcrossProcesses(t *testing.T) {
+func TestVerdictCommitAcrossProcesses(t *testing.T) {
 	root := newVerdictTestRoot(t)
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	type writer struct {
-		cmd   *exec.Cmd
 		input io.WriteCloser
 		out   *bufio.Reader
+		wait  func() error
 	}
 	start := func(role string) writer {
 		t.Helper()
-		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestIntegrationVerdictCommitProcessHelper$")
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestVerdictCommitProcessHelper$")
 		cmd.Env = append(os.Environ(), "GOOBERS_TEST_VERDICT_PROCESS="+role, "GOOBERS_TEST_VERDICT_ROOT="+root)
 		cmd.Stderr = os.Stderr
 		input, err := cmd.StdinPipe()
@@ -44,12 +43,17 @@ func TestIntegrationVerdictCommitAcrossProcesses(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = input.Close() })
+		wait := sync.OnceValue(cmd.Wait)
+		t.Cleanup(func() {
+			_ = input.Close()
+			_ = cmd.Process.Kill()
+			_ = wait()
+		})
 		reader := bufio.NewReader(output)
 		if ready, err := reader.ReadString('\n'); err != nil || ready != "READY\n" {
 			t.Fatalf("helper %s did not capture predecessor: %q %v", role, ready, err)
 		}
-		return writer{cmd, input, reader}
+		return writer{input, reader, wait}
 	}
 	finish := func(w writer) apiv1.Verdict {
 		t.Helper()
@@ -64,7 +68,7 @@ func TestIntegrationVerdictCommitAcrossProcesses(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &verdict); err != nil {
 			t.Fatalf("helper result %q: %v", line, err)
 		}
-		if err := w.cmd.Wait(); err != nil {
+		if err := w.wait(); err != nil {
 			t.Fatalf("helper failed: %v", err)
 		}
 		return verdict
@@ -82,7 +86,7 @@ func TestIntegrationVerdictCommitAcrossProcesses(t *testing.T) {
 	}
 }
 
-func TestIntegrationVerdictCommitProcessHelper(t *testing.T) {
+func TestVerdictCommitProcessHelper(t *testing.T) {
 	role := os.Getenv("GOOBERS_TEST_VERDICT_PROCESS")
 	if role == "" {
 		return
