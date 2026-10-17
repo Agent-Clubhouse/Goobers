@@ -63,7 +63,13 @@ const startupMs = performance.now() - start;
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
 const dirtyPaths = execFileSync("git", ["status", "--porcelain"], { cwd: repository, encoding: "utf8" }).trim().split("\n").filter(Boolean);
 const binarySha256 = createHash("sha256").update(readFileSync(resolve(repository, ".tools/interactive-prototype"))).digest("hex");
+const assetsRoot = resolve(repository, "internal/portalassets/dist");
+const assetsIndex = readFileSync(resolve(assetsRoot, "index.html"));
+const assets = { indexSha256: createHash("sha256").update(assetsIndex).digest("hex"), files: [] };
+for (const match of assetsIndex.toString("utf8").matchAll(/(?:src|href)="(\/assets\/[^".][^"]*)"/g)) {
+  assets.files.push({ path: match[1], sha256: createHash("sha256").update(readFileSync(resolve(assetsRoot, `.${match[1]}`))).digest("hex") });
+}
 writeFileSync(`${evidence}/startup.json`, JSON.stringify({ startedAt, startupMs, repository, commit, dirtyPaths, binarySha256, node: process.version, serverPID: server.pid,
-  args, runtime, qualification: "explicit local-tools sessions only; real deterministic repository/workflow execution; controlled providers", state, configSource, config,
+  args, runtime, assets, qualification: "explicit local-tools sessions only; real deterministic repository/workflow execution; controlled providers", state, configSource, config,
 }, null, 2));
 console.log(`Qualification backend ready in ${startupMs.toFixed(1)} ms; evidence: ${evidence}`);
