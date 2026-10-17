@@ -591,7 +591,7 @@ func extractReferenceCatalog(archivePath, destination string) error {
 		switch header.Typeflag {
 		case tar.TypeDir:
 			return false, os.MkdirAll(target, 0o755)
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg, 0:
 			files++
 			if files > maxReferenceFiles {
 				return false, fmt.Errorf("candidate reference catalog exceeds %d files", maxReferenceFiles)
