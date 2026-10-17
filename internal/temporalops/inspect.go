@@ -35,6 +35,7 @@ const RolloutHelp = "Usage: goobers temporal rollout-status [--timeout 30s] [pat
 	"or authorize retiring a build. Drainage timestamps may be stale; pinned\n" +
 	"histories, accepted starts and closed-history queries can still need a build.\n"
 
+// ContractHelp describes the offline worker-contract inspection command.
 const ContractHelp = "Usage: goobers temporal worker-contract [--workflow-ir file.json] [--allow-preview]\n\n" +
 	"Emit this executable's digest and declared interpreter contracts as JSON.\n" +
 	"Optionally check a canonical workflow IR (maximum 1 MiB) against this binary.\n" +
