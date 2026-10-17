@@ -170,6 +170,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 		if def.Spec.Backprop.Granularity != "" {
 			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
 		}
+		if def.Spec.Backprop.GroundTruth != nil {
+			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
 	}
 	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	return features, nil
@@ -239,6 +242,15 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 	}
 	if spec.Backprop != nil {
 		features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		if spec.Backprop.Version != "" {
+			features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
+		if spec.Backprop.Granularity != "" {
+			features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
+		if spec.Backprop.GroundTruth != nil {
+			features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
 	}
 	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil || spec.Backprop != nil {
 		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
@@ -251,7 +263,10 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 // changing a frozen interpreter's executable contract.
 func binaryLayerFeatures() []Feature {
 	return []Feature{
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeature("gaggle.spec.cost.enabled"),
 		binaryLayerFeature("gaggle.spec.enabled"),
 		binaryLayerFeatureSince("gaggle.spec.health", "dev"),
@@ -259,6 +274,7 @@ func binaryLayerFeatures() []Feature {
 		binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}

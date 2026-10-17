@@ -73,6 +73,8 @@ func TestStatusSurfacesBackpropEnrollment(t *testing.T) {
 		{name: "explicit off beats gaggle override", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}},
 		{name: "legacy enabled beats gaggle override", config: &apiv1.BackpropConfig{Enabled: true, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}, wantEnabled: true, wantLine: "backprop: active (v1)"},
 		{name: "gaggle override off", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeOff}},
+		{name: "gaggle active default", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive}, wantEnabled: true, wantLine: "backprop: active (v1)"},
+		{name: "workflow shadow beats gaggle active", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive}, wantLine: "backprop: shadow (v1)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := readservice.WorkflowBackpropFor(test.config, test.override)

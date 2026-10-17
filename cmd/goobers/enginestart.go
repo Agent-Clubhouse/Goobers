@@ -104,8 +104,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: load config directory: %v\n", err)
 			return 2
 		}
-		instance.ApplyGaggleCICommand(set)
-		instance.ApplyGaggleOutboxMirror(set)
+		instance.ApplyGaggleDefaults(set)
 		if target == "" {
 			for i := range set.Workflows {
 				if set.Workflows[i].Name == workflowName {

@@ -289,8 +289,7 @@ func engineInputFromGeneration(directory string, cfg *instance.Config, gaggle, w
 	if err != nil {
 		return engine.RunInput{}, fmt.Errorf("load pinned engine definitions: %w (%s)", err, validationIssueSummary(report))
 	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	instance.ApplyGaggleDefaults(set)
 	registry, project, err := bootstrap.RegisterGaggleWorkflows(set, gaggle)
 	if err != nil {
 		return engine.RunInput{}, err

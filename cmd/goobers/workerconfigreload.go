@@ -116,8 +116,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 		}
 		return nil, false, fmt.Errorf("worker: load config directory: %w", err)
 	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	instance.ApplyGaggleDefaults(set)
 	gaggleDigests := make(map[string]string, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggle := set.Gaggles[i].Name

@@ -635,6 +635,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "Include runs at or after this RFC3339 timestamp"},
 		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
 	},
+	"telemetry gaggle": {
+		{name: "json", desc: "Emit the gaggle report as JSON"},
+		{name: "gaggle", takesArg: true, valueKind: "gaggles", desc: "Gaggle to report on (required)"},
+		{name: "since", takesArg: true, desc: "Include runs started at or after this RFC3339 timestamp"},
+		{name: "until", takesArg: true, desc: "Include runs started before this RFC3339 timestamp"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},

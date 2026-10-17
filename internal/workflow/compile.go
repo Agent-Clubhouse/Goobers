@@ -398,6 +398,9 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if err := validateBackpropMode(def.Spec.Backprop); err != nil {
 		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
 	}
+	if err := ValidateBackpropGroundTruth(def.Spec.Backprop); err != nil {
+		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
+	}
 	if def.Spec.Backprop != nil {
 		switch def.Spec.Backprop.Granularity {
 		case "", apiv1.BackpropGranularityRun, apiv1.BackpropGranularityStage:
@@ -1074,4 +1077,23 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	default:
 		return nil, fmt.Errorf("DSL version %q is declared %s but has no interpreter", version, support.Level)
 	}
+}
+
+// ValidateBackpropGroundTruth rejects an unknown or repeated ground-truth
+// label source.
+func ValidateBackpropGroundTruth(config *apiv1.BackpropConfig) error {
+	if config == nil || config.GroundTruth == nil {
+		return nil
+	}
+	seen := map[apiv1.BackpropLabelSource]bool{}
+	for _, source := range config.GroundTruth.Sources {
+		if source != apiv1.BackpropLabelSourceHuman {
+			return fmt.Errorf("backprop.groundTruth.sources entry %q must be %q", source, apiv1.BackpropLabelSourceHuman)
+		}
+		if seen[source] {
+			return fmt.Errorf("backprop.groundTruth.sources repeats %q", source)
+		}
+		seen[source] = true
+	}
+	return nil
 }
