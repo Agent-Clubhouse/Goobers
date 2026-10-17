@@ -361,8 +361,12 @@ func TestOpenPRTopologyBLinksTheIssueByURL(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
 
+	workDir := t.TempDir()
+	head := providers.BranchName("implementation", runID)
+	headSHA := seedOpenPRCheckout(t, workDir, "main", head)
 	var description, title string
 	mux := http.NewServeMux()
+	registerADOOpenPRHead(mux, "/"+topologyBOrg+"/"+topologyBCodeProject+"/_apis/git/repositories/"+topologyBCodeRepo, head, headSHA)
 	mux.HandleFunc("/"+topologyBOrg+"/"+topologyBCodeProject+"/_apis/git/repositories/"+topologyBCodeRepo+"/pullrequests", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -399,9 +403,8 @@ func TestOpenPRTopologyBLinksTheIssueByURL(t *testing.T) {
 	}
 	t.Cleanup(func() { newADOProviderForStage = previous })
 
-	workDir := t.TempDir()
 	t.Chdir(workDir)
-	code, stdout, stderr := runArgs(t, "open-pr", root)
+	code, stdout, stderr := runOpenPRArgs(t, root)
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}

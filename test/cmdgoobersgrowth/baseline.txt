@@ -2,7 +2,7 @@
 # Physical lines (including blanks/comments) in direct non-test .go files, all build tags.
 # Informational snapshot; PR enforcement compares head against merge-base.
 # Snapshot updates require !<dimension>-justification\t<exact target>\t<why>.
-!non-test-line-count-justification	136792	LAND-C01 adds a thin child-validation CLI adapter and command registration; reusable validation remains in internal/childworkflow.
-!non-test-line-count 136792
-!non-test-file-count-justification	464	LAND-C01 adds one thin child-validation CLI adapter; see justifications/haw-child-validation-cli.md.
-!non-test-file-count 464
+!non-test-line-count-justification	153919	Issue 7376 adds thin mandatory publication admission and remote-tip verification adapters; history and content checks live in internal/publicationguard.
+!non-test-line-count 153919
+!non-test-file-count-justification	569	Issue 7376 adds publicationsafety.go to share bounded CLI Git inspection across push, remediation, and PR creation.
+!non-test-file-count 569
