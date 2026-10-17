@@ -526,11 +526,14 @@ func TestReconcileBacklogMetadataDefersOverBudgetTrackingInspection(t *testing.T
 	server.issues[7].body = body.String()
 	server.mu.Unlock()
 
+	// The scan budget deliberately refuses requests. Surface that refusal
+	// immediately; transport backoff cannot replenish this pass's budget and
+	// otherwise costs 15 seconds per exhausted request under stress (#3167).
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 	first, err := reconcileBacklogMetadataDetailed(
 		context.Background(),
 		layoutFor(root),
-		server.newGitHubProvider("token"),
+		server.newGitHubProvider("token", providers.WithMaxTransientRetries(0)),
 		repo,
 		"goobers:approved",
 		defaultBacklogStalenessPolicy(),
@@ -547,7 +550,7 @@ func TestReconcileBacklogMetadataDefersOverBudgetTrackingInspection(t *testing.T
 	second, err := reconcileBacklogMetadataDetailed(
 		context.Background(),
 		layoutFor(root),
-		server.newGitHubProvider("token"),
+		server.newGitHubProvider("token", providers.WithMaxTransientRetries(0)),
 		repo,
 		"goobers:approved",
 		defaultBacklogStalenessPolicy(),
@@ -565,7 +568,7 @@ func TestReconcileBacklogMetadataDefersOverBudgetTrackingInspection(t *testing.T
 		result, err := reconcileBacklogMetadataDetailed(
 			context.Background(),
 			layoutFor(root),
-			server.newGitHubProvider("token"),
+			server.newGitHubProvider("token", providers.WithMaxTransientRetries(0)),
 			repo,
 			"goobers:approved",
 			defaultBacklogStalenessPolicy(),
@@ -602,6 +605,9 @@ func TestReconcileBacklogMetadataResumesOversizedTrackingChildren(t *testing.T) 
 	server.issues[7].body = body.String()
 	server.mu.Unlock()
 
+	// The scan budget deliberately refuses requests. Surface that refusal
+	// immediately; transport backoff cannot replenish this pass's budget and
+	// otherwise costs 15 seconds per exhausted request under stress (#3167).
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 	var final backlogReconciliationResult
 	history := make([]string, 0, 16)
@@ -609,7 +615,7 @@ func TestReconcileBacklogMetadataResumesOversizedTrackingChildren(t *testing.T) 
 		result, err := reconcileBacklogMetadataDetailed(
 			context.Background(),
 			layoutFor(root),
-			server.newGitHubProvider("token"),
+			server.newGitHubProvider("token", providers.WithMaxTransientRetries(0)),
 			repo,
 			"goobers:approved",
 			defaultBacklogStalenessPolicy(),
