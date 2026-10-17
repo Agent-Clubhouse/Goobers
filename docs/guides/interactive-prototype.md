@@ -188,7 +188,11 @@ identity. There is no application-identity fallback.
 4. In Helper, inspect `gaggle status`, design a bounded workflow, review/apply
    the exact proposal and submit it. Observe native run receipts, including
    failure before the invoice fix and success afterward. Configuration changes
-   affect the session's isolated instance, not the source config tree.
+   affect the session's isolated instance. Each run captures the repository at
+   an idle session checkpoint and uses a separate execution instance. Its receipt
+   records the captured repository, bound payload digest and native journal.
+   Later chat edits and repository-relative test writes remain independent.
+   Replaying Apply never captures another snapshot or dispatches another run.
 5. Use two browser contexts and the controlled personas to compare private
    histories and workspaces. Cross-owner reads/commands must fail.
 6. Expire or challenge a fixture connection, observe an auth wait, reauthenticate

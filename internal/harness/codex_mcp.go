@@ -109,11 +109,11 @@ func appendCodexStdioOverrides(overrides []string, name, command string, args, e
 }
 
 func codexOverrideServerName(name string) string {
-	// Codex accepts the auto-wired server's hyphenated name as a bare override
+	// Codex accepts the host-wired servers' hyphenated names as bare override
 	// segment. Quoting it here leaves the quote characters in the resolved MCP
 	// server name on current Codex builds, which then reject the server before
 	// session startup.
-	if name == goobersIOServerName {
+	if name == goobersIOServerName || name == "goobers-interactive" {
 		return name
 	}
 	return tomlQuote(name)

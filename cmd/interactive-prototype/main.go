@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -22,6 +24,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/interactive"
+	"github.com/goobers/goobers/internal/interactiveagent"
 	auth "github.com/goobers/goobers/internal/interactiveauth"
 	"github.com/goobers/goobers/internal/interactiveexec"
 	"github.com/goobers/goobers/internal/interactiveops"
@@ -52,6 +55,22 @@ func (e *executors) Recover(ctx context.Context, r interactive.ExecutionRequest)
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "agent-tools" {
+		flags := flag.NewFlagSet("agent-tools", flag.ContinueOnError)
+		socket := flags.String("socket", "", "private invocation socket")
+		if err := flags.Parse(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		if *socket == "" || flags.NArg() != 0 {
+			log.Fatal("agent-tools requires only --socket")
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := interactiveagent.ServeStdio(ctx, *socket, os.Stdin, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := serve(); err != nil {
 		log.Fatal(err)
 	}
@@ -63,12 +82,9 @@ func serve() (serveErr error) {
 	source := flag.String("source", "samples/interactive-investigation", "trusted local repository snapshot source")
 	assets := flag.String("assets", "internal/portalassets/dist", "built portal directory")
 	binary := flag.String("goobers-bin", ".tools/goobers", "native Goobers CLI for Helper workflow operations")
-	mode := flag.String("executor", "local-tools", "local-tools or codex-local")
 	localLogin := flag.Bool("trusted-local-model-login", false, "explicitly use existing trusted local Codex login; never provider delegation")
 	actorsFlag := flag.String("local-actors", "Mason,Alex", "controlled local personas for isolation demonstrations; not real remote authentication")
-	surfacesFile := flag.String("surfaces", "", "optional JSON array of customizable surfaces")
-	leaseDuration := flag.Duration("lease-duration", 30*time.Second, "worker lease lifetime (minimum 3s)")
-	maxActive := flag.Int("max-active", 4, "concurrent bound per execution pool: interactive turns and native Helper runs")
+	configDir := flag.String("config-dir", "samples/interactive-config", "normal Goobers config tree declaring DSL 3.0 interactive surfaces")
 	flag.Parse()
 	if *stateDir == "" {
 		return fmt.Errorf("--state-dir is required; use a private directory outside git")
@@ -80,9 +96,6 @@ func serve() (serveErr error) {
 	ip := net.ParseIP(address)
 	if ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("prototype requires a literal loopback --listen address")
-	}
-	if *leaseDuration < 3*time.Second {
-		return fmt.Errorf("lease-duration must be at least 3s")
 	}
 	*stateDir, err = filepath.Abs(*stateDir)
 	if err != nil {
@@ -117,6 +130,19 @@ func serve() (serveErr error) {
 			break
 		}
 	}
+	catalog, err := loadDSLCatalog(*configDir, *stateDir)
+	if err != nil {
+		return err
+	}
+	catalogs := &catalogStore{current: catalog}
+	selfBinary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	availableModes := []string{interactive.ExecutionModeLocalTools}
+	if *localLogin {
+		availableModes = append(availableModes, interactive.ExecutionModeCodexLocal)
+	}
 	actors := strings.Split(*actorsFlag, ",")
 	for i := range actors {
 		actors[i] = strings.TrimSpace(actors[i])
@@ -150,19 +176,44 @@ func serve() (serveErr error) {
 		}
 	}
 	pool := &executors{byOwner: map[string]*interactiveexec.Executor{}}
-	operations, err := interactiveops.New(interactiveops.Options{Root: filepath.Join(*stateDir, "helper"), Binary: *binary, Repository: *source, RunTimeout: time.Minute, MaxActive: *maxActive, MaxActivePerOwner: 2, RepositoryForScope: func(scope interactiveops.Scope) (string, error) {
-		if service == nil {
-			return "", fmt.Errorf("session service unavailable")
-		}
-		if _, err := service.Session(scope.ActorID, scope.SessionID); err != nil {
-			return "", err
-		}
-		executor, ok := pool.byOwner[scope.ActorID]
-		if !ok {
-			return "", fmt.Errorf("unknown local actor")
-		}
-		return executor.PrepareWorkspace(context.Background(), scope.ActorID, scope.SessionID)
-	}})
+	operations, err := interactiveops.New(interactiveops.Options{Root: filepath.Join(*stateDir, "helper"), Binary: *binary, Repository: *source, RunTimeout: time.Minute, MaxActive: 4, MaxActivePerOwner: 2,
+		PolicyForScope: func(scope interactiveops.Scope) (interactiveops.Policy, error) {
+			surface, _, err := catalogs.session(service, scope.ActorID, scope.SessionID)
+			if err != nil {
+				return interactiveops.Policy{}, err
+			}
+			return operationsPolicy(surface), nil
+		},
+		ConfigDirForScope: func(scope interactiveops.Scope) (string, error) {
+			_, configDir, err := catalogs.session(service, scope.ActorID, scope.SessionID)
+			return configDir, err
+		},
+		RunRepositoryForScope: func(ctx context.Context, scope interactiveops.Scope, runKey string) (string, error) {
+			executor, ok := pool.byOwner[scope.ActorID]
+			if !ok {
+				return "", fmt.Errorf("unknown local actor")
+			}
+			var snapshot string
+			err := service.WithIdleSnapshot(scope.ActorID, scope.SessionID, func() error {
+				var captureErr error
+				snapshot, captureErr = executor.CaptureRunSnapshot(ctx, scope.ActorID, scope.SessionID, runKey)
+				return captureErr
+			})
+			return snapshot, err
+		},
+		RepositoryForScope: func(scope interactiveops.Scope) (string, error) {
+			if service == nil {
+				return "", fmt.Errorf("session service unavailable")
+			}
+			if _, err := service.Session(scope.ActorID, scope.SessionID); err != nil {
+				return "", err
+			}
+			executor, ok := pool.byOwner[scope.ActorID]
+			if !ok {
+				return "", fmt.Errorf("unknown local actor")
+			}
+			return executor.PrepareWorkspace(context.Background(), scope.ActorID, scope.SessionID)
+		}})
 	if err != nil {
 		return err
 	}
@@ -172,13 +223,76 @@ func serve() (serveErr error) {
 		serveErr = errors.Join(serveErr, operations.Close(ctx))
 	}()
 	for _, actor := range actors {
-		executor, err := interactiveexec.New(interactiveexec.Config{StateDir: *stateDir, SourceDir: *source, Mode: *mode, Broker: broker, Principal: principals[actor], TrustedLocalModelLogin: *localLogin, HeartbeatInterval: *leaseDuration / 3,
+		executor, err := interactiveexec.New(interactiveexec.Config{StateDir: *stateDir, SourceDir: *source, Mode: "local-tools", SelfBinary: selfBinary, Broker: broker, Principal: principals[actor], TrustedLocalModelLogin: *localLogin, HeartbeatInterval: 250 * time.Millisecond,
+			ResolveAuthority: func(ctx context.Context, req interactive.ExecutionRequest, provider auth.Provider) (auth.ConnectionRef, error) {
+				_, bindings, err := catalogs.execution(req)
+				if err != nil {
+					return auth.ConnectionRef{}, err
+				}
+				if err := service.CheckExecution(req.Owner, req.SessionID, req.TurnID, req.LeaseID, req.Fence); err != nil {
+					return auth.ConnectionRef{}, err
+				}
+				configured := false
+				for _, name := range req.AuthorityRefs {
+					binding, ok := bindings[name]
+					if !ok {
+						return auth.ConnectionRef{}, fmt.Errorf("authority reference is not configured")
+					}
+					if binding.Provider == "ado" && provider == auth.ADO || binding.Provider == "app-insights" && provider == auth.AppInsights {
+						configured = true
+					}
+				}
+				if !configured {
+					return auth.ConnectionRef{}, nil
+				}
+				connections, err := broker.ListConnections(principals[req.Owner])
+				if err != nil {
+					return auth.ConnectionRef{}, err
+				}
+				for _, connection := range connections {
+					if connection.Provider == provider && connection.Mode == auth.ControlledLocal {
+						return connection.Ref, nil
+					}
+				}
+				return auth.ConnectionRef{}, fmt.Errorf("configured controlled provider is unavailable")
+			},
+			AgentTools: func(ctx context.Context, req interactive.ExecutionRequest, workspace string, emit func(string, map[string]any) error) (interactiveagent.Options, error) {
+				if _, _, err := catalogs.execution(req); err != nil {
+					return interactiveagent.Options{}, err
+				}
+				return (agentToolHost{sessions: service, ops: operations, executor: pool.byOwner[req.Owner], catalogs: catalogs}).options(req, emit), nil
+			},
 			ReviewChild: func(ctx context.Context, req interactive.ExecutionRequest, workspace string, emit func(string, map[string]any) error) (string, error) {
-				childOps, err := interactiveops.New(interactiveops.Options{Root: filepath.Join(*stateDir, "helper"), Binary: *binary, Repository: workspace, RunTimeout: time.Minute, MaxActive: *maxActive, MaxActivePerOwner: 2, RepositoryForScope: func(interactiveops.Scope) (string, error) { return workspace, nil }})
+				surface, _, err := catalogs.execution(req)
 				if err != nil {
 					return "", err
 				}
-				action, err := childOps.RunReviewChild(ctx, interactiveops.Scope{ActorID: req.Owner, SessionID: req.SessionID + "--" + req.ChildID}, req.ChildID, req.Text, func(event interactiveops.ReviewChildEvent) error {
+				if len(req.ChildCommandCapabilities) == 0 {
+					return "", fmt.Errorf("DSL does not authorize child workflow commands")
+				}
+				catalogs.mu.RLock()
+				configDir := catalogs.current.ConfigDir
+				catalogs.mu.RUnlock()
+				policy := operationsPolicy(surface)
+				policy.AllowAuthoring = true // Exact human-approved child only; no child model tools.
+				policy.Workflows = []string{}
+				childOps, err := interactiveops.New(interactiveops.Options{Root: filepath.Join(*stateDir, "helper"), Binary: *binary, Repository: workspace, ConfigDir: configDir, RunTimeout: time.Minute, MaxActive: 4, MaxActivePerOwner: 2,
+					PolicyForScope: func(interactiveops.Scope) (interactiveops.Policy, error) {
+						if _, _, err := catalogs.execution(req); err != nil {
+							return interactiveops.Policy{}, err
+						}
+						return policy, nil
+					},
+					RepositoryForScope: func(interactiveops.Scope) (string, error) { return workspace, nil }})
+				if err != nil {
+					return "", err
+				}
+				sum := sha256.Sum256([]byte(req.WorkflowYAML))
+				digest := ""
+				if req.WorkflowYAML != "" {
+					digest = hex.EncodeToString(sum[:])
+				}
+				action, err := childOps.RunReviewChildWithOptions(ctx, interactiveops.Scope{ActorID: req.Owner, SessionID: req.SessionID + "--" + req.ChildID}, req.ChildID, req.Text, interactiveops.ReviewChildOptions{WorkflowYAML: req.WorkflowYAML, ApprovedPayloadDigest: digest}, func(event interactiveops.ReviewChildEvent) error {
 					data := map[string]any{"name": "child.native-workflow", "executionMode": "native-goobers", "stage": event.Kind, "childId": req.ChildID, "workflowYaml": event.WorkflowYAML, "result": event.Action}
 					if event.Action != nil {
 						data["output"], data["status"], data["runId"] = event.Action.Output, event.Action.Status, event.Action.RunID
@@ -197,10 +311,19 @@ func serve() (serveErr error) {
 				return fmt.Sprintf("Native test-only child workflow %s: %s. Run %s; process cleanup confirmed. The independent snapshot preserves the parent unchanged. This is test evidence, not model-driven semantic review.\n%s", action.Request.Workflow, action.Status, action.RunID, action.Output), nil
 			},
 			Helper: func(ctx context.Context, req interactive.ExecutionRequest, emit func(interactive.ExecutionEvent) error) (string, error) {
+				if _, _, err := catalogs.execution(req); err != nil {
+					return "", err
+				}
+				if !slices.Contains(req.Tools, "session_context") {
+					return "", nil
+				}
 				scope := interactiveops.Scope{ActorID: req.Owner, SessionID: req.SessionID}
 				lower := strings.ToLower(req.Text)
 				for _, intent := range []string{"design workflow", "add workflow", "create workflow", "disable workflow", "enable workflow", "run workflow", "submit run", "rename gaggle", "disable gaggle", "enable gaggle"} {
 					if strings.Contains(lower, intent) {
+						if !slices.Contains(req.Tools, "propose_action") {
+							return "", fmt.Errorf("DSL does not allow management proposals")
+						}
 						action, err := operations.Chat(ctx, scope, req.Text, req.TurnID)
 						if err != nil {
 							return "", err
@@ -227,16 +350,6 @@ func serve() (serveErr error) {
 		}
 		pool.byOwner[actor] = executor
 	}
-	surfaces := []interactive.Surface{{ID: "helper", Name: "Gaggle Helper", Mode: "helper", Description: "Manage a real isolated gaggle: inspect state, author workflows, apply scoped changes and submit runs.", Enabled: true, MaxChildren: 3, Instructions: "Ground recommendations in configured workflows, runs, backlog and repository evidence. Distinguish proposals, admission, and observed results."}, {ID: "workbench", Name: "Cloud Workbench", Mode: "workbench", Description: "Direct repository investigation, editing, tests and bounded review children. This checkpoint runs on a local worker.", Enabled: true, MaxChildren: 3, Instructions: "Investigate and edit within the selected repository; preserve reviewable changes and honor steering."}}
-	if *surfacesFile != "" {
-		data, err := os.ReadFile(*surfacesFile)
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(data, &surfaces); err != nil {
-			return err
-		}
-	}
 	principal := func(r *http.Request) (string, error) {
 		owner, ok := r.Context().Value(actorKey{}).(string)
 		if !ok {
@@ -244,7 +357,7 @@ func serve() (serveErr error) {
 		}
 		return owner, nil
 	}
-	service, err = interactive.Open(interactive.Options{StateDir: filepath.Join(*stateDir, "sessions"), Surfaces: surfaces, Executor: pool, Principal: principal, WorkerID: "local-worker", LeaseDuration: *leaseDuration, MaxActive: *maxActive, MaxActivePerOwner: 2, MaxTurnDuration: 10 * time.Minute,
+	service, err = interactive.Open(interactive.Options{StateDir: filepath.Join(*stateDir, "sessions"), Surfaces: catalog.Surfaces, AvailableExecutionModes: availableModes, DefaultExecutionMode: "codex-local", Executor: pool, Principal: principal, WorkerID: "local-worker", LeaseDuration: 30 * time.Second, MaxActive: 4, MaxActivePerOwner: 2, MaxTurnDuration: 10 * time.Minute,
 		OnStop: func(ctx context.Context, owner, sessionID string) error {
 			if err := pool.byOwner[owner].Stop(ctx, owner, sessionID); err != nil {
 				return err
@@ -257,14 +370,11 @@ func serve() (serveErr error) {
 	}
 	defer func() { serveErr = errors.Join(serveErr, service.Close()) }()
 	mux := http.NewServeMux()
-	mux.Handle(api+"/operations/", operations.Handler(func(ctx context.Context, sessionID string) (interactiveops.Scope, error) {
+	operationsHTTP := operations.Handler(func(ctx context.Context, sessionID string) (interactiveops.Scope, error) {
 		owner, _ := ctx.Value(actorKey{}).(string)
-		session, err := service.Session(owner, sessionID)
+		_, err := service.Session(owner, sessionID)
 		if err != nil {
 			return interactiveops.Scope{}, err
-		}
-		if session.Mode != "helper" {
-			return interactiveops.Scope{}, fmt.Errorf("helper operations require a Helper session")
 		}
 		if method, _ := ctx.Value(methodKey{}).(string); method != "GET" {
 			if err := service.CheckControl(owner, sessionID); err != nil {
@@ -272,7 +382,71 @@ func serve() (serveErr error) {
 			}
 		}
 		return interactiveops.Scope{ActorID: owner, SessionID: sessionID}, nil
-	}))
+	})
+	mux.HandleFunc(api+"/operations/", func(w http.ResponseWriter, r *http.Request) {
+		owner, _ := principal(r)
+		sessionID := r.URL.Query().Get("sessionId")
+		if _, err := service.Session(owner, sessionID); err != nil {
+			fail(w, 403, err)
+			return
+		}
+		surface, _, err := catalogs.session(service, owner, sessionID)
+		if err != nil {
+			// Revocation prevents new effects, not inspection of already-owned
+			// receipts. This path cannot initialize or reconcile a native scope.
+			if r.Method == "GET" {
+				if strings.HasSuffix(r.URL.Path, "/state") || r.URL.Path == api+"/operations/" {
+					state, readErr := operations.SnapshotRecorded(r.Context(), interactiveops.Scope{ActorID: owner, SessionID: sessionID})
+					if readErr != nil {
+						fail(w, 404, readErr)
+						return
+					}
+					writeJSON(w, state)
+					return
+				}
+				if strings.Contains(r.URL.Path, "/actions/") {
+					operationsHTTP.ServeHTTP(w, r)
+					return
+				}
+			}
+			fail(w, 403, err)
+			return
+		}
+		required := "propose_action"
+		if r.Method == "GET" {
+			required = "session_context"
+		}
+		if strings.Contains(r.URL.Path, "/actions/") && r.Method == "GET" {
+			required = "inspect_action"
+		}
+		if strings.HasSuffix(r.URL.Path, "/validate-workflow") {
+			required = "validate_workflow"
+		}
+		if !slices.Contains(surface.Tools, required) {
+			fail(w, 403, fmt.Errorf("operation is not allowed by the surface DSL tool policy"))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/chat") {
+			session, err := service.Session(owner, sessionID)
+			if err != nil || session.ExecutionMode != interactive.ExecutionModeLocalTools {
+				fail(w, 403, fmt.Errorf("deterministic chat routing is available only in explicit demo sessions"))
+				return
+			}
+		}
+		operationsHTTP.ServeHTTP(w, r)
+	})
+	mux.HandleFunc(api+"/config/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		revision, err := catalogs.reload(*configDir, *stateDir, service)
+		if err != nil {
+			fail(w, 409, err)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "reloaded", "configRevision": revision})
+	})
 	mux.HandleFunc(api+"/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "method not allowed", 405)
@@ -293,7 +467,7 @@ func serve() (serveErr error) {
 			}
 			items = append(items, map[string]any{"id": c.Ref.ID, "provider": c.Provider, "label": c.Label, "status": c.State, "resources": resources, "expiresAt": c.ExpiresAt, "refreshCount": c.RefreshCount})
 		}
-		writeJSON(w, map[string]any{"providerMode": "controlled-local", "executionMode": *mode, "identity": map[string]string{"name": owner, "subject": owner, "issuer": "goobers:controlled-local"}, "localActors": actors, "connections": items, "limits": map[string]any{"maxTurnSeconds": 600, "maxChildren": 3, "maxActive": *maxActive, "leaseSeconds": leaseDuration.Seconds()}, "capabilities": map[string]bool{"liveModel": *mode == "codex-local", "liveDelegatedAuth": false}})
+		writeJSON(w, map[string]any{"providerMode": "controlled-local", "executionMode": "per-session", "defaultMode": "codex-local", "executionModes": []any{map[string]any{"id": "codex-local", "label": "Agent", "available": *localLogin, "liveQualified": false, "reason": "Requires explicit trusted local model login opt-in; live model qualification is pending"}, map[string]any{"id": "local-tools", "label": "Demo tools", "available": true, "liveQualified": false}}, "identity": map[string]string{"name": owner, "subject": owner, "issuer": "goobers:controlled-local"}, "localActors": actors, "connections": items, "limits": map[string]any{"maxTurnSeconds": 600, "maxChildren": 3, "maxActive": 4, "leaseSeconds": 30}, "capabilities": map[string]bool{"liveModel": false, "modelEnabled": *localLogin, "liveDelegatedAuth": false}})
 	})
 	mux.HandleFunc(api+"/identity/select", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -416,7 +590,7 @@ func serve() (serveErr error) {
 		case <-stopped:
 		}
 	}()
-	log.Printf("Experimental interactive prototype: http://%s/#/interactive (executor=%s; providers=controlled-local; identities=controlled-local)", *listen, *mode)
+	log.Printf("Experimental interactive prototype: http://%s/#/interactive (DSL=%s; per-session adapters; providers=controlled-local; identities=controlled-local)", *listen, catalog.Revision)
 	err = server.ListenAndServe()
 	close(stopped)
 	if errors.Is(err, http.ErrServerClosed) {
