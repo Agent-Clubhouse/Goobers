@@ -3,6 +3,7 @@ package journal
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,6 +109,10 @@ func (r *Reader) Identity() (RunIdentity, error) {
 	if err != nil {
 		return RunIdentity{}, fmt.Errorf("journal: read run.yaml: %w", err)
 	}
+	return decodeIdentity(b)
+}
+
+func decodeIdentity(b []byte) (RunIdentity, error) {
 	var id RunIdentity
 	if err := yaml.Unmarshal(b, &id); err != nil {
 		return RunIdentity{}, fmt.Errorf("journal: parse run.yaml: %w", err)
@@ -754,6 +759,10 @@ func readEventRecords(path string) ([]EventRecord, int, error) {
 }
 
 func parseEventRecords(data []byte) ([]EventRecord, int, error) {
+	return parseEventRecordsContext(context.Background(), data, 0)
+}
+
+func parseEventRecordsContext(ctx context.Context, data []byte, maxRecords int) ([]EventRecord, int, error) {
 	var complete, tail []byte
 	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
 		complete, tail = data[:nl+1], data[nl+1:]
@@ -765,6 +774,9 @@ func parseEventRecords(data []byte) ([]EventRecord, int, error) {
 	sc := bufio.NewScanner(bytes.NewReader(complete))
 	sc.Buffer(make([]byte, 0, 64*1024), maxEventBytes)
 	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		line := bytes.TrimSpace(sc.Bytes())
 		// NUL bytes are never part of a scrubbed JSON event line — they are crash
 		// zero-fill left by an interrupted append. Leading fill appears when a
@@ -777,12 +789,18 @@ func parseEventRecords(data []byte) ([]EventRecord, int, error) {
 		if len(line) == 0 {
 			continue
 		}
+		if maxRecords > 0 && len(records) >= maxRecords {
+			return nil, 0, ErrReadSnapshotLimit
+		}
 		var ev Event
 		if err := json.Unmarshal(line, &ev); err != nil {
 			// A completed (newline-terminated, fsynced) line that still fails to
 			// parse after stripping crash fill is corruption beyond a torn tail —
 			// surface it rather than hide it.
 			return nil, 0, fmt.Errorf("journal: corrupt event at seq boundary: %w", err)
+		}
+		if maxRecords > 0 && !ev.KnownSchema() {
+			return nil, 0, unsupportedPayloadSchema("event", ev.Schema, EventSchema)
 		}
 		records = append(records, EventRecord{
 			Event: ev,

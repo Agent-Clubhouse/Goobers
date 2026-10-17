@@ -35,6 +35,7 @@ describe("Go daemon wire contract", () => {
       "workflows",
       "workflowDetail",
       "runs",
+      "runAttribution",
       "runDetail",
       "runChildren",
       "runEvents",

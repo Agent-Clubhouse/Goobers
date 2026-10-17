@@ -23,6 +23,7 @@ import type {
   WorkflowPage,
   WorkflowDetail,
   RunList,
+  RunAttributionResult,
   RunDetail,
   ChildHistoryPage,
   EventList,
@@ -67,6 +68,7 @@ export interface GoWireFixtures {
   workflows: WorkflowPage;
   workflowDetail: WorkflowDetail;
   runs: RunList;
+  runAttribution: RunAttributionResult;
   runDetail: RunDetail;
   runChildren: ChildHistoryPage;
   runEvents: EventList;
@@ -1072,6 +1074,108 @@ export const goWireFixtures = {
       }
     ],
     "nextCursor": "next-run"
+  },
+  "runAttribution": {
+    "schema": "goobers.dev/backprop/read/v1",
+    "runId": "run-123",
+    "gaggle": "core",
+    "observedAt": "2026-07-18T12:34:56Z",
+    "availability": "recorded",
+    "runPhase": "failed",
+    "record": {
+      "schema": "goobers.dev/backprop/record/v1",
+      "status": "complete",
+      "contractVersion": "goobers.dev/creditgraph/attribution/v1",
+      "mode": "active",
+      "runId": "run-123",
+      "gaggle": "core",
+      "workflow": "implementation",
+      "workflowVersion": 1,
+      "workflowDigest": "sha256:workflow",
+      "effectiveVersion": "sha256:effective",
+      "workload": "manual",
+      "attribution": {
+        "schema": "goobers.dev/creditgraph/attribution/v1",
+        "runId": "run-123",
+        "rootId": "run",
+        "outcome": "failed",
+        "outcomeSign": -1,
+        "contributions": [
+          {
+            "nodeId": "stage",
+            "kind": "stage",
+            "label": "Implement",
+            "stage": "implement",
+            "path": [
+              "run",
+              "stage"
+            ],
+            "attempt": 1,
+            "share": 0.6,
+            "score": -0.6,
+            "uncertainty": 0.2,
+            "confidence": 0.8,
+            "provenance": "recorded"
+          }
+        ],
+        "causes": [
+          {
+            "class": "bad-tool-result",
+            "nodeId": "stage",
+            "stage": "implement",
+            "errorCode": "tool_failed",
+            "confidence": 0.8,
+            "summary": "tool failed",
+            "assumptions": [
+              "recorded"
+            ],
+            "evidence": [
+              "sequence 9"
+            ]
+          }
+        ],
+        "assumptions": [
+          "correlational estimate"
+        ],
+        "droppedClaims": 1
+      },
+      "evidence": [
+        {
+          "runId": "run-123",
+          "nodeId": "stage",
+          "stage": "implement",
+          "detail": "recorded",
+          "source": "contribution",
+          "journalSequence": 9,
+          "journalPath": "events.jsonl"
+        }
+      ],
+      "stageComposition": {
+        "checkpoints": 1,
+        "throughSequence": 8,
+        "error": "tail analyzed"
+      }
+    },
+    "groundTruth": {
+      "id": "label-1",
+      "runId": "run-123",
+      "outcome": "incorrect",
+      "reason": "incorrect output",
+      "source": "human",
+      "labeledBy": "operator",
+      "labeledAt": "2026-07-18T12:34:56Z",
+      "recordedAt": "2026-07-18T12:34:56Z"
+    },
+    "labelRevision": "sha256:labels",
+    "sourceDigest": "sha256:record",
+    "evidence": [
+      {
+        "index": 0,
+        "kind": "journal",
+        "status": "verified"
+      }
+    ],
+    "inputBytes": 1024
   },
   "runDetail": {
     "childActivity": {

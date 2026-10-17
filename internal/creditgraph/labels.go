@@ -205,12 +205,28 @@ func ReadLabelStore(runDir string) (LabelStore, error) {
 	if err != nil {
 		return LabelStore{}, err
 	}
+	return DecodeLabelStore(data)
+}
+
+// DecodeLabelStore validates already bounded persisted bytes without reading or writing files.
+func DecodeLabelStore(data []byte) (LabelStore, error) {
 	var store LabelStore
 	if err := json.Unmarshal(data, &store); err != nil {
 		return LabelStore{}, fmt.Errorf("decode label store: %w", err)
 	}
 	if store.Schema != LabelStoreSchemaVersion {
 		return LabelStore{}, fmt.Errorf("unsupported label store schema %q", store.Schema)
+	}
+	if strings.TrimSpace(store.RunID) == "" || len(store.Labels) > maxLabelsPerRun {
+		return LabelStore{}, errors.New("invalid label store identity or history length")
+	}
+	for _, label := range store.Labels {
+		if label.RunID != store.RunID || label.ID == "" {
+			return LabelStore{}, errors.New("label store identity mismatch")
+		}
+		if err := label.validate(); err != nil {
+			return LabelStore{}, fmt.Errorf("invalid stored label: %w", err)
+		}
 	}
 	return store, nil
 }

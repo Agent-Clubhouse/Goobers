@@ -12858,3 +12858,13 @@ select {
 .map-item code {
   color: var(--muted);
 }
+
+.run-attribution-panel { padding-block: 1rem; }
+.run-attribution-panel dl { display: grid; grid-template-columns: minmax(9rem, 1fr) 3fr; gap: .5rem 1rem; }
+.run-attribution-panel dd { margin: 0; overflow-wrap: anywhere; }
+.run-attribution-panel .mono { overflow-wrap: anywhere; }
+.run-attribution-table { overflow-x: auto; }
+.run-attribution-table table { width: 100%; border-collapse: collapse; }
+.run-attribution-table th, .run-attribution-table td { padding: .75rem; text-align: left; vertical-align: top; }
+.run-attribution-table caption { text-align: left; padding-block: .75rem; }
+.run-attribution-table details { font-weight: normal; min-width: 14rem; }

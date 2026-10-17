@@ -40,6 +40,7 @@ import type {
   PortalConfig,
   RequestOptions,
   RunDetail,
+  RunAttributionResult,
   ChildHistoryPage,
   RunList,
   RunListOptions,
@@ -293,6 +294,10 @@ export class HttpDaemonClient implements DaemonClient {
 
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
     return this.getJSON(clientRoutes.runDetail, undefined, options, { run: runId });
+  }
+
+  getRunAttribution(runId: string, gaggle: string, options?: RequestOptions): Promise<RunAttributionResult> {
+    return this.getJSON(clientRoutes.runAttribution, { gaggle }, options, { run: runId });
   }
 
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage> {

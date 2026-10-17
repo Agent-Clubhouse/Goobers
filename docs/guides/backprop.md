@@ -525,3 +525,40 @@ actually received.
 
 - [Credit graph contract](../design/credit-graph.md)
 - [CLI reference](../cli/README.md)
+
+## Inspect one run in Portal
+
+Open a run and select **Backprop** to inspect its persisted `attribution.json`.
+The table orders contributions by signed score, highest first, and pages 50 rows
+at a time. Responsibility share is unsigned; it does not indicate whether a
+contribution helped or hurt. Expand a row to inspect its path, uncertainty,
+provenance, cause assumptions, and exact journal evidence. Span references open
+their journal event; only verified artifact references offer artifact inspection.
+Filesystem paths are never browser links.
+
+The panel distinguishes run phase, analysis status, and the latest human
+correctness label. Missing records are not successful analyses. A missing blob
+is unavailable evidence; a committed redaction is shown as redacted evidence,
+while the original analysis and its digest remain unchanged. Replacement bytes
+are never substituted into that analysis. Other digest/reference mismatches
+refuse the read. Refresh checks the same run again; stale observations remain
+marked. The panel provides investigation only: it does not label runs, compute
+cohorts, invoke the fault auditor, file issues, or control rotation/remediation.
+Those capabilities remain separate work under #4664.
+
+The additive read endpoint is
+`GET /api/v1/runs/{run}/attribution?gaggle={gaggle}`. The required gaggle selects
+only its scoped and legacy run locations; the journal and record identities must
+agree. Ordinary Portal read authorization applies. Stage-pod principals cannot
+use this endpoint. Older readers may return `attribution_unavailable`.
+
+Reads are pure: they neither migrate journals nor rewrite records. The initial
+ceilings are 8 MiB per record/serialized response, 1 MiB each for identity and
+label history, 64 KiB for the schema manifest, 64 MiB total input (including
+unique evidence blobs), 100,000 journal events, and 10,000 contributions/evidence
+references. The existing eight-second request budget applies. The endpoint
+returns an explicit `limit-exceeded` availability with no partial analysis;
+journals requiring migration return `unsupported`. These conservative ceilings
+are not measured production percentiles. Each expanded row shows at most 100
+path nodes, causes and evidence references; claim lists show at most 100 entries
+per class. The persisted record retains the full bounded analysis.
