@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 )
 
 // Bridge's socket location is a local transport endpoint, not a credential. Its
@@ -31,6 +32,7 @@ type Bridge struct {
 	closed          bool
 	once            sync.Once
 	closeErr        error
+	callbacks       sync.WaitGroup
 }
 
 func Start(ctx context.Context, options Options) (*Bridge, error) {
@@ -43,6 +45,12 @@ func Start(ctx context.Context, options Options) (*Bridge, error) {
 		return nil, ErrUnavailable
 	}
 	if options.Check == nil || options.Invoke == nil {
+		return nil, ErrInvalidConfiguration
+	}
+	if options.ShutdownTimeout <= 0 {
+		options.ShutdownTimeout = 2 * time.Second
+	}
+	if options.ShutdownTimeout > 30*time.Second {
 		return nil, ErrInvalidConfiguration
 	}
 	tools, definitions, err := compileTools(options.Tools)
@@ -128,8 +136,27 @@ func (b *Bridge) Close() error {
 		if os.RemoveAll(b.directory) != nil {
 			b.closeErr = ErrUnavailable
 		}
+		drained := make(chan struct{})
+		go func() { b.callbacks.Wait(); close(drained) }()
+		timer := time.NewTimer(b.options.ShutdownTimeout)
+		defer timer.Stop()
+		select {
+		case <-drained:
+		case <-timer.C:
+			b.closeErr = errors.Join(b.closeErr, ErrNotQuiescent)
+		}
 	})
 	return b.closeErr
+}
+
+func (b *Bridge) beginCallback() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed || b.ctx.Err() != nil {
+		return false
+	}
+	b.callbacks.Add(1)
+	return true
 }
 
 func readLine(reader *bufio.Reader) ([]byte, error) {

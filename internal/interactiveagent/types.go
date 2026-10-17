@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 const (
@@ -41,10 +42,14 @@ type Options struct {
 	Check  func(context.Context) error
 	Invoke func(context.Context, Call) (any, error)
 	Emit   func(AuditEvent)
+	// ShutdownTimeout bounds waiting for admitted host callbacks to finish.
+	// A timeout fails custody closed; it never means the callback was stopped.
+	ShutdownTimeout time.Duration
 }
 
 var (
 	ErrUnavailable          = errors.New("interactive tool bridge unavailable")
 	ErrInvalidConfiguration = errors.New("invalid interactive tool bridge configuration")
 	ErrInvalidMessage       = errors.New("invalid or oversized MCP message")
+	ErrNotQuiescent         = errors.New("interactive host tool callbacks have not stopped")
 )

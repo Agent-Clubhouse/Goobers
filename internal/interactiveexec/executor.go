@@ -17,6 +17,7 @@ import (
 
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/interactive"
+	"github.com/goobers/goobers/internal/interactiveagent"
 	auth "github.com/goobers/goobers/internal/interactiveauth"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/platform/proc"
@@ -24,12 +25,18 @@ import (
 
 type Config struct {
 	StateDir, SourceDir, Mode string
+	Model, SelfBinary         string
 	Broker                    *auth.Broker
 	Principal                 auth.Principal
 	TrustedLocalModelLogin    bool
 	HeartbeatInterval         time.Duration
 	Helper                    func(context.Context, interactive.ExecutionRequest, func(interactive.ExecutionEvent) error) (string, error)
 	ReviewChild               func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (string, error)
+	AgentTools                func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (interactiveagent.Options, error)
+	// ResolveAuthority maps the server-pinned symbolic authority refs to an exact
+	// owned broker connection. A zero ref means this provider is unconfigured.
+	// It must never acquire credentials, create a grant, or substitute identity.
+	ResolveAuthority func(context.Context, interactive.ExecutionRequest, auth.Provider) (auth.ConnectionRef, error)
 }
 
 type Executor struct {
@@ -143,6 +150,19 @@ func (e *Executor) Execute(ctx context.Context, req interactive.ExecutionRequest
 	if req.Owner != e.config.Principal.Identity().Subject {
 		return result, fmt.Errorf("executor identity mismatch")
 	}
+	executionMode := req.ExecutionMode
+	if executionMode == "" {
+		executionMode = e.config.Mode // Legacy direct-call tests only; HTTP sessions pin a mode.
+	}
+	if executionMode != "local-tools" && executionMode != "codex-local" {
+		return result, fmt.Errorf("unknown execution mode; no fallback is permitted")
+	}
+	if executionMode == "codex-local" && !e.config.TrustedLocalModelLogin {
+		return result, fmt.Errorf("model execution unavailable: host trusted-local login opt-in is required; choose the explicitly labeled demo mode separately")
+	}
+	if executionMode == "codex-local" && req.Harness != "" && req.Harness != "codex" {
+		return result, fmt.Errorf("configured harness is unsupported for codex-local; no fallback is permitted")
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan struct{})
@@ -212,7 +232,7 @@ func (e *Executor) Execute(ctx context.Context, req interactive.ExecutionRequest
 	send := func(kind string, data map[string]any) error {
 		return emit(interactive.ExecutionEvent{Type: kind, Data: data})
 	}
-	if err := send("tool.started", map[string]any{"name": "workspace.snapshot", "detail": "Private local copy; no remote publication credentials", "executionMode": e.config.Mode}); err != nil {
+	if err := send("tool.started", map[string]any{"name": "workspace.snapshot", "detail": "Private local copy; no remote publication credentials", "executionMode": executionMode}); err != nil {
 		return result, err
 	}
 	if err := send("tool.completed", map[string]any{"name": "workspace.snapshot", "workspacePath": workspace, "status": "succeeded"}); err != nil {
@@ -229,13 +249,17 @@ func (e *Executor) Execute(ctx context.Context, req interactive.ExecutionRequest
 			return result, err
 		}
 	}
-	if req.Mode == "helper" && req.ChildID == "" && !req.ReadOnly && e.config.Helper != nil {
+	if req.ChildID != "" && req.WorkflowYAML != "" && e.config.ReviewChild != nil {
+		result.Message, runErr = e.config.ReviewChild(ctx, req, workspace, send)
+		return result, runErr
+	}
+	if executionMode == "local-tools" && req.Mode == "helper" && req.ChildID == "" && !req.ReadOnly && e.config.Helper != nil {
 		result.Message, runErr = e.config.Helper(ctx, req, emit)
 		if result.Message != "" || runErr != nil {
 			return result, runErr
 		}
 	}
-	if e.config.Mode == "codex-local" {
+	if executionMode == "codex-local" {
 		result.Message, runErr = e.native(ctx, req, workspace, providerContext, send)
 	} else {
 		result.Message, runErr = e.local(ctx, req, workspace, providerContext, send)
@@ -374,6 +398,13 @@ func sensitiveFilename(name string) bool {
 }
 
 func (e *Executor) authority(ctx context.Context, req interactive.ExecutionRequest) (auth.Authority, error) {
+	bindings, err := e.configuredBindings(ctx, req)
+	if err != nil {
+		return auth.Authority{}, err
+	}
+	if len(bindings) == 0 {
+		return auth.Authority{}, fmt.Errorf("no provider authority is configured for this execution")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	authorities, err := e.config.Broker.ListAuthorities(e.config.Principal)
@@ -388,35 +419,43 @@ func (e *Executor) authority(ctx context.Context, req interactive.ExecutionReque
 				parent = &v
 			}
 			if req.ChildID != "" && a.Authority.ExecutionID == req.ChildID {
+				if !sameBindings(a.Authority.Bindings, bindings) {
+					return auth.Authority{}, fmt.Errorf("configured child authority changed; existing grant cannot be widened or replaced")
+				}
 				return a.Authority, nil
 			}
 		}
 	}
 	if parent == nil {
-		connections, err := e.config.Broker.ListConnections(e.config.Principal)
-		if err != nil {
-			return auth.Authority{}, err
+		if req.ChildID != "" {
+			return auth.Authority{}, fmt.Errorf("child provider access requires an existing parent authority")
 		}
-		var bindings []auth.Binding
-		for _, c := range connections {
-			bindings = append(bindings, auth.Binding{Connection: c.Ref, Resources: c.Resources})
-		}
-		a, err := e.config.Broker.IssueAuthority(ctx, e.config.Principal, auth.AuthorityRequest{SessionID: req.SessionID, ExecutionID: req.SessionID, ExecutionFence: req.Fence, Bindings: bindings, AllowedActions: []auth.Action{auth.ReadWorkItem, auth.QueryTelemetry}, NotAfter: time.Now().Add(2 * time.Hour), Budget: 80, MaxChildren: 3, MaxDepth: 1})
+		a, err := e.config.Broker.IssueAuthority(ctx, e.config.Principal, auth.AuthorityRequest{SessionID: req.SessionID, ExecutionID: req.SessionID, ExecutionFence: req.Fence, Bindings: bindings, AllowedActions: bindingActions(bindings), NotAfter: time.Now().Add(2 * time.Hour), Budget: 80, MaxChildren: 3, MaxDepth: 1})
 		if err != nil {
 			return auth.Authority{}, err
 		}
 		parent = &a
 	}
 	if req.ChildID == "" {
+		if !sameBindings(parent.Bindings, bindings) {
+			return auth.Authority{}, fmt.Errorf("configured provider authority changed; start a new session instead of replacing its pinned grant")
+		}
 		if req.Fence > parent.ExecutionFence {
 			return e.config.Broker.RebindExecution(ctx, e.config.Principal, parent.Ref, req.Fence)
 		}
 		return *parent, nil
 	}
-	return e.config.Broker.DeriveChild(ctx, e.config.Principal, parent.Ref, auth.AuthorityRequest{SessionID: req.SessionID, ExecutionID: req.ChildID, ExecutionFence: req.Fence, Bindings: parent.Bindings, AllowedActions: parent.AllowedActions, NotAfter: parent.NotAfter, Budget: 10, MaxChildren: 0, MaxDepth: 1})
+	return e.config.Broker.DeriveChild(ctx, e.config.Principal, parent.Ref, auth.AuthorityRequest{SessionID: req.SessionID, ExecutionID: req.ChildID, ExecutionFence: req.Fence, Bindings: bindings, AllowedActions: bindingActions(bindings), NotAfter: parent.NotAfter, Budget: 10, MaxChildren: 0, MaxDepth: 1})
 }
 
 func (e *Executor) providerContext(ctx context.Context, req interactive.ExecutionRequest, emit func(string, map[string]any) error) (string, error) {
+	bindings, err := e.configuredBindings(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if len(bindings) == 0 {
+		return "No delegated provider authority is configured for this execution.", nil
+	}
 	a, err := e.authority(ctx, req)
 	if err != nil {
 		return "", err
@@ -432,6 +471,9 @@ func (e *Executor) providerContext(ctx context.Context, req interactive.Executio
 		return "", err
 	}
 	for i, q := range queries {
+		if !bindingsHaveResource(bindings, q.resource) {
+			continue
+		}
 		if err := emit("tool.started", map[string]any{"name": string(q.action), "providerMode": auth.ControlledLocal}); err != nil {
 			return "", err
 		}
@@ -474,6 +516,126 @@ func (e *Executor) providerContext(ctx context.Context, req interactive.Executio
 		}
 	}
 	return strings.Join(parts, "\n"), nil
+}
+
+// ReadProvider is the model's typed mediated read boundary. Identity, exact
+// resource, lease and authority come from the host, never model arguments.
+// Historical cross-fence retries fail closed in the broker rather than being
+// silently reissued under a new operation identity.
+func (e *Executor) ReadProvider(ctx context.Context, req interactive.ExecutionRequest, key string, action auth.Action, payload auth.Payload) (auth.Operation, error) {
+	if req.Owner != e.config.Principal.Identity().Subject || req.ChildID != "" {
+		return auth.Operation{}, fmt.Errorf("provider tool requires the current owned parent execution")
+	}
+	if !safeID.MatchString(key) || len(key) > 64 {
+		return auth.Operation{}, fmt.Errorf("provider tool key must contain 1–64 letters, digits, underscores or hyphens")
+	}
+	resource := auth.DemoADOResource()
+	switch action {
+	case auth.ReadWorkItem:
+	case auth.QueryTelemetry:
+		resource = auth.DemoInsightsResource()
+	default:
+		return auth.Operation{}, fmt.Errorf("model provider tools are read-only")
+	}
+	bindings, err := e.configuredBindings(ctx, req)
+	if err != nil {
+		return auth.Operation{}, err
+	}
+	if !bindingsHaveResource(bindings, resource) {
+		return auth.Operation{}, fmt.Errorf("provider tool is outside the execution's configured authority")
+	}
+	a, err := e.authority(ctx, req)
+	if err != nil {
+		return auth.Operation{}, err
+	}
+	id := "agent-" + req.TurnID + "-" + key
+	return e.config.Broker.Execute(ctx, e.config.Principal, auth.OperationRequest{Authority: a.Ref, SessionID: req.SessionID, ExecutionID: a.ExecutionID, ExecutionFence: req.Fence, TurnID: req.TurnID, LeaseID: req.LeaseID, OperationID: id, ActionID: id, IdempotencyKey: id, Action: action, Resource: resource, Payload: payload})
+}
+
+func (e *Executor) configuredBindings(ctx context.Context, req interactive.ExecutionRequest) ([]auth.Binding, error) {
+	if req.Owner != e.config.Principal.Identity().Subject {
+		return nil, fmt.Errorf("executor identity mismatch")
+	}
+	if len(req.AuthorityRefs) == 0 {
+		return nil, nil
+	}
+	if e.config.ResolveAuthority == nil || e.config.Broker == nil {
+		return nil, fmt.Errorf("configured authority has no trusted host resolver")
+	}
+	connections, err := e.config.Broker.ListConnections(e.config.Principal)
+	if err != nil {
+		return nil, err
+	}
+	bindings := []auth.Binding{}
+	for _, provider := range []auth.Provider{auth.ADO, auth.AppInsights} {
+		ref, err := e.config.ResolveAuthority(ctx, req, provider)
+		if err != nil {
+			return nil, err
+		}
+		if ref == (auth.ConnectionRef{}) {
+			continue
+		}
+		found := false
+		for _, connection := range connections {
+			if connection.Ref == ref && connection.Provider == provider {
+				bindings = append(bindings, auth.Binding{Connection: ref, Resources: connection.Resources})
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("configured authority does not resolve to an exact owned provider binding")
+		}
+	}
+	return bindings, nil
+}
+
+func bindingsHaveResource(bindings []auth.Binding, resource auth.Resource) bool {
+	for _, binding := range bindings {
+		for _, candidate := range binding.Resources {
+			if candidate == resource {
+				return true
+			}
+		}
+	}
+	return false
+}
+func bindingActions(bindings []auth.Binding) []auth.Action {
+	actions := []auth.Action{}
+	if bindingsHaveResource(bindings, auth.DemoADOResource()) {
+		actions = append(actions, auth.ReadWorkItem)
+	}
+	if bindingsHaveResource(bindings, auth.DemoInsightsResource()) {
+		actions = append(actions, auth.QueryTelemetry)
+	}
+	return actions
+}
+func sameBindings(a, b []auth.Binding) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, left := range a {
+		found := false
+		for _, right := range b {
+			if left.Connection == right.Connection && len(left.Resources) == len(right.Resources) {
+				equal := true
+				for _, resource := range left.Resources {
+					if !bindingsHaveResource([]auth.Binding{right}, resource) {
+						equal = false
+						break
+					}
+				}
+				if equal {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func run(ctx context.Context, workspace string, command []string, checkpoint func(harness.TranscriptDelta) error) (harness.ProcessResult, error) {

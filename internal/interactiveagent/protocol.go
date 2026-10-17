@@ -235,6 +235,11 @@ func (c *connection) call(req rpcRequest) {
 		case c.bridge.invokeSlot <- struct{}{}:
 		}
 		defer func() { <-c.bridge.invokeSlot }()
+		if !c.bridge.beginCallback() {
+			c.respond(req.ID, toolFailure("cancelled"), nil)
+			return
+		}
+		defer c.bridge.callbacks.Done()
 		if ctx.Err() != nil {
 			c.respond(req.ID, toolFailure("cancelled"), nil)
 			return

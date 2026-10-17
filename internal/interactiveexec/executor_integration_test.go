@@ -39,10 +39,35 @@ func integrationExecutor(t *testing.T, mode string) *Executor {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.config.ResolveAuthority = func(_ context.Context, req interactive.ExecutionRequest, provider auth.Provider) (auth.ConnectionRef, error) {
+		wanted := "demo-ado"
+		if provider == auth.AppInsights {
+			wanted = "demo-insights"
+		}
+		configured := false
+		for _, ref := range req.AuthorityRefs {
+			if ref == wanted {
+				configured = true
+			}
+		}
+		if !configured {
+			return auth.ConnectionRef{}, nil
+		}
+		connections, err := broker.ListConnections(p)
+		if err != nil {
+			return auth.ConnectionRef{}, err
+		}
+		for _, connection := range connections {
+			if connection.Provider == provider {
+				return connection.Ref, nil
+			}
+		}
+		return auth.ConnectionRef{}, nil
+	}
 	return e
 }
 func integrationRequest() interactive.ExecutionRequest {
-	return interactive.ExecutionRequest{SessionID: "test-session", TurnID: "turn-one", Owner: "test-owner", Mode: "workbench", Fence: 1, Attempt: 1, LeaseID: "lease-one"}
+	return interactive.ExecutionRequest{SessionID: "test-session", TurnID: "turn-one", Owner: "test-owner", Mode: "workbench", Fence: 1, Attempt: 1, LeaseID: "lease-one", AuthorityRefs: []string{"demo-ado", "demo-insights"}}
 }
 
 func TestIntegrationActualEditTestsAndCumulativeChildIsolation(t *testing.T) {

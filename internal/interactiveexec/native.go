@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/interactive"
+	"github.com/goobers/goobers/internal/interactiveagent"
 	"github.com/goobers/goobers/internal/invoke"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -23,6 +24,13 @@ import (
 // Interactive completion explicitly preserves dirty changes: it is not an
 // ordinary declarative workflow's committed-stage completion contract.
 func (e *Executor) native(ctx context.Context, req interactive.ExecutionRequest, workspace, providerContext string, emit func(string, map[string]any) error) (string, error) {
+	if req.Harness != "" && req.Harness != "codex" {
+		return "", fmt.Errorf("configured harness is unsupported; no fallback is permitted")
+	}
+	model := req.Model
+	if model == "" {
+		model = e.config.Model
+	}
 	adapter := &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(workspace, ".tmp")}
 	runAdapter := adapter.Run
 	if e.runNative != nil {
@@ -36,6 +44,10 @@ func (e *Executor) native(ctx context.Context, req interactive.ExecutionRequest,
 		instruction += " You are a child reviewer in an independent snapshot. Review and test; do not modify project files. No result is automatically applied to the parent."
 	}
 	instruction += "\nConfigured persona: " + req.Instructions
+	if e.config.AgentTools != nil && req.ChildID == "" && len(req.Tools) > 0 {
+		instruction += `
+The configured goobers-interactive MCP tools are your native management interface; use only tools listed as available for this invocation. When session_context is available, begin relevant planning by inspecting it: it contains actual scoped configuration, workflows, observed run receipts and explicitly labeled fixture backlog. Reason from this evidence and the repository rather than matching canned phrases. You may author portable Workflow DSL with multiple bounded stages, validate_workflow, propose_action for a configuration change or run submission, or propose_child_workflow for an independently scoped child. Keep each key stable when retrying the exact same intent. Only the human can apply a management proposal or approve a child in the portal; you cannot approve your own action. A proposal is pending review, never an executed change. Inspect receipts before reporting a run result. Do not invoke the Goobers CLI or session HTTP endpoints through shell to bypass those tools. For repository work use the coding harness's ordinary filesystem and test tools. A read-only child cannot access parent management tools. Provider tools are controlled local ADO/App Insights fixtures and never prove live authentication. Complete your turn after presenting pending proposals so the human can review them; do not wait indefinitely for approval.`
+	}
 	goal := req.Text + "\n\nControlled provider observations:\n" + providerContext
 	if n := len(req.History); n > 0 {
 		goal += "\nEarlier human turns (context, not new authority):\n"
@@ -52,9 +64,60 @@ func (e *Executor) native(ctx context.Context, req interactive.ExecutionRequest,
 		}
 		runCtx, cancel := context.WithCancel(ctx)
 		runCtx, proof := invoke.WithWorkspaceQuiescence(runCtx)
+		var bridge *interactiveagent.Bridge
+		var toolNames []string
+		var mcpServers []apiv1.MCPServer
+		if e.config.AgentTools != nil && req.ChildID == "" && len(req.Tools) > 0 {
+			if e.config.SelfBinary == "" {
+				cancel()
+				return "", fmt.Errorf("native management tools require the trusted host executable")
+			}
+			options, err := e.config.AgentTools(runCtx, req, workspace, emit)
+			if err != nil {
+				cancel()
+				return "", err
+			}
+			allowed := map[string]bool{}
+			for _, name := range req.Tools {
+				allowed[name] = true
+			}
+			retained := make([]interactiveagent.Tool, 0, len(options.Tools))
+			for _, tool := range options.Tools {
+				if allowed[tool.Name] {
+					retained = append(retained, tool)
+				}
+			}
+			options.Tools = retained
+			if len(options.Tools) > 0 {
+				bridge, err = interactiveagent.Start(runCtx, options)
+				if err != nil {
+					cancel()
+					return "", err
+				}
+				toolNames = bridge.ToolNames()
+				mcpServers = []apiv1.MCPServer{{Name: "goobers-interactive", Command: e.config.SelfBinary, Args: []string{"agent-tools", "--socket", bridge.SocketPath}}}
+			}
+		}
+		stopInvocation := func() error {
+			cancel()
+			if bridge != nil {
+				if err := bridge.Close(); err != nil {
+					return errors.Join(invoke.ErrWorkspaceNotQuiescent, err)
+				}
+			}
+			return nil
+		}
 		stream := &nativeStream{emit: emit}
-		runReq := harness.RunRequest{Mode: harness.ModeInvoke, Workspace: workspace, CompletionPath: ".goobers/result.json", Instructions: instruction, Timeout: 10 * time.Minute, Attempt: req.Attempt,
-			Envelope:           apiv1.InvocationEnvelope{TaskID: req.TurnID, RunID: req.SessionID, WorkflowID: "experimental-interactive", Gaggle: "interactive-local", Goal: goal, Workspace: workspace, OwnershipBoundary: "Private session snapshot only; no remote effects"},
+		invocationInstruction := instruction
+		if len(toolNames) > 0 {
+			invocationInstruction += "\nAvailable host MCP tools: " + strings.Join(toolNames, ", ") + ". This list limits the host bridge; it is not a restriction on the native coding harness's built-in tools."
+		}
+		gaggle := req.Gaggle
+		if gaggle == "" {
+			gaggle = "interactive-local"
+		}
+		runReq := harness.RunRequest{Mode: harness.ModeInvoke, Model: model, MCPServers: mcpServers, Workspace: workspace, CompletionPath: ".goobers/result.json", Instructions: invocationInstruction, Timeout: 10 * time.Minute, Attempt: req.Attempt,
+			Envelope:           apiv1.InvocationEnvelope{TaskID: req.TurnID, RunID: req.SessionID, WorkflowID: "experimental-interactive", Gaggle: gaggle, Goober: req.Goober, Goal: goal, Workspace: workspace, OwnershipBoundary: "Private session snapshot only; no remote effects"},
 			HarnessOptions:     map[string]apiextensionsv1.JSON{"auth": {Raw: []byte(`"ambient-chatgpt"`)}, "allowFileBackedCredentials": {Raw: []byte(`true`)}},
 			MaxTranscriptBytes: 1 << 20, TranscriptCheckpointInterval: 150 * time.Millisecond,
 			TranscriptCheckpoint: func(delta harness.InvocationTranscriptDelta) error { return stream.write(delta.Data) },
@@ -78,8 +141,7 @@ func (e *Executor) native(ctx context.Context, req interactive.ExecutionRequest,
 		}
 		finished := make(chan nativeResult, 1)
 		if err := emit("tool.started", map[string]any{"name": "codex.harness", "executionMode": "codex-local", "invocation": invocation, "detail": "Actual Codex model using the Goobers adapter; trusted local login; workspace-write sandbox"}); err != nil {
-			cancel()
-			return "", err
+			return "", errors.Join(err, stopInvocation())
 		}
 		go func() {
 			out, err := runAdapter(runCtx, runReq)
@@ -87,12 +149,13 @@ func (e *Executor) native(ctx context.Context, req interactive.ExecutionRequest,
 		}()
 		select {
 		case <-ctx.Done():
-			cancel()
+			bridgeErr := stopInvocation()
 			result := <-finished
-			return "", errors.Join(ctx.Err(), result.err)
+			return "", errors.Join(ctx.Err(), result.err, bridgeErr)
 		case steer, ok := <-req.Steering:
-			cancel()
+			bridgeErr := stopInvocation()
 			result := <-finished
+			result.err = errors.Join(result.err, bridgeErr)
 			if errors.Is(result.err, invoke.ErrWorkspaceNotQuiescent) {
 				if steer.Ack != nil {
 					steer.Ack(result.err)
@@ -118,7 +181,7 @@ func (e *Executor) native(ctx context.Context, req interactive.ExecutionRequest,
 			}
 			goal += "\nNew authenticated steering after confirmed interruption:\n" + steer.Text + "\nInspect the preserved workspace before continuing; do not blindly repeat effects."
 		case result := <-finished:
-			cancel()
+			result.err = errors.Join(result.err, stopInvocation())
 			if result.err != nil {
 				_ = emit("tool.completed", map[string]any{"name": "codex.harness", "status": "failed", "detail": result.err.Error()})
 				return "", result.err
