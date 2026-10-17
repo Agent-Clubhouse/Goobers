@@ -127,3 +127,34 @@ func TestIntegrationChildPublicationSafetyReadsSourceBeyondTransportLimit(t *tes
 		t.Fatal("local Git error exposed raw diagnostics", err)
 	}
 }
+
+// Possessing the base object (or a parent snapshot) does not identify which
+// history is already published. Only an explicitly retained target ref does.
+func TestIntegrationChildPublicationRejectsUnresolvedTargetBase(t *testing.T) {
+	testdep.Require(t, "git")
+	q, target, _ := publicationFixture(t)
+	target = publicationRepository(t, target)
+	publicationGitTest(t, target.Workspace, "update-ref", "-d", "refs/heads/main")
+	publicationGitTest(t, target.Workspace, "fetch", target.Remote, "main")
+	if got := publicationGitTest(t, target.Workspace, "rev-parse", "FETCH_HEAD"); got != target.Fork.Record.BaseSHA {
+		t.Fatal("fixture does not contain the fetched base object")
+	}
+	before := publicationGitTest(t, target.Workspace, "rev-parse", "HEAD")
+	index := publicationGitTest(t, target.Workspace, "write-tree")
+	p := Publisher{Queue: q, Git: GitCommand{AllowLocal: true}}
+	if _, err := p.Push(t.Context(), target); err == nil || !strings.Contains(err.Error(), "cannot resolve target base") {
+		t.Fatal("publication accepted FETCH_HEAD instead of the target base", err)
+	}
+	if _, err := q.ChildPublication(t.Context(), target.Child.Identity, "branch"); !errors.Is(err, triggerqueue.ErrChildPublicationPending) {
+		t.Fatal("unresolved base retained a publication intent", err)
+	}
+	if sha, err := p.Git.Head(t.Context(), target.Workspace, target.Remote, target.Head); err != nil || sha != "" {
+		t.Fatal("unresolved base reached the remote", err)
+	}
+	if publicationGitTest(t, target.Workspace, "rev-parse", "HEAD") != before || publicationGitTest(t, target.Workspace, "write-tree") != index {
+		t.Fatal("refused publication changed workspace custody")
+	}
+	if got, err := os.ReadFile(filepath.Join(target.Workspace, "child.txt")); err != nil || string(got) != "child work" {
+		t.Fatal("refused publication changed dirty child output", err)
+	}
+}
