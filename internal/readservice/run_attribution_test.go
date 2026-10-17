@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/goobers/goobers/internal/creditgraph"
@@ -396,6 +397,10 @@ func TestAttributionLegacyFallbackReplacementCannotRedirectLookup(t *testing.T) 
 			t.Run(initial+"/"+targetKind, func(t *testing.T) {
 				root, _, runID := seedStoredAttributionRun(t)
 				layout := instance.NewLayout(root)
+				want, err := creditgraph.ReadRunRecord(filepath.Join(layout.RunsDir(), runID))
+				if err != nil {
+					t.Fatal(err)
+				}
 				if initial == "missing" {
 					scoped := layout.ForGaggle("core").RunsDir()
 					if err := os.MkdirAll(filepath.Dir(scoped), 0700); err != nil {
@@ -416,8 +421,18 @@ func TestAttributionLegacyFallbackReplacementCannotRedirectLookup(t *testing.T) 
 				}
 				defer func() { _ = runRoot.Close() }()
 				if initial == "ordinary" {
-					if err := os.Rename(layout.RunsDir(), filepath.Join(root, "original-runs")); err != nil {
+					before, err := os.Lstat(layout.RunsDir())
+					if err != nil {
 						t.Fatal(err)
+					}
+					moved := filepath.Join(root, "original-runs")
+					renameErr := os.Rename(layout.RunsDir(), moved)
+					if renameErr != nil && runtime.GOOS == "windows" {
+						assertAttributionAncestorRenameBlocked(t, layout.RunsDir(), moved, renameErr, before, runRoot, want)
+						return
+					}
+					if renameErr != nil {
+						t.Fatal(renameErr)
 					}
 				}
 				target := filepath.Join(root, "unexpected-runs")
@@ -435,11 +450,47 @@ func TestAttributionLegacyFallbackReplacementCannotRedirectLookup(t *testing.T) 
 				}
 				budget := &attributionReadBudget{ctx: context.Background(), root: runRoot, remaining: attributionInputBytes}
 				out := RunAttributionResult{RunID: runID, Gaggle: "core"}
-				if err := loadRunAttribution(budget, &out); err != nil || out.Availability != "recorded" {
+				if err := loadRunAttribution(budget, &out); err != nil || out.Availability != "recorded" || !reflect.DeepEqual(out.Record, &want) {
 					t.Fatalf("legacy replacement redirected pinned lookup: %+v %v", out, err)
 				}
 			})
 		}
+	}
+}
+
+func assertAttributionAncestorRenameBlocked(t *testing.T, original, moved string, renameErr error, before os.FileInfo, runRoot *os.Root, want creditgraph.RunRecord) {
+	t.Helper()
+	// Called only on Windows: Win32 ERROR_ACCESS_DENIED is 5. MoveFileEx
+	// can reject renaming an ancestor of an open directory even with delete
+	// sharing; require that exact error, not an arbitrary rename failure.
+	const windowsAccessDenied = syscall.Errno(5)
+	if !errors.Is(renameErr, windowsAccessDenied) {
+		t.Fatalf("unexpected held-directory rename failure: %v", renameErr)
+	}
+	after, err := os.Lstat(original)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("blocked rename changed the original directory: %v", err)
+	}
+	if _, err := os.Lstat(moved); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked rename created the destination: %v", err)
+	}
+	budget := &attributionReadBudget{ctx: context.Background(), root: runRoot, remaining: attributionInputBytes}
+	out := RunAttributionResult{RunID: want.RunID, Gaggle: want.Gaggle}
+	if err := loadRunAttribution(budget, &out); err != nil || out.Availability != "recorded" || !reflect.DeepEqual(out.Record, &want) {
+		t.Fatalf("blocked rename changed the pinned record: %+v %v", out, err)
+	}
+	// Keep the outer instance root open. Requiring this same rename to work
+	// after closing only the selected child distinguishes handle protection
+	// from a permission problem or another fixture handle left open.
+	if err := runRoot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(original, moved); err != nil {
+		t.Fatalf("rename remained blocked after closing the selected root: %v", err)
+	}
+	after, err = os.Lstat(moved)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("released rename did not preserve the original directory: %v", err)
 	}
 }
 
