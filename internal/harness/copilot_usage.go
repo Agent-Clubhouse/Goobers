@@ -48,7 +48,7 @@ type copilotCapturePaths struct {
 func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequest, argv, env []string, confinement *copilotConfinement) (copilotCapturePaths, error) {
 	for _, arg := range argv {
 		if arg == "--log-dir" || strings.HasPrefix(arg, "--log-dir=") {
-			return copilotCapturePaths{}, fmt.Errorf("Copilot log directory is adapter-managed; remove --log-dir from harness arguments")
+			return copilotCapturePaths{}, fmt.Errorf("copilot log directory is adapter-managed; remove --log-dir from harness arguments")
 		}
 	}
 	usageReq := req
