@@ -213,3 +213,11 @@ func TestVerdictStateRestartDurability(t *testing.T) {
 		t.Fatalf("read after restart = %+v, %v, %v; want pass, true, nil", got, ok, err)
 	}
 }
+
+func writeVerdictState(root string, repo providers.RepositoryRef, number int, verdict apiv1.Verdict) error {
+	store, err := openStageStateStore(instance.NewLayout(root))
+	if err != nil {
+		return err
+	}
+	return updateVerdictRecord(stateContext(), store, verdictRecordKey(repo, number), func(apiv1.Verdict, bool) (apiv1.Verdict, bool, error) { return verdict, true, nil })
+}

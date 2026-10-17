@@ -109,6 +109,11 @@
       "type": "boolean",
       "description": "PR-lifecycle only (PRL-021): whether this PR was the single-lander election's deterministic winner for its overlap cluster at the moment this verdict was published."
     },
+    "ledgerGeneration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Runner-owned committed publication generation; zero denotes legacy records."
+    },
     "dispositions": {
       "type": "array",
       "description": "PR-lifecycle only (#5890): explicit answers to findings an earlier verdict raised on the same head. Such a finding stays outstanding until a later verdict resolves it with evidence or rejects it with a reason.",
@@ -142,6 +147,11 @@
           "pattern": "\\S",
           "description": "The id of the earlier finding being answered, copied verbatim."
         },
+        "findingGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Copy the standing finding ledgerGeneration. Zero answers only a legacy finding."
+        },
         "outcome": {
           "type": "string",
           "enum": ["resolved", "rejected"],
@@ -167,6 +177,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Stable finding identity copied across repasses; assigned by the runner when omitted on the first occurrence."
+        },
+        "ledgerGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Runner-owned finding instance generation. Preserved while this unchanged finding stays open."
         },
         "learningSignature": {
           "type": "string",

@@ -633,6 +633,9 @@ type Verdict struct {
 	// apply-verdict carries the dispositions of earlier verdicts on the same
 	// head forward, so the newest published record holds them all.
 	Dispositions []FindingDisposition `json:"dispositions,omitempty"`
+	// LedgerGeneration is allocated by the authoritative publication transaction.
+	// Reviewer input cannot choose it; zero identifies a legacy record.
+	LedgerGeneration uint64 `json:"ledgerGeneration,omitempty"`
 	// StandingFindings is the ledger apply-verdict writes on every published
 	// record (#5890): the findings earlier verdicts raised on this head that
 	// no verdict has dispositioned, apart from the ones this verdict raises
@@ -661,6 +664,9 @@ const (
 type FindingDisposition struct {
 	// FindingID is the id of the finding being answered, copied verbatim.
 	FindingID string `json:"findingId"`
+	// FindingGeneration names the exact instance being answered. Copy the
+	// standing finding's ledgerGeneration; zero answers only legacy findings.
+	FindingGeneration uint64 `json:"findingGeneration,omitempty"`
 	// Outcome is resolved or rejected.
 	Outcome FindingDispositionOutcome `json:"outcome"`
 	// Evidence locates where the reviewed diff addresses the finding.
@@ -691,6 +697,9 @@ type Finding struct {
 	// copy it from an injected learning episode when the same finding remains
 	// unresolved; the runner assigns one on the first occurrence.
 	ID string `json:"id,omitempty"`
+	// LedgerGeneration identifies this finding instance. The runner assigns it
+	// on publication and preserves it while an unchanged finding stays open.
+	LedgerGeneration uint64 `json:"ledgerGeneration,omitempty"`
 	// LearningSignature is the normalized cross-run clustering key. The
 	// runner derives one when absent.
 	LearningSignature string `json:"learningSignature,omitempty"`
