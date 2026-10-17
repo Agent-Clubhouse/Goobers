@@ -234,11 +234,17 @@ func podCIPollConfig(declared []string) (executor.CIPollConfig, error) {
 // fake must be able to drive BOTH substrates through it, or the test proves
 // only that two different fakes behave differently.
 func podCIPollPoller(token string, source providers.TokenSource, adoSource providers.ADOCredentialSource) (executor.PRPoller, error) {
+	if strings.TrimSpace(os.Getenv(executor.RepoProviderEnvVar)) == "" {
+		return nil, errors.New("ci-poll pod requires an explicit routed provider stamp; instance configuration fallback is forbidden")
+	}
 	repo, err := providerRepo(providerStageRoot(""))
 	if err != nil {
 		return nil, fmt.Errorf("resolve ci-poll repository: %w", err)
 	}
 	if repo.Provider == providers.ProviderADO {
+		if adoSource == nil {
+			return nil, errors.New("ADO ci-poll pod requires an explicit broker credential source; ambient authentication fallback is forbidden")
+		}
 		provider, err := newProviderForStageAs[*providers.ADOProvider](providerStageRoot(""), repo, true,
 			withStageProviderCapability(capability.ProviderPRWrite), withStageProviderADOCredential(adoSource))
 		if err == nil {

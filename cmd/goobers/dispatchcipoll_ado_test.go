@@ -217,3 +217,21 @@ func TestPodCIPollInputContract(t *testing.T) {
 		t.Fatalf("noVerdict dropped: %+v %v", cfg, err)
 	}
 }
+
+func TestPodCIPollRefusesAmbientFallback(t *testing.T) {
+	for _, tc := range []struct{ provider, want string }{
+		{"", "explicit routed provider stamp"},
+		{string(providers.ProviderADO), "explicit broker credential source"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			t.Setenv(executor.RepoProviderEnvVar, tc.provider)
+			t.Setenv(executor.RepoOwnerEnvVar, "acme")
+			t.Setenv(executor.RepoProjectEnvVar, "project")
+			t.Setenv(executor.RepoNameEnvVar, "web")
+			_, err := podCIPollPoller("ambient-token", nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("missing pod authority: %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
