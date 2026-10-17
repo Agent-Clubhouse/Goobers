@@ -837,7 +837,7 @@ func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = run.Close() })
+	defer func() { _ = run.Close() }()
 	now := startedAt.Add(time.Minute)
 	if err := run.Append(journal.Event{
 		Type:  journal.EventStageStarted,

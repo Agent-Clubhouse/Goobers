@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -75,13 +76,9 @@ func (s *Local) RunAttribution(ctx context.Context, runID, gaggle string) (RunAt
 		return out, err
 	}
 	defer func() { _ = instanceRoot.Close() }()
-	dir, err := attributionRunDir(instanceRoot, s.sources.Layout, runID, gaggle)
+	runRoot, err := attributionRunRoot(instanceRoot, s.sources.Layout, runID, gaggle)
 	if err != nil {
 		return out, err
-	}
-	runRoot, err := instanceRoot.OpenRoot(dir)
-	if err != nil {
-		return out, fmt.Errorf("%w: %s", ErrArtifactIntegrity, err.Error())
 	}
 	defer func() { _ = runRoot.Close() }()
 	budget := &attributionReadBudget{ctx: ctx, root: runRoot, remaining: attributionInputBytes}
@@ -115,34 +112,126 @@ func (s *Local) RunAttribution(ctx context.Context, runID, gaggle string) (RunAt
 	return out, ctx.Err()
 }
 
-func attributionRunDir(root *os.Root, layout instance.Layout, runID, gaggle string) (string, error) {
-	var found string
+func attributionRunRoot(root *os.Root, layout instance.Layout, runID, gaggle string) (*os.Root, error) {
+	legacy, err := attributionLegacyRunsDir(root, layout, gaggle)
+	if err != nil {
+		return nil, err
+	}
+	scoped, err := filepath.Rel(layout.Root, layout.ForGaggle(gaggle).RunsDir())
+	if err != nil {
+		return nil, err
+	}
+	candidates := []string{scoped}
+	if legacy != "" {
+		candidates = append(candidates, legacy)
+	}
+	var found *os.Root
 	var foundInfo os.FileInfo
-	for _, candidate := range []string{filepath.Join(layout.ForGaggle(gaggle).RunsDir(), runID), filepath.Join(instance.NewLayout(layout.Root).RunsDir(), runID)} {
-		relative, err := filepath.Rel(layout.Root, candidate)
+	defer func() {
+		if found != nil {
+			_ = found.Close()
+		}
+	}()
+	for _, candidate := range candidates {
+		runs, _, err := openAttributionDirectory(root, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if runs == nil {
+			continue
+		}
+		run, info, err := openAttributionDirectory(runs, runID)
+		_ = runs.Close()
+		if err != nil {
+			return nil, err
+		}
+		if run == nil {
+			continue
+		}
+		if found != nil {
+			_ = run.Close()
+			if !os.SameFile(foundInfo, info) {
+				return nil, fmt.Errorf("%w: ambiguous attribution run", ErrArtifactIntegrity)
+			}
+			continue
+		}
+		found = run
+		foundInfo = info
+	}
+	if found == nil {
+		return nil, ErrNotFound
+	}
+	selected := found
+	found = nil // Transfer the retained handle to the caller.
+	return selected, nil
+}
+
+// Pin an ordinary directory and compare the opened identity with the no-follow
+// observation. A missing candidate stays absent; later alias replacement cannot
+// redirect a retained handle or turn absence into an authorized candidate.
+func openAttributionDirectory(root *os.Root, name string) (*os.Root, os.FileInfo, error) {
+	before, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %s", ErrArtifactIntegrity, err.Error())
+	}
+	if !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, ErrArtifactIntegrity
+	}
+	dir, err := root.OpenRoot(name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %s", ErrArtifactIntegrity, err.Error())
+	}
+	after, err := dir.Stat(".")
+	if err != nil || !os.SameFile(before, after) {
+		_ = dir.Close()
+		return nil, nil, ErrArtifactIntegrity
+	}
+	return dir, after, nil
+}
+
+// Read the compatibility link itself without traversing it. Windows junctions
+// store absolute targets, which os.Root correctly refuses to follow. Convert a
+// contained target to a relative path and keep every subsequent lookup rooted;
+// replacing the alias after this read cannot redirect a later open.
+func attributionLegacyRunsDir(root *os.Root, layout instance.Layout, gaggle string) (string, error) {
+	legacy, err := filepath.Rel(layout.Root, instance.NewLayout(layout.Root).RunsDir())
+	if err != nil {
+		return "", err
+	}
+	target, err := root.Readlink(legacy)
+	if err != nil {
+		// Ordinary directories and missing paths are handled by the rooted
+		// candidate lookup; any other failure still fails closed there.
+		return legacy, nil
+	}
+	if filepath.IsAbs(target) {
+		base, err := filepath.Abs(layout.Root)
 		if err != nil {
 			return "", err
 		}
-		info, err := root.Lstat(relative)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
+		target, err = filepath.Rel(base, target)
 		if err != nil {
-			return "", fmt.Errorf("%w: %s", ErrArtifactIntegrity, err.Error())
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", ErrArtifactIntegrity
 		}
-		if found != "" && !os.SameFile(foundInfo, info) {
-			return "", fmt.Errorf("%w: ambiguous attribution run", ErrArtifactIntegrity)
-		}
-		found = relative
-		foundInfo = info
+	} else {
+		target = filepath.Join(filepath.Dir(legacy), target)
 	}
-	if found == "" {
-		return "", ErrNotFound
+	if !filepath.IsLocal(target) {
+		return "", ErrArtifactIntegrity
 	}
-	return found, nil
+	parts := strings.Split(filepath.Clean(target), string(filepath.Separator))
+	if len(parts) != 3 || parts[0] != instance.GagglesDirName || !validAttributionGaggle(parts[1]) || parts[2] != instance.RunsDirName {
+		return "", ErrArtifactIntegrity
+	}
+	if parts[1] != gaggle {
+		// The original gaggle's generated alias can survive adding another
+		// gaggle. It is not a candidate for the requested scoped run.
+		return "", nil
+	}
+	return target, nil
 }
 
 func loadRunAttribution(b *attributionReadBudget, out *RunAttributionResult) error {
@@ -328,7 +417,7 @@ func (b *attributionReadBudget) read(name string, maximum int64) ([]byte, error)
 	if err := b.ctx.Err(); err != nil {
 		return nil, err
 	}
-	if filepath.IsAbs(name) || strings.Contains(name, "\\") || filepath.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
+	if filepath.IsAbs(name) || strings.Contains(name, "\\") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
 		return nil, ErrArtifactIntegrity
 	}
 	f, err := safeopen.OpenRegularInRoot(b.root, name)
