@@ -34,7 +34,7 @@ func TestProvidersRetryTransportErrorsButNotRequestAdmissionErrors(t *testing.T)
 			for _, admission := range []bool{false, true} {
 				t.Run(fmt.Sprintf("admission=%t", admission), func(t *testing.T) {
 					cause := errors.New("injected request failure")
-					var requestErr error = cause
+					requestErr := cause
 					if admission {
 						requestErr = fmt.Errorf("local budget: %w", &RequestAdmissionError{Err: cause})
 					}
