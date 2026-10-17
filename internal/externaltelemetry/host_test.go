@@ -2,6 +2,7 @@ package externaltelemetry
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -816,7 +817,7 @@ func TestBoundedFailedArtifactShrinkLadder(t *testing.T) {
 	}
 }
 
-func TestBoundedFailedArtifactLadderSteps(t *testing.T) {
+func TestBoundedFailedArtifactCompactsLongStrings(t *testing.T) {
 	now := time.Unix(10, 0)
 	name, descriptor, request, provenance, queryErr := boundedArtifactFixture(5000)
 	artifact := boundedFailedArtifact(name, descriptor, request, provenance, now, now, 1, QueryLimits{MaxBytes: MinimumMaxBytes}, queryErr)
@@ -826,5 +827,83 @@ func TestBoundedFailedArtifactLadderSteps(t *testing.T) {
 	}
 	if !strings.HasPrefix(compactArtifactString(name), "sha256:") || compactArtifactString("short") != "short" {
 		t.Fatal("compactArtifactString did not hash only long values")
+	}
+}
+
+func TestBoundedFailedArtifactLadderSteps(t *testing.T) {
+	now := time.Unix(10, 0)
+	name, descriptor, request, provenance, queryErr := boundedArtifactFixture(100)
+	// Production digests are shorter. Padding this preserved field makes even
+	// the defensive final steps reachable above MinimumMaxBytes, so each byte
+	// boundary can be checked independently of the minimum-limit guard.
+	provenance.Digest = strings.Repeat("d", 570)
+	limits := QueryLimits{MaxRows: 1, MaxBytes: MinimumMaxBytes}
+	full := failedArtifact(name, descriptor, request, provenance, now, now, 1, limits, queryErr)
+	hash := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(name)))
+	compacted := full
+	compacted.Metadata.Truncated = true
+	compacted.Connector = ConnectorIdentity{Name: hash, Kind: hash, Version: hash}
+	compacted.Source = SourceIdentity{ID: hash}
+	compacted.Query = QueryProvenance{Digest: provenance.Digest}
+	compacted.Shape = ResultShape(hash)
+	compacted.Failure = &FailureInfo{Code: hash, Kind: hash, Retryable: true}
+	withoutWindow := compacted
+	withoutWindow.Window = Window{}
+	fallback := withoutWindow
+	fallback.Connector = ConnectorIdentity{Name: hash}
+	fallback.Source = SourceIdentity{}
+	fallback.Shape = ""
+	fallback.Failure = &FailureInfo{Code: "failure_artifact_too_large", Kind: "limit"}
+	minimal := fallback
+	minimal.Connector = ConnectorIdentity{}
+	minimal.Query = QueryProvenance{Digest: provenance.Digest}
+
+	stages := []struct {
+		name     string
+		artifact ResultArtifact
+	}{
+		{"unchanged", full},
+		{"compacted strings and provenance", compacted},
+		{"removed window", withoutWindow},
+		{"fallback failure and cleared identity", fallback},
+		{"minimal connector and query", minimal},
+	}
+	for i, stage := range stages[:len(stages)-1] {
+		t.Run(stage.name, func(t *testing.T) {
+			threshold := len(mustJSON(t, stage.artifact))
+			if threshold-1 < MinimumMaxBytes {
+				t.Fatalf("stage threshold %d must exceed the supported minimum", threshold)
+			}
+			for _, delta := range []int{1, 0, -1} {
+				t.Run(fmt.Sprintf("threshold%+d", delta), func(t *testing.T) {
+					maxBytes := threshold + delta
+					atBoundary := stage.artifact
+					atBoundary.Metadata.MaxBytes = maxBytes
+					if size := len(mustJSON(t, atBoundary)); size != threshold {
+						t.Fatalf("maxBytes digit width changed the stage size: got %d, want %d", size, threshold)
+					}
+					want := stage.artifact
+					if delta < 0 {
+						want = stages[i+1].artifact
+					}
+					want.Metadata.MaxBytes = maxBytes
+					got := boundedFailedArtifact(name, descriptor, request, provenance, now, now, 1,
+						QueryLimits{MaxRows: 1, MaxBytes: maxBytes}, queryErr)
+					gotJSON := mustJSON(t, got)
+					if string(gotJSON) != string(mustJSON(t, want)) {
+						t.Fatalf("maxBytes=%d artifact = %s, want %s", maxBytes, gotJSON, mustJSON(t, want))
+					}
+					if len(gotJSON) > maxBytes {
+						t.Fatalf("artifact size %d exceeds maxBytes=%d", len(gotJSON), maxBytes)
+					}
+				})
+			}
+		})
+	}
+	// At the supported minimum even the last fallback is too large, but the
+	// terminal artifact must still fit and retain the query digest.
+	got := boundedFailedArtifact(name, descriptor, request, provenance, now, now, 1, limits, queryErr)
+	if gotJSON := mustJSON(t, got); string(gotJSON) != string(mustJSON(t, minimal)) || len(gotJSON) > MinimumMaxBytes {
+		t.Fatalf("minimum-limit artifact = %s, want bounded %s", gotJSON, mustJSON(t, minimal))
 	}
 }
