@@ -2023,6 +2023,21 @@ func (in *GaggleFindingPolicy) DeepCopy() *GaggleFindingPolicy {
 	in.DeepCopyInto(out)
 	return out
 }
+func (in *GaggleHealthControllerStatus) DeepCopyInto(out *GaggleHealthControllerStatus) {
+	*out = *in
+	if in.LastSuccessfulEvaluation != nil {
+		value := *in.LastSuccessfulEvaluation
+		out.LastSuccessfulEvaluation = &value
+	}
+}
+func (in *GaggleHealthControllerStatus) DeepCopy() *GaggleHealthControllerStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthControllerStatus)
+	in.DeepCopyInto(out)
+	return out
+}
 func (in *GaggleHealthEvent) DeepCopyInto(out *GaggleHealthEvent) {
 	*out = *in
 	if in.Finding != nil {
@@ -2176,6 +2191,10 @@ func (in *GaggleHealthRepair) DeepCopy() *GaggleHealthRepair {
 func (in *GaggleHealthResponse) DeepCopyInto(out *GaggleHealthResponse) {
 	*out = *in
 	in.Health.DeepCopyInto(&out.Health)
+	if in.Controller != nil {
+		out.Controller = new(GaggleHealthControllerStatus)
+		in.Controller.DeepCopyInto(out.Controller)
+	}
 }
 func (in *GaggleHealthResponse) DeepCopy() *GaggleHealthResponse {
 	if in == nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -136,6 +137,9 @@ type fakeGitHubServer struct {
 	// BranchTipSHA) — the LIVE base-branch tip the merge-escalated self-heal
 	// check (#1052) compares against, distinct from any PR's pinned baseSHA.
 	branchTips map[string]string
+	// branchTipLookup lets fixtures that perform real pushes serve their remote refs.
+	branchTipLookup func(context.Context, string) (string, error)
+	branchDelete    func(context.Context, string) error
 	// repoLabels is the repository's label set (GET/POST /repos/o/r/labels),
 	// distinct from any issue's applied labels. It lets a test model a label the
 	// code names but the repository does not actually define — the #1801 failure,
@@ -367,6 +371,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
+	mux.HandleFunc(prefix+"/git/refs/heads/", s.handleDeleteGitRef)
 	mux.HandleFunc(prefix+"/activity", s.handleActivity)
 	mux.HandleFunc(prefix+"/labels", s.handleRepoLabels)
 	mux.HandleFunc(prefix+"/code-scanning/alerts", s.handleSecurityAlerts("code-scanning"))
@@ -752,6 +757,24 @@ func (s *fakeGitHubServer) setBranchTip(branch, sha string) {
 	s.branchTips[branch] = sha
 }
 
+// setBranchTipLookup connects API ref reads to a fixture's actual remote.
+// The callback runs outside the server mutex and replaces only ref-map reads.
+func (s *fakeGitHubServer) setBranchTipLookup(lookup func(context.Context, string) (string, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branchTipLookup = lookup
+}
+
+func (s *fakeGitHubServer) lookupBranchTip(ctx context.Context, branch string) (string, error) {
+	s.mu.Lock()
+	lookup, sha := s.branchTipLookup, s.branchTips[branch]
+	s.mu.Unlock()
+	if lookup != nil {
+		return lookup(ctx, branch)
+	}
+	return sha, nil
+}
+
 func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -760,10 +783,12 @@ func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) 
 	prefix := "/repos/" + s.owner + "/" + s.repo + "/git/ref/"
 	ref := strings.TrimPrefix(r.URL.Path, prefix) // e.g. "heads/main"
 	branch := strings.TrimPrefix(ref, "heads/")
-	s.mu.Lock()
-	sha, ok := s.branchTips[branch]
-	s.mu.Unlock()
-	if !ok {
+	sha, err := s.lookupBranchTip(r.Context(), branch)
+	if err != nil {
+		http.Error(w, "branch tip lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if sha == "" {
 		// Unset on purpose: a test that reaches BranchTipSHA without seeding a
 		// tip should fail loudly, not silently resolve to a phantom SHA.
 		http.Error(w, "no branch tip registered for "+branch, http.StatusNotFound)
@@ -775,6 +800,26 @@ func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (s *fakeGitHubServer) handleDeleteGitRef(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	branch := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/git/refs/heads/")
+	s.mu.Lock()
+	remove := s.branchDelete
+	s.mu.Unlock()
+	if remove == nil {
+		http.Error(w, "branch deletion is not configured", http.StatusNotFound)
+		return
+	}
+	if err := remove(r.Context(), branch); err != nil {
+		http.Error(w, "branch deletion failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *fakeGitHubServer) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -782,10 +827,12 @@ func (s *fakeGitHubServer) handleActivity(w http.ResponseWriter, r *http.Request
 	}
 	ref := r.URL.Query().Get("ref")
 	branch := strings.TrimPrefix(ref, "refs/heads/")
-	s.mu.Lock()
-	_, ok := s.branchTips[branch]
-	s.mu.Unlock()
-	if !ok {
+	sha, err := s.lookupBranchTip(r.Context(), branch)
+	if err != nil {
+		http.Error(w, "branch activity lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if sha == "" {
 		http.Error(w, "no branch activity registered for "+branch, http.StatusNotFound)
 		return
 	}

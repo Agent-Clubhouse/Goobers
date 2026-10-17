@@ -733,7 +733,7 @@ func TestShardRunPatternPartitionsListedTests(t *testing.T) {
 		}
 		patterns = append(patterns, pattern)
 	}
-	want := []string{"^(?:TestAlpha|TestGamma)$", "^(?:TestBeta|TestDelta)$"}
+	want := []string{"^(?:TestAlpha|TestDelta)$", "^(?:TestBeta|TestGamma)$"}
 	if !slices.Equal(patterns, want) {
 		t.Fatalf("shard run patterns = %v, want %v", patterns, want)
 	}
@@ -794,10 +794,9 @@ func TestShardRunPatternDropsExcludedTests(t *testing.T) {
 		}
 		patterns = append(patterns, pattern)
 	}
-	// With TestBeta excluded before the round-robin split, the remaining
-	// three tests (Alpha, Gamma, Delta) split 2/1 instead of drifting the
-	// original 2/2 split around a hole.
-	want := []string{"^(?:TestAlpha|TestDelta)$", "^(?:TestGamma)$"}
+	// With TestBeta excluded before weighted partitioning, the three
+	// equally weighted new tests split 2/1 in stable lexical order.
+	want := []string{"^(?:TestAlpha|TestGamma)$", "^(?:TestDelta)$"}
 	if !slices.Equal(patterns, want) {
 		t.Fatalf("shard run patterns (exclude) = %v, want %v", patterns, want)
 	}

@@ -130,11 +130,16 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "context", "blob"), "materialized context")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "mcp", "runtime-1", "copilot-home", "session-state", "events.jsonl"), "MCP session transcript")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goober-assets", "reference.md"), "goober reference")
+	mustWriteFile(t, filepath.Join(wt.Path, ".goobers-launcher-session-123", "native.jsonl"), "launcher transcript")
+	mustWriteFile(t, filepath.Join(wt.Path, "mutations.jsonl"), "{}\n")
 	mustWriteFile(t, filepath.Join(wt.Path, "src.txt"), "real implementation change")
+	for _, path := range []string{"nested/.goobers/config.json", "nested/.goober-assets/skill.md", "nested/.goobers-launcher-session-123/native.jsonl", "nested/mutations.jsonl"} {
+		mustWriteFile(t, filepath.Join(wt.Path, path), "project-owned fixture")
+	}
 
 	// (a) status shows the real change but not the scratch dir.
 	status := runTestGit(t, wt.Path, "status", "--porcelain")
-	if strings.Contains(status, ".goobers") || strings.Contains(status, ".goober-assets") {
+	if strings.Contains(status, "?? .goobers") || strings.Contains(status, "?? .goober-assets") || strings.Contains(status, "?? mutations.jsonl") {
 		t.Fatalf("git status leaks harness scratch:\n%s", status)
 	}
 	if !strings.Contains(status, "src.txt") {
@@ -145,11 +150,62 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	runTestGit(t, wt.Path, "add", "-A")
 	runTestGit(t, wt.Path, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-m", "impl")
 	committed := runTestGit(t, wt.Path, "show", "--name-only", "--pretty=format:", "HEAD")
-	if strings.Contains(committed, ".goobers") || strings.Contains(committed, ".goober-assets") {
-		t.Fatalf("committed tree contains harness scratch:\n%s", committed)
+	want := "nested/.goober-assets/skill.md\nnested/.goobers-launcher-session-123/native.jsonl\nnested/.goobers/config.json\nnested/mutations.jsonl\nsrc.txt"
+	if strings.TrimSpace(committed) != want {
+		t.Fatalf("committed paths = %q, want project-owned paths %q", committed, want)
 	}
-	if !strings.Contains(committed, "src.txt") {
-		t.Fatalf("committed tree should contain the real change:\n%s", committed)
+	if _, err := os.Stat(filepath.Join(wt.Path, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf("checkout changed the target repository's .gitignore: %v", err)
+	}
+}
+
+func TestEnsureScratchExcludedPreservesTrackedCleanup(t *testing.T) {
+	repo := newSourceRepo(t)
+	for _, path := range []string{".goobers/debug.log", ".goober-assets/skill.md", "mutations.jsonl"} {
+		mustWriteFile(t, filepath.Join(repo, path), "previously tracked artifact")
+	}
+	runTestGit(t, repo, "add", "-A")
+	runTestGit(t, repo, "commit", "-m", "previous artifacts")
+	if err := EnsureScratchExcluded(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{".goobers/debug.log", ".goober-assets/skill.md", "mutations.jsonl"} {
+		if err := os.Remove(filepath.Join(repo, path)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runTestGit(t, repo, "add", "-A")
+	got := strings.TrimSpace(runTestGit(t, repo, "diff", "--cached", "--name-status"))
+	want := "D\t.goober-assets/skill.md\nD\t.goobers/debug.log\nD\tmutations.jsonl"
+	if got != want {
+		t.Fatalf("cleanup diff = %q, want %q", got, want)
+	}
+}
+
+func TestManagerWorkingCopyRestoresHarnessExclusions(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	dir, err := m.WorkingCopy(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exclude := filepath.Join(dir, "info", "exclude")
+	if err := os.WriteFile(exclude, []byte("# operator pattern\n/local-only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := m.WorkingCopy(ctx, repo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(exclude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# operator pattern\n/local-only\n/.goobers\n/.goober-assets\n/mutations.jsonl\n/.goobers-launcher-session-*\n"
+	if string(data) != want {
+		t.Fatalf("restored exclusions = %q, want %q", data, want)
 	}
 }
 

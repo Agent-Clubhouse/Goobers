@@ -160,8 +160,20 @@ type GaggleHealthSnapshot struct {
 	LastSequence  uint64                `json:"lastSequence"`
 }
 
+// GaggleHealthControllerStatus reports daemon evaluation freshness separately
+// from the durable episode projection.
+type GaggleHealthControllerStatus struct {
+	FreshAt                  time.Time  `json:"freshAt"`
+	LastSuccessfulEvaluation *time.Time `json:"lastSuccessfulEvaluation,omitempty"`
+	LastError                string     `json:"lastError,omitempty"`
+	NextEvaluation           time.Time  `json:"nextEvaluation"`
+	ActiveFindingCount       int        `json:"activeFindingCount"`
+	Evaluating               bool       `json:"evaluating"`
+}
+
 // GaggleHealthResponse is the read-API envelope for one gaggle's health.
 type GaggleHealthResponse struct {
-	SchemaVersion string               `json:"schemaVersion"`
-	Health        GaggleHealthSnapshot `json:"health"`
+	SchemaVersion string                        `json:"schemaVersion"`
+	Health        GaggleHealthSnapshot          `json:"health"`
+	Controller    *GaggleHealthControllerStatus `json:"controller,omitempty"`
 }

@@ -1,6 +1,7 @@
 package readmodel
 
 import (
+	"container/heap"
 	"fmt"
 	"math"
 	"sort"
@@ -115,16 +116,11 @@ func betweenness(ids map[string]bool, adj map[string][]string, failure map[strin
 		parents := make(map[string][]string, len(ids))
 		visited := make(map[string]bool, len(ids))
 		order := make([]string, 0, len(ids))
-		for {
-			current := ""
-			for node, distance := range dist {
-				if !visited[node] && (current == "" || distance < dist[current] ||
-					(distance == dist[current] && node < current)) {
-					current = node
-				}
-			}
-			if current == "" {
-				break
+		queue := &centralityHeap{{node: source, distance: 0}}
+		for queue.Len() > 0 {
+			current := heap.Pop(queue).(centralityCandidate).node
+			if visited[current] {
+				continue
 			}
 			visited[current] = true
 			order = append(order, current)
@@ -134,6 +130,7 @@ func betweenness(ids map[string]bool, adj map[string][]string, failure map[strin
 				known, seen := dist[next]
 				if !seen || candidate < known-1e-12 {
 					dist[next] = candidate
+					heap.Push(queue, centralityCandidate{node: next, distance: candidate})
 					sigma[next] = sigma[current]
 					parents[next] = []string{current}
 				} else if !visited[next] && candidate == known {
@@ -164,6 +161,34 @@ func betweenness(ids map[string]bool, adj map[string][]string, failure map[strin
 		return result[i].Node < result[j].Node
 	})
 	return result
+}
+
+type centralityCandidate struct {
+	node     string
+	distance float64
+}
+
+// centralityHeap settles the shortest distance first, with the same exact
+// distance and node-ID tie-break as the original minimum scan.
+type centralityHeap []centralityCandidate
+
+func (h centralityHeap) Len() int { return len(h) }
+func (h centralityHeap) Less(i, j int) bool {
+	if h[i].distance != h[j].distance {
+		return h[i].distance < h[j].distance
+	}
+	return h[i].node < h[j].node
+}
+func (h centralityHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *centralityHeap) Push(value any) {
+	*h = append(*h, value.(centralityCandidate))
+}
+func (h *centralityHeap) Pop() any {
+	last := len(*h) - 1
+	candidate := (*h)[last]
+	(*h)[last] = centralityCandidate{}
+	*h = (*h)[:last]
+	return candidate
 }
 
 func longestPath(ids map[string]bool, adj map[string][]string, latency map[string]float64) CriticalPath {

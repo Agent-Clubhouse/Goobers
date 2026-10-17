@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1024,5 +1025,74 @@ func TestValidateRejectionArms(t *testing.T) {
 				t.Fatalf("Validate error = %v, want ErrInvalidBundle containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestReportSummary(t *testing.T) {
+	errIssue := func(msg string) validate.Issue {
+		return validate.Issue{Severity: validate.Error, Message: msg}
+	}
+	if got := reportSummary(nil); got != "no validation report" {
+		t.Fatalf("nil report = %q", got)
+	}
+	warnOnly := &validate.Report{Issues: []validate.Issue{{Severity: validate.Warning, Message: "w"}}}
+	if got := reportSummary(warnOnly); got != "no validation errors" {
+		t.Fatalf("warning-only = %q", got)
+	}
+	if got := reportSummary(&validate.Report{}); got != "no validation errors" {
+		t.Fatalf("empty = %q", got)
+	}
+	capped := &validate.Report{Issues: []validate.Issue{
+		errIssue("e1"), {Severity: validate.Warning, Message: "skip"}, errIssue("e2"), errIssue("e3"), errIssue("e4"),
+	}}
+	want := capped.Issues[0].String() + "; " + capped.Issues[2].String() + "; " + capped.Issues[3].String()
+	if got := reportSummary(capped); got != want {
+		t.Fatalf("capped summary = %q, want %q", got, want)
+	}
+	oneError := &validate.Report{Issues: []validate.Issue{errIssue("only error")}}
+	if got := reportSummary(oneError); got != oneError.Issues[0].String() {
+		t.Fatalf("single-error summary = %q, want %q", got, oneError.Issues[0].String())
+	}
+}
+
+func TestMarshalJSONIsIndentedAndUnescaped(t *testing.T) {
+	bundle := apiv1.GaggleBundle{Kind: "A<b>&c", Digest: "d"}
+	bundle.Definition.Gaggle.Labels = make(map[string]string)
+	bundle.Definition.Gaggle.Labels["z"] = "last"
+	bundle.Definition.Gaggle.Labels["a"] = "first"
+	first, err := MarshalJSON(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Definition.Gaggle.Labels = make(map[string]string)
+	bundle.Definition.Gaggle.Labels["a"] = "first"
+	bundle.Definition.Gaggle.Labels["z"] = "last"
+	second, err := MarshalJSON(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("output not deterministic")
+	}
+	if !json.Valid(first) {
+		t.Fatalf("invalid JSON: %q", first)
+	}
+	if !bytes.Contains(first, []byte("\n  \"kind\": \"A<b>&c\",\n")) {
+		t.Fatalf("expected unescaped, indented output: %s", first)
+	}
+	if !bytes.HasSuffix(first, []byte("}\n")) {
+		t.Fatalf("expected trailing newline: %q", first)
+	}
+}
+
+func TestMarshalJSONEncodingError(t *testing.T) {
+	bundle := apiv1.GaggleBundle{ExportedAt: time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	output, err := MarshalJSON(bundle)
+	var marshalErr *json.MarshalerError
+	if !errors.As(err, &marshalErr) || !strings.HasPrefix(err.Error(), "encode gaggle bundle: ") {
+		t.Fatalf("error = %v, want wrapped JSON marshaler error", err)
+	}
+	if output != nil {
+		t.Fatalf("output = %q, want nil on encoding error", output)
 	}
 }

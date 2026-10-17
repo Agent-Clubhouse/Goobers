@@ -3,7 +3,6 @@ package harness
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -34,11 +33,11 @@ func (c *CopilotAdapter) ProbeMCPReadiness(ctx context.Context, req RunRequest) 
 	}
 	ctx, cancel := context.WithTimeout(ctx, MCPDiagnosticTimeout)
 	defer cancel()
-	workspace, err := os.MkdirTemp("", "goobers-mcp-readiness-")
+	workspace, cleanupWorkspace, err := copilotPrivateTempDir(req.Workspace)
 	if err != nil {
 		return failedMCPDiagnostics(reports, "transport_failure")
 	}
-	defer func() { _ = os.RemoveAll(workspace) }()
+	defer cleanupWorkspace()
 	req.Workspace, req.Envelope.Workspace = workspace, workspace
 	req.Envelope.RunID = "readiness"
 	req.ContextPaths, req.Envelope.Inputs = nil, nil

@@ -115,6 +115,9 @@ type Command struct {
 
 	mutatesClaimLedger bool
 	claimMutationFlags []string
+	// valueFlags names non-boolean CLI flags whose next argument is a value.
+	// Boolean-condition scans need this arity to preserve positional boundaries.
+	valueFlags []string
 
 	// sinceDSL/untilDSL bound the DSL versions in which the command exists,
 	// with the same window semantics as CapabilityUse. Entry metadata
@@ -556,7 +559,7 @@ func requiredCapabilitiesIn(table map[string]Command, dslVersion, command string
 	}
 	var required []CapabilityUse
 	for _, use := range entry.Capabilities {
-		if use.required(args) {
+		if use.required(args, entry.valueFlags) {
 			required = append(required, use)
 		}
 	}
@@ -568,7 +571,7 @@ func mutatesClaimLedgerIn(table map[string]Command, dslVersion, command string, 
 	if !ok {
 		return false
 	}
-	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags)
+	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags, entry.valueFlags)
 }
 
 // lookupIn resolves command's entry in table as seen at dslVersion: an entry
@@ -698,15 +701,15 @@ func SupportsResultFile(command string) (ResultFileSupport, bool) {
 	return entry.effectiveSupport(), true
 }
 
-func (u CapabilityUse) required(args []string) bool {
+func (u CapabilityUse) required(args, valueFlags []string) bool {
 	if u.optional {
 		return false
 	}
 	if len(u.anyFlags) > 0 {
-		return anyFlagEnabled(args, u.anyFlags)
+		return anyFlagEnabled(args, u.anyFlags, valueFlags)
 	}
 	if len(u.unlessFlags) > 0 {
-		return !anyFlagEnabled(args, u.unlessFlags)
+		return !anyFlagEnabled(args, u.unlessFlags, valueFlags)
 	}
 	if u.flag == "" {
 		return true
@@ -730,15 +733,24 @@ func (u CapabilityUse) required(args []string) bool {
 	return false
 }
 
-func anyFlagEnabled(args, flags []string) bool {
+func anyFlagEnabled(args, flags, valueFlags []string) bool {
 	enabled := make(map[string]bool, len(flags))
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
 			break
 		}
 		name := strings.TrimPrefix(arg, "-")
 		name = strings.TrimPrefix(name, "-")
 		name, value, hasValue := strings.Cut(name, "=")
+		if slices.Contains(valueFlags, name) {
+			// Like flag.FlagSet, consume even a dash-prefixed value or "--".
+			// Unrelated boolean flags do not consume a following positional.
+			if !hasValue {
+				i++
+			}
+			continue
+		}
 		for _, flag := range flags {
 			if name != flag {
 				continue

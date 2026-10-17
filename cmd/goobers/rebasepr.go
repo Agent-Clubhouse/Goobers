@@ -970,6 +970,10 @@ func abortRebaseAfterError(dir string, cause error) error {
 // ever updated for the bare flag to compare against, which misreports every
 // push as "stale info" regardless of whether the remote actually moved.
 func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA string, auth gitAuthEnvironmentResolver) error {
+	head, err := checkPublicationSafety(ctx, dir, stageBaseBranch(), "refs/heads/"+branch)
+	if err != nil {
+		return err
+	}
 	url, err := originURL(dir)
 	if err != nil {
 		return err
@@ -981,7 +985,7 @@ func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA st
 	if err != nil {
 		return err
 	}
-	cmd := workspaceGitAuthEnvCommand(dir, env, "push", "--force-with-lease="+branch+":"+expectedSHA, url, branch+":"+branch)
+	cmd := workspaceGitAuthEnvCommand(dir, env, "push", "--force-with-lease="+branch+":"+expectedSHA, url, head+":refs/heads/"+branch)
 	if out, err := workspaceGitCombinedOutput(cmd); err != nil {
 		// Same classification as gitPushBranch: a force-push rejected by an
 		// enabled ADO branch policy (TF402455 /

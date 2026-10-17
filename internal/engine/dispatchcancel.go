@@ -15,11 +15,20 @@ import (
 )
 
 const (
-	dispatchCancellationChange   = "dispatch-cancellation-v1"
-	dispatchHeartbeatTimeout     = 10 * time.Second
-	dispatchHeartbeatInterval    = time.Second
-	dispatchSurrenderReadTimeout = 30 * time.Second
+	dispatchCancellationChange      = "dispatch-cancellation-v1"
+	dispatchHeartbeatContractChange = "dispatch-heartbeat-contract-v2"
+	dispatchHeartbeatTimeout        = 10 * time.Second
+	dispatchHeartbeatTimeoutV2      = time.Minute
+	dispatchHeartbeatInterval       = time.Second
+	dispatchSurrenderReadTimeout    = 30 * time.Second
 )
+
+// DispatchHeartbeatThrottleInterval keeps cancellation delivery at the prior
+// eight-second cadence even when the server heartbeat timeout is longer. The
+// SDK otherwise batches at 80% of that timeout (48s for v2). Worker hosts must
+// set this maximum; generating a heartbeat every second does not bypass batching.
+// The SDK also uses this interval as its heartbeat RPC retry budget.
+const DispatchHeartbeatThrottleInterval = 8 * time.Second
 
 // Only remote dispatch waits for cancellation cleanup and requires heartbeats.
 // Older histories retain their exact options and immediate cancellation result.
@@ -27,9 +36,17 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 	options := stageActivityOptions(limits, queue)
 	if workflow.GetVersion(ctx, dispatchCancellationChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 		options.HeartbeatTimeout = dispatchHeartbeatTimeout
+		if workflow.GetVersion(ctx, dispatchHeartbeatContractChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			options.HeartbeatTimeout = dispatchHeartbeatTimeoutV2
+		}
 		options.WaitForCancellation = true
 	}
 	return workflow.WithActivityOptions(ctx, options)
+}
+
+type dispatchHeartbeatDetails struct {
+	Sequence    uint64    `json:"sequence"`
+	GeneratedAt time.Time `json:"generatedAt"`
 }
 
 // Temporal delivers activity cancellation through heartbeat replies. Keep
@@ -37,7 +54,11 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 // so heartbeat timeout cannot settle the workflow while cleanup is in flight.
 // Direct non-Temporal callers already own their context and need no heartbeat.
 func heartbeatDispatch(ctx context.Context) func() {
-	return heartbeatDispatchDetails(ctx, nil)
+	var sequence uint64
+	return heartbeatDispatchDetails(ctx, func() any {
+		sequence++
+		return dispatchHeartbeatDetails{Sequence: sequence, GeneratedAt: time.Now().UTC()}
+	})
 }
 
 func heartbeatDispatchDetails(ctx context.Context, details func() any) func() {

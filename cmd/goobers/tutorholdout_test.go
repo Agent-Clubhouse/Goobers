@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -456,21 +458,30 @@ func TestOpenPRDiscardsPreparedTutorHoldoutWhenProviderFails(t *testing.T) {
 	writeTutorFindingFixture(t, root, gaggle, runID)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", runID)
-	// The server is closed below so every call fails at the transport; the
-	// assertion is on the discarded holdout, not on retry timing. Spend the
-	// transient-retry budget so open-pr fails fast instead of burning
-	// 1+2+4+8 = 15s of real backoff sleep. providerCmdEnv's own t.Cleanup
-	// still restores the original factory.
+	// Keep branch verification available and fail only pull-request calls so
+	// this still exercises cleanup after the PR provider fails. Spend the
+	// transient-retry budget: this test asserts cleanup, not retry timing.
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, repoDir, "rev-parse", "HEAD")))
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/pulls") {
+			http.Error(w, "pull request unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		server.server.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(failing.Close)
 	baseFactory := newGitHubProvider
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
-		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+		provider := baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+		provider.BaseURL = failing.URL
+		return provider
 	}
 	t.Setenv("GOOBERS_WORKFLOW", "tutor")
 	t.Setenv("GOOBERS_GAGGLE", gaggle)
 	t.Setenv(executor.InputEnvVar("recordLiveVerification"), "true")
 	t.Setenv(executor.InputEnvVar("tutorConfigSource"), proposedConfig)
 	t.Chdir(repoDir)
-	server.server.Close()
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 
 	code, _, stderr := runArgs(t, "open-pr", root)
 	if code != 1 || !strings.Contains(stderr, "open pull request") {

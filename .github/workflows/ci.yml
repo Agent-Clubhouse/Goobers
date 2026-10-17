@@ -1991,6 +1991,9 @@ jobs:
       - name: make build (windows)
         run: make build-operator
 
+      - name: Windows operator options
+        run: go test ./cmd/operator -count=1
+
       - name: Windows platform runtime
         # Hosted runners can ship wsl.exe without a usable distro, so the WSL
         # descendant test probes for a guest and skips with diagnostics; set
@@ -2032,6 +2035,9 @@ jobs:
       - name: Windows credential files
         run: go test ./internal/credentials ./internal/fleet
 
+      - name: Windows test partitioning
+        run: go test ./internal/testshard -count=1
+
       - name: Windows child proposal validation
         run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook -count=1
 
@@ -2052,6 +2058,18 @@ jobs:
       - name: Windows self-update
         run: go test ./internal/selfupdate
 
+      # #7509: exercise heartbeat transport diagnostics and local recovery
+      # custody fences on the affected host OS. Keep the large CLI/engine
+      # suites filtered; the lifecycle fixture uses in-process service fakes.
+      - name: Windows dispatch heartbeat and recovery fences
+        run: go test ./internal/engine ./internal/temporaldial ./internal/workerhost ./internal/recovery ./cmd/goobers -run '^(TestDispatchCancellation.*|TestReviewerDispatchReceivesCancellationOptions|TestDispatchHeartbeat.*|TestConfirmedSurrenderReadSurvivesCancellationDuringGetWithBound|TestHeartbeatRPCDiagnostics.*|TestOptionsUnsetIsTodaysDial|TestWorkerOptionsBoundHeartbeatCancellationLatency|TestRunServesEveryQueueAndDrains|TestHTTPArchive.*|TestClassifyTransportDistinguishesCauses|TestRecoveryDelivery.*|TestRecoveryPublicationReleased.*)$' -count=1 -timeout=3m
+
+      - name: Windows recovery publication custody
+        timeout-minutes: 7
+        env:
+          TESTDEP_STRICT: '1'
+        run: go test -tags=integration ./cmd/goobers -run '^TestIntegrationRecoveryPublicationTakesVerifiedHostCustody$' -count=1 -timeout=5m
+
       # Both are real Windows faults fixed under #2031 whose only coverage
       # lives in an existing test that no gated selection ran:
       # harness/claude.go let an ambient USERPROFILE override an explicitly
@@ -2065,7 +2083,7 @@ jobs:
         run: go test ./internal/instanceannotations ./internal/branchretention ./internal/engineoperator
 
       - name: Windows containment and journals
-        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/pathutil ./internal/secretpattern
+        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/pathutil ./internal/secretpattern ./internal/diagnostictmp ./internal/publicationguard ./internal/publicationpaths
 
       # Exercise native Logs delivery and real journal-writing CLI lifetimes.
       # Keep the large CLI/engine suites filtered; test/ci checks this selection

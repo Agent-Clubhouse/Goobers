@@ -384,6 +384,22 @@ test("keeps optional Overview diagnostics accessible and exposes capacity warnin
           inventoryRoot: "C:\\fixture\\recovery",
           policySource: "instance-config",
           observedAt: "2026-08-17T08:01:59Z",
+          reclaimCandidatesTotal: 1,
+          reclaimCandidates: [
+            {
+              runId: "01JZ400RECLAIMABLE0000000000",
+              phase: "completed",
+              ref: "refs/goobers/recovery/01JZ400RECLAIMABLE0000000000",
+              patchDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              repositoryKey: "github|||fixture|repo|",
+              createdAt: "2026-07-01T00:00:00Z",
+              retainUntil: "2026-09-01T00:00:00Z",
+              inspectCommand: "goobers trace --summary 01JZ400RECLAIMABLE0000000000 'C:\\fixture\\instance'",
+              abandonCommand:
+                "goobers recovery-abandon --run 01JZ400RECLAIMABLE0000000000 --ref refs/goobers/recovery/01JZ400RECLAIMABLE0000000000 --confirm-digest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 'C:\\fixture\\instance'",
+            },
+          ],
+          statusCommand: "goobers status --all 'C:\\fixture\\instance'",
         },
       },
     });
@@ -393,8 +409,9 @@ test("keeps optional Overview diagnostics accessible and exposes capacity warnin
   const warning = page.getByRole("alert", { name: "Recovery inventory warning" });
   await expect(warning).toBeVisible();
   await expect(
-    warning.getByRole("link", { name: "Recovery capacity and operator actions" }),
-  ).toBeVisible();
+    warning.getByRole("listitem", { name: "Recovery snapshot 01JZ400RECLAIMABLE0000000000" }),
+  ).toContainText("goobers recovery-abandon --run 01JZ400RECLAIMABLE0000000000");
+  await expect(warning).toContainText("goobers status --all");
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 });
 

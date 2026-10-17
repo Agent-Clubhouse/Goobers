@@ -3,6 +3,8 @@ package recovery
 import (
 	"fmt"
 	"strings"
+
+	"github.com/goobers/goobers/internal/stringpolicy"
 )
 
 // captureStderrBound caps how much of a failing git command's stderr this
@@ -128,7 +130,7 @@ func gitSubcommand(args []string) string {
 func classifyCaptureStderr(stderr string) CaptureErrorClass {
 	message := strings.ToLower(stderr)
 	switch {
-	case containsAny(message,
+	case stringpolicy.ContainsAny(message,
 		"unknown revision",
 		"bad object",
 		"bad revision",
@@ -137,13 +139,13 @@ func classifyCaptureStderr(stderr string) CaptureErrorClass {
 		"missing object",
 		"needed a single revision"):
 		return CaptureErrorMissingObject
-	case containsAny(message,
+	case stringpolicy.ContainsAny(message,
 		"index.lock",
 		".lock':",
 		"unable to create",
 		"another git process seems to be running"):
 		return CaptureErrorLocked
-	case containsAny(message,
+	case stringpolicy.ContainsAny(message,
 		"detected dubious ownership",
 		"unsafe repository",
 		"dubious ownership"):
@@ -151,15 +153,6 @@ func classifyCaptureStderr(stderr string) CaptureErrorClass {
 	default:
 		return CaptureErrorUnclassified
 	}
-}
-
-func containsAny(haystack string, fragments ...string) bool {
-	for _, fragment := range fragments {
-		if strings.Contains(haystack, fragment) {
-			return true
-		}
-	}
-	return false
 }
 
 // newCaptureError builds the typed failure for one recoveryGit invocation.

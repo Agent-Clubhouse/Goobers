@@ -33,10 +33,11 @@ const (
 	// genuine wedge still panics with a goroutine dump instead of burning the
 	// whole stress job.
 	stressTimeout = 30 * time.Minute
-	// stressBuildReserve is the slice of stressTimeout that is not available
-	// for repeat execution: compiling and linking a race-instrumented test
-	// binary, plus the enumeration pass that resolves a shard's test set,
-	// happen inside the same `go test -timeout` window.
+	// stressBuildReserve is a conservative enrollment allowance for building
+	// the race binary and enumerating tests. Those steps run before the test
+	// binary starts its `go test -timeout` clock; the workflow's separate job
+	// timeout also covers them. This allowance is planning headroom, not a
+	// measurement of time deducted from the test binary's runtime budget.
 	stressBuildReserve    = 10 * time.Minute
 	maxShards             = 64
 	reportSchema          = "goobers.dev/stress/v1"
@@ -104,8 +105,9 @@ type shardSpec struct {
 	Exclude string
 }
 
-// shardBudget is the reviewed wall-clock cost of running one shard of spec,
-// including the build reserve the invocation cannot avoid paying.
+// shardBudget is the enrollment estimate from the reviewed whole-package pass
+// cost plus setup allowance. It is not a guarantee that any particular shard
+// fits: measured test weighting and hosted stress validate the actual layout.
 func (s packageSpec) shardBudget() time.Duration {
 	return time.Duration(s.Count)*s.PassBudget/time.Duration(s.Shards) + stressBuildReserve
 }
@@ -615,7 +617,7 @@ func goListArgs(pkg string) []string {
 
 // shardRunPattern enumerates the package's top-level tests and returns a -run
 // pattern selecting this shard's deterministic slice of them, after dropping
-// any test named by the package's `exclude=` setting. Round-robin assignment
+// any test named by the package's `exclude=` setting. Weighted assignment
 // keeps shards balanced as tests are added, so the split does not need
 // hand-maintained name prefixes; excluding tests before that assignment keeps
 // it balanced over the tests that actually run.
@@ -638,7 +640,6 @@ func (r processRunner) shardRunPattern(ctx context.Context, spec shardSpec) (str
 		return "", fmt.Errorf("list tests in %s: %w", spec.Package, err)
 	}
 	var selected []string
-	index := 0
 	for _, line := range strings.Split(listed.String(), "\n") {
 		name := strings.TrimSpace(line)
 		if !testNamePattern.MatchString(name) {
@@ -647,13 +648,18 @@ func (r processRunner) shardRunPattern(ctx context.Context, spec shardSpec) (str
 		if _, skip := excluded[name]; skip {
 			continue
 		}
-		if spec.Shards <= 1 || index%spec.Shards == spec.Index {
-			selected = append(selected, name)
+		selected = append(selected, name)
+	}
+	listedCount := len(selected)
+	if spec.Shards > 1 {
+		var err error
+		selected, err = weightedStressTests(selected, spec)
+		if err != nil {
+			return "", err
 		}
-		index++
 	}
 	if len(selected) == 0 {
-		return "", fmt.Errorf("shard %s selected no tests from %s (%d test(s) listed)", spec.ID, spec.Package, index)
+		return "", fmt.Errorf("shard %s selected no tests from %s (%d test(s) listed)", spec.ID, spec.Package, listedCount)
 	}
 	return "^(?:" + strings.Join(selected, "|") + ")$", nil
 }
