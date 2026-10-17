@@ -23,7 +23,10 @@ type Git func(context.Context, ...string) ([]byte, error)
 // The returned commit ID is the inspected tip; callers must push this exact ID.
 func Check(ctx context.Context, git Git, base, head string) (string, error) {
 	shallow, err := git(ctx, "rev-parse", "--is-shallow-repository")
-	if err != nil || strings.TrimSpace(string(shallow)) != "false" {
+	if err != nil {
+		return "", fmt.Errorf("publication safety: inspect local history depth: %w", err)
+	}
+	if strings.TrimSpace(string(shallow)) != "false" {
 		return "", fmt.Errorf("publication safety: complete local history is required; unshallow the checkout before publishing")
 	}
 
