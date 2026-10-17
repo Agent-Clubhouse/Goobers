@@ -139,6 +139,7 @@ type fakeGitHubServer struct {
 	branchTips map[string]string
 	// branchTipLookup lets fixtures that perform real pushes serve their remote refs.
 	branchTipLookup func(context.Context, string) (string, error)
+	branchDelete    func(context.Context, string) error
 	// repoLabels is the repository's label set (GET/POST /repos/o/r/labels),
 	// distinct from any issue's applied labels. It lets a test model a label the
 	// code names but the repository does not actually define — the #1801 failure,
@@ -370,6 +371,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
+	mux.HandleFunc(prefix+"/git/refs/heads/", s.handleDeleteGitRef)
 	mux.HandleFunc(prefix+"/activity", s.handleActivity)
 	mux.HandleFunc(prefix+"/labels", s.handleRepoLabels)
 	mux.HandleFunc(prefix+"/code-scanning/alerts", s.handleSecurityAlerts("code-scanning"))
@@ -796,6 +798,26 @@ func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) 
 		"ref":    "refs/" + ref,
 		"object": map[string]string{"sha": sha, "type": "commit"},
 	})
+}
+
+func (s *fakeGitHubServer) handleDeleteGitRef(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	branch := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/git/refs/heads/")
+	s.mu.Lock()
+	remove := s.branchDelete
+	s.mu.Unlock()
+	if remove == nil {
+		http.Error(w, "branch deletion is not configured", http.StatusNotFound)
+		return
+	}
+	if err := remove(r.Context(), branch); err != nil {
+		http.Error(w, "branch deletion failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *fakeGitHubServer) handleActivity(w http.ResponseWriter, r *http.Request) {

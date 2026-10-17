@@ -118,15 +118,8 @@ func runDocsUpdaterDryRun(t *testing.T, runID string, agentStatus apiv1.ResultSt
 
 	origin := newDocsDryRunOrigin(t)
 	server := newFakeGitHubServer(t, "fixture", "repository")
-	// This dry run pushes to a real local remote. Serve that remote's current
-	// ref through the provider fixture so publication admission verifies the
-	// push's result, rather than an unregistered or pre-seeded local commit.
-	server.setBranchTipLookup(func(ctx context.Context, branch string) (string, error) {
-		cmd := testgit.CommandContext(ctx, "-c", "safe.bareRepository=all", "rev-parse", "--verify", "--end-of-options", "refs/heads/"+branch+"^{commit}")
-		cmd.Dir = origin
-		out, err := cmd.Output()
-		return strings.TrimSpace(string(out)), err
-	})
+	server.serveGitRemote(origin)
+	restrictPublicationFixtureHTTP(t)
 	t.Setenv("GOOBERS_TEST_GITHUB_API_URL", server.server.URL)
 	t.Setenv(docsDryRunTokenEnv, "docs-dry-run-token")
 
