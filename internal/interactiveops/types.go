@@ -15,9 +15,12 @@ type Scope struct {
 	SessionID string `json:"sessionId"`
 }
 type Options struct {
-	Root       string
-	Binary     string
-	Repository string
+	Root              string
+	Binary            string
+	Repository        string
+	ConfigDir         string
+	PolicyForScope    func(Scope) (Policy, error)
+	ConfigDirForScope func(Scope) (string, error)
 	// RepositoryForScope is trusted host wiring, never a browser-supplied path.
 	RepositoryForScope func(Scope) (string, error)
 	RunTimeout         time.Duration
@@ -79,6 +82,9 @@ type BacklogItem struct {
 	Source string `json:"source"`
 }
 type State struct {
+	ReadOnly            bool                `json:"readOnly,omitempty"`
+	Policy              Policy              `json:"policy"`
+	Goobers             []apiv1.Goober      `json:"goobers"`
 	Mode                string              `json:"mode"`
 	ActorID             string              `json:"actorId"`
 	SessionID           string              `json:"sessionId"`

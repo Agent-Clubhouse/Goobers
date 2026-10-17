@@ -5,12 +5,14 @@ package interactiveops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -271,4 +273,106 @@ func TestIntegrationNativeDynamicSyntaxStopsBeforeRegression(t *testing.T) {
 		t.Fatalf("real syntax stage did not stop chain: %+v %v", result, err)
 	}
 	t.Logf("native syntax failure run=%s cleanup=%v", result.RunID, result.CleanupConfirmed)
+}
+
+func TestIntegrationNativeDSL3ConfiguredScopeAndChild(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_INTERACTIVE_TEST_BINARY")
+	testdep.Require(t, "node")
+	s, parent, p := scopedNativeService(t, os.Getenv("GOOBERS_INTERACTIVE_TEST_BINARY"))
+	basePolicy := *p
+	s.opts.PolicyForScope = func(scope Scope) (Policy, error) {
+		policy := basePolicy
+		if scope.SessionID == "scoped-child" {
+			policy.Workflows = []string{}
+			policy.Revision = "attenuated-child"
+		}
+		return policy, nil
+	}
+	ctx := context.Background()
+	state, err := s.Snapshot(ctx, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Workflows) != 1 || state.Workflows[0].DSLVersion != "3.0" {
+		t.Fatal("configured DSL3 source was not selected")
+	}
+	validation, err := s.ValidateWorkflow(ctx, parent, dsl3Workflow("review-native-config", "team"))
+	if err != nil || !validation.Valid {
+		t.Fatalf("validate3: %+v %v", validation, err)
+	}
+	child := Scope{ActorID: parent.ActorID, SessionID: "scoped-child"}
+	result, err := s.RunReviewChildWithOptions(ctx, child, "approved-dsl3", "Review the actual configured team workspace", ReviewChildOptions{WorkflowYAML: validation.NormalizedYAML, ApprovedPayloadDigest: validation.PayloadDigest}, nil)
+	if err != nil || result.Status != "succeeded" || !result.CleanupConfirmed || result.Request.Gaggle != "team" || !strings.Contains(result.Output, "dynamic arithmetic result") {
+		t.Fatalf("real scoped DSL3 child failed: %+v %v", result, err)
+	}
+	childState, err := s.Snapshot(ctx, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childState.Workflows) != 1 || childState.Workflows[0].Name != "review-native-config" || len(childState.Policy.Workflows) != 0 {
+		t.Fatalf("attenuated child source broadened: %+v", childState)
+	}
+	cfg, err := instance.LoadConfig(filepath.Join(childState.InstanceRoot, "instance.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Repos) != 0 || !cfg.SelfRunnerEnforces(instance.RunnerRestrictionNetworkNone) {
+		t.Fatal("private DSL3 runner must have no provider credentials and enforce network:none")
+	}
+	t.Logf("real DSL3 child run=%s gaggle=%s payload=%s cleanup=%v", result.RunID, result.Request.Gaggle, validation.PayloadDigest, result.CleanupConfirmed)
+}
+
+func TestIntegrationNativeDSL3StopAfterPolicyRevocation(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_INTERACTIVE_TEST_BINARY")
+	testdep.Require(t, "node")
+	s, scope, _ := scopedNativeService(t, os.Getenv("GOOBERS_INTERACTIVE_TEST_BINARY"))
+	ctx := context.Background()
+	state, err := s.Snapshot(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(state.Repository, "tests/arithmetic.test.mjs"), []byte("import test from 'node:test';test('owned live worker',async()=>{await new Promise(r=>setTimeout(r,18000));});\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Propose(ctx, scope, Request{Kind: "submit_run", Workflow: "selected-check", IdempotencyKey: "live-before-revoke"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = s.Apply(ctx, scope, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := false
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		current, getErr := s.Get(ctx, scope, a.ID)
+		if getErr == nil && strings.Contains(current.Output, "stage regression started") {
+			started = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !started {
+		t.Fatal("native DSL3 regression stage did not start")
+	}
+	// Emulate the host's durable stop/reload fence: every live callback refuses.
+	s.opts.PolicyForScope = func(Scope) (Policy, error) { return Policy{}, errors.New("surface stopping or retired") }
+	s.opts.ConfigDirForScope = func(Scope) (string, error) { return "", errors.New("surface stopping or retired") }
+	s.opts.RepositoryForScope = func(Scope) (string, error) { return "", errors.New("surface stopping or retired") }
+	stopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err = s.StopSession(stopCtx, scope); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := s.Get(ctx, scope, a.ID)
+	if err != nil || !receipt.CleanupConfirmed {
+		t.Fatalf("revoked helper custody: %+v %v", receipt, err)
+	}
+	history, err := s.SnapshotRecorded(ctx, scope)
+	if err != nil || len(history.Actions) != 1 || !history.Actions[0].CleanupConfirmed {
+		t.Fatalf("retired history missing cleanup: %+v %v", history, err)
+	}
+	if err = s.Close(stopCtx); err != nil {
+		t.Fatalf("shutdown after revocation failed: %v", err)
+	}
+	t.Logf("revoked native DSL3 worker run=%s cleanup=true historical-read=true", receipt.RunID)
 }

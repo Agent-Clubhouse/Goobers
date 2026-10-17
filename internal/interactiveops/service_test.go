@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/goobers/goobers/internal/instance"
 )
 
 func fixture(t *testing.T, binary string) (*Service, Scope) {
@@ -60,7 +58,7 @@ func TestConfigLifecycleIsolationAndReplay(t *testing.T) {
 	if err != nil || repeated.UpdatedAt != applied.UpdatedAt {
 		t.Fatalf("apply replay mutated receipt: %+v %v", repeated, err)
 	}
-	set, _, err := instance.LoadConfigDir(filepath.Join(state.InstanceRoot, "config"))
+	set, err := loadNativeConfig(filepath.Join(state.InstanceRoot, "config"))
 	if err != nil || len(set.Workflows) != 2 {
 		t.Fatalf("native config: %+v %v", set, err)
 	}

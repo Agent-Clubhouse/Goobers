@@ -55,6 +55,10 @@ func copyTree(src, dst string) error {
 	})
 }
 func (s *Service) ensure(scope Scope, dir string) error {
+	view, policy, err := s.scoped(scope)
+	if err != nil {
+		return err
+	}
 	owner := filepath.Join(dir, "owner.json")
 	if b, err := os.ReadFile(owner); err == nil {
 		var got Scope
@@ -72,7 +76,6 @@ func (s *Service) ensure(scope Scope, dir string) error {
 		return err
 	}
 	repo := filepath.Join(dir, "repository")
-	var err error
 	if s.opts.RepositoryForScope == nil {
 		if s.opts.Repository == "" {
 			return errors.New("fixture repository is required")
@@ -92,6 +95,13 @@ func (s *Service) ensure(scope Scope, dir string) error {
 	if _, err = instance.InitDemo(root); err != nil {
 		return err
 	}
+	// Declare the actual local network restriction for native DSL3 placement.
+	// This is a private credential-free instance; no host instance settings are copied.
+	cfg := &instance.Config{APIVersion: instance.ConfigAPIVersion, Kind: instance.ConfigKind, RunConditions: instance.RunConditions{MaxParallelRuns: 1}, Runners: []instance.RunnerEntry{{Name: "interactive-local", Host: instance.RunnerHostSelfName, Restrictions: []instance.RunnerRestriction{instance.RunnerRestrictionNetworkNone}}}}
+	if err = instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
+		return err
+	}
+
 	staging, err := os.MkdirTemp(dir, "seed-")
 	if err != nil {
 		return err
@@ -104,8 +114,8 @@ func (s *Service) ensure(scope Scope, dir string) error {
 	if _, _, err := scopedFile(repo, "invoice.test.mjs", CommandNodeTest); err != nil {
 		files["gaggle.yaml"] = strings.ReplaceAll(files["gaggle.yaml"], "invoice", "repository")
 	}
-	if draft := s.defaultDraft(repo, false); draft != "" {
-		v := s.validateWorkflow(draft, repo)
+	if draft := view.defaultDraft(repo, false); draft != "" && s.opts.PolicyForScope == nil {
+		v := view.validateWorkflow(draft, repo)
 		if !v.Valid {
 			return validationError(v)
 		}
@@ -115,6 +125,19 @@ func (s *Service) ensure(scope Scope, dir string) error {
 		if err = os.WriteFile(filepath.Join(staging, name), []byte(b), 0600); err != nil {
 			return err
 		}
+	}
+	if s.opts.ConfigDir != "" || s.opts.ConfigDirForScope != nil {
+		if err = os.RemoveAll(staging); err != nil {
+			return err
+		}
+		if err = os.MkdirAll(staging, 0700); err != nil {
+			return err
+		}
+		if err = s.projectConfig(scope, staging, repo, policy); err != nil {
+			return err
+		}
+	} else if s.opts.PolicyForScope != nil {
+		return errors.New("explicit scope policy requires ConfigDir")
 	}
 	if err = validateConfig(staging); err != nil {
 		return err
@@ -132,10 +155,11 @@ func workflowDraft(name, repo string) string {
 	command, _ := json.Marshal([]string{"node", "--test", filepath.Join(repo, "invoice.test.mjs")})
 	return fmt.Sprintf("apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: \"2.0\"\nmetadata:\n  name: %s\n  annotations:\n    goobers.dev/acknowledge-manual-only: \"true\"\nspec:\n  gaggle: interactive\n  displayName: Invoice regression check\n  triggers: [{type: manual}]\n  readiness: {maxConcurrentRuns: 1}\n  start: test\n  tasks:\n    - name: test\n      type: deterministic\n      goal: Run the actual invoice regression tests in this session workspace\n      timeoutSeconds: 30\n      run:\n        workspace: scratch\n        network: none\n        command: %s\n", name, command)
 }
-func validateConfig(path string) error {
-	_, report, err := instance.LoadConfigDir(path)
+func validateConfig(path string) error { _, err := loadNativeConfig(path); return err }
+func loadNativeConfig(path string) (*instance.ConfigSet, error) {
+	set, report, err := instance.LoadConfigDir(path)
 	if err == nil {
-		return nil
+		return set, nil
 	}
 	messages := []string{err.Error()}
 	if report != nil {
@@ -145,7 +169,7 @@ func validateConfig(path string) error {
 			}
 		}
 	}
-	return errors.New(strings.Join(messages, "; "))
+	return nil, errors.New(strings.Join(messages, "; "))
 }
 func onlyKeys(m map[string]any, keys ...string) error {
 	allowed := map[string]bool{}
@@ -160,13 +184,22 @@ func onlyKeys(m map[string]any, keys ...string) error {
 	return nil
 }
 func (s *Service) preview(scope Scope, dir string, req Request) (string, string, error) {
-	root := filepath.Join(dir, "instance")
-	set, _, err := instance.LoadConfigDir(filepath.Join(root, "config"))
+	view, policy, err := s.scoped(scope)
 	if err != nil {
 		return "", "", err
 	}
-	if req.Gaggle != "interactive" {
-		return "", "", errors.New("operation is outside the session fixture gaggle")
+	root := filepath.Join(dir, "instance")
+	set, err := loadNativeConfig(filepath.Join(root, "config"))
+	if err != nil {
+		return "", "", err
+	}
+	if req.Gaggle != policy.Gaggle {
+		return "", "", errors.New("operation is outside the session-authorized gaggle")
+	}
+	if req.Kind == "submit_run" || req.Kind == "tweak_workflow" {
+		if err = s.checkWorkflowAuthority(dir, policy, req.Workflow); err != nil {
+			return "", "", err
+		}
 	}
 	switch req.Kind {
 	case "tweak_gaggle", "tweak_workflow":
@@ -193,11 +226,14 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 		b, _ := json.MarshalIndent(map[string]any{"gaggle": req.Gaggle, "workflow": req.Workflow, "displayName": req.DisplayName, "enabled": req.Enabled}, "", "  ")
 		return "Apply scoped " + req.Kind + " to the isolated local fixture", string(b), nil
 	case "add_workflow":
+		if !policy.AllowAuthoring {
+			return "", "", errors.New("session policy forbids workflow authoring")
+		}
 		repo, err := s.repository(scope, dir)
 		if err != nil {
 			return "", "", err
 		}
-		v := s.validateWorkflow(req.WorkflowYAML, repo)
+		v := view.validateWorkflow(req.WorkflowYAML, repo)
 		if !v.Valid {
 			return "", "", validationError(v)
 		}
@@ -217,6 +253,12 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 			return "", "", errors.New("native Goobers binary unavailable; build cmd/goobers and configure Binary")
 		}
 		for _, g := range set.Gaggles {
+			if g.Name != policy.Gaggle {
+				continue
+			}
+			if g.Spec.OutboxMirrorPath != "" || g.Spec.Workcopies != nil || len(g.Spec.CICommand) > 0 {
+				return "", "", errors.New("gaggle runtime path/command overrides are not authorized in bounded helper execution")
+			}
 			if g.Spec.Enabled != nil && !*g.Spec.Enabled {
 				return "", "", errors.New("gaggle is disabled")
 			}
@@ -236,7 +278,7 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 			if err != nil {
 				return "", "", err
 			}
-			if v := s.validateWorkflow(string(b), repo); !v.Valid {
+			if v := view.validateWorkflow(string(b), repo); !v.Valid {
 				return "", "", validationError(v)
 			}
 			return "Submit " + req.Gaggle + "/" + req.Workflow + " through the native Goobers scheduler", "Admission is distinct from completion. Observe the run journal for actual test results. No provider credentials or remote effects are authorized.", nil
@@ -260,6 +302,10 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 	}
 }
 func (s *Service) stageConfig(scope Scope, dir string, req Request) (string, error) {
+	view, _, err := s.scoped(scope)
+	if err != nil {
+		return "", err
+	}
 	stage, err := os.MkdirTemp(dir, "candidate-")
 	if err != nil {
 		return "", err
@@ -274,7 +320,7 @@ func (s *Service) stageConfig(scope Scope, dir string, req Request) (string, err
 	if err = copyTree(config, stage); err != nil {
 		return "", err
 	}
-	set, _, err := instance.LoadConfigDir(stage)
+	set, err := loadNativeConfig(stage)
 	if err != nil {
 		return "", err
 	}
@@ -286,7 +332,7 @@ func (s *Service) stageConfig(scope Scope, dir string, req Request) (string, err
 		if err != nil {
 			return "", err
 		}
-		v := s.validateWorkflow(req.WorkflowYAML, repo)
+		v := view.validateWorkflow(req.WorkflowYAML, repo)
 		if !v.Valid {
 			return "", validationError(v)
 		}

@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/goobers/goobers/internal/instance"
 )
 
 const dynamicWorkflow = `apiVersion: goobers.dev/v1alpha1
@@ -101,7 +99,7 @@ func TestDynamicWorkflowValidationAndNativeConfig(t *testing.T) {
 	if err != nil || a.Status != "succeeded" {
 		t.Fatalf("apply: %+v %v", a, err)
 	}
-	set, _, err := instance.LoadConfigDir(filepath.Join(state.InstanceRoot, "config"))
+	set, err := loadNativeConfig(filepath.Join(state.InstanceRoot, "config"))
 	if err != nil {
 		t.Fatal(err)
 	}

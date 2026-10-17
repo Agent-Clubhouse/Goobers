@@ -14,14 +14,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/lock"
 )
 
-type Service struct{ opts Options }
+type Service struct {
+	opts   Options
+	policy *Policy
+}
 
 func New(opts Options) (*Service, error) {
+	if (opts.ConfigDir != "" || opts.ConfigDirForScope != nil) && opts.PolicyForScope == nil {
+		return nil, errors.New("native configuration requires an explicit per-session policy")
+	}
 	if opts.Root == "" {
 		return nil, errors.New("helper operations root is required")
 	}
@@ -68,13 +73,29 @@ func validScope(scope Scope) error {
 func (s *Service) scopeDir(scope Scope) string {
 	return filepath.Join(s.opts.Root, digest([]byte(scope.ActorID+"\x00"+scope.SessionID)))
 }
-func (s *Service) locked(scope Scope) (string, func(), error) {
+func (s *Service) locked(scope Scope) (string, func(), error)   { return s.lockScope(scope, true) }
+func (s *Service) observed(scope Scope) (string, func(), error) { return s.lockScope(scope, false) }
+func (s *Service) lockScope(scope Scope, enforcePolicy bool) (string, func(), error) {
 	if err := validScope(scope); err != nil {
 		return "", nil, err
 	}
 	dir := s.scopeDir(scope)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", nil, err
+	if enforcePolicy {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return "", nil, err
+		}
+	} else {
+		b, err := os.ReadFile(filepath.Join(dir, "owner.json"))
+		if err != nil {
+			return "", nil, err
+		}
+		var owner Scope
+		if err = json.Unmarshal(b, &owner); err != nil {
+			return "", nil, err
+		}
+		if owner != scope {
+			return "", nil, errors.New("fixture ownership mismatch")
+		}
 	}
 	l, err := lock.TryAcquire(filepath.Join(dir, "operations.lock"))
 	for retry := 0; errors.Is(err, lock.ErrHeld) && retry < 20; retry++ {
@@ -85,7 +106,20 @@ func (s *Service) locked(scope Scope) (string, func(), error) {
 		return "", nil, fmt.Errorf("helper busy: %w", err)
 	}
 	release := func() { _ = l.Release() }
-	if err = s.ensure(scope, dir); err != nil {
+	if enforcePolicy {
+		err = s.ensure(scope, dir)
+	} else {
+		var owner Scope
+		b, readErr := os.ReadFile(filepath.Join(dir, "owner.json"))
+		err = readErr
+		if err == nil {
+			err = json.Unmarshal(b, &owner)
+		}
+		if err == nil && owner != scope {
+			err = errors.New("fixture ownership mismatch")
+		}
+	}
+	if err != nil {
 		release()
 		return "", nil, err
 	}
@@ -200,8 +234,12 @@ func (s *Service) Snapshot(ctx context.Context, scope Scope) (State, error) {
 		return State{}, err
 	}
 	defer release()
+	view, policy, err := s.scoped(scope)
+	if err != nil {
+		return State{}, err
+	}
 	root := filepath.Join(dir, "instance")
-	set, _, err := instance.LoadConfigDir(filepath.Join(root, "config"))
+	set, err := loadNativeConfig(filepath.Join(root, "config"))
 	if err != nil {
 		return State{}, err
 	}
@@ -224,7 +262,15 @@ func (s *Service) Snapshot(ctx context.Context, scope Scope) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	return State{Mode: "isolated-local-fixture", ActorID: scope.ActorID, SessionID: scope.SessionID, InstanceRoot: root, Repository: repo, ConfigDigest: dg, Gaggles: set.Gaggles, Workflows: set.Workflows, Runs: runs, Actions: actions, Backlog: readBacklog(repo), WorkflowDraft: s.defaultDraft(repo, true), CommandCapabilities: append([]CommandCapability{}, s.opts.CommandCapabilities...), Capabilities: []string{"read configured gaggle/workflow/run state", "propose/apply gaggle and workflow displayName/enabled", "author/add validated bounded local workflows", "submit real Goobers workflow and observe journal", "request stop of an owned run"}, Limitations: []string{"local fixture provider; no live ADO/Azure authority", "deterministic workflow steering unsupported; steer the interactive workspace session instead", fmt.Sprintf("native helper limits: %d active globally, %d per owner, one per session; bounded process; no cloud-scale claim", s.opts.MaxActive, s.opts.MaxActivePerOwner), "configuration applies only to this isolated session fixture"}}, nil
+	mode := "isolated-local-fixture"
+	if s.opts.ConfigDir != "" || s.opts.ConfigDirForScope != nil {
+		mode = "isolated-native-config"
+	}
+	draft := view.defaultDraft(repo, true)
+	if !policy.AllowAuthoring {
+		draft = ""
+	}
+	return State{Mode: mode, Policy: policy, Goobers: set.Goobers, ActorID: scope.ActorID, SessionID: scope.SessionID, InstanceRoot: root, Repository: repo, ConfigDigest: dg, Gaggles: set.Gaggles, Workflows: set.Workflows, Runs: runs, Actions: actions, Backlog: readBacklog(repo), WorkflowDraft: draft, CommandCapabilities: append([]CommandCapability{}, policy.CommandCapabilities...), Capabilities: []string{"read configured gaggle/workflow/run state", "propose/apply gaggle and workflow displayName/enabled", "author/add validated bounded local workflows", "submit real Goobers workflow and observe journal", "request stop of an owned run"}, Limitations: []string{"provider configuration is context only; no live ADO/Azure credentials copied", "deterministic workflow steering unsupported; steer the interactive workspace session instead", fmt.Sprintf("native helper limits: %d active globally, %d per owner, one per session; bounded process; no cloud-scale claim", s.opts.MaxActive, s.opts.MaxActivePerOwner), "configuration applies only to this isolated session fixture"}}, nil
 }
 func (s *Service) Propose(ctx context.Context, scope Scope, req Request) (Action, error) {
 	if err := ctx.Err(); err != nil {
@@ -241,8 +287,12 @@ func (s *Service) Propose(ctx context.Context, scope Scope, req Request) (Action
 	if err = mutationAllowed(dir); err != nil {
 		return Action{}, err
 	}
+	policy, err := s.policyFor(scope)
+	if err != nil {
+		return Action{}, err
+	}
 	if req.Gaggle == "" {
-		req.Gaggle = "interactive"
+		req.Gaggle = policy.Gaggle
 	}
 	payload, _ := json.Marshal(req)
 	id := "op_" + digest([]byte(scope.ActorID + "\x00" + scope.SessionID + "\x00" + req.IdempotencyKey))[:32]
@@ -286,7 +336,7 @@ func (s *Service) Get(ctx context.Context, scope Scope, id string) (Action, erro
 	if err := ctx.Err(); err != nil {
 		return Action{}, err
 	}
-	dir, release, err := s.locked(scope)
+	dir, release, err := s.observed(scope)
 	if err != nil {
 		return Action{}, err
 	}
@@ -397,7 +447,10 @@ func (s *Service) Apply(ctx context.Context, scope Scope, id string) (Action, er
 // StopSession fences further mutations, records stop intent, then waits for
 // the owned worker to confirm process-tree cleanup. Disconnect is not stop.
 func (s *Service) StopSession(ctx context.Context, scope Scope) error {
-	dir, release, err := s.locked(scope)
+	dir, release, err := s.observed(scope)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -437,7 +490,7 @@ func (s *Service) StopSession(ctx context.Context, scope Scope) error {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	dir, release, err = s.locked(scope)
+	dir, release, err = s.observed(scope)
 	if err != nil {
 		return err
 	}

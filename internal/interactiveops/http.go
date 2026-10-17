@@ -96,7 +96,7 @@ func (s *Service) Chat(ctx context.Context, scope Scope, text, key string) (Acti
 		return Action{}, err
 	}
 	lower := strings.ToLower(strings.TrimSpace(text))
-	req := Request{Gaggle: "interactive", IdempotencyKey: key}
+	req := Request{Gaggle: state.Policy.Gaggle, IdempotencyKey: key}
 	switch {
 	case strings.Contains(lower, "design workflow") || strings.Contains(lower, "add workflow") || strings.Contains(lower, "create workflow"):
 		req.Kind = "add_workflow"
