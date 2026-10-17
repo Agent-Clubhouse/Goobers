@@ -5,4 +5,6 @@ the instance annotation seam. Only `merge-pr` knows whether all current gates
 allowed a landing attempt, so that production wiring belongs in `cmd/goobers`.
 Provider evidence classification and the would-block predicate live in
 `internal/prstatus`. This slice changes no enforcement and adds no durable store:
-the existing instance journal retention loop bounds its annotations.
+the existing instance journal age compaction prunes its annotations. It is not
+a hard storage cap or retry deduplication guarantee. The command also assigns
+closed outcome classes from its existing branches, without changing those branches.

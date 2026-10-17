@@ -354,7 +354,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		// works for both GitHub and ADO — behavior on GitHub is identical to the
 		// former concrete call.
 		poll, pollErr = dispatcher.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
-		verdictObservation = prstatus.ObserveVerdict(stageProvider, poll, pollErr)
+		verdictObservation = prstatus.ObserveVerdict(stageProvider, poll, pollErr, expectedBaseSHA)
 		if pollErr != nil {
 			return nil
 		}
@@ -486,7 +486,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		})
 		return nil
 	})
-	recordMergeVerdictShadow(root, repo, pullNumber, expectedHeadSHA, poll, verdictObservation, mergeAttempted, stdout, stderr)
+	shadowOutcome := mergeShadowOutcome(lockErr, pollErr, optedOutReason, advisoryMode, reasons, commitErr, checkErr, policyErr, mergeAttempted, mergeErr)
+	recordMergeVerdictShadow(root, repo, pullNumber, expectedHeadSHA, expectedBaseSHA, poll, verdictObservation, mergeAttempted, shadowOutcome, stdout, stderr)
 	if lockErr != nil {
 		pf(stderr, "error: acquire merge lock: %v\n", lockErr)
 		return 1

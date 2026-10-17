@@ -576,29 +576,29 @@ func (p *GiteaProvider) RequestReview(ctx context.Context, req ReviewRequest) er
 // read, so it emits no mutation event.
 func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
 	if err := p.ready(); err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("request", err)
 	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("request", err)
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, errPullIDRequired
+		return pullRequestPollFailure("request", errPullIDRequired)
 	}
 	pr, err := p.getPull(ctx, req.Repository, req.PullID)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("pull-request", err)
 	}
 	decision, requestedChanges, err := p.reviewDecision(ctx, req.Repository, req.PullID)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("reviews", err)
 	}
-	checkState, checks, verdictStatus, err := p.combinedCheckStateAndVerdict(ctx, req.Repository, pr.Head.SHA)
+	checkState, checks, verdictStatus, observed, err := p.combinedCheckStateAndVerdict(ctx, req.Repository, pr.Head.SHA)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("checks", err)
 	}
 	comments, err := pullRequestComments(ctx, p, p.BaseURL, req.Repository, req.PullID, req.CommentsSince)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("comments", err)
 	}
 	result := pullPollResultFromProjection(giteaPRProjection(pr))
 	result.ReviewDecision = decision
@@ -606,6 +606,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 	result.CheckState = checkState
 	result.Checks = checks
 	result.VerdictStatus = verdictStatus
+	result.VerdictReadStatus = observed
 	result.CommentsSince = comments
 	return result, nil
 }
@@ -693,29 +694,33 @@ func (p *GiteaProvider) reviewDecision(ctx context.Context, repo RepositoryRef, 
 // to a normalized CheckState plus per-check detail. An empty statuses list is
 // treated as passing, following the GitHub convention.
 func (p *GiteaProvider) combinedCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, error) {
-	state, details, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	state, details, _, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
 	return state, details, err
 }
 
 // combinedCheckStateAndVerdict is combinedCheckState plus the merge-review
 // verdict status (#4199), which is reported apart from CI: it is Goobers' own
 // review decision, so it never makes the CI state failing or pending.
-func (p *GiteaProvider) combinedCheckStateAndVerdict(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, *CheckDetail, error) {
+func (p *GiteaProvider) combinedCheckStateAndVerdict(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, *CheckDetail, VerdictReadStatus, error) {
 	if ref == "" {
-		return CheckStatePending, nil, nil, nil
+		return CheckStatePending, nil, nil, VerdictReadIncomplete, nil
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, VerdictReadIncomplete, err
 	}
 	var combined giteaCombinedStatus
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &combined); err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, VerdictReadIncomplete, err
 	}
 	details := make([]CheckDetail, 0, len(combined.Statuses))
 	var verdict *CheckDetail
 	failing, pending := false, false
+	// This endpoint is paginated; the existing poll reads one page. Do not
+	// infer absence unless that page explicitly accounts for the total.
+	complete := combined.Statuses != nil && combined.TotalCount != nil && *combined.TotalCount == len(combined.Statuses)
 	for _, status := range combined.Statuses {
+		complete = complete && validObservedStatus(status.Context, status.Status)
 		if found, ok := mergeReviewStatusDetail(status.Context, status.Status, status.Description, status.TargetURL); ok {
 			verdict = found
 			continue
@@ -734,13 +739,13 @@ func (p *GiteaProvider) combinedCheckStateAndVerdict(ctx context.Context, repo R
 	}
 	switch {
 	case failing:
-		return CheckStateFailing, details, verdict, nil
+		return CheckStateFailing, details, verdict, verdictReadStatus(complete), nil
 	case len(details) == 0:
-		return CheckStatePassing, details, verdict, nil
+		return CheckStatePassing, details, verdict, verdictReadStatus(complete), nil
 	case pending:
-		return CheckStatePending, details, verdict, nil
+		return CheckStatePending, details, verdict, verdictReadStatus(complete), nil
 	default:
-		return CheckStatePassing, details, verdict, nil
+		return CheckStatePassing, details, verdict, verdictReadStatus(complete), nil
 	}
 }
 
@@ -753,7 +758,7 @@ func (p *GiteaProvider) MergeReviewStatus(ctx context.Context, repo RepositoryRe
 	if err := requireOwnerRepo(repo); err != nil {
 		return nil, err
 	}
-	_, _, verdict, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	_, _, verdict, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
 	return verdict, err
 }
 
@@ -1612,8 +1617,9 @@ type giteaReview struct {
 }
 
 type giteaCombinedStatus struct {
-	State    string        `json:"state"`
-	Statuses []giteaStatus `json:"statuses"`
+	TotalCount *int          `json:"total_count"`
+	State      string        `json:"state"`
+	Statuses   []giteaStatus `json:"statuses"`
 }
 
 type giteaStatus struct {
