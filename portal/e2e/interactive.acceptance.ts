@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -8,7 +8,7 @@ const evidenceDirectory = resolve(
   process.env.INTERACTIVE_EVIDENCE_DIR ?? `${tmpdir()}/goobers-interactive-evidence`,
 );
 
-interface Surface { id: string; name: string; mode: string; enabled: boolean }
+interface Surface { id: string; name: string; mode: string; enabled: boolean; maxChildren: number; configRevision: string }
 interface Event {
   sequence: number; type: string; time: string; turnId?: string; commandId?: string;
   data: Record<string, unknown>;
@@ -16,9 +16,14 @@ interface Event {
 interface Session {
   id: string;
   mode: string;
+  executionMode: string;
+  configDigest: string;
+  configRevision: string;
   status: string;
   sequence: number;
   fence: number;
+  custodyPending?: boolean;
+  lease?: { status: string };
   activeTurnId?: string;
   turns: Array<{ id: string; text: string; status: string; attempt?: number }>;
   children: Array<{ id: string; status: string; result?: string }>;
@@ -43,10 +48,12 @@ async function snapshot(request: APIRequestContext, id: string): Promise<Session
 async function createSession(request: APIRequestContext, mode = "workbench") {
   const surface = (await surfaces(request)).find((value) => value.mode === mode && value.enabled);
   expect(surface, `an enabled ${mode} surface is required for this acceptance`).toBeDefined();
-  const data = { commandId: crypto.randomUUID(), surfaceId: surface!.id, title: `Acceptance ${mode}` };
+  const data = { commandId: crypto.randomUUID(), surfaceId: surface!.id, executionMode: "local-tools", title: `Acceptance ${mode}` };
   const response = await request.post(`${api}/sessions`, { data });
   expect(response.ok()).toBeTruthy();
-  return { session: await response.json() as Session, data };
+  const session = await response.json() as Session;
+  expect(session.executionMode).toBe("local-tools");
+  return { session, data };
 }
 
 async function capture(page: Page, name: string) {
@@ -73,6 +80,18 @@ async function awaitTurn(request: APIRequestContext, id: string, count: number) 
   return snapshot(request, id);
 }
 
+test.beforeAll(async ({ request }) => {
+  const response = await request.get(`${api}/status`);
+  expect(response.ok()).toBeTruthy();
+  const status = await response.json();
+  expect(status.defaultMode).toBe("codex-local");
+  expect(status.capabilities).toMatchObject({ modelEnabled: false, liveModel: false, liveDelegatedAuth: false });
+  expect(status.executionModes).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: "codex-local", available: false, liveQualified: false }),
+    expect.objectContaining({ id: "local-tools", available: true, liveQualified: false }),
+  ]));
+});
+
 test.afterEach(async ({ page, request }, info) => {
   if (info.status === info.expectedStatus) return;
   const id = page.url().split("/interactive/")[1];
@@ -94,6 +113,15 @@ test.afterEach(async ({ page, request }, info) => {
 });
 
 test("session creation is idempotent and changed payloads cannot reuse an identity", async ({ request }) => {
+  const surface = (await surfaces(request)).find(value => value.mode === "workbench" && value.enabled)!;
+  expect(surface.id).toBe("interactive--workbench");
+  for (const executionMode of [undefined, "codex-local"]) {
+    const unavailable = await request.post(`${api}/sessions`, { data: {
+      commandId: crypto.randomUUID(), surfaceId: surface.id, ...(executionMode ? { executionMode } : {}),
+    } });
+    expect(unavailable.status()).toBe(409);
+    expect((await unavailable.json()).error.code).toBe("execution_mode_unavailable");
+  }
   const { session, data } = await createSession(request);
   const replay = await request.post(`${api}/sessions`, { data });
   expect(replay.ok()).toBeTruthy();
@@ -211,6 +239,12 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   const pageErrors: string[] = [];
   page.on("pageerror", error => pageErrors.push(error.message));
   await page.goto("/#/interactive");
+  await expect(page.getByRole("radio", { name: "Agent (Codex)", exact: true })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "Agent (Codex)", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeDisabled();
+  await expect(page.getByText("Not live-qualified", { exact: true })).toBeVisible();
+  await capture(page, "interactive-agent-unavailable-no-fallback");
+  await page.getByRole("radio", { name: "Deterministic demo", exact: true }).check();
   await page.getByRole("radio", { name: new RegExp(workbench.name) }).check();
   await page.getByRole("textbox", { name: /Session name/ }).fill("Invoice investigation acceptance");
   await page.getByRole("button", { name: "Start session", exact: true }).click();
@@ -381,6 +415,79 @@ test("helper authors and applies a native workflow, tweaks its gaggle and observ
     execution: "actual Goobers configuration validator, transaction, CLI and native journal", provider: "controlled local fixture",
     state: final,
   }, null, 2));
+});
+
+test("DSL reload rejects invalid policy and fences existing work before new sessions use changed policy", async ({ page, request }) => {
+  const startup = JSON.parse(await readFile(`${evidenceDirectory}/startup.json`, "utf8"));
+  const fixtureConfig = await realpath(resolve(evidenceDirectory, "config"));
+  expect(await realpath(startup.config), "reload qualification must only edit the launcher's copied config").toBe(fixtureConfig);
+  const gagglePath = resolve(fixtureConfig, "gaggles/interactive/gaggle.yaml");
+  const original = await readFile(gagglePath, "utf8");
+  const updated = original.replace(/maxChildren:\s*3\b/g, "maxChildren: 2");
+  expect(updated).not.toBe(original);
+  const { session } = await createSession(request);
+  const surfaceBefore = (await surfaces(request)).find(surface => surface.id === "interactive--workbench")!;
+  expect(surfaceBefore.maxChildren).toBe(3);
+  expect(surfaceBefore.configRevision).toBeTruthy();
+  await page.goto(`/#/interactive/${session.id}`);
+  await sendMessage(page, "wait");
+  await expect.poll(async () => (await events(request, session.id)).some(event => event.type === "tool.started" && event.data.name === "bounded.wait")).toBeTruthy();
+  const before = await snapshot(request, session.id);
+  let changedPublished = false;
+  try {
+    await writeFile(gagglePath, "invalid: [\n");
+    const invalidReload = await request.post(`${api}/config/reload`);
+    expect(invalidReload.status()).toBe(409);
+    const afterInvalid = await snapshot(request, session.id);
+    expect(afterInvalid.status).toBe("running");
+    expect(afterInvalid.fence).toBe(before.fence);
+    expect((await surfaces(request)).find(surface => surface.id === surfaceBefore.id)?.configRevision).toBe(surfaceBefore.configRevision);
+
+    await writeFile(gagglePath, updated);
+    const reload = await request.post(`${api}/config/reload`);
+    expect(reload.ok(), await reload.text()).toBeTruthy();
+    changedPublished = true;
+    const reloadReceipt = await reload.json();
+    expect(reloadReceipt.status).toBe("reloaded");
+    expect(reloadReceipt.configRevision).not.toBe(surfaceBefore.configRevision);
+    await expect.poll(async () => (await snapshot(request, session.id)).status).toBe("recovery_required");
+    await expect.poll(async () => (await snapshot(request, session.id)).lease?.status).toBe("released");
+    const fenced = await snapshot(request, session.id);
+    expect(fenced.custodyPending ?? false).toBe(false);
+    expect(fenced.fence).toBeGreaterThan(before.fence);
+    expect(fenced.configDigest).toBe(before.configDigest);
+    expect(fenced.turns[0].status).toBe("interrupted");
+    const rejected = await request.post(`${api}/sessions/${session.id}/commands`, { data: {
+      commandId: crypto.randomUUID(), type: "message", text: "investigate", expectedSequence: fenced.sequence, expectedFence: fenced.fence,
+    } });
+    expect(rejected.status()).toBe(409);
+    expect((await rejected.json()).error.code).toBe("surface_changed");
+    await expect(page.getByText("Recovery required", { exact: true })).toBeVisible();
+    await capture(page, "interactive-dsl-reload-fenced");
+
+    const surfaceAfter = (await surfaces(request)).find(surface => surface.id === surfaceBefore.id)!;
+    expect(surfaceAfter.maxChildren).toBe(2);
+    const { session: fresh } = await createSession(request);
+    expect(fresh.configDigest).not.toBe(fenced.configDigest);
+    expect(fresh.configRevision).toBe(reloadReceipt.configRevision);
+    await page.goto(`/#/interactive/${fresh.id}`);
+    await sendMessage(page, "investigate");
+    const completed = await awaitTurn(request, fresh.id, 1);
+    expect(completed.status).toBe("idle");
+    await page.getByRole("tab", { name: /^Children/ }).click();
+    await expect(page.getByText("Configured limit: 2", { exact: true })).toBeVisible();
+    await capture(page, "interactive-dsl-reload-new-session");
+    await writeFile(`${evidenceDirectory}/dsl-reload.json`, JSON.stringify({
+      fixtureConfig, before, afterInvalid, reloadReceipt, fenced, surfaceAfter, fresh: completed,
+      evidenceBoundary: "actual DSL validation, policy publication, running-turn fencing and new-session execution; controlled provider; no model",
+    }, null, 2));
+  } finally {
+    await writeFile(gagglePath, original);
+    if (changedPublished) {
+      const restored = await request.post(`${api}/config/reload`);
+      expect(restored.ok(), await restored.text()).toBeTruthy();
+    }
+  }
 });
 
 test("controlled provider expiry blocks work, explicit reauthentication resumes and revocation stays fenced", async ({ page, request }) => {

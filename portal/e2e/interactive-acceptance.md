@@ -20,10 +20,14 @@ INTERACTIVE_EVIDENCE_DIR=/tmp/goobers-interactive-evidence \
 node portal/e2e/interactive-server.mjs
 ```
 
-The launcher refuses to reuse an existing state directory and never enables a
-model executor. `INTERACTIVE_REPOSITORY_ROOT` can point it at a separate checked
-out integration branch. `INTERACTIVE_STATE_DIR` and `INTERACTIVE_PORT` override
-the state path and loopback port.
+The launcher copies `samples/interactive-config` into a fresh `config/` directory
+under the evidence directory and passes it through `--config-dir`. Reload tests
+edit this copy, never tracked configuration. The launcher refuses to reuse an
+existing state/config directory or an occupied port and never adds a trusted
+model opt-in. It verifies that model access and live-provider claims are disabled.
+`INTERACTIVE_REPOSITORY_ROOT` can point it at a separate checked-out integration
+branch. `INTERACTIVE_STATE_DIR` and `INTERACTIVE_PORT` override the state path and
+loopback port. `INTERACTIVE_CONFIG_SOURCE` selects a source config tree to copy.
 
 ```sh
 cd portal
@@ -46,7 +50,10 @@ npx playwright test --config e2e/interactive.config.ts
 
 ## Required journey
 
-1. Open both optional surfaces; create a private session with a stable ID.
+1. Open both optional surfaces; verify Agent is unavailable and not live-qualified.
+   Explicitly select Deterministic demo; create a private session with a stable ID
+   and pinned `local-tools` execution mode. Missing/agent API mode must be rejected,
+   never silently mapped to the demo executor.
 2. Investigate the repository and scoped ADO-shaped context, identifying the
    controlled provider in the UI.
 3. Edit the sample through execution, run its tests and review cumulative changes.
@@ -70,6 +77,10 @@ npx playwright test --config e2e/interactive.config.ts
     cross-owner session reads/commands, and verify their workspace changes differ.
 11. In Helper, design and apply a bounded native workflow, edit the gaggle display
     name, submit the new workflow, and observe the native completed run receipt.
+12. Reload copied DSL configuration: reject invalid input without fencing active
+    work; then reduce the child limit and verify the active old session is fenced,
+    its worker releases custody, old-policy commands are rejected, and a new
+    session can execute using the changed policy. Restore the copied configuration.
 
 ## Independent checks
 
