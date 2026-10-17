@@ -409,7 +409,8 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 			if s.opts.Executor == nil {
 				return receipt, problem(503, "executor_unavailable", "no interactive executor is configured")
 			}
-			launch = &ExecutionRequest{SessionID: sessionID, TurnID: rec.Session.ActiveTurnID, ChildID: child.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Text: child.Prompt, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions, ReadOnly: true}
+			receipt.TurnID = child.ID
+			launch = &ExecutionRequest{SessionID: sessionID, TurnID: child.ID, ChildID: child.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, Text: child.Prompt, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions, ReadOnly: true}
 		case "deny":
 			if child.Status != "proposed" {
 				return receipt, problem(409, "invalid_state", "only proposed children can be denied")
@@ -504,7 +505,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 			if cmd.Decision == "approve" {
 				kind = "child.started"
 			}
-			appendEvent(current, kind, "", cmd.CommandID, map[string]any{"childId": cmd.ChildID, "decision": cmd.Decision})
+			appendEvent(current, kind, receipt.TurnID, cmd.CommandID, map[string]any{"childId": cmd.ChildID, "decision": cmd.Decision})
 		}
 		receipt.Sequence = current.Session.Sequence
 		current.Commands[cmd.CommandID] = storedCommand{hash, receipt}
@@ -635,4 +636,31 @@ func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64,
 		rec.Commands[commandID] = cmd
 		return nil
 	})
+}
+
+// CheckControl admits a helper control-plane action against the currently
+// configured surface and private session. It does not authorize a provider
+// operation, which must additionally pass its own grant and lease checks.
+// History and artifacts remain readable without this admission check.
+func (s *Service) CheckControl(owner, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.fatal != nil {
+		return problem(503, "unavailable", "interactive coordinator is unavailable")
+	}
+	rec, err := s.record(owner, sessionID)
+	if err != nil {
+		return err
+	}
+	surface, ok := s.surface(rec.Session.SurfaceID)
+	if !ok || !surface.Enabled {
+		return problem(409, "surface_unavailable", "configured surface is unavailable")
+	}
+	if rec.Session.ConfigDigest != digest(surface) {
+		return problem(409, "surface_changed", "surface policy changed; create a new session for the new configuration")
+	}
+	if rec.Session.Status == "stopped" || rec.Session.Status == "stopping" || rec.Session.Status == "recovery_required" || rec.Session.CustodyPending || rec.Session.StopFencePending {
+		return problem(409, "invalid_state", "session control is fenced or awaiting recovery")
+	}
+	return nil
 }

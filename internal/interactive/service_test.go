@@ -645,3 +645,47 @@ func TestOutputBudgetRefusesFurtherOutputWithoutLosingReceipts(t *testing.T) {
 		t.Fatal("output pressure damaged command/custody ledger")
 	}
 }
+
+func TestIdleParentChildGetsDistinctNonemptyTurnAndBrokerAdmission(t *testing.T) {
+	e := newExecutor()
+	s := openTest(t, options(t, e))
+	session := createTest(t, s, "alice")
+	proposed := commandTest(t, s, "alice", session.ID, Command{Type: "child.request", Text: "review while parent idle"})
+	approved := commandTest(t, s, "alice", session.ID, Command{Type: "child.review", ChildID: proposed.ChildID, Decision: "approve"})
+	run := receiveRun(t, e)
+	if run.req.TurnID == "" || run.req.TurnID != run.req.ChildID || approved.TurnID != run.req.TurnID {
+		t.Fatalf("child did not receive independent turn identity: %+v / %+v", run.req, approved)
+	}
+	if err := s.CheckExecution("alice", session.ID, run.req.TurnID, run.req.LeaseID, run.req.Fence); err != nil {
+		t.Fatalf("valid child broker admission denied: %v", err)
+	}
+	requireCode(t, s.CheckExecution("alice", session.ID, "", run.req.LeaseID, run.req.Fence), "stale_lease")
+	run.result <- ExecutionResult{Message: "review done"}
+	<-run.done
+}
+
+func TestCheckControlSharesSessionAndSurfaceAdmission(t *testing.T) {
+	e := newExecutor()
+	opts := options(t, e)
+	s, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := createTest(t, s, "alice")
+	if err := s.CheckControl("alice", session.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, s.CheckControl("bob", session.ID), "not_found")
+	commandTest(t, s, "alice", session.ID, Command{Type: "stop"})
+	requireCode(t, s.CheckControl("alice", session.ID), "invalid_state")
+	if _, err := s.Session("alice", session.ID); err != nil {
+		t.Fatal("stop must not block history reads")
+	}
+	another := createTest(t, s, "alice")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opts.Surfaces[0].Instructions = "new configuration"
+	restarted := openTest(t, opts)
+	requireCode(t, restarted.CheckControl("alice", another.ID), "surface_changed")
+}
