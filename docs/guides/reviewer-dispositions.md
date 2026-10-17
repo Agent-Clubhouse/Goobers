@@ -144,6 +144,13 @@ An unchanged finding that remains open keeps its generation. A changed finding,
 or one raised again after it was answered, receives a new generation. Reviewer
 input cannot assign these generations or inject `standingFindings`.
 
+Each committed record is a complete snapshot. Readers select the highest
+committed generation for the head, so delayed comments cannot resurrect findings
+that a newer snapshot resolved. Before the first committed generation, the
+legacy publication-order replay collects every outstanding finding for migration.
+After migration, writers must use the atomic publication path; older writers
+cannot extend a committed ledger through generation-zero comments.
+
 Copy the standing finding's generation into the disposition's
 `findingGeneration`. An answer for an older instance cannot clear a newer one
 with the same ID. A missing generation answers only a legacy finding that also
@@ -245,9 +252,9 @@ to full remediation, so a finding that blocks the merge is never healed past.
 
 ### Known limits
 
-- The fold and the write are separate steps, not one atomic state update. Two
-  publications racing on the same PR could drop each other's standing
-  findings. The per-PR claim lease makes this unlikely.
+- Committed state is atomic, but provider projections remain eventually
+  consistent. An in-flight HTTP request can finish after a newer publication;
+  this change does not fence native status completion across publishers.
 - A branch force-pushed back to an earlier head finds that head's ledger
   already replaced by the later head's records. That head is reviewed in full,
   like any other.

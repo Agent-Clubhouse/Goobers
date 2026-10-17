@@ -22,6 +22,21 @@ import (
 
 var verdictCommitRepo = providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "repo"}
 
+func TestVerdictReadUsesCommittedSnapshotAfterProjectionFailure(t *testing.T) {
+	failure := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, HeadSHA: "head", Findings: []apiv1.Finding{unboundedLineageFinding()}}
+	first, _ := findingledger.Commit(nil, failure, 1, prFindingPolicy(55))
+	answer := apiv1.Verdict{Decision: apiv1.VerdictPass, HeadSHA: "head", Dispositions: []apiv1.FindingDisposition{{
+		FindingID: first.Findings[0].ID, FindingGeneration: 1, Outcome: apiv1.FindingRejected, Reason: "Caller already bounds it.",
+	}}}
+	resolved, _ := findingledger.Commit([]apiv1.Verdict{first}, answer, 2, prFindingPolicy(55))
+	// The first read raced the resolution, or recovered an old provider
+	// projection. The records read now includes the authoritative snapshot.
+	got, standing := carryOutstandingFindings([]apiv1.Verdict{first, resolved}, first, 55, true)
+	if got.Decision != apiv1.VerdictPass || got.LedgerGeneration != 2 || len(got.Findings) != 0 || len(standing) != 0 {
+		t.Fatalf("read resurrected resolved findings: %+v standing=%v", got, standing)
+	}
+}
+
 // verdictCommitPlane uses the real file store behind the HTTP CAS contract.
 // Each caller gets an independent HTTP client, as separate stage pods do.
 // beforePut lets a test force the exact stale-read/write interleaving.

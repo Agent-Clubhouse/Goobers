@@ -149,6 +149,13 @@ func Fold(prior []apiv1.Verdict, next apiv1.Verdict, substantive Substantive) (a
 	}
 
 	if len(standing) > 0 && !next.Synthesized && (next.Decision == apiv1.VerdictPass || next.Decision == apiv1.VerdictNeedsChanges) {
+		if next.Decision == apiv1.VerdictPass {
+			// A pass raises nothing. Its same-id notes cannot replace the
+			// content or instance identity of an unanswered standing finding.
+			next.Findings = slices.DeleteFunc(slices.Clone(next.Findings), func(f apiv1.Finding) bool {
+				return stillOpen[FindingID(f)]
+			})
+		}
 		next.Findings = appendMissing(next.Findings, standing, substantive)
 		if next.Decision == apiv1.VerdictPass {
 			next.Decision = apiv1.VerdictNeedsChanges
@@ -205,12 +212,33 @@ func replay(records []apiv1.Verdict, head string, substantive Substantive) *ledg
 	if head == "" {
 		return state
 	}
+	// Committed records are complete snapshots, including resolution. A
+	// provider projection may arrive late or miss intermediate generations:
+	// replaying its older findings beside the latest snapshot resurrects
+	// already-answered instances. Before the first commit, retain the full
+	// legacy publication-order replay so migration carries all open findings.
+	if snapshot, ok := LatestSnapshot(records, head); ok {
+		state.apply(snapshot, substantive)
+		return state
+	}
 	for _, record := range records {
 		if record.HeadSHA == head {
 			state.apply(record, substantive)
 		}
 	}
 	return state
+}
+
+// LatestSnapshot returns the newest committed snapshot for head, independent
+// of projection arrival order. Generation zero is an uncommitted legacy record.
+func LatestSnapshot(records []apiv1.Verdict, head string) (apiv1.Verdict, bool) {
+	var latest apiv1.Verdict
+	for _, record := range records {
+		if head != "" && record.HeadSHA == head && record.LedgerGeneration > 0 && record.LedgerGeneration >= latest.LedgerGeneration {
+			latest = record
+		}
+	}
+	return latest, latest.LedgerGeneration > 0
 }
 
 func (l *ledger) apply(record apiv1.Verdict, substantive Substantive) {
