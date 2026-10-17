@@ -280,7 +280,11 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   await page.getByRole("button", { name: "Run child", exact: true }).click();
   await expect(page.getByRole("button", { name: "Mark reviewed", exact: true })).toBeVisible({ timeout: 60_000 });
   const nativeChildEvents = (await events(request, id)).filter(event => event.data.name === "child.native-workflow");
-  expect(nativeChildEvents.some(event => event.data.executionMode === "native-goobers" && String(event.data.workflowYaml).includes("network: none"))).toBeTruthy();
+  expect(nativeChildEvents.some(event => {
+    const definition = String(event.data.workflowYaml);
+    return event.data.executionMode === "native-goobers" && /dslVersion:\s*["']?3\.0/.test(definition) &&
+      definition.includes("runsOn:") && /network:\s*none/.test(definition);
+  }), "the child must carry a DSL3 definition with an enforced network:none runner restriction").toBeTruthy();
   expect(nativeChildEvents.some(event => {
     const result = event.data.result as { cleanupConfirmed?: boolean; runId?: string; status?: string; request?: { workflow?: string } } | undefined;
     return result?.cleanupConfirmed && result.runId && result.status === "succeeded" && result.request?.workflow === "review-child";
