@@ -248,9 +248,14 @@ future adapter or separately approved custody boundary. See the
 
 ## Verification and remaining work
 
-Do not reuse earlier browser counts or startup timings as qualification of the
-latest DSL/compiler/model-tool integration. The final handoff must identify the
-exact commit, commands, provider/execution modes and evidence paths.
+The assembled DSL integration passed ten browser acceptance scenarios against
+the real local HTTP/SSE backend, including a native DSL 3.0 child, an authored
+Helper run in its private snapshot, reload fencing and historical receipts.
+The final integration also passed `make verify-fast`, the six-package backend
+race suite and three actual Git/Node execution/custody integration tests.
+The Helper's full native-plus-race suite and independent integration review
+passed. The handoff records the exact source checkpoint, binary/asset hashes,
+commands and outside-Git screenshots, videos, traces and logs.
 
 Normal schema/reference/preview validation, `instance.LoadConfigDir`, generated
 CRD installability, deep-copy isolation and config generation apply/replay/update
@@ -259,8 +264,8 @@ no cluster. Session and broker tests use controlled executors/providers. MCP
 transport tests use real private sockets and controlled callbacks; native adapter
 tests can substitute a harness. Local Git/Node/native workflow execution provides
 actual execution evidence separately. None of these proves live model reasoning
-or Microsoft delegated authentication. Final assembled browser/reload acceptance
-must be recorded after the current implementation is integrated.
+or Microsoft delegated authentication. Subsequent code changes require appropriate
+new qualification; earlier evidence describes only the recorded checkpoint.
 
 Useful checks include:
 
