@@ -12,25 +12,43 @@ snapshot. Values are integer milliseconds. Measured zero-duration tests have a
 which is a scheduling estimate, not a measurement. Missing package data or
 invalid weights fail the run instead of silently reverting to count balancing.
 
-The initial snapshot comes from all 32 CLI shard logs in
-[run 38877589113](https://github.com/Agent-Clubhouse/Goobers/actions/runs/38877589113)
-at commit `7da8bb4b88bca9ab96b839657512d3a2a0156898`. The overall run failed when
-ten shards timed out. Each stored value averages only completed top-level
-`--- PASS: TestName (seconds)` measurements; interrupted executions and subtests
-are omitted. There are 4,606 measured tests, with 4–20 completed samples each.
-Means are rounded to the nearest millisecond. These are the observed costs
-before this PR's fixture changes; projected improvements are not measurements
-and are deliberately absent from the snapshot.
+The snapshot comes from all 32 CLI shard artifacts in successful
+[run 39013119025](https://github.com/Agent-Clubhouse/Goobers/actions/runs/39013119025).
+Each stored value averages the completed top-level `pass` event's `Elapsed`
+seconds from the JSONL event stream. Subtests are omitted. There are 4,617
+measured tests, with 20 completed samples each (92,340 samples total). Means
+are rounded half-up to the nearest millisecond. These measurements include the
+fixture improvements; projected costs are not stored as measurements.
 
-To refresh, retain the full logs from every CLI shard of one Linux race stress
-run (`gh run view RUN_ID --repo Agent-Clubhouse/Goobers --log`) and its run
-metadata. Group the completed top-level PASS durations by exact test name,
-average each group's seconds, round to integer milliseconds, and review the
-result together with the run, commit, platform, conclusion, and sample counts.
+Three existing tests skipped all 20 repetitions: the deferred detached-worker
+test and two subprocess helpers. Their exact names are recorded in
+`source.skipOnlyTests`; they have no measured PASS cost and retain the 2-second
+fallback. A completed PASS with zero reported elapsed time is a measurement
+and receives the separate 10ms floor.
+
+Jobs checked out merge commits `4d91f7f61257f2edd90271766af6acdaa86406f8` and
+`7cfd8b4bd056888bc7a435955d46a87acb84b083`. Both have identical runtime and test
+sources, fixtures, modules, weights, Makefile, and stress workflow. All 6,963
+tracked paths, modes, and blobs outside `.github/workflows/ci.yml` and
+`test/ci/runtime-acquisitions.json` match; those two files differ only by four
+lines adding Windows CI coverage and its acquisition declaration. The recorded
+input digest hashes the NUL-delimited `git ls-tree -r -z` records after removing
+those two paths. Actual job checkout logs establish provenance; the workflow's
+dispatch SHA does not identify the PR merge checkout.
+
+To refresh, retain the JSONL event streams and summaries from every CLI shard's
+artifact, plus the run metadata and actual checkout logs. Verify run, attempt,
+package, platform, race mode, repetition counts, and complete test coverage.
+Group completed top-level PASS durations by exact test name, average each
+group's seconds, round half-up to integer milliseconds, and review the result
+together with the source checkouts, conclusion, and sample counts. Keep
+skip-only names explicit and on the fallback rather than assigning zero cost.
 Prefer a successful run. If using partial runs, document their failures and
-exclude incomplete measurements explicitly. Do not combine measurements from
-different commits or write projected fixture costs into this file. Re-run the
-partition coverage tests and verify hosted stress on the resulting commit.
+exclude incomplete measurements explicitly. Do not combine differing runtime
+or test inputs; combining CI-only revisions requires an explicit content
+identity proof and a narrow list of differing metadata files. Do not write
+projected fixture costs into this file. Re-run the partition coverage tests and
+verify hosted stress on the resulting commit.
 
 The ordinary CI timing table and its refresh policy remain separate. Both
 runners share only the deterministic partition algorithm.
