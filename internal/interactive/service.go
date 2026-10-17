@@ -288,6 +288,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 	var launch *ExecutionRequest
 	var steerRun *activeRun
 	var stop bool
+	var custody []ExecutionRequest
 	text := s.clean(strings.TrimSpace(cmd.Text))
 	switch cmd.Type {
 	case "message":
@@ -322,7 +323,18 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		}
 		receipt.TurnID = cmd.TurnID
 	case "stop":
-
+		if len(s.active[sessionID]) == 0 && (rec.Session.Status == "recovery_required" || rec.Session.CustodyPending) {
+			base := ExecutionRequest{SessionID: sessionID, Owner: owner, SurfaceID: rec.Session.SurfaceID, Mode: rec.Session.Mode, TurnID: rec.Session.ActiveTurnID, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence}
+			custody = append(custody, base)
+			for _, child := range rec.Session.Children {
+				if child.Status == "uncertain" {
+					next := base
+					next.ChildID = child.ID
+					next.ReadOnly = true
+					custody = append(custody, next)
+				}
+			}
+		}
 		stop = true
 		receipt.TurnID = rec.Session.ActiveTurnID
 	case "resume":
@@ -445,6 +457,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		case "stop":
 			current.Session.Fence++
 			current.Session.StopFencePending = s.opts.OnStop != nil
+			current.Session.CustodyPending = len(custody) > 0
 			current.Session.Status = "stopping"
 			appendEvent(current, "session.stopping", current.Session.ActiveTurnID, cmd.CommandID, map[string]any{"fence": current.Session.Fence})
 			for i := range current.Session.Children {
@@ -452,7 +465,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 					current.Session.Children[i].Status = "cancelled"
 				}
 			}
-			if len(s.active[sessionID]) == 0 && !current.Session.StopFencePending {
+			if len(s.active[sessionID]) == 0 && !current.Session.StopFencePending && !current.Session.CustodyPending {
 				markStopped(current)
 			}
 		case "child.request":
@@ -500,6 +513,44 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		}
 		steerRun.steering <- message
 	}
+	if stop && len(custody) > 0 {
+		s.mu.Unlock()
+		var custodyErr error
+		recoverer, ok := s.opts.Executor.(RecoveryExecutor)
+		if !ok {
+			custodyErr = errors.New("executor cannot verify prior writer custody")
+		} else {
+			for _, request := range custody {
+				if err := recoverer.Recover(ctx, request); err != nil {
+					custodyErr = err
+					break
+				}
+			}
+		}
+		s.mu.Lock()
+		err = s.mutate(func(state *diskState) error {
+			current := state.Sessions[sessionID]
+			current.Session.CustodyPending = custodyErr != nil
+			if custodyErr != nil {
+				current.Session.RecoveryReason = s.clean(custodyErr.Error())
+				appendEvent(current, "recovery.required", "", cmd.CommandID, map[string]any{"reason": current.Session.RecoveryReason})
+			}
+			if custodyErr == nil {
+				for i := range current.Session.Children {
+					if current.Session.Children[i].Status == "uncertain" {
+						current.Session.Children[i].Status = "cancelled"
+					}
+				}
+			}
+			if !current.Session.CustodyPending && !current.Session.StopFencePending && len(s.active[sessionID]) == 0 && current.Session.Status == "stopping" {
+				markStopped(current)
+			}
+			return nil
+		})
+		if err != nil {
+			return CommandReceipt{}, err
+		}
+	}
 	if stop {
 		// The session fence is already durable. Never hold the session lock
 		// while acquiring the broker lock: broker admission checks us too.
@@ -512,7 +563,7 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 				current.Session.StopFencePending = hookErr != nil
 				if hookErr != nil {
 					appendEvent(current, "auth.fence_pending", "", cmd.CommandID, map[string]any{"reason": s.clean(hookErr.Error())})
-				} else if len(s.active[sessionID]) == 0 && current.Session.Status == "stopping" {
+				} else if len(s.active[sessionID]) == 0 && !current.Session.CustodyPending && current.Session.Status == "stopping" {
 					markStopped(current)
 				}
 				return nil

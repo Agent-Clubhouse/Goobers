@@ -267,7 +267,7 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 		}
 		now := time.Now().UTC()
 		for key, cmd := range rec.Commands {
-			if cmd.Receipt.Type == "steer" && cmd.Receipt.Status == "accepted" && cmd.Receipt.TurnID == req.TurnID {
+			if req.ChildID == "" && cmd.Receipt.Type == "steer" && cmd.Receipt.Status == "accepted" && cmd.Receipt.TurnID == req.TurnID {
 				cmd.Receipt.Status = "rejected"
 				rec.Commands[key] = cmd
 				appendEvent(rec, "steering.rejected", req.TurnID, key, map[string]any{"reason": "attempt ended before delivery confirmation"})
@@ -331,7 +331,7 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 				}
 			}
 		}
-		if rec.Session.Status == "stopping" && !rec.Session.StopFencePending && len(s.active[req.SessionID]) == 0 {
+		if rec.Session.Status == "stopping" && !rec.Session.CustodyPending && !rec.Session.StopFencePending && len(s.active[req.SessionID]) == 0 {
 			markStopped(rec)
 		}
 		return nil

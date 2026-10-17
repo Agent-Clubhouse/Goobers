@@ -479,3 +479,118 @@ func TestStopPreservesFirstTurnPartialChangesAfterWriterReturns(t *testing.T) {
 		}
 	}
 }
+
+func TestBrokerAdmissionChecksLeaseAndStopHookDoesNotInvertLocks(t *testing.T) {
+	e := newExecutor()
+	opts := options(t, e)
+	var s *Service
+	var run *testExecution
+	opts.OnStop = func(context.Context, string, string) error {
+		returnError := s.CheckExecution("alice", run.req.SessionID, run.req.TurnID, run.req.LeaseID, run.req.Fence)
+		requireCode(t, returnError, "stale_fence")
+		return nil
+	}
+	s = openTest(t, opts)
+	session := createTest(t, s, "alice")
+	commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
+	run = receiveRun(t, e)
+	if err := s.CheckExecution("alice", session.ID, run.req.TurnID, run.req.LeaseID, run.req.Fence); err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, s.CheckExecution("bob", session.ID, run.req.TurnID, run.req.LeaseID, run.req.Fence), "not_found")
+	requireCode(t, s.CheckExecution("alice", session.ID, run.req.TurnID, "another-lease", run.req.Fence), "stale_lease")
+	commandTest(t, s, "alice", session.ID, Command{Type: "stop"})
+	waitStatus(t, s, "alice", session.ID, "stopped")
+}
+
+func TestStopPropagationFailureRemainsPendingUntilRetried(t *testing.T) {
+	opts := options(t, newExecutor())
+	var calls int
+	opts.OnStop = func(context.Context, string, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("broker temporarily unavailable")
+		}
+		return nil
+	}
+	s := openTest(t, opts)
+	session := createTest(t, s, "alice")
+	commandTest(t, s, "alice", session.ID, Command{Type: "stop"})
+	pending := waitStatus(t, s, "alice", session.ID, "stopping")
+	if !pending.StopFencePending {
+		t.Fatal("failed broker fence was acknowledged effective")
+	}
+	commandTest(t, s, "alice", session.ID, Command{Type: "stop"})
+	done := waitStatus(t, s, "alice", session.ID, "stopped")
+	if done.StopFencePending {
+		t.Fatal("successful fence retry not recorded")
+	}
+}
+
+func TestStopAfterCrashWaitsForOrphanCustody(t *testing.T) {
+	e := newExecutor()
+	opts := options(t, e)
+	s, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := createTest(t, s, "alice")
+	commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
+	receiveRun(t, e)
+	snapshot, err := os.ReadFile(filepath.Join(opts.StateDir, "sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	os.WriteFile(filepath.Join(opts.StateDir, "sessions.json"), snapshot, 0600)
+	e2 := newExecutor()
+	e2.recoverErr = errors.New("orphan worker could still write")
+	opts.Executor = e2
+	s2 := openTest(t, opts)
+	commandTest(t, s2, "alice", session.ID, Command{Type: "stop"})
+	pending := waitStatus(t, s2, "alice", session.ID, "stopping")
+	if !pending.CustodyPending {
+		t.Fatal("orphan writer custody guessed stopped")
+	}
+	events, _ := s2.Events("alice", session.ID, 0)
+	for _, event := range events {
+		if event.Type == "session.stopped" {
+			t.Fatal("stop falsely acknowledged before custody confirmation")
+		}
+	}
+	e2.recoverErr = nil
+	commandTest(t, s2, "alice", session.ID, Command{Type: "stop"})
+	waitStatus(t, s2, "alice", session.ID, "stopped")
+}
+
+func TestChildCompletionDoesNotRejectParentSteering(t *testing.T) {
+	e := newExecutor()
+	s := openTest(t, options(t, e))
+	session := createTest(t, s, "alice")
+	parentReceipt := commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
+	parent := receiveRun(t, e)
+	childReceipt := commandTest(t, s, "alice", session.ID, Command{Type: "child.request", Text: "review"})
+	commandTest(t, s, "alice", session.ID, Command{Type: "child.review", ChildID: childReceipt.ChildID, Decision: "approve"})
+	child := receiveRun(t, e)
+	steer := commandTest(t, s, "alice", session.ID, Command{Type: "steer", TurnID: parentReceipt.TurnID, Text: "adjust"})
+	child.result <- ExecutionResult{}
+	<-child.done
+	for i := 0; i < 100; i++ {
+		s.mu.Lock()
+		_, active := s.active[session.ID][child.req.ChildID]
+		s.mu.Unlock()
+		if !active {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	s.mu.Lock()
+	status := s.state.Sessions[session.ID].Commands[steer.CommandID].Receipt.Status
+	s.mu.Unlock()
+	if status != "accepted" {
+		t.Fatalf("child completion changed parent steering to %s", status)
+	}
+	(<-parent.req.Steering).Ack(nil)
+	parent.result <- ExecutionResult{}
+	waitStatus(t, s, "alice", session.ID, "idle")
+}

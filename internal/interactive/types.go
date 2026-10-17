@@ -98,6 +98,7 @@ type Lease struct {
 	Status    string    `json:"status"`
 }
 type Session struct {
+	CustodyPending   bool      `json:"custodyPending,omitempty"`
 	StopFencePending bool      `json:"stopFencePending,omitempty"`
 	ConfigDigest     string    `json:"configDigest"`
 	Members          []Member  `json:"members"`
