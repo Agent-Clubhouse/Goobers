@@ -398,6 +398,9 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	}
 	cfg.IssueOwnershipAssignees = input.IssueOwnershipAssignees
 	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
+	if input.Config != nil {
+		cfg.ResultHandoffSchemas = input.Config.DecisionGate.ResultSchemas()
+	}
 	cloneURL := cfg.RepoCloneURL
 	if cloneURL == nil {
 		cloneURL = runner.DefaultRepoCloneURL

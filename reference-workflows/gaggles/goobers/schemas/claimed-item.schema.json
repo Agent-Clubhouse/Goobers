@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/reference/claimed-item.schema.json",
+  "title": "Claimed backlog item",
+  "description": "The single work item `goobers backlog-query --claim` writes to claimed-item.json for the implementation workflow's query-backlog stage. Opt-in handoff validation only: bind it through the instance's decisionGate.handoffSchemas.",
+  "type": "object",
+  "required": ["provider", "id", "title"],
+  "properties": {
+    "provider": { "type": "string", "minLength": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "body": { "type": "string" },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "state": { "type": "string" },
+    "url": { "type": "string" }
+  }
+}
