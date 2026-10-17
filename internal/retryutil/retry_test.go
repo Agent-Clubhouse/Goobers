@@ -51,6 +51,49 @@ func TestJitteredExponentialInvalidPolicyReturnsZero(t *testing.T) {
 	}
 }
 
+func TestJitteredExponentialSymmetricJitter(t *testing.T) {
+	const largestDuration = time.Duration(1<<63 - 1)
+	tests := []struct {
+		name    string
+		base    time.Duration
+		max     time.Duration
+		attempt int
+		upper   bool
+		want    time.Duration
+	}{
+		{name: "floor", base: time.Second, max: 30 * time.Second, want: 750 * time.Millisecond},
+		{name: "ceiling", base: time.Second, max: 30 * time.Second, upper: true, want: 1250 * time.Millisecond},
+		{name: "exponential floor", base: time.Second, max: 30 * time.Second, attempt: 4, want: 12 * time.Second},
+		{name: "exponential ceiling", base: time.Second, max: 30 * time.Second, attempt: 4, upper: true, want: 20 * time.Second},
+		{name: "capped floor", base: time.Second, max: 30 * time.Second, attempt: 5, want: 22500 * time.Millisecond},
+		{name: "capped ceiling", base: time.Second, max: 30 * time.Second, attempt: 5, upper: true, want: 30 * time.Second},
+		{name: "jitter crosses cap", base: 28 * time.Second, max: 30 * time.Second, upper: true, want: 30 * time.Second},
+		{name: "large attempt", base: time.Second, max: 30 * time.Second, attempt: 100, upper: true, want: 30 * time.Second},
+		{name: "negative attempt", base: time.Second, max: 30 * time.Second, attempt: -1, want: 22500 * time.Millisecond},
+		{name: "duration overflow", base: largestDuration, max: largestDuration, upper: true, want: largestDuration},
+		{name: "sub-quarter precision", base: time.Nanosecond, max: time.Second, upper: true, want: time.Nanosecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := JitteredExponential(Policy{
+				Base: tt.base, Max: tt.max, SymmetricJitter: true,
+				RandInt63n: func(n int64) int64 {
+					if n <= 0 {
+						t.Fatalf("random bound = %d, want positive", n)
+					}
+					if tt.upper {
+						return n - 1
+					}
+					return 0
+				},
+			}, tt.attempt)
+			if got != tt.want {
+				t.Fatalf("JitteredExponential = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUntilStopsOnNonRetryableError(t *testing.T) {
 	want := errors.New("permanent")
 	attempts := 0
