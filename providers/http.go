@@ -88,6 +88,22 @@ type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// RequestAdmissionError is a local refusal before an HTTP request is sent,
+// such as an exhausted caller-owned request budget. Transport backoff cannot
+// change that admission decision, so providers return it without retrying.
+// Err must be non-nil and remains available through errors.Is/errors.As.
+type RequestAdmissionError struct {
+	Err error
+}
+
+func (e *RequestAdmissionError) Error() string { return e.Err.Error() }
+func (e *RequestAdmissionError) Unwrap() error { return e.Err }
+
+func isRequestAdmissionError(err error) bool {
+	var admissionErr *RequestAdmissionError
+	return errors.As(err, &admissionErr)
+}
+
 type providerResponseError struct {
 	method             string
 	endpoint           string

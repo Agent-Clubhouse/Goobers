@@ -82,6 +82,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows rollup migration alias dedup:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows self-update:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows service transitions:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows test partitioning:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows worktree and event stream:go-modules",
       ".github/workflows/ci.yml#windows-smoke/go build (windows/amd64):go-modules",
       ".github/workflows/ci.yml#windows-smoke/go vet (windows/amd64):go-modules",
