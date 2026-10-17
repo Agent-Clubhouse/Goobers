@@ -199,6 +199,27 @@ fallback.
 
 ## Verification and live follow-up
 
+Checkpoint qualification on 2026-10-17 passed against the integrated local
+backend and built portal:
+
+| Check | Result and boundary |
+| --- | --- |
+| `make verify-fast` | Passed formatting, no-phone-home check, vet, and command builds |
+| Go race suites | Sessions, controlled broker, native Helper operations, executor, writer-custody support and dependency inventory passed |
+| Actual executor integration | Git/Node investigation, edit/test, cumulative commit/revert review, child/owner isolation, steering and custody regressions passed |
+| Native Helper integration | Actual failed/passing workflow runs, stop cleanup, generated child execution, one-run replay and scoped child cancellation passed; combined race suite 42.332 seconds |
+| Portal focused tests/build | 79 tests passed; production TypeScript/Vite build passed |
+| Real-backend Playwright | 9/9 scenarios passed in 48.8 seconds; desktop/mobile, two personas, native child/Helper runs, steering, reconnect, lost response, auth wait/resume and revocation |
+| Independent source review | Ten findings fixed; no remaining concrete blocker in reviewed local integration; actual-file and native child tests independently rerun |
+| Native model smoke | Not executed: automatic approval review denied the sample/model disclosure pending explicit approval |
+| Live Microsoft access | Not attempted; controlled fixtures only |
+
+Measured startup was about 800 ms and first visible repository read about
+3.0 seconds on the qualification host. These are single-host observations, not
+cloud performance or scale claims. Browser stop exercised the bounded-wait
+turn; native integration tests separately proved actual process-tree cleanup.
+Screenshots, videos, traces and native receipts are kept outside Git as required.
+
 ```sh
 make verify-fast
 go test -race ./internal/interactive ./internal/interactiveauth \
