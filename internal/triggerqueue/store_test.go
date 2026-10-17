@@ -148,6 +148,49 @@ func TestDispatchCustodySurvivesCrashBoundary(t *testing.T) {
 	}
 }
 
+func TestFinishClockBeforeAcceptance(t *testing.T) {
+	for _, tc := range []struct {
+		state  State
+		runID  string
+		reason string
+	}{
+		{Dispatched, "run-1", ""},
+		{Rejected, "", "admission refused"},
+	} {
+		t.Run(string(tc.state), func(t *testing.T) {
+			s := openTestStore(t, filepath.Join(t.TempDir(), "triggers.db"))
+			acceptedAt := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+			r := acceptTest(t, s, "delivery", acceptedAt)
+			if err := s.BeginDispatch(t.Context(), r.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Finish(t.Context(), r.ID, tc.state, tc.runID, tc.reason, acceptedAt.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.Get(t.Context(), r.ID, r.Actor)
+			if err != nil || got.State != tc.state || got.RunID != tc.runID || got.Reason != tc.reason {
+				t.Fatalf("finished record = %+v, %v", got, err)
+			}
+			var finishedNS int64
+			if err := s.db.QueryRow("SELECT finished_ns FROM triggers WHERE id=?", r.ID).Scan(&finishedNS); err != nil {
+				t.Fatal(err)
+			}
+			if finishedNS != acceptedAt.UnixNano() {
+				t.Fatalf("finished_ns = %d, want acceptance %d", finishedNS, acceptedAt.UnixNano())
+			}
+			if err := s.Finish(t.Context(), r.ID, tc.state, tc.runID, tc.reason, acceptedAt); !errors.Is(err, ErrTransition) {
+				t.Fatalf("second outcome = %v, want ErrTransition", err)
+			}
+			// Accept prunes expired terminal records. A backwards finish must
+			// not shorten the original delivery's replay-retention window.
+			acceptTest(t, s, "next-delivery", acceptedAt.Add(ReplayRetention-time.Minute))
+			if _, err := s.Get(t.Context(), r.ID, r.Actor); err != nil {
+				t.Fatalf("record expired before its acceptance-based retention: %v", err)
+			}
+		})
+	}
+}
+
 func TestConcurrentStoresAcceptAndClaimExactlyOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "triggers.db")
 	stores := []*Store{openTestStore(t, path), openTestStore(t, path)}
