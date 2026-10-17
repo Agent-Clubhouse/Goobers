@@ -1,0 +1,9 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: workbench
+spec:
+  gaggle: interactive
+  role: repository-investigator
+  harness: codex
+  instructions: instructions.md

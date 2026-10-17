@@ -121,6 +121,7 @@ func AllFeatures() []Feature {
 	features = append(features, childWorkflowFeatures()...)
 	features = append(features, fanOutFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
+	features = append(features, interactiveFeature())
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
 	})
@@ -178,8 +179,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 // FeatureDefinitionsByDSLVersion collapses workflow definitions into one
 // feature-probe Definition per distinct DSL pin, in ascending version order.
 // Gaggle/goober feature-support checks fan out over the returned probes: those
-// objects carry no dslVersion of their own, so their effective DSL version is
-// the set of pins their workflows declare, and a scoped feature must be
+// ordinary fields have no independent version pin, so their effective DSL version is
+// the set of pins their workflows declare. Gaggle.dslVersion governs only
+// the separate interactive contract; it never changes these probes. A scoped feature must be
 // supported at every pin present (docs/design/dsl-version-lifecycle.md §8.4).
 //
 // An empty input — a gaggle or goober with no workflows — resolves at the

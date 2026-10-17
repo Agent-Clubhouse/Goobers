@@ -11,6 +11,9 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // this worker's RBAC access to it before polling or dispatching any work
 // (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
 type GaggleSpec struct {
+	// Interactive declares optional DSL 3.0 chat entry points and non-secret broker refs.
+	// +optional
+	Interactive *GaggleInteractive `json:"interactive,omitempty" yaml:"interactive,omitempty"`
 	// Cost overrides instance-wide external cost publication. An omitted or
 	// null enabled value inherits the instance default; local accounting remains active.
 	// +optional
@@ -393,7 +396,13 @@ type GaggleStatus struct {
 // +kubebuilder:printcolumn:name="Goobers",type=integer,JSONPath=`.status.gooberCount`
 
 // Gaggle is a siloed workforce of goobers within an instance.
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.interactive) || (has(self.dslVersion) && self.dslVersion == '3.0')",message="spec.interactive requires explicit dslVersion 3.0"
 type Gaggle struct {
+	// DSLVersion pins only the additive interactive contract, independently of workflow pins.
+	// Legacy gaggles omit it; existing fields keep their workflow-derived versions.
+	// +optional
+	// +kubebuilder:validation:Enum="3.0"
+	DSLVersion        string `json:"dslVersion,omitempty" yaml:"dslVersion,omitempty"`
 	metav1.TypeMeta   `json:",inline" yaml:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 

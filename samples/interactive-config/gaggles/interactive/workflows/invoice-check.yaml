@@ -1,0 +1,23 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0"
+metadata:
+  name: invoice-check
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+    goobers.dev/acknowledge-manual-only: "true"
+spec:
+  gaggle: interactive
+  displayName: Invoice regression check
+  triggers: [{type: manual}]
+  readiness: {maxConcurrentRuns: 1}
+  start: test
+  tasks:
+    - name: test
+      type: deterministic
+      goal: Run invoice regression tests in the selected workspace
+      timeoutSeconds: 30
+      run:
+        workspace: scratch
+        network: none
+        command: [node, --test, invoice.test.mjs]
