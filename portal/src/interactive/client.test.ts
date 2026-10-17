@@ -8,7 +8,8 @@ describe("interactive client", () => {
     const command = { commandId: "same-intent", type: "message" as const, text: "Inspect", expectedSequence: 18, expectedFence: 3 };
     await expect(client.command("session/a", command)).rejects.toMatchObject({ status: 0, code: "network" });
     await client.command("session/a", command);
-    expect(fetcher.mock.calls[0]).toEqual(fetcher.mock.calls[1]);
+    expect(fetcher.mock.calls[0][0]).toEqual(fetcher.mock.calls[1][0]);
+    expect(fetcher.mock.calls[0][1].body).toBe(fetcher.mock.calls[1][1].body);
     expect(fetcher.mock.calls[1][0]).toBe("/api/v1/interactive/sessions/session%2Fa/commands");
     expect(fetcher.mock.calls[1][1]).toMatchObject({ credentials: "same-origin", body: JSON.stringify(command) });
   });

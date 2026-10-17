@@ -65,6 +65,7 @@ export class HttpInteractiveClient implements InteractiveClient {
     try {
       response = await this.fetcher(this.base + path, {
         method: body === undefined ? "GET" : "POST", credentials: "same-origin",
+        signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(30000) : undefined,
         headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });

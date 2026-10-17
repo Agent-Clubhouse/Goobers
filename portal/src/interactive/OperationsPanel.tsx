@@ -39,7 +39,7 @@ export function OperationsPanel({ sessionId, disabled }: { sessionId: string; di
   const query = `?sessionId=${encodeURIComponent(sessionId)}`;
   const request = useCallback(async <T,>(path: string, body?: unknown): Promise<T> => {
     let response: Response;
-    try { response = await fetch(base + path + query, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); }
+    try { response = await fetch(base + path + query, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(30000) : undefined, headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); }
     catch { throw new InteractiveError("The response was lost. The action outcome is unknown. Refresh its receipt before retrying.", "network", 0); }
     const payload = await response.json().catch(() => undefined);
     if (!response.ok) throw new InteractiveError(typeof payload?.error === "string" ? payload.error : payload?.error?.message ?? `Operation returned HTTP ${response.status}.`, "operation", response.status);
