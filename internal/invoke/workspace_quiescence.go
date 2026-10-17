@@ -67,3 +67,15 @@ func (state *WorkspaceQuiescence) Verify() error {
 	}
 	return nil
 }
+
+// HasRegisteredWriters distinguishes a launch refusal from an unconfirmed
+// launched process. It conveys no custody proof; callers still use Verify after
+// every successful launch or claimed completion.
+func (state *WorkspaceQuiescence) HasRegisteredWriters() bool {
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.started > 0
+}

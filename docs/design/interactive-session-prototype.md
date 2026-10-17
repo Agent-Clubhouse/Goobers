@@ -1,8 +1,14 @@
 # Interactive session coordinator prototype
 
+> Status: draft — working experimental branch implementation; not shipped or accepted as the production design.
+> Area: interactive sessions
+
 This document describes the experimental `internal/interactive` implementation,
 not a deployed cloud service. Ordinary declarative workflows retain their existing
 scheduler, approval, and completion behavior.
+
+See the [launch and qualification guide](../guides/interactive-prototype.md)
+for the integrated portal, executor and delegated-access checkpoint.
 
 ## Execution and state
 

@@ -8,6 +8,9 @@
 
 # Go build artifacts
 /bin/
+/.tools/
+/interactive-prototype
+/cmd/interactive-prototype/interactive-prototype
 # Release artifacts: `go run ./release` writes cross-compiled archives +
 # SHA256SUMS here (override with -output). Never commit built binaries.
 /dist/

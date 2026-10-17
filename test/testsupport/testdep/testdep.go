@@ -19,6 +19,8 @@ type Dependency struct {
 }
 
 var declared = map[string]Dependency{
+	"codex": {Name: "codex", InstallHint: "install Codex CLI and explicitly opt in to trusted local model login"},
+	"node":  {Name: "node", InstallHint: "install Node.js 24 for interactive prototype repository tests"},
 	"bash": {
 		Name:        "bash",
 		InstallHint: "install Bash (Debian/Ubuntu: apt-get install bash)",
