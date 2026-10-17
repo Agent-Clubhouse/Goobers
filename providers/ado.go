@@ -36,6 +36,7 @@ type ADOProvider struct {
 
 	credentialSource ADOCredentialSource
 	secretRegistrar  SecretRegistrar
+	pollScope        *RepositoryRef
 	rateObserver     RateLimitObserver
 	quotaObserver    QuotaObserver
 	mutationRecorder MutationRecorder

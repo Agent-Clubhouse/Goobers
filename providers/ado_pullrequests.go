@@ -208,6 +208,9 @@ func adoLabelNames(labels []adoLabel) []string {
 // reviewers) so a gate can drive the CI-poll/repass loop against ADO's own
 // policy engine — the source of truth for whether a PR is correct (#772).
 func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
+	if err := p.validatePollScope(req); err != nil {
+		return PullRequestPollResult{}, err
+	}
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestPollResult{}, err
 	}
@@ -220,6 +223,9 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 	}
 	var pr adoPullRequestDetail
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return PullRequestPollResult{}, err
+	}
+	if err := p.validatePolledIdentity(req, pr); err != nil {
 		return PullRequestPollResult{}, err
 	}
 	result := PullRequestPollResult{
