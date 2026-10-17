@@ -11,6 +11,20 @@ the prototype launch documentation, use a fresh state directory. The final
 test permanently revokes a controlled ADO connection; re-running requires
 fresh state or different controlled identities.
 
+For a measured local-tools launch with startup metadata and server logs, run
+this in one terminal after building `.tools/interactive-prototype`,
+`.tools/goobers`, and the portal assets:
+
+```sh
+INTERACTIVE_EVIDENCE_DIR=/tmp/goobers-interactive-evidence \
+node portal/e2e/interactive-server.mjs
+```
+
+The launcher refuses to reuse an existing state directory and never enables a
+model executor. `INTERACTIVE_REPOSITORY_ROOT` can point it at a separate checked
+out integration branch. `INTERACTIVE_STATE_DIR` and `INTERACTIVE_PORT` override
+the state path and loopback port.
+
 ```sh
 cd portal
 INTERACTIVE_BASE_URL=http://127.0.0.1:8097 \

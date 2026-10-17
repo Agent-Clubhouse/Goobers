@@ -20,7 +20,7 @@ interface Session {
   sequence: number;
   fence: number;
   activeTurnId?: string;
-  turns: Array<{ id: string; text: string; status: string }>;
+  turns: Array<{ id: string; text: string; status: string; attempt?: number }>;
   children: Array<{ id: string; status: string; result?: string }>;
   changes: Array<{ path: string; status: string }>;
   diff?: string;
@@ -72,6 +72,26 @@ async function awaitTurn(request: APIRequestContext, id: string, count: number) 
   }, { timeout: 60_000 }).toBeTruthy();
   return snapshot(request, id);
 }
+
+test.afterEach(async ({ page, request }, info) => {
+  if (info.status === info.expectedStatus) return;
+  const id = page.url().split("/interactive/")[1];
+  if (!id?.startsWith("ses_")) return;
+  // A failed UI assertion must not leave a real worker consuming the budget of
+  // the next test. This cleanup never changes whether that assertion passed.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const response = await request.get(`${api}/sessions/${id}`);
+    if (!response.ok()) return;
+    const current = await response.json() as Session;
+    if (current.status === "stopped") return;
+    const stopped = await request.post(`${api}/sessions/${id}/commands`, { data: {
+      commandId: crypto.randomUUID(), type: "stop", expectedSequence: current.sequence, expectedFence: current.fence,
+    } });
+    const result = await stopped.json();
+    await info.attach(`failed-test-cleanup-${attempt}`, { body: JSON.stringify(result), contentType: "application/json" });
+    if (stopped.ok() || result.error?.code !== "stale_sequence") return;
+  }
+});
 
 test("session creation is idempotent and changed payloads cannot reuse an identity", async ({ request }) => {
   const { session, data } = await createSession(request);
@@ -130,6 +150,9 @@ test("both surfaces render a new session and retain it after a narrow-screen rec
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     await capture(page, `interactive-${mode}-mobile`);
+    await page.getByRole("textbox", { name: "Message", exact: true }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeInViewport();
+    await capture(page, `interactive-${mode}-mobile-composer`);
     expect((await snapshot(request, session.id)).turns ?? []).toHaveLength(0);
     await page.setViewportSize({ width: 1280, height: 800 });
   }
@@ -195,7 +218,8 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   const id = page.url().split("/interactive/")[1];
   const startedAt = Date.now();
   await sendMessage(page, "investigate");
-  await expect.poll(async () => (await events(request, id)).some(event => event.type === "tool.completed"), { timeout: 60_000 }).toBeTruthy();
+  await expect.poll(async () => (await events(request, id)).some(event => event.type === "tool.completed" && event.data.name === "repository.read"), { timeout: 60_000 }).toBeTruthy();
+  await expect(page.getByText("Completed: repository.read", { exact: true })).toBeVisible();
   const firstUsefulOutputMs = Date.now() - startedAt;
   await awaitTurn(request, id, 1);
   await capture(page, "interactive-investigated");
@@ -221,6 +245,12 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   await capture(page, "interactive-child-proposal");
   await page.getByRole("button", { name: "Run child", exact: true }).click();
   await expect(page.getByRole("button", { name: "Mark reviewed", exact: true })).toBeVisible({ timeout: 60_000 });
+  const nativeChildEvents = (await events(request, id)).filter(event => event.data.name === "child.native-workflow");
+  expect(nativeChildEvents.some(event => event.data.executionMode === "native-goobers" && String(event.data.workflowYaml).includes("network: none"))).toBeTruthy();
+  expect(nativeChildEvents.some(event => {
+    const result = event.data.result as { cleanupConfirmed?: boolean; runId?: string; status?: string; request?: { workflow?: string } } | undefined;
+    return result?.cleanupConfirmed && result.runId && result.status === "succeeded" && result.request?.workflow === "review-child";
+  }), "the child must have a real native scheduler receipt and confirmed process cleanup").toBeTruthy();
   await capture(page, "interactive-child-result");
   await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await expect.poll(async () => (await snapshot(request, id)).children[0]?.status).toBe("reviewed");
@@ -300,9 +330,16 @@ test("helper authors and applies a native workflow, tweaks its gaggle and observ
   const { session } = await createSession(request, "helper");
   const stateURL = `${api}/operations/state?sessionId=${session.id}`;
   const readState = async () => {
-    const response = await request.get(stateURL);
-    expect(response.ok()).toBeTruthy();
-    return response.json();
+    let state: any;
+    await expect.poll(async () => {
+      const response = await request.get(stateURL);
+      const body = await response.json();
+      if (response.status() === 409 && body.error?.startsWith("helper busy:")) return false;
+      expect(response.ok(), JSON.stringify(body)).toBeTruthy();
+      state = body;
+      return true;
+    }).toBeTruthy();
+    return state;
   };
   await page.goto(`/#/interactive/${session.id}`);
   await sendMessage(page, "fix");
@@ -329,6 +366,9 @@ test("helper authors and applies a native workflow, tweaks its gaggle and observ
   await expect.poll(async () => (await readState()).runs.some((run: {workflow: string; phase: string}) => run.workflow === "invoice-check-custom" && run.phase === "completed"), { timeout: 90_000 }).toBeTruthy();
   const final = await readState();
   expect(final.actions.find((action: {kind: string}) => action.kind === "submit_run").status).toBe("succeeded");
+  const observedRun = page.getByRole("region", { name: "Observed runs", exact: true });
+  await expect(observedRun).toContainText("completed");
+  await observedRun.scrollIntoViewIfNeeded();
   await capture(page, "interactive-helper-native-run-completed");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
@@ -344,29 +384,41 @@ test("controlled provider expiry blocks work, explicit reauthentication resumes 
   await page.goto(`/#/interactive/${session.id}`);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   const ado = page.locator(".ix-connection").filter({ hasText: "Controlled local ADO" });
+  const insights = page.locator(".ix-connection").filter({ hasText: "Controlled local App Insights" });
   await expect(ado).toBeVisible();
   await expect(page.getByText("No live Azure sign-in or delegation has been demonstrated.", { exact: false })).toBeVisible();
-  await ado.getByRole("button", { name: "Expire demo connection", exact: true }).click();
-  await expect(ado).toContainText("Interaction required");
+  // Expire the second provider so the first read already has a confirmed
+  // receipt when resume rebinds authority. It must not become a new effect.
+  await insights.getByRole("button", { name: "Expire demo connection", exact: true }).click();
+  await expect(insights).toContainText("Interaction required");
   await sendMessage(page, "investigate");
   await expect.poll(async () => (await snapshot(request, session.id)).status).toBe("waiting_auth");
   await expect(page.getByText("Waiting for authorization", { exact: true })).toBeVisible();
   expect((await events(request, session.id)).some(event => event.type === "turn.completed")).toBeFalsy();
   await capture(page, "interactive-auth-required");
-  await ado.getByRole("button", { name: "Reauthenticate demo connection", exact: true }).click();
-  await expect(ado.locator(".ix-status")).toHaveText("Ready");
+  await insights.getByRole("button", { name: "Reauthenticate demo connection", exact: true }).click();
+  await expect(insights.locator(".ix-status")).toHaveText("Ready");
   await page.getByRole("button", { name: "Resume session", exact: true }).click();
+  await expect.poll(async () => (await snapshot(request, session.id)).turns[0].attempt).toBe(2);
   expect((await awaitTurn(request, session.id, 1)).status).toBe("idle");
   await capture(page, "interactive-auth-resumed");
+  await sendMessage(page, "wait");
+  await expect.poll(async () => (await snapshot(request, session.id)).status).toBe("running");
+  await expect.poll(async () => (await events(request, session.id)).some(event => event.type === "tool.started" && event.data.name === "bounded.wait")).toBeTruthy();
   await ado.getByRole("button", { name: "Revoke demo connection", exact: true }).click();
   await expect(ado.locator(".ix-status")).toHaveText("Revoked");
   await expect(ado.getByRole("button", { name: "Reauthenticate demo connection", exact: true })).toBeDisabled();
-  await sendMessage(page, "investigate");
-  await expect.poll(async () => (await snapshot(request, session.id)).status).toBe("waiting_auth");
-  const revoked = await snapshot(request, session.id);
-  const revokedTurn = revoked.turns[1].id;
-  expect((await events(request, session.id)).filter(event => event.turnId === revokedTurn && event.type === "tool.completed" && event.data.name === "repository.read")).toHaveLength(0);
-  await capture(page, "interactive-auth-revoked");
-  await page.getByRole("button", { name: "Stop session", exact: true }).click();
   await expect.poll(async () => (await snapshot(request, session.id)).status).toBe("stopped");
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeDisabled();
+  const stopped = await snapshot(request, session.id);
+  expect(stopped.turns[1].status).toBe("cancelled");
+  await capture(page, "interactive-auth-revoked");
+  const { session: fresh } = await createSession(request);
+  await page.goto(`/#/interactive/${fresh.id}`);
+  await sendMessage(page, "investigate");
+  await expect.poll(async () => (await snapshot(request, fresh.id)).status).toBe("waiting_auth");
+  expect((await events(request, fresh.id)).filter(event => event.type === "tool.completed" && event.data.name === "repository.read")).toHaveLength(0);
+  await capture(page, "interactive-revoked-new-session-blocked");
+  await page.getByRole("button", { name: "Stop session", exact: true }).click();
+  await expect.poll(async () => (await snapshot(request, fresh.id)).status).toBe("stopped");
 });
