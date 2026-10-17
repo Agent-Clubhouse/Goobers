@@ -38,7 +38,8 @@ npx playwright test --config e2e/interactive.config.ts
 | --- | --- |
 | Browser | Real portal controls, HTTP command admission, event replay, responsive rendering, visible activity and errors. |
 | Session backend | Durable IDs, command replay, conflicting payload rejection, stale fence rejection and preserved history. |
-| Local tools executor | Actual checkout inspection, file edit, test process, cumulative diff and bounded child process; deterministic planning is explicitly disclosed. |
+| Local tools executor | Actual checkout inspection, file edit, test process and cumulative diff; deterministic planning is explicitly disclosed. |
+| Bounded child | A generated test-only `review-child` workflow runs through the native Goobers scheduler in an independent snapshot. The test checks its run ID, successful receipt, `network: none` definition and confirmed process cleanup. This is test evidence, not model semantic review. |
 | Helper operations | Actual Goobers configuration validation and transaction, authored workflow submission through the native CLI, and observed journal completion in an isolated instance. |
 | Controlled provider | ADO-shaped data, credential lifecycle and local authority enforcement against a fake provider. This is not a live Azure or ADO delegated sign-in. |
 | Native Codex adapter | Only a separately recorded run with `--executor codex-local` demonstrates native model work. Default local-tools tests cannot establish that claim. |
@@ -51,12 +52,15 @@ npx playwright test --config e2e/interactive.config.ts
 3. Edit the sample through execution, run its tests and review cumulative changes.
 4. Deliver steering during an active turn. Distinguish accepted receipt from
    delivered acknowledgement and preserve the message after reconnect.
-5. Request a bounded read-only child, review its proposed work, run it and review
-   its result. Verify that child execution does not silently adopt changes.
+5. Request a bounded child, review its proposed work, run its native test-only
+   workflow and review its result. Verify that child execution does not adopt
+   changes into the parent snapshot.
 6. Disconnect/reload and reconnect to the same session. History and event IDs
    persist without launching duplicate work.
-7. Expire then reauthenticate the controlled connection; a pending request must
-   not claim success. Revoke the connection and verify new effects are denied.
+7. Expire then reauthenticate the second controlled connection after the first
+   provider read has completed; resume the same turn. Revoke the connection
+   during active work, verify cancellation and test that a new session cannot
+   bypass the revoked connection.
 8. Stop an active process; wait for confirmed stop and retain workspace changes.
 9. At narrow viewport widths, verify the message composer and critical controls
    remain accessible without document-wide horizontal overflow.
