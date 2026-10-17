@@ -46,7 +46,7 @@ npx playwright test --config e2e/interactive.config.ts
 | Bounded child | A generated test-only `review-child` workflow runs through the native Goobers scheduler in an independent snapshot. The test checks its run ID, successful receipt, `network: none` definition and confirmed process cleanup. This is test evidence, not model semantic review. |
 | Helper operations | Actual Goobers configuration validation and transaction, authored workflow submission through the native CLI, and observed journal completion in an isolated instance. |
 | Controlled provider | ADO-shaped data, credential lifecycle and local authority enforcement against a fake provider. This is not a live Azure or ADO delegated sign-in. |
-| Native Codex adapter | Only a separately recorded run with `--executor codex-local` demonstrates native model work. Default local-tools tests cannot establish that claim. |
+| Native Codex adapter | Only a separately authorized and recorded `codex-local` session on a host explicitly enabled for model access demonstrates native model work. This qualification launcher never enables that access, and local-tools tests cannot establish that claim. |
 
 ## Required journey
 
