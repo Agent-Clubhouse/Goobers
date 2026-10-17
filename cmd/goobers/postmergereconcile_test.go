@@ -426,7 +426,16 @@ func TestReconcilePostMergeRejectsUnboundedBatch(t *testing.T) {
 
 func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 	var polls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/contoso/project/_apis/policy/evaluations" {
+			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		}
+		if r.URL.Path != "/contoso/project/_apis/git/repositories/repo/pullrequests/359" {
+			t.Errorf("unexpected ADO request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
 		polls++
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"pullRequestId": 359, "status": "completed", "description": "No work item reference",
@@ -492,6 +501,15 @@ func TestReconcilePostMergeADOReturnsCloseOutFailure(t *testing.T) {
 		if strings.Contains(r.URL.Path, "/wit/workitems/") {
 			workItemCalls++
 			http.Error(w, "work item id is not valid", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path == "/contoso/project/_apis/policy/evaluations" {
+			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		}
+		if r.URL.Path != "/contoso/project/_apis/git/repositories/repo/pullrequests/359" {
+			t.Errorf("unexpected ADO request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
