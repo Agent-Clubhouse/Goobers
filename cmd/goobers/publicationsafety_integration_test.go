@@ -42,6 +42,7 @@ func publicationFile(t *testing.T, dir, path, content string) {
 }
 
 func TestIntegrationPublicationSafetyRejectsArtifactsThroughoutHistory(t *testing.T) {
+	testdep.Require(t, "git")
 	for _, path := range []string{".goobers/prompt.md", ".goober-assets/instructions.md", "mutations.jsonl", ".goobers", ".goober-assets"} {
 		t.Run(path, func(t *testing.T) {
 			dir := publicationRepo(t)
@@ -61,6 +62,7 @@ func TestIntegrationPublicationSafetyRejectsArtifactsThroughoutHistory(t *testin
 }
 
 func TestIntegrationPublicationSafetyAllowsSourceAndCleanup(t *testing.T) {
+	testdep.Require(t, "git")
 	dir := publicationRepo(t)
 	publicationFile(t, dir, ".goobers/old.log", "old artifact")
 	runGitT(t, dir, "branch", "-f", "main", "HEAD")
@@ -80,6 +82,7 @@ func TestIntegrationPublicationSafetyAllowsSourceAndCleanup(t *testing.T) {
 }
 
 func TestIntegrationPublicationSafetyRejectsRenamedArtifactAndMissingBase(t *testing.T) {
+	testdep.Require(t, "git")
 	dir := publicationRepo(t)
 	publicationFile(t, dir, "ordinary.txt", "content")
 	if err := os.Mkdir(filepath.Join(dir, ".goobers"), 0o755); err != nil {
@@ -99,6 +102,7 @@ func TestIntegrationPublicationSafetyRejectsRenamedArtifactAndMissingBase(t *tes
 }
 
 func TestIntegrationPublicationSafetyRejectsCredentialBlobsWithoutEchoing(t *testing.T) {
+	testdep.Require(t, "git")
 	for _, value := range []string{
 		"ghs_" + strings.Repeat("A", 36),
 		"GH_TOKEN=" + strings.Repeat("b", 24),
@@ -147,6 +151,7 @@ func TestIntegrationPushBranchPublicationSafetyRefusesBeforeRemoteWrite(t *testi
 }
 
 func TestIntegrationOpenPRPublicationSafetyRefusesBeforeProviderWrite(t *testing.T) {
+	testdep.Require(t, "git")
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "run-7376")
@@ -165,6 +170,7 @@ func TestIntegrationOpenPRPublicationSafetyRefusesBeforeProviderWrite(t *testing
 }
 
 func TestIntegrationOpenPRPublicationSafetyRejectsDifferentRemoteTip(t *testing.T) {
+	testdep.Require(t, "git")
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "run-7376")
@@ -188,6 +194,7 @@ func TestIntegrationOpenPRPublicationSafetyRejectsDifferentRemoteTip(t *testing.
 }
 
 func TestIntegrationPublicationSafetyRejectsIncompleteAndMergedHistory(t *testing.T) {
+	testdep.Require(t, "git")
 	t.Run("shallow", func(t *testing.T) {
 		dir := publicationRepo(t)
 		base := strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "main"))
