@@ -482,7 +482,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
     } });
     expect(rejected.status()).toBe(409);
     expect((await rejected.json()).error.code).toBe("surface_changed");
-    await expect(page.getByText("Recovery required", { exact: true })).toBeVisible();
+    await expect(page.getByRole("alert").getByText("Recovery required", { exact: true })).toBeVisible();
     await capture(page, "interactive-dsl-reload-fenced");
 
     const retainedReceipts: unknown[] = [];
@@ -522,6 +522,9 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
     expect(fresh.configDigest).not.toBe(fenced.configDigest);
     expect(fresh.configRevision).toBe(reloadReceipt.configRevision);
     await page.goto(`/#/interactive/${fresh.id}`);
+    // The policy change was issued by this API client, outside the page's
+    // Refresh configuration control. Reload fetches the current surface catalog.
+    await page.reload();
     await sendMessage(page, "investigate");
     const completed = await awaitTurn(request, fresh.id, 1);
     expect(completed.status).toBe("idle");
