@@ -55,9 +55,7 @@ func (s *adoRefreshingCredentialSource) Credential(ctx context.Context) (ADOCred
 	if s.terminal != nil {
 		return ADOCredential{}, s.terminal
 	}
-	expired := !s.current.ExpiresAt.IsZero() && !s.now().Before(s.current.ExpiresAt)
-	nearExpiry := !s.current.ExpiresAt.IsZero() && !s.now().Add(adoTokenRefreshSkew).Before(s.current.ExpiresAt)
-	if !s.invalid && !expired && (!nearExpiry || !s.lastRefresh.IsZero() && s.now().Sub(s.lastRefresh) < time.Minute) {
+	if !s.refreshDue() {
 		return s.current, nil
 	}
 	s.lastRefresh = s.now()
@@ -70,13 +68,7 @@ func (s *adoRefreshingCredentialSource) Credential(ctx context.Context) (ADOCred
 	var refusal interface{ Deterministic() bool }
 	permanent := errors.Is(err, ErrInvalidADOCredentialDelivery) || errors.As(err, &refusal) && refusal.Deterministic()
 	if err == nil {
-		err = validateDeliveredADOCredential(next)
-		if err == nil && (next.Kind != s.current.Kind || next.Username != s.current.Username) {
-			err = errors.New("ADO delivered credential authorization scheme changed; start a new attempt")
-		}
-		if err == nil && !next.ExpiresAt.IsZero() && !s.now().Before(next.ExpiresAt) {
-			err = errors.New("ADO credential resolver returned an expired value")
-		}
+		err = s.validateRotation(next)
 		permanent = err != nil
 	}
 	if err != nil {
@@ -84,7 +76,7 @@ func (s *adoRefreshingCredentialSource) Credential(ctx context.Context) (ADOCred
 			s.terminal = fmt.Errorf("%w for %s: %w", ErrADODeliveredCredentialRejected, s.label, err)
 			return ADOCredential{}, s.terminal
 		}
-		if s.invalid || !s.current.ExpiresAt.IsZero() && !s.now().Before(s.current.ExpiresAt) {
+		if s.invalid || s.expired() {
 			return ADOCredential{}, fmt.Errorf("%w for %s: no valid credential after refresh: %w", ErrADODeliveredCredentialRejected, s.label, err)
 		}
 		return s.current, nil
@@ -92,6 +84,34 @@ func (s *adoRefreshingCredentialSource) Credential(ctx context.Context) (ADOCred
 	s.register(next)
 	s.current, s.invalid = next, false
 	return s.current, nil
+}
+
+// These helpers run while Credential holds mu.
+func (s *adoRefreshingCredentialSource) expired() bool {
+	return !s.current.ExpiresAt.IsZero() && !s.now().Before(s.current.ExpiresAt)
+}
+
+func (s *adoRefreshingCredentialSource) refreshDue() bool {
+	if s.invalid || s.expired() {
+		return true
+	}
+	if s.current.ExpiresAt.IsZero() || s.now().Add(adoTokenRefreshSkew).Before(s.current.ExpiresAt) {
+		return false
+	}
+	return s.lastRefresh.IsZero() || s.now().Sub(s.lastRefresh) >= time.Minute
+}
+
+func (s *adoRefreshingCredentialSource) validateRotation(next ADOCredential) error {
+	if err := validateDeliveredADOCredential(next); err != nil {
+		return err
+	}
+	if next.Kind != s.current.Kind || next.Username != s.current.Username {
+		return errors.New("ADO delivered credential authorization scheme changed; start a new attempt")
+	}
+	if !next.ExpiresAt.IsZero() && !s.now().Before(next.ExpiresAt) {
+		return errors.New("ADO credential resolver returned an expired value")
+	}
+	return nil
 }
 
 func validateDeliveredADOCredential(c ADOCredential) error {
