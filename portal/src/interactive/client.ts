@@ -4,6 +4,9 @@ export interface CreateSessionRequest { commandId: string; surfaceId: string; ti
 export interface Surface {
   id: string; name: string; description: string; mode: "helper" | "workbench";
   enabled: boolean; maxChildren: number; instructions?: string;
+  configRevision?: string; gaggle?: string; goober?: string; model?: string; harness?: string;
+  tools?: string[]; executionModes?: ExecutionModeId[]; defaultExecutionMode?: ExecutionModeId;
+  maxTurnSeconds?: number; leaseSeconds?: number; maxActive?: number; maxActivePerOwner?: number;
 }
 export interface Turn {
   id: string; text: string; status: string; attempt: number; fence: number;
@@ -17,7 +20,7 @@ export interface Child {
 export interface Change { path: string; status: string; additions: number; deletions: number }
 export interface Lease { workerId: string; leaseId: string; fence: number; expiresAt: string; status: string }
 export interface Session {
-  lease?: Lease; configDigest?: string; members?: {principal: string; role: string}[]; custodyPending?: boolean; stopFencePending?: boolean;
+  lease?: Lease; configDigest?: string; configRevision?: string; members?: {principal: string; role: string}[]; custodyPending?: boolean; stopFencePending?: boolean;
   id: string; owner: string; surfaceId: string; mode: "helper" | "workbench";
   executionMode?: ExecutionModeId; title: string; status: string; sequence: number; fence: number; createdAt: string;
   updatedAt: string; activeTurnId?: string; turns: Turn[]; children: Child[];

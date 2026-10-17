@@ -31,6 +31,25 @@ describe("helper action controls", () => {
     expect(screen.queryByLabelText("Describe a gaggle action")).not.toBeInTheDocument();
     expect(await screen.findByText("Configure an action yourself")).toBeInTheDocument();
   });
+  it("keeps explicit DSL workflow actions read-only without propose_action", async () => {
+    const action = {id: "action-1", operationId: "operation-1", kind: "submit_run", status: "proposed", operationStatus: "prepared", summary: "Run inspect", preview: "exact definition", updatedAt: "2026-10-17T00:00:00Z", request: {kind: "submit_run"}};
+    const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({...state, actions: [action]})));
+    vi.stubGlobal("fetch", fetcher);
+    render(<OperationsPanel surface={{id: "work", name: "Workbench", mode: "workbench", enabled: true, description: "", maxChildren: 0, configRevision: "policy", tools: ["session_context"]}} sessionId="s-1" disabled={false} />);
+    expect(await screen.findByText(/Workflow actions are read-only/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", {name: "Start run"})).toBeDisabled();
+    fireEvent.click(screen.getByText("Configure an action yourself"));
+    expect(screen.getByRole("button", {name: "Preview action"})).toBeDisabled();
+    expect(screen.queryByLabelText("Describe a gaggle action")).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.every(([, init]) => init.method === "GET")).toBe(true);
+  });
+  it("defaults explicit DSL tools to deny and does not fetch disallowed context", async () => {
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    render(<OperationsPanel surface={{id: "work", name: "Workbench", mode: "workbench", enabled: true, description: "", maxChildren: 0, configRevision: "policy"}} sessionId="s-1" disabled={false} />);
+    expect(await screen.findByText(/Workflow and management context is not enabled/)).toBeInTheDocument();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", {name: "Preview action"})).not.toBeInTheDocument();
+  });
   it("edits the server-provided workflow draft before asking for a preview", async () => {
     const fetcher = vi.fn().mockImplementation(async (url: string) => new Response(JSON.stringify(url.includes("/proposals") ? {summary: "Add workflow", status: "proposed"} : state)));
     vi.stubGlobal("fetch", fetcher);

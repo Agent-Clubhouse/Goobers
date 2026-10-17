@@ -242,3 +242,7 @@
 .ix-child-definition .ix-definition-digest { display: block; white-space: normal; max-width: none; overflow-wrap: anywhere; }
 .ix-inspector-tabs { overflow-x: auto; }
 @media (max-width: 520px) { .ix-execution-badges { margin: 5px 0 0; display: flex; } }
+
+.ix-surface-policy { display: grid; gap: 4px; padding: 12px 14px; margin: 14px 0; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; color: var(--muted-strong); overflow-wrap: anywhere; }
+.ix-surface-policy strong { color: var(--ink); font-size: 13px; }
+.ix-surface-policy small { opacity: .8; }

@@ -77,6 +77,61 @@ describe("interactive workspace", () => {
     expect(fx.client.create).toHaveBeenCalledTimes(1);
     expect(fx.client.create).toHaveBeenCalledWith(expect.objectContaining({executionMode: "codex-local"}));
   });
+  it("respects surface execution restrictions and displays its resolved DSL policy", async () => {
+    const fx = fixture();
+    vi.mocked(fx.client.status).mockResolvedValue({...runtime, executionModes: runtime.executionModes!.map(option => ({...option, available: true}))});
+    vi.mocked(fx.client.surfaces).mockResolvedValue([{...surfaces[0], configRevision: "resolved-revision-one", gaggle: "finance", goober: "review-helper", model: "configured-model", executionModes: ["local-tools"], defaultExecutionMode: "local-tools", maxTurnSeconds: 90, maxActivePerOwner: 1}]);
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} />);
+    expect(await screen.findByRole("radio", {name: "Agent (Codex)"})).toBeDisabled();
+    expect(screen.getByRole("radio", {name: "Deterministic demo"})).toBeChecked();
+    expect(screen.getByText("review-helper")).toBeInTheDocument();
+    expect(screen.getByText(/Gaggle: finance · Model: configured-model/)).toBeInTheDocument();
+    expect(screen.getByText(/90s per turn · 1 active per owner/)).toBeInTheDocument();
+    expect(screen.getByText(/not allowed by the selected surface configuration/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {name: "Start session"}));
+    await waitFor(() => expect(fx.client.create).toHaveBeenCalledWith(expect.objectContaining({executionMode: "local-tools"})));
+  });
+  it("keeps an unavailable configured agent default instead of falling back", async () => {
+    const fx = fixture();
+    vi.mocked(fx.client.surfaces).mockResolvedValue([{...surfaces[0], configRevision: "revision-one", executionModes: ["codex-local"], defaultExecutionMode: "codex-local"}]);
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} />);
+    expect(await screen.findByRole("radio", {name: "Agent (Codex)"})).toBeChecked();
+    expect(screen.getByRole("radio", {name: "Deterministic demo"})).toBeDisabled();
+    expect(screen.getByRole("button", {name: "Start session"})).toBeDisabled();
+    expect(fx.client.create).not.toHaveBeenCalled();
+  });
+  it("refreshes configuration without rebinding an old session and preserves stop and review", async () => {
+    const fx = fixture(makeSession({configRevision: "old", status: "recovery_required", children: [{id: "c-1", prompt: "Review", status: "proposed", requestedAt: "2026-10-17T09:00:00Z"}]}));
+    vi.mocked(fx.client.surfaces).mockResolvedValue([{...surfaces[1], configRevision: "old", maxChildren: 1}]);
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    await screen.findByRole("button", {name: "Stop session"});
+    vi.mocked(fx.client.surfaces).mockResolvedValue([{...surfaces[1], configRevision: "new", maxChildren: 0}]);
+    fireEvent.click(screen.getByRole("button", {name: "Refresh configuration"}));
+    expect(await screen.findByText(/This session is bound to a retired configuration/)).toBeInTheDocument();
+    expect(screen.getByRole("button", {name: "Resume session"})).toBeDisabled();
+    expect(screen.getByRole("button", {name: "Stop session"})).toBeEnabled();
+    fireEvent.click(screen.getByRole("tab", {name: /Children/}));
+    expect(screen.getByRole("button", {name: "Propose child"})).toBeDisabled();
+    expect(screen.getByRole("button", {name: "Run child"})).toBeDisabled();
+    expect(screen.getByRole("button", {name: "Deny child"})).toBeEnabled();
+  });
+  it("reconciles an uncertain create with the same mode and ID after its surface is removed", async () => {
+    const fx = fixture();
+    const original = {commandId: "original-create", surfaceId: "removed-surface", executionMode: "codex-local" as const, title: "Saved request"};
+    writePending("create.local:mason", original);
+    vi.mocked(fx.client.surfaces).mockResolvedValue([]);
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", {name: "Retry opening session"}));
+    await waitFor(() => expect(fx.client.create).toHaveBeenCalledWith(original));
+  });
+  it("reports a failed configuration refresh and retains the last confirmed choices", async () => {
+    const fx = fixture(); render(<InteractivePage client={fx.client} navigate={vi.fn()} />);
+    await screen.findByRole("radio", {name: /Gaggle helper/});
+    vi.mocked(fx.client.surfaces).mockRejectedValue(new Error("Configuration unavailable"));
+    fireEvent.click(screen.getByRole("button", {name: "Refresh configuration"}));
+    expect(await screen.findByText(/Configuration refresh failed: Configuration unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole("radio", {name: /Gaggle helper/})).toBeInTheDocument();
+  });
   it("pins session copy to the saved execution mode instead of the server default", async () => {
     const fx = fixture(); render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
     expect(await screen.findByText("Try the sample investigation.")).toBeInTheDocument();
