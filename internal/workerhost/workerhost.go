@@ -24,6 +24,7 @@ import (
 
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/workerrouting"
 )
@@ -146,9 +147,10 @@ func Identity(buildVersion string) string {
 // workerOptions builds the one options set every queue's worker runs under.
 func (h *Host) workerOptions() worker.Options {
 	opts := worker.Options{
-		Identity:          Identity(h.cfg.BuildVersion),
-		WorkerStopTimeout: h.cfg.DrainTimeout,
-		Interceptors:      []interceptor.WorkerInterceptor{h.tracker},
+		Identity:                     Identity(h.cfg.BuildVersion),
+		WorkerStopTimeout:            h.cfg.DrainTimeout,
+		MaxHeartbeatThrottleInterval: engine.DispatchHeartbeatThrottleInterval,
+		Interceptors:                 []interceptor.WorkerInterceptor{h.tracker},
 	}
 	if !h.versioned() {
 		return opts

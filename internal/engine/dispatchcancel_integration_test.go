@@ -11,6 +11,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	temporalworker "go.temporal.io/sdk/worker"
@@ -85,7 +86,11 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 	}
 	queue := "dispatch-cancellation-" + mode
 	workerCtx, stopActivities := context.WithCancel(ctx)
-	w := temporalworker.New(server.Client(), queue, temporalworker.Options{BackgroundActivityContext: workerCtx, WorkerStopTimeout: time.Second})
+	w := temporalworker.New(server.Client(), queue, temporalworker.Options{
+		BackgroundActivityContext:    workerCtx,
+		WorkerStopTimeout:            time.Second,
+		MaxHeartbeatThrottleInterval: DispatchHeartbeatThrottleInterval,
+	})
 	RegisterWith(w, &Activities{Workspaces: testWorkspaces(t), Dispatcher: dispatch, Surrenders: store})
 	if err := w.Start(); err != nil {
 		t.Fatal(err)
@@ -109,12 +114,13 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 	case <-time.After(15 * time.Second):
 		t.Fatal("Temporal cancellation never reached dispatched pod cleanup")
 	}
-	// Hold cleanup beyond the heartbeat timeout. Continued heartbeats must keep
-	// the activity alive, and the canceled future must still await its result.
-	// Get on a deadline-bound context can return a transport CANCEL before
-	// that context reports DeadlineExceeded. That is not workflow settlement.
-	// Keep the pod present for the full heartbeat window, then inspect the
-	// authoritative execution state; a terminal execution cannot become running.
+	cleanupStarted := time.Now()
+	beforeTime, beforeDetails := cancellationHeartbeat(t, ctx, server.Client(), run)
+	// Keep the existing 12s observation window, longer than the transmission
+	// cap. Server heartbeat time and freshly generated details must advance
+	// during detached cleanup; a buffered pre-cancellation heartbeat is not proof.
+	// Inspect the authoritative execution state rather than a deadline-bound
+	// Get, whose transport cancellation is not workflow settlement.
 	hold := time.NewTimer(dispatchHeartbeatTimeout + 2*time.Second)
 	defer hold.Stop()
 	select {
@@ -122,12 +128,9 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 	case <-ctx.Done():
 		t.Fatalf("cleanup observation interrupted: %v", ctx.Err())
 	}
-	description, err := server.Client().DescribeWorkflowExecution(ctx, run.GetID(), run.GetRunID())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if description.WorkflowExecutionInfo.Status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
-		t.Fatalf("workflow settled during cleanup: %v", description.WorkflowExecutionInfo.Status)
+	afterTime, afterDetails := cancellationHeartbeat(t, ctx, server.Client(), run)
+	if !afterTime.After(beforeTime) || afterDetails.Sequence <= beforeDetails.Sequence || !afterDetails.GeneratedAt.After(cleanupStarted) {
+		t.Fatalf("heartbeats did not advance during cleanup: before=%s %+v after=%s %+v cleanup=%s", beforeTime, beforeDetails, afterTime, afterDetails, cleanupStarted)
 	}
 	if mode == "task" {
 		assertCancellationJournal(t, ctx, server.Client(), run, false)
@@ -148,6 +151,29 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 	if err := replayer.ReplayWorkflowHistoryWithOptions(nil, history, temporalworker.ReplayWorkflowHistoryOptions{OriginalExecution: workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()}}); err != nil {
 		t.Fatalf("replay canceled dispatch: %v", err)
 	}
+}
+
+func cancellationHeartbeat(t *testing.T, ctx context.Context, c client.Client, run client.WorkflowRun) (time.Time, dispatchHeartbeatDetails) {
+	t.Helper()
+	description, err := c.DescribeWorkflowExecution(ctx, run.GetID(), run.GetRunID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if description.WorkflowExecutionInfo.Status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		t.Fatalf("workflow settled during cleanup: %v", description.WorkflowExecutionInfo.Status)
+	}
+	for _, pending := range description.PendingActivities {
+		if pending.GetActivityType().GetName() != ActDispatchStage {
+			continue
+		}
+		var details dispatchHeartbeatDetails
+		if err := converter.GetDefaultDataConverter().FromPayloads(pending.HeartbeatDetails, &details); err != nil {
+			t.Fatalf("decode dispatch heartbeat: %v", err)
+		}
+		return pending.GetLastHeartbeatTime().AsTime(), details
+	}
+	t.Fatal("dispatch activity missing during cleanup")
+	return time.Time{}, dispatchHeartbeatDetails{}
 }
 
 func startCancellationWorkflow(t *testing.T, ctx context.Context, c client.Client, queue, mode string) client.WorkflowRun {
