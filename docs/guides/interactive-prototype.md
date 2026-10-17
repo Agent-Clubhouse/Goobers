@@ -1,18 +1,18 @@
 # Interactive sessions and delegated access prototype
 
-This is the runnable checkpoint on `experimental/interactive`, based on main
-`4e6c7d1e30c76718a56de2b9ba940c17ef9333e5`. It combines two optional portal
-experiences with durable sessions, private working copies, bounded execution,
-and mediated delegated-access plumbing. It is an experiment, not a cloud
-deployment or a production authentication system. Ordinary declarative
-workflows keep their existing execution path.
+`experimental/interactive` combines two optional portal experiences with durable
+sessions, private working copies, actual local execution, and mediated delegated
+access plumbing. Product configuration lives in the normal Goobers DSL tree:
+Manifest, Gaggle, Goober and Workflow definitions. This experimental command is
+separate from the production daemon; it is not a deployed cloud service or a
+production authentication system. Ordinary workflows retain their existing path.
 
 ## Launch locally
 
-Use the Go version pinned in `go.mod`, Node.js 24, npm, and Git. On macOS,
-native execution needs permission to inspect its owned process tree and invoke
-the existing nested `network: none` sandbox. An outer restricted sandbox can
-prevent this; cleanup uncertainty is surfaced rather than treated as success.
+Use the Go version pinned in `go.mod`, Node.js 24, npm and Git. Native workflow
+execution needs permission to inspect its owned process tree and apply the
+existing network restriction. An outer sandbox can prevent this; cleanup
+uncertainty must remain visible rather than becoming a successful stop.
 
 From the repository root:
 
@@ -23,229 +23,265 @@ mkdir -p .tools
 go build -o .tools/goobers ./cmd/goobers
 go build -o .tools/interactive-prototype ./cmd/interactive-prototype
 .tools/interactive-prototype \
-  --state-dir /tmp/goobers-interactive-demo \
-  --executor local-tools
+  --config-dir samples/interactive-config \
+  --source samples/interactive-investigation \
+  --state-dir /tmp/goobers-interactive-demo
 ```
 
-Open <http://127.0.0.1:8097/#/interactive>. Keep the state directory outside
-every Git checkout and use a fresh private directory for a clean demonstration.
-Stop the server with Ctrl-C and wait for confirmed cleanup. Reuse the state
-directory to inspect durable history. After restart, controlled connections
-require explicit reauthentication; the server does not invent a credential
-cache. Revoked fixture connections cannot be revived; use a fresh state
-directory for another independent demo.
+Open <http://127.0.0.1:8097/#/interactive>. Select **Deterministic demo** explicitly
+when creating a Helper or Workbench session. Both sample surfaces request
+`codex-local` by default, but the host does not enable that adapter by default.
+An unavailable Agent mode is an error; it never silently becomes the demo.
+Execution mode is immutable for the session.
 
-The app shows **Gaggle Helper** and **Cloud Workbench**. “Cloud” describes the
-intended experience; this checkpoint uses a local worker. The local-persona
-selector offers Mason and Alex so isolation can be exercised with two browser
-contexts. These are deliberately selectable test identities, not verified
-Entra users. The server only binds loopback, checks Host/Origin and cross-site
-requests, and takes ownership from its configured persona adapter rather than
-an arbitrary owner field in a command.
+The source is a trusted host-selected local directory, copied into a private
+session workspace. The sample has a real invoice bug and failing Node test.
+Project metadata does not cause this command to clone a remote repository.
+Keep state and browser evidence outside every Git checkout. Use fresh private
+state for an independent demonstration. Ctrl-C requests cleanup; wait for its
+result before reusing state. Restart preserves history but requires explicit
+reauthentication of controlled connections. Revoked fixture connections cannot
+be revived by restarting or opening another session.
 
-## What actually executes
+Host flags select resources and operational boundaries: `--config-dir` (default
+`samples/interactive-config`), `--source`, `--state-dir`, `--goobers-bin`, `--assets`,
+`--listen` and `--local-actors`. The command binds only a literal loopback address.
+There is no separate surfaces JSON file or executor, lease or admission-limit CLI
+configuration; those product settings come from the DSL and remain subject to
+host ceilings.
 
-| Component | Checkpoint behavior |
-| --- | --- |
-| Portal | React UI against the real Go HTTP/SSE backend; no browser API mocks in acceptance tests |
-| Local tools executor | Explicit deterministic intent driver; actual source reads, edits, Git review, Node test subprocesses, steering and cancellation |
-| Native Helper controls | Actual Goobers config validation/transactions, scheduler admission receipts, workflow runner, process custody and journals |
-| Native child review | A generated bounded test-only declarative workflow in the child's independent snapshot, with actual native run receipts |
-| Codex executor | Existing `harness.CodexAdapter` integration; optional trusted local CLI login; model-driven smoke requires separate opt-in |
-| ADO/App Insights | Controlled local typed providers and observations, including a durable local mutation ledger; no Microsoft API calls |
-| Sign-in | Controlled local personas; no live authentication or newly created credentials/grants |
+The local persona selector defaults to Mason and Alex for isolation exercises.
+These are selectable test identities, not verified Entra users. Host/Origin and
+cross-site checks protect the loopback HTTP boundary. Owner identity comes from
+the configured principal adapter, not a command's request body. This is not a
+remote authentication or hostile same-OS-user isolation boundary.
 
-The default local executor is **not a language model**. It supports
-`investigate`, `fix` (the supplied invoice bug), `test`, `review`,
-`read <relative path>`, and `wait`. It explains its limitations in the
-conversation. The default source is a disposable, newly authored invoice
-sample with a real failing test: excessive discounts produce a negative total.
-No backlog item or authored workflow is required before opening a Workbench
-session and editing it.
+## Configure the experiences in DSL 3.0
 
-The optional model mode is selected explicitly:
+Start with [the complete sample](../../samples/interactive-config/README.md).
+`Gaggle.dslVersion: "3.0"` governs only `spec.interactive`; the Gaggle itself
+acknowledges that preview using
+`metadata.annotations[goobers.dev/allow-preview-features]: "true"`. Each Workflow
+keeps its own version and preview acknowledgement. Neither a Gaggle pin nor its
+acknowledgement changes ordinary Workflow interpretation. Existing DSL 2.0
+workflows can coexist with interactive 3.0. Omission, or `interactive: {}`, adds
+no surfaces.
+
+A surface binds an existing Goober, permitted mediated tools, same-gaggle
+workflow references, local authority references, execution modes, session
+ceilings and reviewed-child capabilities. The sample uses:
+
+```yaml
+name: helper
+mode: helper
+gooberRef: helper
+executionModes: [codex-local, local-tools]
+defaultExecutionMode: codex-local
+tools: [session_context, inspect_action, validate_workflow, propose_action, propose_child_workflow, read_work_item, query_telemetry]
+workflows: [invoice-check]
+authorityRefs: [ado-context, telemetry-context]
+session: {leaseSeconds: 30, maxTurnSeconds: 600, maxChildren: 3, maxActive: 4, maxActivePerOwner: 2}
+childWorkflows:
+  enabled: true
+  commandCapabilities: [node-test, node-check]
+```
+
+Set a surface's `enabled` to false to disable admission. Names are scoped to the
+Gaggle; runtime IDs are `<gaggle>--<surface>`. The normal loader validates names,
+references, bounds and preview acknowledgement, then selects Manifest-active
+Gaggles. Goobers can be gaggle-owned or use the existing instance-shared layout.
+`Goober.spec.harness`, optional `model`, and the referenced Markdown instruction
+file bind the agent. The sample chooses `codex` and omits `model`, preserving the
+existing adapter default; set an approved model in the Goober when needed.
+
+The prototype compiler supports Codex Goobers only. It explicitly rejects
+unsupported nonempty Goober tools, external MCP servers, harness options,
+skills, capabilities and policy-action grants rather than silently dropping
+those declarations. Surface tools configure the mediated host bridge; they are
+not Goober builtin-tool settings. Missing tool, workflow and authority lists
+permit none. The DSL cannot enable a host-disabled execution adapter or create
+credentials or grants.
+
+The command validates a private snapshot through `instance.LoadConfigDir`.
+Its revision hashes the configuration files and any adjacent instance-shared
+Goober definitions/instructions. Supported snapshot assets are YAML and Markdown;
+links, special files, unsupported assets, excessive sizes and recognized
+credential-shaped content are refused. This is not a general secret scanner.
+Sessions pin that revision and their resolved surface policy.
+
+After editing the host's selected configuration, reload explicitly:
 
 ```sh
-.tools/interactive-prototype \
-  --state-dir /tmp/goobers-interactive-codex \
-  --executor codex-local \
-  --trusted-local-model-login
+curl --request POST \
+  --header 'Origin: http://127.0.0.1:8097' \
+  http://127.0.0.1:8097/api/v1/interactive/config/reload
 ```
 
-This uses an existing local Codex CLI login and may transmit the chosen
-workspace and controlled provider observations to that model service. It is a
-trusted single-user workstation boundary, not per-user cloud model identity.
-It does not supply Microsoft tokens. The checkpoint's attempted model smoke
-was denied before execution by automatic approval review pending explicit
-approval of the sample payload and model destination. Until that opt-in is
-approved and the test passes, do not describe this checkpoint as qualified
-model-driven execution.
+Invalid input retains the last known-good catalog. A changed valid revision
+fences sessions pinned to the old revision, cancels active work and requires
+confirmed writer custody before capacity is released. Start a new session to
+use the new policy. History and safe terminal controls remain available; the
+worker does not silently migrate old grants. A changed shared instruction file
+also changes the revision. Configuration is not automatically watched.
 
-## Demonstration journeys
+## What executes, and what is still unqualified
 
-1. Open a Workbench session. Send `investigate`. Observe the fixture ADO bug
-   and App Insights query, actual source, streamed tool output, and the failing
-   Node assertion. Send `fix`, then `test`. Review the cumulative changes.
-   Cumulative review survives private Git commits and clears after reversion.
-2. Send `wait` and steer it. The UI distinguishes accepted steering from the
-   executor's acknowledgment at a tool boundary. Disconnect and reconnect the
-   stream, or reload the page; replay preserves ordered history. A lost command
-   response can be retried with its original stable identity without dispatching
-   another effect.
-3. At an idle checkpoint, propose a child review, inspect its isolated scope,
-   approve it, and mark the result reviewed. Local mode creates a bounded
-   native test workflow against an independent copy of the current parent
-   workspace. It neither adopts a patch nor performs an open-ended semantic
-   review. The parent cannot edit during a running child snapshot/review.
-4. Open a Helper session and send `gaggle status` to initialize its private
-   workspace under a worker lease. Inspect real isolated gaggle config, workflow state
-   and run journals; its backlog context is a labeled fixture. Ask to
-   `design workflow`, review/edit the allowed YAML in Actions, apply it, then
-   submit a run. The first run fails on the real invoice assertion. Fix the
-   same session workspace and rerun; the native workflow now sees that edit.
-   Try `rename gaggle`, enabling/disabling a workflow, and stopping a run.
-   Exact reviewed proposals are required before configuration or run effects.
-5. In a second browser context select Alex. Open an independent session and
-   compare workspaces, changes and history. Owner-scoped API lookups and
-   commands refuse cross-owner access. Simultaneous sessions have separate
-   leases and working copies; they do not share one mutable agent runtime.
-6. Expire a controlled connection, observe an auth wait, reauthenticate and
-   resume. Resume reuses any provider receipt already completed in that turn.
-   Demonstrate silent refresh separately. Revoke during execution: authority
-   is fenced first, cancellation follows, and stopped sessions cannot resume.
-7. Explicitly stop a running turn or Helper workflow. The UI distinguishes
-   stop requested, stopping, stopped, and custody/recovery pending. Closing the
-   browser does not stop the worker or claim cleanup.
-
-## Session and authority decisions
-
-The session coordinator stores ordered events, command receipts, messages,
-leases, children and cumulative changes in private atomic files. Stable
-command IDs bind to exact admitted payloads. Rejected stale sequences may be
-refreshed only after an explicit pre-dispatch rejection.
-An unknown transport outcome retains its original identity and exact last
-payload for reconciliation. The portal retries an explicit stale-sequence
-rejection at most four times with the same command identity and a refreshed
-sequence; it refuses automatic retry after a changed fence or steering target.
-SSE replay uses sequence cursors. One process holds the coordinator store lock.
-
-Workers heartbeat leases and carry fences through provider admission. A normal
-completed turn releases capacity and leaves an idle conversation. A lost lease
-or interrupted writer requires recovery. The executor keeps a writer marker
-outside the model-writable workspace; a crashed process cannot establish its
-own cleanup by removing a marker. Recovery never takes over an unconfirmed
-writer. Operator isolation/reconciliation is needed after an actual crash with
-unknown custody; there is no unsafe “force resume” button.
-
-Default capacity is four concurrent interactive executions and, separately,
-four native workflow workers, with two per owner in each pool. Children count
-against these limits. The total can therefore reach eight across both pools.
-Native admission is cross-process on one supported host; the session store has
-one coordinator. There is no distributed queue, Kubernetes worker provisioner,
-multi-host failover or autoscaling qualification in this checkpoint.
-
-Sessions have explicit owner/membership/actor fields but enforce owner-only
-access. Sharing a live session, collaborator roles, simultaneous human edits,
-and collaborative approval semantics remain future work.
-
-The host issues immutable authority revisions with exact resources/actions,
-an original two-hour deadline, shared 80-operation budget, three cumulative
-children, and depth one. Child grants attenuate the parent; stop, revocation
-and parent supersession fence them. Rebinding a recovered execution preserves
-the original deadline and consumed budget. Consent/reauthentication never
-authorizes a pending mutation by itself. Unknown provider outcomes are
-reconciled from receipts and never blindly retried.
-
-These are reversible prototype limits, not accepted product defaults. See
-[the broker contract](../../internal/interactiveauth/README.md) and
-[native Helper operations](../../internal/interactiveops/README.md) for exact
-operations, effects and failure semantics.
-
-## Customization and boundaries
-
-Pass `--surfaces /absolute/path/surfaces.json` to configure the two experiences:
-
-```json
-[
-  {"id":"helper","name":"Team Helper","mode":"helper","description":"Operate the isolated gaggle","enabled":true,"maxChildren":2,"instructions":"Ground work in configured workflows and observed runs."},
-  {"id":"workbench","name":"Engineering Workspace","mode":"workbench","description":"Investigate, edit and test","enabled":true,"maxChildren":3,"instructions":"Preserve changes for review."}
-]
-```
-
-Set either `enabled` to false to disable that experience. Existing history
-remains inspectable; disabling a surface fences new control. `--local-actors`,
-`--lease-duration` and `--max-active` configure the local demonstration.
-`--source` accepts only a trusted host-selected source directory, never a
-browser-supplied path. Snapshots reject links/special files, exclude common
-secret filenames and hidden files, and impose size limits. This is not a
-general secret scanner or a sandbox for arbitrary untrusted repositories.
-Native child code still executes as the host user inside the existing native
-workflow boundary. Do not expose this server remotely.
-
-Helper chat is a bounded intent parser. Native config permits deterministic
-test-only workflows with restricted arguments, deadlines and `network: none`.
-Dynamic children use this bounded ordinary-workflow path; they do not yet
-integrate the production `childworkflow` journal lineage/admission model or
-allow arbitrary generated workflow capabilities. The optional Codex path can
-investigate/edit arbitrary trusted sample code, but its native tool semantics
-and live model behavior still need the blocked smoke qualification.
-
-Mediated ADO/Azure calls receive a reference to authority, never a reusable
-provider token. Native Azure CLI, Git helpers, generic HTTP clients and
-token-consuming MCP servers cannot transparently inherit this authority.
-Supporting those tools requires an explicit future adapter or a separately
-approved weaker credential-custody boundary. There is no application-identity
-fallback.
-
-## Verification and live follow-up
-
-Checkpoint qualification on 2026-10-17 passed against the integrated local
-backend and built portal:
-
-| Check | Result and boundary |
+| Layer | Implemented boundary |
 | --- | --- |
-| `make verify-fast` | Passed formatting, no-phone-home check, vet, and command builds |
-| Go race suites | Sessions, controlled broker, native Helper operations, executor, writer-custody support and dependency inventory passed |
-| Actual executor integration | Git/Node investigation, edit/test, cumulative commit/revert review, child/owner isolation, steering and custody regressions passed |
-| Native Helper integration | Actual failed/passing workflow runs, stop cleanup, generated child execution, one-run replay and scoped child cancellation passed; combined race suite 42.332 seconds |
-| Portal focused tests/build | 79 tests passed; production TypeScript/Vite build passed |
-| Real-backend Playwright | 9/9 scenarios passed in 48.8 seconds; desktop/mobile, two personas, native child/Helper runs, steering, reconnect, lost response, auth wait/resume and revocation |
-| Independent source review | Ten findings fixed; no remaining concrete blocker in reviewed local integration; actual-file and native child tests independently rerun |
-| Native model smoke | Not executed: automatic approval review denied the sample/model disclosure pending explicit approval |
-| Live Microsoft access | Not attempted; controlled fixtures only |
+| Portal/session backend | Real HTTP/SSE, durable history, steering receipts, reconnect, explicit stop and pending/error/auth states |
+| `local-tools` | Explicit deterministic driver with actual source reads, edits, Git review and Node subprocesses; not a language model |
+| Helper operations | Scoped native config validation/transactions, immutable human-reviewed proposals, native workflow admission and observed journals |
+| Dynamic children | Exact reviewed bounded Workflow YAML, an independent workspace snapshot, native execution receipts and explicit result review |
+| `codex-local` | Existing Codex harness adapter plus invocation-bound typed MCP tools; tested with controlled adapter/callback substitutes, live model qualification pending |
+| ADO/App Insights | Controlled local providers with scoped authority and durable operation receipts; no live Microsoft API calls |
+| Identity | Controlled local personas; no live sign-in, consent, credential acquisition or new grants |
 
-Measured startup was about 800 ms and first visible repository read about
-3.0 seconds on the qualification host. These are single-host observations, not
-cloud performance or scale claims. Browser stop exercised the bounded-wait
-turn; native integration tests separately proved actual process-tree cleanup.
-Screenshots, videos, traces and native receipts are kept outside Git as required.
+The demo understands `investigate`, `fix` for the sample invoice bug, `test`,
+`review`, `read <relative path>` and `wait`. Its Helper also offers bounded
+configuration/run intents such as `gaggle status` and `design workflow`. These
+are explicit demonstration controls. The native model path uses seven typed
+MCP tools instead of that deterministic intent parser:
+
+| Tool | Purpose |
+| --- | --- |
+| `session_context` | Read configured scope, workflows, observed actions/runs and labeled fixture backlog |
+| `inspect_action` | Read an owned proposal or native execution receipt |
+| `validate_workflow` | Validate authored bounded DSL and return diagnostics/normalized YAML |
+| `propose_action` | Propose a workflow/configuration change or run control for human review |
+| `propose_child_workflow` | Propose exact authored child YAML; never start or approve it |
+| `read_work_item` | Read a scoped controlled ADO fixture through the broker |
+| `query_telemetry` | Query scoped controlled App Insights observations through the broker |
+
+The bridge binds actor, session, turn, lease and fence in the host. Calls cannot
+choose those identities, inject authority, create grants or approve themselves.
+Stable intent keys belong to the host operation ledger; a disconnected tool
+client does not establish that an admitted effect did not occur.
+
+Native model access additionally requires `--trusted-local-model-login` and an
+existing local Codex login. It can transmit the selected workspace, configured
+instructions and controlled provider observations to the model service. The
+attempted live smoke was **denied before execution by automatic approval
+review**, pending explicit approval of that payload and model destination.
+Do not enable or claim qualification of this path until that action is approved
+and its actual result is recorded. No live model call is required to validate
+configuration or test the local bridge.
+
+The native adapter uses a trusted local workstation boundary. Its prompt asks
+for bounded behavior, but the mediated-tool allowlist does **not** restrict the
+harness's builtin filesystem or shell tools. The bridge's private Unix socket is
+not protection against a hostile process running as the same OS user. Existing
+local model login is infrastructure authentication, not delegated Microsoft
+identity. There is no application-identity fallback.
+
+## Demonstrate the local paths
+
+1. Explicitly select the demo and open Workbench. `investigate`, `fix`, `test`
+   and `review` exercise real reads, edits, test output and cumulative changes
+   without a backlog item or pre-authored workflow.
+2. Send `wait`, then steer it. Observe accepted versus delivered steering.
+   Disconnect/reload and reconnect to the same session. Replay must preserve
+   event order without creating another execution.
+3. Propose a bounded child, review its definition, and approve at an idle parent
+   checkpoint. Review the observed native result. The child uses an independent
+   snapshot; no patch is automatically adopted and the parent cannot write
+   while a child is running.
+4. In Helper, inspect `gaggle status`, design a bounded workflow, review/apply
+   the exact proposal and submit it. Observe native run receipts, including
+   failure before the invoice fix and success afterward. Configuration changes
+   affect the session's isolated instance, not the source config tree.
+5. Use two browser contexts and the controlled personas to compare private
+   histories and workspaces. Cross-owner reads/commands must fail.
+6. Expire or challenge a fixture connection, observe an auth wait, reauthenticate
+   and resume. Revoke during work and verify cancellation. Reauth must not revive
+   revoked authority, reset budgets or authorize a pending mutation.
+7. Stop active work and retain partial edits. Distinguish stop requested,
+   stopping, stopped and custody pending. Closing a browser is not a stop.
+8. Reload an invalid copied config and verify no policy replacement. Reload a
+   valid changed policy, observe fencing, and open a new session with it.
+
+Authored child workflows use the bounded native DSL 2.0/3.0 path: manual trigger,
+1–8 deterministic stages, explicit `node --test`/`node --check` file arguments,
+scratch execution and 1–30 second stage deadlines. DSL 3.0 uses
+`runsOn.restrictions: [network:none]` and its own preview acknowledgement;
+DSL 2.0 uses `run.network: none`. Host path binding and the surface's command
+capabilities apply before admission. This path does not establish production
+DSL 3.1 `task.childWorkflows` lineage, arbitrary shell workflows, publication,
+recursive children or distributed child scheduling.
+
+## Durability, capacity and delegated authority
+
+Stable command IDs bind exact payloads. Lost-response retries retain their
+identity; stale sequence rejection permits a bounded refresh only before
+admission. Unknown effects remain uncertain until their operation receipts are
+reconciled. SSE sequence cursors reconnect without dispatching work.
+
+Worker leases carry fences through event and broker admission. Idle sessions
+need no worker; finished turns release capacity. Interrupted writers retain
+capacity until custody is verified. Private writer markers live outside the
+model-writable workspace. There is no force-resume path for an unknown writer.
+One coordinator owns each atomic-file store; this is not a distributed queue,
+Kubernetes worker provisioner or autoscaling implementation.
+
+The sample requests four active executions and two per owner. The host also
+caps interactive execution at four/two and native workflow workers at a separate
+four/two. Surface ceilings may narrow admission further; children consume
+capacity. The two pools can total eight workers. Owner/membership/actor fields
+are explicit, but shared sessions and collaborative approvals are not enabled.
+
+Named authority declarations are non-secret host broker references. This host
+resolves only `controlled-local-ado` and `controlled-local-app-insights`.
+Immutable grants bind exact resources/actions, an original deadline and shared
+operation budget. Children attenuate that authority; stop/revocation fence it.
+Provider admission rechecks current lease and policy. An already admitted effect
+can still complete across a concurrent stop and must be reconciled from its
+receipt. Tokens belong in broker custody, never prompts, logs or artifacts.
+
+Native Azure CLI, Git helpers, arbitrary HTTP clients and token-consuming MCP
+servers cannot transparently inherit mediated authority. They need an explicit
+future adapter or separately approved custody boundary. See the
+[broker contract](../../internal/interactiveauth/README.md) and
+[native Helper operations](../../internal/interactiveops/README.md).
+
+## Verification and remaining work
+
+Do not reuse earlier browser counts or startup timings as qualification of the
+latest DSL/compiler/model-tool integration. The final handoff must identify the
+exact commit, commands, provider/execution modes and evidence paths.
+
+Normal schema/reference/preview validation, `instance.LoadConfigDir`, generated
+CRD installability, deep-copy isolation and config generation apply/replay/update
+have passed tests. The apply test uses a fake Kubernetes transport; it changes
+no cluster. Session and broker tests use controlled executors/providers. MCP
+transport tests use real private sockets and controlled callbacks; native adapter
+tests can substitute a harness. Local Git/Node/native workflow execution provides
+actual execution evidence separately. None of these proves live model reasoning
+or Microsoft delegated authentication. Final assembled browser/reload acceptance
+must be recorded after the current implementation is integrated.
+
+Useful checks include:
 
 ```sh
 make verify-fast
+go test -race ./api/validate ./api/v1alpha1 ./internal/instance \
+  ./internal/configsync ./internal/workflow -run TestInteractive -count=1
 go test -race ./internal/interactive ./internal/interactiveauth \
-  ./internal/interactiveops ./internal/interactiveexec ./internal/invoke
+  ./internal/interactiveagent ./internal/interactiveops ./internal/interactiveexec \
+  ./internal/invoke ./cmd/interactive-prototype
 go test -tags integration ./internal/interactiveexec \
   -run 'TestIntegration(Actual|Steering)' -count=1 -v
 GOOBERS_INTERACTIVE_TEST_BINARY="$PWD/.tools/goobers" \
   go test -race -tags integration ./internal/interactiveops -count=1 -v
 ```
 
-Portal acceptance uses a fresh local-tools server and the separate Playwright
-configuration in `portal`; see [the browser acceptance instructions](../../portal/e2e/interactive-acceptance.md)
-for its measured launcher and evidence. Keep screenshots, video, traces, logs and runtime state outside Git.
-The handoff records exact commands, outcomes and paths. Broker tests cover
-identity/resource isolation, decisions, refresh/challenge/revocation,
-attenuation, concurrent replay and unknown writes using controlled providers.
-They provide no evidence of live Microsoft delegated authentication.
+Use [the browser acceptance instructions](../../portal/e2e/interactive-acceptance.md)
+with a fresh demo server and copied configuration. Store screenshots, video,
+traces, logs and runtime state outside Git. Those artifacts show observed local
+states, not live provider access or production isolation.
 
-A live Azure/ADO pilot needs explicit approval for tenant, resources and
-permissions, verified issuer/audience/tenant/object identity, a frontend and
-backend sign-in topology, consented ADO and Azure audiences, supported
-authorization-code/OBO flows, encrypted token cache custody, Conditional
-Access challenges, actual resource authorization, provider correlation and
-revocation/uncertain-write qualification. None is provisioned here.
-
-Decisions for the next iteration are the live sign-in and broker deployment
-boundary, native-tool compatibility versus strict mediation, distributed
-worker/lease persistence, production child-workflow lineage, and whether
-collaborative sessions are part of the first live release.
+A live Azure/ADO pilot still needs approved tenant/resources/permissions,
+verified identity, frontend/backend sign-in topology, consented audiences,
+supported authorization-code/OBO flows, encrypted token cache custody,
+Conditional Access challenges, real resource authorization and uncertain-write
+qualification. Nothing here provisions those prerequisites. Other open decisions
+are production daemon integration, distributed persistence/workers, native-tool
+compatibility, production child lineage and collaborative sessions.
