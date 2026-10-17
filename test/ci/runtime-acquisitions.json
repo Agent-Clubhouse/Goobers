@@ -69,6 +69,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows credential files:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows dispatch heartbeat and recovery fences:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows durable state services:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows Temporal inspection:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows harness and toolkit:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows host image preparation:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows image input verifier (PowerShell 5.1):go-modules",
