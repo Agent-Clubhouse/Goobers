@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -344,9 +345,21 @@ func (e *Executor) metadata(workspace, suffix string) string {
 }
 
 func copySource(source, dest string) error {
+	return copySourceContext(context.Background(), source, dest)
+}
+
+func copySourceContext(ctx context.Context, source, dest string) error {
+	sourceRoot, err := os.OpenRoot(source)
+	if err != nil {
+		return err
+	}
+	defer sourceRoot.Close()
 	count := 0
 	var total int64
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -384,8 +397,22 @@ func copySource(source, dest string) error {
 			return fmt.Errorf("workspace snapshot exceeds prototype bound")
 		}
 		// Copy files, never hardlink the source or transport its Git credentials/hooks.
-		data, err := os.ReadFile(path)
+		file, err := sourceRoot.Open(rel)
 		if err != nil {
+			return err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, (4<<20)+1))
+		closeErr := file.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return err
+		}
+		// Enforce the actual bytes too: an unexpected growing file must not
+		// escape the advertised bound after its metadata was inspected.
+		total += int64(len(data)) - info.Size()
+		if len(data) > 4<<20 || total > 64<<20 {
+			return fmt.Errorf("workspace snapshot exceeds prototype bound")
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		return os.WriteFile(target, data, info.Mode().Perm()&0700|0600)
