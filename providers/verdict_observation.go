@@ -1,5 +1,7 @@
 package providers
 
+import "encoding/json"
+
 // VerdictReadStatus records whether a successful poll established the shape of
 // every native combined-status response. It is observation-only provenance.
 type VerdictReadStatus string
@@ -32,4 +34,11 @@ func validObservedStatus(context, state string) bool {
 
 func pullRequestPollFailure(phase string, err error) (PullRequestPollResult, error) {
 	return PullRequestPollResult{PollErrorPhase: phase}, err
+}
+
+// The count was historically ignored by policy decoding. Invalid count types
+// must only degrade observation certainty, never introduce a new poll error.
+func observedStatusTotalMatches(raw json.RawMessage, count int) bool {
+	var total *int
+	return json.Unmarshal(raw, &total) == nil && total != nil && *total == count
 }

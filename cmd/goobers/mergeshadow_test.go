@@ -190,7 +190,7 @@ func TestMergeVerdictShadowPodTransportAndPrivacy(t *testing.T) {
 func TestMergeVerdictShadowAppendWarningIsSafe(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = fmt.Fprint(w, `{"error":{"message":"secret-sentinel"}}`)
+		_, _ = fmt.Fprint(w, `{"error":{"code":"fixture-denied","message":"secret-sentinel"}}`)
 	}))
 	defer server.Close()
 	stampJournalPlaneEnv(t, server.URL+"/secret-sentinel", "fixture", "run-1", "alpha")

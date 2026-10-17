@@ -20,6 +20,12 @@ func TestVerdictObservationPollProvenance(t *testing.T) {
 			phase         string
 		}{
 			{name: "explicit-empty", body: `{"statuses":[],"total_count":0}`, want: VerdictReadComplete},
+			{name: "count-string", body: `{"statuses":[],"total_count":"invalid"}`, want: VerdictReadIncomplete},
+			{name: "count-fraction", body: `{"statuses":[],"total_count":0.5}`, want: VerdictReadIncomplete},
+			{name: "count-overflow", body: `{"statuses":[],"total_count":1e100}`, want: VerdictReadIncomplete},
+			{name: "count-bool", body: `{"statuses":[],"total_count":false}`, want: VerdictReadIncomplete},
+			{name: "count-object", body: `{"statuses":[],"total_count":{}}`, want: VerdictReadIncomplete},
+			{name: "count-null", body: `{"statuses":[],"total_count":null}`, want: VerdictReadIncomplete},
 			{name: "missing", body: `{}`, want: VerdictReadIncomplete},
 			{name: "null-response", body: `null`, want: VerdictReadIncomplete},
 			{name: "null-list", body: `{"statuses":null,"total_count":0}`, want: VerdictReadIncomplete},
@@ -63,8 +69,12 @@ func TestVerdictObservationPollProvenance(t *testing.T) {
 				if statusReads.Load() != 1 {
 					t.Fatalf("native status reads = %d, want exactly the existing poll read", statusReads.Load())
 				}
-				if (err != nil) != (tc.phase != "") || poll.PollErrorPhase != tc.phase || poll.VerdictReadStatus != tc.want {
-					t.Fatalf("poll=%+v err=%v want read=%q phase=%q", poll, err, tc.want, tc.phase)
+				want := tc.want
+				if forge == "github" && strings.HasPrefix(tc.name, "count-") {
+					want = VerdictReadComplete
+				}
+				if (err != nil) != (tc.phase != "") || poll.PollErrorPhase != tc.phase || poll.VerdictReadStatus != want {
+					t.Fatalf("poll=%+v err=%v want read=%q phase=%q", poll, err, want, tc.phase)
 				}
 				if tc.phase == "" && tc.name != "bad-entry" && tc.name != "bad-state" && poll.CheckState != CheckStatePassing {
 					t.Fatalf("shadow changed existing empty-status merge behavior: %+v", poll)

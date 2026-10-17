@@ -718,7 +718,7 @@ func (p *GiteaProvider) combinedCheckStateAndVerdict(ctx context.Context, repo R
 	failing, pending := false, false
 	// This endpoint is paginated; the existing poll reads one page. Do not
 	// infer absence unless that page explicitly accounts for the total.
-	complete := combined.Statuses != nil && combined.TotalCount != nil && *combined.TotalCount == len(combined.Statuses)
+	complete := combined.Statuses != nil && observedStatusTotalMatches(combined.TotalCount, len(combined.Statuses))
 	for _, status := range combined.Statuses {
 		complete = complete && validObservedStatus(status.Context, status.Status)
 		if found, ok := mergeReviewStatusDetail(status.Context, status.Status, status.Description, status.TargetURL); ok {
@@ -1617,9 +1617,9 @@ type giteaReview struct {
 }
 
 type giteaCombinedStatus struct {
-	TotalCount *int          `json:"total_count"`
-	State      string        `json:"state"`
-	Statuses   []giteaStatus `json:"statuses"`
+	TotalCount json.RawMessage `json:"total_count"`
+	State      string          `json:"state"`
+	Statuses   []giteaStatus   `json:"statuses"`
 }
 
 type giteaStatus struct {
