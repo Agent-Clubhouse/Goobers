@@ -1991,6 +1991,9 @@ jobs:
       - name: make build (windows)
         run: make build-operator
 
+      - name: Windows operator options
+        run: go test ./cmd/operator -count=1
+
       - name: Windows platform runtime
         # Hosted runners can ship wsl.exe without a usable distro, so the WSL
         # descendant test probes for a guest and skips with diagnostics; set
