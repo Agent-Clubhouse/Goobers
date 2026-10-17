@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -26,11 +25,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/configsync"
@@ -253,61 +256,25 @@ func (r *GaggleReconciler) workerImage() string {
 // SetupWithManager wires the reconciler to watch Gaggles, plus Goober and
 // Deployment changes mapped back to their owning gaggle.
 func (r *GaggleReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	// Generation publication has its own workqueue: API errors while finding
+	// Gaggles must be retried rather than discarded by a watch map callback.
+	generationEvents := make(chan event.GenericEvent)
+	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Gaggle{}).
 		Watches(&v1alpha1.Goober{}, handler.EnqueueRequestsFromMapFunc(gooberToGaggle)).
-		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.generationPointerToGaggles)).
+		WatchesRawSource(generationGaggleSource(generationEvents)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(workerToGaggle)).
-		Complete(r)
+		Complete(r); err != nil {
+		return err
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		Named("gaggle-generation-pointer").
+		For(&corev1.ConfigMap{}, builder.WithPredicates(predicate.NewPredicateFuncs(isGenerationPointer))).
+		Complete(&generationPointerReconciler{Client: r.Client, events: generationEvents})
 }
 
-// A map function cannot return an error to trigger a requeue, so a failed List
-// is retried in place with a short bounded backoff before being dropped.
-const generationListAttempts = 3
-
-const generationListBackoff = 200 * time.Millisecond
-
-func (r *GaggleReconciler) generationPointerToGaggles(ctx context.Context, obj client.Object) []reconcile.Request {
-	if obj.GetName() != configsync.GenerationConfigMapName {
-		return nil
-	}
-	cm, ok := obj.(*corev1.ConfigMap)
-	if !ok {
-		return nil
-	}
-	generation := cm.Data[configsync.GenerationConfigMapKey]
-	if generation == "" {
-		return nil
-	}
-	var gaggles v1alpha1.GaggleList
-	var err error
-	for attempt := 1; attempt <= generationListAttempts; attempt++ {
-		err = r.List(ctx, &gaggles,
-			client.InNamespace(cm.Namespace),
-			configsync.GenerationSelector(generation),
-		)
-		if err == nil {
-			break
-		}
-		log.FromContext(ctx).Error(err, "listing gaggles for generation pointer failed",
-			"namespace", cm.Namespace, "generation", generation, "attempt", attempt)
-		if attempt == generationListAttempts {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(generationListBackoff * time.Duration(attempt)):
-		}
-	}
-	reqs := make([]reconcile.Request, 0, len(gaggles.Items))
-	for i := range gaggles.Items {
-		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-			Namespace: gaggles.Items[i].Namespace,
-			Name:      gaggles.Items[i].Name,
-		}})
-	}
-	return reqs
+func generationGaggleSource(events <-chan event.GenericEvent) source.Source {
+	return source.Channel(events, &handler.EnqueueRequestForObject{}, source.WithBufferSize[client.Object, reconcile.Request](32))
 }
 
 // gooberToGaggle maps a Goober change to a reconcile request for its gaggle.
