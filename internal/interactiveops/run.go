@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,30 @@ func nativeReceipt(dir string, a *Action) (state, runID, reason string) {
 	return
 }
 func (s *Service) reconcile(dir string, a *Action, runs []Run) {
+	if isConfigAction(a.Kind) && (a.Status == "authorized" || a.Status == "running") {
+		current, err := configDigest(filepath.Join(dir, "instance", "config"))
+		if err != nil {
+			return
+		}
+		switch {
+		case a.ExpectedConfigDigest != "" && current == a.ExpectedConfigDigest:
+			a.Status = "succeeded"
+			a.OperationStatus = "confirmed"
+			a.Output = "Recovered committed native configuration generation."
+			a.Error = ""
+		case current == a.ConfigDigest:
+			a.Status = "failed"
+			a.OperationStatus = "failed"
+			a.Error = "Interrupted configuration action did not commit; the native transaction restored the previous generation."
+		default:
+			a.Status = "uncertain"
+			a.OperationStatus = "outcome_unknown"
+			a.Error = "Configuration generation differs from both reviewed and expected state; reconcile before another action."
+		}
+		_ = saveAction(dir, a)
+		return
+	}
+
 	if a.Kind != "submit_run" || (a.Status != "running" && a.Status != "admitted" && a.Status != "uncertain") {
 		return
 	}
@@ -116,13 +141,9 @@ func (s *Service) reconcile(dir string, a *Action, runs []Run) {
 	}
 }
 func (s *Service) startRun(scope Scope, dir string, a *Action) error {
-	worker, err := lock.TryAcquire(filepath.Join(dir, "worker.lock"))
-	for retry := 0; errors.Is(err, lock.ErrHeld) && retry < 20; retry++ {
-		time.Sleep(10 * time.Millisecond)
-		worker, err = lock.TryAcquire(filepath.Join(dir, "worker.lock"))
-	}
+	worker, err := s.reserveWorker(scope, dir)
 	if err != nil {
-		return errors.New("session helper worker capacity is occupied")
+		return err
 	}
 	if _, err = os.Stat(s.opts.Binary); err != nil {
 		_ = worker.Release()
@@ -226,6 +247,17 @@ func (s *Service) execute(scope Scope, dir, id string, worker *lock.Handle) {
 					current.CleanupConfirmed = outcome.cleanup
 					runs, _ := readRuns(root)
 					s.reconcile(dir, &current, runs)
+					for _, run := range runs {
+						if run.ID == current.RunID {
+							log, reason := nativeLogs(run.JournalPath)
+							if log != "" {
+								current.Output += "\nNative stage output:\n" + log
+							}
+							if current.Status == "failed" && current.Error == "" {
+								current.Error = reason
+							}
+						}
+					}
 					if current.Status == "running" || current.Status == "admitted" {
 						current.Status = "uncertain"
 						current.OperationStatus = "outcome_unknown"
@@ -273,4 +305,37 @@ func (s *Service) requestStop(dir, target string) error {
 		}
 	}
 	return errors.New("owned active run not found")
+}
+
+func isConfigAction(kind string) bool {
+	return kind == "tweak_gaggle" || kind == "tweak_workflow" || kind == "add_workflow"
+}
+func nativeLogs(path string) (string, string) {
+	reader, err := journal.OpenReadOnly(path)
+	if err != nil {
+		return "", ""
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "", ""
+	}
+	var out strings.Builder
+	reason := ""
+	for _, event := range events {
+		if event.Error != nil {
+			reason = event.Error.Message
+		}
+		if event.Type != journal.EventArtifactRecorded || event.Ref == nil || (!strings.HasSuffix(event.Name, "/stdout.log") && !strings.HasSuffix(event.Name, "/stderr.log")) {
+			continue
+		}
+		if out.Len() >= 20000 {
+			break
+		}
+		data, err := reader.ArtifactBytesBounded(*event.Ref, 20000)
+		if err != nil {
+			continue
+		}
+		out.Write(data)
+	}
+	return out.String(), reason
 }

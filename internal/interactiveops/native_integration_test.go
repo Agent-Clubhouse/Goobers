@@ -51,7 +51,7 @@ func TestNativeWorkflowExecution(t *testing.T) {
 			}
 			a = current
 			err = nil
-			if a.Status != "running" && a.Status != "admitted" {
+			if a.Status != "running" && a.Status != "admitted" && (a.CleanupConfirmed || a.OperationStatus == "failed") {
 				return a
 			}
 		}
@@ -59,8 +59,7 @@ func TestNativeWorkflowExecution(t *testing.T) {
 		return a
 	}
 	failed := run("failing-test")
-	time.Sleep(500 * time.Millisecond)
-	if failed.Status != "failed" || failed.RunID == "" {
+	if failed.Status != "failed" || failed.RunID == "" || !strings.Contains(failed.Output, "discount floor") {
 		data, _ := json.MarshalIndent(failed, "", "  ")
 		t.Fatalf("actual failing test missing: %s", data)
 	}
@@ -68,7 +67,7 @@ func TestNativeWorkflowExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	passed := run("passing-test")
-	if passed.Status != "succeeded" || passed.RunID == "" {
+	if passed.Status != "succeeded" || passed.RunID == "" || !strings.Contains(passed.Output, "discount floor") {
 		data, _ := json.MarshalIndent(passed, "", "  ")
 		t.Fatalf("actual passing test missing: %s", data)
 	}
