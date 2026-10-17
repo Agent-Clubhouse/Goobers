@@ -5,22 +5,36 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/testsuite"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	kubetesting "k8s.io/client-go/testing"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimrelease"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -28,7 +42,14 @@ import (
 
 func TestIntegrationRecoveryPublicationTakesVerifiedHostCustody(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"live", "released-during-transfer", "finished-during-transfer", "crashed-reservation-present"} {
+	for _, mode := range []string{
+		"live",
+		"cold-pending-times-out-before-terminal-release",
+		"warm-ready-finishes-before-terminal-release",
+		"successor-owns-before-late-publication",
+		"finished-during-transfer",
+		"crashed-reservation-present",
+	} {
 		t.Run(mode, func(t *testing.T) {
 			testRecoveryPublicationCustody(t, mode)
 		})
@@ -37,7 +58,6 @@ func TestIntegrationRecoveryPublicationTakesVerifiedHostCustody(t *testing.T) {
 
 func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	t.Helper()
-	release := mode == "released-during-transfer"
 	ctx := context.Background()
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
@@ -61,6 +81,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		t.Fatalf("claim: %t %v", ok, err)
 	}
 	seedItemRepositoryForTest(t, layout, runID, "7", repo)
+	if mode == "cold-pending-times-out-before-terminal-release" {
+		runHeartbeatTimeoutLifecycle(t, layout, run, runID, false)
+	}
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
@@ -105,8 +128,16 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	}
 	service := recoveryDeliveryService{layout: layout, setup: &schedulerSetup{LegacyWorktrees: manager}}
 	var body io.Reader = bytes.NewReader(wire.Bytes())
-	if release {
-		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error { return ledger.Release("7", runID, claimrelease.Completed.Reason()) }}
+	if mode == "warm-ready-finishes-before-terminal-release" {
+		runHeartbeatTimeoutLifecycle(t, layout, run, runID, true)
+	}
+	if mode == "successor-owns-before-late-publication" {
+		if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _, err := ledger.Claim("7", "successor-run", "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("successor claim: %t %v", ok, err)
+		}
 	}
 	if mode == "finished-during-transfer" {
 		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error {
@@ -123,8 +154,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		seedRecoveryDebris(t, layout, "0000000000000000-deadbeef")
 	}
 	err = service.PublishRecovery(ctx, runID, repo.CanonicalKey(), "7", body)
-	if (err != nil) != release {
-		t.Fatalf("publication release=%t: %v", release, err)
+	wantRefusal := mode == "successor-owns-before-late-publication"
+	if (err != nil) != wantRefusal {
+		t.Fatalf("late publication refusal=%t: %v", wantRefusal, err)
 	}
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -134,14 +166,14 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if release {
+	if wantRefusal {
 		if len(captures) != 0 {
-			t.Fatalf("released claim acknowledged: %+v", captures)
+			t.Fatalf("successor-fenced publication acknowledged: %+v", captures)
 		}
 		return
 	}
 	deadline := started.Add(30 * 24 * time.Hour)
-	if mode == "finished-during-transfer" {
+	if mode == "finished-during-transfer" || mode == "cold-pending-times-out-before-terminal-release" || mode == "warm-ready-finishes-before-terminal-release" {
 		deadline = finished.Add(30 * 24 * time.Hour)
 	}
 	if len(captures) != 1 || !captures[0].CreatedAt.Equal(started) || !captures[0].RetainUntil.Equal(deadline) {
@@ -160,6 +192,149 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		return
 	}
 	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline, source)
+}
+
+type heartbeatLifecycleRelay struct {
+	cancel context.CancelFunc
+	cold   bool
+	ready  bool
+}
+
+func (r *heartbeatLifecycleRelay) RelayLiveness(_ context.Context, _ dispatcher.Attempt, _ string, phase corev1.PodPhase) error {
+	if phase == corev1.PodRunning {
+		r.ready = true
+	}
+	if r.cold && phase == corev1.PodPending {
+		r.cancel()
+	}
+	return nil
+}
+
+type heartbeatLifecycleGate struct {
+	cancel    context.CancelFunc
+	completed bool
+}
+
+func (g *heartbeatLifecycleGate) Confirmed(ctx context.Context, _ dispatcher.Attempt) (bool, error) {
+	g.completed = true
+	g.cancel()
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *journal.Run, runID string, warm bool) {
+	t.Helper()
+	api := fake.NewSimpleClientset()
+	var pod *corev1.Pod
+	var observations int
+	var deleted bool
+	api.PrependReactor("create", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		pod = action.(kubetesting.CreateAction).GetObject().(*corev1.Pod)
+		pod.Status.Phase = corev1.PodPending
+		observations = 0
+		deleted = false
+		return false, nil, nil
+	})
+	api.PrependReactor("get", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+		if pod == nil || deleted {
+			return false, nil, nil
+		}
+		observations++
+		observed := pod.DeepCopy()
+		if warm {
+			if observations == 1 {
+				observed.Status.Phase = corev1.PodRunning
+				observed.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			} else {
+				observed.Status.Phase = corev1.PodSucceeded
+			}
+		}
+		return true, observed, nil
+	})
+	api.PrependReactor("delete", "pods", func(kubetesting.Action) (bool, runtime.Object, error) {
+		deleted = true
+		return false, nil, nil
+	})
+	relay := &heartbeatLifecycleRelay{cold: !warm}
+	gate := &heartbeatLifecycleGate{}
+	stageDispatcher, err := dispatcher.New(dispatcher.Config{
+		GaggleNamespaces:    map[string]string{"goobers": "test"},
+		EmbeddedVersion:     "v1",
+		SupervisionInterval: time.Millisecond,
+	}, dispatcher.NewKubernetesPodAPI(api), relay, gate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane, err := dispatcher.NewSurrenderDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	activities := &engine.Activities{Dispatcher: stageDispatcher, Surrenders: plane}
+	timeout := temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil)
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	env.RegisterActivity(activities)
+	env.OnActivity(engine.ActDispatchStage, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, input engine.DispatchStageInput) (engine.DispatchStageResult, error) {
+			dispatchCtx, cancel := context.WithCancel(ctx)
+			relay.cancel = cancel
+			gate.cancel = cancel
+			_, dispatchErr := activities.DispatchStage(dispatchCtx, input)
+			if dispatchErr == nil || !strings.Contains(dispatchErr.Error(), "control path lost") {
+				return engine.DispatchStageResult{}, fmt.Errorf("dispatch interruption = %v, want lost heartbeat control path", dispatchErr)
+			}
+			return engine.DispatchStageResult{}, timeout
+		},
+	)
+	env.ExecuteWorkflow(engine.Run, engine.RunInput{
+		RunID: runID, Gaggle: "goobers", WorkflowName: "implementation", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers", Start: "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+				Run: &apiv1.DeterministicRun{Command: []string{"go", "version"}, Workspace: apiv1.WorkspaceScratch},
+			}},
+		},
+		Placements: []engine.PinnedPlacement{{
+			Stage: "implement", Queue: dispatcher.QueueName("goobers", "windows"),
+			Eligible: []dispatcher.RunnerSpec{{
+				Name: "windows", OS: "windows", HostKind: "image", Host: "example/windows:v1",
+			}},
+		}},
+	})
+	if err := env.GetWorkflowError(); err == nil || !strings.Contains(strings.ToLower(err.Error()), "heartbeat") {
+		t.Fatalf("workflow heartbeat timeout = %v", err)
+	}
+	if warm && (!relay.ready || !gate.completed) {
+		t.Fatalf("warm lifecycle ready=%t agentCompleted=%t, want both before timeout", relay.ready, gate.completed)
+	}
+	if !warm && (relay.ready || gate.completed) {
+		t.Fatalf("cold lifecycle ready=%t agentCompleted=%t, want timeout while Pending", relay.ready, gate.completed)
+	}
+	// Production terminal hooks run only after the workflow's durable finish.
+	// Preserve that order so claim release records Failed rather than Unknown.
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	hooks := &engineTerminalHooks{
+		finalize: func(id string, _ journal.RunPhase) error {
+			return releaseClaimsForRun(layout, nil, id)
+		},
+	}
+	hooks.run(context.Background(), engineTerminalOutcome{
+		RunID: runID, Gaggle: "goobers", Workflow: "implementation",
+		Phase: journal.PhaseFailed, Err: env.GetWorkflowError(),
+	})
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held := ledger.ForRunAll(runID); len(held) != 0 {
+		t.Fatalf("terminal workflow retained claims: %+v", held)
+	}
+	if released := ledger.HistoryForRun(runID); len(released) != 1 || released[0].ReleaseReason.Disposition != claimrelease.Failed {
+		t.Fatalf("terminal claim release did not preserve failed outcome: %+v", released)
+	}
 }
 
 func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string, deadline time.Time, base string) {

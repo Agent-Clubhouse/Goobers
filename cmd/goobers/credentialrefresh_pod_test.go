@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -182,6 +183,26 @@ func TestPodCIPollTokenSourceWithoutAUsableValue(t *testing.T) {
 // reports a plane it cannot reach, a plane failure, or a plane answer without
 // the capability as a rejected credential that was not refreshed.
 func TestPodCIPollTokenSourceRefreshThroughThePlane(t *testing.T) {
+	// A persistent 500 exhausts the production three-minute retry budget.
+	// Keep that path covered without spending three real minutes per stress
+	// repetition (#3167). An in-process transport keeps all waiting in the
+	// synctest bubble; a TCP server would introduce real network I/O.
+	for _, name := range []string{"fresh value", "plane unreachable", "plane fails", "plane omits the capability"} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				testPodCIPollTokenSourceRefreshThroughThePlane(t, name)
+			})
+		})
+	}
+}
+
+type credentialRefreshTestTransport func(*http.Request) (*http.Response, error)
+
+func (f credentialRefreshTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func testPodCIPollTokenSourceRefreshThroughThePlane(t *testing.T, name string) {
 	const capabilityName = "provider:pr:write"
 	stageExpiry := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
 	freshExpiry := stageExpiry.Add(time.Hour)
@@ -205,58 +226,65 @@ func TestPodCIPollTokenSourceRefreshThroughThePlane(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []map[string]any{{"capability": "repo:push", "value": "unrelated"}}})
 		}, wantErr: `the credential plane returned no value for "provider:pr:write"`},
 	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			var requests []dispatcher.CredentialResolveRequest
-			t.Setenv(dispatcher.EnvRunID, "run-pod")
-			t.Setenv(dispatcher.EnvStage, "ci-poll")
-			t.Setenv(dispatcher.EnvPodToken, "pod-token")
-			t.Setenv(dispatcher.EnvDaemonAPI, "")
-			if !tc.noPlane {
-				plane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					var request dispatcher.CredentialResolveRequest
-					_ = json.NewDecoder(r.Body).Decode(&request)
-					requests = append(requests, request)
-					tc.handler(w, r)
-				}))
-				t.Cleanup(plane.Close)
-				t.Setenv(dispatcher.EnvDaemonAPI, plane.URL)
+	tc := cases[name]
+	var requests []dispatcher.CredentialResolveRequest
+	t.Setenv(dispatcher.EnvRunID, "run-pod")
+	t.Setenv(dispatcher.EnvStage, "ci-poll")
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+	t.Setenv("GOOBERS_DAEMON_CA", "")
+	if !tc.noPlane {
+		previousTransport := http.DefaultTransport
+		t.Cleanup(func() { http.DefaultTransport = previousTransport })
+		http.DefaultTransport = credentialRefreshTestTransport(func(r *http.Request) (*http.Response, error) {
+			defer func() { _ = r.Body.Close() }()
+			var request dispatcher.CredentialResolveRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode credential resolve request: %v", err)
 			}
-			registrar := &recordingRegistrar{}
-			source := podCIPollTokenSource([]dispatcher.MintedCredential{{Capability: capabilityName, Value: "stage-value", ExpiresAt: &stageExpiry}}, capabilityName, registrar)
-			token, ok := source.(*credentials.RefreshingToken)
-			if !ok {
-				t.Fatalf("source = %T, want a refreshing token", source)
-			}
-			if !token.Expiry().Equal(stageExpiry) {
-				t.Fatalf("expiry = %v, want the stated %v", token.Expiry(), stageExpiry)
-			}
-			if value, err := token.Token(context.Background()); err != nil || value != "stage-value" || len(requests) != 0 {
-				t.Fatalf("Token = %q, %v after %d plane calls; want the stage-start value without a call", value, err, len(requests))
-			}
-
-			token.Invalidate()
-			value, err := token.Token(context.Background())
-			if tc.wantErr != "" {
-				if !errors.Is(err, credentials.ErrRejectedCredentialNotRefreshed) || !strings.Contains(err.Error(), tc.wantErr) || value != "" {
-					t.Fatalf("Token after 401 = %q, %v; want a not-refreshed error naming %q", value, err, tc.wantErr)
-				}
-				if len(registrar.values) != 0 {
-					t.Fatalf("registered %q, want nothing from a failed refresh", registrar.values)
-				}
-				return
-			}
-			if err != nil || value != tc.wantValue || !token.Expiry().Equal(freshExpiry) {
-				t.Fatalf("Token after 401 = %q (expires %v), %v; want %q expiring %v", value, token.Expiry(), err, tc.wantValue, freshExpiry)
-			}
-			if len(requests) != 1 || requests[0].RunID != "run-pod" || requests[0].Stage != "ci-poll" ||
-				strings.Join(requests[0].Capabilities, ",") != capabilityName || requests[0].Grant {
-				t.Fatalf("plane requests = %+v, want one re-resolve of %s for run-pod/ci-poll without a grant", requests, capabilityName)
-			}
-			if strings.Join(registrar.values, ",") != "fresh-value" {
-				t.Fatalf("registered %q, want the fresh value", registrar.values)
-			}
+			requests = append(requests, request)
+			w := httptest.NewRecorder()
+			tc.handler(w, r)
+			return w.Result(), nil
 		})
+		t.Setenv(dispatcher.EnvDaemonAPI, "http://credential-plane.test")
+	}
+	registrar := &recordingRegistrar{}
+	source := podCIPollTokenSource([]dispatcher.MintedCredential{{Capability: capabilityName, Value: "stage-value", ExpiresAt: &stageExpiry}}, capabilityName, registrar)
+	token, ok := source.(*credentials.RefreshingToken)
+	if !ok {
+		t.Fatalf("source = %T, want a refreshing token", source)
+	}
+	if !token.Expiry().Equal(stageExpiry) {
+		t.Fatalf("expiry = %v, want the stated %v", token.Expiry(), stageExpiry)
+	}
+	if value, err := token.Token(context.Background()); err != nil || value != "stage-value" || len(requests) != 0 {
+		t.Fatalf("Token = %q, %v after %d plane calls; want the stage-start value without a call", value, err, len(requests))
+	}
+
+	token.Invalidate()
+	value, err := token.Token(context.Background())
+	if tc.wantErr != "" {
+		if !errors.Is(err, credentials.ErrRejectedCredentialNotRefreshed) || !strings.Contains(err.Error(), tc.wantErr) || value != "" {
+			t.Fatalf("Token after 401 = %q, %v; want a not-refreshed error naming %q", value, err, tc.wantErr)
+		}
+		if len(registrar.values) != 0 {
+			t.Fatalf("registered %q, want nothing from a failed refresh", registrar.values)
+		}
+		if name == "plane fails" && len(requests) < 2 {
+			t.Fatalf("persistent 500 made %d requests, want the retry path exercised", len(requests))
+		}
+		return
+	}
+	if err != nil || value != tc.wantValue || !token.Expiry().Equal(freshExpiry) {
+		t.Fatalf("Token after 401 = %q (expires %v), %v; want %q expiring %v", value, token.Expiry(), err, tc.wantValue, freshExpiry)
+	}
+	if len(requests) != 1 || requests[0].RunID != "run-pod" || requests[0].Stage != "ci-poll" ||
+		strings.Join(requests[0].Capabilities, ",") != capabilityName || requests[0].Grant {
+		t.Fatalf("plane requests = %+v, want one re-resolve of %s for run-pod/ci-poll without a grant", requests, capabilityName)
+	}
+	if strings.Join(registrar.values, ",") != "fresh-value" {
+		t.Fatalf("registered %q, want the fresh value", registrar.values)
 	}
 }
 

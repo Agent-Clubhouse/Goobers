@@ -13,7 +13,7 @@ import (
 )
 
 func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key, issue string, body io.Reader) error {
-	deadline, err := authorizeRecoveryDelivery(ctx, s.layout, runID, key, issue, time.Now().UTC())
+	deadline, err := withAuthorizedRecoveryDelivery(ctx, s.layout, runID, key, issue, time.Now().UTC(), true, nil)
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,7 @@ func (a recoveryPublicationAck) Append(event journal.Event) error {
 	if err != nil {
 		return err
 	}
-	_, err = withAuthorizedRecoveryDelivery(a.ctx, a.service.layout, a.runID, a.key, a.issue, time.Now().UTC(), func() error {
+	_, err = withAuthorizedRecoveryDelivery(a.ctx, a.service.layout, a.runID, a.key, a.issue, time.Now().UTC(), true, func() error {
 		return (recoveryCleanupJournal{directory: a.service.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}).Append(event)
 	})
 	return err

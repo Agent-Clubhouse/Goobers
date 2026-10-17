@@ -518,7 +518,7 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 	if err := runGit(ctx, pinDir, "config", "user.email", BotGitUserEmail); err != nil {
 		return nil, err
 	}
-	if err := ensureScratchExcluded(ctx, pinDir); err != nil {
+	if err := EnsureScratchExcluded(ctx, pinDir); err != nil {
 		return nil, err
 	}
 	startRef, err := finishPinnedPreparation(ctx, pinDir, opts, existing)

@@ -230,6 +230,7 @@ func runVoidStartupPhase(stdout io.Writer, tracker *startupPhaseTracker, phase s
 func reconcileStartupEphemeralTemp(setup *schedulerSetup, tracker *startupPhaseTracker, stdout io.Writer) {
 	runVoidStartupPhase(stdout, tracker, "ephemeral-temp-reconcile", func() {
 		sweepOrphanedEphemeralTmp(setup.Config, setup.InstanceLog)
+		sweepOrphanedDiagnostics(setup.InstanceLog)
 	})
 }
 

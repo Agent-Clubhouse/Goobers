@@ -8,11 +8,17 @@ import (
 	"path/filepath"
 )
 
+type retainedArchiveImporter func(context.Context, string, string, Record, int64) error
+
 // An archive can outlive a crash before metadata publication. The caller's
 // freshly prepared snapshot supplies the trusted commit, ref, base and patch
 // identity; the archive supplies only its transport digest and size. The retry
 // verifier must check both identities before any metadata can acknowledge it.
 func resumeArchivePublication(ctx context.Context, repository, directory string, prepared Record, maxBytes int64) (Record, error) {
+	return resumeArchivePublicationWithImporter(ctx, repository, directory, prepared, maxBytes, ImportSnapshotBundle)
+}
+
+func resumeArchivePublicationWithImporter(ctx context.Context, repository, directory string, prepared Record, maxBytes int64, importArchive retainedArchiveImporter) (Record, error) {
 	archive := filepath.Join(directory, BundleFileName)
 	digest, err := archiveDigest(archive, maxBytes)
 	if err != nil {
@@ -28,13 +34,19 @@ func resumeArchivePublication(ctx context.Context, repository, directory string,
 	}
 	bound := prepared
 	bound.ArchiveDigest, bound.ArchiveBytes, bound.ArchiveFormat = digest, info.Size(), format
-	return republishRetainedState(ctx, repository, directory, prepared, bound, maxBytes)
+	return republishRetainedStateWithImporter(ctx, repository, directory, prepared, bound, maxBytes, importArchive)
 }
 
 // A published archive is immutable evidence, not a cache to regenerate using
 // whatever packing heuristics Git currently applies. Verify and re-flush its
 // original bytes on retries, including a prior metadata-directory flush error.
 func republishRetainedState(ctx context.Context, repository, directory string, prepared, existing Record, maxBytes int64) (Record, error) {
+	return republishRetainedStateWithImporter(ctx, repository, directory, prepared, existing, maxBytes, ImportSnapshotBundle)
+}
+
+// Inject only Git-backed verification; retries still use the real immutable
+// archive and metadata publishers, including their durability and lock checks.
+func republishRetainedStateWithImporter(ctx context.Context, repository, directory string, prepared, existing Record, maxBytes int64, importArchive retainedArchiveImporter) (Record, error) {
 	if !prepared.CreatedAt.Equal(existing.CreatedAt) || !prepared.RetainUntil.Equal(existing.RetainUntil) {
 		return Record{}, ErrRecordConflict
 	}
@@ -44,7 +56,7 @@ func republishRetainedState(ctx context.Context, repository, directory string, p
 		return Record{}, ErrRecordConflict
 	}
 	archive := filepath.Join(directory, BundleFileName)
-	if err := ImportSnapshotBundle(ctx, repository, archive, existing, maxBytes); err != nil {
+	if err := importArchive(ctx, repository, archive, existing, maxBytes); err != nil {
 		return Record{}, fmt.Errorf("verify retained archive before retry: %w", err)
 	}
 	digest, err := publishArchive(ctx, archive, maxBytes, func(w io.Writer) error {

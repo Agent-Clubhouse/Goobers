@@ -35,7 +35,7 @@ func TestPrepareCopilotConfinementCreatesRuntimeDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareCopilotConfinement: %v", err)
 	}
-	for _, dir := range []string{c.copilotHome, c.tempDir, c.logDir} {
+	for _, dir := range []string{c.copilotHome, c.tempDir} {
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
 			t.Fatalf("runtime directory %s missing: %v", dir, err)
@@ -58,7 +58,7 @@ func TestPrepareCopilotConfinementCreatesRuntimeDirectories(t *testing.T) {
 // TestPrepareCopilotConfinementKeepsTheWorkspaceSpelling pins that the
 // runtime directories are reported under the workspace root the caller
 // passed, not the canonicalized root safepath resolves through. These paths
-// become the confined subprocess's COPILOT_HOME, TMPDIR and --log-dir, next
+// become the confined subprocess's COPILOT_HOME and TMPDIR, next
 // to a sandbox policy expressed in terms of the caller's workspace; on macOS
 // (/var -> /private/var) and Windows (8.3 short paths) a canonicalized
 // prefix would point the CLI's runtime state at a path the policy never
@@ -77,7 +77,6 @@ func TestPrepareCopilotConfinementKeepsTheWorkspaceSpelling(t *testing.T) {
 	for name, got := range map[string]string{
 		"copilot-home": c.copilotHome,
 		"tmp":          c.tempDir,
-		"logs":         c.logDir,
 	} {
 		if want := filepath.Join(base, name); got != want {
 			t.Fatalf("runtime directory = %q, want %q", got, want)

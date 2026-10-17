@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -268,6 +269,54 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 	})
 }
 
+func TestGettingStartedSampleRejectsRemoteMismatchWithoutExternalRequests(t *testing.T) {
+	root, remote, _, _, server := initGettingStartedQuickstart(t)
+	server.setBranchTipLookup(func(context.Context, string) (string, error) {
+		return strings.Repeat("f", 40), nil
+	})
+	code, stdout, stderr := runArgs(t, "run", "quickstart", root)
+	if code != 1 || !strings.Contains(stdout, "phase=failed") {
+		t.Fatalf("mismatched publication outcome: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	reader, err := journal.OpenRead(filepath.Join(root, "runs", runIDFromRunStdout(t, stdout)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushed, refused := false, false
+	for _, event := range events {
+		if event.Type == journal.EventStageFinished && event.Stage == "push-branch" && event.Status == string(apiv1.ResultSuccess) {
+			pushed = true
+		}
+		if event.Error != nil {
+			if event.Stage == "open-pr" && strings.Contains(event.Error.Message, "remote branch does not match") {
+				refused = true
+			}
+			if event.Error.Code == "failed_handling_failed" || event.Error.Code == "branch_delete_failed" || strings.Contains(event.Error.Message, "refused non-loopback") {
+				t.Fatalf("publication failure escaped local fixture handling: %+v", event.Error)
+			}
+		}
+	}
+	server.mu.Lock()
+	prCount := len(server.prs)
+	failureRecorded := false
+	for _, comment := range server.issues[1].comments {
+		if count, ok := gate.ParseFailureStreakCount(comment); ok && count == 1 && strings.Contains(comment, "stage `open-pr`") {
+			failureRecorded = true
+		}
+	}
+	server.mu.Unlock()
+	if !pushed || !refused || prCount != 0 || !failureRecorded {
+		t.Fatalf("publication failure boundary: pushed=%v refused=%v prs=%d failureRecorded=%v", pushed, refused, prCount, failureRecorded)
+	}
+	if refs := sampleGitOutput(t, "", "--git-dir", remote, "for-each-ref", "--format=%(refname)", "refs/heads/goobers/quickstart/"); refs != "" {
+		t.Fatalf("failed publication branch was not cleaned up: %s", refs)
+	}
+}
+
 func TestGettingStartedSampleImplementationLocalCIThroughRealRunner(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
@@ -342,6 +391,7 @@ func initGettingStartedImplementation(t *testing.T, breakLocalCI bool) string {
 
 func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (root, remote, disposableRoot string, seed sampleSeedIssue, server *fakeGitHubServer) {
 	t.Helper()
+	restrictPublicationFixtureHTTP(t)
 	root = filepath.Join(t.TempDir(), "quickstart-instance")
 	if code, stdout, stderr := runArgs(t, "init", "--template=quickstart", root); code != 0 {
 		t.Fatalf("init quickstart template: code=%d stdout=%q stderr=%q", code, stdout, stderr)
@@ -381,14 +431,14 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return remote, nil }
 
 	server = newFakeGitHubServer(t, "your-org", "your-repo")
+	server.serveGitRemote(remote)
+	usePublicationWorkflowProviders(t, server)
 	server.addIssue(1, seed.Title, seed.Labels...)
 	server.mu.Lock()
 	server.issues[1].body = seed.Body
 	server.mu.Unlock()
 	t.Setenv("GOOBERS_TEST_GITHUB_API_URL", server.server.URL)
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "ghp_getting_started_fixture_token")
-	previousProvider := newGitHubProvider
-	newGitHubProvider = server.newGitHubProvider
 
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
@@ -432,7 +482,6 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 
 	t.Cleanup(func() {
 		repoCloneURL = previousCloneURL
-		newGitHubProvider = previousProvider
 		newAgenticAdapter = previousAdapter
 	})
 	return root, remote, disposableRoot, seed, server

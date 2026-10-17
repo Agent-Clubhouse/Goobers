@@ -257,7 +257,7 @@ type backlogReconcileBudgetedHTTPClient struct {
 
 func (c backlogReconcileBudgetedHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	if err := c.budget.Consume(); err != nil {
-		return nil, err
+		return nil, &providers.RequestAdmissionError{Err: err}
 	}
 	if c.inner != nil {
 		return c.inner.Do(req)
