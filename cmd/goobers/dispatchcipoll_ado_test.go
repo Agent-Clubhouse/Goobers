@@ -27,7 +27,9 @@ func setupADOPodPoll(t *testing.T, scheme string, resolve func(int) dispatcher.M
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderADO))
 	t.Setenv(executor.RepoProjectEnvVar, "project")
 	t.Setenv(executor.GaggleEnvVar, "gaggle")
-	t.Setenv(dispatcher.GaggleBacklogEnv, "{}")
+	// A GitHub backlog must not make this PR credential look like a backlog
+	// credential at the registered stage-provider safety gate.
+	t.Setenv(dispatcher.GaggleBacklogEnv, `{"provider":"github","project":"acme/backlog"}`)
 	t.Setenv(executor.RepoAuthSchemeEnvVar, "ambient-must-not-be-used")
 	calls := new(int)
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

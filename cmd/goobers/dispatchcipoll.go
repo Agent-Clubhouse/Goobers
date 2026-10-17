@@ -240,7 +240,7 @@ func podCIPollPoller(token string, source providers.TokenSource, adoSource provi
 	}
 	if repo.Provider == providers.ProviderADO {
 		provider, err := newProviderForStageAs[*providers.ADOProvider](providerStageRoot(""), repo, true,
-			withStageProviderADOCredential(adoSource))
+			withStageProviderCapability(capability.ProviderPRWrite), withStageProviderADOCredential(adoSource))
 		if err == nil {
 			providers.WithADOPollScope(repo)(provider)
 		}
