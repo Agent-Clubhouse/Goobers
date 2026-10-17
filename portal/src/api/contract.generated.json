@@ -146,6 +146,17 @@
       "recoverySafe": false
     },
     {
+      "id": "gaggleHealth",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/health",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "gaggleConnections",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/connections",

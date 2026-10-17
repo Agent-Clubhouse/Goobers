@@ -44,6 +44,7 @@ const (
 	FindingProlongedDegradation = "prolonged-degradation"
 	FindingOrphanedClaim        = "orphaned-claim"
 	FindingProjectionDrift      = "projection-drift"
+	FindingControllerDegraded   = "controller-degraded"
 )
 
 type findingRule struct {
@@ -59,6 +60,7 @@ var findingRules = map[string]findingRule{
 	FindingProlongedDegradation: {apiv1.GaggleHealthSeverityCritical, apiv1.GaggleHealthOperatorRequired, false},
 	FindingOrphanedClaim:        {apiv1.GaggleHealthSeverityError, apiv1.GaggleHealthInconsistent, true},
 	FindingProjectionDrift:      {apiv1.GaggleHealthSeverityError, apiv1.GaggleHealthInconsistent, false},
+	FindingControllerDegraded:   {apiv1.GaggleHealthSeverityError, apiv1.GaggleHealthDegraded, false},
 }
 
 // DefaultPolicy preserves existing behavior: observe health, notify operators,
