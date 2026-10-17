@@ -4430,11 +4430,8 @@ func recordContextManifest(jr executionJournal, env apiv1.InvocationEnvelope, st
 // rather than imported — cmd depends on internal, never the reverse).
 const mutationsSidecarFile = "mutations.jsonl"
 
-// mutationFact mirrors one line of cmd/goobers's sidecar record shape
-// without importing cmd/goobers (same decoupling convention
-// internal/telemetry/rollup/mirror.go uses for the journal's own event
-// shape) — just enough to build a journal.ExternalRef plus an operation
-// annotation.
+// mutationFact is the runner spelling of the shared provider receipt, keeping
+// sidecar decoding and recovery on the same JSON contract.
 type mutationFact = mutationsidecar.Fact
 
 // readMutationSidecar reads and parses mutationsSidecarFile from workspace,
