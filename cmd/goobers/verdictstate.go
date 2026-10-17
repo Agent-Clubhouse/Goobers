@@ -174,6 +174,9 @@ func prFindingPolicy(prNumber int) findingledger.Substantive {
 // (forRead) lists the standing findings in Findings whatever the decision, so
 // every healer and the remediation brief see them. standing names them.
 func carryOutstandingFindings(records []apiv1.Verdict, latest apiv1.Verdict, prNumber int, forRead bool) (apiv1.Verdict, []string) {
+	if snapshot, ok := findingledger.LatestSnapshot(records, latest.HeadSHA); ok && snapshot.LedgerGeneration >= latest.LedgerGeneration {
+		latest = snapshot
+	}
 	folded, result := findingledger.Fold(records, latest, prFindingPolicy(prNumber))
 	if len(result.Standing) == 0 {
 		return folded, nil
