@@ -2,6 +2,7 @@ package interactive
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -138,6 +139,20 @@ func (s *Service) start(req ExecutionRequest) {
 		emit := func(event ExecutionEvent) error {
 			emitMu.Lock()
 			defer emitMu.Unlock()
+			// Normalize typed tool results so nested structs cannot bypass
+			// sensitive-key scrubbing or retain caller-owned mutable pointers.
+			encoded, normalizeErr := json.Marshal(event.Data)
+			if normalizeErr != nil {
+				return problem(400, "invalid_event", "executor event must contain JSON-safe values")
+			}
+			var data map[string]any
+			if err := json.Unmarshal(encoded, &data); err != nil {
+				return problem(400, "invalid_event", "executor event must contain a JSON object")
+			}
+			if data == nil {
+				data = map[string]any{}
+			}
+			event.Data = data
 			if event.Type == "assistant.delta" || event.Type == "tool.output" {
 				key := event.Type + "/" + fmt.Sprint(event.Data["name"]) + "/" + fmt.Sprint(event.Data["stream"])
 				previous := pending[key]
@@ -230,10 +245,15 @@ func (s *Service) emit(req ExecutionRequest, event ExecutionEvent) error {
 	if req.ChildID != "" {
 		data["childId"] = req.ChildID
 	}
+	dataBytes, _ := json.Marshal(data)
+	if rec.Session.OutputBytes+len(dataBytes) > s.opts.MaxSessionOutputBytes {
+		return problem(409, "capacity", "session output retention budget reached")
+	}
 	if len(rec.Events) > 20000 {
 		return problem(409, "capacity", "prototype event retention limit reached")
 	}
 	return s.mutate(func(state *diskState) error {
+		state.Sessions[req.SessionID].Session.OutputBytes += len(dataBytes)
 		appendEvent(state.Sessions[req.SessionID], event.Type, req.TurnID, "", data)
 		return nil
 	})

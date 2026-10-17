@@ -594,3 +594,54 @@ func TestChildCompletionDoesNotRejectParentSteering(t *testing.T) {
 	parent.result <- ExecutionResult{}
 	waitStatus(t, s, "alice", session.ID, "idle")
 }
+
+func TestTypedToolResultsAndPinnedInstructionsAreSanitized(t *testing.T) {
+	e := newExecutor()
+	opts := options(t, e)
+	secret := "ghp_" + strings.Repeat("b", 36)
+	opts.Surfaces[0].Instructions = "Never reveal " + secret
+	s := openTest(t, opts)
+	opts.Surfaces[0].Instructions = "Caller mutation must not alter admitted configuration"
+	session := createTest(t, s, "alice")
+	commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
+	run := receiveRun(t, e)
+	if strings.Contains(run.req.Instructions, secret) || strings.Contains(run.req.Instructions, "Caller mutation") {
+		t.Fatal("surface instructions not copied and sanitized")
+	}
+	value := struct {
+		AccessToken string `json:"accessToken"`
+		Nested      string `json:"nested"`
+	}{"opaque-private", secret}
+	if err := run.emit(ExecutionEvent{Type: "tool.completed", Data: map[string]any{"result": value}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.emit(ExecutionEvent{Type: "tool.completed", Data: map[string]any{"invalid": make(chan int)}}); err == nil {
+		t.Fatal("non-JSON output accepted")
+	}
+	run.result <- ExecutionResult{}
+	waitStatus(t, s, "alice", session.ID, "idle")
+	bytes, _ := os.ReadFile(filepath.Join(s.opts.StateDir, "sessions.json"))
+	if strings.Contains(string(bytes), secret) || strings.Contains(string(bytes), "opaque-private") {
+		t.Fatal("typed payload bypassed scrubber")
+	}
+}
+
+func TestOutputBudgetRefusesFurtherOutputWithoutLosingReceipts(t *testing.T) {
+	e := newExecutor()
+	opts := options(t, e)
+	opts.MaxSessionOutputBytes = 256
+	s := openTest(t, opts)
+	session := createTest(t, s, "alice")
+	receipt := commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "bounded"})
+	run := receiveRun(t, e)
+	requireCode(t, run.emit(ExecutionEvent{Type: "tool.completed", Data: map[string]any{"text": strings.Repeat("output ", 100)}}), "capacity")
+	run.result <- ExecutionResult{Message: "output limit reached"}
+	completed := waitStatus(t, s, "alice", session.ID, "idle")
+	s.mu.Lock()
+	saved := s.state.Sessions[session.ID].Commands[receipt.CommandID]
+	fatal := s.fatal
+	s.mu.Unlock()
+	if saved.Receipt.CommandID != receipt.CommandID || fatal != nil || completed.OutputBytes != 0 {
+		t.Fatal("output pressure damaged command/custody ledger")
+	}
+}

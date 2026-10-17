@@ -20,16 +20,17 @@ type Surface struct {
 }
 
 type Options struct {
-	StateDir          string
-	Surfaces          []Surface
-	Executor          Executor
-	Principal         func(*http.Request) (string, error)
-	MaxTurnDuration   time.Duration
-	WorkerID          string
-	LeaseDuration     time.Duration
-	MaxActive         int
-	MaxActivePerOwner int
-	Now               func() time.Time
+	StateDir              string
+	Surfaces              []Surface
+	Executor              Executor
+	Principal             func(*http.Request) (string, error)
+	MaxTurnDuration       time.Duration
+	WorkerID              string
+	LeaseDuration         time.Duration
+	MaxActive             int
+	MaxActivePerOwner     int
+	MaxSessionOutputBytes int
+	Now                   func() time.Time
 	// OnStop must commit any external authority fence before returning. It is
 	// invoked after the durable session fence, outside the coordinator mutex.
 	// Failure leaves stop pending until a subsequent stop retries propagation.
@@ -98,6 +99,7 @@ type Lease struct {
 	Status    string    `json:"status"`
 }
 type Session struct {
+	OutputBytes      int       `json:"outputBytes"`
 	CustodyPending   bool      `json:"custodyPending,omitempty"`
 	StopFencePending bool      `json:"stopFencePending,omitempty"`
 	ConfigDigest     string    `json:"configDigest"`

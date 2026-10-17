@@ -63,6 +63,14 @@ func Open(opts Options) (*Service, error) {
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if opts.MaxSessionOutputBytes <= 0 {
+		opts.MaxSessionOutputBytes = 8 << 20
+	}
+	opts.Surfaces = clone(opts.Surfaces)
+	scrubber := secretpattern.NewScrubber()
+	for i := range opts.Surfaces {
+		opts.Surfaces[i].Instructions = string(scrubber.Scrub([]byte(opts.Surfaces[i].Instructions)))
+	}
 	seen := map[string]bool{}
 	for _, surface := range opts.Surfaces {
 		if surface.ID == "" || seen[surface.ID] || (surface.Mode != "helper" && surface.Mode != "workbench") || surface.MaxChildren < 0 || surface.MaxChildren > 8 {
@@ -300,6 +308,9 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 		}
 		if s.opts.Executor == nil {
 			return receipt, problem(503, "executor_unavailable", "no interactive executor is configured")
+		}
+		if rec.Session.OutputBytes >= s.opts.MaxSessionOutputBytes {
+			return receipt, problem(409, "capacity", "session output retention budget reached; create a new session")
 		}
 		if len(rec.Session.Turns) >= 1000 {
 			return receipt, problem(409, "capacity", "prototype turn retention limit reached")
@@ -581,6 +592,14 @@ func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Comm
 
 func markStopped(rec *sessionRecord) {
 	rec.Session.Status = "stopped"
+	if rec.Session.Lease != nil {
+		rec.Session.Lease.Status = "released"
+	}
+	for i := range rec.Session.Children {
+		if rec.Session.Children[i].Lease != nil && rec.Session.Children[i].Status == "cancelled" {
+			rec.Session.Children[i].Lease.Status = "released"
+		}
+	}
 	now := time.Now().UTC()
 	for i := range rec.Session.Turns {
 		if rec.Session.Turns[i].Status == "running" || rec.Session.Turns[i].Status == "interrupted" || rec.Session.Turns[i].Status == "waiting_auth" {

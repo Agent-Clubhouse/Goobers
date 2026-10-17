@@ -27,6 +27,9 @@ configurable by the embedding command. Children consume the same capacity. A
 surface's child count is a lifetime reservation; denying or completing a child
 does not replenish it. Each execution also has a bounded wall-clock deadline.
 Retention limits refuse new work instead of deleting dedupe or effect evidence.
+Executor event output has an eight MiB per-session default budget, independent
+of command receipts and terminal custody records, so noisy tools cannot consume
+that ledger space. Operators can lower this budget for constrained environments.
 The full-snapshot store is intentionally limited to this prototype; large
 production histories need a transactional indexed ledger and retention policy.
 
@@ -122,6 +125,7 @@ An `Accept: text/event-stream` header selects SSE, with durable sequence IDs and
 
 Credential custody belongs in the broker. Executors must keep tokens out of
 prompts, tool output, workspace files, and artifacts. The coordinator additionally
+copies and scrubs configured instructions, normalizes typed results, and
 scrubs recognized secret shapes and sensitive field names, buffering assistant
 and tool deltas across chunk boundaries. This pattern defense cannot detect all
 unknown secrets, especially bare ADO PATs; it does not make arbitrary native
