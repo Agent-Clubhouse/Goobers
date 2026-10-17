@@ -1,8 +1,9 @@
 package findingledger
 
 import (
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestCommitResolvedNewInstanceDoesNotResurrectStaleProjection(t *testing.T) {
