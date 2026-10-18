@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/daemonclient"
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 // defaultCredentialTimeout bounds a resolve. Short on purpose: credentials are
@@ -200,7 +201,7 @@ func (c *CredentialResolveClient) post(ctx context.Context, endpoint string, bod
 	// credential per call rather than consuming a one-shot grant. A repeated
 	// resolve can only return the same entitlement again.
 	var resolution CredentialResolution
-	retryErr := withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
+	retryErr := retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		// A fresh request per attempt: an *http.Request body is consumed by
 		// the first send, so a retried request would post an empty body and
 		// be refused as invalid — a self-inflicted non-retryable failure.
@@ -246,7 +247,7 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 		if len(detail) > 400 {
 			detail = detail[:400] + "…"
 		}
-		return CredentialResolution{}, retryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
+		return CredentialResolution{}, retryutil.RetryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
 	}
 	var decoded struct {
 		Credentials    []MintedCredential `json:"credentials"`
