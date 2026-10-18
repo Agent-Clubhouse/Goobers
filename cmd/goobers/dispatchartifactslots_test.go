@@ -63,7 +63,7 @@ func TestRemoteCommandNamedPublication(t *testing.T) {
 			// cannot leak into the command's environment.
 			command, _ := json.Marshal([]string{"sh", "-c", `test -z "$GOOBERS_ARTIFACT_PUBLICATION" || exit 8; printf '%s' '` + manifest + `' > manifest.json; printf evidence > report; printf diagnostic`})
 			t.Setenv(dispatcher.EnvStageCommand, string(command))
-			result := runDeclaredStage(t.Context(), io.Discard, io.Discard)
+			result := runDeclaredStage(t.Context(), io.Discard, io.Discard, nil)
 			if mode != "published" {
 				want := "artifact_publication_failed"
 				if mode == "missing" {

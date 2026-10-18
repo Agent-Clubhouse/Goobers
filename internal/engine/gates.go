@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -206,7 +205,7 @@ func escalationTarget(g apiv1.Gate) string {
 // dispatch runs under its own start-to-close window, so a retry gets a fresh
 // timeout.
 func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, rec *runJournal, firstClass journal.AttemptClass, call func(workflow.Context, journal.AttemptClass) error) error {
-	maxAttempts, backoff := evaluatorRetryBounds(gateEvaluatorRetry(g))
+	maxAttempts, backoff := gate.RetryBounds(gateEvaluatorRetry(g))
 	class := firstClass
 	for attempt := 1; ; attempt++ {
 		err := call(ctx, class)
@@ -255,16 +254,4 @@ func gateEvaluatorRetry(g apiv1.Gate) *apiv1.RetryPolicy {
 		}
 	}
 	return nil
-}
-
-// evaluatorRetryBounds mirrors internal/gate's retryBounds: a nil policy —
-// or MaxAttempts <= 1 — means a single attempt, so only a gate that opts in
-// via retry: ever retries.
-func evaluatorRetryBounds(policy *apiv1.RetryPolicy) (maxAttempts int, backoff time.Duration) {
-	maxAttempts = 1
-	if policy != nil && policy.MaxAttempts > 1 {
-		maxAttempts = int(policy.MaxAttempts)
-		backoff = time.Duration(policy.BackoffSeconds) * time.Second
-	}
-	return maxAttempts, backoff
 }

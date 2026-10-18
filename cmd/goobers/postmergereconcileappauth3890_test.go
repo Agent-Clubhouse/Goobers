@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -49,21 +50,29 @@ func (r *capturingRecorder) recorded() []providers.ExternalRef {
 	return append([]providers.ExternalRef(nil), r.refs...)
 }
 
-// reviewSubmitForge answers the one POST both backends' SubmitPullRequestReview
-// makes, so the same call can prove recorder wiring on either forge.
+// reviewSubmitForge answers the review POST both backends make and the
+// follow-up review-list GET GitHub makes after an approval.
 func reviewSubmitForge(t *testing.T, wantPath string) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
-	var paths []string
+	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		paths = append(paths, r.URL.Path)
+		requests = append(requests, r.Method+" "+r.URL.Path)
 		mu.Unlock()
 		if r.URL.Path != wantPath {
 			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && strings.HasPrefix(wantPath, "/repos/") {
+			_ = json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "unexpected method "+r.Method, http.StatusMethodNotAllowed)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": 7, "html_url": "https://forge.test/pulls/12#review-7", "commit_id": "deadbeef", "state": "APPROVED",
 		})
@@ -72,7 +81,7 @@ func reviewSubmitForge(t *testing.T, wantPath string) (*httptest.Server, func() 
 	return server, func() []string {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]string(nil), paths...)
+		return append([]string(nil), requests...)
 	}
 }
 
@@ -242,6 +251,10 @@ func TestMergeStageProviderRecordsGitHubMutationsThroughTheCallersRecorder(t *te
 	}); err != nil {
 		t.Fatalf("SubmitPullRequestReview: %v (paths %v)", err, paths())
 	}
+	wantPath := "/repos/" + repo.Owner + "/" + repo.Name + "/pulls/12/reviews"
+	if got := paths(); len(got) != 2 || got[0] != "POST "+wantPath || got[1] != "GET "+wantPath {
+		t.Fatalf("requests = %v, want review POST followed by review-list GET", got)
+	}
 	refs := recorder.recorded()
 	if len(refs) != 1 {
 		t.Fatalf("recorded %d ref(s) %+v, want exactly one", len(refs), refs)
@@ -273,6 +286,9 @@ func TestMergeStageProviderRecordsGiteaMutationsThroughTheCallersRecorder(t *tes
 		Repository: repo, PullID: "12", CommitSHA: "deadbeef", Body: "ok", Decision: providers.ReviewDecisionApproved,
 	}); err != nil {
 		t.Fatalf("SubmitPullRequestReview: %v (paths %v)", err, paths())
+	}
+	if got := paths(); len(got) != 1 || got[0] != "POST /api/v1/repos/your-org/your-repo/pulls/12/reviews" {
+		t.Fatalf("requests = %v, want one Gitea review POST", got)
 	}
 	refs := recorder.recorded()
 	if len(refs) != 1 {

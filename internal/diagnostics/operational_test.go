@@ -53,6 +53,12 @@ func TestOperationalBundleOfflineProjectionAndRedaction(t *testing.T) {
 	if !strings.Contains(Summary(bundle), "claim availability unknown") {
 		t.Fatal("pending work summary overstates eligibility")
 	}
+	claimable := int64(2)
+	observation.Backlog.ClaimableCount = &claimable
+	if got := backlogClaimabilityText(observation.Backlog); !strings.Contains(got, "at least 2 verified claimable") || !strings.Contains(got, "not a reservation") {
+		t.Fatal("claimable evidence summary", got)
+	}
+	observation.Backlog.ClaimableCount = nil
 	data, err := json.Marshal(bundle)
 	if err != nil {
 		t.Fatal(err)
@@ -71,5 +77,32 @@ func TestOperationalBundleMissingHistoryIsExplicit(t *testing.T) {
 	evidence := collectOperationalEvidence(t.TempDir())
 	if evidence.Coverage != "unavailable" || len(evidence.Gaps) == 0 || len(evidence.Observations) != 0 {
 		t.Fatalf("missing history claimed complete: %+v", evidence)
+	}
+}
+
+func TestOperationalUnsupportedSchemaGapRecordedOnce(t *testing.T) {
+	root := t.TempDir()
+	log, _, err := journal.OpenInstanceLog((instance.Layout{Root: root}).SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		err = log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "goobers.fleet.heartbeat", "diagnostic": map[string]any{"schemaVersion": 2}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	evidence := collectOperationalEvidence(root)
+	count := 0
+	for _, gap := range evidence.Gaps {
+		if gap == "An unsupported diagnostic schema was omitted." {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("unsupported schema gap count = %d, want 1: %v", count, evidence.Gaps)
 	}
 }

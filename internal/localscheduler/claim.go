@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
@@ -49,18 +50,48 @@ type ClaimEntry struct {
 	ExternalID   string            `json:"externalId,omitempty"`
 	RunID        string            `json:"runId"`
 	Workflow     string            `json:"workflow"`
-	ClaimedAt    time.Time         `json:"claimedAt"`
-	ExpiresAt    time.Time         `json:"expiresAt"`
+	// ClaimedAt is when this lease incarnation was first granted. A live
+	// same-run renewal is continuous ownership and keeps it; RenewedAt records
+	// the latest such renewal so history stays ordered by real acquisition.
+	ClaimedAt time.Time `json:"claimedAt"`
+	RenewedAt time.Time `json:"renewedAt,omitzero"`
+	ExpiresAt time.Time `json:"expiresAt"`
 	// SharedDeadline marks admission that must not be renewed through the
 	// local-only path, including after the ledger is reopened on restart.
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
 	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
 	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
+	// ReleaseReason records why a released history entry ended (#4421). It is
+	// zero on live entries and on history written before it existed, which
+	// readers treat as claimrelease.Unknown.
+	ReleaseReason claimrelease.Reason `json:"releaseReason,omitzero"`
 }
 
 // expired reports whether the lease is no longer live at now.
 func (e ClaimEntry) expired(now time.Time) bool { return !e.ExpiresAt.After(now) }
+
+// LastGrantedAt is the most recent time the current lease term began: the
+// latest renewal, or the original grant when it was never renewed.
+func (e ClaimEntry) LastGrantedAt() time.Time {
+	if e.RenewedAt.After(e.ClaimedAt) {
+		return e.RenewedAt
+	}
+	return e.ClaimedAt
+}
+
+// continueLease carries a live same-run lease's incarnation into its renewal:
+// the original grant time and the lease-specific provider observation. A
+// replacement or expired lease must never inherit the prior owner's state.
+func continueLease(prev ClaimEntry, hadPrev bool, entry ClaimEntry, now time.Time) ClaimEntry {
+	if !hadPrev || prev.RunID != entry.RunID || prev.expired(now) || prev.ReleasedAt != nil {
+		return entry
+	}
+	entry.ClaimedAt = prev.ClaimedAt
+	entry.RenewedAt = now
+	entry.Verification = prev.Verification
+	return entry
+}
 
 // ClaimLedger is the authoritative, atomic, lease-based source of truth for
 // exactly-once backlog-item processing (SCH-020/BL-005). A provider-visible
@@ -119,6 +150,17 @@ func WithInstanceLog(log *journal.InstanceLog) LedgerOption {
 // OpenClaimLedger loads the ledger at path (a JSON file under the instance's
 // scheduler dir), creating an empty one if absent.
 func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("localscheduler: read claim ledger: %w", err)
+	}
+	return ParseClaimLedger(path, data, opts...)
+}
+
+// ParseClaimLedger decodes ledger bytes already read from path (empty bytes
+// are a fresh ledger) without touching the file, for read-only callers that
+// bound their own IO.
+func ParseClaimLedger(path string, data []byte, opts ...LedgerOption) (*ClaimLedger, error) {
 	l := &ClaimLedger{
 		path: path, entries: map[string]ClaimEntry{},
 		history: map[string]map[string]ClaimEntry{}, now: time.Now,
@@ -126,29 +168,30 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 	for _, opt := range opts {
 		opt(l)
 	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return l, nil // fresh ledger
-		}
-		return nil, fmt.Errorf("localscheduler: read claim ledger: %w", err)
+	if err := l.load(data); err != nil {
+		return nil, err
 	}
+	return l, nil
+}
+
+// load decodes data, a fresh ledger when empty, into l.
+func (l *ClaimLedger) load(data []byte) error {
+	path := l.path
 	if len(data) == 0 {
-		return l, nil
+		return nil
 	}
 
 	var state claimLedgerState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("localscheduler: parse claim ledger %q: %w", path, err)
+		return fmt.Errorf("localscheduler: parse claim ledger %q: %w", path, err)
 	}
 	if state.Schema == "" {
 		if err := json.Unmarshal(data, &l.entries); err != nil {
-			return nil, fmt.Errorf("localscheduler: parse legacy claim ledger %q: %w", path, err)
+			return fmt.Errorf("localscheduler: parse legacy claim ledger %q: %w", path, err)
 		}
 	} else {
 		if state.Schema != claimLedgerSchema {
-			return nil, fmt.Errorf("localscheduler: unknown claim ledger schema %q", state.Schema)
+			return fmt.Errorf("localscheduler: unknown claim ledger schema %q", state.Schema)
 		}
 		if state.Entries != nil {
 			l.entries = state.Entries
@@ -167,10 +210,10 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 		l.entries[storageKey] = entry
 	}
 	if err := l.validateSharedClaims(); err != nil {
-		return nil, fmt.Errorf("localscheduler: invalid shared claim ledger: %w", err)
+		return fmt.Errorf("localscheduler: invalid shared claim ledger: %w", err)
 	}
 	l.history = l.retainedHistory(l.now())
-	return l, nil
+	return nil
 }
 
 // MigrateLegacyNamespace upgrades pre-GAG-011 item-only keys into the sole
@@ -386,6 +429,8 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 			ClaimedAt:  now,
 			ExpiresAt:  now.Add(leaseDuration),
 		}
+		prev, hadPrev := previous[claim.storageKey]
+		entry = continueLease(prev, hadPrev, entry, now)
 		l.entries[claim.storageKey] = entry
 		l.recordHistory(claim.storageKey, entry)
 		acquired = append(acquired, entry)
@@ -476,12 +521,8 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		SharedDeadline: deadline,
 		SharedOwner:    owner,
 	}
-	// A live same-owner renewal is continuous ownership, not a new provider
-	// observation. Retain its original as-of timestamp; replacement or expired
-	// leases must never inherit the prior owner's verification.
-	if hadPrev && prev.RunID == runID && !prev.expired(now) && prev.ReleasedAt == nil {
-		entry.Verification = prev.Verification
-	}
+	// A live same-owner renewal is continuous ownership, not a new grant.
+	entry = continueLease(prev, hadPrev, entry, now)
 	if err := l.storeClaim(storageKey, entry); err != nil {
 		return false, "", err
 	}
@@ -513,27 +554,31 @@ func (l *ClaimLedger) storeClaim(storageKey string, entry ClaimEntry) error {
 }
 
 // Release explicitly releases a claim (run finished, failed, or crash-recovery
-// determined it orphaned). Releasing a claim not held (already released, held
+// determined it orphaned) and records reason on the released history entry and
+// the claim.released event. Releasing a claim not held (already released, held
 // by a different run, or never claimed) is a no-op, not an error — normal
 // completion and crash-recovery can race to release the same item, and both
-// outcomes are fine as long as exactly one claimant ever wins.
-func (l *ClaimLedger) Release(itemID, runID string) error {
-	return l.release(itemID, runID, sharedclaim.Owner{})
+// outcomes are fine as long as exactly one claimant ever wins. The no-op is
+// also what keeps reasons consistent: only the release that actually ends the
+// lease records one, so a retried release can never append a second,
+// contradictory boundary.
+func (l *ClaimLedger) Release(itemID, runID string, reason claimrelease.Reason) error {
+	return l.release(itemID, runID, sharedclaim.Owner{}, reason)
 }
 
 // ReleaseScoped releases a claim identified by its scoped key.
-func (l *ClaimLedger) ReleaseScoped(key ClaimKey, runID string) error {
+func (l *ClaimLedger) ReleaseScoped(key ClaimKey, runID string, reason claimrelease.Reason) error {
 	storageKey, err := key.storageKey()
 	if err != nil {
 		return err
 	}
-	return l.release(storageKey, runID, sharedclaim.Owner{})
+	return l.release(storageKey, runID, sharedclaim.Owner{}, reason)
 }
 
 // ReleaseSharedScoped removes only the exact locally recorded incarnation.
 // The coordinator must acknowledge remote release before calling this method;
 // keeping the local owner on failure preserves restart reconciliation evidence.
-func (l *ClaimLedger) ReleaseSharedScoped(key ClaimKey, owner sharedclaim.Owner) error {
+func (l *ClaimLedger) ReleaseSharedScoped(key ClaimKey, owner sharedclaim.Owner, reason claimrelease.Reason) error {
 	if owner.Instance == "" || owner.Run == "" || owner.Token == "" {
 		return errors.New("localscheduler: shared release requires complete owner identity")
 	}
@@ -541,20 +586,20 @@ func (l *ClaimLedger) ReleaseSharedScoped(key ClaimKey, owner sharedclaim.Owner)
 	if err != nil {
 		return err
 	}
-	return l.release(storageKey, owner.Run, owner)
+	return l.release(storageKey, owner.Run, owner, reason)
 }
 
 // ReleaseEntry releases entry without reconstructing whether it came from a
 // scoped or legacy ledger key.
-func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string) error {
+func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string, reason claimrelease.Reason) error {
 	if entry.Gaggle == "" || entry.Provider == "" {
-		return l.Release(entry.ItemID, runID)
+		return l.Release(entry.ItemID, runID, reason)
 	}
 	return l.ReleaseScoped(ClaimKey{
 		Gaggle:     entry.Gaggle,
 		Provider:   entry.Provider,
 		ExternalID: entry.ExternalID,
-	}, runID)
+	}, runID, reason)
 }
 
 // RenewEntry re-acquires entry's own claim via Claim/ClaimScoped's existing
@@ -578,7 +623,7 @@ func (l *ClaimLedger) RenewEntry(entry ClaimEntry, leaseDuration time.Duration) 
 	return ok, err
 }
 
-func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner) error {
+func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner, reason claimrelease.Reason) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -595,8 +640,9 @@ func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner)
 	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
 		return errors.New("localscheduler: shared release requires acknowledged owner-scoped handoff")
 	}
+	reason = reason.Normalize()
 	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
-	l.recordReleasedHistory(storageKey, entry, l.now())
+	l.recordReleasedHistory(storageKey, entry, l.now(), reason)
 	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
 		// Same rollback discipline as Claim: a failed persist must not leave
@@ -609,7 +655,7 @@ func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner)
 		l.restoreHistory(runID, storageKey, previousHistory, hadHistory)
 		return err
 	}
-	l.journal(journal.EventClaimReleased, entry)
+	l.journalRelease(journal.EventClaimReleased, entry, reason, nil)
 	return nil
 }
 
@@ -654,15 +700,16 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.O
 	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
 		return errors.New("localscheduler: shared force-release requires remote coordination")
 	}
+	reason := claimrelease.ForceReleased.Reason().By(actor).Normalize()
 	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
-	l.recordReleasedHistory(storageKey, entry, l.now())
+	l.recordReleasedHistory(storageKey, entry, l.now(), reason)
 	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
 		l.entries[storageKey] = entry
 		l.restoreHistory(entry.RunID, storageKey, previousHistory, hadHistory)
 		return err
 	}
-	l.journalWithRunner(journal.EventClaimForceReleased, entry, map[string]any{"actor": actor})
+	l.journalRelease(journal.EventClaimForceReleased, entry, reason, map[string]any{"actor": actor})
 	return nil
 }
 
@@ -706,6 +753,7 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 		hadHistoryEntry bool
 	}
 	var released []releasedClaim
+	reason := StallSweptReason()
 	for storageKey, entry := range l.entries {
 		// Expiry ends execution authority, not cleanup custody. A shared
 		// record must pass through provider-coordinated release before its
@@ -715,7 +763,7 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 		}
 		if entry.expired(now) {
 			previous, hadHistoryEntry := l.historyEntry(entry.RunID, storageKey)
-			l.recordReleasedHistory(storageKey, entry, now)
+			l.recordReleasedHistory(storageKey, entry, now, reason)
 			delete(l.entries, storageKey)
 			released = append(released, releasedClaim{
 				storageKey: storageKey, entry: entry,
@@ -741,7 +789,7 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	}
 	entries := make([]ClaimEntry, 0, len(released))
 	for _, claim := range released {
-		l.journal(journal.EventClaimReleased, claim.entry)
+		l.journalRelease(journal.EventClaimReleased, claim.entry, reason, nil)
 		entries = append(entries, claim.entry)
 	}
 	return entries, nil
@@ -939,7 +987,7 @@ func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]Claim
 		if !active {
 			var newest time.Time
 			for _, entry := range history {
-				activity := entry.ClaimedAt
+				activity := entry.LastGrantedAt()
 				if entry.ReleasedAt != nil {
 					activity = *entry.ReleasedAt
 				}
@@ -974,8 +1022,9 @@ func (l *ClaimLedger) recordHistory(storageKey string, entry ClaimEntry) {
 	l.history[entry.RunID][storageKey] = entry
 }
 
-func (l *ClaimLedger) recordReleasedHistory(storageKey string, entry ClaimEntry, releasedAt time.Time) {
+func (l *ClaimLedger) recordReleasedHistory(storageKey string, entry ClaimEntry, releasedAt time.Time, reason claimrelease.Reason) {
 	entry.ReleasedAt = &releasedAt
+	entry.ReleaseReason = reason
 	l.recordHistory(storageKey, entry)
 }
 
@@ -1011,26 +1060,49 @@ func cloneClaimHistory(history map[string]ClaimEntry) map[string]ClaimEntry {
 // — a journal write failure here is deliberately swallowed rather than failing
 // the claim/release operation the ledger already committed.
 func (l *ClaimLedger) journal(eventType journal.EventType, entry ClaimEntry) {
-	var runner map[string]any
-	if entry.Provider != "" {
-		runner = map[string]any{
-			"claimProvider":   entry.Provider,
-			"claimExternalId": entry.ExternalID,
-		}
+	l.journalWithRunner(eventType, entry, claimRunner(entry))
+}
+
+func claimRunner(entry ClaimEntry) map[string]any {
+	if entry.Provider == "" {
+		return nil
 	}
-	l.journalWithRunner(eventType, entry, runner)
+	return map[string]any{
+		"claimProvider":   entry.Provider,
+		"claimExternalId": entry.ExternalID,
+	}
+}
+
+// journalRelease records a release boundary with its structured reason on the
+// event itself, so an operator reading the instance journal never needs a
+// separate summary event to learn why ownership ended (#4421). runner
+// overrides the default claim annotations when non-nil.
+func (l *ClaimLedger) journalRelease(eventType journal.EventType, entry ClaimEntry, reason claimrelease.Reason, runner map[string]any) {
+	if runner == nil {
+		runner = claimRunner(entry)
+	}
+	l.appendEvent(eventType, entry, runner, &reason)
 }
 
 func (l *ClaimLedger) journalWithRunner(eventType journal.EventType, entry ClaimEntry, runner map[string]any) {
+	l.appendEvent(eventType, entry, runner, nil)
+}
+
+func (l *ClaimLedger) appendEvent(eventType journal.EventType, entry ClaimEntry, runner map[string]any, reason *claimrelease.Reason) {
 	if l.log == nil {
 		return
 	}
-	l.log.AppendBestEffort(journal.Event{
+	event := journal.Event{
 		Type:     eventType,
 		Name:     entry.ItemID,
 		Gaggle:   entry.Gaggle,
 		RunID:    entry.RunID,
 		Workflow: entry.Workflow,
 		Runner:   runner,
-	})
+	}
+	if reason != nil {
+		event.Reason = string(reason.Disposition)
+		event.ClaimRelease = reason
+	}
+	l.log.AppendBestEffort(event)
 }

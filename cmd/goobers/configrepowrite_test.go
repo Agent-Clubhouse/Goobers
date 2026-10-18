@@ -382,6 +382,8 @@ func TestOpenPRConfigTargetOpensInConfigRepoWithConfigCredential(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("actionRoots"), "gaggles/alpha,skills")
 	t.Setenv(executor.CredentialEnvVar(string(capability.ConfigRepoWrite)), "config-write")
 
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD")))
+
 	code, stdout, stderr := runArgs(t, "open-pr", "--config-repo", t.TempDir())
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)

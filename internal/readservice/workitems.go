@@ -21,6 +21,7 @@ type workItemStore interface {
 type WorkItemListOptions struct {
 	Provider string
 	Kind     string
+	Gaggle   string
 	Limit    int
 }
 
@@ -97,6 +98,7 @@ type WorkItemAction struct {
 func (s *Telemetry) WorkItems(ctx context.Context, options WorkItemListOptions) (WorkItemPage, error) {
 	options.Provider = strings.TrimSpace(options.Provider)
 	options.Kind = strings.TrimSpace(options.Kind)
+	options.Gaggle = strings.TrimSpace(options.Gaggle)
 	if options.Kind != "" && options.Kind != "pr" && options.Kind != "issue" {
 		return WorkItemPage{}, ErrInvalidTelemetryRequest
 	}
@@ -113,6 +115,7 @@ func (s *Telemetry) WorkItems(ctx context.Context, options WorkItemListOptions) 
 	items, hasMore, err := store.WorkItems(ctx, rollup.WorkItemQuery{
 		Provider: options.Provider,
 		Kind:     options.Kind,
+		Gaggle:   options.Gaggle,
 		Limit:    options.Limit,
 	})
 	if err != nil {

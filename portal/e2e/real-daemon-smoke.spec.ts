@@ -38,7 +38,7 @@ test("renders every route against a real demo dashboard without browser errors",
     { name: "runs", path: "/#/runs", heading: "Runs" },
     { name: "errors", path: "/#/errors", heading: "Matching errors" },
     { name: "insight", path: "/#/insight", heading: "Insight" },
-    { name: "cost", path: "/#/cost", heading: "AIC" },
+    { name: "cost", path: "/#/cost", heading: "Cost" },
     { name: "work items", path: "/#/work-items", heading: "Work Items" },
     {
       name: "workflow",

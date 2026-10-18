@@ -10,6 +10,17 @@ create a new operator branch on freshly fetched main. The
 [`goobers recovery-resume`](../cli/README.md#goobers-recovery-resume) workflow
 stage adopts a verified restoration into a receiving run. Conflicts, expired
 archives, and changes to protected runtime assets refuse restoration.
+Its `recovery-resume.json` result names the source run and, whenever retained
+work was adopted or skipped as incompatible, the exact retained snapshot:
+`sourceRecoveryRef`, `sourceBaseRef` (omitted for version-1 records),
+`sourceBaseSha`, `sourceSnapshotSha`, and `sourcePatchDigest`. Those outcomes
+also report the source run's terminal journal evidence, read in one pass from
+its idle journal: `sourceWorkflow`, `sourceRunPhase`, and `sourceTerminalSeq`
+(the sequence of its latest `run.finished` event, the value
+`goobers run continue --terminal-seq` binds to). `sourceTerminalSeq` is omitted
+when the journal has no `run.finished` event, and all three are omitted when a
+claims-plane daemon that predates them serves the archive; they are never
+inferred.
 
 ## Retirement
 
@@ -163,6 +174,40 @@ alongside the earliest retention deadline, which is what distinguishes ordinary
 pressure from an inventory wedged behind a retain floor, and appends
 `+<n> overflow` when snapshots are being held at the ref tier described below.
 
+After every successful workspace cleanup the runner observes the recovery
+state that cleanup retained and copies it into the run's journal. When that
+observation fails, the run records an error and `goobers status` lists it among
+the run's blockers, with when it was observed and how long ago
+(`(observed <time>, <age> ago)`; `blockers[].observedAt` and `ageMillis` in
+`--json`). The error code says which part failed, because the two clear
+differently (#5404):
+
+- `recovery_observation_failed`: the shared inventory itself could not be read
+  (its configuration, or the directory — for example the pre-#5354 cap
+  refusal). A run that has finished never observes again, but any other run's
+  later successful observation reads the same inventory, so that retracts the
+  blocker. The daemon journals an instance-scoped `blocker.cleared` record in
+  the instance log on the first successful observation of each process
+  lifetime, on the first one after an inventory failure it saw, and otherwise
+  at most every fifteen minutes.
+- `recovery_observation_run_failed`: the inventory was readable, but the run's
+  own records, its observation-count or ownership checks, or the append into
+  its journal failed. Another run's success never looks at any of those, so
+  only a later successful observation of the *same* run retracts it (a
+  run-scoped `blocker.cleared` record). A run that never observes again keeps
+  the blocker.
+
+Each record carries the time its successful observation *started*, and only a
+failure recorded before that time is retracted: a success that read the
+inventory before a concurrent failure never retracts it, however late its record
+is written. A blocker whose observed time is unknown (a read-model row projected
+by an older build) is never treated as cleared. The recorded error itself stays
+in the run's journal and `latestError`; only its listing as a current blocker
+is retracted. Other run blockers clear the way they always have: a later error
+or review in the same run supersedes the earlier one, and stale-heartbeat and
+claim-drift blockers are recomputed on every read. Any other recorded error code
+has no automatic clear — it is the run's last recorded failure.
+
 A legitimately full inventory no longer refuses the cleanup. Capacity gates
 bundle publication, never worktree teardown. A snapshot's objects are written
 into the repository - for a linked worktree, the managed mirror - and pinned
@@ -242,7 +287,31 @@ That classification appears in three places: the instance read model
 renders as a card carrying occupancy, the effective limit, the earliest
 retention deadline and elevated styling for warning and exhaustion); the
 periodic service-health record in the instance log; and a deduplicated warning
-in the instance log. The warning is journalled once when occupancy crosses into
+in the instance log.
+
+A warning or exhausted reading also carries the commands that act on it, so
+the Overview card shows commands to copy and run instead of a link to this
+guide. `reclaimCandidates` lists the oldest bundled snapshots whose owning run
+is terminal — the only ones `recovery-abandon` and `recovery-restore` accept —
+bounded to ten, with `reclaimCandidatesTotal` counting all of them. Each one
+carries an `inspectCommand` (`goobers trace --summary`), a `restoreCommand`
+while its retention deadline has not passed (run it from a checkout of the
+snapshot's repository; it creates a new `recovered/<run>` branch), and an
+`abandonCommand` with the exact run, ref and confirmed digest, which is
+omitted once the snapshot has been abandoned and is waiting to be deleted.
+Overflow entries are not listed: they hold no slot. `statusCommand` lists
+every retained snapshot per run. The commands are quoted for the daemon
+host's shell (PowerShell on Windows, POSIX `sh` elsewhere) and are never run
+by the portal: abandoning discards work and stays an operator decision.
+
+Abandoning a snapshot frees its slot only when a retention pass deletes it,
+so `reclaimHold` names the setting that is stopping that pass, if any:
+`retention.enabled: false`, `retention.dryRun: true`, or the first-enable
+grace window (with `until` once it has started; set
+`retention.firstEnable: immediate` to skip it). The card shows the
+`instance.yaml` change that releases the hold.
+
+The warning is journalled once when occupancy crosses into
 `warning` (`recovery_inventory_high_water`) and once when it crosses into
 `exhausted` (`recovery_inventory_exhausted`), never per sample. It is re-armed
 only by dropping back below the threshold — and, once overflow has been
@@ -344,6 +413,32 @@ deferred pending durable handoff: recovery handoff for <id>: ...`. This is
 the correct outcome when the underlying git capture itself failed — a
 missing ref/object, lock contention, or an unsafe-repository refusal — not
 just when the recovery inventory is full.
+
+One case is not deferred: a cleanup target whose checkout directory no
+longer exists. Nothing is left in it to capture, so a handoff that reads it
+could never succeed on retry. For a linked run worktree the abandoned
+preparation branch lives in the shared repository rather than the checkout,
+so it is still handed to the inventory from there (a failure doing so is
+deferred like any other capture failure). The cleanup then proceeds — the
+worktree registration is pruned and its markers retired — and the instance
+journal records a `recovery-cleanup-target-missing` annotation naming the
+worktree and whether a shared repository was available. Entries that older
+builds left deferred this way drain on the next reap pass after upgrade;
+targets already quarantined as `cleanup-retained` stay in operator review.
+Only the cleanup's existing selection (crash orphan, abandoned or
+cleanup-pending) decides which targets are examined, so a live run's
+worktree is never selected by this rule.
+
+The same applies when the checkout directory still exists but holds nothing
+a capture could read: it is empty, or its only entry is a `.git` file naming
+a worktree admin directory that was already pruned. On Windows,
+`git worktree remove` can delete the checkout and its admin entry yet fail to
+unlink the directory itself while another process still holds it, leaving
+exactly this shell; every git command there fails "not a git repository", so
+deferring could never succeed. The annotation's `checkout` field is `missing`
+for a vanished directory and `empty` for this shell. A directory that lost its
+git metadata but still holds any other file is not settled: it may be the
+only copy of uncommitted work, so it stays deferred for an operator.
 
 The wrapped failure carries three pieces of evidence an operator needs, all
 preserved in the error chain and in whatever journal/log surfaces it (both

@@ -28,6 +28,8 @@ function prototypeWarningClient() {
   };
 }
 
+const dismissalsStorageKey = "goobers-configuration-warning-dismissals";
+
 const modelWarning: ValidationWarning = {
   code: "MODEL002",
   severity: "warning",
@@ -100,16 +102,18 @@ function renderWarnings(
 ) {
   const onDismiss = vi.fn();
   const onRefresh = vi.fn();
+  const onRestore = vi.fn();
   render(
     <ConfigurationWarnings
       context={options.context ?? "instance"}
       dismissedWarningKeys={options.dismissed ?? new Set()}
       onDismiss={onDismiss}
       onRefresh={onRefresh}
+      onRestore={onRestore}
       state={state}
     />,
   );
-  return { onDismiss, onRefresh };
+  return { onDismiss, onRefresh, onRestore };
 }
 
 describe("ConfigurationWarnings", () => {
@@ -125,6 +129,7 @@ describe("ConfigurationWarnings", () => {
   });
 
   beforeEach(() => {
+    window.localStorage.clear();
     window.location.hash = "#/overview";
     delete document.documentElement.dataset.theme;
   });
@@ -143,6 +148,21 @@ describe("ConfigurationWarnings", () => {
       .toBeInTheDocument();
   });
 
+  it("keeps the warning count and refresh control grouped above visible details", () => {
+    renderWarnings({ status: "ready", data: [modelWarning] });
+
+    const count = screen.getByText("1 active warning");
+    const actions = count.parentElement;
+    if (!actions) {
+      throw new Error("Expected configuration warning actions.");
+    }
+
+    expect(window.getComputedStyle(actions).display).toBe("flex");
+    expect(window.getComputedStyle(actions).alignItems).toBe("center");
+    expect(actions).toContainElement(screen.getByRole("button", { name: "Refresh warnings" }));
+    expect(screen.getByText(modelWarning.explanation)).toBeVisible();
+  });
+
   it("presents shared remediation once and supports group expansion and dismissal", async () => {
     const user = userEvent.setup();
 
@@ -152,10 +172,13 @@ describe("ConfigurationWarnings", () => {
         <ConfigurationWarnings
           context="instance"
           dismissedWarningKeys={dismissed}
-          onDismiss={(warning) =>
-            setDismissed((current) => new Set(current).add(configurationWarningKey(warning)))
+          onDismiss={(warnings) =>
+            setDismissed(
+              (current) => new Set([...current, ...warnings.map(configurationWarningKey)]),
+            )
           }
-          onRefresh={() => setDismissed(new Set())}
+          onRefresh={vi.fn()}
+          onRestore={vi.fn()}
           state={{
             status: "ready",
             data: [
@@ -178,7 +201,7 @@ describe("ConfigurationWarnings", () => {
     await user.click(
       screen.getByRole("button", { name: "Dismiss all 2 warnings for Goober/coder" }),
     );
-    expect(screen.getByText("Warnings dismissed for this portal session.")).toBeInTheDocument();
+    expect(screen.getByText("All current warnings are dismissed.")).toBeInTheDocument();
     expect(screen.getByText("0 active warnings")).toBeInTheDocument();
   });
 
@@ -220,6 +243,7 @@ describe("ConfigurationWarnings", () => {
         dismissedWarningKeys={new Set()}
         onDismiss={vi.fn()}
         onRefresh={vi.fn()}
+        onRestore={vi.fn()}
         state={{ status: "empty" }}
       />,
     );
@@ -252,12 +276,14 @@ describe("ConfigurationWarnings", () => {
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent("Refresh failed.");
-    expect(screen.getByText("Warnings dismissed for this portal session.")).toBeInTheDocument();
+    expect(screen.getByText("All current warnings are dismissed.")).toBeInTheDocument();
   });
 
-  it("keeps dismissal session-local across routes and restores active warnings on refresh", async () => {
+  it("persists dismissal across routes, refreshes, and remounts until restored", async () => {
     const user = userEvent.setup();
-    render(<App client={daemonClient()} warningClient={prototypeWarningClient()} />);
+    const { unmount } = render(
+      <App client={daemonClient()} warningClient={prototypeWarningClient()} />,
+    );
 
     await user.click(
       await screen.findByRole("button", {
@@ -272,15 +298,85 @@ describe("ConfigurationWarnings", () => {
     });
 
     expect(
-      await screen.findByText("Warnings dismissed for this portal session."),
+      await screen.findByText("All current warnings are dismissed."),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Refresh warnings" }));
+    expect(
+      await screen.findByText("All current warnings are dismissed."),
+    ).toBeInTheDocument();
+
+    // A remount reads the acknowledgement back from browser storage.
+    unmount();
+    render(<App client={daemonClient()} warningClient={prototypeWarningClient()} />);
+    expect(
+      await screen.findByText("All current warnings are dismissed."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show 1 dismissed warning" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: /Restore VER003 warning for .*Workflow\/implementation/,
+      }),
+    );
     expect(
       await screen.findByRole("button", {
         name: /Dismiss VER003 warning for .*Workflow\/implementation/,
       }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Dismissed configuration warnings" }))
+      .not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(dismissalsStorageKey)!))
+      .toEqual([]);
+  });
+
+  it("shows a changed finding again even though its earlier identity was dismissed", async () => {
+    const user = userEvent.setup();
+    const getInstance = vi
+      .fn()
+      .mockResolvedValueOnce({ warnings: [modelWarning] })
+      .mockResolvedValue({
+        warnings: [{ ...modelWarning, explanation: "the configured model changed" }],
+      });
+    render(<App client={daemonClient()} warningClient={{ getInstance, getWorkflow: vi.fn() }} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Dismiss MODEL002 warning for Goober/coder" }),
+    );
+    expect(screen.getByText("All current warnings are dismissed.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Refresh warnings" }));
+    expect(await screen.findByText("the configured model changed")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Dismissed configuration warnings" }))
+      .not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(dismissalsStorageKey)!))
+      .toEqual([configurationWarningKey(modelWarning)]);
+  });
+
+  it("restores a whole set of dismissed warnings at once", async () => {
+    const user = userEvent.setup();
+    const otherFinding = { ...modelWarning, explanation: "A second model fallback is active." };
+    const onRestore = vi.fn();
+    render(
+      <ConfigurationWarnings
+        context="instance"
+        dismissedWarningKeys={
+          new Set([configurationWarningKey(modelWarning), configurationWarningKey(otherFinding)])
+        }
+        onDismiss={vi.fn()}
+        onRefresh={vi.fn()}
+        onRestore={onRestore}
+        state={{ status: "ready", data: [otherFinding, modelWarning, previewWarning] }}
+      />,
+    );
+
+    expect(screen.getByText(previewWarning.explanation)).toBeInTheDocument();
+    expect(screen.queryByText(modelWarning.explanation)).not.toBeInTheDocument();
+    expect(screen.getByText("1 active warning")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show 2 dismissed warnings" }));
+    expect(screen.getAllByTestId("dismissed-configuration-warning")).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "Restore all 2 dismissed warnings" }));
+    expect(onRestore).toHaveBeenCalledWith([otherFinding, modelWarning]);
   });
 
   it("supports keyboard dismissal without mutating the warning", async () => {
@@ -292,8 +388,9 @@ describe("ConfigurationWarnings", () => {
         <ConfigurationWarnings
           context="instance"
           dismissedWarningKeys={dismissed}
-          onDismiss={(warning) => setDismissed(new Set([configurationWarningKey(warning)]))}
-          onRefresh={() => setDismissed(new Set())}
+          onDismiss={(warnings) => setDismissed(new Set(warnings.map(configurationWarningKey)))}
+          onRefresh={vi.fn()}
+          onRestore={vi.fn()}
           state={{ status: "ready", data: [modelWarning] }}
         />
       );
@@ -306,7 +403,7 @@ describe("ConfigurationWarnings", () => {
     dismiss.focus();
     await user.keyboard("{Enter}");
 
-    expect(screen.getByText("Warnings dismissed for this portal session.")).toBeInTheDocument();
+    expect(screen.getByText("All current warnings are dismissed.")).toBeInTheDocument();
     expect(modelWarning).toEqual({
       code: "MODEL002",
       severity: "warning",
@@ -328,10 +425,13 @@ describe("ConfigurationWarnings", () => {
         <ConfigurationWarnings
           context="instance"
           dismissedWarningKeys={dismissed}
-          onDismiss={(warning) =>
-            setDismissed((current) => new Set(current).add(configurationWarningKey(warning)))
+          onDismiss={(warnings) =>
+            setDismissed(
+              (current) => new Set([...current, ...warnings.map(configurationWarningKey)]),
+            )
           }
-          onRefresh={() => setDismissed(new Set())}
+          onRefresh={vi.fn()}
+          onRestore={vi.fn()}
           state={{ status: "ready", data: [modelWarning, otherFinding] }}
         />
       );

@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -80,7 +79,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	// PR-scoped credential and vice versa — on Azure DevOps too, where the
 	// issue is a backlog work item (docs/design/ado-parity-dsl-2-0.md §3.1).
 	issuesEnv := env
-	issuesEnv.repo = backlogProviderRepo(repo, issuesRepo)
+	issuesEnv.repo = providerconfig.BacklogProviderRepo(repo, issuesRepo)
 	issuesProvider, err := providerForEnvAs[providers.Provider](issuesEnv, false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderCache(),
@@ -187,14 +186,12 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	if reason != "" {
 		out["reason"] = reason
 	}
-	data, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal issue-staleness result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 2
+	if code := writeStageResultJSON(stderr, resultFile, out, stageResultOptions{
+		MarshalLabel:       "marshal issue-staleness result",
+		Indented:           true,
+		WriteErrorExitCode: 2,
+	}); code != 0 {
+		return code
 	}
 	if stale {
 		pf(stdout, "pr #%s: %s\n", pullNumber, reason)

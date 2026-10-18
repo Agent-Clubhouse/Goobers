@@ -61,18 +61,20 @@ func (owned *schedulerRuntime) open(input schedulerDefinitionsInput) (err error)
 	owned.runnerRegistry.Replace(owned.definitions.Runners)
 	reportStartupProgress(input.StartupProgress, "initializing retained legacy runtime")
 	owned.legacyRunner, owned.legacyWorktrees, err = buildRetainedLegacyRunner(retainedLegacyRunnerInput{
-		Layout:           input.Layout,
-		Config:           input.Config,
-		Definitions:      input.Definitions,
-		Goobers:          owned.definitions.Goobers,
-		Telemetry:        input.Telemetry,
-		InstanceLog:      input.InstanceLog,
-		SharedRegistry:   input.SharedRegistry,
-		ProviderQuota:    owned.providerQuota,
-		Watermarks:       input.Watermarks,
-		TerminalNotifier: input.TerminalNotifier,
-		HarnessInfo:      owned.definitions.HarnessPreflight,
-		CredentialStores: input.CredentialStores,
+		Layout:               input.Layout,
+		Config:               input.Config,
+		Definitions:          input.Definitions,
+		Goobers:              owned.definitions.Goobers,
+		InstructionsByGoober: owned.definitions.Instructions,
+		InstructionFailures:  owned.definitions.InstructionFailures,
+		Telemetry:            input.Telemetry,
+		InstanceLog:          input.InstanceLog,
+		SharedRegistry:       input.SharedRegistry,
+		ProviderQuota:        owned.providerQuota,
+		Watermarks:           input.Watermarks,
+		TerminalNotifier:     input.TerminalNotifier,
+		HarnessInfo:          owned.definitions.HarnessPreflight,
+		CredentialStores:     input.CredentialStores,
 	})
 	if err != nil {
 		return err

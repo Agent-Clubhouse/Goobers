@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
@@ -95,6 +97,8 @@ type SurrenderedMutation struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // SurrenderedResult is the wire shape of one attempt's surrendered outcome:
@@ -102,6 +106,13 @@ type SurrenderedMutation struct {
 // (ResultEnvelope + mutation facts + mutation issues), so the dispatch
 // activity can marshal it back into the identical stageActivityResult.
 type SurrenderedResult struct {
+	// ObservedUsage comes from the isolated harness adapter, not model-authored metrics.
+	ObservedUsage         map[string]float64 `json:"observedUsage,omitempty"`
+	ObservedUsageReported bool               `json:"observedUsageReported,omitempty"`
+	// ChildWorkspaceDigest names the bounded child output carrier. The host
+	// verifies its contract and waits for exact pod writer termination before
+	// importing its tree. Ordinary workspace delta semantics do not apply.
+	ChildWorkspaceDigest string `json:"childWorkspaceDigest,omitempty"`
 	// RecoveryAcknowledged is set only by the pod supervisor after the host
 	// accepts recovery custody (or verifies that no unmerged patch exists).
 	// Old images omit it; omission must not authorize writable-pod deletion.
@@ -140,6 +151,14 @@ type SurrenderedResult struct {
 	// nothing about the branch rather than inferring "unchanged" from
 	// silence. Never set beside a non-empty WorkspaceDelta.
 	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
+	// WorkspaceHeadMoved is the pod RUNTIME's own statement that Result's
+	// workspace_head_moved failure came from its workspace provisioning
+	// refusing to land the run's delta on a pull request head that moved
+	// under the run (#6019) — never from the stage. The engine honours that
+	// code only beside this flag: a stage's own result cannot claim the
+	// superseded exit, because the stage never sees the dispatcher's control
+	// plane that sets it.
+	WorkspaceHeadMoved bool `json:"workspaceHeadMoved,omitempty"`
 	// Verdict is the reviewer's decision when the attempt was an agentic
 	// reviewer GATE evaluated in a pod (Attempt.Review, agentickit.ModeReview;
 	// decision 001 rulings 7–8) — the same apiv1.Verdict the worker's
@@ -172,6 +191,14 @@ type SurrenderedResult struct {
 // they are, since those are routing decisions the engine — not the transport —
 // owns.
 func (r SurrenderedResult) Validate() error {
+	if len(r.ObservedUsage) > 64 || (len(r.ObservedUsage) > 0 && !r.ObservedUsageReported) {
+		return fmt.Errorf("dispatcher: observed usage exceeds bound")
+	}
+	for key, value := range r.ObservedUsage {
+		if key == "" || len(key) > 128 || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("dispatcher: invalid observed usage")
+		}
+	}
 	if err := r.Result.Validate(); err != nil {
 		return fmt.Errorf("dispatcher: surrendered result envelope: %w", err)
 	}
@@ -236,11 +263,12 @@ func (g PlaneSurrenderGate) Confirmed(ctx context.Context, attempt Attempt) (boo
 
 // RecoveryConfirmed reads the supervisor's durable custody acknowledgment;
 // mere presence of a legacy surrendered result does not establish recovery.
+// It reads the physical attempt's document, the key the pod surrendered under.
 func (g PlaneSurrenderGate) RecoveryConfirmed(ctx context.Context, attempt Attempt) (bool, error) {
 	if g.Plane == nil {
 		return false, errors.New("dispatcher: surrender gate has no plane")
 	}
-	result, err := ReadSurrenderedResult(ctx, g.Plane, attempt.RunID, attempt.Stage, attempt.Number)
+	result, err := ReadSurrenderedResult(ctx, g.Plane, attempt.RunID, attempt.Stage, attempt.IdentityAttempt())
 	if err != nil {
 		return false, err
 	}
@@ -349,6 +377,11 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 	}
 	if err := durability.WriteFileAtomic(path, data, 0o600,
 		durability.WithTempPattern(".surrender-*"),
+		// SurrenderDir lives under the blob store, an Azure Files CIFS mount
+		// (nounix) where chmod returns EPERM (outage 2026-10-04).
+		durability.WithBestEffortMode(),
+		durability.WithChmod(chmodStaged),
+		durability.WithLink(linkStaged),
 		durability.WithPublishRaceCheck(func(path string) error {
 			_, err := os.Stat(path)
 			return err
@@ -372,3 +405,11 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 	}
 	return nil
 }
+
+// chmodStaged applies the requested mode to the staged result; tests replace
+// it to simulate CIFS mounts whose chmod always fails.
+var chmodStaged = os.Chmod
+
+// linkStaged is the hard-link primitive for the no-clobber publish; tests
+// replace it to simulate mounts without hard links (CIFS nounix).
+var linkStaged = os.Link

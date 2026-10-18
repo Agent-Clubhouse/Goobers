@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -32,7 +33,7 @@ const (
 // autonomous attempt already found technically correct, just without
 // surviving regression coverage for it.
 func decompositionTargetLeaseExternalID(itemID string) string {
-	return "decomposition-target:" + itemID
+	return claimsclient.DecompositionTargetItemPrefix + itemID
 }
 
 // claimsPlaneTargetLeaser implements decomposition.TargetLeaser on the
@@ -100,7 +101,7 @@ func (l claimsPlaneTargetLeaser) Acquire(ctx context.Context, repo providers.Rep
 			// closure runs long after Acquire returns.
 			return func() error {
 				defer closeLog()
-				return ledger.ReleaseScoped(ctx, key, l.runID)
+				return ledger.ReleaseScoped(ctx, key, l.runID, claimrelease.Completed.Because("target_lease_released", ""))
 			}, nil
 		}
 		select {

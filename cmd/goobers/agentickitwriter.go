@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // agentickitwriter.go is the worker half of the agentic claim check.
@@ -78,6 +79,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	if err != nil {
 		return "", err
 	}
+	kit.ReviewRequiresDiff = attempt.Review && attempt.ReviewRequiresDiff
 	data, digest, err := agentickit.Marshal(kit)
 	if err != nil {
 		return "", err
@@ -125,6 +127,10 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		return nil, err
 	}
 	defer release()
+	return w.buildSnapshotKit(l, snapshot, env, mode)
+}
+
+func (w agenticKitWriter) buildSnapshotKit(l instance.Layout, snapshot *workerConfigSnapshot, env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	if snapshot.configDir != "" {
 		l = l.WithConfigDir(snapshot.configDir)
 	}
@@ -150,7 +156,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 	}
 
 	assets := make(map[string]*gooberassets.WireBundle, 1)
-	bundle, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, env.Goober), gooberassets.SourceDir))
+	bundle, err := gooberassets.Load(filepath.Join(resolvedGooberDefinitionDir(l.ConfigDir(), set, spec, env.Goober), gooberassets.SourceDir))
 	if err != nil {
 		return nil, fmt.Errorf("load goober %q assets: %w", env.Goober, err)
 	}
@@ -194,6 +200,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		Mode:                 mode,
 		Goobers:              scoped,
 		Instructions:         instructions,
+		SkillPackages:        workflow.ResolvedSkillFiles(spec, snapshot.skillPackages[env.Gaggle]),
 		Assets:               assets,
 		EnvCapabilities:      envCapabilities,
 		Grants:               wireGrants,

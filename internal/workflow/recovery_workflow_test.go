@@ -29,8 +29,8 @@ func TestReferenceRecoveryPreservesImplementationGates(t *testing.T) {
 	if !reflect.DeepEqual(base.Spec.Gates, recovery.Spec.Gates) || !reflect.DeepEqual(base.Spec.Readiness, recovery.Spec.Readiness) || base.Spec.Start != recovery.Spec.Start {
 		t.Fatal("recovery changed implementation gates, admission budgets, or credential preflight")
 	}
-	if len(recovery.Spec.Tasks) != len(base.Spec.Tasks)+1 {
-		t.Fatal("recovery must add exactly one restoration stage")
+	if len(recovery.Spec.Tasks) != len(base.Spec.Tasks) {
+		t.Fatal("standard and remediation implementation workflows must carry the same restoration stage")
 	}
 	tasks := make(map[string]apiv1.Task)
 	for _, task := range recovery.Spec.Tasks {
@@ -45,9 +45,9 @@ func TestReferenceRecoveryPreservesImplementationGates(t *testing.T) {
 			if got.Next != "recovery-resume" || got.Inputs["trustLabel"] != "goobers:approved" || got.Inputs["requireLabels"] != "goobers:needs-remediation" || got.Inputs["filterParkLabels"] != "false" || got.Inputs["excludeLabels"] != "goobers:needs-human,goobers:blocked-on-sibling,goobers/status:in-review" {
 				t.Fatal("recovery selector lost trust, parked selection, exclusions or restore-before-implementation")
 			}
-			// Only selection and its immediate successor may differ. The claim
-			// command, open-PR read capability and result contract stay intact.
-			got.Goal, got.Next, got.Inputs = task.Goal, task.Next, task.Inputs
+			// Only selection may differ. The claim command, successor,
+			// open-PR read capability and result contract stay intact.
+			got.Goal, got.Inputs = task.Goal, task.Inputs
 		}
 		if !reflect.DeepEqual(got, task) {
 			t.Fatalf("recovery changed implementation task %s", task.Name)

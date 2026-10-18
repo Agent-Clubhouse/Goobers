@@ -31,6 +31,20 @@ describe("tracked template updates", () => {
     expect(within(region).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("identifies an Azure DevOps gaggle by organization, project and repository (#6799)", async () => {
+    const fixtures = structuredClone(populatedDaemonFixtures());
+    fixtures.gaggles.items[1].project = {
+      provider: "ado",
+      owner: "example-org",
+      project: "Platform",
+      name: "Toolbox",
+    };
+    window.location.hash = `#/gaggle/${fixtures.gaggles.items[1].name}`;
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+    await screen.findByRole("heading", { name: "Developer tools" });
+    expect(screen.getByText("tools · example-org/Platform/Toolbox")).toBeInTheDocument();
+  });
+
   it("does not add template UI to legacy gaggles", async () => {
     window.location.hash = "#/gaggle/core";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
@@ -78,7 +92,7 @@ describe("gaggle view summary (#2531)", () => {
 
     expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
 
-    const goobers = screen.getByRole("list", { name: "Core product goobers" });
+    const goobers = screen.getByRole("table", { name: "Core product goobers" });
     expect(within(goobers).getByText("Core implementer")).toBeInTheDocument();
     expect(
       within(goobers).getByText("Implements claimed backlog items end to end."),
@@ -111,7 +125,7 @@ describe("gaggle view summary (#2531)", () => {
     expect(within(recent).getByText(/01JZ300ABORTED/)).toBeInTheDocument();
   });
 
-  it("keeps major secondary sections collapsed and links to gaggle-filtered personas", async () => {
+  it("opens repository connections, collapses recent outcomes, and links to gaggle-filtered personas", async () => {
     window.location.hash = "#/gaggle/core";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
@@ -122,7 +136,7 @@ describe("gaggle view summary (#2531)", () => {
     );
     expect(screen.getByRole("button", { name: /Repository connections/ })).toHaveAttribute(
       "aria-expanded",
-      "false",
+      "true",
     );
     expect(screen.getByRole("link", { name: "View full Goober details" })).toHaveAttribute(
       "href",
@@ -135,8 +149,6 @@ describe("gaggle view summary (#2531)", () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     expect(await screen.findByRole("heading", { name: "Developer tools" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
-
     const topology = screen.getByRole("region", { name: "Developer tools repository connections" });
     expect(within(topology).getByText("GitHub")).toBeInTheDocument();
     expect(within(topology).getByText("Gitea")).toBeInTheDocument();
@@ -144,13 +156,15 @@ describe("gaggle view summary (#2531)", () => {
   });
 });
 
-describe("gaggle switcher (#2531)", () => {
-  it("lets the gaggle view itself switch between gaggles on a multi-gaggle instance", async () => {
+describe("gaggle navigation (#2531)", () => {
+  it("uses sidebar navigation rather than a duplicate switcher on a multi-gaggle instance", async () => {
     window.location.hash = "#/gaggle/core";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    const switcher = await screen.findByLabelText("Switch gaggle");
-    await userEvent.selectOptions(switcher, "tools");
+    await screen.findByRole("heading", { name: "Core product" });
+    expect(screen.queryByLabelText("Switch gaggle")).not.toBeInTheDocument();
+    const navigation = screen.getByRole("navigation", { name: "Gaggles" });
+    await userEvent.click(within(navigation).getByRole("link", { name: "Open gaggle Developer tools" }));
 
     await waitFor(() => expect(window.location.hash).toBe("#/gaggle/tools"));
     expect(await screen.findByRole("heading", { name: "Developer tools" })).toBeInTheDocument();

@@ -147,11 +147,13 @@ func TestShippedWorkflowContracts(t *testing.T) {
 				source := discovered[key]
 				t.Run(strings.ReplaceAll(key, "/", "_"), func(t *testing.T) {
 					def := workflow.Definition{
-						Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+						Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec, Annotations: definition.Annotations,
 					}
 					assertStaticStageContracts(t, source, def)
 					assertWindowsDeterministicCompatibility(t, source, def)
-					machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(allowPreview))
+					// Preview authorization is per Workflow (#4220): a workflow's own
+					// acknowledgement, never a Manifest's, as the loader compiles it.
+					machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(allowPreview || workflow.PreviewFeaturesEnabled(definition.Annotations)))
 					if err != nil {
 						t.Fatalf("%s: workflow %q compile contract: %v", source, key, err)
 					}
@@ -368,7 +370,7 @@ func windowsDeterministicCompatibilityProblems(def workflow.Definition) []string
 		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 			continue
 		}
-		if hasWindowsIncompatibleOSCapability(task.RequiredCapabilities) {
+		if hasWindowsIncompatibleOSCapability(task.RequiredCapabilities) || hasWindowsIncompatibleRunsOn(task.RunsOn) {
 			continue
 		}
 		switch {
@@ -407,6 +409,12 @@ func isWindowsIncompatibleCommand(command []string) bool {
 	}
 }
 
+// hasWindowsIncompatibleRunsOn is the DSL 3.x form of an os=* capability:
+// runsOn.os pins a non-Windows operating system.
+func hasWindowsIncompatibleRunsOn(runsOn *apiv1.RunsOn) bool {
+	return runsOn != nil && runsOn.OS != "" && runsOn.OS != "windows"
+}
+
 func hasWindowsIncompatibleOSCapability(capabilities []string) bool {
 	for _, capability := range capabilities {
 		goos, ok := strings.CutPrefix(capability, "os=")
@@ -428,6 +436,22 @@ func TestWindowsDeterministicCompatibilityRejectsUnconstrainedInlineScript(t *te
 	problems := windowsDeterministicCompatibilityProblems(def)
 	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
 		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsRunsOnOS(t *testing.T) {
+	t.Parallel()
+	for os, wantProblems := range map[string]int{"linux": 0, "macOS": 0, "windows": 1} {
+		def := workflow.Definition{Name: "posix-script", Spec: apiv1.WorkflowSpec{
+			Tasks: []apiv1.Task{{
+				Name: "run", Type: apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+				RunsOn: &apiv1.RunsOn{OS: os},
+			}},
+		}}
+		if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != wantProblems {
+			t.Fatalf("runsOn.os %s: Windows compatibility problems = %v, want %d", os, problems, wantProblems)
+		}
 	}
 }
 
@@ -1872,8 +1896,10 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 				}
 			}
 		}
-		if err := commitAgentChange(request.Workspace, stage, call); err != nil {
-			return err
+		if task.Workspace != apiv1.WorkspaceRepoReadOnly {
+			if err := commitAgentChange(request.Workspace, stage, call); err != nil {
+				return err
+			}
 		}
 		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, result)
 	case harness.ModeReview:
@@ -1943,7 +1969,8 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 		task := d.script.tasks[stage]
 		gateDefinition, ok := d.script.gates[task.Next]
 		if !ok {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("CI-poll task %q does not feed a gate", stage)
+			d.script.setCIOutcome(gate.OutcomePass)
+			return d.builtins.Run(ctx, env, run)
 		}
 		outcome, ok := d.script.nextGateOutcome(gateDefinition.Name)
 		if !ok {
@@ -1994,6 +2021,9 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 			return apiv1.ResultEnvelope{}, fmt.Errorf("%s input for %s is %T, want string", executor.InputResultFile, stage, value)
 		}
 	}
+	if err := writeScriptedArtifactSlots(env, d.script.definition, d.script.tasks[stage]); err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("stage scripted artifact slots for %s: %w", stage, err)
+	}
 	run.Command = []string{d.executable, "-test.run=^TestShippedWorkflowCommandHelper$"}
 	run.Script = ""
 	run.Env = map[string]string{
@@ -2004,6 +2034,70 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 	}
 	run.Network = ""
 	return d.shell.Run(ctx, env, run)
+}
+
+// writeScriptedArtifactSlots stands in for a DSL 3.1 producer's named
+// artifact publication: it stages every declared slot and the manifest the
+// shell executor publishes from. A selective parallel's selection selects
+// every optional branch and a map's roster holds one item, so every declared
+// fan-out edge stays executable by some terminal scenario.
+func writeScriptedArtifactSlots(env apiv1.InvocationEnvelope, definition apiv1.Workflow, task apiv1.Task) error {
+	manifestFile, _ := env.Inputs["artifactManifestFile"].(string)
+	if len(task.ArtifactSlots) == 0 || manifestFile == "" {
+		return nil
+	}
+	type entry struct {
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+		MediaType string `json:"mediaType"`
+	}
+	entries := make([]entry, 0, len(task.ArtifactSlots))
+	for _, slot := range task.ArtifactSlots {
+		content := []byte("{}")
+		for _, parallel := range definition.Spec.Parallels {
+			if parallel.Selection == nil || parallel.Selection.Source != (apiv1.FanOutSource{Task: task.Name, Slot: slot.Name}) {
+				continue
+			}
+			type selected struct {
+				Name string `json:"name"`
+			}
+			selection := struct {
+				SchemaVersion int        `json:"schemaVersion"`
+				Branches      []selected `json:"branches"`
+			}{SchemaVersion: 1, Branches: []selected{}}
+			for _, branch := range parallel.Branches {
+				if branch.Optional {
+					selection.Branches = append(selection.Branches, selected{Name: branch.Name})
+				}
+			}
+			var err error
+			if content, err = json.Marshal(selection); err != nil {
+				return err
+			}
+		}
+		for _, fanOut := range definition.Spec.Maps {
+			if fanOut.Source == (apiv1.FanOutSource{Task: task.Name, Slot: slot.Name}) {
+				content = []byte(`{"schemaVersion":1,"items":[{"identity":"contract","item":{}}]}`)
+			}
+		}
+		path := "contract-slot-" + slot.Name + ".json"
+		if err := os.WriteFile(filepath.Join(env.Workspace, path), content, 0o644); err != nil {
+			return err
+		}
+		mediaType := slot.MediaType
+		if mediaType == "" {
+			mediaType = "application/json"
+		}
+		entries = append(entries, entry{Name: slot.Name, Path: path, MediaType: mediaType})
+	}
+	manifest, err := json.Marshal(struct {
+		SchemaVersion string  `json:"schemaVersion"`
+		Entries       []entry `json:"entries"`
+	}{SchemaVersion: "goobers.dev/stage-artifact-set/v1alpha1", Entries: entries})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(env.Workspace, filepath.FromSlash(manifestFile)), manifest, 0o644)
 }
 
 func stageName(taskID string) string {
@@ -2143,6 +2237,13 @@ func writeScriptedArtifactFile(request harness.RunRequest) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
+// commitAgentChange stands in for a writable stage's agent committing work.
+// harnessAct never calls it for a repo-readonly task (#6633): such a worktree
+// shares the managed mirror's object store, and a concurrent sibling branch's
+// workspace provisioning runs mirror maintenance whose gc removes empty
+// loose-object fan-out directories, so a fake read-only lens writing objects
+// there can lose git's mkdir/mkstemp race ("unable to create temporary file").
+// A read-only lens must not write to the repository anyway.
 func commitAgentChange(workspace, stage string, call int) error {
 	name := strings.NewReplacer("/", "-", ":", "-").Replace(stage)
 	path := filepath.Join(workspace, fmt.Sprintf("contract-%s-%d.txt", name, call))
@@ -2164,6 +2265,35 @@ func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	if err := runGitCommand(dir, args...); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// #6633: a fake read-only lens must complete without touching git, so it can
+// never write into an object store a sibling branch's provisioning is
+// garbage-collecting. The workspace is deliberately not a repository: any git
+// invocation would fail the stage.
+func TestHarnessActReadOnlyTaskDoesNotWriteRepository(t *testing.T) {
+	t.Parallel()
+	script := newScenarioScript(apiv1.Workflow{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+		Name: "lens", Type: apiv1.TaskAgentic, Workspace: apiv1.WorkspaceRepoReadOnly,
+		ExpectedOutputs: []string{"findingsRef"},
+	}}}}, terminalScenario{})
+	workspace := t.TempDir()
+	err := script.harnessAct(context.Background(), harness.RunRequest{
+		Mode:           harness.ModeInvoke,
+		Envelope:       apiv1.InvocationEnvelope{TaskID: "run:lens"},
+		Workspace:      workspace,
+		CompletionPath: "result.json",
+	})
+	if err != nil {
+		t.Fatalf("harnessAct: %v", err)
+	}
+	written, err := filepath.Glob(filepath.Join(workspace, "contract-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 0 {
+		t.Fatalf("read-only lens wrote agent changes %v", written)
 	}
 }
 

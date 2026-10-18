@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { Route } from "../src/routing";
 
 const smokeRunId = "01JZE2ESMOKERUN";
@@ -19,19 +19,19 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   runs: { path: "/#/runs", heading: "Runs" },
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
-  cost: { path: "/#/cost", heading: "AIC" },
+  cost: { path: "/#/cost", heading: "Cost" },
   "work-items": { path: "/#/work-items", heading: "Work Items" },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
 };
 
-const PRIMARY_ROUTES = [
-  ["Overview", "/#/overview", "Active runs"],
-  ["Workflows", "/#/workflows", "Workflows"],
-  ["Goobers", "/#/goobers", "Goobers"],
-  ["Runs", "/#/runs", "Runs"],
-  ["Insight", "/#/insight", "Insight"],
-  ["AIC", "/#/cost", "AIC"],
+const COMPACT_NAV_ROUTES = [
+  ["Overview", "/#/overview", "Active runs", "direct"],
+  ["Workflows", "/#/workflows", "Workflows", "direct"],
+  ["Goobers", "/#/goobers", "Goobers", "more"],
+  ["Runs", "/#/runs", "Runs", "direct"],
+  ["Insight", "/#/insight", "Insight", "more"],
+  ["Cost", "/#/cost", "Cost", "more"],
 ] as const;
 
 function trackConsoleErrors(page: Page): string[] {
@@ -53,6 +53,31 @@ function trackPageErrors(page: Page): string[] {
     errors.push(error.message);
   });
   return errors;
+}
+
+async function expectFullyInVisualViewport(locator: Locator, description: string) {
+  await expect
+    .poll(
+      () =>
+        locator.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const viewport = window.visualViewport;
+          const left = viewport?.offsetLeft ?? 0;
+          const top = viewport?.offsetTop ?? 0;
+          const right = left + (viewport?.width ?? window.innerWidth);
+          const bottom = top + (viewport?.height ?? window.innerHeight);
+          return (
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            bounds.left >= left &&
+            bounds.top >= top &&
+            bounds.right <= right &&
+            bounds.bottom <= bottom
+          );
+        }),
+      { message: `${description} should be fully within the visual viewport` },
+    )
+    .toBe(true);
 }
 
 for (const [name, { path, heading }] of Object.entries(ROUTES)) {
@@ -102,15 +127,15 @@ test("renders the Workflow-detail topology with withheld graph analytics and zer
   expect(pageErrors).toEqual([]);
 });
 
-for (const [area, path, heading] of PRIMARY_ROUTES) {
+for (const [area, path, heading] of COMPACT_NAV_ROUTES) {
   test(`keeps the ${area} primary route within a 320px viewport`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 800 });
     await page.goto(path);
 
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: area }),
-    ).toHaveAttribute("aria-current", "page");
+    const navigation = page.getByRole("navigation", { name: "Mobile primary", exact: true });
+    const active = navigation.getByRole("button", { name: "Open navigation menu" });
+    await expect(active).toHaveText(area);
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
       .toBeLessThanOrEqual(1);
@@ -155,13 +180,27 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
     }
 
     await page.goto("/#/cost");
-    const costHeading = page.getByRole("heading", { name: "AIC", exact: true });
-    const summary = page.locator(".usage-analytics").first();
+    const costHeading = page.getByRole("heading", { name: "Cost", exact: true });
+    const summary = page.locator(".cost-usage-summary").first();
     await expect(costHeading, `Cost title at ${layout.name}`).toBeVisible();
     await expect(summary, `Cost summary at ${layout.name}`).toBeVisible();
-    await expect(summary.getByText("Total", { exact: true })).toBeVisible();
+    await expect(summary.getByText("Total cost", { exact: true })).toBeVisible();
     await expect(summary.getByText("P50", { exact: true })).toBeVisible();
     await expect(summary.getByText("P95", { exact: true })).toBeVisible();
+    const metrics = summary.locator(".cost-usage-spend > div");
+    const boxes = await Promise.all((await metrics.all()).map((metric) => metric.boundingBox()));
+    expect(boxes).toHaveLength(4);
+    if (layout.width >= 360 && layout.width <= 760) {
+      const supporting = boxes.slice(1);
+      expect(Math.max(...supporting.map((box) => box!.y)) - Math.min(...supporting.map((box) => box!.y)))
+        .toBeLessThanOrEqual(1);
+      const values = await metrics.locator("dd").all();
+      const valueBoxes = await Promise.all(values.slice(1).map((value) => value.boundingBox()));
+      expect(Math.max(...valueBoxes.map((box) => box!.y)) - Math.min(...valueBoxes.map((box) => box!.y)))
+        .toBeLessThanOrEqual(1);
+    } else if (layout.width < 360) {
+      expect(Math.abs(boxes[2]!.y - boxes[3]!.y)).toBeLessThanOrEqual(1);
+    }
     const comparison = page.getByRole("region", { name: "Attributed costs comparison" });
     await expect(comparison).toBeVisible();
     await expect(comparison).toHaveAttribute("tabindex", "0");
@@ -169,7 +208,21 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
       comparison.getByRole("table", { name: "Attributed costs" }).getByRole("columnheader"),
     ).toHaveCount(4);
     await expect(comparison.getByText("123,456,789.12 AIC").first()).toBeAttached();
-    await expect(page.getByText("Scroll sideways to compare every cost column.")).toBeVisible();
+    await comparison.locator(".external-cost-models").first().evaluate((element) => {
+      element.setAttribute("style", "font-size: 20px");
+      element.querySelector("li")!.textContent =
+        "claude-sonnet-with-a-long-unbroken-model-identifier: 123,456 AIC · 14/14 attempts";
+    });
+    await comparison.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+    const modelList = comparison.locator(".external-cost-models").first();
+    const modelBox = await modelList.boundingBox();
+    const comparisonBox = await comparison.boundingBox();
+    expect(modelBox).not.toBeNull();
+    expect(comparisonBox).not.toBeNull();
+    expect(modelBox!.x + modelBox!.width).toBeLessThanOrEqual(comparisonBox!.x + comparisonBox!.width - 12);
+    expect(await modelList.evaluate((element) => element.scrollWidth - element.clientWidth))
+      .toBeLessThanOrEqual(1);
+    await expect(page.getByText("Scroll sideways to compare every cost column.")).toHaveCount(0);
     if (layout.width <= 430) {
       expect(
         await comparison.evaluate((element) => element.scrollWidth > element.clientWidth),
@@ -214,13 +267,16 @@ test("loads Overview and Workflows and processes an SSE invalidation", async ({ 
   expect(consoleErrors).toEqual([]);
 });
 
-test("keeps Overview status and recent outcomes compact at desktop and narrow widths", async ({
+test("keeps Overview content first without horizontal overflow across compact layouts", async ({
   page,
 }) => {
   const completedRunId = "01JZE2ECOMPLETEDRUNWITHALONGIDENTIFIER";
   for (const viewport of [
     { width: 1280, height: 800 },
+    { width: 320, height: 844 },
     { width: 390, height: 844 },
+    { width: 430, height: 844 },
+    { width: 844, height: 390 },
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/#/overview");
@@ -228,15 +284,13 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
     const status = page.getByRole("region", {
       name: "Daemon connection and instance counts",
     });
-    await expect(status).toContainText("Retention sweep");
-    await expect(status).toContainText("Running");
     await expect(status).toContainText("Active runs1");
     await expect(status).toContainText("Gaggles1");
 
     const outcomes = page.getByRole("region", { name: "Recent outcomes" });
-    await expect(page.getByRole("region", { name: "Active runs" })).toContainText(
-      "01JZE2ESMOKERUN",
-    );
+    const active = page.getByRole("region", { name: "Active runs" });
+    await expect(active).toContainText("01JZE2ESMOKERUN");
+    const activeRow = active.locator(".data-row").filter({ hasText: smokeRunId });
     const outcomeRow = outcomes.locator(".data-row").filter({ hasText: completedRunId });
     await expect(outcomeRow).toBeVisible();
     await expect(outcomeRow.locator(`a[aria-label="Open run ${completedRunId}"]`)).toHaveAttribute(
@@ -250,9 +304,166 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
       ),
     ).toBeVisible();
 
+    if (viewport.width === 390) {
+      await expectFullyInVisualViewport(
+        page.getByRole("heading", { level: 1 }),
+        "Overview title at 390x844",
+      );
+      await expectFullyInVisualViewport(activeRow, "active run at 390x844");
+    }
+
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
   }
+
+  await page.setViewportSize({ width: 1920, height: 1440 });
+  await page.goto("/#/overview");
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setDeviceMetricsOverride", {
+    width: 960,
+    height: 720,
+    deviceScaleFactor: 2,
+    mobile: false,
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      })),
+    )
+    .toEqual({ width: 960, height: 720, devicePixelRatio: 2 });
+  await expectFullyInVisualViewport(
+    page.getByRole("heading", { level: 1 }),
+    "Overview title at 200% zoom",
+  );
+  await expectFullyInVisualViewport(
+    page
+      .getByRole("region", { name: "Active runs" })
+      .locator(".data-row")
+      .filter({ hasText: smokeRunId }),
+    "active run at 200% zoom",
+  );
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+});
+
+test("keeps optional Overview diagnostics accessible and exposes capacity warnings", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.recoveryInventory;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/#/overview");
+
+  const diagnostics = page.getByText("Diagnostics and capacity", { exact: true });
+  await expect(diagnostics).toBeVisible();
+  await diagnostics.click();
+  await expect(page.getByRole("status", { name: "Retention sweep running" })).toBeVisible();
+  await expect(page.getByText("Recovery inventory", { exact: true })).toHaveCount(0);
+
+  await page.unroute("**/api/v1/instance");
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        recoveryInventory: {
+          state: "warning",
+          used: 9,
+          limit: 10,
+          unreadable: 0,
+          overflow: 0,
+          highWaterPercent: 80,
+          inventoryRoot: "C:\\fixture\\recovery",
+          policySource: "instance-config",
+          observedAt: "2026-08-17T08:01:59Z",
+          reclaimCandidatesTotal: 1,
+          reclaimCandidates: [
+            {
+              runId: "01JZ400RECLAIMABLE0000000000",
+              phase: "completed",
+              ref: "refs/goobers/recovery/01JZ400RECLAIMABLE0000000000",
+              patchDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              repositoryKey: "github|||fixture|repo|",
+              createdAt: "2026-07-01T00:00:00Z",
+              retainUntil: "2026-09-01T00:00:00Z",
+              inspectCommand: "goobers trace --summary 01JZ400RECLAIMABLE0000000000 'C:\\fixture\\instance'",
+              abandonCommand:
+                "goobers recovery-abandon --run 01JZ400RECLAIMABLE0000000000 --ref refs/goobers/recovery/01JZ400RECLAIMABLE0000000000 --confirm-digest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 'C:\\fixture\\instance'",
+            },
+          ],
+          statusCommand: "goobers status --all 'C:\\fixture\\instance'",
+        },
+      },
+    });
+  });
+  await page.reload();
+
+  const warning = page.getByRole("alert", { name: "Recovery inventory warning" });
+  await expect(warning).toBeVisible();
+  await expect(
+    warning.getByRole("listitem", { name: "Recovery snapshot 01JZ400RECLAIMABLE0000000000" }),
+  ).toContainText("goobers recovery-abandon --run 01JZ400RECLAIMABLE0000000000");
+  await expect(warning).toContainText("goobers status --all");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+});
+
+test("preserves attention selection and dismissals across navigation and Back", async ({ page }) => {
+  await page.route("**/api/v1/runs*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/runs" && url.searchParams.get("phase") === "failed") {
+      await route.fulfill({
+        json: {
+          runs: [{
+            id: "01JZE2EATTENTION",
+            workflow: "implementation",
+            workflowVersion: 7,
+            workflowDigest: "sha256:core",
+            gaggle: "core",
+            trigger: { kind: "item", ref: "6645" },
+            phase: "failed",
+            terminal: true,
+            startedAt: "2026-08-17T07:00:00Z",
+            finishedAt: "2026-08-17T07:10:00Z",
+            durationMillis: 600_000,
+            lastActivityAt: "2026-08-17T07:10:00Z",
+            stale: false,
+            lastSeq: 8,
+            repassCount: 0,
+            retryCount: 0,
+            policyRetryCount: 0,
+            infraRetryCount: 0,
+            noWork: false,
+            terminalReason: "review failed",
+          }],
+        },
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/#/overview");
+  const selection = page.getByRole("checkbox", {
+    name: /Select all 1 runs in core \/ implementation/,
+  });
+  await selection.check();
+  await page.goto("/#/runs");
+  await page.goBack();
+  await expect(selection).toBeChecked();
+
+  await page.getByRole("button", { name: /Dismiss all runs in core \/ implementation/ }).click();
+  await expect(page.getByRole("button", { name: "Show dismissed (1)" })).toBeVisible();
+  await page.goto("/#/runs");
+  await page.goBack();
+  await expect(page.getByRole("button", { name: "Show dismissed (1)" })).toBeVisible();
 });
 
 for (const viewport of [
@@ -503,17 +714,15 @@ test("restores the originating instance summary focus and scroll", async ({ page
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/overview");
   const origin = page.getByRole("link", { name: "View recovery metadata" });
+  await origin.scrollIntoViewIfNeeded();
   await origin.focus();
-  await page.locator(".portal-main").evaluate((element) => {
-    const spacer = document.createElement("div");
-    spacer.style.height = "600px";
-    element.append(spacer);
-    element.scrollTop = 140;
-  });
   const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
 
-  await origin.click();
-  await expect(page.getByRole("heading", { name: "Recovery metadata" })).toBeVisible();
+  await origin.evaluate((link) => (link as HTMLAnchorElement).click());
+  await expect(
+    page.getByRole("heading", { name: "Recovery metadata", exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Back to overview" }).click();
 
   await expect(page.getByRole("heading", { name: /healthy|attention/i }).first()).toBeVisible();
@@ -548,19 +757,19 @@ test("does not mark unrelated history after a canceled detail-link click", async
   await page.evaluate(() => {
     window.location.hash = "#/instance/retention";
   });
-  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
   expect(await page.evaluate(() => window.history.state?.portalOrigin)).not.toBe(true);
 
   await page.goBack();
   await expect(page).toHaveURL(/#\/overview$/);
   await page.goForward();
-  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
 });
 
 test("keeps instance details usable on desktop and at 200 percent zoom", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/#/instance/retention");
-  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
   await page.evaluate(() => {
     document.documentElement.style.zoom = "2";
   });
@@ -616,8 +825,8 @@ test("bounds route reads when daemon admission is constrained", async ({ page },
   await page.getByRole("button", { name: "Workflows" }).click();
   await page.getByRole("button", { name: "Runs" }).click();
   await page.getByRole("button", { name: "Insight" }).click();
-  await page.getByRole("button", { name: "AIC" }).click();
-  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cost" }).click();
+  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
 
   const result = await page.request.get("/api/v1/test/admission", { headers });
   const stats = (await result.json()) as { peak: number; requests: number };
@@ -630,40 +839,39 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   await page.goto("/#/overview");
   await expect(page.getByRole("heading", { name: "Active runs" })).toBeVisible();
 
-  const primary = page.getByRole("navigation", { name: "Primary" });
-  for (const name of ["Overview", "Workflows", "Goobers", "Runs", "Work Items", "Insight", "AIC"]) {
-    await expect(primary.getByRole("button", { name })).toBeVisible();
-  }
-  await expect(primary.getByRole("button", { name: "Overview" })).toHaveAttribute(
-    "aria-current",
-    "page",
-  );
-
-  const more = page.getByRole("button", {
-    name: "Show gaggles, status, and support links",
-  });
+  const primary = page.getByRole("navigation", { name: "Mobile primary", exact: true });
+  const more = primary.getByRole("button", { name: "Open navigation menu" });
+  await expect(more).toBeVisible();
+  await expect(more).toHaveText("Overview");
   await more.click();
+  const dialog = page.getByRole("dialog", { name: "Goobers" });
+  for (const name of ["Overview", "Workflows", "Runs", "Goobers", "Work Items", "Insight", "Cost"]) {
+    await expect(dialog.getByRole("button", { name })).toBeVisible();
+  }
   await expect(page.getByRole("navigation", { name: "Gaggles" })).toBeVisible();
   const support = page.getByRole("navigation", { name: "Support" });
   await expect(support).toBeVisible();
   await expect(support.getByRole("link", { name: "Docs" })).toBeVisible();
 
-  await primary.getByRole("button", { name: "AIC" }).click();
-  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
-  await expect(primary.getByRole("button", { name: "AIC" })).toHaveAttribute(
-    "aria-current",
-    "page",
-  );
+  await expect(dialog.getByRole("button", { name: "Use dark theme" })).toHaveCount(0);
+  const close = dialog.getByRole("button", { name: "Close portal menu" });
+  for (const control of [more, close]) {
+    const box = await control.boundingBox();
+    expect(box, "representative shell control should have geometry").not.toBeNull();
+    expect(box!.width).toBeGreaterThanOrEqual(24);
+    expect(box!.height).toBeGreaterThanOrEqual(24);
+  }
+
+  await dialog.getByRole("button", { name: "Cost" }).click();
+  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
+  await expect(more).toHaveText("Cost");
 
   for (const control of [
-    primary.getByRole("button", { name: "AIC" }),
-    more,
     page.getByLabel("Scope"),
     page.getByLabel("Time window"),
-    page.getByRole("button", { name: "Use dark theme" }),
   ]) {
     const box = await control.boundingBox();
-    expect(box, "representative control should have geometry").not.toBeNull();
+    expect(box, "representative page control should have geometry").not.toBeNull();
     expect(box!.width).toBeGreaterThanOrEqual(24);
     expect(box!.height).toBeGreaterThanOrEqual(24);
   }
@@ -691,7 +899,7 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   );
 
   const costPivot = page.getByRole("link", {
-    name: "View core / Implementation in AIC",
+    name: "View core / Implementation in Cost",
   });
   await expect(costPivot).toHaveAttribute(
     "href",
@@ -699,10 +907,8 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   );
   await costPivot.click();
   await expect(page).toHaveURL(/#\/cost\?gaggle=core&workflow=implementation$/);
-  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Scope")).toHaveValue(
-    JSON.stringify(["workflow", "core", "implementation"]),
-  );
+  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Scope")).toHaveText("Workflow · core / implementation");
 });
 
 test("shows one coherent polling fallback status with diagnostics out of primary copy", async ({

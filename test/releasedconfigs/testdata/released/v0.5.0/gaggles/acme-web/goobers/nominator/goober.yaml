@@ -1,0 +1,35 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: nominator
+spec:
+  gaggle: acme-web
+  role: nominator
+  displayName: Nominator
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  # Read-only repo + telemetry, issues-only — never repo:push/github:pr:write
+  # (issue #26 scope: "writes issues only — never code"). Approval is allowed
+  # at the goober boundary but materialized only when a workflow stage explicitly
+  # declares github:issues:approve; the shipped workflow leaves it undeclared.
+  capabilities:
+    - repo:read
+    - telemetry:read
+    - github:issues:write
+    - github:issues:approve
+    - agent:model
+  policyActions:
+    - comment-on-issue
+    - create-issue
+    - label-issue
+  conditionalPolicyActions:
+    - approve-issue
+  tools:
+    - github
+    - telemetry
+    - shell
+  scaleFactor: 1
+  workflows:
+    - work-nomination

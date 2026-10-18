@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -44,7 +46,13 @@ func TestDecideRemediationCheckpoint(t *testing.T) {
 
 	t.Run("same digest on same base escalates", func(t *testing.T) {
 		got := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
-			Prior:   remediationState{LastDiffDigest: "sha256:same", BaseSHA: "base"},
+			Prior: remediationState{
+				LastDiffDigest: "sha256:same",
+				BaseSHA:        "base",
+				AttemptsByCause: remediationAttempts{
+					Substantive: 1,
+				},
+			},
 			Digest:  "sha256:same",
 			HeadSHA: "head",
 			BaseSHA: "base",
@@ -52,6 +60,21 @@ func TestDecideRemediationCheckpoint(t *testing.T) {
 
 		if !got.Escalated || !strings.Contains(got.Escalation.Reason, "byte-identical") {
 			t.Fatalf("decision = %+v, want same-diff escalation", got)
+		}
+	})
+
+	t.Run("same digest without a prior attempt does not escalate", func(t *testing.T) {
+		got := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+			Prior:   remediationState{LastDiffDigest: "sha256:same", BaseSHA: "base"},
+			Causes:  []remediationCause{remediationCauseFailingCI},
+			Budgets: remediationBudgets{FailingCI: 2},
+			Digest:  "sha256:same",
+			HeadSHA: "head",
+			BaseSHA: "base",
+		})
+
+		if got.Escalated || !got.HasObservedCause {
+			t.Fatalf("decision = %+v, want the first real remediation attempt admitted", got)
 		}
 	})
 
@@ -77,4 +100,21 @@ func TestDecideRemediationCheckpoint(t *testing.T) {
 			t.Fatalf("escalation causes = %v, want none for a forced escalation", got.State.EscalationCauses)
 		}
 	})
+}
+
+func TestResolveRemediationCheckpointModeDropsRecoveredCI(t *testing.T) {
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "failing-ci,substantive")
+	t.Setenv("GOOBERS_INPUT_CISTATUS", "passing")
+
+	mode, code, ok := resolveRemediationCheckpointMode(
+		remediationCheckpointFlags{},
+		remediationCheckpointFeatures{},
+		&bytes.Buffer{},
+	)
+	if !ok || code != 0 {
+		t.Fatalf("resolve mode = %+v, code = %d, ok = %v", mode, code, ok)
+	}
+	if want := []remediationCause{remediationCauseSubstantive}; !reflect.DeepEqual(mode.causes, want) {
+		t.Fatalf("causes = %v, want %v after CI recovered", mode.causes, want)
+	}
 }

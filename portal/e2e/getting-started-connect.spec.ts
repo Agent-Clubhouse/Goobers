@@ -14,8 +14,10 @@ interface Fixture {
 
 function state(fixture: Fixture) {
   return {
-    version: 2,
+    version: 3,
     platform: "windows",
+    executable: "C:\\Program Files\\Goobers\\goobers.exe",
+    runtimeIdentity: "CONTOSO\\alice",
     workdir,
     instancePath: fixture.instanceExists ? selectedInstancePath : instancePath,
     suggestedStack: "Node.js",
@@ -121,9 +123,26 @@ async function routeGuided(page: Page, fixture: Fixture) {
         return;
       }
       if (path === "/guided/actions/complete") {
-        expect(request.postDataJSON()).toEqual({ installScheduledTask: true });
+        expect(request.postDataJSON()).toEqual({
+          mode: "foreground",
+          confirmLocalSystem: false,
+        });
         await route.fulfill({
-          json: { complete: true, scheduledTaskInstalled: true },
+          json: {
+            complete: true,
+            daemonRunning: false,
+            supervisionMode: "foreground",
+            foregroundCommand:
+              '"C:\\Program Files\\Goobers\\goobers.exe" "up" "C:\\src\\widgets-goobers"',
+            workflows: [
+              {
+                name: "implementation",
+                schedules: ["3,18,33,48 * * * *"],
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "run" "implementation" "C:\\src\\widgets-goobers"',
+              },
+            ],
+          },
         });
         return;
       }
@@ -218,9 +237,9 @@ test("configures a repository through the multi-page guided wizard", async ({ pa
   await expect(page.getByText(/All configuration, harness, and repository checks passed/)).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
-  await expect(page.getByRole("heading", { name: "Finish setup" })).toBeVisible();
-  await page.getByRole("button", { name: "Finish setup" }).click();
-  await expect(page.getByRole("heading", { name: "Goobers is ready" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose how Goobers will run" })).toBeVisible();
+  await page.getByRole("button", { name: "Apply and finish" }).click();
+  await expect(page.getByRole("heading", { name: "Setup complete" })).toBeVisible();
   await expect(page.getByText(/goobers-dsl-author/)).toBeVisible();
   await expect(page.getByText(/close this browser window/i)).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);

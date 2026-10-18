@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/goobers/goobers/internal/engineoperator"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -45,6 +47,13 @@ type daemonRunJournalService struct {
 	operatorMessages engineoperator.Service
 	layout           instance.Layout
 	log              *journal.InstanceLog
+	// reads is the daemon's live, read-model-backed run reader. The
+	// escalation-candidates route answers from it, never from an offline
+	// journal scan (#6889 follow-up).
+	reads decomposition.EscalationReads
+	// definitions names the workflows whose runs can contribute to the
+	// windowed routes (#6968); without them those routes refuse.
+	definitions *interventionDefinitionRegistry
 }
 
 func newDaemonRunJournalService(layout instance.Layout, log *journal.InstanceLog) *daemonRunJournalService {
@@ -110,7 +119,17 @@ func (s *daemonRunJournalService) ConflictTouches(ctx context.Context, request j
 	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
 		return journalclient.ConflictTouchResponse{}, gaggleMismatch("a conflict-history read")
 	}
-	touches, err := s.crossRun().ConflictTouches(ctx, journalclient.ConflictTouchRequest{
+	if err := s.requireWindowedLiveReads(request.Since, "a conflict-history read"); err != nil {
+		return journalclient.ConflictTouchResponse{}, err
+	}
+	workflows, err := s.contributingWorkflows(request.Gaggle, journalclient.WorkflowCanRecordBaseSyncConflict)
+	if err != nil {
+		return journalclient.ConflictTouchResponse{}, err
+	}
+	// Candidate runs come from the live read model (last activity since the
+	// window opens) of the workflows that can record a conflict; only those
+	// journals are opened, never every run's.
+	touches, err := s.crossRun().ConflictTouchesFromReads(ctx, s.reads, workflows, journalclient.ConflictTouchRequest{
 		RunID:  request.RunID,
 		Gaggle: request.Gaggle,
 		Since:  request.Since,
@@ -119,6 +138,38 @@ func (s *daemonRunJournalService) ConflictTouches(ctx context.Context, request j
 		return journalclient.ConflictTouchResponse{}, err
 	}
 	return journalclient.ConflictTouchResponse{Touches: touches}, nil
+}
+
+// requireWindowedLiveReads refuses a windowed cross-run scan that has no live
+// read model to narrow its candidates with, or no window: falling back to the
+// offline directory scan is the defect this plane exists to avoid.
+func (s *daemonRunJournalService) requireWindowedLiveReads(since time.Time, what string) error {
+	if since.IsZero() {
+		return httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
+			"since is required; an unbounded "+what+" is refused", nil)
+	}
+	if s.reads == nil {
+		return errors.New(what + ": the daemon's live read model is not attached")
+	}
+	return nil
+}
+
+// contributingWorkflows names the gaggle's workflows, in the daemon's current
+// definitions, whose runs can hold what a windowed scan reads. Most runs on a
+// busy instance (merge-review ticks) can hold neither, and opening their
+// journals is what exhausted the route's budget and the daemon's heap.
+func (s *daemonRunJournalService) contributingWorkflows(gaggle string, can func(apiv1.WorkflowSpec) bool) ([]string, error) {
+	if s.definitions == nil {
+		return nil, errors.New("the daemon's workflow definitions are not attached; refusing an unfiltered journal scan")
+	}
+	var names []string
+	for identity, machine := range s.definitions.Snapshot().machines {
+		if identity.Gaggle == gaggle && machine != nil && can(machine.Def.Spec) {
+			names = append(names, identity.Workflow)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // UnpushedWork answers the stranded-diff question for the items the asking run
@@ -139,7 +190,14 @@ func (s *daemonRunJournalService) UnpushedWork(ctx context.Context, request jour
 	if len(itemIDs) == 0 {
 		return journalclient.UnpushedWorkResponse{}, nil
 	}
-	work, err := s.crossRun().UnpushedWork(ctx, journalclient.UnpushedWorkRequest{
+	if err := s.requireWindowedLiveReads(request.Since, "a prior-unpushed-work read"); err != nil {
+		return journalclient.UnpushedWorkResponse{}, err
+	}
+	workflows, err := s.contributingWorkflows(request.Gaggle, journalclient.WorkflowCanStrandUnpushedWork)
+	if err != nil {
+		return journalclient.UnpushedWorkResponse{}, err
+	}
+	work, err := s.crossRun().UnpushedWorkFromReads(ctx, s.reads, workflows, journalclient.UnpushedWorkRequest{
 		RunID:              request.RunID,
 		Gaggle:             request.Gaggle,
 		Since:              request.Since,
@@ -155,17 +213,19 @@ func (s *daemonRunJournalService) UnpushedWork(ctx context.Context, request jour
 // EscalationCandidates answers the gaggle's outstanding decomposition
 // escalation candidates (#4342): the same
 // decomposition.FindEscalationCandidates scan select-source ran directly off
-// disk before this route existed, run here over the SAME FileCrossRun this
-// service backs every other cross-run question with — so a pod and a
-// self-runner select-source can never see a different candidate set.
+// disk before this route existed — so a pod and a self-runner select-source
+// see the same candidate set. It reads the daemon's live read model (read.db),
+// not FileCrossRun's offline scan of every run journal on disk.
 func (s *daemonRunJournalService) EscalationCandidates(ctx context.Context, request journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error) {
 	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
 		return journalclient.EscalationCandidatesResponse{}, gaggleMismatch("a decomposition escalation-candidates read")
 	}
-	candidates, err := s.crossRun().EscalationCandidates(ctx, journalclient.EscalationCandidatesRequest{
-		RunID:  request.RunID,
-		Gaggle: request.Gaggle,
-	})
+	if s.reads == nil {
+		return journalclient.EscalationCandidatesResponse{}, errors.New("escalation candidates: the daemon's live read model is not attached")
+	}
+	// The daemon's live read model lists the escalated runs by an indexed phase
+	// query; the offline journal scan (FileCrossRun) is never used here.
+	candidates, err := journalclient.EscalationCandidatesFromReads(ctx, s.reads, request.Gaggle)
 	if err != nil {
 		return journalclient.EscalationCandidatesResponse{}, err
 	}

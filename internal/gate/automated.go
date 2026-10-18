@@ -206,8 +206,8 @@ func DefaultChecks() map[string]CheckFunc {
 		},
 		// "failure-class": pass for success, infra for a retryable failure or
 		// a generic command failure carrying a known host-contention,
-		// filesystem-errno or dependency-transport signature,
-		// and fail for every other status. No params.
+		// filesystem-errno, dependency-transport or unresolvable-git-revision
+		// signature, and fail for every other status. No params.
 		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
 			status := stringField(inputs, InputKeyStatus)
 			if status == string(apiv1.ResultSuccess) {
@@ -391,7 +391,8 @@ func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 	}
 	return failureclass.IsDependencyTransportDenial(message) ||
 		failureclass.IsWindowsSharingViolation(message) ||
-		failureclass.IsStaleManagedWorktreePath(message)
+		failureclass.IsStaleManagedWorktreePath(message) ||
+		failureclass.IsUnrunnableGitRevisionFailure(message)
 }
 
 func containsAll(message string, tokens []string) bool {

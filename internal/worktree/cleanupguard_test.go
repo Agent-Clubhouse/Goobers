@@ -11,6 +11,26 @@ import (
 	"testing"
 )
 
+func TestLinkedWorktreeRepositoryAcceptsOnlyRunDirectories(t *testing.T) {
+	root := t.TempDir()
+	manager := &Manager{Root: root}
+	if got, ok := manager.LinkedWorktreeRepository(filepath.Join(root, "key", "runs", "wt-1")); !ok || got != filepath.Join(root, "key", "repo.git") {
+		t.Fatalf("run directory = %q, %t; want the shared repository", got, ok)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "key", "pin"),
+		filepath.Join(root, "key", "runs"),
+		filepath.Join(root, "key", "owners", "wt-1"),
+		filepath.Join(root, "key", "runs", "wt-1", "nested"),
+		filepath.Join(root, "..", "key", "runs", "wt-1"),
+		filepath.Join(t.TempDir(), "key", "runs", "wt-1"),
+	} {
+		if got, ok := manager.LinkedWorktreeRepository(path); ok {
+			t.Fatalf("LinkedWorktreeRepository(%s) = %q; want no shared repository", path, got)
+		}
+	}
+}
+
 func TestCleanupHandoffsComposeAndStopOnFailure(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		manager := &Manager{}

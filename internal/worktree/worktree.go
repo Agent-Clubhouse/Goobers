@@ -92,6 +92,11 @@ type CreateOptions struct {
 	// cleanup must publish recovery before the workspace can be reset or
 	// released. Ordinary per-stage worktrees leave this false.
 	RetainOnCleanup bool
+	// parentRestoreHead is set only by CreateParentRestore after the caller
+	// supplies verified archive custody. Ordinary Create keeps its lost-branch
+	// refusal and stale-workspace behavior.
+	parentRestoreHead  string
+	parentRestoreStart string
 }
 
 // BaseSyncConflictError identifies a genuine content conflict while merging a
@@ -218,6 +223,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if err != nil {
 		return nil, err
 	}
+	return m.createInMirror(ctx, opts, repoDir, false)
+}
+
+// createInMirror shares normal provisioning with already-verified child
+// snapshots. Child retries preserve owned work instead of adopting and resetting.
+func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDir string, preserveChild bool) (_ *Worktree, retErr error) {
 	cleanupBaseRef := resolvedCleanupBaseRef(ctx, repoDir, opts.BaseRef)
 	key := repoKey(opts.RepoURL)
 	directory := worktreeDirectoryName(opts.RunID)
@@ -235,24 +246,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		}
 	}()
 
+	if existing, found, err := m.existingPreservedWorkspace(ctx, key, repoDir, path, opts, preserveChild); found || err != nil {
+		return existing, err
+	}
 	if err := m.prepareBranchAcquisition(ctx, key, repoDir, path, opts); err != nil {
 		return nil, err
 	}
 
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
-	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
-		refs := []string{opts.BaseRef}
-		if existingBranch {
-			refs[0] = opts.Branch
-			if opts.SyncBase {
-				refs = append(refs, opts.BaseRef)
-			}
-		}
-		for _, ref := range refs {
-			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
-				return nil, err
-			}
-		}
+	if err := m.preflightCreatePathLength(ctx, opts, path, repoDir, existingBranch); err != nil {
+		return nil, err
 	}
 
 	if _, err := os.Stat(path); err == nil {
@@ -284,19 +287,20 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	pid := os.Getpid()
 	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
 	mk := marker{
-		RepositoryDigest: RepositoryDigest(opts.RepoURL),
-		RunID:            opts.RunID,
-		OwnerRunID:       opts.OwnerRunID,
-		Gaggle:           opts.Gaggle,
-		Directory:        directory,
-		BaseRef:          cleanupBaseRef,
-		Branch:           opts.Branch,
-		RetainOnCleanup:  opts.RetainOnCleanup,
-		Writer:           m.writerIdentity,
-		PID:              pid,
-		PIDStartedAt:     startedAt,
-		CreatedAt:        time.Now(),
-		Status:           statusActive,
+		RepositoryDigest:  RepositoryDigest(opts.RepoURL),
+		RunID:             opts.RunID,
+		OwnerRunID:        opts.OwnerRunID,
+		Gaggle:            opts.Gaggle,
+		Directory:         directory,
+		BaseRef:           cleanupBaseRef,
+		Branch:            opts.Branch,
+		RetainOnCleanup:   opts.RetainOnCleanup,
+		ParentRestoreHead: opts.parentRestoreHead,
+		Writer:            m.writerIdentity,
+		PID:               pid,
+		PIDStartedAt:      startedAt,
+		CreatedAt:         time.Now(),
+		Status:            statusActive,
 	}
 	// Persist ownership before git creates the directory so a crash during
 	// worktree add never leaves an opaque hash that cleanup cannot resolve.
@@ -330,7 +334,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	} else if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
-	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
+	startRef, err := initialWorktreeRef(ctx, path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, err)
 	}
@@ -399,7 +403,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	}
 
 	mk.StartRef = startRef
-	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
+	mk.ParentRestoreHead = ""
+	if err := m.persistCreatedWorktree(key, opts, mk); err != nil {
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 
@@ -711,10 +716,37 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if wt.pinned {
 		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
 	}
-	// Evidence artifacts must not depend on repository-local diff drivers,
-	// presentation, hunk, or heuristic settings. Those settings can vary
-	// between otherwise identical runner environments.
-	args := []string{
+	args := evidenceDiffArgs(baseRef)
+	var out []byte
+	var err error
+	if wt.partialMirror {
+		// On a blobless mirror the merge-base side of the diff can name blobs
+		// no checkout ever materialized (a rebound PR branch's checkout brings
+		// only its own tip), so the diff spawns a promisor blob fetch: it
+		// needs the credential environment, and its failure must classify
+		// through IsTransientProvisionError like every other promisor fetch.
+		out, err = wt.manager.remoteGitOutput(ctx, wt.repoURL, wt.Path, args...)
+	} else {
+		out, err = rawGitOutput(ctx, wt.Path, nil, args...)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return out, nil
+}
+
+// evidenceDiffArgs keeps Diff's evidence bytes independent of
+// repository-local diff drivers, presentation, hunk, or heuristic settings.
+// Those settings can vary between otherwise identical runner environments.
+func evidenceDiffArgs(baseRef string) []string {
+	return evidenceDiffRangeArgs(baseRef, "HEAD")
+}
+
+// evidenceDiffRangeArgs is evidenceDiffArgs for baseRef...headRef, so a diff
+// read from the mirror (Manager.RunBranchDiff) is byte-identical to the one a
+// worktree on that branch reports.
+func evidenceDiffRangeArgs(baseRef, headRef string) []string {
+	return []string{
 		"-c", "diff.algorithm=myers",
 		"-c", "diff.compactionHeuristic=false",
 		"-c", "diff.indentHeuristic=false",
@@ -734,25 +766,12 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 		"--inter-hunk-context=0",
 		"--no-indent-heuristic",
 		"--submodule=short",
-		"-O" + os.DevNull,
-		baseRef + "...HEAD",
+		// Git resolves a relative order file against the repository prefix,
+		// so os.DevNull ("NUL" on Windows) is not portable (#6297). Git treats
+		// "/dev/null" as absolute everywhere and maps it on Windows.
+		"-O/dev/null",
+		baseRef + "..." + headRef,
 	}
-	var out []byte
-	var err error
-	if wt.partialMirror {
-		// On a blobless mirror the merge-base side of the diff can name blobs
-		// no checkout ever materialized (a rebound PR branch's checkout brings
-		// only its own tip), so the diff spawns a promisor blob fetch: it
-		// needs the credential environment, and its failure must classify
-		// through IsTransientProvisionError like every other promisor fetch.
-		out, err = wt.manager.remoteGitOutput(ctx, wt.repoURL, wt.Path, args...)
-	} else {
-		out, err = rawGitOutput(ctx, wt.Path, nil, args...)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
-	}
-	return out, nil
 }
 
 // HasCommitsAheadOf reports whether HEAD contains commits not reachable from
@@ -1159,11 +1178,21 @@ func (m *Manager) reconcileReleasedSameRunBranch(ctx context.Context, key, repoD
 	if primary.RepositoryDigest != RepositoryDigest(opts.RepoURL) || primary.Branch != opts.Branch {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: repository or branch identity disagrees", opts.Branch, occupant)
 	}
-	if primary.OwnerRunID == "" || primary.OwnerRunID != opts.OwnerRunID {
+	if primary.OwnerRunID == "" {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: owned by another run", opts.Branch, occupant)
+	}
+	if primary.OwnerRunID != opts.OwnerRunID {
+		if primary.Status == statusActive {
+			return fmt.Errorf("worktree: refuse branch %q occupant %s: %w", opts.Branch, occupant, branchOccupancyError{reason: "owned by another run"})
+		}
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: owned by another run", opts.Branch, occupant)
 	}
 	if primary.Status != statusCleanupPending {
-		return fmt.Errorf("worktree: refuse branch %q occupant %s: owner has not surrendered it (status %q)", opts.Branch, occupant, primary.Status)
+		reason := fmt.Sprintf("owner has not surrendered it (status %q)", primary.Status)
+		if primary.Status == statusActive {
+			return fmt.Errorf("worktree: refuse branch %q occupant %s: %w", opts.Branch, occupant, branchOccupancyError{reason: reason})
+		}
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: %s", opts.Branch, occupant, reason)
 	}
 	if primary.Status != ownership.Status {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: ownership records disagree", opts.Branch, occupant)
@@ -1211,4 +1240,23 @@ func samePathOnDisk(a, b string) bool {
 	aInfo, aErr := os.Stat(a)
 	bInfo, bErr := os.Stat(b)
 	return aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo)
+}
+
+func (m *Manager) preflightCreatePathLength(ctx context.Context, opts CreateOptions, path, repoDir string, existingBranch bool) error {
+	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
+		refs := []string{opts.BaseRef}
+		if existingBranch {
+			refs[0] = opts.Branch
+			if opts.SyncBase {
+				refs = append(refs, opts.BaseRef)
+			}
+		}
+		for _, ref := range refs {
+			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

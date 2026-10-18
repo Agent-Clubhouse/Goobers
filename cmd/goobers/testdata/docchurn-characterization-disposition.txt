@@ -1,0 +1,6 @@
+The current command reads the wall clock and invokes Git through package-level
+functions, so exact run-level timestamps and failures of each individual Git
+subcommand cannot be injected deterministically without the extraction's clock
+and Git seams. These tests pin direct digest serialization, commit timestamps,
+and watermark timestamps; they characterize the observable HEAD Git failure and
+all output and persistence failure boundaries available on the upstream seams.

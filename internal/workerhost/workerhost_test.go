@@ -172,8 +172,27 @@ func TestRunServesEveryQueueAndDrains(t *testing.T) {
 		if w.opts.WorkerStopTimeout != 7*time.Second {
 			t.Errorf("WorkerStopTimeout = %v, want the drain timeout", w.opts.WorkerStopTimeout)
 		}
+		if w.opts.MaxHeartbeatThrottleInterval != 8*time.Second {
+			t.Errorf("queue %q heartbeat throttle = %v, want 8s cancellation cadence", w.queue, w.opts.MaxHeartbeatThrottleInterval)
+		}
 		if len(w.opts.Interceptors) != 1 {
 			t.Errorf("interceptors = %d, want the in-flight tracker", len(w.opts.Interceptors))
+		}
+	}
+}
+
+func TestWorkerOptionsBoundHeartbeatCancellationLatency(t *testing.T) {
+	for _, config := range []Config{
+		{TaskQueues: []string{"queue"}},
+		{TaskQueues: []string{"queue"}, BuildVersion: "v1"},
+		{TaskQueues: []string{"queue"}, BuildVersion: "v1", Versioning: true},
+	} {
+		h, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := h.workerOptions().MaxHeartbeatThrottleInterval; got != 8*time.Second {
+			t.Fatalf("build=%q versioned=%t heartbeat throttle=%v, want 8s", config.BuildVersion, config.Versioning, got)
 		}
 	}
 }

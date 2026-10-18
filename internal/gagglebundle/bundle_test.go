@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -958,4 +959,140 @@ func readFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestValidateRejectionArms(t *testing.T) {
+	source := newBundleSource(t)
+	base, err := Export(source.ConfigDir(), "example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*apiv1.GaggleBundle)
+		refresh bool
+		want    string
+	}{
+		{"wrong apiVersion", func(b *apiv1.GaggleBundle) { b.APIVersion = "v0" }, false, "apiVersion must be"},
+		{"wrong kind", func(b *apiv1.GaggleBundle) { b.Kind = "Other" }, false, "kind must be"},
+		{"wrong schemaVersion", func(b *apiv1.GaggleBundle) { b.SchemaVersion = 99 }, false, "unsupported schemaVersion"},
+		{"empty source name", func(b *apiv1.GaggleBundle) { b.Source.Name = "  " }, false, "source.name is required"},
+		{"empty source apiVersion", func(b *apiv1.GaggleBundle) { b.Source.APIVersion = "" }, false, "source.apiVersion is required"},
+		{"zero exportedAt", func(b *apiv1.GaggleBundle) { b.ExportedAt = time.Time{} }, false, "exportedAt is required"},
+		{"wrong exporter", func(b *apiv1.GaggleBundle) { b.Provenance.Exporter = "other" }, false, "provenance.exporter"},
+		{"empty exporter version", func(b *apiv1.GaggleBundle) { b.Provenance.ExporterVersion = " " }, false, "exporterVersion is required"},
+		{"empty gaggle name", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Name = "" }, false, "definition.gaggle.metadata.name is required"},
+		{"source name mismatch", func(b *apiv1.GaggleBundle) { b.Source.Name = "other" }, false, "does not match definition gaggle"},
+		{"sanitized fields mismatch", func(b *apiv1.GaggleBundle) { b.Provenance.SanitizedFields = []string{"x"} }, false, "sanitizedFields"},
+		{"credential in retained envelope", func(b *apiv1.GaggleBundle) { b.Provenance.ExporterVersion = "password=hunter2hunter2" }, false, "retained envelope"},
+		{"absolute path in retained envelope", func(b *apiv1.GaggleBundle) { b.Source.Name = "/home/user/x"; b.Definition.Gaggle.Name = "/home/user/x" }, false, "retained envelope"},
+		{"tampered definition", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Labels = map[string]string{"k": "v"} }, false, "digest mismatch"},
+		{"tampered digest", func(b *apiv1.GaggleBundle) { b.Digest = "sha256:00" }, false, "digest mismatch"},
+		{"tampered source digest", func(b *apiv1.GaggleBundle) { b.Source.Digest = "sha256:00" }, false, "digest mismatch"},
+		{"project connectionRef", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Spec.Project.ConnectionRef = "c" }, true, "connection references are forbidden"},
+		{"backlog connectionRef", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Spec.Backlog.ConnectionRef = "c" }, true, "connection references are forbidden"},
+		{"additional repo connectionRef", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Spec.AdditionalRepos = []apiv1.RepoRef{{ConnectionRef: "c"}}
+		}, true, "repository connection references are forbidden"},
+		{"sibling connectionRef", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Spec.Siblings = []apiv1.GaggleSibling{{Project: apiv1.RepoRef{ConnectionRef: "c"}}}
+		}, true, "sibling repository connection references are forbidden"},
+		{"gaggle label credential", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Labels = map[string]string{"note": "password=hunter2hunter2"}
+		}, true, "gaggle metadata"},
+		{"gaggle annotation absolute path", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Annotations = map[string]string{"where": "/home/user/secret"}
+		}, true, "non-portable absolute path"},
+		{"workflow annotation absolute path", func(b *apiv1.GaggleBundle) {
+			b.Definition.Workflows[0].Annotations = map[string]string{"where": "/home/user/secret"}
+		}, true, "workflow "},
+		{"goober label credential", func(b *apiv1.GaggleBundle) {
+			b.Definition.Goobers[0].Labels = map[string]string{"note": "token=abcdefgh12345678"}
+		}, true, "goober "},
+	}
+	if err := Validate(base); err != nil {
+		t.Fatalf("base bundle invalid: %v", err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bundle := cloneBundle(t, base)
+			tt.mutate(&bundle)
+			if tt.refresh {
+				refreshBundleDigest(t, &bundle)
+			}
+			err := Validate(bundle)
+			if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want ErrInvalidBundle containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestReportSummary(t *testing.T) {
+	errIssue := func(msg string) validate.Issue {
+		return validate.Issue{Severity: validate.Error, Message: msg}
+	}
+	if got := reportSummary(nil); got != "no validation report" {
+		t.Fatalf("nil report = %q", got)
+	}
+	warnOnly := &validate.Report{Issues: []validate.Issue{{Severity: validate.Warning, Message: "w"}}}
+	if got := reportSummary(warnOnly); got != "no validation errors" {
+		t.Fatalf("warning-only = %q", got)
+	}
+	if got := reportSummary(&validate.Report{}); got != "no validation errors" {
+		t.Fatalf("empty = %q", got)
+	}
+	capped := &validate.Report{Issues: []validate.Issue{
+		errIssue("e1"), {Severity: validate.Warning, Message: "skip"}, errIssue("e2"), errIssue("e3"), errIssue("e4"),
+	}}
+	want := capped.Issues[0].String() + "; " + capped.Issues[2].String() + "; " + capped.Issues[3].String()
+	if got := reportSummary(capped); got != want {
+		t.Fatalf("capped summary = %q, want %q", got, want)
+	}
+	oneError := &validate.Report{Issues: []validate.Issue{errIssue("only error")}}
+	if got := reportSummary(oneError); got != oneError.Issues[0].String() {
+		t.Fatalf("single-error summary = %q, want %q", got, oneError.Issues[0].String())
+	}
+}
+
+func TestMarshalJSONIsIndentedAndUnescaped(t *testing.T) {
+	bundle := apiv1.GaggleBundle{Kind: "A<b>&c", Digest: "d"}
+	bundle.Definition.Gaggle.Labels = make(map[string]string)
+	bundle.Definition.Gaggle.Labels["z"] = "last"
+	bundle.Definition.Gaggle.Labels["a"] = "first"
+	first, err := MarshalJSON(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Definition.Gaggle.Labels = make(map[string]string)
+	bundle.Definition.Gaggle.Labels["a"] = "first"
+	bundle.Definition.Gaggle.Labels["z"] = "last"
+	second, err := MarshalJSON(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("output not deterministic")
+	}
+	if !json.Valid(first) {
+		t.Fatalf("invalid JSON: %q", first)
+	}
+	if !bytes.Contains(first, []byte("\n  \"kind\": \"A<b>&c\",\n")) {
+		t.Fatalf("expected unescaped, indented output: %s", first)
+	}
+	if !bytes.HasSuffix(first, []byte("}\n")) {
+		t.Fatalf("expected trailing newline: %q", first)
+	}
+}
+
+func TestMarshalJSONEncodingError(t *testing.T) {
+	bundle := apiv1.GaggleBundle{ExportedAt: time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	output, err := MarshalJSON(bundle)
+	var marshalErr *json.MarshalerError
+	if !errors.As(err, &marshalErr) || !strings.HasPrefix(err.Error(), "encode gaggle bundle: ") {
+		t.Fatalf("error = %v, want wrapped JSON marshaler error", err)
+	}
+	if output != nil {
+		t.Fatalf("output = %q, want nil on encoding error", output)
+	}
 }

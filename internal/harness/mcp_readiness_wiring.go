@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"sync"
 
 	"github.com/github/copilot-sdk/go/rpc"
 
@@ -30,13 +31,6 @@ func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex in
 		controlled.permissionRoots = append([]string(nil), confinement.writableRoots...)
 	}
 	return controlled, controlled.close
-}
-
-func (c *CopilotAdapter) prepareCopilotProcessRunner(req RunRequest, promptIndex int, config, model string, options map[string]string, confinement *copilotConfinement) (ProcessRunner, func()) {
-	if promptIndex >= 0 {
-		return c.prepareRequiredMCPRunner(req, promptIndex, config, model, options, confinement)
-	}
-	return withUnobservableMCPSource(c.runner(), req, "prompt-stdin"), func() {}
 }
 
 type mcpUnobservableRunner struct {
@@ -122,6 +116,52 @@ func (e *Executor) prepareReadinessRequest(req *RunRequest) {
 	if req.Attempt < 1 {
 		req.Attempt = 1
 	}
+}
+
+// captureReadiness wraps req's readiness sink so the executor keeps the
+// goobers-io report it carried, and can name the readiness state in a
+// diagnostic without re-reading its own journal (#5871). The wrapped sink
+// still journals exactly what it did before.
+func captureReadiness(req *RunRequest) *readinessCapture {
+	capture := &readinessCapture{}
+	journalSink := req.MCPReadinessSink
+	req.MCPReadinessSink = func(report MCPReadiness) error {
+		capture.record(report)
+		if journalSink == nil {
+			return nil
+		}
+		return journalSink(report)
+	}
+	return capture
+}
+
+// readinessCapture keeps the latest goobers-io readiness report an adapter
+// emitted for this invocation.
+type readinessCapture struct {
+	mu       sync.Mutex
+	report   MCPReadiness
+	reported bool
+}
+
+func (c *readinessCapture) record(report MCPReadiness) {
+	if report.Server != goobersIOServerName {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.report, c.reported = report, true
+}
+
+// goobersIO returns the latest goobers-io report, or ok=false when the adapter
+// reported none (the server was not registered, or the session never reached
+// the readiness phase).
+func (c *readinessCapture) goobersIO() (MCPReadiness, bool) {
+	if c == nil {
+		return MCPReadiness{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.report, c.reported
 }
 
 // The CLI-global lifecycle log does not describe SDK-created sessions. Query

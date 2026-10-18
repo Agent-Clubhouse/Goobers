@@ -115,6 +115,9 @@ func (r *Reader) Identity() (RunIdentity, error) {
 	if id.Schema != RunSchema {
 		return RunIdentity{}, unsupportedPayloadSchema("run", id.Schema, RunSchema)
 	}
+	if err := id.ValidateChildLineage(); err != nil {
+		return RunIdentity{}, err
+	}
 	return id, nil
 }
 
@@ -620,7 +623,7 @@ func gateParkingEffect(event Event) (parked, decisive bool) {
 	case EventGateStarted, EventGateEvaluated, EventGateOverridden,
 		EventRunStarted, EventRunResumed, EventRunFinished,
 		EventStageStarted, EventStageFinished, EventStageRerunRequested,
-		EventParallelStarted, EventParallelFinished,
+		EventParallelStarted, EventParallelFinished, EventMapStarted, EventMapFinished,
 		EventBranchStarted, EventBranchFinished:
 		return false, true
 	default:

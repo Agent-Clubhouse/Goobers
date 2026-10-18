@@ -145,6 +145,113 @@ func TestRecordMergeRefusalSkipsMergeReviewOptOut(t *testing.T) {
 
 }
 
+func TestRecordMergeRefusalSkipsPendingRequiredChecks(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(83, "goobers/implementation/checks-pending", "main", "sha-pending", "base1", false, nil, nil)
+	server.addIssue(83, "checks pending")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "83")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-pending")
+	t.Setenv("GOOBERS_INPUT_REASON", requiredStatusPendingReason)
+	t.Setenv("GOOBERS_INPUT_DEMOTIONTHRESHOLD", "1")
+	t.Chdir(t.TempDir())
+
+	for attempt := 1; attempt <= defaultDemotionThreshold; attempt++ {
+		code, stdout, stderr := runArgs(t, "record-merge-refusal", root)
+		if code != 0 {
+			t.Fatalf("attempt %d: code = %d, stderr = %q", attempt, code, stderr)
+		}
+		if !strings.Contains(stdout, "deferring without recording demotion") {
+			t.Fatalf("attempt %d: stdout = %q, want pending-check deferral", attempt, stdout)
+		}
+	}
+
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[83].comments...)
+	labels := append([]string(nil), server.issues[83].labels...)
+	server.mu.Unlock()
+	if len(comments) != 0 || len(labels) != 0 {
+		t.Fatalf("pending checks mutated PR: comments=%v labels=%v", comments, labels)
+	}
+}
+
+// TestRecordMergeRefusalNoVerdictCI covers #6817: a refusal whose only reason
+// is CI that finished without a verdict (an outage cancelled it) is not a
+// stuck PR and must never demote it, since a demotion survives the rerun that
+// turns CI green. The same reason beside another refusal still counts.
+func TestRecordMergeRefusalNoVerdictCI(t *testing.T) {
+	noVerdict := ciNoVerdictReason + ": CI finished without a verdict (cancelled, never started or stale: build, test), waiting for CI to be rerun"
+	for name, tc := range map[string]struct {
+		reason     string
+		wantDemote bool
+	}{
+		"only no-verdict CI":         {reason: noVerdict},
+		"no-verdict CI and a draft":  {reason: noVerdict + "; pull request is a draft", wantDemote: true},
+		"another reason comes first": {reason: `verdict is "needs-changes", want pass; ` + noVerdict, wantDemote: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addOpenPR(84, "goobers/implementation/outage", "main", "sha-outage", "base1", false, nil, nil)
+			server.addIssue(84, "outage")
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+			t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "84")
+			t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-outage")
+			t.Setenv("GOOBERS_INPUT_REASON", tc.reason)
+			t.Setenv("GOOBERS_INPUT_DEMOTIONTHRESHOLD", "1")
+			t.Chdir(t.TempDir())
+
+			code, _, stderr := runArgs(t, "record-merge-refusal", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if demoted := issueHasLabel(server, 84, mergeDemotedLabel); demoted != tc.wantDemote {
+				t.Fatalf("demoted = %v, want %v", demoted, tc.wantDemote)
+			}
+		})
+	}
+}
+
+// TestRecordMergeRefusalNoVerdictNoticeIsStickyPerHead pins the #6817 notice:
+// one comment asking for a CI rerun, posted once per head, updated in place
+// when the head moves, and never a demotion record.
+func TestRecordMergeRefusalNoVerdictNoticeIsStickyPerHead(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(85, "goobers/implementation/outage", "main", "sha-one", "base1", false, nil, nil)
+	server.addIssue(85, "outage")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "85")
+	t.Setenv("GOOBERS_INPUT_REASON", ciNoVerdictReason+": CI finished without a verdict (cancelled, never started or stale: build), waiting for CI to be rerun")
+	t.Chdir(t.TempDir())
+
+	comments := func() []string {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return append([]string(nil), server.issues[85].comments...)
+	}
+	for _, head := range []string{"sha-one", "sha-one", "sha-one", "sha-two"} {
+		t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", head)
+		if code, _, stderr := runArgs(t, "record-merge-refusal", root); code != 0 {
+			t.Fatalf("head %s: code = %d, stderr = %q", head, code, stderr)
+		}
+		got := comments()
+		if len(got) != 1 {
+			t.Fatalf("head %s: comments = %q, want exactly one sticky notice", head, got)
+		}
+		if !strings.Contains(got[0], "CI needs a rerun") || !strings.Contains(got[0], "`"+head+"`") || !strings.Contains(got[0], "build") {
+			t.Fatalf("head %s: notice = %q, want it to ask for a rerun of build at this head", head, got[0])
+		}
+		if _, _, found := latestMergeDemotionState([]providers.Comment{{Body: got[0]}}); found {
+			t.Fatalf("head %s: notice carries a demotion record", head)
+		}
+	}
+	if issueHasLabel(server, 85, mergeDemotedLabel) {
+		t.Fatal("a no-verdict refusal must never demote")
+	}
+}
+
 // TestRecordMergeRefusalResetsOnHeadAdvance proves a refusal at a NEW head resets
 // the counter — a PR whose head advanced (a remediation push) is a genuinely
 // fresh attempt, not a continuation of the stuck run.
@@ -204,36 +311,29 @@ func TestRecordMergeRefusalADOUsesADOProviderPath(t *testing.T) {
 
 func TestRecordMergeRefusalDispatchesADOAndRecordsComment(t *testing.T) {
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	commentsPath := "/" + repo.Owner + "/" + repo.Project + "/_apis/wit/workItems/359/comments"
-	var posted bool
+	var threadPosted bool
 	mux := http.NewServeMux()
-	mux.HandleFunc(commentsPath, func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			_, _ = w.Write([]byte(`{"comments":[]}`))
-		case http.MethodPost:
-			var body map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode comment request: %v", err)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/_apis/wit/"):
+			t.Errorf("work-item API called with a PR id: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected work-item call", http.StatusTeapot)
+		case strings.HasSuffix(r.URL.Path, "/pullrequests/359/threads") && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"value":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/pullrequests/359/threads") && r.Method == http.MethodPost:
+			var body struct {
+				Comments []struct {
+					Content string `json:"content"`
+				} `json:"comments"`
 			}
-			if body["text"] == "" {
-				t.Error("comment request has empty text")
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Comments) != 1 || body.Comments[0].Content == "" {
+				t.Errorf("bad thread request: %v %+v", err, body)
 			}
-			posted = true
-			_, _ = w.Write([]byte(`{"id":1,"text":"recorded"}`))
+			threadPosted = true
+			_, _ = w.Write([]byte(`{"id":7,"comments":[{"id":1,"content":"recorded","commentType":"text"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
-	})
-	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/359", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"id":359,"rev":1,"url":"https://ado.test/workitems/359","fields":{"System.Title":"ADO refusal","System.Description":"","System.State":"Active","System.WorkItemType":"Bug","System.Tags":""}}`))
-			return
-		}
-		http.NotFound(w, r)
-	})
-	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitemtypes/Bug/states", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"value":[{"name":"Active","category":"InProgress"}]}`))
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -259,8 +359,8 @@ func TestRecordMergeRefusalDispatchesADOAndRecordsComment(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("record-merge-refusal: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !posted {
-		t.Fatal("ADO work-item comment endpoint was not called")
+	if !threadPosted {
+		t.Fatal("ADO PR thread endpoint was not called")
 	}
 	if !strings.Contains(stdout, "recorded merge refusal 1/") {
 		t.Fatalf("stdout = %q, want refusal recorded message", stdout)

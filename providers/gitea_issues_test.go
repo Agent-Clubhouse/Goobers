@@ -159,12 +159,19 @@ func TestGiteaCreateWorkItemResolvesLabelIDsCreatingMissing(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	provider := NewGiteaProvider(server.URL, "token")
+	recorder := &recordingRecorder{}
+	provider := NewGiteaProvider(server.URL, "token", WithGiteaMutationRecorder(recorder))
+	provider.SetAttribution(Attribution{
+		Instance: "instance", Gaggle: "gaggle", Workflow: "implementation",
+		Task: "task", Goober: "implementer", Run: "run-gitea",
+	})
 	item, err := provider.CreateWorkItem(context.Background(), CreateWorkItemRequest{
 		Repository: RepositoryRef{Owner: "acme", Name: "app"},
 		Title:      "New work",
-		Labels:     []string{"route/backend"},
+		Body:       "body bytes",
+		Labels:     []string{"route/backend", "goobers/status:ready"},
 		Status:     WorkItemStatusClaimed,
+		Assignee:   "octocat",
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkItem returned error: %v", err)
@@ -178,6 +185,22 @@ func TestGiteaCreateWorkItemResolvesLabelIDsCreatingMissing(t *testing.T) {
 	labelIDs, _ := gotIssueBody["labels"].([]interface{})
 	if len(labelIDs) != 2 {
 		t.Fatalf("issue create body labels = %#v, want both resolved IDs [1 2]", gotIssueBody["labels"])
+	}
+	assignees, _ := gotIssueBody["assignees"].([]interface{})
+	if len(assignees) != 1 || assignees[0] != "octocat" {
+		t.Fatalf("issue create body assignees = %#v, want octocat", gotIssueBody["assignees"])
+	}
+	body, _ := gotIssueBody["body"].(string)
+	attribution, found, err := ParseAttribution(body)
+	if err != nil || !found || attribution.Action != "issue-create" || attribution.Run != "run-gitea" {
+		t.Fatalf("created body attribution = %+v, found=%v, err=%v", attribution, found, err)
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Provider != ProviderGitea || ref.Ref != "acme/app#11" || ref.Operation != "create" {
+		t.Fatalf("recorded ref = %+v (ok=%v), want gitea issue create", ref, ok)
+	}
+	if ref.Fields["title"].After != digestString("New work") || ref.Fields["body"].After != digestString(body) {
+		t.Fatalf("create ref field digests = %#v, want posted title and body digests", ref.Fields)
 	}
 }
 

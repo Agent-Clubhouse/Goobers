@@ -654,13 +654,26 @@ func TestCredentialPlaneStatesNoSchemeForGitHub(t *testing.T) {
 
 // TestStageCredentialEnvStampsTheADOSchemeWithTheCredentials pins the pod
 // stage environment: the scheme travels with the credentials it describes,
-// and never on its own.
+// and never on its own. Each credential carries its own scheme (#5957): the
+// one the plane stated for it, else the repository's.
 func TestStageCredentialEnvStampsTheADOSchemeWithTheCredentials(t *testing.T) {
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "entra-pod-token-0123456789"}}
 	got := strings.Join(stageCredentialEnv(creds, adoauth.SchemeBearer), "\n")
-	want := executor.CredentialEnvVar("repo:push") + "=entra-pod-token-0123456789\n" + executor.RepoAuthSchemeEnvVar + "=bearer"
+	want := executor.CredentialEnvVar("repo:push") + "=entra-pod-token-0123456789\n" +
+		executor.RepoAuthSchemeEnvVar + "=bearer"
 	if got != want {
 		t.Fatalf("stage credential env = %q, want %q", got, want)
+	}
+	withPAT := append(creds, dispatcher.MintedCredential{Capability: "ado:work-items:write", Value: "override-pat-0123456789", Scheme: adoauth.SchemeBasic})
+	got = strings.Join(stageCredentialEnv(withPAT, adoauth.SchemeBearer), "\n")
+	want = strings.Join([]string{
+		executor.CredentialEnvVar("repo:push") + "=entra-pod-token-0123456789",
+		executor.CredentialEnvVar("ado:work-items:write") + "=override-pat-0123456789",
+		executor.CredentialSchemeEnvVar("ado:work-items:write") + "=basic",
+		executor.RepoAuthSchemeEnvVar + "=bearer",
+	}, "\n")
+	if got != want {
+		t.Fatalf("stage credential env with a credentials: PAT = %q, want %q", got, want)
 	}
 	if env := stageCredentialEnv(creds, ""); len(env) != 1 {
 		t.Fatalf("stage credential env without a scheme = %q, want only the credential", env)

@@ -73,14 +73,17 @@ func TestSelectResolvesAFullyConfiguredPlane(t *testing.T) {
 // construction rather than at the first read, so a stage cannot get halfway
 // through a decision before discovering it has no journal.
 func TestNewHTTPRefusesAnIncompleteConfiguration(t *testing.T) {
-	for name, cfg := range map[string]HTTPConfig{
-		"no base url": {Token: "t", RunID: "run-1"},
-		"no token":    {BaseURL: "http://d", RunID: "run-1"},
-		"no run":      {BaseURL: "http://d", Token: "t"},
-		"bad run":     {BaseURL: "http://d", Token: "t", RunID: "../../etc/passwd"},
+	for name, test := range map[string]struct {
+		cfg  HTTPConfig
+		want string
+	}{
+		"no base url": {HTTPConfig{Token: "t", RunID: "run-1"}, "journalclient: HTTP backend requires a base URL"},
+		"no token":    {HTTPConfig{BaseURL: "http://d", RunID: "run-1"}, "journalclient: HTTP backend requires a bearer token"},
+		"no run":      {HTTPConfig{BaseURL: "http://d", Token: "t"}, "journalclient: HTTP backend requires the stage's run ID"},
+		"bad run":     {HTTPConfig{BaseURL: "http://d", Token: "t", RunID: "../../etc/passwd"}, `journalclient: "../../etc/passwd" is not a valid run id`},
 	} {
-		if _, err := NewHTTP(cfg); err == nil {
-			t.Errorf("%s: NewHTTP succeeded, want a refusal", name)
+		if _, err := NewHTTP(test.cfg); err == nil || err.Error() != test.want {
+			t.Errorf("%s: NewHTTP error = %v, want %q", name, err, test.want)
 		}
 	}
 }
@@ -184,6 +187,7 @@ func TestPlaneRefusalsSurfaceAsErrorsNotEmptyAnswers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
 		if _, err := client.Events(); err == nil {
 			t.Errorf("status %d: Events returned no error", status)
 		}
@@ -202,6 +206,29 @@ func TestPlaneRefusalsSurfaceAsErrorsNotEmptyAnswers(t *testing.T) {
 			t.Errorf("status %d: UnpushedWork returned no error", status)
 		}
 		server.Close()
+	}
+}
+
+func TestHTTPJSONAndFallbackMechanics(t *testing.T) {
+	var contentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		contentType = request.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewHTTP(HTTPConfig{BaseURL: server.URL + "/", Token: "tok", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target struct{}
+	err = client.post(t.Context(), "/test", map[string]string{"value": "ok"}, &target)
+	var planeErr *Error
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+		t.Fatalf("error = %#v", planeErr)
+	}
+	if contentType != "application/json" {
+		t.Fatalf("content type = %q", contentType)
 	}
 }
 
@@ -312,4 +339,16 @@ func TestArtifactFetchRefusesASubstitutedArtifact(t *testing.T) {
 			t.Fatal("substituted content was accepted")
 		}
 	})
+}
+
+// TestDefaultHTTPTimeoutContainsTheScanBudget pins that the client never cuts
+// off the daemon's cross-run scan before the server's own budget fires.
+func TestDefaultHTTPTimeoutContainsTheScanBudget(t *testing.T) {
+	if DefaultHTTPTimeout <= apicontract.JournalScanBudget {
+		t.Fatalf("DefaultHTTPTimeout %s must exceed apicontract.JournalScanBudget %s", DefaultHTTPTimeout, apicontract.JournalScanBudget)
+	}
+	route, ok := apicontract.V1Route(apicontract.RouteJournalEscalationCandidates)
+	if !ok || route.Budget != apicontract.JournalScanBudget || DefaultHTTPTimeout <= route.Budget {
+		t.Fatalf("escalation-candidates route budget %s not contained by client timeout %s", route.Budget, DefaultHTTPTimeout)
+	}
 }

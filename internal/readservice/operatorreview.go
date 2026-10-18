@@ -10,6 +10,7 @@ func populateOperatorReview(review *OperatorReview, verdict apiv1.Verdict) {
 	review.Rationale = verdict.Rationale
 	review.ReasonCode = verdict.ReasonCode
 	review.Findings = verdict.Findings
+	review.Synthesized = verdict.Synthesized
 	review.LegacyFailAmbiguous = review.Verdict == string(apiv1.VerdictFail) && verdict.ReasonCode == ""
 	if review.Rationale == "" {
 		review.Rationale = strings.TrimSpace(verdict.Summary)

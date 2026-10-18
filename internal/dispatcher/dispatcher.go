@@ -41,10 +41,21 @@ const (
 	// container executing indefinitely. Kubernetes retains the stopped Pod
 	// object until an explicit deletion.
 	DefaultDeadlineMargin = 10 * time.Minute
+	// DefaultHeldPodRetention bounds how long the orphan sweep keeps a
+	// writable stage pod whose recovery custody was never confirmed after its
+	// owning workflow is terminal and its stage container has stopped (#6571).
+	// The hold keeps the only copy of unsurrendered work salvageable for a day;
+	// past it the pod is reaped so held pods cannot accumulate indefinitely.
+	DefaultHeldPodRetention = 24 * time.Hour
 	// DefaultStageTimeout backs a stage that declares no timeout, so every
 	// pod still carries a finite activeDeadlineSeconds (the execution bound is
 	// always-on, never conditional on declaration).
 	DefaultStageTimeout = time.Hour
+	// DefaultRecoveryCustodyTimeout bounds the pod-side recovery custody work
+	// that runs after a stage exits but before surrender. It must comfortably
+	// cover slow-container-FS git scans and archive publication while still
+	// staying finite; publishPodRecovery also clamps it to the claim expiry.
+	DefaultRecoveryCustodyTimeout = 10 * time.Minute
 	// DefaultSupervisionInterval paces the supervise loop's pod polls and
 	// liveness relays.
 	DefaultSupervisionInterval = 15 * time.Second
@@ -69,6 +80,12 @@ const (
 // constraint (d)): an absent sizeLimit on a memory-backed emptyDir defaults
 // to half the node's RAM, which no runner ceiling ever accounted for.
 var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
+
+// DefaultDiskTmpSizeLimit is the tmp:ephemeral sizeLimit when the operator
+// selects a disk-backed volume (Config.TmpDiskBacked) and configures no size.
+// It is larger than the tmpfs default because it costs node disk, not pod
+// memory, and Go's build work directory and t.TempDir() land there.
+var DefaultDiskTmpSizeLimit = resource.MustParse("4Gi")
 
 // Config is the dispatcher's per-instance wiring.
 type Config struct {
@@ -131,6 +148,9 @@ type Config struct {
 	// WriteAPIBase is the daemon write API base URL stage pods emit journal
 	// events to and resolve credentials from (GOOBERS_DAEMON_API).
 	WriteAPIBase string
+	// RecoveryCustodyTimeout is the resolved runner.recoveryCustodyTimeout
+	// stamped into every stage pod. Zero uses DefaultRecoveryCustodyTimeout.
+	RecoveryCustodyTimeout time.Duration
 	// EnvPassthrough is the instance's RunnerConfig.EnvPassthrough (#736): the
 	// operator-declared env var NAMES carried into a stage subprocess on top of
 	// procenv's built-in default-deny allowlist.
@@ -182,10 +202,30 @@ type Config struct {
 	// stamping; the pod resolves the actual secret through the credential
 	// plane instead, exactly as every other pod capability does.
 	ExternalTelemetryConnectors map[string]externaltelemetry.ConnectorConfig
-	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
+	// GaggleBacklogs is each configured gaggle's backlog settings as the
+	// pod-side CLI decodes them (the backlog provider, project, labels and
+	// doneStates an Azure DevOps stage applies), already encoded, keyed by gaggle name — threaded at
+	// wiring (workerdispatch.go) exactly like BotLogins and for the same
+	// reason: this process can read the instance config and a stage pod
+	// cannot (#5957). Only the attempt's own gaggle's entry is stamped, as
+	// GaggleBacklogEnv. A gaggle with no entry is stamped EMPTY, which the pod
+	// reads as "not resolved" and refuses rather than defaulting.
+	GaggleBacklogs map[string]string
+	// TmpfsSizeLimit overrides the tmp:ephemeral volume's default size
+	// (DefaultTmpfsSizeLimit, or DefaultDiskTmpSizeLimit when TmpDiskBacked);
+	// zero uses the default.
 	TmpfsSizeLimit resource.Quantity
+	// TmpDiskBacked mounts a Linux pod's tmp:ephemeral /tmp as a node-disk
+	// emptyDir instead of a memory tmpfs (runner.podTmpMedium "disk", #6758),
+	// so its size is not added to the container memory limit.
+	TmpDiskBacked bool
+	// PodEgressProxy is stamped into stage pods whose runner class carries
+	// network:allowlist (#6748); a stage's own env wins. Zero stamps nothing.
+	PodEgressProxy *instance.PodEgressProxyConfig
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.
 	DeadlineMargin time.Duration
+	// HeldPodRetention overrides DefaultHeldPodRetention; zero uses the default.
+	HeldPodRetention time.Duration
 	// LinuxScheduleToStart / WindowsScheduleToStart override the capacity
 	// wait bounds; zero uses the defaults.
 	LinuxScheduleToStart   time.Duration
@@ -221,10 +261,20 @@ func (c Config) ownerLabel() string {
 }
 
 func (c Config) tmpfsSizeLimit() resource.Quantity {
-	if c.TmpfsSizeLimit.IsZero() {
-		return DefaultTmpfsSizeLimit.DeepCopy()
+	if !c.TmpfsSizeLimit.IsZero() {
+		return c.TmpfsSizeLimit
 	}
-	return c.TmpfsSizeLimit
+	if c.TmpDiskBacked {
+		return DefaultDiskTmpSizeLimit.DeepCopy()
+	}
+	return DefaultTmpfsSizeLimit.DeepCopy()
+}
+
+func (c Config) heldPodRetention() time.Duration {
+	if c.HeldPodRetention <= 0 {
+		return DefaultHeldPodRetention
+	}
+	return c.HeldPodRetention
 }
 
 func (c Config) deadlineMargin() time.Duration {
@@ -287,6 +337,11 @@ func (c Config) linuxScheduleToStart() time.Duration {
 // Attempt is one stage attempt to dispatch: the identity, requirement, and
 // budget facts the pod spec is a pure function of.
 type Attempt struct {
+	// WorkflowParent selects a separately authenticated contained-parent contract.
+	WorkflowParent bool
+	// ChildExecutionDigest binds an isolated generated-child execution contract.
+	// Only the trusted child adapter sets it; ordinary dispatch is unchanged.
+	ChildExecutionDigest string
 	// InstanceID belongs to the originating run, not to the dispatch worker.
 	InstanceID string
 	// RunID, Gaggle, Workflow, and Stage identify the attempt; Number is the
@@ -436,6 +491,11 @@ type Attempt struct {
 	// document that carries its instructions, never from a listable env var.
 	// Meaningless without Agentic; Dispatch refuses the combination.
 	Review bool
+	// ReviewRequiresDiff marks a Review whose gate must judge a non-empty run
+	// diff (#5414). Like Review it rides the verified kit
+	// (agentickit.Kit.ReviewRequiresDiff), never the pod spec. Meaningless
+	// without Review.
+	ReviewRequiresDiff bool
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.
@@ -470,6 +530,13 @@ func (a Attempt) stageTimeout() time.Duration {
 		return DefaultStageTimeout
 	}
 	return a.Timeout
+}
+
+func (c Config) recoveryCustodyTimeout() time.Duration {
+	if c.RecoveryCustodyTimeout <= 0 {
+		return DefaultRecoveryCustodyTimeout
+	}
+	return c.RecoveryCustodyTimeout
 }
 
 // RunnerSpec is the dispatcher's view of one resolved runner: the inventory
@@ -740,6 +807,14 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
+	// ChildPodUID is the API-created object identity, never a name-derived ID.
+	ChildPodUID string
+	// ChildCreateAttempted distinguishes a preflight refusal from an uncertain
+	// API creation outcome that still requires writer reconciliation.
+	ChildCreateAttempted bool
+	// WorkspaceWritersStopped requires the exact isolated pod's only writable
+	// container to have terminated. Delete acceptance or absence is insufficient.
+	WorkspaceWritersStopped bool
 	// Runner is the resolved runner name.
 	Runner string
 	// Build and Worker are the worker versioning identity this dispatcher is
@@ -819,13 +894,14 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 
 // Dispatch executes one stage attempt on the eligible runner set (the
 // solver's ELIGIBLE-SET output for this stage, in inventory order): resolve
-// the runner (Linux-preferring), verify the image skew contract, wait
-// bounded for capacity, create ONE fresh pod, supervise it, confirm output
+// the runner (Linux-preferring), verify the image skew contract, retire any
+// earlier attempt's still-running pod, wait bounded for capacity, create ONE
+// fresh pod, supervise it, confirm output
 // surrender, and dispose the pod when recovery custody permits. Writable pods
 // without a verified recovery acknowledgment are preserved. Every retry still
 // receives a fresh pod, never a reused one (D1).
 func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []RunnerSpec) (Report, error) {
-	selected, err := SelectRunner(attempt, eligible)
+	selected, err := selectChildAwareRunner(attempt, eligible)
 	if err != nil {
 		return Report{}, err
 	}
@@ -856,31 +932,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		// carries no verdict" after the stage ran.
 		return Report{}, fmt.Errorf("dispatcher: stage %s of run %s is marked review but not agentic; only a goober invocation can produce a verdict", attempt.Stage, attempt.RunID)
 	}
-	if attempt.Agentic {
-		if d.cfg.KitWriter == nil {
-			return Report{}, fmt.Errorf("dispatcher: agentic stage %s of run %s requires a kit writer; none is configured", attempt.Stage, attempt.RunID)
-		}
-		digest, kerr := d.cfg.KitWriter.WriteKit(ctx, attempt)
-		if kerr != nil {
-			return Report{}, fmt.Errorf("dispatcher: publish agentic kit for run %s stage %s attempt %d: %w", attempt.RunID, attempt.Stage, attempt.Number, kerr)
-		}
-		if digest == "" {
-			return Report{}, fmt.Errorf("dispatcher: agentic kit writer returned no digest for run %s stage %s", attempt.RunID, attempt.Stage)
-		}
-		attempt.KitDigest = digest
+	if err := d.prepareAttemptKit(ctx, &attempt); err != nil {
+		return Report{}, err
 	}
-	if d.cfg.TokenMinter != nil && attempt.PodToken == "" {
-		token, terr := d.cfg.TokenMinter.Mint(attempt.RunID, 0)
-		if terr != nil {
-			return Report{}, fmt.Errorf("dispatcher: mint pod token for run %s stage %s attempt %d: %w", attempt.RunID, attempt.Stage, attempt.Number, terr)
-		}
-		attempt.PodToken = token
+
+	if err := d.mintAttemptToken(&attempt); err != nil {
+		return Report{}, err
 	}
 	if err := d.mintPlaneTokens(&attempt); err != nil {
 		return Report{}, err
 	}
 
-	if err := d.waitForCapacity(ctx, selected); err != nil {
+	if err := d.admitAttempt(ctx, attempt, selected); err != nil {
 		return report, err
 	}
 
@@ -897,17 +960,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
 
-	if err := d.pods.CreatePod(ctx, pod); err != nil {
+	if err := d.createAttemptPod(ctx, pod, attempt, &report); err != nil {
 		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
 
-	phase, superviseErr := d.supervise(ctx, attempt, pod.Namespace, pod.Name, &report)
+	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, &report)
 	report.Phase = phase
+	settlementCtx, cancelSettlement := childSettlementContext(ctx, attempt)
+	defer cancelSettlement()
 
 	if superviseErr == nil {
-		confirmed, gateErr := d.gate.Confirmed(ctx, attempt)
+		confirmed, gateErr := d.gate.Confirmed(settlementCtx, attempt)
 		report.SurrenderConfirmed = confirmed && gateErr == nil
 		if gateErr != nil {
 			superviseErr = fmt.Errorf("dispatcher: confirm surrender for run %s stage %s attempt %d: %w",
@@ -1054,6 +1119,9 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 	if err != nil {
 		return nil, err
 	}
+	if attempt.ChildExecutionDigest != "" {
+		return hardenChildPod(pod, attempt)
+	}
 	if !d.goModCacheClaimPresent(ctx, pod.Namespace) {
 		useEphemeralGoModCache(pod)
 	}
@@ -1064,6 +1132,9 @@ func (d *Dispatcher) renderHost(ctx context.Context, attempt Attempt, runner Run
 	cfg, err := d.configWithServiceAliases(ctx, runner)
 	if err != nil {
 		return nil, err
+	}
+	if attempt.ChildExecutionDigest != "" {
+		cfg.EnvPassthrough = nil
 	}
 	switch runner.HostKind {
 	case instance.RunnerHostImage:
@@ -1101,6 +1172,9 @@ func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, 
 		pod, err := d.pods.GetPod(ctx, namespace, name)
 		if err != nil {
 			return "", fmt.Errorf("dispatcher: supervise pod %s/%s: %w", namespace, name, err)
+		}
+		if err := observeChildWriters(attempt, pod, report); err != nil {
+			return "", err
 		}
 		// Short stages can pass from Pending to terminal between polls. Read
 		// assignment before every phase/sidecar exit, without inventing a

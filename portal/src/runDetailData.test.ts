@@ -599,6 +599,27 @@ describe("run detail projection", () => {
       "Parallel fanout finished — 1/2 branches succeeded (security-lens: failed, perf-lens: succeeded).",
     );
 
+    const selectiveStarted = event(20, "parallel.started", {
+      parallel: "review",
+      completeness: [
+        { branch: 1, name: "baseline", status: "cancelled", artifacts: 0 },
+        { branch: 2, name: "ui", status: "skipped", artifacts: 0, reason: "not selected by triage.lenses" },
+      ],
+    });
+    expect(eventSummary(selectiveStarted)).toBe(
+      "Parallel review started — skipped ui (not selected by triage.lenses).",
+    );
+    const selectiveFinished = event(24, "parallel.finished", {
+      parallel: "review",
+      completeness: [
+        { branch: 1, name: "baseline", status: "succeeded", artifacts: 1 },
+        { branch: 2, name: "ui", status: "skipped", artifacts: 0, reason: "not selected by triage.lenses" },
+      ],
+    });
+    expect(eventSummary(selectiveFinished)).toBe(
+      "Parallel review finished — 1/1 selected branches succeeded, 1 skipped (baseline: succeeded, ui: skipped (not selected by triage.lenses)).",
+    );
+
     // eventNodeId: the parallel container is its own graph node; a branch
     // event has no single node of its own.
     expect(eventNodeId(started)).toBe("fanout");
@@ -843,7 +864,28 @@ describe("deriveBranchStates", () => {
     expect(branchStateLabel("timed-out")).toBe("Timed out");
     expect(branchStateLabel("cancelled")).toBe("Cancelled");
     expect(branchStateLabel("no-output")).toBe("No output");
+    expect(branchStateLabel("skipped")).toBe("Skipped");
     expect(branchStateLabel("cancelled")).not.toBe(branchStateLabel("failed"));
+    expect(branchStateLabel("skipped")).not.toBe(branchStateLabel("no-output"));
+  });
+
+  it("marks a selective parallel's skipped branches from its start event (#7383)", () => {
+    const events = [
+      event(3, "parallel.started", {
+        parallel: "review",
+        completeness: [
+          { branch: 1, name: "baseline", status: "cancelled", artifacts: 0 },
+          { branch: 2, name: "security", status: "cancelled", artifacts: 0, reason: "touches internal/auth" },
+          { branch: 3, name: "ui", status: "skipped", artifacts: 0, reason: "not selected by triage.lenses" },
+        ],
+      }),
+      event(4, "branch.started", { branch: 1, parallel: "review", branchName: "baseline" }),
+    ];
+    const states = deriveBranchStates(events, 4);
+    expect(states.get("ui")).toEqual({ state: "skipped", seq: 3, reason: "not selected by triage.lenses" });
+    expect(states.get("baseline")?.state).toBe("running");
+    // A selected branch that has not started yet is not shown as skipped.
+    expect(states.has("security")).toBe(false);
   });
 });
 

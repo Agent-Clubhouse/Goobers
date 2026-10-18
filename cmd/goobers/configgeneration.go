@@ -29,6 +29,20 @@ func executionGenerationStore(layout instance.Layout) (configgeneration.Store, e
 	return configgeneration.Store{Root: filepath.Join(layout.Root, "config-generations"), Blobs: blobs}, nil
 }
 
+// All execution paths rebuild through the same captured-definition compiler.
+func bindGenerationRuntimes(definitions *schedulerDefinitions, input schedulerDefinitionsInput, layout instance.Layout, generation string) *schedulerDefinitions {
+	build := schedulerGenerationBuilder(input)
+	retainer := firstGenerationRetainer(input.Generations)
+	definitions.ExecutionGeneration = generation
+	for i := range definitions.Entries {
+		definitions.Entries[i].ConfigGeneration = generation
+	}
+	definitions.OrdinaryRuntime = ordinaryRuntimeBuilderFor(layout, retainer, build)
+	definitions.ChildRuntime = childRuntimeBuilderFor(layout, retainer, input.Config, build)
+	definitions.GenerationResolver = generationResolverFor(layout, retainer, build)
+	return definitions
+}
+
 func newExecutionGenerationRetainer(layout instance.Layout) (*configgeneration.Retainer, error) {
 	store, err := executionGenerationStore(layout)
 	if err != nil {
@@ -46,7 +60,10 @@ func retainedExecutionGenerationPins(ctx context.Context, layout instance.Layout
 	if err != nil {
 		return nil, err
 	}
-	pins := make(map[string]bool)
+	pins, err := retainedOrdinaryGenerationPins(ctx, layout)
+	if err != nil {
+		return nil, err
+	}
 	for _, root := range roots {
 		entries, err := os.ReadDir(root)
 		if err != nil {
@@ -125,13 +142,20 @@ type executionGenerationRuntime struct {
 
 type executionGenerationResolver func(context.Context, journal.RunIdentity) (executionGenerationRuntime, error)
 
-type generationDefinitionBuilder func(instance.Layout, *instance.ConfigSet, *validate.Report) (*schedulerDefinitions, error)
+// generationDefinitionBuilder compiles runtime definitions from the retained
+// tree of the named admitted generation.
+type generationDefinitionBuilder func(instance.Layout, string, *instance.ConfigSet, *validate.Report) (*schedulerDefinitions, error)
 
 func generationResolverFor(layout instance.Layout, retainer *configgeneration.Retainer, build generationDefinitionBuilder) executionGenerationResolver {
 	if retainer == nil {
 		return nil
 	}
 	return func(ctx context.Context, identity journal.RunIdentity) (executionGenerationRuntime, error) {
+		// Generated runs require retained source plus parent-generation custody;
+		// their display names must never select a mutable catalog definition.
+		if identity.Child != nil {
+			return executionGenerationRuntime{}, errors.New("generated child recovery requires retained proposal resolver")
+		}
 		directory, lease, err := retainer.Store.Acquire(ctx, identity.ConfigGeneration)
 		if err != nil {
 			return executionGenerationRuntime{}, err
@@ -141,7 +165,7 @@ func generationResolverFor(layout instance.Layout, retainer *configgeneration.Re
 		if err != nil {
 			return executionGenerationRuntime{}, fmt.Errorf("load pinned execution definitions: %w (%s)", err, validationIssueSummary(report))
 		}
-		definitions, err := build(instance.NewLayout(layout.Root).WithConfigDir(directory), set, report)
+		definitions, err := build(instance.NewLayout(layout.Root).WithConfigDir(directory), identity.ConfigGeneration, set, report)
 		if err != nil {
 			return executionGenerationRuntime{}, err
 		}
@@ -172,9 +196,18 @@ func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity
 	}
 	r.mu.RLock()
 	resolve := r.resolveGeneration
+	reconcile := r.reconcileContained
+	if identity.Child != nil {
+		resolve = r.resolveChildGeneration
+	}
 	r.mu.RUnlock()
 	if resolve == nil {
 		return executionGenerationRuntime{}, errors.New("no resolver for pinned execution generation")
+	}
+	if identity.Child == nil && reconcile != nil {
+		if err := reconcile(ctx, identity); err != nil {
+			return executionGenerationRuntime{}, err
+		}
 	}
 	return resolve(ctx, identity)
 }
@@ -203,6 +236,18 @@ func firstGenerationRetainer(retainers []*configgeneration.Retainer) *configgene
 	}
 	return retainers[0]
 }
+
+// schedulerExecutionGeneration binds a pinned rebuild to the run's admitted
+// generation. Re-retaining its extracted tree is not byte-stable (Windows
+// reads back different mode bits), and a fresh identity would make every
+// later CLI stage of the run fail config_generation_mismatch (#5445).
+func schedulerExecutionGeneration(input schedulerDefinitionsInput) (instance.Layout, string, error) {
+	if input.PinnedGeneration != "" {
+		return input.Layout, input.PinnedGeneration, nil
+	}
+	return retainOptionalExecutionGeneration(input.Layout, input.Generations)
+}
+
 func retainOptionalExecutionGeneration(layout instance.Layout, retainers []*configgeneration.Retainer) (instance.Layout, string, error) {
 	retainer := firstGenerationRetainer(retainers)
 	if retainer == nil {

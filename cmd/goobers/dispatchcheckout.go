@@ -60,7 +60,7 @@ var checkoutCloneURL = runner.DefaultRepoCloneURL
 // plane stated beside an Azure DevOps repository credential, and "" for every
 // other provider. On Azure DevOps it selects the URL-scoped Authorization
 // header every other in-pod ADO git operation sends (checkoutGitAuthEnv).
-func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential, repoAuthScheme string) error {
+func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential, repoAuthScheme string) (err error) {
 	mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace))
 	if mode == "" || mode == string(apiv1.WorkspaceScratch) {
 		return nil
@@ -68,6 +68,16 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	wsMode := apiv1.WorkspaceMode(mode)
 	if !wsMode.IsRepoBacked() {
 		return fmt.Errorf("unsupported workspace mode %q", mode)
+	}
+	// Every repo checkout, including a verified child carrier and read-only
+	// checkout, must exclude harness artifacts before a stage can write them.
+	defer func() {
+		if err == nil {
+			err = worktree.EnsureScratchExcluded(ctx, dir)
+		}
+	}()
+	if isolatedChildWorkspace(ctx) {
+		return nil // verified carrier was materialized before invoking the stage
 	}
 
 	ref := apiv1.RepoRef{
@@ -148,11 +158,17 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// is what #3763 measured: the universal idiom commits in one stage and
 	// pushes in a later one, so the common case is unpushed commits that must
 	// still reach this stage. applyStageWorkspaceDelta covers that.
-	cloneErr := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, ".")
-	if cloneErr == nil {
+	branchExists, err := remoteBranchExists(ctx, dir, gitEnv, cloneURL, branch)
+	if err != nil {
+		return fmt.Errorf("probe remote workspace branch %s: %w", branch, err)
+	}
+	if branchExists {
+		if err := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, "."); err != nil {
+			return fmt.Errorf("clone %s at workspace branch %s: %w", cloneURL, branch, err)
+		}
 		return finishWritableRepoCheckoutOnExistingBranch(ctx, dir, gitEnv, stderr, branch, base)
 	}
-	// A REBOUND branch this pod could not clone is a refusal, not a fallback
+	// A REBOUND branch this pod could not find is a refusal, not a fallback
 	// (#392). The fallback below creates the branch locally at base, which is
 	// right for the first stage of a run — the run branch legitimately does not
 	// exist yet — and catastrophically wrong for a rebound one: the branch was
@@ -164,16 +180,8 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// RequireExistingBranch, set exactly when the branch was rebound); this is
 	// that refusal on the pod substrate.
 	//
-	// The refusal WRAPS the clone's own error rather than announcing a cause it
-	// did not establish. `clone --branch <b>` fails for a missing branch, but
-	// equally for a bad credential, a DNS or TLS fault, a full disk, or a
-	// repository that is gone — and this error is what the surrendered envelope
-	// carries after the pod is disposed of, so naming "does not exist" when the
-	// truth was an expired token sends the next reader after the wrong bug.
-	// The refusal itself is unchanged and still fails closed on every one of
-	// those; only its account of why is now sourced from git.
 	if rebound != "" {
-		return fmt.Errorf("rebound workspace branch %q could not be cloned from %s; refusing to create it at base — the branch names work that already exists: %w", rebound, cloneURL, cloneErr)
+		return fmt.Errorf("rebound workspace branch %q was not found in %s; refusing to create it at base — the branch names work that already exists", rebound, cloneURL)
 	}
 	// First stage of the run: the branch does not exist yet.
 	return checkoutFallbackBranchAtBase(ctx, dir, gitEnv, stderr, branch, base, cloneURL)
@@ -240,6 +248,11 @@ func finishWritableRepoCheckoutOnExistingBranch(ctx context.Context, dir string,
 	// resolvable locally by then regardless of whether this stage declared
 	// syncBase (#5103).
 	if err := ensureRecoveryBaseRemoteRef(ctx, dir, gitEnv, stderr, base); err != nil {
+		return err
+	}
+	// Before the inherited delta moves HEAD: the pull request head as this
+	// stage found it, carried in this stage's own delta (#6019).
+	if err := recordCheckoutOrigin(ctx, dir, gitEnv, stderr); err != nil {
 		return err
 	}
 	if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
@@ -447,11 +460,15 @@ func adoCheckoutAuthFor(ref apiv1.RepoRef, repoAuthScheme, cloneURL string) adoC
 // ADO git operations already use; the askpass helper would send an Entra
 // token as a Basic password, which Azure DevOps does not accept everywhere.
 func checkoutGitAuthEnv(ctx context.Context, dir string, creds []dispatcher.MintedCredential, ado adoCheckoutAuth) ([]string, error) {
-	token := gitToken(creds)
-	if token == "" {
+	cred, ok := gitCredential(creds)
+	if !ok {
 		return nil, nil
 	}
+	token := cred.Value
 	if ado.scheme != "" {
+		// The value's own stated scheme wins over the repository's: a
+		// credentials: entry's PAT is sent as Basic on an Entra gaggle (#5957).
+		ado.scheme = cred.SchemeOr(ado.scheme)
 		return adoCheckoutGitAuthEnv(ctx, token, ado)
 	}
 	// OUTSIDE the workspace, deliberately. `git clone <url> .` refuses a
@@ -519,11 +536,33 @@ func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, arg
 	return nil
 }
 
-// gitToken picks a credential the stage already holds that can authenticate a
-// git fetch. Preference order matters: a write-scoped credential also reads, so
-// either works for the clone, but choosing deterministically keeps the same
+func remoteBranchExists(ctx context.Context, dir string, env []string, remote, branch string) (bool, error) {
+	var captured strings.Builder
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", remote, "refs/heads/"+branch)
+	cmd.Dir = dir
+	cmd.Env = composeGitEnv(dir, env)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &captured
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+		return false, nil
+	}
+	if msg := strings.TrimSpace(captured.String()); msg != "" {
+		return false, fmt.Errorf("%w: %s", err, msg)
+	}
+	return false, err
+}
+
+// gitCredential picks a credential the stage already holds that can
+// authenticate a git fetch, with the scheme the plane stated for it.
+// Preference order matters: a write-scoped credential also reads, so either
+// works for the clone, but choosing deterministically keeps the same
 // credential in play across attempts of the same stage.
-func gitToken(creds []dispatcher.MintedCredential) string {
+func gitCredential(creds []dispatcher.MintedCredential) (dispatcher.MintedCredential, bool) {
 	for _, c := range creds {
 		name := strings.ToLower(c.Capability)
 		if c.Value == "" {
@@ -538,7 +577,7 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 		// "repo" covers the capabilities production stages actually declare:
 		// repo:push, push-repository-branch, modify-repository.
 		if strings.Contains(name, "repo") {
-			return c.Value
+			return c, true
 		}
 	}
 	// No repo-shaped capability. Deliberately NOT falling back to any other
@@ -546,7 +585,7 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 	// would be a silent scope widening. An anonymous clone is correct for a
 	// public repository and fails loudly on a private one, which is the honest
 	// outcome and names the real cause.
-	return ""
+	return dispatcher.MintedCredential{}, false
 }
 
 // clearDirContents empties dir without removing dir itself: the workspace is a

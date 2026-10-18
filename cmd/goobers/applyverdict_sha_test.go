@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
@@ -189,6 +190,9 @@ func TestApplyVerdictReadsCurrentPRPastTickSnapshot(t *testing.T) {
 			t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 			t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
 			t.Setenv(providersnapshot.EnvVar, "tick-before-review")
+			t.Setenv(executor.GaggleEnvVar, "goobers")
+			t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+			t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-test")
 			seedGateVerdictJournal(t, root, runID, apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "ready"})
 			t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", pinHead)
 			t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", pinBase)

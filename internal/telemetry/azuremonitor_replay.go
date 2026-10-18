@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 const (
@@ -175,6 +177,7 @@ type azureReplaySpool struct {
 	healthDone chan struct{}
 	wake       chan struct{}
 	done       chan struct{}
+	released   chan struct{} // closed when close, or its deadline fallback, has released the index reference
 	cancel     context.CancelFunc
 	closed     atomic.Bool
 
@@ -198,7 +201,7 @@ func newAzureReplaySpool(cfg azureReplayConfig, send func(context.Context, []byt
 		return nil, errors.New("azure monitor replay requires positive age and byte bounds")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &azureReplaySpool{cfg: cfg, send: send, now: time.Now, wake: make(chan struct{}, 1), done: make(chan struct{}), cancel: cancel}
+	s := &azureReplaySpool{cfg: cfg, send: send, now: time.Now, wake: make(chan struct{}, 1), done: make(chan struct{}), released: make(chan struct{}), cancel: cancel}
 	if err := s.ensureIndex(); err != nil {
 		cancel()
 		return nil, err
@@ -492,7 +495,8 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 		case <-s.cfg.start:
 		}
 	}
-	delay := azureReplayRetryMinimum
+	retryPolicy := retryutil.Policy{Base: azureReplayRetryMinimum, Max: azureReplayRetryMaximum}
+	failedAttempts := 0
 	retrying := false
 	bootstrapRetry := false
 	sweep := time.NewTicker(azureBootstrapSweepInterval)
@@ -509,7 +513,7 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 			// Continuous traffic must not turn an outage into a retry storm.
 			wake = nil
 			periodic = nil
-			timer = time.NewTimer(jitterAzureReplayDelay(delay))
+			timer = time.NewTimer(retryutil.JitteredExponential(retryPolicy, failedAttempts))
 			retry = timer.C
 			select {
 			case <-s.index.ready:
@@ -551,30 +555,15 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 		cancel()
 		if err == nil || errors.Is(err, errAzureReplayYield) {
 			bootstrapRetry = false
-			delay = azureReplayRetryMinimum
+			failedAttempts = 0
 			retrying = false
 			continue
 		}
 		bootstrapRetry = migrationErr != nil
 		retrying = true
-		delay = min(delay*2, azureReplayRetryMaximum)
+		// The first retry has a one-to-two-second window, as before.
+		failedAttempts++
 	}
-}
-
-func jitterAzureReplayDelay(maximum time.Duration) time.Duration {
-	if maximum <= azureReplayRetryMinimum {
-		return azureReplayRetryMinimum
-	}
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return maximum
-	}
-	var value uint64
-	for _, b := range raw {
-		value = value<<8 | uint64(b)
-	}
-	half := maximum / 2
-	return half + time.Duration(value%uint64(maximum-half+1))
 }
 
 func azureReplayID() (string, error) {
@@ -624,15 +613,21 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 		activeAzureReplaySpools.Unlock()
 	}()
 	s.cancel()
+	// Both workers query the manifest. sql.DB.Close defers closing a busy
+	// connection until its query returns, so releasing the index before they
+	// exit can leave the file open after close returns (#6684).
+	stopped := make(chan struct{})
+	go func() {
+		<-s.healthDone
+		<-s.done
+		close(stopped)
+	}()
 	select {
-	case <-s.healthDone:
-	case <-ctx.Done():
-	}
-	select {
-	case <-s.done:
+	case <-stopped:
 	case <-ctx.Done():
 		go func() {
-			<-s.done
+			defer close(s.released)
+			<-stopped
 			s.reportShutdownHealth(s.stats())
 			_ = s.index.release(context.Background())
 		}()
@@ -662,5 +657,7 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 	default:
 	}
 	s.reportShutdownHealth(s.stats())
-	return errors.Join(err, s.index.release(ctx))
+	err = errors.Join(err, s.index.release(ctx))
+	close(s.released)
+	return err
 }

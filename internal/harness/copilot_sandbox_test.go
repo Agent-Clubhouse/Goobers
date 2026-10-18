@@ -79,14 +79,15 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 	if len(command) < 3 || command[0] != "sandbox-stub" || command[1] != "--confine" {
 		t.Fatalf("exec'd argv is not sandbox-wrapped: %v", command)
 	}
-	if command[2] != "copilot" {
+	if command[2] != resolveStdioHarnessCommand([]string{"copilot"})[0] {
 		t.Fatalf("wrapped argv target = %q, want the original copilot invocation: %v", command[2], command)
 	}
-	logDir := filepath.Join(workspace, ".goobers", "sandbox", "logs")
 	logFlag := slices.Index(command, "--log-dir")
-	if logFlag < 0 || logFlag+1 >= len(command) || command[logFlag+1] != logDir {
-		t.Fatalf("wrapped argv missing --log-dir %s: %v", logDir, command)
+	if logFlag < 0 || logFlag+1 >= len(command) {
+		t.Fatalf("wrapped argv missing --log-dir: %v", command)
 	}
+	logDir := command[logFlag+1]
+	assertCopilotLogOutsideWorkspace(t, workspace, logDir)
 
 	if len(sb.policies) != 1 {
 		t.Fatalf("Wrap called %d times, want 1", len(sb.policies))
@@ -94,8 +95,8 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 	if sb.policies[0].Workspace != workspace {
 		t.Fatalf("policy workspace = %q, want %q", sb.policies[0].Workspace, workspace)
 	}
-	if len(sb.policies[0].WritableRoots) != 0 {
-		t.Fatalf("policy writable roots = %v, want none for a git-less workspace", sb.policies[0].WritableRoots)
+	if !slices.Equal(sb.policies[0].WritableRoots, []string{logDir}) {
+		t.Fatalf("policy writable roots = %v, want only the private log directory", sb.policies[0].WritableRoots)
 	}
 
 	copilotHome := filepath.Join(workspace, ".goobers", "sandbox", "copilot-home")
@@ -112,18 +113,21 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 			t.Fatalf("subprocess env %s = %q (found=%v), want %q", name, got, found, want)
 		}
 	}
-	for _, dir := range []string{copilotHome, tempDir, logDir} {
+	for _, dir := range []string{copilotHome, tempDir} {
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
 			t.Fatalf("sandbox runtime directory %s missing: %v", dir, err)
 		}
 	}
+	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
+		t.Fatalf("private log directory survived invocation: %v", err)
+	}
 }
 
 // TestCopilotAdapterWithoutSandboxKeepsLaunchUnchanged pins the opt-in
-// default: a nil RunRequest.Sandbox must produce the exact pre-sandbox argv —
-// no wrapper prefix, no --log-dir, no COPILOT_HOME/TMPDIR overrides pointed
-// into the workspace.
+// sandbox default: a nil RunRequest.Sandbox has no wrapper prefix or
+// COPILOT_HOME/TMPDIR overrides pointed into the workspace. Raw debug logs
+// still go to the invocation-private external directory.
 func TestCopilotAdapterWithoutSandboxKeepsLaunchUnchanged(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
@@ -142,12 +146,14 @@ func TestCopilotAdapterWithoutSandboxKeepsLaunchUnchanged(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	command := runner.lastReq.Command
-	if command[0] != "copilot" {
+	if command[0] != resolveStdioHarnessCommand([]string{"copilot"})[0] {
 		t.Fatalf("argv[0] = %q, want the unwrapped copilot invocation: %v", command[0], command)
 	}
-	if slices.Contains(command, "--log-dir") {
-		t.Fatalf("unsandboxed argv unexpectedly carries --log-dir: %v", command)
+	logFlag := slices.Index(command, "--log-dir")
+	if logFlag < 0 || logFlag+1 >= len(command) {
+		t.Fatalf("unsandboxed argv missing private --log-dir: %v", command)
 	}
+	assertCopilotLogOutsideWorkspace(t, workspace, command[logFlag+1])
 	for _, entry := range runner.lastReq.Env {
 		if strings.HasPrefix(entry, "COPILOT_HOME=") {
 			t.Fatalf("unsandboxed env unexpectedly carries a COPILOT_HOME override: %v", entry)
@@ -167,9 +173,9 @@ func dirExists(path string) bool {
 }
 
 // TestCopilotAdapterRecoveryTurnStaysConfined proves the contract-recovery
-// turn (a clean exit with no completion file) reuses the WRAPPED argv with
-// only the prompt swapped — the wrapper prefix must shift the prompt index,
-// not corrupt the recovery invocation or escape the sandbox.
+// turn (a clean exit with no completion file) reuses the WRAPPED argv
+// unchanged and carries the recovery prompt on stdin (#6871) — the wrapper
+// prefix must not corrupt the recovery invocation or escape the sandbox.
 func TestCopilotAdapterRecoveryTurnStaysConfined(t *testing.T) {
 	workspace := t.TempDir()
 	sb := &stubSandbox{}
@@ -198,28 +204,20 @@ func TestCopilotAdapterRecoveryTurnStaysConfined(t *testing.T) {
 	if second[0] != "sandbox-stub" {
 		t.Fatalf("recovery argv is not sandbox-wrapped: %v", second)
 	}
-	if len(first) != len(second) {
-		t.Fatalf("recovery argv length %d != initial %d", len(second), len(first))
+	if !slices.Equal(first, second) {
+		t.Fatalf("recovery argv differs from initial: %v vs %v", first, second)
 	}
-	diffs := 0
-	promptIdx := -1
-	for i := range first {
-		if first[i] != second[i] {
-			diffs++
-			promptIdx = i
-		}
+	// The empty prompt-mode flag follows the wrapper prefix (2 args) and the
+	// base command (1); the prompt itself is never in argv.
+	if got := second[3]; got != defaultPromptFlag+"=" {
+		t.Fatalf("argv[3] = %q, want the empty prompt-mode flag (wrapper-shifted)", got)
 	}
-	if diffs != 1 {
-		t.Fatalf("recovery argv differs from initial at %d positions, want exactly the prompt: %v vs %v", diffs, first, second)
+	recoveryPrompt := string(runner.reqs[1].Stdin)
+	if !strings.Contains(recoveryPrompt, "completion") && !strings.Contains(recoveryPrompt, "result") {
+		t.Fatalf("recovery stdin does not look like the completion-recovery prompt: %q", recoveryPrompt)
 	}
-	// The prompt follows the wrapper prefix (2 args) and the base command
-	// (1). It is bound to its flag in that same element (`-p=<text>`), so it
-	// does not occupy one of its own — see copilotPromptArg.
-	if wantIdx := 3; promptIdx != wantIdx {
-		t.Fatalf("recovery prompt swapped at index %d, want %d (wrapper-shifted)", promptIdx, wantIdx)
-	}
-	if !strings.Contains(second[promptIdx], "completion") && !strings.Contains(second[promptIdx], "result") {
-		t.Fatalf("recovery prompt does not look like the completion-recovery prompt: %q", second[promptIdx])
+	if recoveryPrompt == string(runner.reqs[0].Stdin) {
+		t.Fatal("recovery turn resent the initial prompt instead of the recovery prompt")
 	}
 }
 

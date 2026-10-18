@@ -239,6 +239,56 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	}
 }
 
+func TestStoredAttributionCohortsRescoreWhenLateLabelLands(t *testing.T) {
+	root, store, runID := seedStoredAttributionRun(t)
+	query := StoredAttributionQuery{
+		Gaggle: "core", Workflow: "implementation", Since: time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC),
+	}
+	before, err := StoredAttributionCohorts(context.Background(), root, store, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].GroundTruth != nil {
+		t.Fatalf("cohorts before label = %+v, want one unlabeled cohort", before)
+	}
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	journalBefore, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	labeledAt := time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
+	for _, outcome := range []creditgraph.LabelOutcome{creditgraph.LabelCorrect, creditgraph.LabelIncorrect} {
+		if _, err := RecordGroundTruthLabel(context.Background(), root, creditgraph.GroundTruthLabel{
+			RunID: runID, Outcome: outcome, Source: creditgraph.LabelSourceHuman, LabeledBy: "reviewer",
+			LabeledAt: labeledAt, RecordedAt: labeledAt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		labeledAt = labeledAt.Add(time.Hour)
+	}
+
+	after, err := StoredAttributionCohorts(context.Background(), root, store, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := creditgraph.GroundTruthSummary{LabeledRunCount: 1, IncorrectRunCount: 1}
+	if len(after) != 1 || after[0].GroundTruth == nil || *after[0].GroundTruth != want {
+		t.Fatalf("cohorts after late labels = %+v, want %+v from the latest verdict", after, want)
+	}
+	if after[0].RunCount != before[0].RunCount || after[0].EffectiveVersion != before[0].EffectiveVersion {
+		t.Fatalf("labels changed cohort identity: before %+v after %+v", before[0], after[0])
+	}
+	journalAfter, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(journalAfter) != string(journalBefore) {
+		t.Fatal("recording a ground-truth label mutated the run journal")
+	}
+}
+
 func TestLocalTelemetryAttributionReturnsEnrolledRunRecords(t *testing.T) {
 	root, store, runID := seedStoredAttributionRun(t)
 	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
@@ -520,8 +570,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 				TokenSamples: 2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 				CostSamples: 2, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
 				RetryWasteAttempts: 1, RetryWasteDurationMs: 10, HasRetryWasteDuration: true,
-				RetryWasteTokens: 100, HasRetryWasteTokens: true,
-				RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
+				RetryWasteTokenSamples: 1, RetryWasteTokens: 100, HasRetryWasteTokens: true,
+				RetryWasteCostSamples: 1, RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
 			},
 			{Gaggle: "core", Workflow: "running", Stage: "active", TotalAttempts: 1},
 		},
@@ -531,8 +581,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 			TokenSamples:  2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 			PremiumRequestSamples: 2, P50CopilotPremiumRequests: 0, P95CopilotPremiumRequests: 1, HasPremiumRequests: true,
 			CostSamples: 2, CostUSD: 1.5, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
-			RetryWasteAttempts: 1, RetryWasteTokens: 100, HasRetryWasteTokens: true,
-			RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
+			RetryWasteAttempts: 1, RetryWasteTokenSamples: 1, RetryWasteTokens: 100, HasRetryWasteTokens: true,
+			RetryWasteCostSamples: 1, RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
 		}},
 		Models: []rollup.ModelStats{{
 			Model: "gpt-5.4", UsageSamples: 1,
@@ -600,6 +650,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		done.P95Tokens == nil || *done.P95Tokens != 200 ||
 		done.P50CostAIC == nil || *done.P50CostAIC != 50 ||
 		done.RetryWasteDurationMs == nil || *done.RetryWasteDurationMs != 10 ||
+		done.RetryWasteTokenSamples != 1 || done.RetryWasteCostSamples != 1 ||
 		done.RetryWasteTokens == nil || *done.RetryWasteTokens != 100 ||
 		done.RetryWasteCostAIC == nil || *done.RetryWasteCostAIC != 50 {
 		t.Fatalf("projected stage distributions = %+v", done)
@@ -615,6 +666,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		got.Usage[0].P50CopilotPremiumRequests == nil || *got.Usage[0].P50CopilotPremiumRequests != 0 ||
 		got.Usage[0].P95CopilotPremiumRequests == nil || *got.Usage[0].P95CopilotPremiumRequests != 1 ||
 		got.Usage[0].CostAIC == nil || *got.Usage[0].CostAIC != 150 ||
+		got.Usage[0].RetryWasteTokenSamples != 1 || got.Usage[0].RetryWasteCostSamples != 1 ||
 		got.Usage[0].RetryWasteCostAIC == nil || *got.Usage[0].RetryWasteCostAIC != 50 {
 		t.Fatalf("projected scope usage = %+v", got.Usage)
 	}

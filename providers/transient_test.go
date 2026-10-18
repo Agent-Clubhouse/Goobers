@@ -17,6 +17,9 @@ func TestIsTransientError(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
+		{"local admission refusal", &RequestAdmissionError{Err: errors.New("request budget exhausted")}, false},
+		{"wrapped admission deadline", &url.Error{Op: "Get", URL: "https://api.github.com", Err: &RequestAdmissionError{Err: context.DeadlineExceeded}}, false},
+		{"admission cause resembles transient error", fmt.Errorf("send request: %w", &RequestAdmissionError{Err: errors.New("temporary failure: request budget exhausted")}), false},
 		{"github 503 status", fmt.Errorf("GET /pulls/1 failed: status 503: service unavailable"), true},
 		{"ado 502 status", fmt.Errorf("PATCH https://dev.azure.com/acme failed: status 502: bad gateway"), true},
 		{"rate limited status", fmt.Errorf("GET /pulls/1 failed: status 429: rate limited; retry after 60s"), true},
@@ -95,6 +98,11 @@ func TestIsAuthenticationError(t *testing.T) {
 		statusCode:         403,
 		rateLimitRemaining: "0",
 	}
+	// The refusal exactly as adoCompletionError builds it from ADO's 403.
+	policyNotMet := adoCompletionError(&providerResponseError{
+		method: "PATCH", endpoint: "/pullrequests/42", statusCode: 403,
+		body: `{"message":"The update is rejected by policy.","typeKey":"GitPullRequestUpdateRejectedByPolicyException"}`,
+	}, MergePullRequestRequest{PullID: "42"})
 	cases := []struct {
 		name string
 		err  error
@@ -109,6 +117,11 @@ func TestIsAuthenticationError(t *testing.T) {
 		{"rate limit error", &RateLimitError{Status: 403}, false},
 		{"not found", errors.New("GET /issues/1 failed: status 404: Not Found"), false},
 		{"nil", nil, false},
+		// A branch-policy refusal is a 403 the same credential clears once
+		// the policy is satisfied, never an authentication failure — even
+		// when its text carries the raw status the fallback parser keys on.
+		{"policy not met", policyNotMet, false},
+		{"wrapped policy not met", fmt.Errorf("PATCH /pullrequests/42 failed: status 403: %w", policyNotMet), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

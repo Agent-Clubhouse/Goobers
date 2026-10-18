@@ -12,10 +12,11 @@ import (
 // the generated portal types.
 type PortalConfig struct {
 	ReadStateEnvelope
-	Brand        PortalBrandResponse   `json:"brand"`
-	Theme        PortalThemeResponse   `json:"theme"`
-	Support      PortalSupportResponse `json:"support"`
-	Capabilities PortalCapabilities    `json:"capabilities"`
+	Brand              PortalBrandResponse   `json:"brand"`
+	Theme              PortalThemeResponse   `json:"theme"`
+	Support            PortalSupportResponse `json:"support"`
+	Capabilities       PortalCapabilities    `json:"capabilities"`
+	ConnectionLocality string                `json:"connectionLocality"`
 }
 
 // PortalCapabilities reports deployment-dependent actions the portal may offer.

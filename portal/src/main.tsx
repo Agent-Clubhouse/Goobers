@@ -5,11 +5,18 @@ import { bootstrapPortalTheme } from "./cobrand";
 import "./tokens.css";
 import "./styles.css";
 import "./tables.css";
+import "./ui/primitives.css";
 
 bootstrapPortalTheme();
 
+const searchParams = new URLSearchParams(window.location.search);
+const headerTarget =
+  searchParams.get("host") === "fleet"
+    ? (document.getElementById("portal-header-host") ?? undefined)
+    : undefined;
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <App headerHost={headerTarget ? { target: headerTarget } : undefined} />
   </StrictMode>,
 );

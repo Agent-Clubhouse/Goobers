@@ -26,7 +26,6 @@ github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lo
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow/v_2_0.CheckGaggleFeatureSupport # Next-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2046).
 github.com/goobers/goobers/internal/workflow/v_2_0.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
-github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
 github.com/goobers/goobers/providers.WithGiteaHTTPClient # Public Gitea HTTP-client injection option retained for external provider consumers and custom transports.
 github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea retry option retained for external provider consumers; mirrors WithADOMaxRateLimitRetries.
@@ -291,3 +290,13 @@ github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired unti
 github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
+
+# #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
+# capture activation before all three approved slices land. Remove on activation.
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01
+
+# #4424 defines the gaggle-health contract, persistence and rebuild rules only;
+# the daemon evaluation controller that consumes them is #4425. Remove on wiring.
+github.com/goobers/goobers/internal/gagglehealth.ExtendEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.

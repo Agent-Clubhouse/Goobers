@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -80,6 +81,9 @@ func TestRefreshNormalizesVolatileFields(t *testing.T) {
 			t.Errorf("normalized fixture does not contain %q:\n%s", want, firstRaw)
 		}
 	}
+	if err := CheckContract(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRefreshRejectsInvalidConfiguration(t *testing.T) {
@@ -100,6 +104,44 @@ func TestRefreshRejectsInvalidConfiguration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := Refresh(context.Background(), tc.cfg); err == nil {
 				t.Fatal("Refresh() succeeded with invalid configuration")
+			}
+		})
+	}
+}
+
+func TestRefreshPreservesResponseErrors(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		statusCode int
+		body       []byte
+		want       string
+	}{
+		{
+			name:       "status",
+			statusCode: http.StatusForbidden,
+			body:       []byte(`{"message":"forbidden"}`),
+			want:       `list-open-issues request returned status 403: {"message":"forbidden"}`,
+		},
+		{
+			name:       "size",
+			statusCode: http.StatusOK,
+			body:       bytes.Repeat([]byte("x"), maxResponseBytes+1),
+			want:       fmt.Sprintf("list-open-issues response exceeds %d bytes", maxResponseBytes),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Refresh(context.Background(), RefreshConfig{
+				Repository: Repository{Owner: "acme", Name: "live"},
+				Issue:      "7",
+				Token:      "dedicated-token",
+				Client: httpClientFunc(func(*http.Request) (*http.Response, error) {
+					return fixtureHTTPResponse(tc.statusCode, tc.body), nil
+				}),
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Refresh() error = %v, want containing %q", err, tc.want)
 			}
 		})
 	}
@@ -158,6 +200,117 @@ func TestReadWriteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExistingCanonicalFixtureBytesSurviveCheckCycle(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"github_contract.json", "github_pr_contract.json", "ado_contract.json"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "test", "providers", "testdata", name)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture, err := Read(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckContract(context.Background(), fixture); err != nil {
+				t.Fatal(err)
+			}
+			afterPath := filepath.Join(t.TempDir(), name)
+			if err := Write(afterPath, fixture); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(afterPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("canonical fixture bytes changed after check cycle\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
+	}
+}
+
+func TestRefreshMatchesExistingCanonicalFixtureBytes(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"github_contract.json", "github_pr_contract.json"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "test", "providers", "testdata", name)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline, err := Read(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refreshed, err := Refresh(context.Background(), RefreshConfig{
+				Repository:  baseline.Repository,
+				Issue:       baseline.Issue,
+				PullRequest: baseline.PullRequest,
+				Token:       "dedicated-token",
+				Client:      fixtureReplayClient(t, baseline),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := canonical(refreshed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after = append(after, '\n')
+			if !bytes.Equal(before, after) {
+				t.Fatalf("canonical GitHub fixture bytes changed after refresh\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
+	}
+}
+
+// TestRefreshRecordsPathsRelativeToBaseURLPrefix pins that a base URL with a
+// path prefix (GitHub Enterprise Server's /api/v3) does not leak into the
+// recorded exchange paths: they stay relative to the API root, as the request
+// specs name them.
+func TestRefreshRecordsPathsRelativeToBaseURLPrefix(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "test", "providers", "testdata", "github_contract.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := fixtureReplayClient(t, baseline)
+	prefixed := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+		if !strings.HasPrefix(req.URL.Path, "/api/v3/") {
+			return nil, fmt.Errorf("request %s did not use the base URL path prefix", req.URL.RequestURI())
+		}
+		stripped := req.Clone(req.Context())
+		stripped.URL.Path = strings.TrimPrefix(req.URL.Path, "/api/v3")
+		stripped.URL.RawPath = ""
+		return replay.Do(stripped)
+	})
+	refreshed, err := Refresh(context.Background(), RefreshConfig{
+		Repository: baseline.Repository,
+		Issue:      baseline.Issue,
+		Token:      "dedicated-token",
+		BaseURL:    "https://ghes.invalid/api/v3/",
+		Client:     prefixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := canonical(refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = append(after, '\n')
+	if !bytes.Equal(before, after) {
+		t.Fatalf("base URL path prefix changed recorded fixture bytes\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestCheckContractReplaysRecordedRequests(t *testing.T) {
 	t.Parallel()
 	if err := CheckContract(context.Background(), validFixture()); err != nil {
@@ -165,21 +318,48 @@ func TestCheckContractReplaysRecordedRequests(t *testing.T) {
 	}
 }
 
-func TestCheckContractClassifiesAssertionFailure(t *testing.T) {
+func TestCheckContractPreservesIdentityAssertionError(t *testing.T) {
 	t.Parallel()
 	fixture := cloneFixture(t, validFixture())
 	fixture.Exchanges[1].Response.Body = json.RawMessage(`{
 		"id": 0,
-		"number": 7,
-		"title": "",
+		"number": 9,
+		"title": "Stable fixture issue",
 		"state": "open",
-		"html_url": "https://github.com/fixture-owner/fixture-repo/issues/7",
+		"html_url": "https://github.com/fixture-owner/fixture-repo/issues/9",
 		"created_at": "2000-01-01T00:00:00Z",
 		"updated_at": "2000-01-01T00:00:00Z"
 	}`)
 	err := CheckContract(context.Background(), fixture)
 	if !errors.Is(err, ErrContractAssertion) {
 		t.Fatalf("CheckContract() error = %v, want ErrContractAssertion", err)
+	}
+	if got := errors.Unwrap(err); got != ErrContractAssertion { //nolint:errorlint // The exact single unwrap target is the compatibility contract under test.
+		t.Fatalf("errors.Unwrap(CheckContract()) = %v, want ErrContractAssertion", got)
+	}
+	if got, want := err.Error(), "provider contract assertion failed: mapped item identity = issue/9, want issue/7"; got != want {
+		t.Fatalf("CheckContract() error = %q, want %q", got, want)
+	}
+}
+
+func TestCheckContractPreservesUnconsumedExchangeError(t *testing.T) {
+	t.Parallel()
+	fixture := cloneFixture(t, validFixture())
+	fixture.Exchanges = append(fixture.Exchanges, Exchange{
+		Name:   "unused",
+		Method: http.MethodGet,
+		Path:   "/unused",
+		Response: FixtureResponse{
+			Status: http.StatusOK,
+			Body:   json.RawMessage(`{}`),
+		},
+	})
+	err := CheckContract(context.Background(), fixture)
+	if !errors.Is(err, ErrContractAssertion) {
+		t.Fatalf("CheckContract() error = %v, want ErrContractAssertion", err)
+	}
+	if got, want := err.Error(), `provider contract assertion failed: fixture exchange "unused" was not consumed`; got != want {
+		t.Fatalf("CheckContract() error = %q, want %q", got, want)
 	}
 }
 
@@ -286,6 +466,50 @@ func writeIssueJSON(t *testing.T, w http.ResponseWriter, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type httpClientFunc func(*http.Request) (*http.Response, error)
+
+func (f httpClientFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func fixtureHTTPResponse(status int, body []byte) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+}
+
+func fixtureReplayClient(t *testing.T, fixture Fixture) HTTPClient {
+	t.Helper()
+	exchanges := append([]Exchange(nil), fixture.Exchanges...)
+	return httpClientFunc(func(req *http.Request) (*http.Response, error) {
+		if len(exchanges) == 0 {
+			return nil, fmt.Errorf("unexpected request %s %s", req.Method, req.URL.RequestURI())
+		}
+		exchange := exchanges[0]
+		exchanges = exchanges[1:]
+		if req.Method != exchange.Method || req.URL.RequestURI() != exchange.Path {
+			return nil, fmt.Errorf(
+				"request = %s %s, want %s %s",
+				req.Method,
+				req.URL.RequestURI(),
+				exchange.Method,
+				exchange.Path,
+			)
+		}
+		headers := make(http.Header, len(exchange.Response.Headers))
+		for name, value := range exchange.Response.Headers {
+			headers.Set(name, value)
+		}
+		return &http.Response{
+			StatusCode: exchange.Response.Status,
+			Header:     headers,
+			Body:       io.NopCloser(bytes.NewReader(exchange.Response.Body)),
+		}, nil
+	})
 }
 
 func validFixture() Fixture {

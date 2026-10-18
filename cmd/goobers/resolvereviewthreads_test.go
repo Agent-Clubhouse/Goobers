@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -82,7 +83,7 @@ func assertAttributedReviewThreadReply(t *testing.T, threadID, body string) {
 }
 
 func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
-	rendered := renderReviewThreadReply("run-1", "sha", reviewThreadDisposition{ThreadID: "T1", Disposition: "addressed", Detail: "done"})
+	rendered := renderReviewThreadReply("run-1", "p1", "sha", reviewThreadDisposition{ThreadID: "T1", Disposition: "addressed", Detail: "done"})
 	attributed := rendered + "\n\n<!-- goobers:attribution v1 e30= -->\nPosted by **Goobers** | `goobers/pr-remediation`"
 	for _, tc := range []struct {
 		name     string
@@ -93,13 +94,17 @@ func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
 		{"CRLF-normalised reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "\n", "\r\n")}}, true},
 		{"reply on another thread", []providers.PullRequestInlineComment{{ThreadID: "T2", Body: attributed}}, false},
 		{"another run's reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "run-1", "run-0")}}, false},
-		{"marker quoted mid-line", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "see " + reviewThreadResponseMarker("run-1", "T1") + " above"}}, false},
+		{"marker quoted mid-line", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "see " + reviewThreadResponseMarker("run-1", "T1", "p1") + " above"}}, false},
+		// #6131: a reply to an earlier publication pass's feedback snapshot,
+		// or the snapshot-less marker, is not this pass's reply.
+		{"earlier pass's reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, ":T1:p1 -->", ":T1:p0 -->")}}, false},
+		{"snapshot-less marker", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: reviewThreadResponseMarker("run-1", "T1", "")}}, false},
 		{"reviewer comment only", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "finding"}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			snapshot := providers.PullRequestReviewThreads{InlineComments: tc.comments}
-			if got := reviewThreadHasReply(snapshot, "run-1", "T1"); got != tc.want {
-				t.Fatalf("reviewThreadHasReply = %v, want %v", got, tc.want)
+			if _, got := reviewThreadReplyID(snapshot, "run-1", "T1", "p1"); got != tc.want {
+				t.Fatalf("reviewThreadReplyID found = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -254,6 +259,20 @@ func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *
 	if result[unresolvedReviewThreadCountOutput] != "2" || result["publishedHeadSha"] != "published-sha" {
 		t.Fatalf("result = %v, want unresolved count 2 at published-sha", result)
 	}
+	// Goobers#7052: a successful run's outputs must not collide with the
+	// automated gate's reserved inputs, or pr-remediation's review-threads-gate
+	// fails the run.
+	for _, key := range []string{gate.InputKeyStatus, gate.InputKeyErrorCode, gate.InputKeyErrorMessage, gate.InputKeyErrorRetryable} {
+		if _, ok := result[key]; ok {
+			t.Errorf("result file emits reserved gate input key %q: %v", key, result)
+		}
+	}
+	if _, err := gate.AutomatedInputs(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: result}); err != nil {
+		t.Errorf("gate.AutomatedInputs rejects the result file: %v", err)
+	}
+	if result["resolutionStatus"] != apiv1.ReviewThreadPublicationComplete {
+		t.Errorf("resolutionStatus = %v, want %q", result["resolutionStatus"], apiv1.ReviewThreadPublicationComplete)
+	}
 	if !threads["PRRT_addressed"].resolved || threads["PRRT_obsolete"].resolved || threads["PRRT_blocked"].resolved {
 		t.Fatalf("thread resolution states = %+v", threads)
 	}
@@ -381,10 +400,18 @@ func TestResolveReviewThreadsRefusesWhenPublishedHeadMoved(t *testing.T) {
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
 	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
-	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	t.Chdir(dir)
 
-	if code, _, stderr := runArgs(t, "resolve-review-threads", root); code == 0 {
-		t.Fatalf("resolve-review-threads succeeded after head drift; stderr=%q", stderr)
+	// #6126/#6128: a head that moved off the published SHA ends the run as a
+	// typed stale-head no-work — nothing published, never a provider failure.
+	code, stdout, stderr := runArgs(t, "resolve-review-threads", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q; want a typed no-work", code, stdout, stderr)
+	}
+	result := readJSONResult(t, filepath.Join(dir, resolveReviewThreadsResultFile))
+	if result["noWork"] != true || result[staleInputOutput] != staleReasonHead || result["liveHeadSha"] != "advanced-sha" {
+		t.Fatalf("result = %v, want a stale-head no-work", result)
 	}
 	if reviewThreadsAccessed {
 		t.Fatal("review threads were accessed after head drift")

@@ -418,3 +418,88 @@ func connectorTestStorage(t *testing.T) (*memoryStorage, *ecdsa.PublicKey) {
 	}
 	return store, parsed.(*ecdsa.PublicKey)
 }
+
+func TestConnectorBackoffResetsAfterSuccessfulConnection(t *testing.T) {
+	store, _ := connectorTestStorage(t)
+	session := func(id string, last any) *fakeSocket {
+		return newFakeSocket(
+			Challenge{Type: messageTypeChallenge, ProtocolVersion: ProtocolVersion, FleetID: "fleet-1", ConnectionID: id, Nonce: "nonce"},
+			HelloAck{Type: messageTypeHelloAck, ConnectionID: id, HeartbeatSeconds: 30},
+			last,
+		)
+	}
+	dials := 0
+	connector := NewConnector(store, "root", "dev")
+	connector.Dial = func(context.Context, string, *websocket.DialOptions) (Socket, *http.Response, error) {
+		dials++
+		switch dials {
+		case 1:
+			return nil, nil, errors.New("outage")
+		case 2:
+			return session("c2", HeartbeatAck{Type: "bogus", ConnectionID: "other"}), nil, nil
+		case 3:
+			return nil, nil, errors.New("outage")
+		}
+		return session("c4", Revoke{Type: messageTypeRevoke, Reason: "done"}), nil, nil
+	}
+	var attempts []int
+	connector.Backoff = func(attempt int) time.Duration {
+		attempts = append(attempts, attempt)
+		return 0
+	}
+	connector.Wait = func(context.Context, time.Duration) error { return nil }
+	if err := connector.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []int{0, 0, 1}
+	if len(attempts) != len(want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	for i := range want {
+		if attempts[i] != want[i] {
+			t.Fatalf("attempts = %v, want %v", attempts, want)
+		}
+	}
+}
+
+func TestConnectorDefaultBackoff(t *testing.T) {
+	store, _ := connectorTestStorage(t)
+	c := NewConnector(store, "root", "dev")
+	c.Dial = func(context.Context, string, *websocket.DialOptions) (Socket, *http.Response, error) {
+		return nil, nil, errors.New("outage")
+	}
+	attempt := 0
+	c.Wait = func(_ context.Context, got time.Duration) error {
+		base := 30 * time.Second
+		if attempt < 5 {
+			base = time.Second << attempt
+		}
+		low, high := base*3/4, min(base*5/4, 30*time.Second)
+		if got < low || got > high {
+			t.Fatalf("backoff(%d) = %s, want [%s, %s]", attempt, got, low, high)
+		}
+		attempt++
+		if attempt == 66 {
+			return context.Canceled
+		}
+		return nil
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 66 {
+		t.Fatalf("waits = %d, want 66", attempt)
+	}
+}
+
+func TestConnectorDefaultWait(t *testing.T) {
+	c := &Connector{}
+	if err := c.wait(context.Background(), time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.wait(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait = %v, want context canceled", err)
+	}
+}

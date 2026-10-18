@@ -4,12 +4,12 @@ package telemetryclient
 // option (2) ruled on Goobers#3996 blocker 1 and built as Goobers#4001.
 //
 // What crosses the boundary is a FIXED, closed set of derived aggregates:
-// stage-failure-rate, gate-noise, credit-assignment, and a NORMALIZED,
-// REDACTED error-signature aggregate. What does not cross it, and is not
+// stage-failure-rate, gate-noise, credit-assignment, ci-check-failure, and a
+// NORMALIZED, REDACTED error-signature aggregate. What does not cross it, and is not
 // expressible in a request at all: the telemetry database, any raw rollup
 // row, any raw error message, any external-telemetry connector, any SQL, any
 // path, any projection name. The client names a gaggle, a bounded window,
-// which of the four families it wants, and bounded numeric thresholds; the
+// which of the admitted families it wants, and bounded numeric thresholds; the
 // DAEMON queries, filters, aggregates and redacts.
 //
 // The wire shapes here are restated rather than imported from the daemon's
@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,21 +33,31 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/planehttp"
 )
 
 // Aggregate names one admitted detection family.
 type Aggregate string
 
-// The four admitted aggregate families, and only these four. `all`,
-// `ci-check-failure`, `workflow-untriggered`, `stage-unreached` and
-// `learning-episode` are deliberately absent: the ruling enumerated four, so
-// four is what this admits, and asking for a fifth is refused rather than
+// The admitted aggregate families. The set is closed: #3996/#4001 enumerated
+// four (stage-failure-rate, error-signature, gate-noise, credit-assignment)
+// and #6707 widened it by exactly one, ci-check-failure, because the
+// `goobers/test-suite-quality` workflow now runs in a pod (DSL 3.0 `runsOn`)
+// and its first stage is `telemetry-query --aggregate ci-check-failure`.
+// Running workflows on the daemon host is being eliminated, so the plane has
+// to serve it. ci-check-failure is admitted because its answer is derived
+// counts keyed by check name plus run pointers, the same class of data the
+// other families return. `all`, `workflow-untriggered`, `stage-unreached` and
+// `learning-episode` remain absent, and asking for one is refused rather than
 // silently narrowed.
 const (
 	AggregateStageFailureRate Aggregate = "stage-failure-rate"
 	AggregateErrorSignature   Aggregate = "error-signature"
 	AggregateGateNoise        Aggregate = "gate-noise"
 	AggregateCreditAssignment Aggregate = "credit-assignment"
+	// AggregateCICheckFailure was admitted for #6707 (pod-placed
+	// test-suite-quality).
+	AggregateCICheckFailure Aggregate = "ci-check-failure"
 )
 
 // AdmittedAggregates returns the closed admitted set, in wire order.
@@ -56,6 +67,7 @@ func AdmittedAggregates() []Aggregate {
 		AggregateErrorSignature,
 		AggregateGateNoise,
 		AggregateCreditAssignment,
+		AggregateCICheckFailure,
 	}
 }
 
@@ -123,6 +135,9 @@ type Thresholds struct {
 	MaxFlaggedRuns         int     `json:"maxFlaggedRuns,omitempty"`
 	MinCreditRuns          int     `json:"minCreditRuns,omitempty"`
 	MinCreditFailureShare  float64 `json:"minCreditFailureShare,omitempty"`
+	// MinCICheckFailureRuns is the ci-check-failure knob (#6707): the number
+	// of distinct runs a CI check must fail in before it is flagged.
+	MinCICheckFailureRuns int `json:"minCICheckFailureRuns,omitempty"`
 }
 
 // DefectAggregateRequest is one bounded read.
@@ -137,8 +152,8 @@ type DefectAggregateRequest struct {
 	// Since is the inclusive lower bound. Required: an unbounded read is
 	// refused on both sides.
 	Since time.Time
-	// Aggregates is the requested subset of the admitted four. Empty means
-	// all four.
+	// Aggregates is the requested subset of the admitted families. Empty
+	// means every admitted family.
 	Aggregates []Aggregate
 	// Thresholds overrides the daemon's detection defaults, within bounds.
 	Thresholds Thresholds
@@ -240,6 +255,15 @@ type AttributionCohort struct {
 	RunCount             int                       `json:"runCount"`
 	TopContributingPaths []ContributingPath        `json:"topContributingPaths,omitempty"`
 	CounterEvidence      []AttributionEvidenceLink `json:"counterEvidence,omitempty"`
+	GroundTruth          *GroundTruthSummary       `json:"groundTruth,omitempty"`
+}
+
+// GroundTruthSummary counts a cohort's runs by their effective user-defined
+// ground-truth label.
+type GroundTruthSummary struct {
+	LabeledRunCount   int `json:"labeledRunCount"`
+	CorrectRunCount   int `json:"correctRunCount"`
+	IncorrectRunCount int `json:"incorrectRunCount"`
 }
 
 // FaultFinding is one evidence-backed failure signature and its likely owner.
@@ -260,21 +284,35 @@ type FaultFinding struct {
 	RecommendedOwner   string                    `json:"recommendedOwner"`
 	RecommendedAction  string                    `json:"recommendedAction"`
 	Verification       string                    `json:"verification"`
+	Fileable           bool                      `json:"fileable"`
+}
+
+// FilingThreshold is the minimum finding confidence the fault auditor treats
+// as fileable and where it came from (a published attribution eval, or the
+// default).
+type FilingThreshold struct {
+	Confidence        float64 `json:"confidence"`
+	NoneFileable      bool    `json:"noneFileable,omitempty"`
+	Source            string  `json:"source"`
+	CalibrationTarget string  `json:"calibrationTarget,omitempty"`
+	EvalSetVersion    string  `json:"evalSetVersion,omitempty"`
+	EvalSetDigest     string  `json:"evalSetDigest,omitempty"`
 }
 
 // FaultAuditReport groups fault findings by ownership boundary.
 type FaultAuditReport struct {
-	Schema              string         `json:"schema"`
-	Mode                string         `json:"mode"`
-	Since               time.Time      `json:"since"`
-	Until               time.Time      `json:"until"`
-	ObservationsScanned int            `json:"observationsScanned"`
-	ProductFindings     []FaultFinding `json:"productReliabilityFindings,omitempty"`
-	ExternalFindings    []FaultFinding `json:"externalFindings,omitempty"`
-	WorkflowFindings    []FaultFinding `json:"workflowFindings,omitempty"`
-	UnknownFindings     []FaultFinding `json:"mixedOrUnknownFindings,omitempty"`
-	Suppressed          int            `json:"suppressed"`
-	Truncated           bool           `json:"truncated,omitempty"`
+	Schema              string           `json:"schema"`
+	Mode                string           `json:"mode"`
+	Since               time.Time        `json:"since"`
+	Until               time.Time        `json:"until"`
+	ObservationsScanned int              `json:"observationsScanned"`
+	ProductFindings     []FaultFinding   `json:"productReliabilityFindings,omitempty"`
+	ExternalFindings    []FaultFinding   `json:"externalFindings,omitempty"`
+	WorkflowFindings    []FaultFinding   `json:"workflowFindings,omitempty"`
+	UnknownFindings     []FaultFinding   `json:"mixedOrUnknownFindings,omitempty"`
+	Suppressed          int              `json:"suppressed"`
+	Truncated           bool             `json:"truncated,omitempty"`
+	FilingThreshold     *FilingThreshold `json:"filingThreshold,omitempty"`
 }
 
 // DefectAggregateResponse is the plane's answer.
@@ -368,6 +406,7 @@ func ValidateThresholds(thresholds Thresholds) error {
 		{"minGateEvaluations", thresholds.MinGateEvaluations, MaxThresholdCount},
 		{"maxFlaggedRuns", thresholds.MaxFlaggedRuns, MaxFlaggedRuns},
 		{"minCreditRuns", thresholds.MinCreditRuns, MaxThresholdCount},
+		{"minCICheckFailureRuns", thresholds.MinCICheckFailureRuns, MaxThresholdCount},
 	}
 	for _, count := range counts {
 		if count.value < 0 || count.value > count.max {
@@ -456,6 +495,7 @@ func DefectAggregateQuery(req DefectAggregateRequest) (url.Values, error) {
 	setCount("maxFlaggedRuns", req.Thresholds.MaxFlaggedRuns)
 	setCount("minCreditRuns", req.Thresholds.MinCreditRuns)
 	setRate("minCreditFailureShare", req.Thresholds.MinCreditFailureShare)
+	setCount("minCICheckFailureRuns", req.Thresholds.MinCICheckFailureRuns)
 	return values, nil
 }
 
@@ -484,7 +524,7 @@ func ValidateScopeName(field, value string) error {
 	return nil
 }
 
-// DefectAggregates reads the four admitted aggregate families for this
+// DefectAggregates reads the admitted aggregate families for this
 // client's own gaggle.
 //
 // The gaggle is this client's, never the caller's: a request that names a
@@ -503,22 +543,22 @@ func (h *HTTP) DefectAggregates(ctx context.Context, req DefectAggregateRequest)
 	if err != nil {
 		return DefectAggregateResponse{}, err
 	}
-	target := h.cfg.BaseURL + apicontract.TelemetryDefectAggregatesPath + "?" + values.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: build request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	request.Header.Set("Accept", "application/json")
+	path := apicontract.TelemetryDefectAggregatesPath + "?" + values.Encode()
+	headers := make(http.Header)
+	headers.Set("Accept", "application/json")
 
-	// This aggregate derives four families over as much as a week of rollups.
+	// This aggregate derives its families over as much as a week of rollups.
 	// The ordinary 30-second plane budget has expired in live nomination runs.
 	// Copy the client so other telemetry reads keep their short bound, while
 	// the caller's context can still impose a shorter deadline.
 	client := *h.cfg.Client
 	client.Timeout = DefectAggregateTimeout
-	response, err := client.Do(request)
+	response, err := h.plane.WithHTTPClient(&client).DoRetrying(ctx, http.MethodGet, path, nil, headers, true)
 	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: build request: %w", requestErr.Err)
+		}
 		return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: read defect aggregates: %w", err)
 	}
 	defer func() {
@@ -532,7 +572,7 @@ func (h *HTTP) DefectAggregates(ctx context.Context, req DefectAggregateRequest)
 	// or broken endpoint must not be able to exhaust a stage pod's memory,
 	// and an answer at the ceiling is a refusal, not a truncated result the
 	// stage would act on.
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	raw, err := planehttp.ReadBounded(response.Body, maxResponseBytes+1)
 	if err != nil {
 		return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: read defect aggregates: %w", err)
 	}

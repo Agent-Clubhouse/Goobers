@@ -71,6 +71,12 @@ func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
 			"value": []map[string]string{{"name": "Active", "category": "InProgress"}},
 		})
 	})
+	// #5960 decision: health keeps the ChangedDate approximation on ADO and
+	// never pays an updates walk per ready item.
+	mux.HandleFunc("/acme/project/_apis/wit/workItems/42/updates", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("backlog-health walked ADO work item updates (%s); ready ages use System.ChangedDate", r.URL)
+		http.NotFound(w, r)
+	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 

@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -41,7 +42,7 @@ func adoNativeWorkItemLink(root string, repo providers.RepositoryRef, haveIssue 
 	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
 		return false
 	}
-	return !backlogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
+	return !providerconfig.BacklogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
 }
 
 // textOnlyADOWorkItemLink stands in for the native linker when native linking
@@ -125,6 +126,9 @@ func openPullRequestWithADOLink(
 	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
 		prReq.Body = textOnlyWorkItemLinkNote(prReq.Body, issueID)
 	}
+	if screen := publicationLeakScreenForRoot(root, nil); screen != nil {
+		screen(ctx, "pull-request", prReq.Title, prReq.Body)
+	}
 	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
 		if tutorHoldout != nil {
@@ -169,9 +173,11 @@ const openPRHelp = "Usage: goobers open-pr [--config-repo] [path]\n\n" +
 	"        # \"plan.prTitle\" would name an earlier stage explicitly.\n" +
 	"        title: prTitle\n\n" +
 	"Title precedence: an explicitly set non-empty title wins; otherwise the\n" +
-	"claimed item's title, recovered from the run journal (so it survives a\n" +
-	"resume or repass); otherwise the generic \"Automated implementation\". An\n" +
-	"empty value is not an override — every empty input falls back.\n\n" +
+	"claimed item's title, recovered from the run journal (or the journal\n" +
+	"plane in a stage pod, so it survives a resume, repass, or pod placement);\n" +
+	"otherwise the generic \"Automated implementation\" with a warning naming\n" +
+	"why no item title was available. An empty value is not an override — every\n" +
+	"empty input falls back.\n\n" +
 	"itemID explicitly identifies a selected backlog item when the workflow\n" +
 	"read it without claiming. If a claimed item also exists, the IDs must\n" +
 	"match. On ADO, native work-item linking separately uses the\n" +
@@ -203,44 +209,66 @@ const openPRHelp = "Usage: goobers open-pr [--config-repo] [path]\n\n" +
 	"rejects the PR author as a reviewer — that surfaces as the warning).\n\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
-func openPRIssue(root, runID string) (id, title string, ok bool, err error) {
-	id, title, ok = claimedIssueFromJournal(root, runID)
+func openPRIssueWithFallbackReason(root, runID string) (id, title string, ok bool, fallbackReason string, err error) {
+	id, title, ok, fallbackReason = claimedIssueFromJournal(root, runID)
 	explicitID := strings.TrimSpace(providerInput("itemID", ""))
 	explicitTitle := strings.TrimSpace(providerInput("itemTitle", ""))
 	if explicitID == "" {
 		if explicitTitle != "" && !ok {
-			return "", "", false, fmt.Errorf("open-pr input itemTitle requires itemID when the run has no claimed item")
+			return "", "", false, "", fmt.Errorf("open-pr input itemTitle requires itemID when the run has no claimed item")
 		}
 		if explicitTitle != "" {
 			title = explicitTitle
+			fallbackReason = ""
 		}
-		return id, title, ok, nil
+		return id, title, ok, fallbackReason, nil
 	}
 	if ok && id != explicitID {
-		return "", "", false, fmt.Errorf("open-pr input itemID %q conflicts with claimed item %q", explicitID, id)
+		return "", "", false, "", fmt.Errorf("open-pr input itemID %q conflicts with claimed item %q", explicitID, id)
 	}
 	id, ok = explicitID, true
 	if explicitTitle != "" {
 		title = explicitTitle
+		fallbackReason = ""
+	} else if title == "" {
+		if fallbackReason != "" {
+			fallbackReason = fmt.Sprintf("open-pr input itemID %q did not include itemTitle, and %s", explicitID, fallbackReason)
+		} else {
+			fallbackReason = fmt.Sprintf("open-pr input itemID %q did not include itemTitle", explicitID)
+		}
 	}
-	return id, title, ok, nil
+	return id, title, ok, fallbackReason, nil
 }
 
 // openPRTitle resolves the pull request title. In topology (b) a bare "#<n>"
 // in it (the issue title is the default) is rewritten to the backlog issue's
 // URL, because the title becomes the Azure DevOps squash-commit title, where
-// "#<n>" names ADO work item n; see crossProviderIssueText.
-func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issueID, issueTitle string, haveIssue bool, err error) {
-	issueID, issueTitle, haveIssue, err = openPRIssue(root, runID)
+// "#<n>" names ADO work item n; see crossProviderIssueText. When it falls
+// back to the generic title it warns on stderr naming why (#6566).
+func openPRTitle(root, runID string, repo providers.RepositoryRef, stderr io.Writer) (title, issueID, issueTitle string, haveIssue bool, err error) {
+	issueID, issueTitle, haveIssue, genericReason, err := openPRIssueWithFallbackReason(root, runID)
 	if err != nil {
 		return "", "", "", false, err
 	}
 	title = providerInput("title", "")
-	if title == "" && haveIssue {
+	if title != "" {
+		genericReason = ""
+	}
+	if title == "" && haveIssue && issueTitle != "" {
 		title = issueTitle
 	}
 	if title == "" {
 		title = "Automated implementation"
+		if genericReason == "" {
+			if haveIssue {
+				genericReason = "the selected backlog item has no title"
+			} else {
+				genericReason = "no claimed backlog item was found"
+			}
+		}
+	}
+	if genericReason != "" {
+		pf(stderr, "warning: using generic pull request title %q: %s\n", title, genericReason)
 	}
 	if haveIssue && issueID != "" {
 		title = crossProviderIssueText(title, issueID, prIssueReference(root, repo, issueID))
@@ -349,13 +377,23 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	head := providerInput("head", preferredOpenPRHead(root, runID, workflow))
 	base := providerInput("base", target.baseDefault)
 
+	var inspectedHead string
+	if err := inRepoDir(func() error {
+		var err error
+		inspectedHead, err = checkPublicationSafety(context.Background(), ".", base, "refs/heads/"+head)
+		return err
+	}); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
 	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell
 	// them apart and the issue<->PR breadcrumb the #30 runbook checks exists on
 	// both sides. Recovered from the run journal (resume-safe), so this holds on
 	// a repass too. Falls back to the generic title/body when the run claimed no
 	// issue (other workflows) or an explicit title/body input is set.
-	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID, repo)
+	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID, repo, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -395,47 +433,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Config write-boundary (#104/T4, wired here per #223). Opt-in and no-op by
-	// default, so implementation/work-nomination are unaffected. When the Tutor
-	// workflow sets confineToConfigRoot=true, every file this run's branch changes
-	// (relative to base) must be within the configured config root — else the
-	// cycle is aborted CLOSED before the PR is opened, so a self-improvement run
-	// can never open a PR touching platform code.
-	if providerInput("confineToConfigRoot", "") == "true" {
-		if err := inRepoDir(func() error { return confineDiffToConfigRoot(base, providerInput("configRoot", "")) }); err != nil {
-			pf(stderr, "error: config write-boundary: %v\n", err)
-			return 1
-		}
-	}
-
-	// Docs write-boundary (#1016). The docs-updater analog of the config
-	// boundary above: opt-in (confineToDocsRoots=true) and no-op by default, so
-	// every other workflow is unaffected. When set, every file this run's branch
-	// changes must be within at least one declared in-repo docs root (the
-	// ordered WorkflowSpec.docsRoots list, passed through as a comma/newline
-	// `docsRoots` input) — else the cycle aborts CLOSED before the PR opens, so a
-	// docs run can never open a PR touching code. An empty docsRoots list with
-	// the boundary enabled fails closed (configboundary.ErrNoDocsRoots), never
-	// silently allowing the whole tree.
-	if providerInput("confineToDocsRoots", "") == "true" {
-		if err := inRepoDir(func() error { return confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))) }); err != nil {
-			pf(stderr, "error: docs write-boundary: %v\n", err)
-			return 1
-		}
-	}
-
-	// Per-target-action-root write-boundary (TUT-A5/#1217). The Tutor's
-	// per-action-class boundary: opt-in (confineToActionRoots=true) and no-op
-	// by default. When set, every file this run's branch changes must resolve
-	// into the SAME single declared action root (the comma/newline
-	// `actionRoots` input, e.g. "reference-workflows,skills") — a skill-authoring action
-	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
-	// CLOSED before the PR opens (configboundary.ConfineExclusive).
-	if providerInput("confineToActionRoots", "") == "true" {
-		if err := inRepoDir(func() error { return confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))) }); err != nil {
-			pf(stderr, "error: action write-boundary: %v\n", err)
-			return 1
-		}
+	if err := checkOpenPRWriteBoundaries(inRepoDir, base); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 
 	var tutorHoldout *tutorHoldoutRecord
@@ -521,6 +521,19 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	branchReader, ok := stageProvider.(providers.BranchReconciliationProvider)
+	if !ok {
+		pf(stderr, "error: publication safety: provider cannot verify the remote branch\n")
+		return 1
+	}
+	remoteHead, found, err := branchReader.GetBranch(ctx, repo, head)
+	if err != nil || !found || remoteHead.SHA != inspectedHead {
+		pf(stderr, "error: publication safety: remote branch does not match the inspected commit; push the checked branch before opening its PR\n")
+		return 1
+	}
+
 	// Persist the mandatory finding before the external mutation. If the
 	// process crashes after GitHub accepts the PR, the prepared record still
 	// survives for a later exact-cohort verification pass. Repasses atomically
@@ -542,8 +555,6 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		prReq.RunID = runID
 	}
 
-	ctx, cancel := providerCommandContext()
-	defer cancel()
 	result, code := openPullRequestWithADOLink(ctx, provider, workItemLinker, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
 	if code != 0 {
 		return code
@@ -562,7 +573,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	extras := requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr)
 
-	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, extras); err != nil {
+	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, withOpenPRDraft(extras, result.Draft)); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -670,6 +681,20 @@ func writeOpenPRResult(resultFile string, opened bool, prNumber int, url string,
 	return nil
 }
 
+// withOpenPRDraft records the provider-reported draft state so status can show
+// the retained PR's draft state (#5313); unreported state stays absent.
+func withOpenPRDraft(extras map[string]string, draft *bool) map[string]string {
+	if draft == nil {
+		return extras
+	}
+	out := make(map[string]string, len(extras)+1)
+	for k, v := range extras {
+		out[k] = v
+	}
+	out["draft"] = strconv.FormatBool(*draft)
+	return out
+}
+
 // openPRReviewRequester is the optional provider surface open-pr uses to
 // request reviewers after the PR is open. Every shipped RepoProvider (GitHub,
 // Gitea, ADO) satisfies it.
@@ -715,4 +740,25 @@ func requestOpenPRReviewers(ctx context.Context, provider any, repo providers.Re
 		return map[string]string{"reviewersRequestError": err.Error()}
 	}
 	return map[string]string{"reviewersRequested": strings.Join(reviewers, ",")}
+}
+
+// checkOpenPRWriteBoundaries applies opt-in repository boundaries in the PR's
+// target checkout, including a separate config-repository target.
+func checkOpenPRWriteBoundaries(inRepoDir func(func() error) error, base string) error {
+	if providerInput("confineToConfigRoot", "") == "true" {
+		if err := inRepoDir(func() error { return confineDiffToConfigRoot(base, providerInput("configRoot", "")) }); err != nil {
+			return fmt.Errorf("config write-boundary: %w", err)
+		}
+	}
+	if providerInput("confineToDocsRoots", "") == "true" {
+		if err := inRepoDir(func() error { return confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))) }); err != nil {
+			return fmt.Errorf("docs write-boundary: %w", err)
+		}
+	}
+	if providerInput("confineToActionRoots", "") == "true" {
+		if err := inRepoDir(func() error { return confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))) }); err != nil {
+			return fmt.Errorf("action write-boundary: %w", err)
+		}
+	}
+	return nil
 }

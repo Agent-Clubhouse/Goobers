@@ -964,7 +964,7 @@ func TestPendingParallelDoesNotCrossTerminalResume(t *testing.T) {
 		{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)},
 		{Type: journal.EventRunResumed, Target: "collate"},
 	}
-	if par, _ := pendingParallel(terminalResume, machine); par != nil {
+	if par, _, _ := pendingParallel(terminalResume, machine); par != nil {
 		t.Fatalf("pending parallel = %+v, want nil after terminal resume", par)
 	}
 
@@ -974,7 +974,7 @@ func TestPendingParallelDoesNotCrossTerminalResume(t *testing.T) {
 		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
 		{Type: journal.EventStageRerunRequested, Stage: "review-security", Branch: 1},
 	}
-	if par, _ := pendingParallel(stageRerun, machine); par == nil {
+	if par, _, _ := pendingParallel(stageRerun, machine); par == nil {
 		t.Fatal("pending parallel is nil after a stage rerun reopened the branch")
 	}
 }
@@ -990,7 +990,7 @@ func TestPendingParallelReconstructsBranchStartedAtForTimeoutBudget(t *testing.T
 		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security",
 			Stage: "review-security", Time: startedAt},
 	}
-	par, _ := pendingParallel(events, machine)
+	par, _, _ := pendingParallel(events, machine)
 	if par == nil {
 		t.Fatal("pending parallel is nil")
 	}

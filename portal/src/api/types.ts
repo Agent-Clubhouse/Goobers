@@ -45,8 +45,10 @@ export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
-export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
-export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output";
+/** "map": a DSL 3.1 map runs one declared task once per item of a frozen roster. */
+export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel" | "map";
+/** "skipped": a selective parallel's frozen selection did not choose this optional branch; it never started. */
+export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output" | "skipped";
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
@@ -401,7 +403,7 @@ export interface Health extends ContractVersion {
   /** Present on daemons that report the local self-execution policy. */
   selfExecution?: { policy: string; observed: boolean; placements: number; refusals: number };
   definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
-  startup?: { phase: string; target?: string; since: string };
+  startup?: StartupStatus;
   build?: BuildMetadata;
   readState?: ReadState;
   ready: boolean;
@@ -415,6 +417,51 @@ export interface Health extends ContractVersion {
    */
   update?: UpdateAvailability;
   telemetryExporterHealth?: TelemetryExporterHealthStatus;
+}
+
+export interface StartupStatus {
+  phase: string;
+  target?: string;
+  since: string;
+  elapsedSeconds?: number;
+  worktreeCount?: number;
+  recoveryRunCount?: number;
+  accumulationCount?: number;
+  budgetSeconds?: number;
+  budgetUsedPercent?: number;
+  budgetState?: string;
+  blockingCandidate?: RecoveryCandidateStatus;
+}
+
+export interface RecoveryCandidateStatus {
+  progress: RecoveryProgress;
+  runId?: string;
+  gaggle?: string;
+  workflow?: string;
+  disposition?: string;
+  phase?: string;
+  operation?: string;
+  startedAt?: string;
+  lastProgressAt?: string;
+  elapsedSeconds?: number;
+  progressAgeSeconds?: number;
+}
+
+export interface RecoveryProgress {
+  total: number;
+  examined: number;
+  resumed: number;
+  reattached: number;
+  terminal: number;
+  skipped: number;
+}
+
+export interface InstanceReadiness extends ContractVersion {
+  computerName?: string;
+  instanceRoot: string;
+  rootIdentity?: Instance["rootIdentity"];
+  ready: boolean;
+  recovery: StartupStatus;
 }
 
 export interface UpdateAvailability {
@@ -494,6 +541,7 @@ export interface StorageHealthStatus {
   warningFloorPercent?: number;
   criticalFloorBytes?: number;
   criticalFloorPercent?: number;
+  criticalResumeBytes?: number;
   measuredAt?: string;
   error?: string;
 }
@@ -549,6 +597,43 @@ export interface RecoveryInventoryStatus {
   policySource?: string;
   error?: string;
   observedAt: string;
+  /**
+   * Oldest slot-holding snapshots of terminal runs, with the exact commands
+   * that inspect, restore or abandon each one. Only on warning/exhausted.
+   */
+  reclaimCandidates?: RecoveryReclaimCandidate[];
+  /** Every actionable snapshot; reclaimCandidates is its oldest prefix. */
+  reclaimCandidatesTotal?: number;
+  /** Retention setting stopping abandoned snapshots from being deleted. */
+  reclaimHold?: RecoveryReclaimHold;
+  /** Lists every retained snapshot per run. */
+  statusCommand?: string;
+}
+
+export interface RecoveryReclaimCandidate {
+  runId: string;
+  phase: string;
+  ref: string;
+  patchDigest: string;
+  repositoryKey: string;
+  createdAt: string;
+  retainUntil: string;
+  /** Already abandoned; waiting for a retention pass to delete it. */
+  abandoned?: boolean;
+  inspectCommand: string;
+  /** Absent once the retention deadline has passed: restore refuses it. */
+  restoreCommand?: string;
+  /** Absent once abandoned. */
+  abandonCommand?: string;
+}
+
+export interface RecoveryReclaimHold {
+  reason: "disabled" | "dry-run" | "grace";
+  /** End of the first-enable grace window, when it has started. */
+  until?: string;
+  /** instance.yaml change that releases the hold. */
+  setting: string;
+  configFile?: string;
 }
 
 export interface TelemetryRetentionStatus {
@@ -623,6 +708,8 @@ export interface WorkflowSafetyDetails {
 export interface RepoRef {
   provider: Provider;
   owner: string;
+  /** Azure DevOps project; omitted for GitHub and Gitea. */
+  project?: string;
   name: string;
   branch?: string;
   connectionRef?: string;
@@ -763,7 +850,7 @@ export interface WorkflowSummary {
   owners: GooberReference[];
   stageCount: number;
   definition: WorkflowDefinition;
-  backprop?: { enabled: boolean; version?: string };
+  backprop?: { enabled: boolean; mode?: "off" | "shadow" | "active"; version?: string };
   warnings: ValidationWarning[];
 }
 
@@ -994,8 +1081,20 @@ export interface LineageRun {
   phase?: RunPhase;
 }
 
+/** One run blocker with when its evidence was observed (#5404). `message` matches the potentialBlockers entry. */
+export interface OperatorBlocker {
+  code: string;
+  source: string;
+  message: string;
+  /** Absent when the observed time is unknown. */
+  observedAt?: string;
+  ageMillis?: number;
+}
+
 export interface OperatorRunSummary {
-  issue?: { number: string; title?: string };
+  issue?: { number: string; title?: string; url?: string; labels?: string[] };
+  /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
+  displayTitle?: string;
   currentStage?: string;
   lastHeartbeatAt?: string;
   heartbeatAgeMillis?: number;
@@ -1013,11 +1112,94 @@ export interface OperatorRunSummary {
   nextTransition?: string;
   /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** potentialBlockers with provenance and age, one per source and code, with cleared conditions removed (#5404); absent on older daemons. */
+  blockers?: OperatorBlocker[];
   /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
   diagnosticsLimitations?: string[];
+  /** Implementation reliability projection (#5313); absent on older daemons. */
+  reliability?: RunReliability;
+}
+
+/** A retry target's consumed/remaining count; null counts are unknown, never zero. */
+export interface ReliabilityBudget {
+  kind: string;
+  consumed: number | null;
+  remaining: number | null;
+  evidence: "journal" | "pinnedDefinition" | "terminalCause" | "unknown";
+}
+
+/** Implementation reliability state; missing evidence is reported as "unknown". */
+export interface RunReliability {
+  state: string;
+  currentStage?: string;
+  currentAttempt?: number;
+  failure: { classification: string; evidenceRule: string; code?: string };
+  budgets: ReliabilityBudget[];
+  latestVerdict: string;
+  acceptance: { state: string; digest?: string };
+  retained: {
+    branch?: string;
+    branchSha?: string;
+    pullRequest?: { provider: string; kind: string; id: string; url?: string };
+    /** "draft" or "ready" when reported by the opening stage, otherwise "unknown". */
+    pullRequestDraft?: string;
+    recoveryRunId?: string;
+  };
+  nextAction: string;
+  humanInterventionReason?: string;
+}
+
+export interface ChildPublicationItem {
+  action: "branch" | "pr";
+  state: "prepared" | "effect_pending" | "confirmed";
+  head: string;
+  base: string;
+  commit: string;
+  pullRequestUrl: string;
+  pullRequestNumber: number;
+  needsHuman: boolean;
+}
+
+export interface ChildPublicationHistory {
+  status: "recorded" | "unavailable" | "expired";
+  items: ChildPublicationItem[];
+}
+
+export interface ChildHistoryItem {
+  childId: string;
+  runId: string;
+  stageOccurrence: string;
+  invocationKey: string;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  acceptedAt: string;
+  updatedAt: string;
+  terminalAt?: string;
+  acknowledgedAt?: string;
+  expiredAt?: string;
+  cancellationRequested: boolean;
+  publication?: ChildPublicationHistory;
+}
+
+export interface ChildHistoryPage {
+  runId: string;
+  gaggle: string;
+  status: "recorded" | "unavailable";
+  observedAt: string;
+  items: ChildHistoryItem[];
+  nextCursor: string;
+  readState?: ReadState;
+}
+
+export interface ChildActivity {
+  status: "recorded" | "unavailable";
+  parent?: { runId: string; workflow: string; stageOccurrence: string };
+  waits: Array<{ runId: string; stage: string; branch: number; action: "wait" | "merge" | "replace" | "discard"; since: string; sequence: number }>;
+  parked: boolean;
 }
 
 export interface RunDetail extends RunSummary {
+  /** Durable journal projection; absent on older daemons or without child activity. */
+  childActivity?: ChildActivity;
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
   agentProgress?: AgentProgressSummary[];
@@ -1173,6 +1355,8 @@ export type KnownRunEventType =
   | "daemon.dirty_restart"
   | "parallel.started"
   | "parallel.finished"
+  | "map.started"
+  | "map.finished"
   | "branch.started"
   | "branch.finished"
   | "agent.lifecycle"
@@ -1254,23 +1438,54 @@ export interface RunEvent {
   workflow?: string;
   runId?: string;
   reason?: string;
-  /** The parallel state this event concerns; set on parallel.started/finished and branch.started/finished. */
+  /** The fan-out state this event concerns: the parallel on parallel.*, the map on map.*, and the owning parallel or map on branch.*. */
   parallel?: string;
-  /** The declared branch name; set on branch.started/branch.finished. */
+  /** The declared branch name, or a map item's roster identity; set on branch.started/branch.finished. */
   branchName?: string;
   /** The branch's terminal status; set on branch.finished. */
   branchStatus?: BranchStatus;
-  /** The branch completeness record; set on parallel.finished, one entry per declared branch. */
+  /** The branch completeness record; set on parallel.started/finished (one entry per declared branch, skipped branches included) and map.finished (one entry per roster item). */
   completeness?: BranchOutcome[];
+  /** The roster identity of the map item a branch.started/branch.finished concerns. */
+  mapItemIdentity?: string;
+  /** The canonical digest of the map item a branch.started/branch.finished concerns. */
+  mapItemDigest?: string;
+  /** The frozen roster summary on map.started. */
+  mapRoster?: MapRosterSummary;
   raw?: JsonValue;
 }
 
-/** One entry in a parallel's completeness record (one per declared branch). */
+/** One entry in a parallel's completeness record (one per declared branch) or a map's (one per roster item). */
 export interface BranchOutcome {
   branch: number;
   name: string;
   status: BranchStatus;
   artifacts: number;
+  /** Selective parallels only: the selection's reason for a selected branch, or why a skipped branch did not run. */
+  reason?: string;
+  /** Maps only: the roster item's identity. */
+  mapItemIdentity?: string;
+  /** Maps only: the roster item's canonical digest. */
+  mapItemDigest?: string;
+}
+
+/** A map visit's frozen roster: its source and each item's identity and digest, in branch order. Item values stay in the journal. */
+export interface MapRosterSummary {
+  sourceTask: string;
+  sourceSlot: string;
+  sourceDigest: string;
+  integrity: string;
+  failurePolicy: string;
+  itemTimeoutSeconds?: number;
+  maxConcurrent: number;
+  items: MapItemSummary[];
+}
+
+/** One frozen roster item; item i runs as branch i. */
+export interface MapItemSummary {
+  branch: number;
+  identity: string;
+  digest: string;
 }
 
 export interface ExternalRef {
@@ -1438,6 +1653,8 @@ export interface TelemetryCostRunAggregate {
   runId: string;
   gaggle?: string;
   workflow?: string;
+  triggerKind?: string;
+  triggerRef?: string;
   status?: string;
   startedAt: string;
   usageAttempts: number;
@@ -1511,6 +1728,35 @@ export interface TelemetryStatsResult {
   readyPool: TelemetryReadyPool;
   trend?: TelemetryTrendBucket[];
   trendPrevious?: TelemetryTrendBucket;
+  /** The instance's published Backprop attribution accuracy eval, when one exists. */
+  attributionEval?: AttributionEvalSummary;
+}
+
+export interface AttributionEvalSummary {
+  schema: string;
+  evalSetVersion: string;
+  evalSetDigest: string;
+  caseCount: number;
+  unattributed: number;
+  accuracy: {
+    granularity: string;
+    correct: number;
+    total: number;
+    accuracy: number;
+  }[];
+  calibration: {
+    target: string;
+    brierScore: number;
+    expectedCalibrationError: number;
+    bins: {
+      lower: number;
+      upper: number;
+      count: number;
+      correct: number;
+      meanConfidence: number;
+      accuracy: number;
+    }[];
+  };
 }
 
 export interface GraphAnalytics {
@@ -1670,10 +1916,20 @@ export interface TelemetryStageStats {
   costSamples: number;
   p50CostAIC?: number;
   p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p95CostUSD?: number;
   retryWasteAttempts: number;
+  /** Superseded attempts with usage; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteTokenSamples?: number;
+  /** Superseded attempts with cost; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteCostSamples?: number;
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  retryWasteCostUSD?: number;
   // How many of totalAttempts belong to a run that hung and was later
   // aborted (the watchdog's max-duration expiry), excluded from
   // avg/min/maxDurationMs and from p50/p95DurationMs — disclosed rather than
@@ -1698,9 +1954,21 @@ export interface TelemetryUsageStats {
   costAIC?: number;
   p50CostAIC?: number;
   p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  costUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p95CostUSD?: number;
   retryWasteAttempts: number;
+  /** Superseded attempts with usage; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteTokenSamples?: number;
+  /** Superseded attempts with cost; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteCostSamples?: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  retryWasteCostUSD?: number;
 }
 
 export interface TelemetryModelStats {
@@ -1714,6 +1982,8 @@ export interface TelemetryModelStats {
   copilotPremiumRequests?: number;
   costSamples: number;
   costAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  costUSD?: number;
 }
 
 export interface TelemetryErrorSignaturesOptions extends TelemetryStatsOptions {
@@ -1792,6 +2062,7 @@ export interface PortalConfig {
   brand: PortalBrand;
   theme: PortalTheme;
   support: PortalSupport;
+  connectionLocality: "local" | "remote" | "unknown";
   capabilities: {
     revealRun: boolean;
     workflowEnable: boolean;
@@ -1804,6 +2075,7 @@ export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 export interface WorkItemListOptions {
   provider?: string;
   kind?: WorkItemKind;
+  gaggle?: string;
   limit?: number;
 }
 
@@ -1854,6 +2126,8 @@ export interface WorkItemDetail {
 
 export interface WorkItemCost {
   nanoAIU?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to nano-AIU by the HTTP client. */
+  costUSD?: number;
   totalRuns: number;
   measuredRuns: number;
   totalAttempts: number;
@@ -1875,6 +2149,7 @@ export interface DaemonClient {
     options?: RequestOptions,
   ): Promise<DaemonEventStream>;
   getHealth(options?: RequestOptions): Promise<Health>;
+  getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness>;
   getInstance(options?: RequestOptions): Promise<Instance>;
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig>;
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;
@@ -1885,6 +2160,7 @@ export interface DaemonClient {
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
   listStageAttempts(runId: string, stage: string, options?: RequestOptions): Promise<AttemptList>;
@@ -1950,4 +2226,72 @@ export interface ReadState {
 /** Every read response carries one, when served from the read model. */
 export interface WithReadState {
   readState?: ReadState;
+}
+
+/** Stage-grant-only child operations. Human session credentials do not authorize these. */
+export interface ChildWorkflowSourceRequest {
+  source: string;
+}
+
+export interface ChildWorkflowStatusRequest {
+  invocationKey: string;
+}
+
+export interface ChildWorkflowResolveRequest {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  expectedRequestDigest?: string;
+}
+
+export interface ChildWorkflowResolutionResponse {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  requestedAt: string;
+  requestDigest: string;
+  planPublished: boolean;
+  applied: boolean;
+  appliedAt?: string;
+}
+
+export interface ChildWorkflowDiagnostic {
+  code: string;
+  stage?: string;
+  field?: string;
+  message: string;
+}
+
+export interface ChildWorkflowValidationResponse {
+  valid: boolean;
+  advisory: boolean;
+  sourceDigest?: string;
+  canonicalDigest?: string;
+  configDigest?: string;
+  policyDigest?: string;
+  workflowDigest?: string;
+  diagnostics: readonly ChildWorkflowDiagnostic[];
+}
+
+/** Acceptance reports custody, not that execution has begun. */
+export interface ChildWorkflowResponse {
+  acknowledged: boolean;
+  childId: string;
+  acceptanceId: string;
+  runId: string;
+  invocationKey: string;
+  sequence: number;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  duplicate?: boolean;
+  sourceDigest: string;
+  canonicalDigest: string;
+  configDigest: string;
+  policyDigest: string;
+  workflowDigest: string;
+  cancellationRequested: boolean;
+  resultRef?: string;
+  workspaceRef?: string;
+  disposition?: ChildWorkflowResolutionResponse;
+  acceptedAt: string;
+  updatedAt: string;
 }

@@ -30,25 +30,25 @@ import (
 // own --help, confirmed by a live invocation while building this adapter.
 const defaultPromptFlag = "-p"
 
-// copilotPromptArg binds the prompt to its flag in ONE argv element
-// (`-p=<text>`) rather than passing them as two.
+// copilotPromptArg binds the prompt flag's value to the flag in ONE argv
+// element (`-p=<value>`) rather than passing them as two. Adapter invocations
+// always bind an EMPTY value (`-p=`): the flag selects non-interactive mode and
+// the CLI then reads the prompt from stdin (#6871), so no prompt content ever
+// reaches argv. MEASURED against Copilot CLI 1.0.95: `-p=` with the prompt on
+// stdin runs that prompt and exits 0.
 //
-// Every goober body starts with YAML frontmatter, so the rendered prompt
-// begins with "---". Passed as a separate argument the CLI reads that as
-// options, not as the flag's value, and refuses the whole invocation:
+// The bound form matters for any non-empty value. Every goober body starts with
+// YAML frontmatter, so a rendered prompt begins with "---". Passed as a
+// separate argument the CLI reads that as options, not as the flag's value,
+// and refuses the whole invocation:
 //
 //	error: Invalid command format.
 //	It looks like your prompt was not quoted, so the extra words were
 //	treated as separate arguments.
 //
 // exit 1, before the model is ever reached. MEASURED against Copilot CLI
-// 1.0.85: a prompt beginning with "---" fails as two arguments and succeeds
-// as `-p=<text>`; an otherwise identical prompt without the leading "---"
-// succeeds either way. On the goobernetes cluster this failed EVERY
-// implementation run's implement stage (#5197).
-//
-// The = form is not a workaround for one leading token: it is the only shape
-// in which no prompt content can be reinterpreted as flags.
+// 1.0.85 (#5197). The = form is the only shape in which no value can be
+// reinterpreted as flags.
 func copilotPromptArg(flag, prompt string) string {
 	return flag + "=" + prompt
 }
@@ -748,7 +748,10 @@ func (c *CopilotAdapter) copilotAuthProbeError(ctx context.Context, probe string
 	err := copilotAuthProbeError(ctx, probe, result, runErr, launcherProbe)
 	// A timeout or cancellation says nothing about flag compatibility, so
 	// only a probe the CLI actually rejected names the configured args.
-	if len(c.AuthProbeExtraArgs) == 0 || errors.Is(err, ErrTimeout) || errors.Is(err, ErrCanceled) {
+	// A provider that could not answer says nothing about flag compatibility
+	// either.
+	if len(c.AuthProbeExtraArgs) == 0 || errors.Is(err, ErrTimeout) || errors.Is(err, ErrCanceled) ||
+		errors.Is(err, credentials.ErrTransientProvider) {
 		return err
 	}
 	return fmt.Errorf(
@@ -764,6 +767,15 @@ func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResu
 		return preflightProbeError(probe, result, errors.Join(ErrTimeout, context.DeadlineExceeded), "")
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return preflightProbeError(probe, result, errors.Join(ErrCanceled, context.Canceled), "")
+	}
+	// Checked before the credential markers below: the CLI reports a
+	// rate-limited provider as "Failed to fetch PAT user login (403): ... API
+	// rate limit exceeded", which carries "login" and "403" and was reported
+	// as a missing sign-in (#6017).
+	if err := transientProbeFailure(probe, result, runErr); err != nil {
+		return err
+	}
+	switch {
 	case launcherProbe && copilotLauncherAuthProbeLooksTransient(ctx, result, runErr):
 		return preflightProbeError(probe, result, runErr, "a forwarding launcher failed before completing its lightweight authentication check; inspect the launcher/session bootstrap diagnostics")
 	default:
@@ -982,6 +994,43 @@ func copilotDeclaresTool(declared []string, target string) bool {
 	return false
 }
 
+// copilotGitHubMCPRegistrationArg chooses how the built-in GitHub MCP server
+// registers its tool catalog for a session that declares the github group.
+//
+// `--add-github-mcp-toolset=issues` registers only the CLI's read-only issue
+// subset: issue_write and add_issue_comment stay listed in --available-tools
+// but are never reachable, so a stage granted github:issues:write analyzes,
+// then cannot file anything (#5552). MEASURED against Copilot CLI 1.0.93:
+// neither the issues toolset nor per-tool --add-github-mcp-tool registration
+// exposes the write tools; only --enable-all-github-mcp-tools does. The
+// --available-tools allowlist still scopes the model-visible set, so the full
+// catalog is registered only when the invocation holds a GitHub write
+// capability the github group serves; read-only invocations keep the subset.
+// The SDK-controlled session applies the same decision through
+// copilotGitHubMCPToolConfig.
+func copilotGitHubMCPRegistrationArg(capabilities []string) string {
+	if copilotGitHubNeedsFullCatalog(capabilities) {
+		return "--enable-all-github-mcp-tools"
+	}
+	return "--add-github-mcp-toolset=issues"
+}
+
+// copilotGitHubNeedsFullCatalog reports whether the invocation holds a GitHub
+// write capability served by the github tool group.
+func copilotGitHubNeedsFullCatalog(capabilities []string) bool {
+	for _, req := range capabilityToolRequirements {
+		if req.group != "github" || strings.HasSuffix(req.capability, ":read") {
+			continue
+		}
+		for _, capability := range capabilities {
+			if strings.EqualFold(strings.TrimSpace(capability), req.capability) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func copilotConstraintConflict(args []string) string {
 	for _, arg := range args {
 		if arg == "--available-tools" || strings.HasPrefix(arg, "--available-tools=") ||
@@ -1086,22 +1135,20 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	baseCommand := resolveHarnessCommand(c.Command)
+	// #6871: the prompt travels on stdin, never in argv, so its size is not
+	// bounded by CreateProcess (32,767), cmd.exe (8,191) or ARG_MAX. The
+	// command resolves as a stdio client because npm's PowerShell shim
+	// buffers and re-encodes stdin through $input.
+	baseCommand := resolveStdioHarnessCommand(c.Command)
 	if completionInResponse {
 		configuredArgs := append(append([]string(nil), baseCommand[1:]...), extra...)
 		if conflict := copilotConstraintConflict(configuredArgs); conflict != "" {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: tool-constrained run conflicts with configured argument %q", conflict)
 		}
 	}
-	var promptStdin []byte
+	promptStdin := []byte(prompt)
 	promptArg := len(baseCommand)
-	argv := append(baseCommand, copilotPromptArg(flag, prompt))
-	if shouldUseCopilotPromptStdin(c.Command, prompt) {
-		baseCommand = resolveStdioHarnessCommand(c.Command)
-		argv = append(append([]string(nil), baseCommand...), copilotPromptArg(flag, ""))
-		promptArg = -1
-		promptStdin = []byte(prompt)
-	}
+	argv := append(baseCommand, copilotPromptArg(flag, ""))
 	if resolution.Model != "" {
 		argv = append(argv, "--model", resolution.Model)
 	}
@@ -1115,7 +1162,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	argv = withCopilotNoRemoteExport(argv)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
-			argv = append(argv, "--add-github-mcp-toolset=issues")
+			argv = append(argv, copilotGitHubMCPRegistrationArg(req.Envelope.Capabilities))
 		}
 		argv = append(argv,
 			"--available-tools="+strings.Join(copilotAvailableTools(req), ","),
@@ -1142,9 +1189,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return Outcome{}, err
 	}
 	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
-	// into the workspace so the sandbox policy needs no writable root beyond
-	// the worktree (plus its narrowed linked git directories) — the exact recipe the
-	// sandbox package's live Copilot probe codified (ADR-0001). The overrides
+	// into the workspace, with the exception of raw debug logs, which get an
+	// invocation-private external directory and a narrow writable grant below.
+	// The remaining runtime state follows ADR-0001. The overrides
 	// happen before the session-id block below so the native transcript path
 	// derives from the confined COPILOT_HOME.
 	var confinement *copilotConfinement
@@ -1176,15 +1223,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
 		// invocation runs inside the sandbox. promptArg shifts by the wrapper
-		// prefix so the contract-recovery turn below still swaps the prompt.
+		// prefix so a controlled session still drops the prompt-mode flag.
 		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
 		}
 		argv = wrapped
-		if promptArg >= 0 {
-			promptArg += shift
-		}
+		promptArg += shift
 	}
 
 	// #2962: record the CLI version and the effective tool/permission
@@ -1213,7 +1258,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
-	runner, closeControlledSession := c.prepareCopilotProcessRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
+	runner, closeControlledSession := c.prepareRequiredMCPRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
 	defer closeControlledSession()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -1255,8 +1300,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			invalidCompletionPayload = append([]byte(nil), payload...)
 		}
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
-			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv, promptArg, flag,
-			promptStdin, completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
 		)
 	}
 	out = Outcome{
@@ -1301,9 +1346,6 @@ func runCopilotCompletionRepair(
 	payload []byte,
 	argv, env []string,
 	refreshEnv func(context.Context, []string, RunRequest) ([]string, error),
-	promptArg int,
-	flag string,
-	promptStdin []byte,
 	completionInResponse bool,
 	nativeTranscriptPath string,
 	started time.Time,
@@ -1344,15 +1386,9 @@ func runCopilotCompletionRepair(
 		recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 		recoveryStdout = recoveryCapture
 	}
-	recoveryStdin := promptStdin
-	if promptArg >= 0 {
-		recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
-	} else {
-		recoveryStdin = []byte(recoveryPrompt)
-	}
 	recoveryReq := ProcessRequest{
 		Command:                      recoveryArgv,
-		Stdin:                        recoveryStdin,
+		Stdin:                        []byte(recoveryPrompt),
 		Dir:                          req.Workspace,
 		Env:                          env,
 		Timeout:                      remaining,

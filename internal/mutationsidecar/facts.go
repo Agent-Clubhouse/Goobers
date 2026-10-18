@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -25,6 +26,8 @@ type Fact struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // ParseRecoveryFacts is all-or-nothing: a cleanup handoff cannot discard a
@@ -55,6 +58,11 @@ func ParseRecoveryFacts(data []byte) ([]Fact, error) {
 		}
 		if fact.Provider == "" || fact.Kind == "" || fact.ID == "" {
 			return nil, fmt.Errorf("mutation sidecar line %d lacks provider, kind, or id", i+1)
+		}
+		if fact.SemanticMutation != nil {
+			if err := fact.SemanticMutation.Validate(); err != nil {
+				return nil, fmt.Errorf("mutation sidecar line %d: %w", i+1, err)
+			}
 		}
 		facts = append(facts, fact)
 	}

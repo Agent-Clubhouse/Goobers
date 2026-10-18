@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,8 +30,8 @@ func TestSelectIssueRecoveryUsesNewestUnexpiredTerminalMatch(t *testing.T) {
 	if err != nil || got.RecordPath != want {
 		t.Fatalf("selection: %+v %v, want %s", got, err, want)
 	}
-	if _, err := selectIssueRecovery(context.Background(), layout, repo.CanonicalKey(), "unknown", now); err == nil {
-		t.Fatal("missing issue received a snapshot")
+	if _, err := selectIssueRecovery(context.Background(), layout, repo.CanonicalKey(), "unknown", now); !errors.Is(err, recovery.ErrNoMatchingSnapshot) {
+		t.Fatalf("missing issue error = %v, want ErrNoMatchingSnapshot", err)
 	}
 	seedRecoverySelection(t, layout, repo, "same-time", "7", now.Add(-time.Hour), now.Add(time.Hour), true)
 	if _, err := selectIssueRecovery(context.Background(), layout, repo.CanonicalKey(), "7", now); err == nil {

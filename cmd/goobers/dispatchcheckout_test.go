@@ -127,6 +127,9 @@ func TestCheckoutClonesRepoWorkspaceOntoTheRunBranch(t *testing.T) {
 	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
+	if strings.Contains(errOut.String(), "Remote branch") || strings.Contains(errOut.String(), "not found in upstream origin") {
+		t.Fatalf("missing run-branch fallback leaked git's expected clone miss to stderr:\n%s", errOut.String())
+	}
 
 	if _, err := os.Stat(filepath.Join(ws, "README.md")); err != nil {
 		t.Fatalf("repo content missing after checkout: %v", err)
@@ -395,10 +398,10 @@ func TestCheckoutRefusesAReboundBranchThatDoesNotExist(t *testing.T) {
 	}
 }
 
-// The refusal must not INVENT the cause. `clone --branch <b>` fails for a
-// missing branch and equally for a bad credential, an unreachable host, or a
-// repository that is gone; the refusal is right in all of them, but the error
-// it surrenders is the record that outlives the pod, so it has to say what git
+// The refusal must not INVENT the cause. The quiet branch probe distinguishes
+// a missing branch from a bad credential, an unreachable host, or a repository
+// that is gone; the refusal is right in all of them, but the error it
+// surrenders is the record that outlives the pod, so it has to say what git
 // said rather than assert absence it never checked.
 //
 // This drives the failure with an unreachable remote — the branch question is

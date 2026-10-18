@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,12 +19,52 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+const recoveryResumeResultFile = "recovery-resume.json"
+
+type recoveryResumeResult struct {
+	Resumed        bool   `json:"resumed"`
+	ResumeStatus   string `json:"resumeStatus"`
+	ResumedFromRun string `json:"resumedFromRun,omitempty"`
+	RestoredCommit string `json:"restoredCommit,omitempty"`
+	// SkippedRun names a retained run whose work no longer applies to current
+	// main; the claim starts fresh and that state stays available to
+	// recovery-restore.
+	SkippedRun string `json:"skippedRun,omitempty"`
+	// Provenance binds a resumed or skipped outcome to the exact retained
+	// snapshot (ref, base, head, patch digest), not just its source run.
+	*recovery.Provenance
+	// SourceRun reports the source run's workflow, terminal phase, and latest
+	// run.finished sequence, read from its idle journal; omitted when unknown.
+	*recovery.SourceRun
+}
+
+// recoveryResumeSource is the retained record a resume consumed and the
+// terminal journal evidence of the run that produced it.
+type recoveryResumeSource struct {
+	record recovery.Record
+	run    recovery.SourceRun
+}
+
+func (s recoveryResumeSource) sourceRun() *recovery.SourceRun {
+	if s.record.RunID == "" || !s.run.Known() {
+		return nil
+	}
+	run := s.run
+	return &run
+}
+
 const recoveryResumeHelp = "Usage: goobers recovery-resume [instance]\n\n" +
 	"Restore the current run's single claimed issue onto freshly fetched main,\n" +
-	"then fast-forward its clean receiving worktree to the restored commit.\n" +
+	"then fast-forward its clean receiving worktree to the restored commit. A\n" +
+	"claim with no retained checkpoint succeeds without changing the branch.\n" +
 	"Requires workflow run context and repository credentials. Refuses another\n" +
-	"branch, changed or dirty work, and expired claims. Verified retries resume\n" +
-	"the prepared result; completed adoption removes its preparation branch.\n" +
+	"branch, changed or dirty work, and expired claims. Retained work whose base\n" +
+	"diverged or whose patch conflicts is skipped, and the claim starts fresh.\n" +
+	"Verified retries resume the prepared result; completed adoption removes its\n" +
+	"preparation branch. Writes recovery-resume.json with resume status and\n" +
+	"source-run provenance (recovery ref, base and snapshot commits, patch\n" +
+	"digest, workflow, terminal phase and run.finished sequence) for the run\n" +
+	"journal.\n" +
 	"Does not push, open a PR, release the claim, or remove retained state.\n"
 
 func runRecoveryResume(args []string, stdout, stderr io.Writer) int {
@@ -43,68 +85,109 @@ func runRecoveryResume(args []string, stdout, stderr io.Writer) int {
 		defer stopTelemetry()
 	}
 	registry, scrubber := journal.DefaultScrubber()
-	commit, err := resumeClaimedRecovery(ctx, instance.NewLayout(root), registry)
+	commit, source, err := resumeClaimedRecovery(ctx, instance.NewLayout(root), registry)
+	result, message, err := recoveryResumeOutcome(commit, source, err)
 	if err != nil {
 		pf(stderr, "error: %s\n", scrubber.Scrub([]byte(err.Error())))
 		return 1
 	}
-	pf(stdout, "adopted retained implementation at %s\n", commit)
+	if err := writeRecoveryResumeResult(result); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "%s\n", scrubber.Scrub([]byte(message)))
 	return 0
 }
 
-func resumeClaimedRecovery(ctx context.Context, layout instance.Layout, registry *journal.RegistryScrubber) (string, error) {
+// recoveryResumeOutcome classifies a resume attempt. No retained work, or
+// retained work that no longer applies to current main, is the ordinary fresh
+// path: failing the stage would fail every re-claim of the issue until the
+// retention deadline. Every other error stays fail-closed.
+func recoveryResumeOutcome(commit string, source recoveryResumeSource, err error) (recoveryResumeResult, string, error) {
+	sourceRun := source.record.RunID
+	switch {
+	case errors.Is(err, recovery.ErrNoMatchingSnapshot):
+		return recoveryResumeResult{ResumeStatus: "fresh"},
+			"no recoverable implementation matched this claim; starting fresh", nil
+	case errors.Is(err, recovery.ErrIncompatibleSnapshot):
+		return recoveryResumeResult{ResumeStatus: "incompatible", SkippedRun: sourceRun, Provenance: source.record.Provenance(), SourceRun: source.sourceRun()},
+			fmt.Sprintf("retained implementation from run %s does not apply to current main (%v); starting fresh, "+
+				"the retained state remains available to goobers recovery-restore", sourceRun, err), nil
+	case err != nil:
+		return recoveryResumeResult{}, "", err
+	}
+	return recoveryResumeResult{Resumed: true, ResumeStatus: "resumed", ResumedFromRun: sourceRun, RestoredCommit: commit, Provenance: source.record.Provenance(), SourceRun: source.sourceRun()},
+		fmt.Sprintf("adopted retained implementation from run %s at %s", sourceRun, commit), nil
+}
+
+func writeRecoveryResumeResult(result recoveryResumeResult) error {
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal recovery resume result: %w", err)
+	}
+	path := providerInput("resultFile", recoveryResumeResultFile)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func resumeClaimedRecovery(ctx context.Context, layout instance.Layout, registry *journal.RegistryScrubber) (string, recoveryResumeSource, error) {
+	var none recoveryResumeSource
 	runID, workflow, err := providerRunContext()
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	ledger, err := openStageClaimLedger(layout)
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	claim, err := currentRecoveryClaim(ctx, ledger, runID, workflow)
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	key, err := recoveryStageRepositoryKey(layout)
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	directory, err := os.Getwd()
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	branch, err := currentBranch(directory)
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	if branch != providers.BranchNameIn(providerBranchNamespace(), workflow, runID) {
-		return "", fmt.Errorf("recovery resume requires this run's original receiving branch")
+		return "", none, fmt.Errorf("recovery resume requires this run's original receiving branch")
 	}
 	command := workspaceGitCommand(directory, "rev-parse", "--verify", "HEAD^{commit}")
 	head, err := workspaceGitCombinedOutput(command)
 	if err != nil {
-		return "", fmt.Errorf("read receiving branch head: %w", err)
+		return "", none, fmt.Errorf("read receiving branch head: %w", err)
 	}
-	commit, err := withIssueRecoveryRecord(ctx, layout, key, claim.ItemID, func(path string) (string, error) {
+	var source recoveryResumeSource
+	commit, err := withIssueRecoveryRecord(ctx, layout, key, claim.ItemID, func(record recovery.Record, run recovery.SourceRun, path string) (string, error) {
+		source = recoveryResumeSource{record: record, run: run}
 		return prepareClaimedRecovery(ctx, layout, directory, runID, path, registry)
 	})
 	if err != nil {
-		return "", err
+		return "", source, err
 	}
 	current, err := currentRecoveryClaim(ctx, ledger, runID, workflow)
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	if claimsclient.KeyForEntry(current) != claimsclient.KeyForEntry(claim) {
-		return "", fmt.Errorf("receiving issue claim changed during recovery preparation")
+		return "", none, fmt.Errorf("receiving issue claim changed during recovery preparation")
 	}
 	if err := recovery.AdoptRestoredCommit(ctx, directory, branch, strings.TrimSpace(string(head)), commit); err != nil {
-		return "", err
+		return "", none, err
 	}
 	if err := recovery.DeletePreparedRestore(ctx, directory, runID, commit); err != nil {
-		return "", err
+		return "", none, err
 	}
-	return commit, nil
+	return commit, source, nil
 }
 
 func currentRecoveryClaim(ctx context.Context, ledger claimsclient.Ledger, runID, workflow string) (claimsclient.Entry, error) {

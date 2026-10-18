@@ -83,6 +83,9 @@ type backlogHealthScan struct {
 	DeferReason    string `json:"deferReason,omitempty"`
 	QuotaLimit     int    `json:"quotaLimit,omitempty"`
 	QuotaRemaining int    `json:"quotaRemaining,omitempty"`
+	// ItemLookups counts ready items the scanned ledger could not explain and
+	// that were resolved from their own per-item label history instead (#6986).
+	ItemLookups int `json:"itemLookups,omitempty"`
 }
 
 // resumable reports whether a failed read of this scan's ledger is worth

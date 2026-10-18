@@ -30,6 +30,10 @@ const StagePodQueryTimeout = 5 * time.Second
 // Windows. Read-only by construction: Get-MpPreference never mutates.
 const defenderExclusionScript = `
 $ErrorActionPreference = 'Stop'
+if ($null -eq (Get-Command Get-MpPreference -ErrorAction SilentlyContinue)) {
+  Write-Output 'not applicable: Microsoft Defender PowerShell cmdlet Get-MpPreference is unavailable'
+  exit 0
+}
 foreach ($entry in (Get-MpPreference -ErrorAction Stop).ExclusionPath) {
   Write-Output ([Environment]::ExpandEnvironmentVariables($entry))
 }
@@ -38,6 +42,10 @@ foreach ($entry in (Get-MpPreference -ErrorAction Stop).ExclusionPath) {
 // maxDefenderErrorOutput bounds how much of a failed probe's output rides
 // the error, so a PowerShell stack trace does not become the advisory line.
 const maxDefenderErrorOutput = 300
+
+// DefenderNotApplicableMessage is the non-error-looking reason reported when
+// the host cannot answer because the Defender PowerShell cmdlet is absent.
+const DefenderNotApplicableMessage = "not applicable: Microsoft Defender PowerShell cmdlet Get-MpPreference is unavailable"
 
 // Querier reads the host's AV path-exclusion list. The Windows
 // implementation is QueryDefender; tests and non-Windows hosts substitute.
@@ -77,6 +85,9 @@ func QueryDefenderWithin(ctx context.Context, bound time.Duration) ([]string, er
 		if detail == "" {
 			return nil, fmt.Errorf("Get-MpPreference: %w", err)
 		}
+		if defenderNotApplicable(detail) {
+			return nil, errors.New(DefenderNotApplicableMessage)
+		}
 		return nil, fmt.Errorf("Get-MpPreference: %w: %s", err, detail)
 	}
 	return parseDefenderOutput(output)
@@ -98,9 +109,19 @@ func parseDefenderOutput(output []byte) ([]string, error) {
 	entries := ParseExclusionList(output)
 	for _, entry := range entries {
 		normalized := strings.ToLower(strings.TrimSpace(entry))
+		if defenderNotApplicable(normalized) {
+			return nil, errors.New(DefenderNotApplicableMessage)
+		}
 		if strings.HasPrefix(normalized, "n/a:") {
 			return nil, fmt.Errorf("Get-MpPreference: %s", entry)
 		}
 	}
 	return entries, nil
+}
+
+func defenderNotApplicable(detail string) bool {
+	normalized := strings.ToLower(detail)
+	return strings.Contains(normalized, "not applicable:") ||
+		(strings.Contains(normalized, "get-mppreference") &&
+			strings.Contains(normalized, "is not recognized"))
 }

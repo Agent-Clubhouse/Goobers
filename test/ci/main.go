@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -104,6 +106,10 @@ type executor interface {
 type processExecutor struct {
 	stdout io.Writer
 	stderr io.Writer
+	// waitDelay bounds how long a finished check waits for its output to
+	// drain when stdout/stderr are not files (the diagnostics tee): a
+	// grandchild that inherited the pipe must not hold the gate open.
+	waitDelay time.Duration
 }
 
 func main() {
@@ -111,8 +117,12 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "diagnose" {
+		return runDiagnose(args[1:], stdout, stderr, os.Getenv, time.Now)
+	}
 	fast := false
 	group := ""
+	makeCommand := ""
 	switch {
 	case len(args) == 0:
 	case len(args) == 1 && args[0] == "fast":
@@ -124,25 +134,56 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	case len(args) == 2 && args[0] == "full" && strings.TrimSpace(args[1]) != "":
-		exec := processExecutor{stdout: stdout, stderr: stderr}
-		if err := executeChecks(exec, fullChecks(args[1]), stdout, stderr); err != nil {
-			_, _ = fmt.Fprintf(stderr, "ci: %v\n", err)
-			return 1
-		}
-		return 0
+		makeCommand = args[1]
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | group NAME | full MAKE_COMMAND]")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | group NAME | full MAKE_COMMAND | diagnose]")
 		return 2
+	}
+
+	var recorder *diagnosticsRecorder
+	if root := diagnosticsRoot(os.Getenv); root != "" {
+		started, err := startDiagnostics(root, driverMode(args), time.Now)
+		if err != nil {
+			// Diagnostics are observability only; the gate runs regardless.
+			_, _ = fmt.Fprintf(stderr, "ci: warning: CI diagnostics disabled: %v\n", err)
+		} else {
+			recorder = started
+			stdout, stderr = recorder.writers(stdout, stderr)
+		}
+	}
+	exec := processExecutor{stdout: stdout, stderr: stderr}
+	if recorder != nil {
+		exec.waitDelay = diagnosticsWaitDelay
+	}
+	code, err := runChecks(exec, recordingExecutor{inner: exec, recorder: recorder}, fast, group, makeCommand, stdout, stderr)
+	recorder.finish(err)
+	return code
+}
+
+// runChecks resolves and executes the selected tier. exec runs the driver's
+// own probes (build metadata); checks run through checkExec.
+func runChecks(
+	exec processExecutor,
+	checkExec executor,
+	fast bool,
+	group, makeCommand string,
+	stdout, stderr io.Writer,
+) (int, error) {
+	if makeCommand != "" {
+		if err := executeChecks(checkExec, fullChecks(makeCommand), stdout, stderr); err != nil {
+			_, _ = fmt.Fprintf(stderr, "ci: %v\n", err)
+			return 1, err
+		}
+		return 0, nil
 	}
 
 	commands, err := commandPackages("cmd")
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "ci: discover command packages: %v\n", err)
-		return 1
+		return 1, err
 	}
 
 	tools := configuredToolchain(os.Getenv)
-	exec := processExecutor{stdout: stdout, stderr: stderr}
 	metadata := resolveBuildMetadata(exec, tools, time.Now, os.Getenv)
 	validationChecks := checks(commands, tools, metadata, runtime.GOOS, os.Getenv("GOOBERS_TEST_TIMING_FILE"))
 	if fast {
@@ -162,15 +203,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		selected := groupChecksOnly(validationChecks, group)
 		if len(selected) == 0 {
 			_, _ = fmt.Fprintf(stderr, "ci: unknown check group %q\n", group)
-			return 2
+			return 2, fmt.Errorf("unknown check group %q", group)
 		}
 		validationChecks = applyRuntimeToggles(selected, os.Getenv)
 	}
-	if err := executeChecks(exec, validationChecks, stdout, stderr); err != nil {
+	if err := executeChecks(checkExec, validationChecks, stdout, stderr); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ci: %v\n", err)
-		return 1
+		return 1, err
 	}
-	return 0
+	return 0, nil
 }
 
 // groupChecksOnly keeps only the checks belonging to one parallel CI job,
@@ -426,8 +467,11 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			expectEmpty: true,
 			group:       groupChecks,
 		},
+		// CI policy tests remain required even when backend unit jobs skip.
+		{label: "ci-policy", command: tools.goCommand, args: []string{"test", "./test/cipolicy", "./test/ci", "-count=1"}, group: groupPreflight},
 		// Discover undeclared downloads before the long unit/browser suites.
 		{label: "runtime-acquisitions", command: tools.goCommand, args: []string{"test", "./test/ci", "-run", "Test.*Acquisition", "-count=1"}, group: groupPreflight},
+		{label: "architecture-imports", command: tools.goCommand, args: []string{"run", "./test/architectureimports", "-config", "test/architectureimports/rules.json"}, group: groupPreflight},
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
@@ -621,6 +665,20 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			label:        "portal-contract-test",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "run", "test:contract"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-package",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "package:portal"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-package-test",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "test:package"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},
@@ -904,6 +962,12 @@ func portalPreparationChecks(tools toolchain) []check {
 			args:    []string{"vet", "-tags", "embed_portal", "./internal/portalassets", "./cmd/goobers"},
 			group:   groupChecks,
 		},
+		{
+			label:   "portal-embed-test",
+			command: tools.goCommand,
+			args:    []string{"test", "-tags", "embed_portal", "-count=1", "./internal/portalassets"},
+			group:   groupChecks,
+		},
 	}
 }
 
@@ -968,6 +1032,7 @@ func executeChecksAt(
 func (e processExecutor) run(current check) ([]byte, error) {
 	command, args := commandInvocation(current, runtime.GOOS, os.Getenv)
 	cmd := exec.Command(command, args...)
+	cmd.WaitDelay = e.waitDelay
 	if len(current.env) > 0 {
 		cmd.Env = mergeEnvironment(os.Environ(), current.env, runtime.GOOS == "windows")
 	}
@@ -977,11 +1042,21 @@ func (e processExecutor) run(current check) ([]byte, error) {
 		} else {
 			cmd.Stderr = io.Discard
 		}
-		return cmd.Output()
+		return ignoreWaitDelay(cmd.Output())
 	}
 	cmd.Stdout = e.stdout
 	cmd.Stderr = e.stderr
-	return nil, cmd.Run()
+	_, err := ignoreWaitDelay(nil, cmd.Run())
+	return nil, err
+}
+
+// ignoreWaitDelay keeps a check that exited successfully a pass when only its
+// output pipe outlived it (exec.ErrWaitDelay): the verdict is the exit status.
+func ignoreWaitDelay(output []byte, err error) ([]byte, error) {
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return output, nil
+	}
+	return output, err
 }
 
 func commandInvocation(current check, goos string, getenv func(string) string) (string, []string) {
@@ -1018,7 +1093,60 @@ func golangciCacheEnvironment() []string {
 	return []string{"GOLANGCI_LINT_CACHE=" + cache}
 }
 
+// appendGitConfigOverrides re-bases a check's GIT_CONFIG_COUNT/KEY_n/VALUE_n
+// overrides after any git config the ambient environment already injected.
+//
+// Those variables are one indexed list, not independent names, so overriding
+// them by name (core.fsync=none at index 0) silently deletes whatever the host
+// put there. A pod-placed local-ci is the case that matters: its /workspace
+// emptyDir is root-owned, the dispatcher grants nonroot access with
+// safe.directory in GIT_CONFIG_*, and replacing the list made every git call in
+// the test tier (and go build's VCS stamping) fail "detected dubious
+// ownership" — 40+ tests and release-image-probes.
+func appendGitConfigOverrides(base, overrides []string) []string {
+	var baseCount int
+	for _, variable := range base {
+		if environmentName(variable) == "GIT_CONFIG_COUNT" {
+			value := strings.TrimPrefix(variable, "GIT_CONFIG_COUNT=")
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				baseCount = n
+			}
+		}
+	}
+	overrideCount := -1
+	for _, override := range overrides {
+		if environmentName(override) == "GIT_CONFIG_COUNT" {
+			if n, err := strconv.Atoi(strings.TrimPrefix(override, "GIT_CONFIG_COUNT=")); err == nil {
+				overrideCount = n
+			}
+		}
+	}
+	if baseCount == 0 || overrideCount < 0 {
+		return overrides
+	}
+	result := make([]string, 0, len(overrides))
+	for _, override := range overrides {
+		name, value, _ := strings.Cut(override, "=")
+		switch {
+		case name == "GIT_CONFIG_COUNT":
+			result = append(result, "GIT_CONFIG_COUNT="+strconv.Itoa(baseCount+overrideCount))
+		case strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_"):
+			prefix := name[:strings.LastIndexByte(name, '_')+1]
+			index, err := strconv.Atoi(name[len(prefix):])
+			if err != nil {
+				result = append(result, override)
+				continue
+			}
+			result = append(result, prefix+strconv.Itoa(baseCount+index)+"="+value)
+		default:
+			result = append(result, override)
+		}
+	}
+	return result
+}
+
 func mergeEnvironment(base, overrides []string, caseInsensitive bool) []string {
+	overrides = appendGitConfigOverrides(base, overrides)
 	result := make([]string, 0, len(base)+len(overrides))
 	for _, variable := range base {
 		name := environmentName(variable)

@@ -42,6 +42,7 @@ type runWaitReporter struct {
 	publish        func(context.Context, []journal.Event) error
 	publishContext context.Context
 	publishFailed  bool
+	publishWarned  bool
 	finalize       func(context.Context, error) error
 }
 
@@ -89,8 +90,10 @@ func newHostedRunWaitReporter(
 }
 
 // Finalize best-effort completes any in-flight hosted-progress Check Run when
-// the caller exits without observing a terminal journal phase (context
-// cancellation, timeout, wait error). If hosted progress is disabled or was
+// the wait ends. It is safe to call after a terminal phase: the publisher
+// skips an already-published terminal phase and otherwise publishes the
+// journal's real conclusion (context cancellation, timeout, wait error, or a
+// terminal publish lost to a transient failure). If hosted progress is disabled or was
 // never able to create a Check Run this is a no-op. Errors are surfaced as a
 // one-time warning on the reporter's writer so the caller's exit code path
 // is unaffected.
@@ -158,9 +161,14 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 	}
 
 	if r.publish != nil && !r.publishFailed {
-		if err := r.publish(r.publishContext, events); err != nil {
+		// Transient failures keep publishing (the publisher backs off) and
+		// warn once; only a permanent failure stops it.
+		if err := r.publish(r.publishContext, events); hostedprogress.IsPermanent(err) {
 			r.publishFailed = true
 			pf(r.out, "warning: GitHub progress publishing stopped: %v\n", err)
+		} else if err != nil && !r.publishWarned {
+			r.publishWarned = true
+			pf(r.out, "warning: GitHub progress publish failed, retrying: %v\n", err)
 		}
 	}
 

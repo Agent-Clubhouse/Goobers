@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -84,7 +85,7 @@ func TestRecoveryOverflowClaimsRestoreReportsPromotionState(t *testing.T) {
 			}
 			seedItemRepositoryForTest(t, layout, receiving, "7", repo)
 			if mode == "released" {
-				if err := ledger.Release("7", receiving); err != nil {
+				if err := ledger.Release("7", receiving, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -127,7 +128,10 @@ func TestRecoveryOverflowClaimsRestoreReportsPromotionState(t *testing.T) {
 			if mode == "foreign" {
 				key = "github|||other|repo|"
 			}
-			_, err = restoreDownloadedRecovery(t.Context(), key, "7", func(string) (string, error) { t.Fatal("pending overflow reached archive consumer"); return "", nil })
+			_, err = restoreDownloadedRecovery(t.Context(), key, "7", func(recovery.Record, recovery.SourceRun, string) (string, error) {
+				t.Fatal("pending overflow reached archive consumer")
+				return "", nil
+			})
 			var pending *recovery.OverflowPendingError
 			if mode == "released" || mode == "abandoned" || mode == "foreign" {
 				if err == nil || errors.As(err, &pending) {

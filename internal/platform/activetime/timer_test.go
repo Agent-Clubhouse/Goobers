@@ -37,3 +37,26 @@ func TestWithTimeoutPreservesExplicitCancellation(t *testing.T) {
 		t.Fatalf("Err = %v, want canceled", ctx.Err())
 	}
 }
+
+func TestSuspendedGapReportsWallTimeTheActiveClockMissed(t *testing.T) {
+	for _, tc := range []struct {
+		wall, active, want time.Duration
+	}{
+		{wall: 4*time.Hour + time.Minute, active: time.Minute, want: 4 * time.Hour},
+		{wall: time.Minute + 30*time.Millisecond, active: time.Minute, want: 0}, // slew/granularity
+		{wall: time.Minute, active: time.Minute + time.Hour, want: 0},           // wall clock stepped back
+	} {
+		if got := suspendedGap(tc.wall, tc.active); got != tc.want {
+			t.Errorf("suspendedGap(%s, %s) = %s, want %s", tc.wall, tc.active, got, tc.want)
+		}
+	}
+}
+
+func TestWallMarkReportsNoSuspensionWithoutSleep(t *testing.T) {
+	if got := NewWallMark().SuspendedSince(); got != 0 {
+		t.Fatalf("SuspendedSince immediately after NewWallMark = %s, want 0", got)
+	}
+	if got := (WallMark{}).SuspendedSince(); got != 0 {
+		t.Fatalf("zero WallMark reported %s suspended", got)
+	}
+}

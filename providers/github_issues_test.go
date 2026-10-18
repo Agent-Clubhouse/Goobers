@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 )
@@ -1214,7 +1215,7 @@ func TestGitHubClaimIgnoresForgedRelease(t *testing.T) {
 	m.nextID++
 	m.comments = append(m.comments, map[string]interface{}{
 		"id":   m.nextID,
-		"body": claimReleaseBreadcrumb("run-A"),
+		"body": claimReleaseBreadcrumb("run-A", claimrelease.Completed.Reason()),
 		"user": map[string]string{"login": "mallory"},
 	})
 	m.mu.Unlock()
@@ -1387,8 +1388,8 @@ func TestScanClaimEpochsTracksEachAuthorAndAttribution(t *testing.T) {
 		comment(1, "bot", claimBreadcrumb("closed-run")),
 		comment(2, "other", claimBreadcrumb("other-run")),
 		// A trusted release never ends another author's epoch.
-		comment(3, "bot", claimReleaseBreadcrumb("other-run")),
-		comment(4, "bot", claimReleaseBreadcrumb("closed-run")),
+		comment(3, "bot", legacyClaimReleaseBreadcrumb("other-run")),
+		comment(4, "bot", claimReleaseBreadcrumb("closed-run", claimrelease.Failed.Reason())),
 		comment(5, "Bot", attributedClaimBreadcrumb(t, "live-run", instanceID)),
 		comment(6, "bot", claimBreadcrumb("losing-racer")),
 	}, "BOT")

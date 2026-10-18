@@ -17,6 +17,9 @@ func TestStatusDaemonReportsLiveDroppedAppends(t *testing.T) {
 	const identity = "0123456789abcdef0123456789abcdef"
 	t.Setenv("GOOBERS_API_TOKEN", "status-token")
 	root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, request *http.Request) {
+		if serveNoDaemonReadiness(w, request) {
+			return
+		}
 		if request.Method != http.MethodGet || request.URL.Path != apicontract.InstancePath {
 			t.Errorf("request = %s %s, want GET %s", request.Method, request.URL.Path, apicontract.InstancePath)
 			http.NotFound(w, request)
@@ -51,6 +54,9 @@ func TestStatusDaemonReportsLiveStorageHealth(t *testing.T) {
 	const identity = "0123456789abcdef0123456789abcdef"
 	t.Setenv("GOOBERS_API_TOKEN", "status-token")
 	root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, request *http.Request) {
+		if serveNoDaemonReadiness(w, request) {
+			return
+		}
 		if request.Method != http.MethodGet || request.URL.Path != apicontract.InstancePath {
 			t.Errorf("request = %s %s, want GET %s", request.Method, request.URL.Path, apicontract.InstancePath)
 			http.NotFound(w, request)
@@ -59,7 +65,7 @@ func TestStatusDaemonReportsLiveStorageHealth(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(readservice.Instance{
 			RootIdentity: &readservice.RootIdentity{ID: identity},
 			StorageHealth: &readservice.StorageHealthStatus{
-				Tier: "admission-stopped", FreeBytes: 1 << 30, TotalBytes: 100 << 30, Path: "/instances/fixture", CriticalFloorSource: "derived-clamped",
+				Tier: "admission-stopped", FreeBytes: 1 << 30, TotalBytes: 100 << 30, Path: "/instances/fixture", CriticalFloorSource: "derived-clamped", CriticalResumeBytes: 11 << 30,
 			},
 		})
 	})
@@ -78,8 +84,8 @@ func TestStatusDaemonReportsLiveStorageHealth(t *testing.T) {
 	if !strings.Contains(stdout, "storage health admission stopped") {
 		t.Fatalf("status --daemon output = %q, want a storage health line", stdout)
 	}
-	if !strings.Contains(stdout, "critical floor from derived-clamped") {
-		t.Fatalf("status --daemon output = %q, want the binding floor source", stdout)
+	if !strings.Contains(stdout, "critical floor from derived-clamped; admission resumes above 11Gi") {
+		t.Fatalf("status --daemon output = %q, want the binding floor source and resume threshold", stdout)
 	}
 }
 
@@ -87,6 +93,9 @@ func TestStatusDaemonReportsWarningStorageFloorSource(t *testing.T) {
 	const identity = "0123456789abcdef0123456789abcdef"
 	t.Setenv("GOOBERS_API_TOKEN", "status-token")
 	root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, request *http.Request) {
+		if serveNoDaemonReadiness(w, request) {
+			return
+		}
 		if request.Method != http.MethodGet || request.URL.Path != apicontract.InstancePath {
 			t.Errorf("request = %s %s, want GET %s", request.Method, request.URL.Path, apicontract.InstancePath)
 			http.NotFound(w, request)
@@ -143,4 +152,15 @@ func TestStatusDaemonOmitsHealthyStorageHealth(t *testing.T) {
 	if strings.Contains(stdout, "storage health") {
 		t.Fatalf("status --daemon output = %q, want no storage health line while healthy", stdout)
 	}
+}
+
+// serveNoDaemonReadiness answers the startup-readiness probe that status --daemon
+// issues before its instance read with 404, so fakes that only model the
+// instance endpoint keep their strict request checks.
+func serveNoDaemonReadiness(w http.ResponseWriter, request *http.Request) bool {
+	if request.URL.Path != apicontract.InstanceReadinessPath {
+		return false
+	}
+	http.NotFound(w, request)
+	return true
 }

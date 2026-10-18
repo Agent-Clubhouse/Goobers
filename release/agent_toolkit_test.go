@@ -349,6 +349,12 @@ func assertAgentToolkitAdaptersResolve(
 	}
 }
 
+// stagePodWorkspace is where a stage pod checks the repository out, and a path
+// the shipped stage contract and schemas document on purpose. A pod-placed
+// local-ci runs this suite from exactly that directory, so a checkout root equal
+// to it is no evidence of a leaked build-machine path; every other root still is.
+const stagePodWorkspace = "/workspace"
+
 func assertAgentToolkitSafeContent(t *testing.T, repoRoot string, entries map[string][]byte) {
 	t.Helper()
 	secretPatterns := []*regexp.Regexp{
@@ -366,7 +372,7 @@ func assertAgentToolkitSafeContent(t *testing.T, repoRoot string, entries map[st
 				t.Errorf("asset path %q is not portable and relative", path)
 			}
 		}
-		if bytes.Contains(data, []byte(repoRoot)) ||
+		if (repoRoot != stagePodWorkspace && bytes.Contains(data, []byte(repoRoot))) ||
 			bytes.Contains(data, []byte("/Users/")) ||
 			bytes.Contains(data, []byte(`C:\Users\`)) {
 			t.Errorf("%s contains a machine-specific path", path)

@@ -1,0 +1,18 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ADVISORY PR RESET" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers advisory-pr-reset \- clear one private advisory disposition by explicit operator action
+.SH SYNOPSIS
+\fBgoobers advisory-pr-reset\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers advisory-pr-reset --gaggle NAME --owner OWNER --repo REPO --review-type TYPE --pr NUMBER [path]
+
+Explicitly clear one private advisory disposition on the local instance.
+.fi
+.SH EXAMPLES
+.nf
+goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

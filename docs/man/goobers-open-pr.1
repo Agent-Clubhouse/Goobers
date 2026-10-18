@@ -42,9 +42,11 @@ rather than a static value:
         title: prTitle
 
 Title precedence: an explicitly set non-empty title wins; otherwise the
-claimed item's title, recovered from the run journal (so it survives a
-resume or repass); otherwise the generic "Automated implementation". An
-empty value is not an override — every empty input falls back.
+claimed item's title, recovered from the run journal (or the journal
+plane in a stage pod, so it survives a resume, repass, or pod placement);
+otherwise the generic "Automated implementation" with a warning naming
+why no item title was available. An empty value is not an override — every
+empty input falls back.
 
 itemID explicitly identifies a selected backlog item when the workflow
 read it without claiming. If a claimed item also exists, the IDs must

@@ -192,7 +192,7 @@ func TestRequiredMCPReadinessTransientRetryDoesNotSpendModelTurn(t *testing.T) {
 		runner := &copilotControlledRunner{request: request, promptIndex: 1, readiness: MCPReadiness{Server: goobersIOServerName, Source: "adapter-session"}, factory: func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
 			return session, nil
 		}}
-		_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p=work"}, Dir: t.TempDir()})
+		_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p="}, Stdin: []byte("work"), Dir: t.TempDir()})
 		if session == unavailable && !errors.Is(err, errRequiredMCPUnavailable) {
 			t.Fatalf("first attempt=%v", err)
 		}
@@ -234,7 +234,7 @@ func TestRequiredMCPReadinessHonorsInvocationDeadline(t *testing.T) {
 		return session, nil
 	}}
 	defer runner.close()
-	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p=work"}, Timeout: 10 * time.Millisecond})
+	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p="}, Stdin: []byte("work"), Timeout: 10 * time.Millisecond})
 	if !errors.Is(err, ErrTimeout) || session.modelCalls != 0 {
 		t.Fatalf("calls=%d error=%v", session.modelCalls, err)
 	}
@@ -247,9 +247,46 @@ func TestRequiredMCPReadinessReportFailurePreventsModel(t *testing.T) {
 		return session, nil
 	}}
 	defer runner.close()
-	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p=work"}})
+	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p="}, Stdin: []byte("work")})
 	if !errors.Is(err, failure) || session.modelCalls != 0 {
 		t.Fatalf("calls=%d error=%v", session.modelCalls, err)
+	}
+}
+
+// #5552: the SDK-controlled session must make the same GitHub MCP
+// registration choice as the argv path, or write-capable cloud stages keep
+// the read-only issue subset.
+func TestCopilotControlledSessionGitHubRegistrationFollowsCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		capabilities []string
+		wantAll      bool
+	}{
+		{name: "no capabilities", wantAll: false},
+		{name: "issue read", capabilities: []string{"github:issues:read"}, wantAll: false},
+		{name: "issue write", capabilities: []string{"telemetry:read", "github:issues:write"}, wantAll: true},
+		{name: "issue approve", capabilities: []string{"github:issues:approve"}, wantAll: true},
+		{name: "milestone write", capabilities: []string{"github:milestones:write"}, wantAll: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &copilotControlledRunner{request: RunRequest{
+				Envelope: apiv1.InvocationEnvelope{Capabilities: tc.capabilities},
+				Tools:    []string{"github"},
+			}}
+			got := runner.sessionConfig("session", ProcessRequest{Dir: "workspace"}, nil).GitHubMCPToolConfig
+			if got == nil {
+				t.Fatal("GitHub MCP tool config missing for a declared github group")
+			}
+			if tc.wantAll {
+				if got.EnableAllTools == nil || !*got.EnableAllTools || len(got.AdditionalToolsets) != 0 {
+					t.Fatalf("config = %+v, want EnableAllTools", got)
+				}
+				return
+			}
+			if got.EnableAllTools != nil || !reflect.DeepEqual(got.AdditionalToolsets, []string{"issues"}) {
+				t.Fatalf("config = %+v, want the read-only issues toolset", got)
+			}
+		})
 	}
 }
 
@@ -293,10 +330,15 @@ func TestCopilotControlExitBeforeReadinessReportsStatusAndStderr(t *testing.T) {
 		"error: option '--usage-output-file <file>' cannot be used with option '--headless'\n"
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 1, Stderr: []byte(stderr)}, err: errors.New("exit status 1")}
 	_, _, err := startCopilotControlProcess(context.Background(), runner, ProcessRequest{
-		Command: []string{"copilot", "-p=private prompt", "--session-id", "owned-session"},
+		Command: []string{"copilot", "-p=", "--session-id", "owned-session"},
+		Stdin:   []byte("private prompt"),
 	}, 1)
 	if !errors.Is(err, errRequiredMCPUnavailable) {
 		t.Fatalf("error=%v", err)
+	}
+	// The headless server takes the prompt over session RPC, never on stdin.
+	if len(runner.lastReq.Stdin) != 0 {
+		t.Fatalf("control process stdin = %q, want none", runner.lastReq.Stdin)
 	}
 	message := err.Error()
 	if !strings.Contains(message, "exited before readiness (exit 1)") ||

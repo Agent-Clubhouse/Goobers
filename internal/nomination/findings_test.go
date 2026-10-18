@@ -131,6 +131,75 @@ func TestParseSignalsReportsUnreadableSections(t *testing.T) {
 	}
 }
 
+// TestParseSignalsRefusesStoppedTools pins #5578: a tool section whose
+// header shows the tool was stopped before it finished (timeout(1)'s 124, a
+// signal kill, golangci-lint's own deadline) is a problem, not a finding
+// set — neither "clean" nor findings a nomination can be approved against.
+// The fixture is the shape a cold module cache produced: go vet killed
+// mid-download with a final diagnostic cut short, an empty golangci-lint
+// document written on its deadline, and go test fail events from a killed
+// run.
+func TestParseSignalsRefusesStoppedTools(t *testing.T) {
+	stopped := `=== repo-signals ===
+{"schema":"goobers.dev/repo-signals/v1","head":"abc","signalCount":3,"signals":[]}
+=== go vet (exit 124) ===
+go: downloading sigs.k8s.io/yaml v1.6.0
+internal/worktree/manager.go:88:2: result of
+=== golangci-lint (exit 4) ===
+{"Issues":[]}
+level=error msg="Running error: context loading failed: context deadline exceeded"
+=== go test failures (exit 124) ===
+{"Action":"fail","Package":"github.com/goobers/goobers/internal/runner","Test":"TestRunnerRace"}
+`
+	f := ParseSignals([]byte(stopped))
+	if len(f.byKey) != 0 || f.Counts[ToolVet]+f.Counts[ToolLint]+f.Counts[ToolTest] != 0 {
+		t.Fatalf("stopped tools yielded findings %+v (counts %v); want none", sortedFindings(f), f.Counts)
+	}
+	wantProblems := []string{
+		"go vet: the tool timed out (exit 124)",
+		"golangci-lint: the tool exceeded its own deadline (exit 4)",
+		"go test failures: the tool timed out (exit 124)",
+	}
+	if len(f.Problems) != len(wantProblems) {
+		t.Fatalf("problems = %v, want one per stopped tool", f.Problems)
+	}
+	for i, want := range wantProblems {
+		if !strings.HasPrefix(f.Problems[i], want) {
+			t.Errorf("problem %d = %q, want prefix %q", i, f.Problems[i], want)
+		}
+	}
+	for _, e := range []Evidence{
+		{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/worktree/manager.go", Line: 88, Rule: "result of"},
+		{Kind: EvidenceFinding, Tool: ToolTest, Package: "github.com/goobers/goobers/internal/runner", Test: "TestRunnerRace"},
+	} {
+		if got, ok := f.Match(e); ok {
+			t.Errorf("a finding from a stopped tool matched: %+v", got)
+		}
+	}
+
+	for _, tc := range []struct {
+		header  string
+		stopped bool
+	}{
+		{"=== go vet (exit 137) ===", true},
+		{"=== go vet (exit -1) ===", true},
+		{"=== go vet (exit 1) ===", false},
+		{"=== go vet (exit 4) ===", false},
+		{"=== go vet ===", false},
+	} {
+		got := ParseSignals([]byte(tc.header + "\ninternal/worktree/manager.go:88:2: result of (*os.File).Close call not used\n"))
+		if read := got.Counts[ToolVet] == 1; read == tc.stopped || (len(got.Problems) == 1) != tc.stopped {
+			t.Errorf("%s: vet findings = %d, problems = %v; stopped = %v", tc.header, got.Counts[ToolVet], got.Problems, tc.stopped)
+		}
+	}
+	// Only the first header of a name carries the exit status: a tool-echoed
+	// repeat cannot relabel a completed section as stopped.
+	echoed := ParseSignals([]byte("=== go vet (exit 1) ===\ninternal/worktree/manager.go:88:2: result of (*os.File).Close call not used\n=== go vet (exit 124) ===\n"))
+	if echoed.Counts[ToolVet] != 1 {
+		t.Fatalf("an echoed stopped header discarded the completed section: counts %v, problems %v", echoed.Counts, echoed.Problems)
+	}
+}
+
 // TestApprovalBoundsOnPaths pins the fix-surface and load-bearing helpers
 // the approval decision is built from.
 func TestApprovalBoundsOnPaths(t *testing.T) {

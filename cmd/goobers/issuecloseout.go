@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -19,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -47,7 +49,7 @@ type pullRequestBranchFinder interface {
 // credential, and the pull-request lookup to the routed provider under a
 // pull-request credential (crossProviderPRFinder).
 func openIssueCloseOutProvider(root string, repo, backlogRepo providers.RepositoryRef, stderr io.Writer) (issueCloseOutProvider, error) {
-	stageProvider, err := newProviderForStage(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
+	stageProvider, err := newProviderForStage(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +57,7 @@ func openIssueCloseOutProvider(root string, repo, backlogRepo providers.Reposito
 	if !ok {
 		return nil, fmt.Errorf("issue-close-out does not support repository provider %q", repo.Provider)
 	}
-	if !backlogOnOtherProvider(repo, backlogRepo) {
+	if !providerconfig.BacklogOnOtherProvider(repo, backlogRepo) {
 		return provider, nil
 	}
 	finder, err := crossProviderPRFinder(root, repo, stderr)
@@ -395,6 +397,15 @@ func issueCloseOutIdempotencyKey(runID, itemID string, status providers.WorkItem
 	return "issue-close-out/" + runID + "/" + itemID + "/" + string(status)
 }
 
+// issueCloseOutReleaseReason: a park is an escalation, any other close-out
+// status is the run's completed work. The status is the stable code.
+func issueCloseOutReleaseReason(status providers.WorkItemStatus) claimrelease.Reason {
+	if status == issueCloseOutNeedsHuman || status == issueCloseOutNeedsRemediation {
+		return claimrelease.Escalated.Because(string(status), "item parked for attention")
+	}
+	return claimrelease.Completed.Because(string(status), "")
+}
+
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	env, ok, exitCode := parseProviderStageCommand(args, "issue-close-out", stderr)
 	if !ok {
@@ -631,10 +642,8 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// reconciles the label from remote ownership after its CAS transition.
 	if claim.SharedDeadline.IsZero() {
 		if _, err := provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-			Repository:       backlogRepo,
-			ID:               claim.ItemID,
-			RunID:            runID,
-			LedgerAuthorized: true,
+			Repository: backlogRepo, ID: claim.ItemID, RunID: runID,
+			LedgerAuthorized: true, Reason: issueCloseOutReleaseReason(status),
 		}); err != nil {
 			pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
 		}
@@ -644,7 +653,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// is finished with this item, and RecoverExpired's periodic sweep
 	// (goobers up, #131) should not have to reclaim it later.
 	err = ledger.Locked(claimContext(), claimLockOperationCloseOutRelease, func(tx claimsclient.Ledger) error {
-		return tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(claim), runID)
+		return tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(claim), runID, issueCloseOutReleaseReason(status))
 	})
 	if err != nil {
 		pf(stderr, "warning: release claim %s: %v\n", claim.ItemID, err)

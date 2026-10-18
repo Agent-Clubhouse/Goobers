@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -88,6 +89,18 @@ type EscalationCandidate struct {
 	ParentID       string
 }
 
+// EscalationReads is the narrow run-read surface FindEscalationCandidates needs:
+// list the escalated runs, read one run's escalation cause, and read one run's
+// events. It is deliberately smaller than readservice.OfflineRuns so a caller
+// that holds a live, read-model-backed reader (the daemon) can supply it
+// without being forced through the offline journal scan. OfflineRuns and
+// *readservice.Local both satisfy it.
+type EscalationReads interface {
+	ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error)
+	GetRun(context.Context, string) (readservice.RunDetail, error)
+	RunEvents(context.Context, string) (readservice.EventList, error)
+}
+
 // FindEscalationCandidates scans every escalated run's current, unrecovered
 // terminal segment (readservice.OfflineRuns already derives that segment the
 // same way the run-operator surfaces do — see EscalationCause/currentLifecycleRecords)
@@ -109,47 +122,49 @@ type EscalationCandidate struct {
 // A run that later resumed and completed does not appear here at all: ListRuns
 // filters on the run's CURRENT phase, which a completed resume reports as
 // PhaseCompleted, not PhaseEscalated.
-func FindEscalationCandidates(ctx context.Context, reads readservice.OfflineRuns) ([]EscalationCandidate, error) {
+func FindEscalationCandidates(ctx context.Context, reads EscalationReads) ([]EscalationCandidate, error) {
 	runs, err := listEscalatedRuns(ctx, reads)
 	if err != nil {
 		return nil, err
 	}
 
+	// Each escalated run costs one GetRun and, for stage escalations, one
+	// RunEvents read. On a network-backed journal share those are latency
+	// bound, so they are fanned out over a small bounded pool. Results land in
+	// a slice indexed by list position and are folded back in list order, so
+	// the candidate set, its pre-sort order and the first error reported are
+	// exactly what the sequential scan produced.
+	pool := newEscalationScanPool(len(runs))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	workers := escalationScanWorkers
+	if workers > len(runs) {
+		workers = len(runs)
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				pool.scan(ctx, reads, runs, i)
+			}
+		}()
+	}
+	for i := range runs {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	results := pool.results
+	if pool.failed < len(results) {
+		return nil, results[pool.failed].err
+	}
 	candidates := make([]EscalationCandidate, 0, len(runs))
-	for _, run := range runs {
-		detail, err := reads.GetRun(ctx, run.ID)
-		if err != nil {
-			return nil, fmt.Errorf("decomposition: get run %q: %w", run.ID, err)
+	for i := range results {
+		if results[i].candidate != nil {
+			candidates = append(candidates, *results[i].candidate)
 		}
-		if detail.Escalation == nil || detail.Escalation.Selector.Kind != "stage" {
-			continue
-		}
-		events, err := reads.RunEvents(ctx, run.ID)
-		if err != nil {
-			return nil, fmt.Errorf("decomposition: get run events %q: %w", run.ID, err)
-		}
-		causal := findEventBySeq(events.Events, detail.Escalation.CausalEventSeq)
-		if causal == nil ||
-			causal.Type != journal.EventStageFinished ||
-			causal.Status != string(apiv1.ResultFailure) ||
-			causal.Error == nil ||
-			!RecognizedErrorCodes[causal.Error.Code] {
-			continue
-		}
-		parentProvider, parentID, ok := findClaimedParent(events.Events)
-		if !ok {
-			continue
-		}
-		candidates = append(candidates, EscalationCandidate{
-			SourceRunID:    run.ID,
-			SourceWorkflow: run.Workflow,
-			SourceStage:    causal.Stage,
-			ErrorCode:      causal.Error.Code,
-			ErrorMessage:   causal.Error.Message,
-			StartedAt:      run.StartedAt,
-			ParentProvider: parentProvider,
-			ParentID:       parentID,
-		})
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -158,7 +173,108 @@ func FindEscalationCandidates(ctx context.Context, reads readservice.OfflineRuns
 	return candidates, nil
 }
 
-func listEscalatedRuns(ctx context.Context, reads readservice.OfflineRuns) ([]readservice.RunSummary, error) {
+// escalationScanWorkers bounds the concurrent per-run journal reads of one
+// FindEscalationCandidates scan.
+const escalationScanWorkers = 8
+
+type escalationScanResult struct {
+	candidate *EscalationCandidate
+	err       error
+}
+
+// escalationScanPool tracks one pooled scan so its outcome matches the
+// sequential scan exactly. failed is the lowest list index whose scan
+// returned an error. A failure only cancels (in flight) or skips (not yet
+// started) runs at higher list indices, never lower ones, so every run before
+// the final failed index is read to completion and the error at that index
+// is the one the sequential scan would have returned first.
+type escalationScanPool struct {
+	results  []escalationScanResult
+	mu       sync.Mutex
+	failed   int
+	inflight map[int]context.CancelFunc
+}
+
+func newEscalationScanPool(n int) *escalationScanPool {
+	return &escalationScanPool{
+		results:  make([]escalationScanResult, n),
+		failed:   n,
+		inflight: map[int]context.CancelFunc{},
+	}
+}
+
+// scan reads run i unless an earlier run already failed.
+func (p *escalationScanPool) scan(ctx context.Context, reads EscalationReads, runs []readservice.RunSummary, i int) {
+	p.mu.Lock()
+	if i > p.failed {
+		p.mu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	p.inflight[i] = cancel
+	p.mu.Unlock()
+
+	result := scanEscalatedRun(runCtx, reads, runs[i])
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.inflight, i)
+	cancel()
+	p.results[i] = result
+	// A run cancelled by this pool always sits above failed, so it can never
+	// lower it: only a genuine error (or the caller's own cancellation) can.
+	if result.err == nil || i >= p.failed {
+		return
+	}
+	p.failed = i
+	for j, cancelRun := range p.inflight {
+		if j > i {
+			cancelRun()
+		}
+	}
+}
+
+// scanEscalatedRun applies the qualification rules to one escalated run.
+func scanEscalatedRun(ctx context.Context, reads EscalationReads, run readservice.RunSummary) escalationScanResult {
+	if err := ctx.Err(); err != nil {
+		return escalationScanResult{err: err}
+	}
+	detail, err := reads.GetRun(ctx, run.ID)
+	if err != nil {
+		return escalationScanResult{err: fmt.Errorf("decomposition: get run %q: %w", run.ID, err)}
+	}
+	if detail.Escalation == nil || detail.Escalation.Selector.Kind != "stage" {
+		return escalationScanResult{}
+	}
+	events, err := reads.RunEvents(ctx, run.ID)
+	if err != nil {
+		return escalationScanResult{err: fmt.Errorf("decomposition: get run events %q: %w", run.ID, err)}
+	}
+	causal := findEventBySeq(events.Events, detail.Escalation.CausalEventSeq)
+	if causal == nil ||
+		causal.Type != journal.EventStageFinished ||
+		causal.Status != string(apiv1.ResultFailure) ||
+		causal.Error == nil ||
+		!RecognizedErrorCodes[causal.Error.Code] {
+		return escalationScanResult{}
+	}
+	parentProvider, parentID, ok := findClaimedParent(events.Events)
+	if !ok {
+		return escalationScanResult{}
+	}
+	return escalationScanResult{candidate: &EscalationCandidate{
+		SourceRunID:    run.ID,
+		SourceWorkflow: run.Workflow,
+		SourceStage:    causal.Stage,
+		ErrorCode:      causal.Error.Code,
+		ErrorMessage:   causal.Error.Message,
+		StartedAt:      run.StartedAt,
+		ParentProvider: parentProvider,
+		ParentID:       parentID,
+	}}
+}
+
+func listEscalatedRuns(ctx context.Context, reads EscalationReads) ([]readservice.RunSummary, error) {
 	var runs []readservice.RunSummary
 	cursor := ""
 	for {

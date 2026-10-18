@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -224,7 +225,7 @@ func issueContextIssuesRepo(root string, repo providers.RepositoryRef) providers
 	if repo.Provider == providers.ProviderADO {
 		return backlog
 	}
-	return backlogProviderRepo(repo, backlog)
+	return providerconfig.BacklogProviderRepo(repo, backlog)
 }
 
 // issueContextIssueReader is gather-issue-context's originating-issue read.

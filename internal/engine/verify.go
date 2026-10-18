@@ -194,10 +194,7 @@ func inspectJournal(dir string) (journalInspection, error) {
 	}
 	last := events[len(events)-1]
 	if last.Type == journal.EventRunFinished {
-		switch journal.RunPhase(last.Status) {
-		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			inspection.complete = true
-		}
+		inspection.complete = journal.RunPhase(last.Status).IsTerminal()
 	}
 	return inspection, nil
 }

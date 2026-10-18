@@ -81,7 +81,10 @@ var inputSchemas = map[string][]Input{
 		integersIn("maxItems"), stringListsIn("excludeLabels", "requireLabels", "roster"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
-	"backlog-dedupe": schema(integersIn("maxCandidates"), pathsIn("resultFile"), durationsIn("timeout")),
+	"backlog-dedupe": schema(
+		stringsIn("compareFieldPredicate", "compareState"), integersIn("compareScanLimit", "maxCandidates"),
+		stringListsIn("compareLabels"), pathsIn("resultFile"), durationsIn("timeout"),
+	),
 	"backlog-health": schema(
 		stringsIn("readyLabel", "trustLabel"),
 		integersIn("implementationFailureThreshold", "transitionScanMaxPages", "transitionScanQuotaFloor"),
@@ -166,10 +169,11 @@ var inputSchemas = map[string][]Input{
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-pr": schema(
-		stringsIn("baseSha", "commitMessage", "headSha", "mergeMethod", "verdict", "verdictAuthor"),
-		integersIn("pullNumber"), booleansIn("advisoryMode"), pathsIn("resultFile"), durationsIn("timeout"),
+		stringsIn("baseSha", "commitMessage", "headSha", "identityMode", "mergeMethod", "preMergeCheck", "verdict", "verdictAuthor"),
+		integersIn("pullNumber"), booleansIn("advisoryMode", "blockUnansweredFeedback"), stringListsIn("excludeAuthors"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-queue-poll": schema(
+		stringsIn("identityMode", "verdictAuthor"), booleansIn("blockUnansweredFeedback"), stringListsIn("excludeAuthors"),
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
@@ -180,20 +184,22 @@ var inputSchemas = map[string][]Input{
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
 	"pr-comment-watch": schema(
-		stringsIn("base", "identityMode"), integersIn("maxPullRequests"),
+		stringsIn("base", "identityMode"), integersIn("maxPullRequests"), booleansIn("blockUnansweredFeedback"),
 		stringListsIn("excludeAuthors", "excludeLabels", "headPrefixes", "unparkLabels"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"pr-select": schema(
-		stringsIn("assignee", "author", "authorScope", "base", "headPrefix", "requestedReviewer", "requireOptInLabel", "selfIdentity"),
+		stringsIn("assignee", "author", "authorScope", "base", "headPrefix", "requestedReviewer", "requireOptInLabel", "selfIdentity", "titlePredicate"),
 		booleansIn("allowPendingChecks", "respectAssignee"), stringListsIn("excludeLabels", "headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
+	"advisory-pr-select":   schema(stringsIn("reviewType"), pathsIn("resultFile"), durationsIn("timeout")),
+	"advisory-pr-publish":  schema(stringsIn("expectedAuthor", "reviewType", "reviewerStage", "selectionStage"), pathsIn("resultFile"), durationsIn("timeout")),
 	"preflight-repo-write": schema(stringsIn("branch"), durationsIn("timeout")),
 	"publish-batch":        schema(stringsIn("planFile", "validationFile"), pathsIn("resultFile"), durationsIn("timeout")),
 	"push-remediated":      schema(pathsIn("resultFile"), durationsIn("timeout")),
 	"rebase-pr": schema(
-		stringsIn("base", "head", "remediate", "selectedNumber"),
+		stringsIn("base", "head", "identityMode", "remediate", "selectedNumber"), stringListsIn("excludeAuthors"),
 		booleansIn("hasFailingCI", "hasSiblingOverlap", "hasSubstantiveFindings"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -208,7 +214,7 @@ var inputSchemas = map[string][]Input{
 		stringsIn("reason", "selectedHeadSha"), integersIn("demotionThreshold", "selectedNumber"), durationsIn("timeout"),
 	),
 	"remediation-checkpoint": schema(
-		stringsIn("attemptedHeadSha", "base", "conflictLocations", "headPrefix", "policyExcludedReason", "rebaseBaseSha", "remediationCauses", "selectedNumber"),
+		stringsIn("attemptedHeadSha", "base", "ciStatus", "conflictLocations", "headPrefix", "policyExcludedReason", "rebaseBaseSha", "remediationCauses", "selectedNumber"),
 		// #2737: each per-cause budget defaults to 2 when unset; validate
 		// warns so the remediation allowance stays an explicit choice.
 		// --budget overrides every budget; --escalate parks the PR before
@@ -231,10 +237,13 @@ var inputSchemas = map[string][]Input{
 	"self-update": schema(
 		stringsIn("branch", "owner", "policy", "repository", "target"), pathsIn("resultFile"),
 	),
-	"set-milestone":    schema(stringsIn("itemID", "milestone"), pathsIn("resultFile"), durationsIn("timeout")),
-	"telemetry-query":  schema(pathsIn("resultFile")),
-	"update-behind-pr": schema(stringsIn("base", "headPrefix", "minSeverity"), pathsIn("resultFile"), durationsIn("timeout")),
-	"validate-plan":    schema(stringsIn("planFile", "selectionFile"), pathsIn("resultFile"), durationsIn("timeout")),
+	"set-milestone":   schema(stringsIn("itemID", "milestone"), pathsIn("resultFile"), durationsIn("timeout")),
+	"telemetry-query": schema(pathsIn("resultFile")),
+	"update-behind-pr": schema(
+		stringsIn("base", "headPrefix", "identityMode", "minSeverity"), stringListsIn("excludeAuthors"),
+		pathsIn("resultFile"), durationsIn("timeout"),
+	),
+	"validate-plan": schema(stringsIn("planFile", "selectionFile"), pathsIn("resultFile"), durationsIn("timeout")),
 
 	// These provider commands read no workflow-supplied inputs today. Keeping
 	// an explicit empty schema distinguishes them from external/unknown
@@ -243,7 +252,7 @@ var inputSchemas = map[string][]Input{
 	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir")),
 	"config-checkout":    schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "head")),
 	"recovery-restore":   {},
-	"recovery-resume":    {},
+	"recovery-resume":    schema(pathsIn("resultFile")),
 	"ios-simulator-test": schema(integersIn("maxOutputBytes"), pathsIn("resultFile")),
 	"mcp-io":             {},
 	"validate":           {},

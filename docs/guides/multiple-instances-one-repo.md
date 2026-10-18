@@ -66,6 +66,20 @@ the resulting eligible set, so it cannot bypass either restriction. Thread
 reviews should remain read-only. Leave the inputs empty or false during
 migration to preserve legacy behavior.
 
+When teams mark ownership in pull request titles instead of labels, `pr-select`
+also accepts an optional `titlePredicate`. It uses the same restricted CEL as
+backlog `fieldPredicate`, but may reference only `fields["title"]`:
+
+```yaml
+titlePredicate: 'fields["title"].startsWithIgnoreCase("[frontend]")'
+```
+
+The predicate is ANDed with the identity filters above and evaluated
+client-side on GitHub, Azure DevOps and Gitea alike. It narrows only which PRs
+`pr-select` may choose; queue safety gates still see every open PR. An omitted
+or empty `titlePredicate` keeps today's selection unchanged, and an invalid one
+fails config validation (`FLD005`) and the stage.
+
 ## Worked example: two teams, one repo
 
 Team **frontend** and team **billing** both run their own instance against the

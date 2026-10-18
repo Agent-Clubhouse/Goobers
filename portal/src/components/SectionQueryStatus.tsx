@@ -1,3 +1,4 @@
+import { Action } from "../ui/Action";
 export function SectionQueryStatus({
   error,
   loading,
@@ -21,9 +22,9 @@ export function SectionQueryStatus({
       {loading && <span aria-hidden="true" className="section-query-spinner" />}
       {message && <span>{message}</span>}
       {error && retry && (
-        <button className="text-button" onClick={retry} type="button">
+        <Action variant="text" className="text-button" onClick={retry} type="button">
           Retry
-        </button>
+        </Action>
       )}
     </div>
   );

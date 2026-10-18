@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: reviewer
+spec:
+  gaggle: acme-web
+  role: reviewer
+  displayName: Reviewer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  # Pure evaluation: reviews evidence pointers and returns a Verdict. No
+  # write capability of any kind — it never mutates the repo, issue, or PR.
+  capabilities:
+    - agent:model
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - implementation
+    - merge-review

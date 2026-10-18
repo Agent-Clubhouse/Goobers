@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -110,7 +111,7 @@ func seedRestartClaim(t *testing.T, l instance.Layout, key localscheduler.ClaimK
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ledger.ReleaseScoped(key, runID); err != nil {
+	if err := ledger.ReleaseScoped(key, runID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _, err := ledger.ClaimScoped(key, runID, "default-implement", time.Minute); err != nil || !ok {

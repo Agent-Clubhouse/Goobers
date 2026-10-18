@@ -130,7 +130,7 @@ func TestRemediationCheckpointParksBaseRedCIBeforeTheAgenticChain(t *testing.T) 
 			baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 			st := &remediationCheckpointServerState{
 				number: 77, headSHA: headSHA, baseSHA: baseSHA,
-				liveBaseSHA:    "0000000000000000000000000000000000002701",
+				liveBaseSHA:    baseSHA,
 				baseCheckState: tt.baseCheckState,
 				labels:         []string{needsRemediationLabel},
 			}

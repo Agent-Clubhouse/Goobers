@@ -1,5 +1,6 @@
 import { MalformedResponseError } from "./api/errors";
 import type {
+  BranchOutcome,
   BranchStatus,
   DaemonClient,
   ErrorCause,
@@ -216,20 +217,23 @@ export function eventNodeId(event: RunEvent, runId?: string): string | undefined
   if (event.stage) {
     return normalizeRunScopedId(event.stage, runId);
   }
-  if (event.type === "parallel.started" || event.type === "parallel.finished") {
-    // A parallel container is its own graph node (id === declared name);
-    // branch.* events have no single node of their own — a branch spans
-    // multiple stage nodes, so they are attributed via deriveBranchStates
-    // instead, keyed by branch name rather than a graph node id.
+  if (
+    event.type === "parallel.started" ||
+    event.type === "parallel.finished" ||
+    event.type === "map.started" ||
+    event.type === "map.finished"
+  ) {
+    // A parallel or map container is its own graph node (id === declared
+    // name); branch.* events have no single node of their own — a branch
+    // spans multiple stage nodes, so they are attributed via
+    // deriveBranchStates (declared branches) or deriveMapVisits (map items)
+    // instead.
     return event.parallel;
   }
   return normalizeRunScopedId(event.artifact?.stage || event.gate, runId);
 }
 
-export function semanticStageVisits(
-  events: RunEvent[],
-  runId?: string,
-): SemanticStageVisit[] {
+export function semanticStageVisits(events: RunEvent[], runId?: string): SemanticStageVisit[] {
   const visits: SemanticStageVisit[] = [];
   const visitCounts = new Map<string, number>();
   const active = new Map<string, SemanticStageVisit>();
@@ -405,21 +409,14 @@ function repassBefore(
         event.branch === start.branch &&
         eventNodeId(event, runId) === stage,
     );
-  const relevant = previousStart
-    ? prior.filter((event) => event.seq > previousStart.seq)
-    : prior;
+  const relevant = previousStart ? prior.filter((event) => event.seq > previousStart.seq) : prior;
   const rerun = [...relevant]
     .reverse()
-    .find(
-      (event) =>
-        event.type === "stage.rerun.requested" && eventNodeId(event, runId) === stage,
-    );
+    .find((event) => event.type === "stage.rerun.requested" && eventNodeId(event, runId) === stage);
   const gate = [...relevant]
     .reverse()
     .find(
-      (event) =>
-        event.type === "gate.evaluated" &&
-        normalizeTarget(event.target, runId) === stage,
+      (event) => event.type === "gate.evaluated" && normalizeTarget(event.target, runId) === stage,
     );
   if (visit === 1 && !rerun && !gate) {
     return undefined;
@@ -447,12 +444,13 @@ function repassBefore(
       ? `${humanize(eventNodeId(gate, runId) ?? "gate")} returned ${gate.verdict ?? "a corrective verdict"}.`
       : "The stage was requested again.");
   const errorCode = failure?.error?.code?.toLowerCase() ?? "";
-  const kind =
-    /infra|network|timeout|rate|quota|worktree|runner|provider/.test(errorCode + " " + reason.toLowerCase())
-      ? "infrastructure"
-      : gate || correction
-        ? "correction"
-        : "retry";
+  const kind = /infra|network|timeout|rate|quota|worktree|runner|provider/.test(
+    errorCode + " " + reason.toLowerCase(),
+  )
+    ? "infrastructure"
+    : gate || correction
+      ? "correction"
+      : "retry";
 
   return {
     sourceStage: eventNodeId(anchor ?? failure ?? start, runId) ?? "workflow",
@@ -466,10 +464,7 @@ function normalizeTarget(target: string | undefined, runId?: string): string | u
   return normalizeRunScopedId(target, runId);
 }
 
-function normalizeRunScopedId(
-  value: string | undefined,
-  runId?: string,
-): string | undefined {
+function normalizeRunScopedId(value: string | undefined, runId?: string): string | undefined {
   if (!value) {
     return undefined;
   }
@@ -495,7 +490,12 @@ function friendlyArtifactName(name: string | undefined): string {
     return "Recorded artifact";
   }
   const leaf = name.split(/[\\/]/).at(-1) ?? name;
-  return leaf.replace(/\.[^.]+$/, "").replace(/[._-]+/g, " ").trim() || "Recorded artifact";
+  return (
+    leaf
+      .replace(/\.[^.]+$/, "")
+      .replace(/[._-]+/g, " ")
+      .trim() || "Recorded artifact"
+  );
 }
 
 export function eventNodeAtSequence(
@@ -580,9 +580,7 @@ export function evidenceVisit(
   for (const entry of journalEntries(events, runId)) {
     if (
       entry.kind === "group" &&
-      entry.events.some(
-        (event) => event.branch === evidence.branch && event.seq === evidence.seq,
-      )
+      entry.events.some((event) => event.branch === evidence.branch && event.seq === evidence.seq)
     ) {
       return entry.visit;
     }
@@ -697,10 +695,7 @@ export function evidenceDecision(
     if (event.branch !== evidence.branch) {
       continue;
     }
-    if (
-      event.type === "gate.evaluated" &&
-      (!nodeId || eventNodeId(event, runId) === nodeId)
-    ) {
+    if (event.type === "gate.evaluated" && (!nodeId || eventNodeId(event, runId) === nodeId)) {
       return event;
     }
     if (event.type === "gate.started" || event.type === "stage.started") {
@@ -743,6 +738,7 @@ export function deriveNodeStates(
       case "stage.started":
       case "gate.started":
       case "parallel.started":
+      case "map.started":
         states[nodeId] = "running";
         break;
       case "stage.finished":
@@ -752,10 +748,12 @@ export function deriveNodeStates(
         states[nodeId] = stateFromGate(event);
         break;
       case "parallel.finished":
+      case "map.finished":
         // The container's own pending/running/completed axis tracks whether
         // execution REACHED the join, not what the branches inside it did —
         // per-branch outcome (succeeded/failed/cancelled/...) is a separate
-        // signal carried by deriveBranchStates, not smashed into this state.
+        // signal carried by deriveBranchStates and deriveMapVisits, not
+        // smashed into this state.
         states[nodeId] = "completed";
         break;
     }
@@ -877,6 +875,8 @@ export type BranchState = "running" | BranchStatus;
 export interface BranchStateEntry {
   state: BranchState;
   seq: number;
+  /** Why a selective parallel skipped the branch; set only for "skipped". */
+  reason?: string;
 }
 
 // deriveBranchStates is deriveNodeStates'/deriveTraversedEdges' per-branch
@@ -892,13 +892,129 @@ export function deriveBranchStates(
     if (event.seq > selectedSeq) {
       break;
     }
-    if (event.type === "branch.started" && event.branchName) {
+    if (event.type === "parallel.started") {
+      // A selective parallel records its skipped branches once, on its
+      // start event: they never emit branch.started or branch.finished.
+      for (const branch of event.completeness ?? []) {
+        if (branch.status === "skipped") {
+          states.set(branch.name, branch.reason
+            ? { state: "skipped", seq: event.seq, reason: branch.reason }
+            : { state: "skipped", seq: event.seq });
+        } else {
+          states.delete(branch.name);
+        }
+      }
+    } else if (event.mapItemIdentity) {
+      // A map item's branch is not a declared branch; deriveMapVisits owns it.
+      continue;
+    } else if (event.type === "branch.started" && event.branchName) {
       states.set(event.branchName, { state: "running", seq: event.seq });
     } else if (event.type === "branch.finished" && event.branchName && event.branchStatus) {
       states.set(event.branchName, { state: event.branchStatus, seq: event.seq });
     }
   }
   return states;
+}
+
+// MapItemState is one frozen roster item's execution state as of the
+// playhead: "pending" until its branch starts, then "running" or its terminal
+// BranchStatus. Identity and digest come from the frozen roster on
+// map.started, never from the producer's current output.
+export interface MapItemState {
+  branch: number;
+  identity: string;
+  digest: string;
+  state: "pending" | BranchState;
+  seq?: number;
+}
+
+// MapVisit is the latest visit of one map as of the playhead.
+export interface MapVisit {
+  map: string;
+  startedSeq: number;
+  finishedSeq?: number;
+  sourceTask: string;
+  sourceSlot: string;
+  items: MapItemState[];
+}
+
+// deriveMapVisits is deriveBranchStates' counterpart for maps (#7386): each
+// map's latest visit, its frozen roster in branch order, and each item's
+// state from its branch.started/branch.finished and map.finished's
+// completeness record. Keyed by map name (the map's graph node id). A
+// re-entered map starts a new visit, replacing the previous one.
+export function deriveMapVisits(events: RunEvent[], selectedSeq: number): Map<string, MapVisit> {
+  const visits = new Map<string, MapVisit>();
+  // An item event updates its item only when branch and identity both match
+  // the frozen roster; anything else is not this visit's item.
+  const settle = (event: RunEvent, state: BranchState) => {
+    const item = event.parallel
+      ? visits.get(event.parallel)?.items.find((candidate) => candidate.branch === event.branch)
+      : undefined;
+    if (item && item.identity === event.mapItemIdentity) {
+      item.state = state;
+      item.seq = event.seq;
+    }
+  };
+  for (const event of orderRunEvents(events)) {
+    if (event.seq > selectedSeq) {
+      break;
+    }
+    if (event.type === "map.started" && event.parallel && event.mapRoster) {
+      visits.set(event.parallel, {
+        map: event.parallel,
+        startedSeq: event.seq,
+        sourceTask: event.mapRoster.sourceTask,
+        sourceSlot: event.mapRoster.sourceSlot,
+        items: event.mapRoster.items.map((item) => ({
+          branch: item.branch,
+          identity: item.identity,
+          digest: item.digest,
+          state: "pending",
+        })),
+      });
+    } else if (event.type === "branch.started" && event.mapItemIdentity) {
+      settle(event, "running");
+    } else if (event.type === "branch.finished" && event.mapItemIdentity && event.branchStatus) {
+      settle(event, event.branchStatus);
+    } else if (event.type === "map.finished" && event.parallel) {
+      const visit = visits.get(event.parallel);
+      if (visit) {
+        visit.finishedSeq = event.seq;
+        for (const outcome of event.completeness ?? []) {
+          const item = visit.items.find((candidate) => candidate.branch === outcome.branch);
+          if (item && item.state === "pending") {
+            item.state = outcome.status;
+            item.seq = event.seq;
+          }
+        }
+      }
+    }
+  }
+  return visits;
+}
+
+// mapVisitSummary is the non-color-dependent text for a map visit's progress
+// ("3 items — 2 succeeded, 1 running"), in the BranchState vocabulary.
+export function mapVisitSummary(visit: MapVisit): string {
+  if (visit.items.length === 0) {
+    return "0 items";
+  }
+  const noun = visit.items.length === 1 ? "item" : "items";
+  const counts = new Map<string, number>();
+  for (const item of visit.items) {
+    const label = item.state === "pending" ? "pending" : branchStateLabel(item.state).toLowerCase();
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const detail = [...counts.entries()].map(([label, count]) => `${count} ${label}`).join(", ");
+  return `${visit.items.length} ${noun} — ${detail}`;
+}
+
+// shortDigest abbreviates a canonical "sha256:<hex>" digest for display; the
+// full digest stays available alongside it.
+export function shortDigest(digest: string): string {
+  const hex = digest.startsWith("sha256:") ? digest.slice("sha256:".length) : digest;
+  return hex.slice(0, 12);
 }
 
 // branchStateLabel is the non-color-dependent text for a BranchState — the
@@ -918,7 +1034,13 @@ export function branchStateLabel(state: BranchState): string {
       return "Cancelled";
     case "no-output":
       return "No output";
+    case "skipped":
+      return "Skipped";
   }
+}
+
+function describeBranchOutcome(branch: BranchOutcome): string {
+  return branch.reason ? `${branch.name} (${branch.reason})` : branch.name;
 }
 
 export function eventHeading(event: RunEvent): string {
@@ -950,6 +1072,8 @@ export function eventHeading(event: RunEvent): string {
     "span.recorded": "Span recorded",
     "parallel.started": "Parallel started",
     "parallel.finished": "Parallel finished",
+    "map.started": "Map started",
+    "map.finished": "Map finished",
     "branch.started": "Branch started",
     "branch.finished": "Branch finished",
     "agent.lifecycle": "Agent lifecycle recorded",
@@ -991,9 +1115,7 @@ export function eventSummary(
       if (isVerdictArtifact(event) && associatedDecision?.type === "gate.evaluated") {
         const gate = humanize(eventNodeId(associatedDecision, runId) || node || "review");
         const verdict = associatedDecision.verdict || "a verdict";
-        const target = associatedDecision.target
-          ? ` selecting ${associatedDecision.target}`
-          : "";
+        const target = associatedDecision.target ? ` selecting ${associatedDecision.target}` : "";
         return `${name} captured the ${gate} decision: ${verdict}${target}.${access}`;
       }
       return `${name} was recorded${stage}.${access}`;
@@ -1013,9 +1135,8 @@ export function eventSummary(
         return "An external reference was recorded.";
       }
       const kind = externalRefKind(reference.kind);
-      const id = reference.kind === "pr" || reference.kind === "issue"
-        ? `#${reference.id}`
-        : reference.id;
+      const id =
+        reference.kind === "pr" || reference.kind === "issue" ? `#${reference.id}` : reference.id;
       const operation = externalRefOperation(event);
       return `${providerName(reference.provider)} ${operation} ${kind} ${id}.`;
     }
@@ -1040,11 +1161,47 @@ export function eventSummary(
       const stage = node ? `${humanize(node)} attempt` : "The attempt";
       return `${stage} executed on runner ${runner}${where ? ` (${where})` : ""}.`;
     }
-    case "parallel.started":
-      return event.parallel ? `Parallel ${event.parallel} started.` : "A parallel state started.";
+    case "parallel.started": {
+      const label = event.parallel ? `Parallel ${event.parallel} started` : "A parallel state started";
+      const skipped = (event.completeness ?? []).filter((branch) => branch.status === "skipped");
+      if (skipped.length === 0) {
+        return `${label}.`;
+      }
+      return `${label} — skipped ${skipped.map(describeBranchOutcome).join(", ")}.`;
+    }
+    case "map.started": {
+      const label = event.parallel ? `Map ${event.parallel}` : "A map";
+      const roster = event.mapRoster;
+      if (!roster) {
+        return `${label} started.`;
+      }
+      const noun = roster.items.length === 1 ? "item" : "items";
+      return `${label} started with ${roster.items.length} ${noun} frozen from ${roster.sourceTask}.${roster.sourceSlot}.`;
+    }
+    case "map.finished": {
+      const label = event.parallel ? `Map ${event.parallel}` : "The map";
+      const items = event.completeness ?? [];
+      if (items.length === 0) {
+        return `${label} finished with no items.`;
+      }
+      const succeeded = items.filter((item) => item.status === "succeeded").length;
+      const detail = items
+        .map((item) => `${item.mapItemIdentity ?? item.name}: ${item.status}`)
+        .join(", ");
+      return `${label} finished — ${succeeded}/${items.length} items succeeded (${detail}).`;
+    }
     case "branch.started":
+      if (event.mapItemIdentity) {
+        return `Map item ${event.mapItemIdentity}${event.mapItemDigest ? ` (${shortDigest(event.mapItemDigest)})` : ""} started.`;
+      }
       return event.branchName ? `Branch ${event.branchName} started.` : "A branch started.";
     case "branch.finished":
+      if (event.mapItemIdentity) {
+        const digest = event.mapItemDigest ? ` (${shortDigest(event.mapItemDigest)})` : "";
+        return event.branchStatus
+          ? `Map item ${event.mapItemIdentity}${digest} finished as ${event.branchStatus}.`
+          : `Map item ${event.mapItemIdentity}${digest} finished.`;
+      }
       if (!event.branchName) {
         return "A branch finished.";
       }
@@ -1057,9 +1214,14 @@ export function eventSummary(
         return `${label} finished.`;
       }
       const succeeded = event.completeness.filter((branch) => branch.status === "succeeded").length;
+      const skipped = event.completeness.filter((branch) => branch.status === "skipped").length;
       const detail = event.completeness
-        .map((branch) => `${branch.name}: ${branch.status}`)
+        .map((branch) => `${branch.name}: ${branch.status}${branch.reason ? ` (${branch.reason})` : ""}`)
         .join(", ");
+      if (skipped > 0) {
+        const ran = event.completeness.length - skipped;
+        return `${label} finished — ${succeeded}/${ran} selected branches succeeded, ${skipped} skipped (${detail}).`;
+      }
       return `${label} finished — ${succeeded}/${event.completeness.length} branches succeeded (${detail}).`;
     }
     case "agent.lifecycle": {
@@ -1123,23 +1285,7 @@ export function formatDuration(milliseconds: number): string {
   return `${seconds}s`;
 }
 
-export function formatTimestamp(value: string | undefined): string {
-  if (!value) {
-    return "In progress";
-  }
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return "Unavailable";
-  }
-  return new Intl.DateTimeFormat("en", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(timestamp);
-}
+export { formatTimestamp } from "./dateTime";
 
 function stateFromGate(event: RunEvent): RunNodeState {
   const target = event.target?.toLowerCase() ?? "";
@@ -1267,7 +1413,10 @@ function stateFromStatus(
 }
 
 export function humanize(value: string): string {
-  const words = value.replace(/[._-]+/g, " ").trim().split(/\s+/);
+  const words = value
+    .replace(/[._-]+/g, " ")
+    .trim()
+    .split(/\s+/);
   if (!words[0]) {
     return "Event";
   }

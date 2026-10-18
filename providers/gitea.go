@@ -592,7 +592,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	checkState, checks, err := p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
+	checkState, checks, verdictStatus, err := p.combinedCheckStateAndVerdict(ctx, req.Repository, pr.Head.SHA)
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
@@ -600,30 +600,14 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	labels := giteaLabelNames(pr.Labels)
-	return PullRequestPollResult{
-		Number:           pr.Number,
-		Title:            pr.Title,
-		State:            pr.State,
-		Merged:           pr.Merged,
-		MergedAt:         pr.MergedAt,
-		Mergeable:        pr.Mergeable,
-		Draft:            isWIPTitle(pr.Title),
-		Labels:           labels,
-		HeadBranch:       pr.Head.Ref,
-		HeadRepository:   repositoryRef(ProviderGitea, pr.Head.Repo),
-		HeadSHA:          pr.Head.SHA,
-		BaseSHA:          pr.Base.SHA,
-		BaseBranch:       pr.Base.Ref,
-		Body:             pr.Body,
-		ReviewDecision:   decision,
-		RequestedChanges: requestedChanges,
-		CheckState:       checkState,
-		Checks:           checks,
-		CommentsSince:    comments,
-		URL:              pr.HTMLURL,
-		Integrity:        apiintegrity.Unapproved,
-	}, nil
+	result := pullPollResultFromProjection(giteaPRProjection(pr))
+	result.ReviewDecision = decision
+	result.RequestedChanges = requestedChanges
+	result.CheckState = checkState
+	result.Checks = checks
+	result.VerdictStatus = verdictStatus
+	result.CommentsSince = comments
+	return result, nil
 }
 
 func isWIPTitle(title string) bool {
@@ -709,20 +693,33 @@ func (p *GiteaProvider) reviewDecision(ctx context.Context, repo RepositoryRef, 
 // to a normalized CheckState plus per-check detail. An empty statuses list is
 // treated as passing, following the GitHub convention.
 func (p *GiteaProvider) combinedCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, error) {
+	state, details, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	return state, details, err
+}
+
+// combinedCheckStateAndVerdict is combinedCheckState plus the merge-review
+// verdict status (#4199), which is reported apart from CI: it is Goobers' own
+// review decision, so it never makes the CI state failing or pending.
+func (p *GiteaProvider) combinedCheckStateAndVerdict(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, *CheckDetail, error) {
 	if ref == "" {
-		return CheckStatePending, nil, nil
+		return CheckStatePending, nil, nil, nil
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	var combined giteaCombinedStatus
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &combined); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	details := make([]CheckDetail, 0, len(combined.Statuses))
+	var verdict *CheckDetail
 	failing, pending := false, false
 	for _, status := range combined.Statuses {
+		if found, ok := mergeReviewStatusDetail(status.Context, status.Status, status.Description, status.TargetURL); ok {
+			verdict = found
+			continue
+		}
 		state := normalizeCombinedStatusState(status.Status)
 		details = append(details, CheckDetail{
 			Name: status.Context, State: state, Conclusion: status.Status,
@@ -737,14 +734,27 @@ func (p *GiteaProvider) combinedCheckState(ctx context.Context, repo RepositoryR
 	}
 	switch {
 	case failing:
-		return CheckStateFailing, details, nil
+		return CheckStateFailing, details, verdict, nil
 	case len(details) == 0:
-		return CheckStatePassing, details, nil
+		return CheckStatePassing, details, verdict, nil
 	case pending:
-		return CheckStatePending, details, nil
+		return CheckStatePending, details, verdict, nil
 	default:
-		return CheckStatePassing, details, nil
+		return CheckStatePassing, details, verdict, nil
 	}
+}
+
+// MergeReviewStatus reads the merge-review verdict status standing on ref,
+// or nil when there is none (#4199).
+func (p *GiteaProvider) MergeReviewStatus(ctx context.Context, repo RepositoryRef, ref string) (*CheckDetail, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	_, _, verdict, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	return verdict, err
 }
 
 // ClosePullRequest closes a Gitea pull request, detecting merged-vs-closed, and
@@ -851,6 +861,13 @@ func (p *GiteaProvider) ListPullRequests(ctx context.Context, req ListPullReques
 		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
 			continue
 		}
+		titleMatched, err := req.MatchesTitle(pr.Title)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.Number, err)
+		}
+		if !titleMatched {
+			continue
+		}
 		var checkState CheckState
 		if !req.SkipCheckState {
 			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
@@ -868,23 +885,28 @@ func (p *GiteaProvider) ListPullRequests(ctx context.Context, req ListPullReques
 // when the caller skips check-state resolution). The Gitea analog of
 // summarizePullRequest.
 func summarizeGiteaPull(pr giteaPull, checkState CheckState) PullRequestSummary {
-	return PullRequestSummary{
-		ID:         strconv.Itoa(pr.Number),
-		Number:     pr.Number,
-		URL:        pr.HTMLURL,
-		State:      pr.State,
-		Merged:     pr.Merged || pr.MergedAt != nil,
-		Head:       pr.Head.Ref,
-		Base:       pr.Base.Ref,
-		HeadSHA:    pr.Head.SHA,
-		BaseSHA:    pr.Base.SHA,
-		MergeSHA:   pr.MergeCommitSHA,
-		Draft:      isWIPTitle(pr.Title),
-		Labels:     giteaLabelNames(pr.Labels),
-		CheckState: checkState,
-		UpdatedAt:  pr.UpdatedAt,
-		Body:       pr.Body,
-		Integrity:  apiintegrity.Unapproved,
+	return pullSummaryFromProjection(giteaPRProjection(pr), checkState)
+}
+
+func giteaPRProjection(pr giteaPull) restPRProjection {
+	return restPRProjection{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		URL:            pr.HTMLURL,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          isWIPTitle(pr.Title),
+		Labels:         giteaLabelNames(pr.Labels),
+		HeadBranch:     pr.Head.Ref,
+		HeadRepository: repositoryRef(ProviderGitea, pr.Head.Repo),
+		HeadSHA:        pr.Head.SHA,
+		BaseBranch:     pr.Base.Ref,
+		BaseSHA:        pr.Base.SHA,
+		MergeSHA:       pr.MergeCommitSHA,
+		UpdatedAt:      pr.UpdatedAt,
+		Body:           pr.Body,
 	}
 }
 
@@ -978,6 +1000,13 @@ func (p *GiteaProvider) ListRecentlyClosedPullRequests(ctx context.Context, req 
 				continue
 			}
 			if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
+				continue
+			}
+			titleMatched, err := req.MatchesTitle(pr.Title)
+			if err != nil {
+				return nil, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.Number, err)
+			}
+			if !titleMatched {
 				continue
 			}
 			out = append(out, summarizeGiteaPull(pr, ""))

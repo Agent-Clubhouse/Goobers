@@ -125,10 +125,15 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 			writeTelemetryReadError(w, errorLog, "work item", readservice.ErrTelemetryUnavailable)
 			return
 		}
+		repository, err := parseWorkItemDetailQuery(request.URL.Query(), request.PathValue("kind"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+			return
+		}
 		result, err := workItems.WorkItem(
 			request.Context(),
 			request.PathValue("provider"),
-			request.URL.Query().Get("repository"),
+			repository,
 			request.PathValue("kind"),
 			request.PathValue("id"),
 		)
@@ -140,8 +145,27 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 	})
 }
 
+// parseWorkItemDetailQuery validates the detail route's query and path kind
+// up front so a malformed request names the parameter at fault (#6799); the
+// read service's own guard only knows the request is invalid, which surfaced
+// as the generic "telemetry query is invalid".
+func parseWorkItemDetailQuery(values url.Values, kind string) (string, error) {
+	if err := validateQueryValues(values, "repository"); err != nil {
+		return "", err
+	}
+	repository := strings.Trim(strings.TrimSpace(values.Get("repository")), "/")
+	if repository == "" {
+		return "", errors.New("repository query parameter is required: the work item's repository, " +
+			"as listed by " + apicontract.WorkItemsPath)
+	}
+	if kind != "pr" && kind != "issue" {
+		return "", errors.New("kind must be pr or issue")
+	}
+	return repository, nil
+}
+
 func parseWorkItemsQuery(values url.Values) (readservice.WorkItemListOptions, error) {
-	if err := validateQueryValues(values, "provider", "kind", "limit"); err != nil {
+	if err := validateQueryValues(values, "provider", "kind", "gaggle", "limit"); err != nil {
 		return readservice.WorkItemListOptions{}, err
 	}
 	limit := defaultWorkItemsPageSize
@@ -159,6 +183,7 @@ func parseWorkItemsQuery(values url.Values) (readservice.WorkItemListOptions, er
 	return readservice.WorkItemListOptions{
 		Provider: strings.TrimSpace(values.Get("provider")),
 		Kind:     kind,
+		Gaggle:   strings.TrimSpace(values.Get("gaggle")),
 		Limit:    limit,
 	}, nil
 }

@@ -218,3 +218,70 @@ func recordTraceVerdict(
 	}
 	return ref
 }
+
+// TestTraceVerdictsMarksSynthesizedVerdict is #5894's operator surface: a
+// runner-synthesized verdict is labelled in human output, and its JSON view
+// omits findings rather than reporting an empty list that reads as a pass.
+func TestTraceVerdictsMarksSynthesizedVerdict(t *testing.T) {
+	root := t.TempDir()
+	const runID = "synthesized-verdict"
+	recordTraceVerdict(t, root, runID, apiv1.VerdictEscalate, workflow.TargetEscalate, apiv1.Verdict{
+		Decision:    apiv1.VerdictEscalate,
+		ReasonCode:  apiv1.VerdictReasonUnchangedRepass,
+		Rationale:   "runner: this repass produced no change",
+		Synthesized: true,
+	}, false, "sha256:same")
+
+	code, stdout, stderr := runArgs(t, "trace", "--verdicts", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --verdicts: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "synthesized: runner-generated") {
+		t.Fatalf("trace --verdicts did not mark the synthesized verdict:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got struct {
+		Verdicts []map[string]any `json:"verdicts"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode trace JSON: %v", err)
+	}
+	if len(got.Verdicts) != 1 || got.Verdicts[0]["synthesized"] != true {
+		t.Fatalf("verdicts = %v, want one synthesized verdict", got.Verdicts)
+	}
+	if _, present := got.Verdicts[0]["findings"]; present {
+		t.Fatalf("synthesized verdict view = %v, want findings absent", got.Verdicts[0])
+	}
+}
+
+func TestTraceVerdictsKeepsEmptyFindingsForReviewedVerdict(t *testing.T) {
+	root := t.TempDir()
+	const runID = "clean-verdict"
+	recordTraceVerdict(t, root, runID, apiv1.VerdictPass, workflow.TerminalComplete, apiv1.Verdict{
+		Decision:  apiv1.VerdictPass,
+		Rationale: "looks good",
+	}, false, "")
+	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got struct {
+		Verdicts []map[string]any `json:"verdicts"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode trace JSON: %v", err)
+	}
+	if len(got.Verdicts) != 1 {
+		t.Fatalf("verdicts = %v", got.Verdicts)
+	}
+	if _, present := got.Verdicts[0]["findings"]; !present {
+		t.Fatalf("reviewed verdict view = %v, want findings key kept", got.Verdicts[0])
+	}
+	if _, present := got.Verdicts[0]["synthesized"]; present {
+		t.Fatalf("reviewed verdict view = %v, want no synthesized marker", got.Verdicts[0])
+	}
+}

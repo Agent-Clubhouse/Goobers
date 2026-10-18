@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/decisiongate"
 )
 
 // credentialplane.go implements the daemon write API's credential plane
@@ -79,14 +81,32 @@ type CredentialGrantDelivery struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
+// PublicationLeakScreenDelivery carries an explicitly opted-in publication
+// screen over the authenticated plane so its model key never enters a pod spec.
+type PublicationLeakScreenDelivery struct {
+	Settings decisiongate.Settings `json:"settings"`
+	BaseURL  string                `json:"baseUrl"`
+	APIKey   string                `json:"apiKey"`
+	Model    string                `json:"model"`
+}
+
 // MintedCredential is one resolved credential value. ExpiresAt is present
 // when the backing source states an expiry (GitHub App installation tokens
 // do); absent means the source stated none — the consumer must still treat
 // the value as a snapshot, not a lease (DS10).
+//
+// Scheme is the non-secret Azure DevOps authorization scheme ("basic" or
+// "bearer") of this value, set only for a gaggle whose repository is on Azure
+// DevOps (#5957). It differs from the response's RepoAuthScheme when the value
+// does not come from the repository's own credential: a credentials: entry's
+// personal access token is "basic" even on a gaggle whose repository
+// authenticates with a Microsoft Entra token. Empty means RepoAuthScheme
+// applies.
 type MintedCredential struct {
 	Capability string     `json:"capability"`
 	Value      string     `json:"value"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	Scheme     string     `json:"scheme,omitempty"`
 }
 
 // CredentialResolveResponse carries the minted credentials for one resolve
@@ -101,13 +121,16 @@ type MintedCredential struct {
 // scheme from the token's shape. It is empty for every other provider.
 //
 // Grant is present only when the request asked for one and the stage is a
-// deterministic task with at least one expiring credential.
+// deterministic task with at least one expiring credential. PublicationLeakScreen
+// is present only for a deterministic publication stage when the instance has
+// explicitly enabled the shadow screen.
 type CredentialResolveResponse struct {
-	RunID          string                   `json:"runId"`
-	Stage          string                   `json:"stage"`
-	Credentials    []MintedCredential       `json:"credentials"`
-	RepoAuthScheme string                   `json:"repoAuthScheme,omitempty"`
-	Grant          *CredentialGrantDelivery `json:"grant,omitempty"`
+	RunID                 string                         `json:"runId"`
+	Stage                 string                         `json:"stage"`
+	Credentials           []MintedCredential             `json:"credentials"`
+	RepoAuthScheme        string                         `json:"repoAuthScheme,omitempty"`
+	Grant                 *CredentialGrantDelivery       `json:"grant,omitempty"`
+	PublicationLeakScreen *PublicationLeakScreenDelivery `json:"publicationLeakScreen,omitempty"`
 }
 
 // CredentialService is the daemon-side credential plane. Implementations
@@ -132,8 +155,41 @@ func WithCredentialService(credentials CredentialService) HandlerOption {
 	}
 }
 
-func registerCredentialRoute(router *Router, credentials CredentialService, errorLog *log.Logger) {
+// WithGeneratedChildCredentialService installs an owner that independently
+// verifies exact contract, physical attempt, custody and current delegation.
+// Ordinary pod credential authority is never a fallback for generated children.
+func WithGeneratedChildCredentialService(credentials CredentialService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if credentials == nil {
+			return errors.New("generated child credential owner is required")
+		}
+		config.generatedChildCredentials = credentials
+		return nil
+	}
+}
+
+func registerCredentialRoute(router *Router, ordinary, child, parent CredentialService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteCredentialResolve, func(w http.ResponseWriter, request *http.Request) {
+		credentials := ordinary
+		principal, authenticated := PrincipalFromRequest(request)
+		generated := authenticated && principal.Issuer == GeneratedChildPrincipalIssuer
+		if generated {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if child == nil || principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
+				writeError(w, http.StatusForbidden, "child_credentials_unavailable", "generated child credential authority is not available")
+				return
+			}
+			credentials = child
+		}
+		isParent := authenticated && principal.Issuer == WorkflowParentPrincipalIssuer
+		if isParent {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if parent == nil || principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+				writeError(w, http.StatusForbidden, "parent_credentials_unavailable", "contained parent credential authority is not available")
+				return
+			}
+			credentials = parent
+		}
 		if credentials == nil {
 			writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "the credential plane is not available from this server")
 			return
@@ -156,8 +212,7 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 		// caller could pull raw secret material for any run/stage and drive
 		// GitHub App token minting. The gate sits before body decoding — an
 		// unauthenticated caller learns nothing from this surface.
-		principal, authenticated := PrincipalFromRequest(request)
-		if !authenticated || !IsPodPrincipal(principal) {
+		if !generated && !isParent && (!authenticated || !IsPodPrincipal(principal)) {
 			writeError(w, http.StatusForbidden, "credential_plane_requires_pod_principal",
 				"the credential plane requires an authenticated pod principal; it serves stage pods only")
 			return
@@ -167,26 +222,13 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
-		if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId and stage are required")
+		if err := validateCredentialResolveInput(input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
-		}
-		if len(input.Capabilities) > MaxCredentialResolveCapabilities {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
-				fmt.Sprintf("capabilities must name no more than %d entries", MaxCredentialResolveCapabilities))
-			return
-		}
-		for _, capability := range input.Capabilities {
-			if strings.TrimSpace(capability) == "" || len(capability) > MaxCredentialCapabilityBytes {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest,
-					fmt.Sprintf("capability names must be non-empty and no longer than %d bytes", MaxCredentialCapabilityBytes))
-				return
-			}
 		}
 		// Per-run containment: the pod principal established above may only
 		// resolve credentials for its OWN run's stages.
-		if principal.Subject != podPrincipalSubject(input.RunID) {
-			writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only resolve credentials for its own run")
+		if !requirePodRun(w, principal, input.RunID, "pod principal may only resolve credentials for its own run") {
 			return
 		}
 		response, err := credentials.Resolve(request.Context(), input)
@@ -195,7 +237,35 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 			return
 		}
 		// The body carries live secret material: forbid every cache layer.
-		w.Header().Set("Cache-Control", "no-store")
+		if !generated && !isParent {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		writeJSON(w, http.StatusOK, response)
 	})
+}
+
+// WithWorkflowParentCredentialService installs the active parent attempt owner.
+func WithWorkflowParentCredentialService(service CredentialService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("contained parent credential owner is required")
+		}
+		config.workflowParentCredentials = service
+		return nil
+	}
+}
+
+func validateCredentialResolveInput(input CredentialResolveRequest) error {
+	if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
+		return errors.New("runId and stage are required")
+	}
+	if len(input.Capabilities) > MaxCredentialResolveCapabilities {
+		return fmt.Errorf("capabilities must name no more than %d entries", MaxCredentialResolveCapabilities)
+	}
+	for _, capability := range input.Capabilities {
+		if strings.TrimSpace(capability) == "" || len(capability) > MaxCredentialCapabilityBytes {
+			return fmt.Errorf("capability names must be non-empty and no longer than %d bytes", MaxCredentialCapabilityBytes)
+		}
+	}
+	return nil
 }

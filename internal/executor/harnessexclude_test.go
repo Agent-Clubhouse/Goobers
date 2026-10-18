@@ -78,11 +78,14 @@ func TestExcludeStageArtifactsRegistersAndRepeats(t *testing.T) {
 	writeExcludeTestFile(t, filepath.Join(workspace, "claimed-item.json"), "{}\n")
 	writeExcludeTestFile(t, filepath.Join(workspace, "mutations.jsonl"), "{}\n")
 	writeExcludeTestFile(t, filepath.Join(workspace, "nested", "claimed-item.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, "nested", ".goobers", "config.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, "nested", ".goober-assets", "skill.md"), "fixture\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, "nested", "mutations.jsonl"), "{}\n")
 	writeExcludeTestFile(t, filepath.Join(workspace, "agent-work.txt"), "real work\n")
 
 	others := runExcludeTestGit(t, workspace, "ls-files", "--others", "--exclude-standard")
 	visible := strings.Fields(others)
-	want := []string{"agent-work.txt", "nested/claimed-item.json"}
+	want := []string{"agent-work.txt", "nested/.goober-assets/skill.md", "nested/.goobers/config.json", "nested/claimed-item.json", "nested/mutations.jsonl"}
 	if strings.Join(visible, " ") != strings.Join(want, " ") {
 		t.Fatalf("untracked files = %q, want %q (root-anchored exclusion only)", visible, want)
 	}
@@ -153,5 +156,24 @@ func writeExcludeTestFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestExcludeStageArtifactsHidesHarnessScratch is the regression for a blocked
+// pod stage going through recovery custody: the harness scratch directory and
+// goober assets are untracked in a pod checkout, so before this they made a
+// stage that changed nothing look dirty.
+func TestExcludeStageArtifactsHidesHarnessScratch(t *testing.T) {
+	workspace := initExcludeTestRepo(t)
+	ExcludeStageArtifacts(context.Background(), workspace, "claimed-item.json")
+	writeExcludeTestFile(t, filepath.Join(workspace, ".goobers", "mcp", "claude.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, ".goobers", "result.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, ".goober-assets", "skill.md"), "x\n")
+	if status := runExcludeTestGit(t, workspace, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Fatalf("harness scratch still dirties the workspace: %q", status)
+	}
+	writeExcludeTestFile(t, filepath.Join(workspace, "agent-work.txt"), "real work\n")
+	if status := runExcludeTestGit(t, workspace, "status", "--porcelain"); !strings.Contains(status, "agent-work.txt") {
+		t.Fatalf("real work hidden: %q", status)
 	}
 }

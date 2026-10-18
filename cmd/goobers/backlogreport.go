@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"io"
-	"os"
 	"time"
 
 	"github.com/goobers/goobers/providers"
@@ -31,13 +29,13 @@ func writeReadOnlyBacklogReport(items []providers.WorkItem, truncated bool, stde
 		ObservedAt: time.Now().UTC(), ReadOnly: true,
 		CandidateCount: len(items), Candidates: items, Truncated: truncated,
 	}
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err == nil {
-		err = os.WriteFile(path, append(data, '\n'), 0o644)
-	}
-	if err != nil {
-		pf(stderr, "error: write candidate report %s: %v\n", path, err)
-		return 1
+	if code := writeStageResultJSON(stderr, path, report, stageResultOptions{
+		MarshalLabel:    "write candidate report " + path,
+		WriteLabel:      "write candidate report",
+		Indented:        true,
+		TrailingNewline: true,
+	}); code != 0 {
+		return code
 	}
 	return 0
 }

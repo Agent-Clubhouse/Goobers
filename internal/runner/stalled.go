@@ -10,6 +10,8 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/hostsuspend"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -421,7 +423,7 @@ type stalledCandidate struct {
 	finalState   string
 }
 
-func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Duration) (stalledCandidate, bool, error) {
+func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Duration, suspended []hostsuspend.Window) (stalledCandidate, bool, error) {
 	reader, err := journal.OpenRead(dir)
 	if err != nil {
 		return stalledCandidate{}, false, fmt.Errorf("runner: open stalled run %q: %w", runID, err)
@@ -450,7 +452,7 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	// LAST event read false in exactly that case and escalated a run parked for
 	// a human — see journal.ParkedAtGate, which skips observational events and
 	// stops at the first one that actually moves control flow.
-	if journal.ParkedAtGate(events) {
+	if journal.ParkedAtGate(events) || ParkedOnChild(events) {
 		return candidate, false, nil
 	}
 	// Take the newest event that actually carries a TIMESTAMP. An event written
@@ -474,7 +476,10 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	if candidate.lastActivity.IsZero() {
 		return candidate, false, nil
 	}
-	if !candidate.lastActivity.Before(now.Add(-timeout)) {
+	// Journal timestamps are wall-clock, so time the host spent suspended
+	// since the last event is not silence the run could have broken (#5891).
+	window := timeout + hostsuspend.Overlap(suspended, candidate.lastActivity, now)
+	if !candidate.lastActivity.Before(now.Add(-window)) {
 		return candidate, false, nil
 	}
 	if state, stateErr := reader.State(); stateErr == nil {
@@ -486,7 +491,11 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 // EscalateStalled rechecks a candidate and, if it is still running and silent
 // past timeout, asks its live owner to stop the active attempt. Runs without a
 // live owner are recovered and finished directly.
-func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Duration) (Result, bool, error) {
+//
+// suspended lists host-suspension intervals the journal recheck excludes. A
+// live owner's own check compares monotonic instants, which already exclude
+// them (see journal.Run.IfLastActivityBefore), so it is given timeout as is.
+func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Duration, suspended ...hostsuspend.Window) (Result, bool, error) {
 	if !apiv1.ValidRunID(runID) {
 		return Result{}, false, fmt.Errorf("runner: invalid run id %q", runID)
 	}
@@ -496,7 +505,7 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 
 	dir := filepath.Join(r.cfg.RunsDir, runID)
 	if active := r.activeRun(runID); active != nil {
-		candidate, stalled, err := inspectStalledCandidate(dir, runID, now, timeout)
+		candidate, stalled, err := inspectStalledCandidate(dir, runID, now, timeout, suspended)
 		if err != nil {
 			return Result{}, false, err
 		}
@@ -514,6 +523,9 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 			}
 			if outcome, ok := active.waitFor(grace); ok {
 				return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+			}
+			if r.cfg.childExecution != nil {
+				return Result{Phase: journal.PhaseRunning, FinalState: candidate.finalState}, false, invoke.ErrChildCustodyPending
 			}
 			outcome, claim := active.claimTakeover()
 			switch claim {
@@ -549,7 +561,7 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 	}
 	defer func() { _ = jr.Close() }()
 
-	candidate, stalled, err := inspectStalledCandidate(dir, runID, now, timeout)
+	candidate, stalled, err := inspectStalledCandidate(dir, runID, now, timeout, suspended)
 	if err != nil {
 		return Result{}, false, err
 	}
@@ -681,10 +693,11 @@ func (r *Runner) InterruptStage(runID, stage, actor string, now time.Time) (Resu
 	return r.interruptActiveRun(runID, active, finalState, request, journal.PhaseEscalated, "interrupted")
 }
 
-// ExpireRun aborts a running journal whose total wall-clock age exceeds
-// timeout. It shares CancelRun's active-attempt interruption and terminal path,
-// and can recover an unowned journal during daemon startup before resume.
-func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.Duration) (Result, bool, error) {
+// ExpireRun aborts a running journal whose execution time (RunExecutionElapsed:
+// its age less child waiting and the suspended intervals) exceeds timeout. It
+// shares CancelRun's active-attempt interruption and terminal path, and can
+// recover an unowned journal during daemon startup before resume.
+func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.Duration, suspended ...hostsuspend.Window) (Result, bool, error) {
 	if !apiv1.ValidRunID(runID) {
 		return Result{}, false, fmt.Errorf("runner: invalid run id %q", runID)
 	}
@@ -697,7 +710,22 @@ func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: inspect run %q for duration limit: %w", runID, err)
 	}
-	if phase != journal.PhaseRunning || !startedAt.Before(now.Add(-timeout)) {
+	if phase != journal.PhaseRunning {
+		return Result{Phase: phase}, false, nil
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return Result{}, false, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return Result{}, false, err
+	}
+	elapsed, err := RunExecutionElapsed(events, startedAt, now, suspended...)
+	if err != nil {
+		return Result{}, false, err
+	}
+	if elapsed <= timeout {
 		return Result{Phase: phase}, false, nil
 	}
 
@@ -739,6 +767,9 @@ func (r *Runner) interruptActiveRun(
 	}
 	if outcome, ok := active.waitFor(grace); ok {
 		return outcome.result, outcome.result.Phase == success, outcome.err
+	}
+	if r.cfg.childExecution != nil {
+		return Result{Phase: journal.PhaseRunning, FinalState: finalState}, false, invoke.ErrChildCustodyPending
 	}
 	outcome, claim := active.claimTakeover()
 	switch claim {

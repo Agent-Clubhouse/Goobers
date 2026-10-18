@@ -44,16 +44,14 @@ func (p *GiteaProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequ
 
 	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
 	if callerPaged {
-		page := req.Page
-		if page < 1 {
-			page = 1
-		}
+		page := max(req.Page, 1)
+		skip := 0
 		if req.Cursor != "" {
-			n, err := strconv.Atoi(req.Cursor)
-			if err != nil || n < 1 {
-				return nil, fmt.Errorf("invalid gitea work-item cursor %q", req.Cursor)
+			var err error
+			page, skip, err = parseGiteaWorkItemCursor(req.Cursor, pageSize)
+			if err != nil {
+				return nil, err
 			}
-			page = n
 		}
 		values.Set("page", strconv.Itoa(page))
 		values.Set("limit", strconv.Itoa(pageSize))
@@ -69,12 +67,25 @@ func (p *GiteaProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequ
 		if err != nil {
 			return nil, err
 		}
+		fetched := len(issues)
+		issues = issues[min(skip, fetched):]
+		budgetCapped := req.MaxCandidates > 0 && len(issues) > req.MaxCandidates
+		if budgetCapped {
+			issues = issues[:req.MaxCandidates]
+		}
 		if req.PageInfo != nil {
 			req.PageInfo.CandidateCount = len(issues)
+			req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, false)
 			req.PageInfo.HasNext = page*pageSize < total
 			req.PageInfo.NextCursor = ""
 			if req.PageInfo.HasNext {
 				req.PageInfo.NextCursor = strconv.Itoa(page + 1)
+			}
+			if budgetCapped {
+				// The raw-candidate budget cut this page short: resume
+				// inside it, after the last inspected candidate.
+				req.PageInfo.HasNext = true
+				req.PageInfo.NextCursor = fmt.Sprintf("%d:%d", page, skip+len(issues))
 			}
 		}
 		return giteaIssuesToWorkItems(issues, req)
@@ -147,6 +158,25 @@ func (p *GiteaProvider) listIssuesPage(ctx context.Context, endpoint string) ([]
 		}
 	}
 	return issues, total, nil
+}
+
+// parseGiteaWorkItemCursor reads a caller-paged cursor: "page", or
+// "page:skip" when a raw-candidate budget stopped inside that page after skip
+// records.
+func parseGiteaWorkItemCursor(cursor string, pageSize int) (int, int, error) {
+	pagePart, skipPart, hasSkip := strings.Cut(cursor, ":")
+	page, err := strconv.Atoi(pagePart)
+	if err != nil || page < 1 {
+		return 0, 0, fmt.Errorf("invalid gitea work-item cursor %q", cursor)
+	}
+	if !hasSkip {
+		return page, 0, nil
+	}
+	skip, err := strconv.Atoi(skipPart)
+	if err != nil || skip < 1 || skip >= pageSize {
+		return 0, 0, fmt.Errorf("invalid gitea work-item cursor %q", cursor)
+	}
+	return page, skip, nil
 }
 
 func giteaIssuesToWorkItems(issues []giteaIssue, req ListWorkItemsRequest) ([]WorkItem, error) {
@@ -301,66 +331,22 @@ func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo Reposito
 // idempotent (Gitea's q= searches titles only, so the match is a client-side
 // body-footer scan).
 func (p *GiteaProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
-	if err := p.ready(); err != nil {
-		return WorkItem{}, err
-	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	// #5245: refuse declared graph edges before any mutation, rather than
-	// creating the item and dropping them.
-	if err := checkCreateWorkItemGraphFields(req); err != nil {
-		return WorkItem{}, err
-	}
-	itemBody := withRunIDFooter(req.Body, req.RunID)
-	var err error
-	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.RunID != "" {
-		if existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID); err != nil {
-			return WorkItem{}, err
-		} else if found {
-			return existing, nil
-		}
-	}
-	labelNames := replaceStatusLabel(req.Labels, req.Status)
-	labelIDs, err := p.giteaLabelIDs(ctx, req.Repository, labelNames)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
-	if err != nil {
-		return WorkItem{}, err
-	}
-	body := map[string]interface{}{
-		"title": req.Title,
-		"body":  itemBody,
-	}
-	if len(labelIDs) > 0 {
-		body["labels"] = labelIDs
-	}
-	if req.Assignee != "" {
-		body["assignees"] = []string{req.Assignee}
-	}
-	var issue giteaIssue
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &issue); err != nil {
-		return WorkItem{}, err
-	}
-	item := mapGiteaIssue(issue)
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, strconv.Itoa(issue.Number)),
-		URL:       item.URL,
-		Operation: "create",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(req.Title)},
-			"body":  {After: digestString(itemBody)},
+	return createRESTWorkItem(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req, restCreateWorkItemHooks[giteaIssue, []int64]{
+		ready:  p.ready,
+		labels: p.giteaLabelIDs,
+		createBody: func(req CreateWorkItemRequest, itemBody string, labelIDs []int64) interface{} {
+			body := map[string]interface{}{"title": req.Title, "body": itemBody}
+			if len(labelIDs) > 0 {
+				body["labels"] = labelIDs
+			}
+			if req.Assignee != "" {
+				body["assignees"] = []string{req.Assignee}
+			}
+			return body
 		},
+		mapIssue:    mapGiteaIssue,
+		findRunItem: p.findRunItem,
 	})
-	return item, nil
 }
 
 // findRunItem scans a recent window of issues for one whose body carries the
@@ -842,6 +828,7 @@ func giteaIssueFields(issue giteaIssue) fieldpredicate.Fields {
 	fields := fieldpredicate.Fields{
 		"id":       issue.ID,
 		"number":   int64(issue.Number),
+		"title":    issue.Title,
 		"state":    issue.State,
 		"comments": int64(issue.Comments),
 	}

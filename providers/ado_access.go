@@ -69,6 +69,9 @@ type ADOBranchPolicy struct {
 	ID       int
 	TypeName string
 	RefName  string
+	// RunBranchRoot is the run-branch namespace or workflow folder the
+	// policy's scope covers, or empty when the scope covers every branch.
+	RunBranchRoot string
 }
 
 type adoRepositoryResponse struct {
@@ -168,43 +171,69 @@ func adoPermissionResults(response adoPermissionEvaluationBatch, permissions []A
 	return results, nil
 }
 
-// BlanketPrefixPolicies returns the enabled, blocking policy configurations
+// RunBranchPrefixPolicies returns the enabled, blocking policy configurations
 // of repo's project that apply to the repository with repositoryID through a
-// Prefix scope covering all of refs/heads/. Such a policy makes every branch
-// PR-only, so Goobers cannot push a run branch (live probe F8). Scopes that
-// name no ref, or name a narrower folder or one branch, are not reported.
-func (p *ADOProvider) BlanketPrefixPolicies(ctx context.Context, repo RepositoryRef, repositoryID string) ([]ADOBranchPolicy, error) {
+// Prefix scope covering Goobers' run branches: a scope over all of
+// refs/heads/ (which makes every branch PR-only, live probe F8), or one over a
+// folder that contains a run-branch root in runBranchRoots. A root is a
+// gaggle's branch namespace ("goobers/") or one of its run-branch folders: a
+// workflow's ("goobers/implementation/"), since a run branch is
+// <namespace><workflow>/<run> (BranchNameIn), or the published child runs'
+// ("goobers/children/"). Either way every push of the
+// covered run branches must go through a pull request, so Goobers cannot push
+// them. A blanket policy is reported with an empty RunBranchRoot. Scopes that
+// name no ref, or name one branch or a folder that contains no root
+// (refs/heads/release/), are not reported.
+func (p *ADOProvider) RunBranchPrefixPolicies(ctx context.Context, repo RepositoryRef, repositoryID string, runBranchRoots []string) ([]ADOBranchPolicy, error) {
 	configs, err := p.branchPolicyConfigurations(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
-	var blanket []ADOBranchPolicy
+	var blocking []ADOBranchPolicy
 	for _, c := range configs {
 		if !c.IsEnabled || !c.IsBlocking || c.IsDeleted {
 			continue
 		}
 		for _, scope := range c.Settings.Scope {
-			if adoScopeIsBlanketPrefix(scope, repositoryID) {
-				blanket = append(blanket, ADOBranchPolicy{ID: c.ID, TypeName: c.Type.DisplayName, RefName: scope.RefName})
+			if root, covers := adoScopeCoversRunBranches(scope, repositoryID, runBranchRoots); covers {
+				blocking = append(blocking, ADOBranchPolicy{ID: c.ID, TypeName: c.Type.DisplayName, RefName: scope.RefName, RunBranchRoot: root})
 				break
 			}
 		}
 	}
-	sort.SliceStable(blanket, func(i, j int) bool { return blanket[i].ID < blanket[j].ID })
-	return blanket, nil
+	sort.SliceStable(blocking, func(i, j int) bool { return blocking[i].ID < blocking[j].ID })
+	return blocking, nil
 }
 
-// adoScopeIsBlanketPrefix reports whether scope is a Prefix scope on the
-// repository (or on every repository) whose folder contains refs/heads/.
-func adoScopeIsBlanketPrefix(scope adoPolicyScope, repositoryID string) bool {
+// adoScopeCoversRunBranches reports whether scope is a Prefix scope on the
+// repository (or on every repository) whose folder contains refs/heads/, or
+// contains one of runBranchRoots under refs/heads/. The first such root is
+// returned for the latter and "" for the former. Folders compare by path
+// segment and case-insensitively, as Azure DevOps compares ref names.
+func adoScopeCoversRunBranches(scope adoPolicyScope, repositoryID string, runBranchRoots []string) (string, bool) {
 	if !strings.EqualFold(scope.MatchKind, "prefix") {
-		return false
+		return "", false
 	}
 	if scope.RepositoryID != "" && repositoryID != "" && !strings.EqualFold(scope.RepositoryID, repositoryID) {
-		return false
+		return "", false
 	}
-	folder := strings.TrimSuffix(strings.TrimSpace(scope.RefName), "/")
-	return folder == "refs" || folder == "refs/heads"
+	folder := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(scope.RefName), "/"))
+	if folder == "refs" || folder == "refs/heads" {
+		return "", true
+	}
+	if !strings.HasPrefix(folder, "refs/heads/") {
+		return "", false
+	}
+	for _, root := range runBranchRoots {
+		ref := strings.ToLower("refs/heads/" + strings.Trim(strings.TrimSpace(root), "/"))
+		if ref == "refs/heads/" {
+			continue
+		}
+		if ref == folder || strings.HasPrefix(ref, folder+"/") {
+			return root, true
+		}
+	}
+	return "", false
 }
 
 // WorkItemTypeStates returns the state names of one work item type in the

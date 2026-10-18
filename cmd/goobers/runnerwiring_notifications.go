@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/providers"
 )
@@ -73,7 +74,7 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	req = withNeedsHumanAssignee(req, c.needsHumanAssignee)
 	if req.Repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, req.Repository)
-		if !backlogOnOtherProvider(req.Repository, backlog) {
+		if !providerconfig.BacklogOnOtherProvider(req.Repository, backlog) {
 			return c.updateADOWorkItem(ctx, req, backlog)
 		}
 		// A backlog on another provider (topology (b)): the item lives there,
@@ -134,7 +135,7 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 	itemID = blockedLookupID(itemID)
 	if repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, repository)
-		if !backlogOnOtherProvider(repository, backlog) {
+		if !providerconfig.BacklogOnOtherProvider(repository, backlog) {
 			provider, err := newConfiguredADOProvider(c.layout.Root, repository)
 			if err != nil {
 				return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
@@ -160,10 +161,59 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 	return provider.ListComments(ctx, repository, itemID)
 }
 
+// GetWorkItem implements gate.WorkItemReader so the failure-streak comment
+// names the park label the item actually carries (#5430). It routes exactly
+// like ListComments, except that an ADO pull request's labels are read from
+// the PR on its code repository: its number is not a Boards work-item id.
+func (c *escalationCommenter) GetWorkItem(ctx context.Context, repository providers.RepositoryRef, itemID string) (providers.WorkItem, error) {
+	if repository.Provider == providers.ProviderADO && strings.HasPrefix(itemID, pullRequestClaimPrefix) {
+		provider, err := newConfiguredADOProvider(c.layout.Root, repository)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+		}
+		pullID := blockedLookupID(itemID)
+		labels, err := provider.PullRequestLabelNames(ctx, repository, pullID)
+		if err != nil {
+			return providers.WorkItem{}, err
+		}
+		return providers.WorkItem{ID: pullID, Labels: labels}, nil
+	}
+	itemID = blockedLookupID(itemID)
+	if repository.Provider == providers.ProviderADO {
+		backlog := backlogRepoRefForGaggle(c.layout, repository)
+		if !providerconfig.BacklogOnOtherProvider(repository, backlog) {
+			provider, err := newConfiguredADOProvider(c.layout.Root, repository)
+			if err != nil {
+				return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+			}
+			return provider.GetWorkItem(ctx, backlog, itemID)
+		}
+		repository = backlog
+	}
+	ref := repository.Owner + "/" + repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+	}
+	c.reg.Register([]byte(token))
+	if repository.Provider == providers.ProviderGitea {
+		provider, err := newGiteaProviderForStage(c.layout.Root, repository, token)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+		}
+		return provider.GetWorkItem(ctx, repository, itemID)
+	}
+	reader, ok := newEscalationPoster(token).(gate.WorkItemReader)
+	if !ok {
+		return providers.WorkItem{}, fmt.Errorf("escalation provider for %s cannot read work items", ref)
+	}
+	return reader.GetWorkItem(ctx, repository, itemID)
+}
+
 func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
 	if repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, repository)
-		if !backlogOnOtherProvider(repository, backlog) {
+		if !providerconfig.BacklogOnOtherProvider(repository, backlog) {
 			return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
 		}
 		repository = backlog
@@ -230,6 +280,9 @@ func newEscalationPolicy(l instance.Layout, cfg *instance.Config, resolver crede
 		},
 		RunsDir: l.RunsDir(),
 		State:   escalationNotifyState{layout: l, cfg: cfg},
+		EngineInterruption: func(runID string) (string, error) {
+			return engineWatchdogInterruption(l.SchedulerDir(), runID)
+		},
 	}
 }
 
@@ -342,6 +395,10 @@ func (s escalationNotifyState) ClearParks(repo providers.RepositoryRef, itemID s
 
 func (s escalationNotifyState) VoidRemediationCharge(ctx context.Context, poster gate.Commenter, runID string) error {
 	return voidRemediationChargeForRun(ctx, poster, s.layout, runID)
+}
+
+func (s escalationNotifyState) SettleSupersededRun(ctx context.Context, poster gate.Commenter, runID, finalState string) (bool, error) {
+	return settleSupersededRun(ctx, poster, s.layout, runID, finalState)
 }
 
 func (s escalationNotifyState) SettleNoWorkStreak(ctx context.Context, poster gate.Commenter, runID, finalState, runURL string) error {

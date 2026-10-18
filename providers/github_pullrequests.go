@@ -25,7 +25,22 @@ import (
 // sidesteps this package's lack of a typed HTTP-status error to match against
 // (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
-	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, restOpenPullRequestHooks{
+	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, githubOpenPullRequestHooks())
+}
+
+// CreatePullRequest only attempts creation. It never updates an existing PR or
+// handles an ambiguous response with another mutation; its caller owns recovery.
+func (p *GitHubProvider) CreatePullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestResult{}, err
+	}
+	hooks := githubOpenPullRequestHooks()
+	hooks.isCreateRaceError = nil
+	return createRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, hooks, req.Title, withRunIDFooter(req.Body, req.RunID))
+}
+
+func githubOpenPullRequestHooks() restOpenPullRequestHooks {
+	return restOpenPullRequestHooks{
 		title: func(req PullRequestRequest) string { return req.Title },
 		createBody: func(req PullRequestRequest, title, body string) interface{} {
 			return map[string]interface{}{
@@ -37,7 +52,7 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 			}
 		},
 		isCreateRaceError: IsPullRequestAlreadyExistsError,
-	})
+	}
 }
 
 // FindPullRequestByBranch looks up an open PR for head/base, returning
@@ -141,7 +156,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		return PullRequestPollResult{}, err
 	}
 
-	checkState, checks, err := p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
+	checkState, checks, verdictStatus, err := p.combinedCheckStateAndVerdict(ctx, req.Repository, pr.Head.SHA)
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
@@ -150,40 +165,18 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	labels := make([]string, 0, len(pr.Labels))
-	for _, label := range pr.Labels {
-		labels = append(labels, label.Name)
-	}
-	assignees := githubUserLogins(pr.Assignees)
-	requestedReviewers := githubUserLogins(pr.RequestedReviewers)
-
-	return PullRequestPollResult{
-		Number:             pr.Number,
-		Title:              pr.Title,
-		Author:             pr.User.Login,
-		Assignees:          assignees,
-		RequestedReviewers: requestedReviewers,
-		State:              pr.State,
-		Merged:             pr.Merged,
-		MergedAt:           pr.MergedAt,
-		Mergeable:          pr.Mergeable,
-		MergeableState:     pr.MergeableState,
-		Draft:              pr.Draft,
-		Labels:             labels,
-		HeadBranch:         pr.Head.Ref,
-		HeadRepository:     repositoryRef(ProviderGitHub, pr.Head.Repo),
-		HeadSHA:            pr.Head.SHA,
-		BaseSHA:            pr.Base.SHA,
-		BaseBranch:         pr.Base.Ref,
-		Body:               pr.Body,
-		ReviewDecision:     decision,
-		RequestedChanges:   requestedChanges,
-		CheckState:         checkState,
-		Checks:             checks,
-		CommentsSince:      comments,
-		URL:                pr.HTMLURL,
-		Integrity:          apiintegrity.Unapproved,
-	}, nil
+	result := pullPollResultFromProjection(githubPRProjection(pr))
+	result.Author = pr.User.Login
+	result.Assignees = githubUserLogins(pr.Assignees)
+	result.RequestedReviewers = githubUserLogins(pr.RequestedReviewers)
+	result.MergeableState = pr.MergeableState
+	result.ReviewDecision = decision
+	result.RequestedChanges = requestedChanges
+	result.CheckState = checkState
+	result.Checks = checks
+	result.VerdictStatus = verdictStatus
+	result.CommentsSince = comments
+	return result, nil
 }
 
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
@@ -309,6 +302,9 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	}
 	// An accepted HTTP response is not evidence of a completed merge. In
 	// particular, missing/false `merged` must not inflate mutation telemetry.
+	if out.Merged {
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
+	}
 	if err := receipt.record(ctx, out.SHA, out.Merged); err != nil {
 		return MergePullRequestResult{Number: receipt.number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
 	}
@@ -615,6 +611,7 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 // external ref, so a queued-but-not-yet-merged pull request is as visible
 // in the run journal as a merged one.
 func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string, admission *QueueAdmission) error {
+	observeProviderMutation(ctx, p.Client, ProviderGitHub)
 	return recordLandingReceipt(ctx, p.recorder, ExternalRef{
 		QueueAdmission: admission,
 		Provider:       ProviderGitHub,
@@ -878,6 +875,13 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		if !req.MatchesIdentityFields(pr.User.Login, githubUserLogins(pr.Assignees), githubUserLogins(pr.RequestedReviewers)) {
 			continue
 		}
+		titleMatched, err := req.MatchesTitle(pr.Title)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.Number, err)
+		}
+		if !titleMatched {
+			continue
+		}
 		var checkState CheckState
 		if !req.SkipCheckState {
 			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
@@ -891,27 +895,32 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 }
 
 func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
-	labels := githubLabelNames(pr.Labels)
-	return PullRequestSummary{
-		ID:                 strconv.Itoa(pr.Number),
-		Number:             pr.Number,
-		URL:                pr.HTMLURL,
-		Author:             pr.User.Login,
-		Assignees:          githubUserLogins(pr.Assignees),
-		RequestedReviewers: githubUserLogins(pr.RequestedReviewers),
-		State:              pr.State,
-		Merged:             pr.Merged || pr.MergedAt != nil,
-		Head:               pr.Head.Ref,
-		Base:               pr.Base.Ref,
-		HeadSHA:            pr.Head.SHA,
-		BaseSHA:            pr.Base.SHA,
-		MergeSHA:           pr.MergeCommitSHA,
-		Draft:              pr.Draft,
-		Labels:             labels,
-		CheckState:         checkState,
-		UpdatedAt:          pr.UpdatedAt,
-		Body:               pr.Body,
-		Integrity:          apiintegrity.Unapproved,
+	summary := pullSummaryFromProjection(githubPRProjection(pr), checkState)
+	summary.Author = pr.User.Login
+	summary.Assignees = githubUserLogins(pr.Assignees)
+	summary.RequestedReviewers = githubUserLogins(pr.RequestedReviewers)
+	return summary
+}
+
+func githubPRProjection(pr githubPullRequestDetail) restPRProjection {
+	return restPRProjection{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		URL:            pr.HTMLURL,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          pr.Draft,
+		Labels:         githubLabelNames(pr.Labels),
+		HeadBranch:     pr.Head.Ref,
+		HeadRepository: repositoryRef(ProviderGitHub, pr.Head.Repo),
+		HeadSHA:        pr.Head.SHA,
+		BaseBranch:     pr.Base.Ref,
+		BaseSHA:        pr.Base.SHA,
+		MergeSHA:       pr.MergeCommitSHA,
+		UpdatedAt:      pr.UpdatedAt,
+		Body:           pr.Body,
 	}
 }
 
@@ -1116,6 +1125,18 @@ func (p *GitHubProvider) RefCheckState(ctx context.Context, repo RepositoryRef, 
 
 // RefCheckStates resolves combined check state for multiple commit refs in one
 // GraphQL request.
+//
+// GitHub's rollup counts a cancelled, never-started or stale check run as a
+// FAILURE and cannot say which runs it counted, so a failing rollup is
+// re-read per ref (rereadRollupState). Only failing refs pay for that read:
+// a list whose CI is green or still running stays one request, and during an
+// outage, when every ref is failing, the cost is one combined-status and one
+// check-runs read per ref.
+//
+// The rollup also counts the goobers/merge-review verdict status (#4199),
+// which is not CI. Each ref's verdict context is read in the same query, and
+// a PENDING rollup is re-read only when that context is itself pending (a
+// defer or a withdrawn verdict), so green CI never reads as running.
 func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef, refs []string) (map[string]CheckState, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return nil, err
@@ -1131,7 +1152,7 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		variable := fmt.Sprintf("ref%d", i)
 		alias := fmt.Sprintf("r%d", i)
 		fmt.Fprintf(&definitions, ",$%s:String!", variable)
-		fmt.Fprintf(&fields, "%s:object(expression:$%s){... on Commit{statusCheckRollup{state}}}", alias, variable)
+		fmt.Fprintf(&fields, "%s:object(expression:$%s){... on Commit{statusCheckRollup{state} status{context(name:%q){state}}}}", alias, variable, MergeReviewStatusContext)
 		variables[variable] = ref
 	}
 	query := fmt.Sprintf(
@@ -1143,6 +1164,11 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 			StatusCheckRollup *struct {
 				State string `json:"state"`
 			} `json:"statusCheckRollup"`
+			Status *struct {
+				Context *struct {
+					State string `json:"state"`
+				} `json:"context"`
+			} `json:"status"`
 		} `json:"repository"`
 	}
 	if err := p.graphql(ctx, query, variables, &response); err != nil {
@@ -1161,12 +1187,48 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		case "SUCCESS":
 			states[ref] = CheckStatePassing
 		case "FAILURE", "ERROR":
-			states[ref] = CheckStateFailing
+			state, err := p.rereadRollupState(ctx, repo, ref, CheckStateFailing)
+			if err != nil {
+				return nil, err
+			}
+			states[ref] = state
 		default:
-			states[ref] = CheckStatePending
+			if result.Status == nil || result.Status.Context == nil || result.Status.Context.State != "PENDING" {
+				states[ref] = CheckStatePending
+				continue
+			}
+			state, err := p.rereadRollupState(ctx, repo, ref, CheckStatePending)
+			if err != nil {
+				return nil, err
+			}
+			states[ref] = state
 		}
 	}
 	return states, nil
+}
+
+// rereadRollupState re-reads a ref whose GitHub rollup is FAILURE or ERROR,
+// or PENDING with a pending merge-review verdict status, through
+// RefCheckState, which classifies each run as checkDetails does: a run that
+// ended without a verdict reads as pending (#6817), a cancelled run
+// superseded by a newer one is dropped (#6360), and the verdict status is
+// not CI (#4199).
+//
+// The re-read is best-effort, like the Azure DevOps build read
+// (markCanceledBuilds): when it fails, say for a credential that can read
+// the rollup but neither check-runs nor actions/runs, the ref keeps the
+// rollup's own verdict (fallback), as before #6817, rather than failing the
+// read of every other ref in the batch. A failing verdict is never merged.
+// Only the caller's context ending is returned.
+func (p *GitHubProvider) rereadRollupState(ctx context.Context, repo RepositoryRef, ref string, fallback CheckState) (CheckState, error) {
+	state, err := p.RefCheckState(ctx, repo, ref)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err != nil {
+		return fallback, nil
+	}
+	return state, nil
 }
 
 type resolvedCheckDetail struct {
@@ -1183,7 +1245,7 @@ func (p *GitHubProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref
 	if ref == "" {
 		return nil, fmt.Errorf("ref is required")
 	}
-	checks, err := p.checkDetails(ctx, repo, ref)
+	checks, _, err := p.checkDetails(ctx, repo, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -1211,12 +1273,20 @@ func (p *GitHubProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref
 // combinedCheckState normalizes GitHub's legacy combined status plus check-runs
 // into a single CheckState + per-check detail refs (BL-031).
 func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, error) {
+	state, details, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	return state, details, err
+}
+
+// combinedCheckStateAndVerdict is combinedCheckState plus the merge-review
+// verdict status read from the same combined-status response (#4199), which
+// is reported apart from CI rather than folded into the CheckState.
+func (p *GitHubProvider) combinedCheckStateAndVerdict(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, *CheckDetail, error) {
 	if ref == "" {
-		return CheckStatePending, nil, nil
+		return CheckStatePending, nil, nil, nil
 	}
-	resolved, err := p.checkDetails(ctx, repo, ref)
+	resolved, verdict, err := p.checkDetails(ctx, repo, ref)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	details := make([]CheckDetail, 0, len(resolved))
 	failing, pending := false, false
@@ -1231,22 +1301,25 @@ func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo Repository
 	}
 	switch {
 	case failing:
-		return CheckStateFailing, details, nil
+		return CheckStateFailing, details, verdict, nil
 	case pending:
-		return CheckStatePending, details, nil
+		return CheckStatePending, details, verdict, nil
 	default:
 		// GitHub permits a PR with no statuses or check runs to merge. Treat
 		// the empty set as passing rather than polling indefinitely for a
 		// workflow that may never exist.
-		return CheckStatePassing, details, nil
+		return CheckStatePassing, details, verdict, nil
 	}
 }
 
-func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, ref string) ([]resolvedCheckDetail, error) {
+// checkDetails reads ref's CI statuses and check runs. The merge-review
+// verdict status is returned separately and never as a CI check (#4199).
+func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, ref string) ([]resolvedCheckDetail, *CheckDetail, error) {
 	var details []resolvedCheckDetail
+	var verdict *CheckDetail
 	statusEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var statuses []githubStatus
 	if err := p.getAllPages(ctx, statusEndpoint, func(page []byte) error {
@@ -1257,9 +1330,13 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		statuses = append(statuses, pageOut.Statuses...)
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, status := range statuses {
+		if found, ok := mergeReviewStatusDetail(status.Context, status.State, status.Description, status.TargetURL); ok {
+			verdict = found
+			continue
+		}
 		state := normalizeCombinedStatusState(status.State)
 		details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
 			Name: status.Context, State: state, Conclusion: status.State,
@@ -1269,7 +1346,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 
 	runsEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "check-runs")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var checkRuns []githubCheckRun
 	// The single biggest silent failure in the cluster: a failing check-run on
@@ -1283,7 +1360,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		return nil
 	}); err != nil {
 		if !IsForbiddenPATError(err) {
-			return nil, err
+			return nil, nil, err
 		}
 		// Fine-grained PATs have no grantable "Checks" permission at all, so
 		// this specific 403 is permanent, not transient (#2685). If the token
@@ -1292,19 +1369,23 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		// before failing CI visibility closed.
 		runs, actionsErr := p.actionsRunsForRef(ctx, repo, ref)
 		if actionsErr != nil {
-			return nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
+			return nil, nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
 		}
 		runs, dedupErr := p.withoutSupersededCancelledActionsRuns(ctx, repo, runs)
 		if dedupErr != nil {
-			return nil, fmt.Errorf("actions/runs fallback: %w", dedupErr)
+			return nil, nil, fmt.Errorf("actions/runs fallback: %w", dedupErr)
 		}
 		for _, run := range runs {
-			state := normalizeCheckRunState(run.Status, run.Conclusion)
+			state, err := p.actionsRunState(ctx, repo, run)
+			if err != nil {
+				return nil, nil, fmt.Errorf("actions/runs fallback: %w", err)
+			}
 			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
 				Name: run.Name, State: state, Conclusion: run.Conclusion, URL: run.HTMLURL,
+				NoVerdict: state == CheckStatePending && githubRunEndedWithoutVerdict(run.Status, run.Conclusion),
 			}})
 		}
-		return details, nil
+		return details, verdict, nil
 	}
 	for _, run := range withoutSupersededCancelledCheckRuns(checkRuns) {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
@@ -1312,11 +1393,33 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 			CheckDetail: CheckDetail{
 				Name: run.Name, State: state, Conclusion: run.Conclusion,
 				URL: run.HTMLURL, Summary: run.Output.Summary,
+				NoVerdict: githubRunEndedWithoutVerdict(run.Status, run.Conclusion),
 			},
 			checkRunID: run.ID,
 		})
 	}
-	return details, nil
+	return details, verdict, nil
+}
+
+// actionsRunState is a workflow run's check state in the actions/runs
+// fallback. A cancelled run is no verdict (#6817) unless one of its jobs
+// failed: the run stands for a whole workflow, so its jobs, which this
+// fallback can already read, tell an outage from a real failure that
+// cancelled the rest. A failed jobs read is returned, like every other read
+// in checkDetails, rather than guessed into a verdict.
+func (p *GitHubProvider) actionsRunState(ctx context.Context, repo RepositoryRef, run githubActionsRun) (CheckState, error) {
+	state := normalizeCheckRunState(run.Status, run.Conclusion)
+	if !strings.EqualFold(run.Status, "completed") || !strings.EqualFold(run.Conclusion, "cancelled") {
+		return state, nil
+	}
+	failed, err := p.actionsRunFailedJob(ctx, repo, run.ID)
+	if err != nil {
+		return "", fmt.Errorf("list jobs of cancelled workflow run %d: %w", run.ID, err)
+	}
+	if failed {
+		return CheckStateFailing, nil
+	}
+	return state, nil
 }
 
 // withoutSupersededCancelledCheckRuns drops a cancelled check run when a newer
@@ -1396,14 +1499,33 @@ func (p *GitHubProvider) actionsRunSupersedes(ctx context.Context, repo Reposito
 // actionsRunExecutedJobs reports whether any job of the workflow run's latest
 // attempt concluded other than skipped.
 func (p *GitHubProvider) actionsRunExecutedJobs(ctx context.Context, repo RepositoryRef, runID int64) (bool, error) {
+	return p.actionsRunHasJob(ctx, repo, runID, func(_, conclusion string) bool {
+		return !strings.EqualFold(conclusion, "skipped")
+	})
+}
+
+// actionsRunFailedJob reports whether any job of the workflow run's latest
+// attempt failed. A workflow run that a failing job cancelled (one that
+// cancels itself on a failed preflight, say) concludes cancelled although one
+// of its jobs is a real failure; only the jobs say so.
+func (p *GitHubProvider) actionsRunFailedJob(ctx context.Context, repo RepositoryRef, runID int64) (bool, error) {
+	return p.actionsRunHasJob(ctx, repo, runID, func(status, conclusion string) bool {
+		return normalizeCheckRunState(status, conclusion) == CheckStateFailing
+	})
+}
+
+// actionsRunHasJob reports whether any job of the workflow run's latest
+// attempt matches, reading job pages only until one does.
+func (p *GitHubProvider) actionsRunHasJob(ctx context.Context, repo RepositoryRef, runID int64, match func(status, conclusion string) bool) (bool, error) {
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "runs", strconv.FormatInt(runID, 10), "jobs")
 	if err != nil {
 		return false, err
 	}
-	executed := false
+	found := false
 	err = p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var pageOut struct {
 			Jobs []struct {
+				Status     string `json:"status"`
 				Conclusion string `json:"conclusion"`
 			} `json:"jobs"`
 		}
@@ -1411,20 +1533,24 @@ func (p *GitHubProvider) actionsRunExecutedJobs(ctx context.Context, repo Reposi
 			return fmt.Errorf("decode actions run jobs page: %w", err)
 		}
 		for _, job := range pageOut.Jobs {
-			if !strings.EqualFold(job.Conclusion, "skipped") {
-				executed = true
+			if match(job.Status, job.Conclusion) {
+				found = true
 				return errStopPaging
 			}
 		}
 		return nil
 	})
-	return executed, err
+	return found, err
 }
 
 // withoutSupersededCancelled removes each cancelled run whose group, per
 // describe, also holds a higher-id run that supersedes reports may stand in
-// for it. supersedes is consulted lazily, at most once per run, and only for
-// runs newer than a cancelled run of their group. Order is preserved.
+// for it. Any run that ended without a verdict (githubNoVerdictConclusion:
+// cancelled, startup_failure, stale) counts as cancelled here: it reads as
+// pending (#6817), and a newer run of the same check is the rerun it waits
+// for, so keeping it would hold the PR pending after CI has spoken.
+// supersedes is consulted lazily, at most once per run, and only for runs
+// newer than a cancelled run of their group. Order is preserved.
 func withoutSupersededCancelled[R any, K comparable](runs []R, describe func(R) (key K, id int64, conclusion string), supersedes func(R) (bool, error)) ([]R, error) {
 	verdicts := make(map[int]bool, len(runs))
 	canSupersede := func(i int) (bool, error) {
@@ -1452,7 +1578,7 @@ func withoutSupersededCancelled[R any, K comparable](runs []R, describe func(R) 
 	}
 	out := make([]R, 0, len(runs))
 	for i, run := range runs {
-		if _, _, conclusion := describe(run); strings.EqualFold(conclusion, "cancelled") {
+		if _, _, conclusion := describe(run); githubNoVerdictConclusion(conclusion) {
 			drop, err := superseded(i)
 			if err != nil {
 				return nil, err
@@ -1594,10 +1720,11 @@ func (p *GitHubProvider) CancelPendingChecks(ctx context.Context, req CancelPend
 // per run; this is the correct mechanical behavior for "retry what's red; not
 // a partial implementation of per-check retry.
 //
-// Requires the Actions:write permission, which provider:pr:write does not
-// grant today (see #4751) — this call 403s until that credential gap is
-// closed, same failure shape as any other provider write the token lacks
-// scope for.
+// Requires the credential to carry Actions: Read and write — more than the
+// Actions: Read a poll-only provider:pr:write credential needs. A 403 whose
+// body says the resource is not accessible to the token is wrapped with
+// errCIRerunPermissionDenied so the evidence recorded by ci-poll names the
+// missing grant instead of a bare status code (#4751).
 func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryRef, headSHA string) error {
 	if err := requireOwnerRepo(repo); err != nil {
 		return err
@@ -1617,7 +1744,10 @@ func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryR
 		if run.HeadSHA != headSHA {
 			continue
 		}
-		if normalizeCheckRunState(run.Status, run.Conclusion) != CheckStateFailing {
+		// A run that ended without a verdict (#6817) is rerun too: it reads
+		// as pending rather than failing, but a rerun is exactly what it
+		// waits for.
+		if normalizeCheckRunState(run.Status, run.Conclusion) != CheckStateFailing && !githubRunEndedWithoutVerdict(run.Status, run.Conclusion) {
 			continue
 		}
 		id := strconv.FormatInt(run.ID, 10)
@@ -1627,6 +1757,9 @@ func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryR
 			continue
 		}
 		if err := p.do(ctx, http.MethodPost, endpoint, nil, nil); err != nil {
+			if isResourceNotAccessibleError(err) {
+				err = fmt.Errorf("%w: %w", errCIRerunPermissionDenied, err)
+			}
 			rerunErrs = append(rerunErrs, fmt.Errorf("rerun failed jobs for actions run %s: %w", id, err))
 			continue
 		}
@@ -1637,6 +1770,22 @@ func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryR
 		})
 	}
 	return errors.Join(rerunErrs...)
+}
+
+// errCIRerunPermissionDenied marks a rerun-failed-jobs call GitHub refused
+// because the credential lacks the Actions write permission (#4751).
+var errCIRerunPermissionDenied = errors.New("credential lacks the GitHub Actions write permission needed to rerun failed jobs; grant Actions: Read and write to the provider:pr:write credential (see docs/guides/github-token-scopes.md)")
+
+// isResourceNotAccessibleError reports whether err is GitHub's 403 for a
+// token missing a repository permission — "Resource not accessible by
+// personal access token" for a fine-grained PAT, "... by integration" for a
+// GitHub App installation token. Deliberately narrow, like
+// IsForbiddenPATError: rate-limit and SSO 403s carry different bodies.
+func isResourceNotAccessibleError(err error) bool {
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) &&
+		responseErr.statusCode == http.StatusForbidden &&
+		strings.Contains(responseErr.body, "Resource not accessible by")
 }
 
 func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo RepositoryRef, checkRunID int64) ([]CheckAnnotation, error) {
@@ -1660,6 +1809,16 @@ func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo Repositor
 	return annotations, nil
 }
 
+// normalizeCheckRunState maps a check run's (or workflow run's) status and
+// conclusion onto the provider-neutral check state.
+//
+// A run that ended without a verdict on the code (githubNoVerdictConclusion:
+// cancelled, startup_failure, stale) reads as pending, never failing (#6817).
+// A CI-provider outage cancels hosted jobs that never got a runner; reading
+// that as failing CI sent every open pull request through agentic
+// remediation, which had nothing to fix and parked the PR. Pending still
+// fails closed: no merge gate accepts it, and the PR waits for a rerun or a
+// new push to produce a real verdict.
 func normalizeCheckRunState(status, conclusion string) CheckState {
 	if strings.ToLower(status) != "completed" {
 		return CheckStatePending
@@ -1667,11 +1826,49 @@ func normalizeCheckRunState(status, conclusion string) CheckState {
 	switch strings.ToLower(conclusion) {
 	case "success", "neutral", "skipped":
 		return CheckStatePassing
-	case "failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure":
+	case "failure", "timed_out", "action_required":
 		return CheckStateFailing
 	default:
 		return CheckStatePending
 	}
+}
+
+// githubNoVerdictConclusion reports whether a completed run's conclusion says
+// CI did not judge the code (#6817): cancelled (by an outage that left the
+// job without a runner, by a person, or by workflow concurrency),
+// startup_failure (the run never started), or stale (GitHub gave up on a run
+// that never completed).
+//
+// A check run's conclusion alone does not say whether a cancelled job
+// executed steps first: telling an outage apart from, say, a job cancelled at
+// its timeout-minutes would take an Actions jobs read per cancelled check run,
+// a permission the check-runs path does not otherwise need, made exactly when
+// the provider is degraded. So every cancelled check run is treated as no
+// verdict. A job that hangs until its timeout therefore waits for a rerun
+// instead of driving remediation, which costs a person's look but never a
+// merge. The actions/runs fallback, where one run stands for a whole workflow
+// and its jobs are already readable, does look (actionsRunFailedJob).
+//
+// startup_failure is a trade-off too. GitHub also reports it for a workflow
+// definition error (an invalid workflow file, an unresolvable reusable
+// workflow or action, a disallowed permission), which a pull request that
+// edits .github/workflows can cause. Such a PR now waits for a person
+// instead of driving remediation; ci-poll reports it as no verdict and no
+// merge gate accepts it. On the actions/runs fallback a startup-failed run
+// has no jobs, so actionsRunFailedJob cannot turn it back into a failure.
+func githubNoVerdictConclusion(conclusion string) bool {
+	switch strings.ToLower(conclusion) {
+	case "cancelled", "startup_failure", "stale":
+		return true
+	default:
+		return false
+	}
+}
+
+// githubRunEndedWithoutVerdict reports whether a run completed with a
+// no-verdict conclusion.
+func githubRunEndedWithoutVerdict(status, conclusion string) bool {
+	return strings.EqualFold(status, "completed") && githubNoVerdictConclusion(conclusion)
 }
 
 // RequestReview requests GitHub reviewers for a pull request.
@@ -1681,9 +1878,64 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 
 // SubmitPullRequestReview publishes a SHA-pinned native GitHub review. GitHub
 // associates the review with commit_id, allowing branch-protection
-// stale-dismissal to invalidate an approval when the pull request moves.
+// stale-dismissal to invalidate an approval when the pull request moves. A
+// later approval also dismisses this identity's superseded change requests;
+// GitHub otherwise keeps those reviews active and branch protection can block
+// a verdict that has already passed.
 func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
-	return submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
+	result, err := submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
+	if err != nil || req.Decision != ReviewDecisionApproved {
+		return result, err
+	}
+	if err := p.dismissOwnChangeRequests(ctx, req.Repository, req.PullID); err != nil {
+		return result, fmt.Errorf("dismiss superseded change requests: %w", err)
+	}
+	return result, nil
+}
+
+func (p *GitHubProvider) dismissOwnChangeRequests(ctx context.Context, repo RepositoryRef, pullID string) error {
+	reviews, err := p.listNativePullRequestReviews(ctx, repo, pullID)
+	if err != nil {
+		return err
+	}
+	hasChangeRequest := false
+	for _, review := range reviews {
+		if strings.EqualFold(review.State, "CHANGES_REQUESTED") {
+			hasChangeRequest = true
+			break
+		}
+	}
+	if !hasChangeRequest {
+		return nil
+	}
+	login, err := p.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve review author: %w", err)
+	}
+	for _, review := range reviews {
+		if !strings.EqualFold(review.State, "CHANGES_REQUESTED") || !strings.EqualFold(review.Author, login) {
+			continue
+		}
+		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews", strconv.FormatInt(review.ID, 10), "dismissals")
+		if err != nil {
+			return err
+		}
+		if err := p.do(ctx, http.MethodPut, endpoint, map[string]string{
+			"message": "Superseded by a later passing Goobers merge review.",
+		}, nil); err != nil {
+			return err
+		}
+		p.recordExternalRef(ctx, ExternalRef{
+			Provider:  ProviderGitHub,
+			Ref:       issueRef(repo, pullID),
+			URL:       review.URL,
+			Operation: "review-dismiss",
+			Fields: map[string]FieldDigest{
+				"reviewId": {After: digestString(strconv.FormatInt(review.ID, 10))},
+			},
+		})
+	}
+	return nil
 }
 
 // ListWorkItems lists GitHub issues as unified work items.

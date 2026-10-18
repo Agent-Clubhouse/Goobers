@@ -8,6 +8,7 @@ import { defaultPortalConfig } from "./cobrand";
 describe("PortalWorkbench", () => {
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     document.querySelectorAll("[data-test-header-host]").forEach((element) => element.remove());
     document.getElementById("cobrand-theme")?.remove();
     delete document.documentElement.dataset.theme;
@@ -104,6 +105,29 @@ describe("PortalWorkbench", () => {
     expect(second).toBeEmptyDOMElement();
     expect(view.container.querySelector(".portal-frame > .topbar")).toBeInTheDocument();
     expect(view.container.querySelector(".portal-frame-hosted-header")).not.toBeInTheDocument();
+  });
+
+  it("lets an embedding host own phone navigation without rendering a duplicate", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
+      addEventListener: vi.fn(),
+      matches: true,
+      media: query,
+      onchange: null,
+      removeEventListener: vi.fn(),
+    })));
+    const target = createHost();
+    render(
+      <PortalWorkbench
+        client={new FixtureDaemonClient(emptyDaemonFixtures())}
+        headerHost={{ target, providesMobileNavigation: true }}
+        scope="operator:instance"
+      />,
+    );
+
+    await screen.findByText("Healthy");
+    expect(window.matchMedia).toHaveBeenCalled();
+    expect(screen.queryByRole("navigation", { name: "Mobile primary" })).not.toBeInTheDocument();
+    expect(document.querySelector(".portal-frame")).toHaveClass("portal-frame-host-navigation");
   });
 
   it("rejects a header container from another document", () => {

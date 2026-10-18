@@ -189,18 +189,8 @@ func matchingRoot(roots []string, p string) (string, error) {
 // none empty). It reports the last containment error when p is outside every
 // root — enough to name the offending path in the failure.
 func pathWithinAnyRoot(roots []string, p string) error {
-	var last error
-	for _, root := range roots {
-		if err := pathWithinRoot(root, p); err == nil {
-			return nil
-		} else {
-			last = err
-		}
-	}
-	if last == nil {
-		return fmt.Errorf("%w: %q", ErrOutsideConfigRoot, p)
-	}
-	return last
+	_, err := matchingRoot(roots, p)
+	return err
 }
 
 // normalizeConfigRoot cleans a configured root to a comparable, repo-relative

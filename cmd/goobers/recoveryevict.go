@@ -192,7 +192,7 @@ func (s recoveryEvictionScope) retire(ctx context.Context, record recovery.Recor
 			return err
 		}
 		phase, err := reader.PhaseBounded(ctx)
-		if err != nil || !terminalRunPhase(phase) {
+		if err != nil || !phase.IsTerminal() {
 			return err
 		}
 		retired, err = s.retireWithinRepositories(ctx, record, rule)

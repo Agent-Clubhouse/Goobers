@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -55,7 +56,7 @@ func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
 			}
 			seedItemRepositoryForTest(t, layout, "receiving-run", "7", repo)
 			if mode == "released" {
-				if err := ledger.Release("7", "receiving-run"); err != nil {
+				if err := ledger.Release("7", "receiving-run", claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -66,25 +67,54 @@ func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
 				}
 				defer func() { _ = run.Close() }()
 			}
-			var out bytes.Buffer
-			err = (recoveryDeliveryService{layout: layout}).StreamRecovery(context.Background(), "receiving-run", repo.CanonicalKey(), "7", &out)
+			out := &sourceReportingBuffer{}
+			err = (recoveryDeliveryService{layout: layout}).StreamRecovery(context.Background(), "receiving-run", repo.CanonicalKey(), "7", out)
 			if mode == "valid" {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got, err := recovery.ReceiveArchiveEnvelope(context.Background(), &out, t.TempDir(), 4096, nil)
+				want := recovery.SourceRun{Workflow: "implementation", Phase: string(journal.PhaseEscalated), TerminalSeq: lastRecoverySourceSeq(t, layout, "source-run")}
+				if out.source != want || out.reportedAfterBytes {
+					t.Fatalf("source run evidence = %+v (after bytes %t), want %+v before archive bytes", out.source, out.reportedAfterBytes, want)
+				}
+				got, err := recovery.ReceiveArchiveEnvelope(context.Background(), &out.Buffer, t.TempDir(), 4096, nil)
 				if err != nil || got != record {
 					t.Fatalf("received wrong recovery: %+v %v", got, err)
 				}
-			} else if err == nil || out.Len() != 0 {
+			} else if err == nil || out.Len() != 0 || out.source.Known() {
 				t.Fatalf("unsafe delivery: bytes=%d err=%v", out.Len(), err)
 			}
 		})
 	}
 }
 
-func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
-	for _, mode := range []string{"live", "expired", "released", "multiple", "foreign-run", "foreign-repository"} {
+// sourceReportingBuffer records the source-run evidence a delivery reports and
+// whether it arrived only after archive bytes, when headers could not carry it.
+type sourceReportingBuffer struct {
+	bytes.Buffer
+	source             recovery.SourceRun
+	reportedAfterBytes bool
+}
+
+func (b *sourceReportingBuffer) ReportSourceRun(source recovery.SourceRun) {
+	b.source, b.reportedAfterBytes = source, b.Len() != 0
+}
+
+func lastRecoverySourceSeq(t *testing.T, layout instance.Layout, runID string) uint64 {
+	t.Helper()
+	reader, err := journal.OpenReadOnly(filepath.Join(layout.RunsDir(), runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != journal.EventRunFinished {
+		t.Fatalf("source journal has no terminal event: %v", err)
+	}
+	return events[len(events)-1].Seq
+}
+
+func TestRecoveryDeliveryRequiresExclusiveIssueLease(t *testing.T) {
+	for _, mode := range []string{"live", "expired", "released", "released-and-reclaimed", "multiple", "foreign-run", "foreign-repository"} {
 		t.Run(mode, func(t *testing.T) {
 			layout := instance.NewLayout(initDemo(t))
 			now := time.Now().UTC()
@@ -103,8 +133,15 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 			case "expired":
 				at = now.Add(time.Hour)
 			case "released":
-				if err := ledger.Release("7", runID); err != nil {
+				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
+				}
+			case "released-and-reclaimed":
+				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
+					t.Fatal(err)
+				}
+				if ok, _, err := ledger.Claim("7", "successor-run", "implementation-recovery", time.Hour); err != nil || !ok {
+					t.Fatalf("successor claim: %t %v", ok, err)
 				}
 			case "multiple":
 				if ok, _, err := ledger.Claim("8", runID, "implementation-recovery", time.Hour); err != nil || !ok {
@@ -118,7 +155,7 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 			deadline, err := authorizeRecoveryDelivery(context.Background(), layout, requestedRun, requestedKey, "7", at)
 			if mode == "live" {
 				if err != nil || !deadline.Equal(now.Add(time.Hour)) {
-					t.Fatalf("live lease refused: %s %v", deadline, err)
+					t.Fatalf("exclusive lease refused: %s %v", deadline, err)
 				}
 			} else if err == nil || !deadline.IsZero() {
 				t.Fatalf("unauthorized transfer admitted: %s %v", deadline, err)
@@ -127,8 +164,8 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 	}
 }
 
-func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
-	for _, mode := range []string{"live", "released", "ack-failure"} {
+func TestRecoveryDeliveryAcknowledgementHoldsExclusiveClaimFence(t *testing.T) {
+	for _, mode := range []string{"live", "released", "reclaimed", "ack-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			layout := instance.NewLayout(initDemo(t))
 			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
@@ -141,14 +178,19 @@ func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
 			}
 			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
 			seedItemRepositoryForTest(t, layout, runID, "7", repo)
-			if mode == "released" {
-				if err := ledger.Release("7", runID); err != nil {
+			if mode == "released" || mode == "reclaimed" {
+				if err := ledger.Release("7", runID, claimrelease.Completed.Reason()); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if mode == "reclaimed" {
+				if ok, _, err := ledger.Claim("7", "successor-run", "implementation", time.Hour); err != nil || !ok {
+					t.Fatalf("successor claim: %t %v", ok, err)
 				}
 			}
 			ackFailure := errors.New("durable acknowledgement failed")
 			called := false
-			deadline, err := withAuthorizedRecoveryDelivery(context.Background(), layout, runID, repo.CanonicalKey(), "7", time.Now().UTC(), func() error {
+			deadline, err := withAuthorizedRecoveryDelivery(context.Background(), layout, runID, repo.CanonicalKey(), "7", time.Now().UTC(), true, func() error {
 				called = true
 				// A competing release uses this same lock. It cannot enter between
 				// authorization and the journal's durable acknowledgement.
@@ -164,9 +206,9 @@ func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
 				}
 				return nil
 			})
-			if mode == "live" {
+			if mode == "live" || mode == "released" {
 				if err != nil || !called || deadline.IsZero() {
-					t.Fatalf("live acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)
+					t.Fatalf("exclusive acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)
 				}
 			} else if err == nil || !deadline.IsZero() || called != (mode == "ack-failure") {
 				t.Fatalf("unsafe acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)

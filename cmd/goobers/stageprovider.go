@@ -38,6 +38,7 @@ type stageProviderConfig struct {
 	// delivered credential. Only an operator command that is not a stage sets
 	// it; see withStageProviderConfiguredADOAuth.
 	configuredADOAuth bool
+	adoSource         providers.ADOCredentialSource
 	noRetries         bool
 	tokenSource       providers.TokenSource
 	observeToken      func(string)
@@ -433,7 +434,9 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	if cfg.cached {
 		return newCachedGitHubProvider(cfg.root, token, opts...), nil
 	}
-	return newGitHubProvider(token, opts...), nil
+	provider := newGitHubProvider(token, opts...)
+	configureStageGitHubMutationCache(cfg.root, provider)
+	return provider, nil
 }
 
 // stageGitHubTokenSource resolves the GitHub provider's token per request from
@@ -462,6 +465,11 @@ func stageGitHubTokenSource(cfg stageProviderConfig, token string) []func(*provi
 // header. An undeclared capability therefore means no credential on Azure
 // DevOps too (docs/design/ado-parity-dsl-2-0.md §3.1).
 func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
+	// A stage of a named gaggle whose backlog settings cannot be applied
+	// stops here, before it touches the backlog (#5957).
+	if err := requireStageGaggleBacklog(cfg.root, cfg.repo); err != nil {
+		return nil, err
+	}
 	var (
 		provider *providers.ADOProvider
 		err      error
@@ -474,10 +482,14 @@ func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provid
 	if err != nil {
 		return nil, err
 	}
+	configureStageADOReadCache(cfg.root, provider)
 	return provider, nil
 }
 
 func newBrokeredADOProviderForStage(cfg stageProviderConfig) (*providers.ADOProvider, error) {
+	if cfg.adoSource != nil {
+		return newADOProviderForStage(cfg.repo, cfg.adoSource)
+	}
 	token, err := stageProviderToken(cfg)
 	if err != nil {
 		return nil, err
@@ -649,3 +661,9 @@ func stageProviderStampedLogin(stamped string, repo providers.RepositoryRef) sta
 // where a malformed identity matches nothing and every trusted-comment check
 // silently reads as "not mine".
 var githubLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$`)
+
+// withStageProviderADOCredential supplies the host broker's explicit scheme.
+// Contained publication cannot infer it from the daemon process environment.
+func withStageProviderADOCredential(source providers.ADOCredentialSource) stageProviderOption {
+	return func(cfg *stageProviderConfig) { cfg.adoSource = source }
+}

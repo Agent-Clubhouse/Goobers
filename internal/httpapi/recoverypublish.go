@@ -5,6 +5,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+
+	"github.com/goobers/goobers/internal/apicontract"
 )
 
 // RecoveryPublisher authenticates the current issue claim before reading the
@@ -15,7 +17,7 @@ type RecoveryPublisher interface {
 	PublishRecovery(context.Context, string, string, string, io.Reader) error
 }
 
-const maxRecoveryUploadBytes int64 = (512 << 20) + (16 << 10) + 4
+const maxRecoveryUploadBytes int64 = apicontract.RecoveryArchiveMaxBytes + (16 << 10) + 4
 
 func recoveryPublishHandler(service RecoveryService, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
@@ -35,7 +37,7 @@ func recoveryPublishHandler(service RecoveryService, errorLog *log.Logger) http.
 		body := http.MaxBytesReader(w, request.Body, maxRecoveryUploadBytes)
 		defer func() { _ = body.Close() }()
 		if err := publisher.PublishRecovery(request.Context(), run, key, issue, body); err != nil {
-			errorLog.Printf("recovery publication failed for run %s", run)
+			errorLog.Printf("recovery publication failed for run %s: %v", run, err)
 			writeError(w, http.StatusForbidden, "recovery_refused", "recovery publication was refused or custody is unavailable")
 			return
 		}

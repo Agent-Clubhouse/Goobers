@@ -83,6 +83,12 @@ func TestRequiredCapabilities(t *testing.T) {
 			want:    []capability.Capability{capability.GitHubIssuesWrite},
 		},
 		{
+			name:    "unrelated boolean preserves positional boundary",
+			command: "backlog-query",
+			args:    []string{"--debug", "path", "--read-only"},
+			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
+		{
 			name:    "read-only flag after flag terminator",
 			command: "backlog-query",
 			args:    []string{"--", "--read-only"},

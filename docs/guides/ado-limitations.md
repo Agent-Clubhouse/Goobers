@@ -46,13 +46,21 @@ No new DSL is involved. Each stage is routed by role
   `issue-close-out`, the issue half of `post-merge`, `backlog-assignment`,
   `backlog-health`, `backlog-dedupe`, `check-issue-staleness`, the
   decomposition stages (`select-source`, `validate-plan`, `publish-batch`),
-  `set-milestone` run as its own deterministic stage, and the daemon's park, failure and claim-release handlers
-  read and write the GitHub issues. Claims are keyed by the backlog provider.
+  `set-milestone` run as its own deterministic stage (not the agent's
+  `goobers set-milestone`, below), and the daemon's park, failure and
+  claim-release handlers read and write the GitHub issues. Claims are keyed by
+  the backlog provider. `goobers run continue` re-reads a claimed issue from
+  the backlog repository, with the credential in
+  `GOOBERS_CRED_GITHUB_ISSUES_READ` as on a GitHub gaggle, and a claimed pull
+  request from the Azure DevOps repository.
 - **Credentials follow the capability family.** `github:issues:*` and
   `github:milestones:write` are backed by the backlog repository's `repos[]`
   entry. Pull-request and repository capabilities are backed by the ADO
   repository's. Without a backlog entry, a backlog capability has no
   credential and the stage fails. It is never given the ADO credential.
+  `validate` warns (CFG015) when a deterministic stage declares a backlog
+  capability that no backlog entry, `daemonIdentity` or `credentials:` entry
+  backs.
   The reverse holds too:
   - The ADO repository must match its `repos[]` entry exactly. The usual
     fallback to the first `repos[]` entry is off in topology (b).
@@ -80,11 +88,15 @@ No new DSL is involved. Each stage is routed by role
   ADO pull request by its URL. Any `#N` that `open-pr` copies from the
   backlog into the pull request is rewritten to that backlog issue's URL:
   in the title (which becomes the squash commit title), the issue title and
-  acceptance criteria, and the reviewer's summary, rationale and findings.
-- **GitHub pull-request extras are skipped.** In `backlog-query`, the open-PR
-  eligibility backstop and contested-file ordering read GitHub pull requests,
-  and there are none here, so they do not run. Native ADO work-item linking
-  also does not run, because the item is not an ADO work item.
+  acceptance criteria, the reviewer's summary, rationale and findings, and
+  the local-ci output under Testing.
+- **GitHub pull-request extras are skipped.** In `backlog-query`,
+  contested-file ordering and the closed-unmerged requeue read GitHub pull
+  requests, and there are none here, so they do not run. The open-PR
+  eligibility backstop reads the active ADO pull requests instead, and counts
+  only full-URL references into the backlog repository. It needs
+  `github:pr:write` on the `backlog-query` stage. Native ADO work-item linking
+  does not run, because the item is not an ADO work item.
 
 Some behaviour depends on what a stage declares:
 
@@ -111,13 +123,15 @@ case where the project repository is in one ADO project and
 
 Not yet covered in topology (b):
 
-- `goobers run --continue` of a run that claimed a GitHub issue. It stops
-  with an error naming the provider mismatch.
-- Stage pods on the cluster substrate. A stage pod has no instance config, so
-  it cannot route backlog work and credentials by role. The engine refuses
-  every stage of a topology (b) run before a pod is created (failure code
-  `cross_provider_backlog_pod_unsupported`). Place the gaggle's stages on a
-  self runner.
+- Stage pods on the cluster substrate. Support is not planned for the 0.5.x
+  or 0.6 lines. A stage pod has no instance config, so it cannot route
+  backlog work and credentials by role. The engine refuses every stage of a
+  topology (b) run before a pod is created (failure code
+  `cross_provider_backlog_pod_unsupported`). A stage that a self runner can
+  run is placed there, even where a Linux pod is also eligible. `validate`
+  warns (RNR007) about each stage whose eligible runners exclude the daemon's
+  own host, and fails on it under `placement.selfExecution: deny`. Place the
+  gaggle's stages on a self runner.
 - The daemon's terminal claim-marker release for a Gitea backlog. As on a
   plain Gitea gaggle, backlog curation reconciles the marker instead.
 - A stage that is not routed by role and opens the Azure DevOps repository
@@ -135,7 +149,9 @@ Not yet covered in topology (b):
   the harness withholds every `github:*` credential from it. The agent cannot
   label, curate or set milestones on the GitHub backlog, including through
   `goobers set-milestone`; those calls fail closed. Curate the GitHub backlog
-  by hand until this is covered.
+  by hand until this is covered. A credential audience that follows the
+  capability's role rather than the invocation's repository is DSL 3.0 scope
+  ([#5750](https://github.com/Agent-Clubhouse/Goobers/issues/5750)).
 
 ## One gaggle, two code providers (topology c)
 
@@ -157,6 +173,26 @@ the shipped `pr-remediation` runs from its `schedule` trigger. On GitHub each
 due tick is sized to the number of eligible pull requests; on ADO it fires one
 run, bounded by the workflow's readiness limits, and a tick with nothing to
 remediate ends as no-work.
+
+## Backlog-health ready ages
+
+On Azure DevOps, `backlog-health` measures how long an item has been ready
+from the work item's `System.ChangedDate`, not from the time the
+`goobers:ready` tag was actually added. Azure DevOps has no repository-wide
+label-event feed, so the exact time would cost one paged
+`workItems/{id}/updates` read per ready item on every health run, against the
+organization's shared rate limit. That is too much for a metric that is
+only used to watch trends.
+
+`System.ChangedDate` is never earlier than the ready tag's addition, so ADO
+ready ages are lower bounds. Any later edit to the item, such as a comment,
+another tag or a field change, restarts its age. The report's
+`averageReadyAgeSeconds` and `oldestReadyAgeSeconds` can therefore read younger
+on ADO than the same backlog would on GitHub. Ready-pool depth and starvation
+are exact.
+
+`backlog-query` is not affected: when it claims an item it reads that one
+item's update history, and the claim's ready time is exact.
 
 ## Iterations (milestones)
 

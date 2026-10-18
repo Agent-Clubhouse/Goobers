@@ -23,11 +23,12 @@ const copilotControlExitDetailBytes = 4 << 10
 // the SDK talks to its authenticated loopback endpoint. The SDK never launches
 // a second process or inherits the daemon environment.
 type copilotControlProcess struct {
-	client *copilot.Client
-	cancel context.CancelFunc
-	done   <-chan struct{}
-	result ProcessResult
-	err    error
+	client  *copilot.Client
+	session *copilot.Session
+	cancel  context.CancelFunc
+	done    <-chan struct{}
+	result  ProcessResult
+	err     error
 }
 
 type copilotPortCapture struct {
@@ -71,6 +72,7 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	done := make(chan struct{})
 	process := &copilotControlProcess{cancel: cancel, done: done}
 	req.Command = command
+	req.Stdin = nil // The prompt goes over session RPC, not the server's stdin.
 	req.Env = overrideEnv(req.Env, "COPILOT_CONNECTION_TOKEN", token)
 	req.StdoutCapture = capture
 	req.Activity = nil             // The session's RPC event stream owns activity observations.
@@ -83,7 +85,7 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	case port = <-capture.ready:
 	case <-done:
 		cancel()
-		return nil, "", copilotControlExitError(process.result, process.err)
+		return nil, "", copilotControlExitError(process.result, process.err, req.Env)
 	case <-startup.Done():
 		process.close()
 		return nil, "", fmt.Errorf("%w: Copilot control startup timed out", errRequiredMCPUnavailable)
@@ -100,6 +102,15 @@ func (p *copilotControlProcess) close() {
 	if p.client != nil {
 		p.client.ForceStop()
 	}
+	// ForceStop forgets the client's sessions but leaves each one's event
+	// dispatch goroutine running, which pins the session, its transcript
+	// handler and the request-scoped state its handlers capture for the
+	// daemon's lifetime. Disconnect stops it; after ForceStop its detach RPC
+	// fails fast on the stopped connection and the local cleanup still runs.
+	if p.session != nil {
+		_ = p.session.Disconnect()
+		p.session = nil
+	}
 	p.cancel()
 	<-p.done // ProcessRunner joins owned descendants before returning.
 }
@@ -108,12 +119,19 @@ func (p *copilotControlProcess) close() {
 // port. The CLI rejects a bad argv on stderr and exits within a second (#5636:
 // --usage-output-file with --headless), so a bare "exited" reads the same as a
 // crash; the exit status and a redacted stderr tail name the rejected option.
-func copilotControlExitError(result ProcessResult, runErr error) error {
+func copilotControlExitError(result ProcessResult, runErr error, env []string) error {
+	registry, scrubber := journal.DefaultScrubber()
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && (name == "GH_TOKEN" || name == "GITHUB_TOKEN" || name == "COPILOT_GITHUB_TOKEN" || name == "COPILOT_CONNECTION_TOKEN") {
+			registry.Register([]byte(value))
+		}
+	}
 	status := fmt.Sprintf("exit %d", result.ExitCode)
 	if result.ExitCode <= 0 && runErr != nil {
-		status = runErr.Error()
+		status = copilotControlStderrTail([]byte(runErr.Error()), scrubber)
 	}
-	detail := copilotControlStderrTail(result.Stderr)
+	detail := copilotControlStderrTail(result.Stderr, scrubber)
 	if detail != "" {
 		detail = ": " + detail
 	}
@@ -123,8 +141,8 @@ func copilotControlExitError(result ProcessResult, runErr error) error {
 // copilotControlStderrTail scrubs before clipping so a credential straddling
 // the cut is never half-quoted, and keeps the tail: the CLI's last line is why
 // it exited.
-func copilotControlStderrTail(stderr []byte) string {
-	detail := strings.TrimSpace(string(journal.NewPatternScrubber().Scrub(stderr)))
+func copilotControlStderrTail(stderr []byte, scrubber journal.Scrubber) string {
+	detail := strings.TrimSpace(string(scrubber.Scrub(stderr)))
 	if len(detail) <= copilotControlExitDetailBytes {
 		return detail
 	}

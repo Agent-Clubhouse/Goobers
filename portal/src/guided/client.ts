@@ -39,6 +39,8 @@ export interface GuidedConnectedState {
 export interface GuidedState {
   version: number;
   platform: "windows" | "darwin" | "linux" | string;
+  executable: string;
+  runtimeIdentity: string;
   workdir: string;
   instancePath: string;
   instancePathPinned?: boolean;
@@ -134,8 +136,33 @@ export interface GuidedInitResult {
 
 export interface GuidedCompleteResult {
   complete: boolean;
-  scheduledTaskInstalled: boolean;
+  daemonRunning: boolean;
+  supervisionMode: RuntimeMode;
+  account?: string;
+  foregroundCommand: string;
+  workflows: Array<{
+    name: string;
+    schedules: string[];
+    command: string;
+  }>;
 }
+
+export interface GuidedSupervisorPreview {
+  installed: boolean;
+  running: boolean;
+  command?: string;
+}
+
+export interface GuidedSupervisionPreview {
+  scheduledTask: GuidedSupervisorPreview;
+  machineService: GuidedSupervisorPreview;
+}
+
+export type RuntimeMode =
+  | "foreground"
+  | "scheduled-task"
+  | "machine-service"
+  | "not-now";
 
 /** `goobers validate --json` diagnostics envelope (fields we render). */
 export interface DiagnosticsFinding {
@@ -324,8 +351,12 @@ export class GuidedClient {
     );
   }
 
-  complete(installScheduledTask: boolean): Promise<GuidedCompleteResult> {
-    return this.post("/guided/actions/complete", { installScheduledTask });
+  complete(mode: RuntimeMode, confirmLocalSystem = false): Promise<GuidedCompleteResult> {
+    return this.post("/guided/actions/complete", { mode, confirmLocalSystem });
+  }
+
+  getSupervisionPreview(): Promise<GuidedSupervisionPreview> {
+    return this.request("/guided/supervision");
   }
 
   initInstance(body: InitInstanceRequest = {}): Promise<GuidedInitResult> {

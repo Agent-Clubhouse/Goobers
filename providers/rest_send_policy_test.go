@@ -3,12 +3,65 @@ package providers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestProvidersRetryTransportErrorsButNotRequestAdmissionErrors(t *testing.T) {
+	senders := map[string]func(HTTPClient, func(context.Context, time.Duration) error) (*http.Response, error){
+		"github": func(client HTTPClient, sleep func(context.Context, time.Duration) error) (*http.Response, error) {
+			provider := NewGitHubProvider("token", WithHTTPClient(client))
+			provider.sleep = sleep
+			return provider.send(context.Background(), http.MethodGet, "https://provider.example/repos/acme/app", nil)
+		},
+		"gitea": func(client HTTPClient, sleep func(context.Context, time.Duration) error) (*http.Response, error) {
+			provider := NewGiteaProvider("https://provider.example", "token", WithGiteaHTTPClient(client))
+			provider.sleep = sleep
+			return provider.send(context.Background(), http.MethodGet, "https://provider.example/repos/acme/app", nil)
+		},
+		"ado": func(client HTTPClient, sleep func(context.Context, time.Duration) error) (*http.Response, error) {
+			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.Client = client })
+			provider.sleep = sleep
+			return provider.send(context.Background(), http.MethodGet, "https://provider.example/repos/acme/app", nil, "")
+		},
+	}
+	for name, send := range senders {
+		t.Run(name, func(t *testing.T) {
+			for _, admission := range []bool{false, true} {
+				t.Run(fmt.Sprintf("admission=%t", admission), func(t *testing.T) {
+					cause := errors.New("injected request failure")
+					requestErr := cause
+					if admission {
+						requestErr = fmt.Errorf("local budget: %w", &RequestAdmissionError{Err: cause})
+					}
+					attempts, sleeps := 0, 0
+					client := newProviderHTTPClient(time.Second)
+					client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+						attempts++
+						return nil, requestErr
+					})
+					resp, err := send(client, func(context.Context, time.Duration) error {
+						sleeps++
+						return nil
+					})
+					if resp != nil || !errors.Is(err, cause) {
+						t.Fatalf("send() = (%#v, %v), want nil response and original cause", resp, err)
+					}
+					if admission && (attempts != 1 || sleeps != 0) {
+						t.Fatalf("admission attempts=%d sleeps=%d, want 1 attempt without backoff", attempts, sleeps)
+					}
+					if !admission && (attempts < 2 || sleeps != attempts-1) {
+						t.Fatalf("transport attempts=%d sleeps=%d, want retries with backoff", attempts, sleeps)
+					}
+				})
+			}
+		})
+	}
+}
 
 type trackingResponseBody struct {
 	io.Reader

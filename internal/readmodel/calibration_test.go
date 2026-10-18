@@ -58,3 +58,36 @@ func TestHarvestCalibrationCollectsEmpiricalCostObservations(t *testing.T) {
 		t.Fatalf("cost observations = %#v, want one measured and one unmeasured sample", observations.Costs)
 	}
 }
+
+func TestHarvestCalibrationBoundaryTimestamps(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	whole := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+	trailing := whole.Add(500 * time.Millisecond)
+	for _, at := range []time.Time{whole, trailing} {
+		p := projectionWithStages("run-"+at.Format(time.RFC3339Nano), "check")
+		p.Run.StartedAt = at
+		if err := store.UpsertRun(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name         string
+		since, until time.Time
+		want         int
+	}{
+		{"since whole", whole, time.Time{}, 2},
+		{"since trailing", trailing, time.Time{}, 1},
+		{"until whole", time.Time{}, whole, 1},
+		{"until trailing", time.Time{}, trailing, 2},
+		{"exact window", whole, trailing, 2},
+	} {
+		snapshot, err := store.HarvestCalibration(ctx, tc.since, tc.until, 1)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if snapshot.Runs != tc.want {
+			t.Fatalf("%s: runs = %d, want %d", tc.name, snapshot.Runs, tc.want)
+		}
+	}
+}

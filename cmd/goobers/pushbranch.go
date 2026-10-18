@@ -73,7 +73,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	// Opt-in config-repo target (TUT-A8): push the config-repo checkout with
 	// the configrepo:write credential instead of the worktree with repo:push.
 	// Everything else — empty-branch handling, race retry, receipt — is shared.
-	baseBranch := ""
+	baseBranch := stageBaseBranch()
 	var env pushBranchAuthEnv
 	factDir := dir
 	configTarget, isConfig, err := configRepoTargetFor(*configRepo, providerStageRoot(""))
@@ -138,7 +138,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if err := pushBranchWithRetry(dir, branch, env, stderr); err != nil {
+	if err := pushBranchWithRetry(dir, branch, baseBranch, env, stderr); err != nil {
 		pf(stderr, "error: push branch %q: %v\n", branch, err)
 		return 1
 	}
@@ -166,10 +166,15 @@ const pushRaceAttempts = 3
 // apply cleanly aborts and surfaces the original push rejection: conflict
 // resolution is agentic work, not a push-layer concern. Any non-race failure
 // (auth, missing remote) fails immediately, exactly as before.
-func pushBranchWithRetry(dir, branch string, auth pushBranchAuthEnv, stderr io.Writer) error {
+func pushBranchWithRetry(dir, branch, base string, auth pushBranchAuthEnv, stderr io.Writer) error {
 	var err error
 	for attempt := 1; ; attempt++ {
-		err = gitPushBranchWithAuth(dir, branch, auth)
+		// Recheck after every rebase and push precisely the inspected commit.
+		head, checkErr := checkPublicationSafety(context.Background(), dir, base, "refs/heads/"+branch)
+		if checkErr != nil {
+			return checkErr
+		}
+		err = gitPushBranchWithAuth(dir, branch, head, auth)
 		if err == nil {
 			return nil
 		}
@@ -209,12 +214,12 @@ func (auth pushBranchAuthEnv) env() ([]string, error) {
 	return auth()
 }
 
-func gitPushBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
+func gitPushBranchWithAuth(dir, branch, head string, auth pushBranchAuthEnv) error {
 	env, err := auth.env()
 	if err != nil {
 		return err
 	}
-	return gitPushBranch(dir, branch, env)
+	return gitPushBranch(dir, branch, head, env)
 }
 
 func rebaseOntoRemoteBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
@@ -513,12 +518,12 @@ func branchHasNoCommitsBeyondBaseBranch(dir, branch, base string) (bool, error) 
 // repo config, and git refuses to combine a mirrored remote with an explicit
 // refspec ("fatal: --mirror can't be combined with refspecs"). Pushing by
 // URL bypasses that remote-name-keyed restriction entirely.
-func gitPushBranch(dir, branch string, env []string) error {
+func gitPushBranch(dir, branch, head string, env []string) error {
 	url, err := originURL(dir)
 	if err != nil {
 		return err
 	}
-	cmd := workspaceGitCommand(dir, "push", url, branch+":"+branch)
+	cmd := workspaceGitCommand(dir, "push", url, head+":refs/heads/"+branch)
 	// composeGitEnv, not env: credentials.GitAuthEnvironment returns a COMPLETE
 	// environment and strips foreign GIT_CONFIG_* before installing its own, so
 	// assigning it directly ERASED the workspace's safe.directory exemption.
@@ -733,13 +738,13 @@ func redactedRemote(remote string) string {
 	return parsed.Redacted()
 }
 
+// isADORemote is the fail-closed classifier for an origin push-branch did not
+// route: true for every Azure DevOps host spelling adoRepoForOrigin's parser
+// (providers.ParseADORemoteURL) anchors, including the SSH hosts, so an
+// unmatched ADO origin gets a clear mismatch error instead of falling through
+// to the GitHub-token path (#5960).
 func isADORemote(remote string) bool {
-	parsed, err := url.Parse(remote)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	return host == "dev.azure.com" || strings.HasSuffix(host, ".visualstudio.com")
+	return providers.IsADORemoteURL(remote)
 }
 
 // gitAuthEnv builds the env-var-injected git credential (shared by every git

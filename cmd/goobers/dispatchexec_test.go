@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -52,7 +53,7 @@ func TestRunDeclaredStageCommandSuccessCapturesOutput(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
 	var stdout, stderr bytes.Buffer
-	result := runDeclaredStage(context.Background(), &stdout, &stderr)
+	result := runDeclaredStage(context.Background(), &stdout, &stderr, nil)
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %q, want success (result %+v)", result.Status, result)
 	}
@@ -72,7 +73,7 @@ func TestRunDeclaredStageCommandFailureReportsExitCode(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %q, want failure", result.Status)
 	}
@@ -89,7 +90,7 @@ func TestRunDeclaredStageScriptPath(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "echo from-script")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultSuccess || result.Outputs["stdout"] != "from-script\n" {
 		t.Fatalf("result = %+v, want a successful script run", result)
 	}
@@ -104,7 +105,7 @@ func TestRunDeclaredStageInheritsProcessEnvironment(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Outputs["stdout"] != "carried-through" {
 		t.Fatalf("stdout = %q, want the pod's own env var inherited by the exec'd stage", result.Outputs["stdout"])
 	}
@@ -116,12 +117,31 @@ func TestRunDeclaredStageTimeoutIsAFailure(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageTimeout, "50ms")
 
 	start := time.Now()
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if elapsed := time.Since(start); elapsed > 4*time.Second {
 		t.Fatalf("runDeclaredStage took %s, want the 50ms timeout to cut it short", elapsed)
 	}
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "stage_timeout" {
 		t.Fatalf("result = %+v, want a stage_timeout failure", result)
+	}
+}
+
+func TestDispatchRecoveryCustodyTimeoutUsesStampedValueAndDefault(t *testing.T) {
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "")
+	if got := dispatchRecoveryCustodyTimeout(); got != dispatcher.DefaultRecoveryCustodyTimeout {
+		t.Fatalf("unset recovery custody timeout = %s, want %s", got, dispatcher.DefaultRecoveryCustodyTimeout)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "27m")
+	if got := dispatchRecoveryCustodyTimeout(); got != 27*time.Minute {
+		t.Fatalf("configured recovery custody timeout = %s, want 27m", got)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "90s")
+	if got := dispatchRecoveryCustodyTimeout(); got != 90*time.Second {
+		t.Fatalf("explicit 90s recovery custody timeout = %s, want 90s", got)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "not-a-duration")
+	if got := dispatchRecoveryCustodyTimeout(); got != dispatcher.DefaultRecoveryCustodyTimeout {
+		t.Fatalf("malformed recovery custody timeout = %s, want default %s", got, dispatcher.DefaultRecoveryCustodyTimeout)
 	}
 }
 
@@ -133,7 +153,7 @@ func TestRunDeclaredStageMalformedCommandJSONIsAFailureEnvelope(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "stage_declaration_invalid" {
 		t.Fatalf("result = %+v, want stage_declaration_invalid", result)
 	}
@@ -150,7 +170,7 @@ func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
 		t.Fatalf("result = %+v, want an instance_root_required failure", result)
 	}
@@ -179,7 +199,7 @@ func TestRunDeclaredStageRefusesKindWithoutInstanceRoot(t *testing.T) {
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 	t.Setenv("GOOBERS_INPUT_KIND", "some-future-kind")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
 		t.Fatalf("result = %+v, want an instance_root_required failure", result)
 	}
@@ -195,7 +215,7 @@ func TestRunDeclaredStageOrdinaryCommandIgnoresMissingInstanceRoot(t *testing.T)
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Error != nil && result.Error.Code == "instance_root_required" {
 		t.Fatalf("result = %+v, an unrelated command must not trip the instance-root backstop", result)
 	}
@@ -344,6 +364,58 @@ func TestRunDispatchExecContextSurrendersFailureEnvelopeWithExitZero(t *testing.
 
 	if code := runDispatchExecContext(context.Background(), io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (the failure is IN the surrendered envelope, not the process exit)", code)
+	}
+}
+
+// #6920: a writable-repo stage that fails before its checkout must still
+// surrender its own failure. Recovery custody used to probe the empty working
+// directory as a repository, fail with "not a git repository", and exit 1
+// without surrendering, so the engine only saw an infrastructure failure.
+func TestRunDispatchExecContextSurrendersPreCheckoutFailureOfWritableRepoStage(t *testing.T) {
+	var surrenderBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == apicontract.ClaimListPath {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"entries":[{"runId":"run-1","gaggle":"web","itemId":"42","expiresAt":"2030-01-01T00:00:00Z"}],"claimVisibility":"local"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/surrender") {
+			surrenderBody, _ = io.ReadAll(r.Body)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Chdir(t.TempDir())
+
+	t.Setenv(dispatcher.EnvRunID, "run-1")
+	t.Setenv(dispatcher.EnvGaggle, "web")
+	t.Setenv(dispatcher.EnvStage, "probe-builtin")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvStageWorkspace, "repo")
+	t.Setenv(executor.RepoProviderEnvVar, "github")
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
+	t.Setenv(dispatcher.EnvStageCommand, `not-json`)
+	t.Setenv(dispatcher.EnvStageScript, "")
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+
+	var stderr bytes.Buffer
+	if code := runDispatchExecContext(t.Context(), io.Discard, &stderr); code != 0 {
+		t.Fatalf("exit code = %d, want 0 once the original failure is surrendered; stderr:\n%s", code, stderr.String())
+	}
+	var surrendered dispatcher.SurrenderedResult
+	if err := json.Unmarshal(surrenderBody, &surrendered); err != nil {
+		t.Fatalf("decode surrendered body %q: %v", surrenderBody, err)
+	}
+	if surrendered.Result.Status != apiv1.ResultFailure || surrendered.Result.Error == nil || surrendered.Result.Error.Code != "stage_declaration_invalid" {
+		t.Fatalf("surrendered result = %+v, want the stage's own stage_declaration_invalid failure", surrendered.Result)
+	}
+	if !strings.Contains(stderr.String(), `code="stage_declaration_invalid"`) {
+		t.Fatalf("pod stderr does not name the stage failure before recovery:\n%s", stderr.String())
 	}
 }
 
@@ -862,7 +934,7 @@ func runStageWithResultFile(t *testing.T, resultJSON string, exitCode int) apiv1
 	t.Setenv(dispatcher.EnvDaemonAPI, "")
 
 	var out, errOut bytes.Buffer
-	return runDeclaredStage(context.Background(), &out, &errOut)
+	return runDeclaredStage(context.Background(), &out, &errOut, nil)
 }
 
 // noWork is a DISTINCT terminal status. Flattening it to success makes a
@@ -1043,7 +1115,7 @@ func envDefaultDenyProbe(t *testing.T, defaultDeny, cliStage bool) map[string]st
 	// it is set here, never on the pod spec.
 	t.Setenv("IMAGE_AMBIENT_VAR", "baked-into-the-runner-image")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("probe stage did not run: %+v", result)
 	}
@@ -1326,7 +1398,7 @@ func TestDispatchExecClassifiesSyncBaseConflictAsRetryableInfra(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(cwd) })
 
-	got := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	got := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if got.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %q, want failure", got.Status)
 	}

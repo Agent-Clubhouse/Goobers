@@ -191,6 +191,7 @@ func TestImplementationOutcomesSurfacesTypedRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	_, err = client.ImplementationOutcomes(context.Background(), time.Time{})
 	var planeErr *Error
 	if !errors.As(err, &planeErr) {
@@ -201,16 +202,36 @@ func TestImplementationOutcomesSurfacesTypedRefusals(t *testing.T) {
 	}
 }
 
+func TestImplementationOutcomesPreservesFallbackError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("not an envelope"))
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewHTTP(Config{BaseURL: server.URL + "/", Token: "t", Gaggle: "platform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ImplementationOutcomes(t.Context(), time.Time{})
+	var planeErr *Error
+	if !errors.As(err, &planeErr) || planeErr.Code != "unknown" || planeErr.Message != http.StatusText(http.StatusBadGateway) {
+		t.Fatalf("error = %#v", planeErr)
+	}
+}
+
 // TestNewHTTPRequiresEveryContainmentInput keeps the constructor as strict as
 // Select: no base URL, no bearer, no gaggle, no client.
 func TestNewHTTPRequiresEveryContainmentInput(t *testing.T) {
-	for _, cfg := range []Config{
-		{Token: "t", Gaggle: "core"},
-		{BaseURL: "https://d", Gaggle: "core"},
-		{BaseURL: "https://d", Token: "t"},
+	for _, test := range []struct {
+		cfg  Config
+		want string
+	}{
+		{Config{Token: "t", Gaggle: "core"}, "telemetryclient: HTTP backend requires a base URL"},
+		{Config{BaseURL: "https://d", Gaggle: "core"}, ErrEndpointWithoutToken.Error()},
+		{Config{BaseURL: "https://d", Token: "t"}, ErrEndpointWithoutGaggle.Error()},
 	} {
-		if _, err := NewHTTP(cfg); err == nil {
-			t.Fatalf("NewHTTP(%+v) = nil error, want refusal", cfg)
+		if _, err := NewHTTP(test.cfg); err == nil || err.Error() != test.want {
+			t.Fatalf("NewHTTP(%+v) error = %v, want %q", test.cfg, err, test.want)
 		}
 	}
 }

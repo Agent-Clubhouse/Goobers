@@ -1,3 +1,9 @@
+import { Tab, TabList } from "../ui/Tabs";
+import { PageHeading } from "../ui/Heading";
+import { MetadataGrid } from "../ui/MetadataGrid";
+import { Action } from "../ui/Action";
+import { Timestamp } from "../ui/Timestamp";
+import { FilterField, FilterOption } from "../ui/Filters";
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentProgressRecord,
@@ -9,6 +15,8 @@ import type {
   WorkflowGraph,
 } from "../api/types";
 import { newestFirst } from "../chronology";
+import { ChildHistoryPanel } from "../components/ChildHistoryPanel";
+import { ChildActivityPanel } from "../components/ChildActivityPanel";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -19,6 +27,7 @@ import {
 } from "../components/WorkflowTopologyGraph";
 import {
   deriveBranchStates,
+  deriveMapVisits,
   deriveNodeStates,
   deriveTraversedEdges,
   evidenceVisit,
@@ -51,6 +60,8 @@ import {
   useRunDetail,
 } from "../runDetailData";
 import { routeHash, type Navigate, type RunDetailTab } from "../routing";
+import { runWorkTitle } from "../operationalData";
+import { RunWorkTitle } from "../components/RunWorkTitle";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -101,9 +112,9 @@ export function RunPage({
           <h1>Run unavailable</h1>
           <p>{query.state.error.message}</p>
         </div>
-        <button className="reconnect-button" onClick={query.retry} type="button">
+        <Action variant="primary" className="reconnect-button" onClick={query.retry} type="button">
           Retry
-        </button>
+        </Action>
       </section>
     );
   }
@@ -132,9 +143,9 @@ export function RunPage({
             <strong>Run detail may be stale</strong>
             <small>{query.state.error.message}</small>
           </span>
-          <button className="text-button" onClick={query.retry} type="button">
+          <Action variant="text" className="text-button" onClick={query.retry} type="button">
             Retry
-          </button>
+          </Action>
         </div>
       )}
       <RunDetailWorkspace
@@ -208,26 +219,20 @@ function RunDetailWorkspace({
   const { config: portalConfig, loading: portalConfigLoading } = useCobrand();
   const inspectorRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
-  const [fullscreenMode, setFullscreenMode] =
-    useState<WorkflowGraphFullscreenMode>("none");
-  const nodeStates = run.graph
-    ? deriveNodeStates(run.graph, events, selectedSeq, runId)
-    : {};
+  const [fullscreenMode, setFullscreenMode] = useState<WorkflowGraphFullscreenMode>("none");
+  const nodeStates = run.graph ? deriveNodeStates(run.graph, events, selectedSeq, runId) : {};
   const traversedEdges = deriveTraversedEdges(run.transitions, selectedSeq);
   const branchStates = deriveBranchStates(events, selectedSeq);
+  const mapVisits = deriveMapVisits(events, selectedSeq);
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
   const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
   const selectedEvidenceVisit = selectedEvidence
     ? evidenceVisit(events, selectedEvidence, runId)
     : undefined;
   const orderedEvents = orderRunEvents(events);
-  const selectedEventIndex = orderedEvents.findIndex(
-    (event) => event.seq === selectedSeq,
-  );
-  const selectedEvent =
-    selectedEventIndex >= 0 ? orderedEvents[selectedEventIndex] : undefined;
-  const previousEvent =
-    selectedEventIndex > 0 ? orderedEvents[selectedEventIndex - 1] : undefined;
+  const selectedEventIndex = orderedEvents.findIndex((event) => event.seq === selectedSeq);
+  const selectedEvent = selectedEventIndex >= 0 ? orderedEvents[selectedEventIndex] : undefined;
+  const previousEvent = selectedEventIndex > 0 ? orderedEvents[selectedEventIndex - 1] : undefined;
   const nextEvent =
     selectedEventIndex >= 0 && selectedEventIndex < orderedEvents.length - 1
       ? orderedEvents[selectedEventIndex + 1]
@@ -272,22 +277,9 @@ function RunDetailWorkspace({
         }) ??
         latestNodeId,
     );
-    setSelectedEvidenceSeq(
-      event && isInspectableEvidenceEvent(event) ? event.seq : undefined,
-    );
-    setFollowingLatest((current) =>
-      routeTargetChanged ? routeSequence === undefined : current,
-    );
-  }, [
-    events,
-    initialSeq,
-    latestEvent,
-    latestNodeId,
-    routeNodeId,
-    routeSequence,
-    routeTab,
-    runId,
-  ]);
+    setSelectedEvidenceSeq(event && isInspectableEvidenceEvent(event) ? event.seq : undefined);
+    setFollowingLatest((current) => (routeTargetChanged ? routeSequence === undefined : current));
+  }, [events, initialSeq, latestEvent, latestNodeId, routeNodeId, routeSequence, routeTab, runId]);
 
   useEffect(() => {
     if (!followingLatest) {
@@ -306,8 +298,7 @@ function RunDetailWorkspace({
     node?: string,
     showEventDetail = false,
   ) => {
-    const event =
-      seq === undefined ? undefined : events.find((candidate) => candidate.seq === seq);
+    const event = seq === undefined ? undefined : events.find((candidate) => candidate.seq === seq);
     setActiveTab(nextTab);
     if (event) {
       const eventSeq = event.seq ?? seq;
@@ -319,9 +310,7 @@ function RunDetailWorkspace({
             runId,
           }),
       );
-      setSelectedEvidenceSeq(
-        isInspectableEvidenceEvent(event) ? eventSeq : undefined,
-      );
+      setSelectedEvidenceSeq(isInspectableEvidenceEvent(event) ? eventSeq : undefined);
       setFollowingLatest(false);
     } else if (node) {
       setSelectedNodeId(node);
@@ -335,9 +324,7 @@ function RunDetailWorkspace({
       setSelectedSeq(initialSeq);
       setSelectedNodeId(latestNodeId);
       setSelectedEvidenceSeq(
-        latestEvent && isInspectableEvidenceEvent(latestEvent)
-          ? latestEvent.seq
-          : undefined,
+        latestEvent && isInspectableEvidenceEvent(latestEvent) ? latestEvent.seq : undefined,
       );
       setFollowingLatest(true);
     }
@@ -355,16 +342,11 @@ function RunDetailWorkspace({
     const nodeEvent =
       [...orderedEvents]
         .reverse()
-        .find(
-          (event) =>
-            event.seq <= selectedSeq && eventNodeId(event, runId) === nodeId,
-        ) ??
-      [...orderedEvents]
-        .reverse()
-        .find((event) => eventNodeId(event, runId) === nodeId);
+        .find((event) => event.seq <= selectedSeq && eventNodeId(event, runId) === nodeId) ??
+      [...orderedEvents].reverse().find((event) => eventNodeId(event, runId) === nodeId);
     navigateRun(
       "diagnostics",
-      nodeId === latestNodeId ? undefined : nodeEvent?.seq ?? selectedSeq,
+      nodeId === latestNodeId ? undefined : (nodeEvent?.seq ?? selectedSeq),
       nodeId,
       nodeEvent !== undefined,
     );
@@ -405,7 +387,9 @@ function RunDetailWorkspace({
     try {
       await revealRun(runId);
     } catch (error) {
-      setRevealError(error instanceof Error ? error.message : "The run directory could not be opened.");
+      setRevealError(
+        error instanceof Error ? error.message : "The run directory could not be opened.",
+      );
     } finally {
       setRevealPending(false);
     }
@@ -419,6 +403,8 @@ function RunDetailWorkspace({
     }
   };
   const displayedRunId = shortenIdentifier(run.id);
+  const workTitle = runWorkTitle(run, " · ");
+  const claimedIssue = run.operator?.issue;
   const relatedReferences = collectRelatedReferences(run, events);
   const stageVisits = semanticStageVisits(events, runId);
   const artifacts = newestFirst(
@@ -461,10 +447,37 @@ function RunDetailWorkspace({
         </span>
       </nav>
 
-      <header className="run-heading">
-        <div className="run-heading-main">
-          <div className="run-heading-title">
-            <h1 aria-label={`Run ${run.id}`}>Run <span aria-hidden="true">{displayedRunId}</span></h1>
+      <PageHeading
+        className="run-heading"
+        contentClassName="run-heading-main"
+        fullWidth
+        beforeTitle={
+          workTitle && (
+            // Outside the description, which narrow layouts hide, so the run
+            // ID stays visible and readable whenever claimed work headlines.
+            <div className="run-secondary-id">
+              Run{" "}
+              <span aria-hidden="true" className="mono" title={run.id}>
+                {displayedRunId}
+              </span>
+              <span className="sr-only">{run.id}</span>
+            </div>
+          )
+        }
+        title={
+          workTitle ? (
+            <span className="run-work-title"><RunWorkTitle run={run} separator=" · " /></span>
+          ) : (
+            <>
+              Run <span aria-hidden="true">{displayedRunId}</span>
+            </>
+          )
+        }
+        titleProps={
+          workTitle ? { title: workTitle } : { "aria-label": `Run ${run.id}` }
+        }
+        titleActions={
+          <>
             <button
               aria-label={runIdCopied ? "Run ID copied" : "Copy full run ID"}
               className="run-id-copy"
@@ -475,84 +488,99 @@ function RunDetailWorkspace({
               <Icon name={runIdCopied ? "check" : "copy"} size={16} />
             </button>
             <StatusBadge stale={run.stale} status={run.phase} />
-          </div>
-          <p className="run-identity-line">
-            <span>
-              {run.gaggle} / {run.workflow} · Pinned v
-              {run.graph?.version ?? run.workflowVersion} ·{" "}
+          </>
+        }
+        description={
+          <>
+            <span className="run-identity-line">
+              {run.gaggle} / {run.workflow} · Pinned v{run.graph?.version ?? run.workflowVersion} ·{" "}
               <span className="mono">
                 {run.graph?.digest ?? run.workflowDigest ?? "Digest unavailable"}
               </span>
             </span>
-          </p>
-          {((!portalConfigLoading && portalConfig.capabilities.revealRun) ||
-            relatedReferences.length > 0) && (
-            <div className="run-heading-actions">
-              {!portalConfigLoading && portalConfig.capabilities.revealRun && (
-                <button
-                  className="scope-pivot-link run-heading-action"
-                  disabled={revealPending}
-                  onClick={() => void revealFiles()}
-                  type="button"
-                >
-                  <Icon name="artifact" size={14} />
-                {revealPending ? "Opening…" : "Reveal run files"}
-                </button>
-              )}
-              {relatedReferences.map((reference) => (
-                <a
-                  className="scope-pivot-link run-heading-action"
-                  href={reference.url}
-                  key={`${reference.provider}/${reference.kind}/${reference.id}`}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  <Icon name="arrow" size={14} />
-                  Open related {externalRefLabel(reference.kind)} #{reference.id}
-                </a>
-              ))}
-              {revealError && <span role="alert">{revealError}</span>}
+          </>
+        }
+        actions={
+          <MetadataGrid className="run-meta" layout="inline">
+            <div>
+              <dt>Trigger</dt>
+              <dd>
+                {run.trigger.kind}
+                {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
+              </dd>
             </div>
-          )}
-        </div>
-        <dl className="run-meta">
-          <div>
-            <dt>Trigger</dt>
-            <dd>
-              {run.trigger.kind}
-              {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
-            </dd>
+            {claimedIssue && (
+              <div>
+                <dt>Claimed work</dt>
+                <dd
+                  title={`#${claimedIssue.number}${claimedIssue.title ? ` · ${claimedIssue.title}` : ""}`}
+                >
+                  <RunWorkTitle run={run} numberOnly />
+                </dd>
+              </div>
+            )}
+            <div>
+              <dt>Started</dt>
+              <dd>
+                <Timestamp value={run.startedAt} />
+              </dd>
+            </div>
+            <div>
+              <dt>Finished</dt>
+              <dd>
+                <Timestamp value={run.finishedAt} missing="In progress" />
+              </dd>
+            </div>
+            <div>
+              <dt>Duration</dt>
+              <dd>{formatDuration(run.durationMillis)}</dd>
+            </div>
+          </MetadataGrid>
+        }
+      >
+        {((!portalConfigLoading && portalConfig.capabilities.revealRun) ||
+          relatedReferences.length > 0) && (
+          <div className="run-heading-actions">
+            {!portalConfigLoading && portalConfig.capabilities.revealRun && (
+              <button
+                className="scope-pivot-link run-heading-action"
+                disabled={revealPending}
+                onClick={() => void revealFiles()}
+                type="button"
+              >
+                <Icon name="artifact" size={14} />
+                {revealPending ? "Opening…" : "Reveal run files"}
+              </button>
+            )}
+            {relatedReferences.map((reference) => (
+              <a
+                className="scope-pivot-link run-heading-action"
+                href={reference.url}
+                key={`${reference.provider}/${reference.kind}/${reference.id}`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <Icon name="arrow" size={14} />
+                Open related {externalRefLabel(reference.kind)} #{reference.id}
+              </a>
+            ))}
+            {revealError && <span role="alert">{revealError}</span>}
           </div>
-          <div>
-            <dt>Started</dt>
-            <dd>
-              <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
-            </dd>
-          </div>
-          <div>
-            <dt>Finished</dt>
-            <dd>
-              {run.finishedAt ? (
-                <time dateTime={run.finishedAt}>{formatTimestamp(run.finishedAt)}</time>
-              ) : (
-                "In progress"
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Duration</dt>
-            <dd>{formatDuration(run.durationMillis)}</dd>
-          </div>
-        </dl>
-      </header>
+        )}
+      </PageHeading>
 
+      <ChildActivityPanel activity={run.childActivity} navigate={navigate} />
+      <ChildHistoryPanel key={run.id} client={client} runId={run.id} gaggle={run.gaggle} navigate={navigate} />
       {run.lineage && (
         <section aria-labelledby="run-lineage-heading" className="run-lineage">
           <h2 id="run-lineage-heading">Continuation lineage</h2>
           {run.lineage.source && (
             <p>
               Continued from{" "}
-              <button onClick={() => navigate({ page: "run", id: run.lineage!.source!.id })} type="button">
+              <button
+                onClick={() => navigate({ page: "run", id: run.lineage!.source!.id })}
+                type="button"
+              >
                 {shortenIdentifier(run.lineage.source.id)}
               </button>{" "}
               ({run.lineage.source.phase ?? "status unavailable"}) at{" "}
@@ -562,7 +590,9 @@ function RunDetailWorkspace({
             </p>
           )}
           {(run.lineage.injectedInputs?.length ?? 0) > 0 && (
-            <p>Injected input: {run.lineage.injectedInputs!.map((input) => input.name).join(", ")}</p>
+            <p>
+              Injected input: {run.lineage.injectedInputs!.map((input) => input.name).join(", ")}
+            </p>
           )}
           {(run.lineage.continuations?.length ?? 0) > 0 && (
             <p>
@@ -570,7 +600,10 @@ function RunDetailWorkspace({
               {run.lineage.continuations!.map((continuation, index) => (
                 <span key={continuation.id}>
                   {index > 0 ? ", " : ""}
-                  <button onClick={() => navigate({ page: "run", id: continuation.id })} type="button">
+                  <button
+                    onClick={() => navigate({ page: "run", id: continuation.id })}
+                    type="button"
+                  >
                     {shortenIdentifier(continuation.id)}
                   </button>{" "}
                   ({continuation.phase ?? "status unavailable"})
@@ -663,96 +696,91 @@ function RunDetailWorkspace({
           id="run-panel-diagnostics"
           role="tabpanel"
         >
-        <div
-          aria-label={
-            fullscreenMode === "fallback" ? "Run graph fullscreen view" : undefined
-          }
-          aria-modal={fullscreenMode === "fallback" ? "true" : undefined}
-          className={[
-            "run-graph-fullscreen-root",
-            "workflow-graph-fullscreen-target",
-            fullscreenMode === "fallback" ? "workflow-graph-shell-expanded" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          data-fullscreen={fullscreenMode}
-          ref={fullscreenRootRef}
-          role={fullscreenMode === "fallback" ? "dialog" : undefined}
-        >
-          <GraphFrame
-            action={
-              <span aria-live="polite" className="graph-legend">
-                State at sequence {selectedSeq || "—"}
-              </span>
-            }
-            className="run-graph-panel"
-            eyebrow=""
+          <div
+            aria-label={fullscreenMode === "fallback" ? "Run graph fullscreen view" : undefined}
+            aria-modal={fullscreenMode === "fallback" ? "true" : undefined}
+            className={[
+              "run-graph-fullscreen-root",
+              "workflow-graph-fullscreen-target",
+              fullscreenMode === "fallback" ? "workflow-graph-shell-expanded" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            data-fullscreen={fullscreenMode}
+            ref={fullscreenRootRef}
+            role={fullscreenMode === "fallback" ? "dialog" : undefined}
           >
-            {run.graphStatus === "pinned" && run.graph ? (
-              <WorkflowTopologyGraph
-                branchStates={branchStates}
-                causalNodeId={causalNodeId}
-                fullscreenTargetRef={fullscreenRootRef}
-                graph={run.graph}
-                nodeStates={nodeStates}
-                onFullscreenModeChange={setFullscreenMode}
-                onSelectStage={selectNode}
-                selectedStageId={selectedNodeId}
-                stateSeq={selectedSeq}
-                traversedEdges={traversedEdges}
-              />
-            ) : (
-              <div className="empty-detail" role="status">
-                <strong>Pinned graph unavailable</strong>
-                <span>
-                  This historic run predates graph snapshots. Its event ledger remains
-                  available.
+            <GraphFrame
+              action={
+                <span aria-live="polite" className="graph-legend">
+                  State at sequence {selectedSeq || "—"}
                 </span>
-              </div>
-            )}
-          </GraphFrame>
+              }
+              className="run-graph-panel"
+              eyebrow=""
+            >
+              {run.graphStatus === "pinned" && run.graph ? (
+                <WorkflowTopologyGraph
+                  branchStates={branchStates}
+                  causalNodeId={causalNodeId}
+                  fullscreenTargetRef={fullscreenRootRef}
+                  graph={run.graph}
+                  mapVisits={mapVisits}
+                  nodeStates={nodeStates}
+                  onFullscreenModeChange={setFullscreenMode}
+                  onSelectStage={selectNode}
+                  selectedStageId={selectedNodeId}
+                  stateSeq={selectedSeq}
+                  traversedEdges={traversedEdges}
+                />
+              ) : (
+                <div className="empty-detail" role="status">
+                  <strong>Pinned graph unavailable</strong>
+                  <span>
+                    This historic run predates graph snapshots. Its event ledger remains available.
+                  </span>
+                </div>
+              )}
+            </GraphFrame>
 
-          <div className="run-replay-inspector">
-            {events.length > 0 && (
-              <ReplayScrubber
-                events={events}
-                graph={run.graph}
-                onInspect={(seq) => replaySeek(seq, true)}
-                onSeek={replaySeek}
-                runId={runId}
-                selectedSeq={selectedSeq}
-                terminal={run.finishedAt != null}
-              />
-            )}
+            <div className="run-replay-inspector">
+              {events.length > 0 && (
+                <ReplayScrubber
+                  events={events}
+                  graph={run.graph}
+                  onInspect={(seq) => replaySeek(seq, true)}
+                  onSeek={replaySeek}
+                  runId={runId}
+                  selectedSeq={selectedSeq}
+                  terminal={run.finishedAt != null}
+                />
+              )}
 
-            {run.graphStatus === "pinned" && run.graph && (
-              <RunStageInspector
-                client={client}
-                events={events}
-                hideHeading
-                inspectorRef={inspectorRef}
-                node={selectedNode}
-                onSelectAttempt={(isLatest) =>
-                  setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
-                }
-                workflow={run.workflow}
-                runId={runId}
-                selectedEvidence={selectedEvidence}
-                selectedEvidenceVisit={selectedEvidenceVisit}
-                selectedSeq={selectedSeq}
-              />
-            )}
+              {run.graphStatus === "pinned" && run.graph && (
+                <RunStageInspector
+                  client={client}
+                  events={events}
+                  hideHeading
+                  inspectorRef={inspectorRef}
+                  mapVisit={selectedNodeId ? mapVisits.get(selectedNodeId) : undefined}
+                  node={selectedNode}
+                  onSelectAttempt={(isLatest) =>
+                    setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
+                  }
+                  workflow={run.workflow}
+                  runId={runId}
+                  selectedEvidence={selectedEvidence}
+                  selectedEvidenceVisit={selectedEvidenceVisit}
+                  selectedSeq={selectedSeq}
+                />
+              )}
+            </div>
           </div>
-        </div>
         </section>
       )}
 
       {activeTab === "journal" && (
-        <section
-          aria-labelledby="run-tab-journal"
-          id="run-panel-journal"
-          role="tabpanel"
-        >
+        <section aria-labelledby="run-tab-journal" id="run-panel-journal" role="tabpanel">
           <div className="run-journal-column">
             <EventLedger
               events={events}
@@ -819,12 +847,14 @@ function RunDetailTabs({
   };
 
   return (
-    <div aria-label="Run detail views" className="run-detail-tabs" role="tablist">
+    <TabList aria-label="Run detail views" className="run-detail-tabs" role="tablist">
       {RUN_DETAIL_TABS.map((tab, index) => (
-        <button
+        <Tab
           aria-controls={`run-panel-${tab.id}`}
           aria-selected={activeTab === tab.id}
-          className={activeTab === tab.id ? "run-detail-tab run-detail-tab-active" : "run-detail-tab"}
+          className={
+            activeTab === tab.id ? "run-detail-tab run-detail-tab-active" : "run-detail-tab"
+          }
           id={`run-tab-${tab.id}`}
           key={tab.id}
           onClick={() => onSelect(tab.id)}
@@ -834,9 +864,9 @@ function RunDetailTabs({
           type="button"
         >
           {tab.label}
-        </button>
+        </Tab>
       ))}
-    </div>
+    </TabList>
   );
 }
 
@@ -904,7 +934,9 @@ function RunOverview({
           {latestFailure && latestFailure !== current && (
             <button
               className="scope-pivot-link run-heading-action"
-              onClick={() => onInspectSequence(latestFailure.finishedSeq ?? latestFailure.startedSeq)}
+              onClick={() =>
+                onInspectSequence(latestFailure.finishedSeq ?? latestFailure.startedSeq)
+              }
               type="button"
             >
               View latest failure
@@ -972,11 +1004,17 @@ function RunOverview({
                   </small>
                 </span>
                 <span className="run-stage-result">
-                  <strong>{visit.repass ? `Returned from ${humanizeLedgerValue(visit.repass.sourceStage)}` : visit.result}</strong>
+                  <strong>
+                    {visit.repass
+                      ? `Returned from ${humanizeLedgerValue(visit.repass.sourceStage)}`
+                      : visit.result}
+                  </strong>
                   {visit.repass && <small>{visit.repass.reason}</small>}
                 </span>
                 <span className="run-stage-duration">
-                  {visit.durationMillis === undefined ? "In progress" : formatDuration(visit.durationMillis)}
+                  {visit.durationMillis === undefined
+                    ? "In progress"
+                    : formatDuration(visit.durationMillis)}
                 </span>
                 <span className="run-stage-action">Details</span>
               </button>
@@ -1034,10 +1072,7 @@ function RunArtifacts({
             const latest = artifact.events.at(-1)!;
             return (
               <li key={artifact.id}>
-                <button
-                  onClick={() => onInspectSequence(latest.seq)}
-                  type="button"
-                >
+                <button onClick={() => onInspectSequence(latest.seq)} type="button">
                   <span className={`run-artifact-kind run-artifact-kind-${artifact.kind}`}>
                     {artifact.kind}
                   </span>
@@ -1045,7 +1080,8 @@ function RunArtifacts({
                     <strong>{artifact.label}</strong>
                     <small>
                       {artifact.stage ? `${humanizeLedgerValue(artifact.stage)} · ` : ""}
-                      {artifact.events.length} {artifact.events.length === 1 ? "record" : "checkpoints"}
+                      {artifact.events.length}{" "}
+                      {artifact.events.length === 1 ? "record" : "checkpoints"}
                     </small>
                   </span>
                   <span className="run-stage-action">Open details</span>
@@ -1172,11 +1208,13 @@ function EventDetailDialog({
         <dl className="event-detail-meta">
           <div>
             <dt>Time</dt>
-            <dd>{formatTimestamp(event.time)}</dd>
+            <dd><Timestamp value={event.time} /></dd>
           </div>
           <div>
             <dt>Type</dt>
-            <dd><code>{event.type}</code></dd>
+            <dd>
+              <code>{event.type}</code>
+            </dd>
           </div>
           {workflow && (
             <div>
@@ -1315,9 +1353,7 @@ function AgentProgressCard({ summary }: { summary: AgentProgressSummary }) {
 
       <p className="agent-progress-card-summary">{currentSummary}</p>
 
-      {summary.degraded && (
-        <p className="agent-progress-degraded">{summary.degradedText}</p>
-      )}
+      {summary.degraded && <p className="agent-progress-degraded">{summary.degradedText}</p>}
 
       {summary.latest && (
         <div className="agent-progress-latest">
@@ -1395,7 +1431,9 @@ function agentCurrentSourceLabel(current?: AgentProgressSummary["currentStatus"]
   return current?.source ?? "unknown";
 }
 
-function agentBadgeTone(summary: AgentProgressSummary): "active" | "success" | "danger" | "warning" {
+function agentBadgeTone(
+  summary: AgentProgressSummary,
+): "active" | "success" | "danger" | "warning" {
   if (summary.currentStatus?.source === "progress") {
     switch (summary.currentStatus.kind) {
       case "blocker":
@@ -1436,12 +1474,8 @@ function agentProgressSummary(record: AgentProgressRecord): string {
   );
 }
 
-function formatAgentEvidence(
-  evidence: NonNullable<AgentProgressRecord["evidence"]>,
-): string {
-  return evidence
-    .map((item) => item.label || item.id || item.type || "evidence")
-    .join(", ");
+function formatAgentEvidence(evidence: NonNullable<AgentProgressRecord["evidence"]>): string {
+  return evidence.map((item) => item.label || item.id || item.type || "evidence").join(", ");
 }
 
 function renderAgentProgressDetails(record: AgentProgressRecord, currentSummary?: string) {
@@ -1524,22 +1558,20 @@ function EventLedger({
         ? newestLedgerEventsFirst(visible)
             .filter((event) => keyMomentIds.has(`${event.branch}-${event.seq}`))
             .map((event) => ({ kind: "event", event }))
-      : newestJournalEntriesFirst(grouped).flatMap((entry) =>
-          entry.kind === "group" && expandedGroups.has(entry.id)
-            ? [
-                entry,
-                ...newestLedgerEventsFirst(entry.events).map((event) => ({
-                  kind: "event" as const,
-                  event,
-                })),
-              ]
-            : [entry],
-        );
+        : newestJournalEntriesFirst(grouped).flatMap((entry) =>
+            entry.kind === "group" && expandedGroups.has(entry.id)
+              ? [
+                  entry,
+                  ...newestLedgerEventsFirst(entry.events).map((event) => ({
+                    kind: "event" as const,
+                    event,
+                  })),
+                ]
+              : [entry],
+          );
 
   const rowKey = (entry: JournalEntry) =>
-    entry.kind === "group"
-      ? entry.id
-      : `event-${entry.event.branch}-${entry.event.seq}`;
+    entry.kind === "group" ? entry.id : `event-${entry.event.branch}-${entry.event.seq}`;
 
   const moveSelection = (targetIndex: number) => {
     const entry = rows[targetIndex];
@@ -1591,58 +1623,61 @@ function EventLedger({
         <span className="graph-legend">Newest events first</span>
       </div>
       <div aria-label="Event ledger filters" className="filter-bar event-ledger-filter-bar">
-        <button
+        <FilterOption
           aria-describedby="journal-view-key-hint"
-          aria-pressed={view === "key"}
-          className={view === "key" ? "filter-button filter-button-active" : "filter-button"}
+          selected={view === "key"}
           onClick={() => setView("key")}
           title="Show decisions, escalations, and branch handoffs"
           type="button"
         >
           Key moments
-        </button>
+        </FilterOption>
         <span className="sr-only" id="journal-view-key-hint">
           Shows decisions, escalations, and branch handoffs with newest events first
         </span>
-        <button
+        <FilterOption
           aria-describedby="journal-view-major-hint"
-          aria-pressed={view === "major"}
-          className={view === "major" ? "filter-button filter-button-active" : "filter-button"}
+          selected={view === "major"}
           onClick={() => setView("major")}
           title="Show only stage/gate landmarks, hiding evidence and liveness noise"
           type="button"
         >
           Major events
-        </button>
+        </FilterOption>
         <span className="sr-only" id="journal-view-major-hint">
           Shows only stage/gate landmarks, hiding evidence and liveness noise
         </span>
-        <button
+        <FilterOption
           aria-describedby="journal-view-all-hint"
-          aria-pressed={view === "all"}
-          className={view === "all" ? "filter-button filter-button-active" : "filter-button"}
+          selected={view === "all"}
           onClick={() => setView("all")}
           title="Show every durable event of every kind"
           type="button"
         >
           All events ({events.length})
-        </button>
+        </FilterOption>
         <span className="sr-only" id="journal-view-all-hint">
           Shows every durable event of every kind, independent of the stage filter
         </span>
         <div className="event-ledger-filter-fields">
-          <label className="filter-search event-ledger-filter-field">
-            <span>Search</span>
+          <FilterField
+            kind="search"
+            label="Search"
+            className="filter-search event-ledger-filter-field"
+          >
             <input
               onChange={(changeEvent) => setSearchQuery(changeEvent.target.value)}
               placeholder="Search events"
               type="search"
               value={searchQuery}
             />
-          </label>
+          </FilterField>
           {stages.length > 1 && (
-            <label className="filter-select event-ledger-filter-field">
-              <span>Stage</span>
+            <FilterField
+              kind="select"
+              label="Stage"
+              className="filter-select event-ledger-filter-field"
+            >
               <select
                 aria-label="Narrow the journal to one stage, independent of the event-kind toggle above"
                 onChange={(changeEvent) => setStageFilter(changeEvent.target.value)}
@@ -1660,7 +1695,7 @@ function EventLedger({
                   );
                 })}
               </select>
-            </label>
+            </FilterField>
           )}
         </div>
       </div>
@@ -1684,25 +1719,99 @@ function EventLedger({
             <span role="columnheader">Details</span>
           </div>
           <ol>
-          {rows.map((entry, index) => {
-            if (entry.kind === "group") {
-              const expanded = expandedGroups.has(entry.id);
-              const selected = entry.events.some((event) => event.seq === selectedSeq);
-              const first = entry.events[0];
-              const last = entry.events.at(-1) ?? first;
-              const scope = ledgerGroupScope(entry);
+            {rows.map((entry, index) => {
+              if (entry.kind === "group") {
+                const expanded = expandedGroups.has(entry.id);
+                const selected = entry.events.some((event) => event.seq === selectedSeq);
+                const first = entry.events[0];
+                const last = entry.events.at(-1) ?? first;
+                const scope = ledgerGroupScope(entry);
+                return (
+                  <li
+                    className={`ledger-item ledger-support-group ${selected ? "ledger-item-active" : ""}`}
+                    key={entry.id}
+                  >
+                    <button
+                      aria-current={selected ? "true" : undefined}
+                      aria-expanded={expanded}
+                      aria-label={`${expanded ? "Collapse" : "Expand"} ${entry.events.length} supporting ${entry.events.length === 1 ? "event" : "events"} for ${scope}, sequences ${first.seq} through ${last.seq}`}
+                      className="run-ledger-button"
+                      onClick={() => toggleGroup(entry)}
+                      onKeyDown={(event) => handleRowKeyDown(event, index)}
+                      ref={(element) => {
+                        if (element) {
+                          rowRefs.current.set(rowKey(entry), element);
+                        } else {
+                          rowRefs.current.delete(rowKey(entry));
+                        }
+                      }}
+                      type="button"
+                    >
+                      <span className="ledger-seq">
+                        {first.seq}
+                        {last.seq === first.seq ? "" : `–${last.seq}`}
+                      </span>
+                      <span className="ledger-stage">{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</span>
+                      <span className="ledger-type">Supporting</span>
+                      <span className="ledger-time">{entry.events.length} records</span>
+                      <span className="ledger-attempt">N/A</span>
+                      <span className="ledger-copy">
+                        <strong>{expanded ? "Hide" : "Show"} supporting journal records</strong>
+                        <span>{ledgerGroupCategories(entry)}</span>
+                      </span>
+                    </button>
+                    <details className="ledger-mobile-detail">
+                      <summary>More group details</summary>
+                      <dl>
+                        <div>
+                          <dt>Stage</dt>
+                          <dd>{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</dd>
+                        </div>
+                        <div>
+                          <dt>Sequences</dt>
+                          <dd>
+                            {first.seq}–{last.seq}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Records</dt>
+                          <dd>{entry.events.length}</dd>
+                        </div>
+                        <div>
+                          <dt>Categories</dt>
+                          <dd>{ledgerGroupCategories(entry)}</dd>
+                        </div>
+                      </dl>
+                    </details>
+                  </li>
+                );
+              }
+
+              const event = entry.event;
+              const selected = event.seq === selectedSeq;
+              const heading = eventHeading(event);
+              const summary = eventSummary(event, evidenceDecision(events, event, run.id), run.id);
+              const major = isMajorJournalEvent(event);
+              const failed = isFailureJournalEvent(event);
               return (
                 <li
-                  className={`ledger-item ledger-support-group ${selected ? "ledger-item-active" : ""}`}
-                  key={entry.id}
+                  className={[
+                    "ledger-item",
+                    major ? "ledger-item-major" : "ledger-item-supporting",
+                    selected ? "ledger-item-active" : "",
+                    failed ? "ledger-item-failure" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  data-category={event.category ?? "unknown"}
+                  key={`${event.branch}-${event.seq}`}
                 >
                   <button
                     aria-current={selected ? "true" : undefined}
-                    aria-expanded={expanded}
-                    aria-label={`${expanded ? "Collapse" : "Expand"} ${entry.events.length} supporting ${entry.events.length === 1 ? "event" : "events"} for ${scope}, sequences ${first.seq} through ${last.seq}`}
+                    aria-label={`Select sequence ${event.seq}: ${eventStage(event, run.id)}. ${heading}. ${summary}${failed ? " Failed." : ""}`}
                     className="run-ledger-button"
-                    onClick={() => toggleGroup(entry)}
-                    onKeyDown={(event) => handleRowKeyDown(event, index)}
+                    onClick={() => onSelect(event, true)}
+                    onKeyDown={(keyboardEvent) => handleRowKeyDown(keyboardEvent, index)}
                     ref={(element) => {
                       if (element) {
                         rowRefs.current.set(rowKey(entry), element);
@@ -1712,124 +1821,63 @@ function EventLedger({
                     }}
                     type="button"
                   >
-                    <span className="ledger-seq">
-                      {first.seq}
-                      {last.seq === first.seq ? "" : `–${last.seq}`}
-                    </span>
-                    <span className="ledger-stage">{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</span>
-                    <span className="ledger-type">Supporting</span>
-                    <span className="ledger-time">{entry.events.length} records</span>
-                    <span className="ledger-attempt">N/A</span>
+                    <span className="ledger-seq">{event.seq}</span>
+                    <span className="ledger-stage">{eventStage(event, run.id)}</span>
+                    <span className="ledger-type">{event.type}</span>
+                    <span className="ledger-time">{formatElapsed(run.startedAt, event.time)}</span>
+                    <span className="ledger-attempt">{event.attempt ?? "N/A"}</span>
                     <span className="ledger-copy">
-                      <strong>
-                        {expanded ? "Hide" : "Show"} supporting journal records
-                      </strong>
-                      <span>{ledgerGroupCategories(entry)}</span>
+                      <strong>{heading}</strong>
+                      <span>{summary}</span>
+                      <span
+                        className={failed ? "ledger-labels ledger-labels-failure" : "ledger-labels"}
+                      >
+                        <span className="ledger-category">{ledgerCategoryLabel(event)}</span>
+                        {failed && (
+                          <span className="ledger-severity">
+                            <Icon name="alert" size={9} />
+                            Failed
+                          </span>
+                        )}
+                      </span>
+                      {!event.knownSchema && (
+                        <span className="ledger-unknown">Unsupported schema {event.schema}</span>
+                      )}
                     </span>
                   </button>
                   <details className="ledger-mobile-detail">
-                    <summary>More group details</summary>
+                    <summary>More event details</summary>
                     <dl>
-                      <div><dt>Stage</dt><dd>{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</dd></div>
-                      <div><dt>Sequences</dt><dd>{first.seq}–{last.seq}</dd></div>
-                      <div><dt>Records</dt><dd>{entry.events.length}</dd></div>
-                      <div><dt>Categories</dt><dd>{ledgerGroupCategories(entry)}</dd></div>
+                      <div>
+                        <dt>Type</dt>
+                        <dd>{event.type}</dd>
+                      </div>
+                      <div>
+                        <dt>Attempt</dt>
+                        <dd>{event.attempt ?? "N/A"}</dd>
+                      </div>
+                      <div>
+                        <dt>Category</dt>
+                        <dd>{ledgerCategoryLabel(event)}</dd>
+                      </div>
                     </dl>
                   </details>
+                  {event.externalRef?.url && (
+                    <div className="ledger-event-action-row">
+                      <a
+                        className="ledger-event-link"
+                        href={event.externalRef.url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        <Icon name="arrow" size={14} />
+                        Open linked {externalRefLabel(event.externalRef.kind)}
+                      </a>
+                    </div>
+                  )}
                 </li>
               );
-            }
-
-            const event = entry.event;
-            const selected = event.seq === selectedSeq;
-            const heading = eventHeading(event);
-            const summary = eventSummary(
-              event,
-              evidenceDecision(events, event, run.id),
-              run.id,
-            );
-            const major = isMajorJournalEvent(event);
-            const failed = isFailureJournalEvent(event);
-            return (
-              <li
-                className={[
-                  "ledger-item",
-                  major ? "ledger-item-major" : "ledger-item-supporting",
-                  selected ? "ledger-item-active" : "",
-                  failed ? "ledger-item-failure" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                data-category={event.category ?? "unknown"}
-                key={`${event.branch}-${event.seq}`}
-              >
-                <button
-                  aria-current={selected ? "true" : undefined}
-                  aria-label={`Select sequence ${event.seq}: ${eventStage(event, run.id)}. ${heading}. ${summary}${failed ? " Failed." : ""}`}
-                  className="run-ledger-button"
-                  onClick={() => onSelect(event, true)}
-                  onKeyDown={(keyboardEvent) => handleRowKeyDown(keyboardEvent, index)}
-                  ref={(element) => {
-                    if (element) {
-                      rowRefs.current.set(rowKey(entry), element);
-                    } else {
-                      rowRefs.current.delete(rowKey(entry));
-                    }
-                  }}
-                  type="button"
-                >
-                  <span className="ledger-seq">{event.seq}</span>
-                  <span className="ledger-stage">{eventStage(event, run.id)}</span>
-                  <span className="ledger-type">{event.type}</span>
-                  <span className="ledger-time">
-                    {formatElapsed(run.startedAt, event.time)}
-                  </span>
-                  <span className="ledger-attempt">
-                    {event.attempt ?? "N/A"}
-                  </span>
-                  <span className="ledger-copy">
-                    <strong>{heading}</strong>
-                    <span>{summary}</span>
-                    <span
-                      className={failed ? "ledger-labels ledger-labels-failure" : "ledger-labels"}
-                    >
-                      <span className="ledger-category">{ledgerCategoryLabel(event)}</span>
-                      {failed && (
-                        <span className="ledger-severity">
-                          <Icon name="alert" size={9} />
-                          Failed
-                        </span>
-                      )}
-                    </span>
-                    {!event.knownSchema && (
-                      <span className="ledger-unknown">Unsupported schema {event.schema}</span>
-                    )}
-                  </span>
-                </button>
-                <details className="ledger-mobile-detail">
-                  <summary>More event details</summary>
-                  <dl>
-                    <div><dt>Type</dt><dd>{event.type}</dd></div>
-                    <div><dt>Attempt</dt><dd>{event.attempt ?? "N/A"}</dd></div>
-                    <div><dt>Category</dt><dd>{ledgerCategoryLabel(event)}</dd></div>
-                  </dl>
-                </details>
-                {event.externalRef?.url && (
-                  <div className="ledger-event-action-row">
-                    <a
-                      className="ledger-event-link"
-                      href={event.externalRef.url}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      <Icon name="arrow" size={14} />
-                      Open linked {externalRefLabel(event.externalRef.kind)}
-                    </a>
-                  </div>
-                )}
-              </li>
-            );
-          })}
+            })}
           </ol>
         </div>
       )}
@@ -1897,9 +1945,7 @@ function ledgerGroupCategories(group: JournalEventGroup): string {
     const label = ledgerCategoryLabel(event);
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return [...counts.entries()]
-    .map(([category, count]) => `${category} ${count}`)
-    .join(" · ");
+  return [...counts.entries()].map(([category, count]) => `${category} ${count}`).join(" · ");
 }
 
 function ledgerCategoryLabel(event: RunEvent): string {
@@ -1923,12 +1969,14 @@ function collectRelatedReferences(run: RunDetail, events: RunEvent[]): ExternalR
       url: pullRequest.url,
     });
   }
-  return [...new Map(
-    references.map((reference) => [
-      `${reference.provider}/${reference.kind}/${reference.id}`,
-      reference,
-    ]),
-  ).values()];
+  return [
+    ...new Map(
+      references.map((reference) => [
+        `${reference.provider}/${reference.kind}/${reference.id}`,
+        reference,
+      ]),
+    ).values(),
+  ];
 }
 
 function humanizeLedgerValue(value: string): string {

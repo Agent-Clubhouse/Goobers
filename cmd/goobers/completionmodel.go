@@ -79,6 +79,13 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"advisory-pr-reset": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle name"},
+		{name: "owner", takesArg: true, desc: "GitHub owner"},
+		{name: "repo", takesArg: true, desc: "GitHub repository"},
+		{name: "review-type", takesArg: true, desc: "Advisory review type"},
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+	},
 	"temporal codec-server": {
 		{name: "listen", takesArg: true, desc: "TLS listener address"},
 		{name: "tls-cert", takesArg: true, desc: "TLS certificate PEM file"},
@@ -334,6 +341,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
 		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
+		{name: "blob-probe-wait", takesArg: true, desc: "How long the startup blob-plane probe waits for a not-yet-ready daemon before exiting"},
 		{name: "config-history-depth", takesArg: true, desc: "How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
@@ -366,6 +374,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
+	},
+	"signal": {
+		{name: "request-id", takesArg: true, desc: "Idempotency key for the accepted signal recipient set"},
 	},
 	"run": {
 		{name: "no-api", desc: "Explicitly use local execution or file delegation"},
@@ -405,6 +416,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},
 	},
+	"workflow validate-child": {
+		{name: "gaggle", takesArg: true, desc: "Configured parent gaggle"},
+		{name: "parent", takesArg: true, valueKind: "workflows", desc: "Configured parent workflow"},
+		{name: "stage", takesArg: true, desc: "Configured parent agentic stage"},
+		{name: "backend", takesArg: true, desc: "Advisory validation target: runner or engine"},
+		{name: "json", desc: "Emit structured diagnostics and digests"},
+	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
@@ -419,6 +437,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"status": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "agents", desc: "List in-flight agentic stages by role"},
+		{name: "runs-only", desc: "Return only the bounded run table"},
 		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
 		{name: "json", desc: "Emit JSON"},
@@ -602,14 +621,47 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "finding", takesArg: true, desc: "Backprop finding ID to verify"},
 		{name: "applied-at", takesArg: true, desc: "Fix deployment time as RFC3339"},
 	},
+	"telemetry label": {
+		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
+		{name: "outcome", takesArg: true, desc: "Ground-truth verdict (correct or incorrect)"},
+		{name: "reason", takesArg: true, desc: "Why the result is correct or incorrect"},
+		{name: "by", takesArg: true, desc: "Who is recording the label"},
+		{name: "labeled-at", takesArg: true, desc: "Verdict time as RFC3339"},
+	},
+	"telemetry shadow": {
+		{name: "json", desc: "Emit the shadow comparison report as JSON"},
+		{name: "gaggle", takesArg: true, valueKind: "gaggles", desc: "Filter to one gaggle"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter to one workflow"},
+		{name: "since", takesArg: true, desc: "Include runs at or after this RFC3339 timestamp"},
+		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
+	},
+	"telemetry claim": {
+		{name: "kind", takesArg: true, desc: "Claim kind (assignment, reliance, credit, or blame)"},
+		{name: "stage", takesArg: true, desc: "Target stage name"},
+		{name: "attempt", takesArg: true, desc: "Target stage attempt"},
+		{name: "agent", takesArg: true, desc: "Target nested agent ID"},
+		{name: "artifact", takesArg: true, desc: "Target recorded artifact digest"},
+		{name: "statement", takesArg: true, desc: "What the claim asserts"},
+		{name: "evidence", takesArg: true, desc: "Supporting artifact digest or seq:N (repeatable)"},
+		{name: "confidence", takesArg: true, desc: "Writer confidence between 0 and 1"},
 	},
 	"journal redact": {
 		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
 		{name: "path", takesArg: true, desc: "Journal-relative blob path"},
 		{name: "reason", takesArg: true, desc: "Redaction reason"},
 		{name: "secret-file", takesArg: true, desc: "Read the leaked secret bytes from this file"},
+	},
+	"pr retry": {
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+		{name: "route", takesArg: true, values: []string{prRetryRouteMergeReview, prRetryRouteRemediation, prRetryRouteHold}, desc: "Target route"},
+		{name: "reason", takesArg: true, desc: "Audit reason"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle that owns the PR"},
+		{name: "actor", takesArg: true, desc: "Audit identity"},
+		{name: "dry-run", desc: "Report the proposed transition without mutating anything"},
+		{name: "json", desc: "Print the report as JSON"},
 	},
 	"backlog-health": {
 		{name: "feedback", desc: "Include backlog feedback"},
@@ -704,6 +756,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"pr-claim": {
 		{name: "release", desc: "Release the remediation claim"},
+		{name: "verify-feedback", desc: "Also compare live PR feedback with the recorded snapshot"},
+		{name: "classify-feedback-repass", desc: "Report whether a stale-feedback repass changed nothing"},
 	},
 	"remediation-checkpoint": {
 		{name: "budget", takesArg: true, desc: "Per-PR repass-cycle budget before escalating"},

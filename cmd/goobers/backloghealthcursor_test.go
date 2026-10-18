@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,71 @@ func TestBacklogHealthFullRescanWhenLedgerCannotExplainReadyPool(t *testing.T) {
 	if second.ReadyPoolDepth != 1 || len(second.ReadyTransitions) == 0 {
 		t.Fatalf("report = %#v, want the rebuilt ledger", second)
 	}
+}
+
+// TestBacklogHealthResolvesReadyItemOlderThanTheFullScanFromItsOwnHistory is
+// #6986: a full scan whose oldest page is newer than a ready item's only
+// label-add event used to fail the whole snapshot. The item must instead be
+// resolved from its own label history, with its true ready time, and folded
+// into the ledger so the next resumed cycle does not rescan again.
+func TestBacklogHealthResolvesReadyItemOlderThanTheFullScanFromItsOwnHistory(t *testing.T) {
+	root, server := backlogHealthFixture(t)
+	// The 250 churn events are newer than issue 7's ready event, so a 200-event
+	// window serves none of issue 7's history repository-wide.
+	server.setIssueEventWindow(200, false)
+
+	first := runBacklogHealthCycle(t, root)
+	if first.Scan.Mode != backlogHealthScanFull || first.Scan.ItemLookups != 1 {
+		t.Fatalf("first cycle scan = %#v, want a full scan with one per-item lookup", *first.Scan)
+	}
+	if first.ReadyPoolDepth != 1 || first.ReadyPoolStarved {
+		t.Fatalf("first cycle report = %#v", first)
+	}
+	if first.OldestReadyAgeSeconds < (2*time.Hour - time.Minute).Seconds() {
+		t.Fatalf("ready age = %f, want the original label event's age", first.OldestReadyAgeSeconds)
+	}
+	if got := server.itemEventRequestCount(); got != 1 {
+		t.Fatalf("per-item event requests = %d, want exactly one for the unexplained item", got)
+	}
+
+	data, err := os.ReadFile(backlogHealthCursorPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursor backlogHealthCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		t.Fatal(err)
+	}
+	if !ledgerHasActiveAdd(cursor.Transitions, "7") {
+		t.Fatalf("ledger = %#v, want issue 7's label-add folded in", cursor.Transitions)
+	}
+
+	second := runBacklogHealthCycle(t, root)
+	if second.Scan.Mode != backlogHealthScanIncremental || second.Scan.ItemLookups != 0 {
+		t.Fatalf("second cycle scan = %#v, want a plain resumed scan", *second.Scan)
+	}
+	if second.ReadyPoolDepth != 1 || server.itemEventRequestCount() != 1 {
+		t.Fatalf("second cycle report = %#v, per-item requests = %d", second, server.itemEventRequestCount())
+	}
+}
+
+// TestBacklogHealthStillFailsWhenItemHistoryCannotExplainReadyItem keeps the
+// fallback from papering over a real inconsistency: an item that carries the
+// ready label but has no label-add event anywhere is still an error.
+func TestBacklogHealthStillFailsWhenItemHistoryCannotExplainReadyItem(t *testing.T) {
+	root, server := backlogHealthFixture(t)
+	server.setIssueEventWindow(200, true)
+
+	t.Chdir(t.TempDir())
+	code, _, stderr := runArgs(t, "backlog-health", root)
+	if code == 0 || !strings.Contains(stderr, "no active label-add event") {
+		t.Fatalf("backlog-health: code = %d, stderr = %q, want the unexplained-item failure", code, stderr)
+	}
+}
+
+func ledgerHasActiveAdd(transitions []providers.WorkItemLabelTransition, itemID string) bool {
+	_, ok := activeReadyTimes(providers.LabelReady, transitions)[itemID]
+	return ok
 }
 
 // TestBacklogHealthDefersBelowRateLimitFloor is #3392's second half: a periodic,

@@ -583,14 +583,21 @@ func TestADOProviderPollMergeQueueEntryStates(t *testing.T) {
 		response  map[string]interface{}
 		wantState MergeQueueEntryState
 		wantSHA   string
+		// wantHead and wantHeadSHA are the source branch and merged head a
+		// merged read carries for the source-branch backstop (#5957).
+		wantHead    string
+		wantHeadSHA string
 	}{
 		{
 			name: "completed is merged",
 			response: map[string]interface{}{
 				"pullRequestId": 42, "status": "completed",
-				"lastMergeCommit": map[string]string{"commitId": "merged1"},
+				"lastMergeCommit":       map[string]string{"commitId": "merged1"},
+				"sourceRefName":         "refs/heads/goobers/implementation/run-1",
+				"lastMergeSourceCommit": map[string]string{"commitId": "head1"},
 			},
 			wantState: MergeQueueEntryMerged, wantSHA: "merged1",
+			wantHead: "goobers/implementation/run-1", wantHeadSHA: "head1",
 		},
 		{
 			name: "active with auto-complete armed is pending",
@@ -650,6 +657,9 @@ func TestADOProviderPollMergeQueueEntryStates(t *testing.T) {
 			}
 			if result.MergeSHA != tc.wantSHA {
 				t.Fatalf("MergeSHA = %q, want %q", result.MergeSHA, tc.wantSHA)
+			}
+			if result.HeadBranch != tc.wantHead || result.HeadSHA != tc.wantHeadSHA {
+				t.Fatalf("head = %q@%q, want %q@%q", result.HeadBranch, result.HeadSHA, tc.wantHead, tc.wantHeadSHA)
 			}
 		})
 	}
@@ -865,5 +875,26 @@ func TestADOProviderDeleteBranchLeaseLostReportsBranchTipChanged(t *testing.T) {
 	var tipChanged *BranchTipChangedError
 	if !errors.As(err, &tipChanged) {
 		t.Fatalf("error = %v, want *BranchTipChangedError", err)
+	}
+}
+
+// TestADOCompletionMessageLeadsWithTitle pins that ADO's single
+// mergeCommitMessage field carries the pull request title as its subject line:
+// sending only the body titled every squash with the review summary.
+func TestADOCompletionMessageLeadsWithTitle(t *testing.T) {
+	for _, tc := range []struct{ title, message, want string }{
+		{"Fix parser", "Review summary.\n\nCloses #7", "Fix parser\n\nReview summary.\n\nCloses #7"},
+		{"  Fix parser  ", "  Closes #7 ", "Fix parser\n\nCloses #7"},
+		{"", "Closes #7", "Closes #7"},
+		// No body: leave the field empty so ADO keeps "Merged PR <n>: <title>".
+		{"Fix parser", "", ""},
+	} {
+		if got := adoCompletionMessage(tc.title, tc.message); got != tc.want {
+			t.Errorf("adoCompletionMessage(%q, %q) = %q, want %q", tc.title, tc.message, got, tc.want)
+		}
+	}
+	body := adoCompletionBody(MergePullRequestRequest{CommitTitle: "Fix parser", CommitMessage: "Closes #7"})
+	if got := body["completionOptions"].(adoCompletionOptions).MergeCommitMessage; got != "Fix parser\n\nCloses #7" {
+		t.Fatalf("completion body mergeCommitMessage = %q", got)
 	}
 }

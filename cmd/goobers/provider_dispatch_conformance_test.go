@@ -28,6 +28,8 @@ type providerDispatchEvidence struct {
 // CONF-8 (#2497) and CONF-9 (#2498) landed before this gate, so their fixed
 // commands are coverage entries rather than stale allowlist entries.
 var providerDispatchCoverage = map[string]providerDispatchEvidence{
+	"advisory-pr-publish":      {test: TestAdvisoryPRPublishRefusesNonGitHubProviders},
+	"advisory-pr-select":       {test: TestAdvisoryPRSelectRefusesNonGitHubProviders},
 	"apply-verdict":            {test: TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass},
 	"backlog-assignment":       {test: TestBacklogAssignmentDispatchesFromCommand},
 	"backlog-dedupe":           {test: TestBacklogDedupeCommandDispatchesToADO},
@@ -54,6 +56,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"push-branch":              {test: TestPushBranchDispatchesADOOrigin},
 	"push-remediated":          {test: TestPushRemediatedDispatchesFromCommand},
 	"rebase-pr":                {test: TestRebasePRDispatchesFromCommand},
+	"reconcile-branches":       {test: TestReconcileBranchesDispatchesToADO},
 	"reconcile-post-merge":     {test: TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry},
 	"record-merge-refusal":     {test: TestRecordMergeRefusalDispatchesADOAndRecordsComment},
 	"remediation-checkpoint":   {test: TestRemediationCheckpointDispatchesFromCommand},
@@ -71,7 +74,6 @@ var providerDispatchAllowlist = map[string]string{
 	"recovery-restore":     "Uses configured Git transport and verified archives, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/record and /http-issue exercise the command against a Gitea identity with an exact local Git URL redirect.",
 	"recovery-resume":      "Uses claims-plane identity and configured Git transport, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/resume-issue exercises actual adoption for a Gitea repository.",
 	"preflight-repo-write": "Repository-write preflight (#4414) is a GitHub-only capability today (branch ruleset introspection has no ADO/Gitea equivalent); Dispatcher fails closed with ErrUnsupported for other providers.",
-	"reconcile-branches":   "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",
 	"set-milestone":        "Milestones are GitHub-only; the command help explicitly says GitHub milestone and no ADO milestone capability exists.",
 	"telemetry-query":      "Provider access is limited to the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
 }
@@ -579,9 +581,10 @@ type adoStageCredentialCase struct {
 }
 
 var (
-	credPRWrite     = string(capability.GitHubPRWrite)
-	credIssuesWrite = string(capability.GitHubIssuesWrite)
-	credIssuesRead  = string(capability.GitHubIssuesRead)
+	credPRWrite         = string(capability.GitHubPRWrite)
+	credProviderPRWrite = string(capability.ProviderPRWrite)
+	credIssuesWrite     = string(capability.GitHubIssuesWrite)
+	credIssuesRead      = string(capability.GitHubIssuesRead)
 )
 
 // adoStageCredentialCases is the table TestADOStageProvidersConsumeTheDeclaredCapability
@@ -599,11 +602,9 @@ var adoStageCredentialCases = []adoStageCredentialCase{
 	{command: "open-pr", want: []string{string(capability.ProviderPRWrite)}},
 	{command: "post-merge", inputs: map[string]string{"pullNumber": "77"}, want: []string{credPRWrite, credIssuesWrite}},
 	{command: "pr-comment-watch", want: []string{credPRWrite}},
-	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credPRWrite}},
+	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credProviderPRWrite}},
 	{command: "push-remediated", want: []string{credPRWrite}},
 	{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{credPRWrite}},
-	// reconcile-branches builds its provider before it refuses Azure DevOps,
-	// so the credential it would use is still the declared one.
 	{command: "reconcile-branches", want: []string{string(capability.GitHubBranchDelete)}},
 	{command: "reconcile-post-merge", want: []string{credPRWrite, credIssuesWrite}},
 	{command: "record-merge-refusal", inputs: map[string]string{"selectedNumber": "77", "selectedHeadSha": "head-sha", "reason": "blocked"}, want: []string{credPRWrite}},
@@ -638,6 +639,8 @@ var adoCredentialEvidence = map[string]func(*testing.T){
 // capability but which build no Azure DevOps provider, so no ADO credential
 // is consumed at all.
 var adoCredentialExempt = map[string]string{
+	"advisory-pr-publish":   "Refuses non-GitHub repositories before building a provider (TestAdvisoryPRPublishRefusesNonGitHubProviders).",
+	"advisory-pr-select":    "Refuses non-GitHub repositories before building a provider (TestAdvisoryPRSelectRefusesNonGitHubProviders).",
 	"file-issues":           "Refuses every non-GitHub provider before building one (TestFileIssuesRefusesNonGitHubProviders).",
 	"security-alerts-query": "Refuses every non-GitHub provider before building one (TestSecurityAlertsQueryRefusesNonGitHubProviders).",
 	"telemetry-query":       "Its only provider access is the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
@@ -711,8 +714,9 @@ func TestADOStageConsumesDeclaredCapabilityCredential(t *testing.T) {
 // Azure DevOps path builds its own providers (merge review and PR
 // remediation). Each must build every ADO provider from the delivered value of
 // a capability its manifest row names, and exactly the capabilities listed:
-// pull-request work on the project provider from github:pr:write (or
-// provider:pr:write), backlog work items from github:issues:*.
+// pull-request work on the project provider from the manifest-declared
+// github:pr:write or provider:pr:write capability, backlog work items from
+// github:issues:*.
 //
 // merge-pr and merge-queue-poll land with github:pr:merge, or with
 // ado:pr:complete when it was delivered, as it is here

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -89,9 +90,10 @@ func startProjector(
 	retention := newRetentionLoop(store, p, window, readmodel.RetentionOptions{})
 
 	sweepCtx, stopSweep := context.WithCancel(ctx)
-	go retention.Run(sweepCtx)
+	var sweeps sync.WaitGroup
+	sweeps.Go(func() { retention.Run(sweepCtx) })
 	sweeper := newRepairSweeper(store, p, watermarks, repair.Options{ResolveRunsDirs: l.RunDirsContext})
-	go sweeper.Run(sweepCtx)
+	sweeps.Go(func() { sweeper.Run(sweepCtx) })
 
 	// The restart pass runs after Start, so its commits go through the same
 	// serialized loop as live ones. Running it before would mean two writers
@@ -102,8 +104,11 @@ func startProjector(
 	} else {
 		restartComplete = true
 	}
+	// Wait for the sweeps before stopping the commit loop they commit through,
+	// and before the caller closes the stores they hold connections to (#6715).
 	return func() {
 		stopSweep()
+		sweeps.Wait()
 		stop()
 	}, retention.Stats, p.Stats, restartComplete
 }

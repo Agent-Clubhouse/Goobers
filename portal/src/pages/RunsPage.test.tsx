@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
-import type { RunSummary } from "../api/types";
+import type { RunList, RunListOptions, RunSummary } from "../api/types";
 import {
   emptyDaemonFixtures,
   largeJournalFixtures,
@@ -20,6 +20,29 @@ beforeEach(() => {
 });
 
 describe("runs history page", () => {
+  it("opens the source item independently of the run-details row link", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const run = fixtures.runs.runs.find((candidate) => candidate.id === "01JZ441DAEMONAPI");
+    if (!run?.operator?.issue) throw new Error("Missing fixture issue");
+    run.operator.issue.url = "https://example.test/incidents/3088";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const itemLink = await screen.findByRole("link", { name: "#3088" });
+    const rowLink = screen.getByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(itemLink.closest(".data-row")).toBe(rowLink.closest(".data-row"));
+    expect(rowLink).not.toContainElement(itemLink);
+    expect(itemLink.closest(".data-row")).toHaveClass("data-row-stretched");
+    expect(itemLink).toHaveAttribute("href", "https://example.test/incidents/3088");
+    await user.click(itemLink);
+    expect(window.location.hash).toBe("#/runs");
+    itemLink.focus();
+    await user.keyboard("{Enter}");
+    expect(window.location.hash).toBe("#/runs");
+    await user.click(rowLink);
+    expect(window.location.hash).toBe("#/run/01JZ441DAEMONAPI");
+  });
+
   it("reads live daemon runs and paginates with server-side cursors", async () => {
     window.location.hash = "#/runs?status=all";
     const client = new FixtureDaemonClient(
@@ -47,7 +70,7 @@ describe("runs history page", () => {
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "active" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "All runs" })).toHaveAttribute("aria-pressed", "true");
   }, 10_000);
 
   it("maps filter chips onto server-side phase requests", async () => {
@@ -96,19 +119,71 @@ describe("runs history page", () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     await screen.findByRole("heading", { name: "Runs" });
-    await user.selectOptions(screen.getByLabelText("Filter by gaggle"), "core");
+    await user.click(screen.getByRole("button", { name: "Scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · core" }));
     expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
 
-    await user.selectOptions(
-      screen.getByLabelText("Filter by workflow"),
-      JSON.stringify(["core", "implementation"]),
-    );
+    await user.click(screen.getByRole("button", { name: "Scope" }));
+    await user.click(screen.getByRole("button", { name: "Workflow · core / implementation" }));
     expect(window.location.hash).toBe(
       "#/runs?gaggle=core&workflow=implementation&status=all",
     );
 
     await user.click(screen.getByRole("button", { name: "active" }));
-    expect(window.location.hash).toBe("#/runs?gaggle=core&workflow=implementation");
+    expect(window.location.hash).toBe("#/runs?gaggle=core&workflow=implementation&status=active");
+  });
+
+  it("renders a published display title verbatim instead of reconstructing one", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const run = fixtures.runs.runs.find((candidate) => candidate.id === "01JZ441DAEMONAPI");
+    if (!run?.operator) {
+      throw new Error("fixture run 01JZ441DAEMONAPI has no operator summary");
+    }
+    run.operator.displayTitle = "Investigate #3088: Operator status progress";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(row.querySelector(".row-title")).toHaveTextContent(
+      /^Investigate #3088: Operator status progress$/,
+    );
+    expect(row.querySelector(".row-title")).toHaveAttribute(
+      "title",
+      "Investigate #3088: Operator status progress",
+    );
+    expect(row.querySelector(".row-subtitle")).toHaveTextContent("01JZ441DAEMONAPI");
+  });
+
+  it("omits a trigger ref that repeats the workflow but keeps distinct refs (#5428)", async () => {
+    window.location.hash = "#/runs?status=all";
+    const fixtures = populatedDaemonFixtures();
+    const claimed = fixtures.runs.runs.find((run) => run.id === "01JZ441DAEMONAPI");
+    const unclaimed = fixtures.runs.runs.find(
+      (run) => !run.operator?.issue && !run.operator?.displayTitle,
+    );
+    if (!claimed || !unclaimed) {
+      throw new Error("Expected claimed and unclaimed run fixtures.");
+    }
+    claimed.trigger = { kind: "manual", ref: claimed.workflow };
+    unclaimed.trigger = { kind: "item", ref: "queue-item-7" };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const claimedRow = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    const claimedContext = `${claimed.gaggle} / ${claimed.workflow} · 01JZ441DAEMONAPI`;
+    expect(claimedRow.querySelector(".row-title")).toHaveTextContent(
+      /^#3088 · Operator status progress$/,
+    );
+    expect(claimedRow.querySelector(".row-subtitle")).toHaveTextContent(
+      new RegExp(`^${claimedContext}$`),
+    );
+    expect(claimedRow.querySelector(".row-subtitle")).toHaveAttribute("title", claimedContext);
+
+    const unclaimedRow = screen.getByRole("link", { name: `Open run ${unclaimed.id}` });
+    const unclaimedContext = `${unclaimed.gaggle} / ${unclaimed.workflow} · queue-item-7`;
+    expect(unclaimedRow.querySelector(".row-title")).toHaveTextContent(new RegExp(`^${unclaimed.id}$`));
+    expect(unclaimedRow.querySelector(".row-subtitle")).toHaveTextContent(
+      new RegExp(`^${unclaimedContext}$`),
+    );
+    expect(unclaimedRow.querySelector(".row-subtitle")).toHaveAttribute("title", unclaimedContext);
   });
 
   it("identifies runs by their work item while retaining the run ID", async () => {
@@ -168,6 +243,148 @@ describe("runs history page", () => {
 
     expect(await screen.findByRole("link", { name: /Open run 01JZ000NOWORK/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/runs?status=all&showNoWork=1");
+  });
+
+  it("keeps sheet edits isolated until apply and restores focus after Escape", async () => {
+    window.location.hash = "#/runs?status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const trigger = await screen.findByRole("button", { name: "Filters" });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · core" }));
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(window.location.hash).toBe("#/runs?status=all");
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · core" }));
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
+    expect(await screen.findByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · core");
+  });
+
+  it("applies advanced sheet filters and edits or clears them through their controls", async () => {
+    window.location.hash = "#/runs?status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    await user.type(screen.getByLabelText("Draft stage filter"), "review");
+    await user.selectOptions(screen.getByLabelText("Draft outcome filter"), "failure");
+    await user.selectOptions(screen.getByLabelText("Draft population filter"), "attempts");
+    await user.type(screen.getByLabelText("Draft since filter"), "2026-07-18T00:00:00Z");
+    await user.type(screen.getByLabelText("Draft until filter"), "2026-07-19T00:00:00Z");
+    await user.selectOptions(screen.getByLabelText("Draft time window filter"), "24h");
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe(
+      "#/runs?stage=review&outcome=failure&population=attempts" +
+      "&since=2026-07-18T00%3A00%3A00Z&until=2026-07-19T00%3A00%3A00Z" +
+      "&window=24h&status=all",
+    );
+    expect(await screen.findByLabelText("7 active filters")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Remove .* filter$/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    expect(screen.getByLabelText("Draft stage filter")).toHaveValue("review");
+    expect(screen.getByLabelText("Draft outcome filter")).toHaveValue("failure");
+    expect(screen.getByLabelText("Draft population filter")).toHaveValue("attempts");
+    expect(screen.getByLabelText("Draft since filter")).toHaveValue("2026-07-18T00:00:00Z");
+    expect(screen.getByLabelText("Draft until filter")).toHaveValue("2026-07-19T00:00:00Z");
+    expect(screen.getByLabelText("Draft time window filter")).toHaveValue("24h");
+    await user.clear(screen.getByLabelText("Draft stage filter"));
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+    await waitFor(() => expect(window.location.hash).not.toContain("stage=review"));
+    expect(window.location.hash).toContain("outcome=failure");
+
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const dialog = screen.getByRole("dialog", { name: "Filters" });
+    await user.click(within(dialog).getByRole("button", { name: "All runs" }));
+    await user.selectOptions(screen.getByLabelText("Draft outcome filter"), "");
+    await user.selectOptions(screen.getByLabelText("Draft population filter"), "");
+    await user.clear(screen.getByLabelText("Draft since filter"));
+    await user.clear(screen.getByLabelText("Draft until filter"));
+    await user.selectOptions(screen.getByLabelText("Draft time window filter"), "");
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/runs"));
+  });
+
+  it("keeps invalid-route sheet edits isolated when canceled", async () => {
+    window.location.hash = "#/runs?status=surprising";
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "complete" }));
+    expect(window.location.hash).toBe("#/runs?status=surprising");
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(window.location.hash).toBe("#/runs?status=surprising");
+  });
+
+  it("offers workflows from a newly selected draft gaggle", async () => {
+    window.location.hash = "#/runs?gaggle=core&status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · tools" }));
+    expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Workflow · tools / implementation" }));
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe(
+      "#/runs?gaggle=tools&workflow=implementation&status=all",
+    );
+  });
+
+  it("reports invalid route filters instead of silently accepting them", async () => {
+    window.location.hash = "#/runs?status=surprising";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Invalid status filter "surprising"',
+    );
+  });
+
+  it.each([
+    ["outcome", "bogus", 'Invalid outcome filter "bogus"'],
+    ["population", "bogus", 'Invalid population filter "bogus"'],
+    ["window", "bogus", 'Invalid time window filter "bogus"'],
+    ["since", "not-a-date", 'Invalid since filter "not-a-date"'],
+    ["until", "not-a-date", 'Invalid until filter "not-a-date"'],
+    ["showNoWork", "true", 'Invalid show no-work filter "true"'],
+  ])("reports an invalid %s route filter", async (name, value, message) => {
+    window.location.hash = `#/runs?${name}=${value}`;
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  });
+
+  it.each([
+    "2026-09-03",
+    "2026-09-03T12:00:00+24:00",
+  ])("rejects non-RFC3339 timestamp %s before requesting run history", async (timestamp) => {
+    window.location.hash = `#/runs?since=${encodeURIComponent(timestamp)}`;
+    const client = new TimestampRejectingClient();
+    const listRuns = vi.spyOn(client, "listRuns");
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `Invalid since filter "${timestamp}". Enter an RFC3339 timestamp.`,
+    );
+    expect(screen.getByRole("group", { name: "Filter runs" })).toBeInTheDocument();
+    expect(listRuns).not.toHaveBeenCalled();
   });
 
   it("uses a bounded narrow-screen page while retaining pagination", async () => {
@@ -262,19 +479,17 @@ describe("runs history page", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(await screen.findByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
 
-    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+    expect(await screen.findByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
-    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(await screen.findByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
   });
 
   it("surfaces a daemon error with an explicit reconnect affordance", async () => {
@@ -288,3 +503,16 @@ describe("runs history page", () => {
     expect(screen.getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
   });
 });
+
+class TimestampRejectingClient extends FixtureDaemonClient {
+  constructor() {
+    super(populatedDaemonFixtures());
+  }
+
+  override async listRuns(request?: RunListOptions): Promise<RunList> {
+    if (request?.since === "2026-09-03") {
+      throw new Error("daemon rejected non-RFC3339 timestamp");
+    }
+    return super.listRuns(request);
+  }
+}

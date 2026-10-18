@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,7 +54,7 @@ func TestRefreshWritesNormalizedCandidate(t *testing.T) {
 			}
 			return fixture, nil
 		},
-		providerfixture.RefreshADO,
+		adoRefreshers{},
 	)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
@@ -91,7 +92,7 @@ func TestRefreshAcceptsPullRequestTarget(t *testing.T) {
 			}
 			return fixture, nil
 		},
-		providerfixture.RefreshADO,
+		adoRefreshers{},
 	)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
@@ -126,19 +127,85 @@ func TestADORefreshUsesProvisionedPATAndWritesCandidate(t *testing.T) {
 		&stdout,
 		&stderr,
 		providerfixture.Refresh,
-		func(_ context.Context, cfg providerfixture.ADORefreshConfig) (providerfixture.Fixture, error) {
+		adoRefreshers{refresh: func(_ context.Context, cfg providerfixture.ADORefreshConfig) (providerfixture.Fixture, error) {
 			if cfg.OrganizationURL != "https://dev.azure.com/acme" ||
 				cfg.Project != "widgets" || cfg.WorkItem != "7" || cfg.Token != "ado-pat" {
 				t.Fatalf("ADO refresh config = %+v", cfg)
 			}
 			return fixture, nil
-		},
+		}},
 	)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
 	}
 	if _, err := providerfixture.Read(output); err != nil {
 		t.Fatalf("read written ADO candidate: %v", err)
+	}
+}
+
+// TestADORefreshResolvesTheWorkflowManagedFixture covers the workflow's path:
+// with no pinned -work-item, refresh reads whichever open fixture the resolver
+// returns (here a recreated one), and a missing fixture without
+// -provision-fixture fails with the recovery to run.
+func TestADORefreshResolvesTheWorkflowManagedFixture(t *testing.T) {
+	t.Parallel()
+	baseline, err := providerfixture.Read(filepath.Join("..", "providers", "testdata", "ado_contract.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	getenv := func(name string) string {
+		if name == adoTokenEnvironment {
+			return "ado-pat"
+		}
+		return ""
+	}
+	args := func(output string, extra ...string) []string {
+		return append([]string{
+			"refresh", "-provider", "ado",
+			"-organization-url", "https://dev.azure.com/acme",
+			"-project", "widgets",
+			"-output", output,
+		}, extra...)
+	}
+	missing := func(_ context.Context, cfg providerfixture.ADOFixtureConfig) (providerfixture.ADOFixtureResolution, error) {
+		if !cfg.Provision {
+			return providerfixture.ADOFixtureResolution{}, fmt.Errorf("%w: pass -provision-fixture", providerfixture.ErrADOFixtureMissing)
+		}
+		if cfg.WorkItemType != providerfixture.ADOFixtureDefaultType || cfg.Token != "ado-pat" || cfg.Project != "widgets" {
+			t.Errorf("ensure config = %+v", cfg)
+		}
+		return providerfixture.ADOFixtureResolution{WorkItem: "1812", Created: true}, nil
+	}
+	refreshed := ""
+	ado := adoRefreshers{
+		ensure: missing,
+		refresh: func(_ context.Context, cfg providerfixture.ADORefreshConfig) (providerfixture.Fixture, error) {
+			refreshed = cfg.WorkItem
+			return baseline, nil
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	output := filepath.Join(t.TempDir(), "candidate.json")
+	if code := runWithRefreshers(args(output), getenv, &stdout, &stderr, providerfixture.Refresh, ado); code != 1 {
+		t.Fatalf("missing fixture without -provision-fixture exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "-provision-fixture") || refreshed != "" {
+		t.Fatalf("missing fixture: stderr %q, refreshed %q; want recovery hint and no refresh", stderr.String(), refreshed)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runWithRefreshers(args(output, "-provision-fixture"), getenv, &stdout, &stderr, providerfixture.Refresh, ado); code != 0 {
+		t.Fatalf("provisioned refresh exit = %d, stderr %s", code, stderr.String())
+	}
+	if refreshed != "1812" || !strings.Contains(stdout.String(), "#1812: created") {
+		t.Fatalf("refreshed %q, stdout %q; want the recreated fixture", refreshed, stdout.String())
+	}
+
+	stderr.Reset()
+	if code := runWithRefreshers(args(output, "-provision-fixture", "-work-item", "7"), getenv, &stdout, &stderr, providerfixture.Refresh, ado); code != 1 {
+		t.Fatalf("-provision-fixture with -work-item exit = %d, want 1", code)
 	}
 }
 

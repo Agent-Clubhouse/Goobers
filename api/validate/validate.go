@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/fieldpredicate"
+	"github.com/goobers/goobers/internal/gagglehealth"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/lifecycle"
@@ -258,6 +259,18 @@ const (
 	// earned, and a trusted-claim surface that rewards lying is worse than
 	// no claim at all.
 	RunnerAVExclusionsUnverified WarningCode = "RNR006"
+	// RunnerCrossProviderBacklogOffSelf (RNR007) identifies a task of a
+	// topology (b) gaggle (a GitHub or Gitea backlog for Azure DevOps code,
+	// docs/design/ado-parity-dsl-2-0.md §7.2) whose resolved ELIGIBLE RUNNER
+	// SET (the same per-stage solve RNR001 runs) excludes every self entry. A
+	// stage pod has no instance config to route backlog work and credentials
+	// by role, so the engine refuses every task of such a run a pod
+	// (cross_provider_backlog_pod_unsupported). A WARNING, like RNR005: the
+	// enforcement is at dispatch, where the refusal is loud and journaled, so
+	// this is advance notice at author time, not a second gate. The exception,
+	// as for RNR005, is placement.selfExecution: deny, where no runner can run
+	// the stage at all and the finding is an ERROR.
+	RunnerCrossProviderBacklogOffSelf WarningCode = "RNR007"
 	// WarningConnectionRefUnhonored (REF012) identifies a gaggle that declares
 	// a connectionRef at any of its project, backlog, or additionalRepos sites
 	// (#3296). connectionRef is a credential SELECTOR in the config, but the
@@ -296,6 +309,26 @@ const (
 	// explicit operator choice that validated cleanly before must not turn a
 	// --strict pipeline red on upgrade.
 	WarningCrossProviderCredentialOverride WarningCode = "CFG012"
+	// WarningMCPCredentialProvider (MCP002) identifies an external MCP
+	// server credentialRef that names a first-party capability (no kind: byo)
+	// whose credential belongs to another provider's repositories than the
+	// gaggle the goober runs in (a github:* capability on an Azure DevOps
+	// gaggle, an ado:* capability anywhere else). The harness refuses to
+	// materialise it and fails the stage before the harness starts
+	// (capability.FitsProvider), so every run of that goober on that
+	// gaggle fails; this surfaces it at validate time. Not strict-neutral:
+	// the config cannot run as written, so --strict promotes it.
+	WarningMCPCredentialProvider WarningCode = "MCP002"
+	// WarningCrossProviderBacklogUnbound (CFG015) identifies a topology (b)
+	// gaggle (a GitHub or Gitea backlog for Azure DevOps code) whose backlog
+	// repository has no instance repos[] entry with a token or GitHub App,
+	// while its deterministic stages declare backlog-family capabilities
+	// (github:issues:*, github:milestones:write) that no daemonIdentity or
+	// credentials: entry backs either. Those capabilities are never backed by
+	// the Azure DevOps repository's credential, so each stage that declares
+	// one fails at run time for want of a credential. Not strict-neutral: the
+	// stage cannot run as configured.
+	WarningCrossProviderBacklogUnbound WarningCode = "CFG015"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -335,6 +368,16 @@ const (
 	// check is the complement — pattern-shaped, so intentionally incomplete
 	// and never an error on its own evidence.
 	WarningSecretShapedInput WarningCode = "SEC001"
+	// WarningSiblingOverlapUnsequenced identifies a gate that routes a
+	// detected sibling overlap (hasSiblingOverlap=true) to run termination
+	// without any path through lander election, verdict publication, or
+	// another stage that durably records sequencing or remediation state
+	// (#5592). Lazy remediation never counts green, unlabeled, uncrowned
+	// overlapping PRs as demand, so such a graph reselects and terminates
+	// on the same PR forever. A warning rather than an error because the
+	// config still loads and runs; --strict promotes it, since the shape is
+	// a guaranteed livelock rather than a compatibility notice.
+	WarningSiblingOverlapUnsequenced WarningCode = "WF028"
 	// WF024 was the "gate placement not yet honoured" warning that stood
 	// between the DSL half of decision 001 (#3848) and its engine/pod half
 	// (rulings 7–8). It retired with that half and the code is not reused.
@@ -358,6 +401,7 @@ const (
 	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorGaggleMixedProviderADO   WarningCode = "CFG010"
 	errorGaggleGitHubBaseURL      WarningCode = "CFG013"
+	errorGaggleHealth             WarningCode = "CFG014"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -375,6 +419,7 @@ const (
 	errorUnknownRestriction       WarningCode = "CAP005"
 	errorRepoHandoff              WarningCode = "WF022"
 	errorGateRunsOn               WarningCode = "WF023"
+	errorReadOnlyAfterRebind      WarningCode = "WS002"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -410,6 +455,7 @@ const (
 	errorFieldPredicateTrigger    WarningCode = "FLD002"
 	errorFieldPredicateTask       WarningCode = "FLD003"
 	errorFieldOrderTask           WarningCode = "FLD004"
+	errorTitlePredicateTask       WarningCode = "FLD005"
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
 	errorContextFromDuplicate     WarningCode = "CTX001"
@@ -1179,6 +1225,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Sibling-scope overlap warning (MIRC-2, #1901).
 	ix.checkGaggleSiblingLabelOverlap(r)
 	ix.checkGaggleRunControls(r)
+	ix.checkGaggleHealth(r)
 	ix.checkGaggleOutboxMirrorPath(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
@@ -1191,6 +1238,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleProviderTopology(r)
 	// GitHub Enterprise Server is unsupported: a github ref takes no baseUrl (#6347).
 	ix.checkGaggleGitHubBaseURL(r)
+	// Comment-classifying stages must agree on who is human (#6494).
+	ix.checkCommentIdentityAgreement(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1273,6 +1322,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	}
 	ix.checkWorkflowsCompile(r)
 	ix.checkInertADOCapabilities(r)
+	ix.checkMCPCredentialProviders(r)
 	ix.checkManifestPreviewAnnotationDeprecated(r)
 
 	// Every referenceNotFound call in this pass (including from checkWorkflow
@@ -1575,6 +1625,7 @@ func (ix *index) checkFieldSelections(r *Report) {
 			}
 		}
 		for i, task := range workflow.Spec.Tasks {
+			checkPRSelectTitlePredicate(r, indexed.file, workflow.Name, i, task)
 			if !isBacklogQueryTask(task) {
 				continue
 			}
@@ -1601,10 +1652,30 @@ func (ix *index) checkFieldSelections(r *Report) {
 }
 
 func isBacklogQueryTask(task apiv1.Task) bool {
+	return isGoobersSubcommandTask(task, "backlog-query")
+}
+
+func isGoobersSubcommandTask(task apiv1.Task, subcommand string) bool {
 	return task.Run != nil &&
 		len(task.Run.Command) >= 2 &&
 		filepath.Base(task.Run.Command[0]) == "goobers" &&
-		task.Run.Command[1] == "backlog-query"
+		task.Run.Command[1] == subcommand
+}
+
+// checkPRSelectTitlePredicate compiles a pr-select titlePredicate input so an
+// unsupported or non-title expression fails validation instead of the stage.
+func checkPRSelectTitlePredicate(r *Report, file, workflow string, i int, task apiv1.Task) {
+	expression, ok := task.Inputs["titlePredicate"]
+	if !ok || !isGoobersSubcommandTask(task, "pr-select") {
+		return
+	}
+	if strings.TrimSpace(expression) == "" {
+		r.add(errorTitlePredicateTask, Error, file, "Workflow", workflow,
+			"spec.tasks[%d].inputs.titlePredicate is invalid: CEL expression must not be blank", i)
+	} else if _, err := fieldpredicate.CompileTitlePredicate(expression); err != nil {
+		r.add(errorTitlePredicateTask, Error, file, "Workflow", workflow,
+			"spec.tasks[%d].inputs.titlePredicate is invalid: %v", i, err)
+	}
 }
 
 // prLifecycleBaseCommands are the goobers CLI subcommands whose "base" input
@@ -2196,6 +2267,17 @@ func (ix *index) checkGaggleRunControls(r *Report) {
 	}
 }
 
+func (ix *index) checkGaggleHealth(r *Report) {
+	for name, g := range ix.gaggles {
+		if g.Spec.Health == nil {
+			continue
+		}
+		if err := gagglehealth.ValidatePolicy(*g.Spec.Health); err != nil {
+			r.add(errorGaggleHealth, Error, ix.gaggleFile[name], "Gaggle", name, "spec.health: %v", err)
+		}
+	}
+}
+
 // checkGaggleCheckout validates every declared repo checkout block's sparse
 // cones (#649): the local runner now honors project.checkout.sparse by
 // materializing a cone-mode sparse checkout, so a malformed declaration is a
@@ -2388,28 +2470,36 @@ func (ix *index) checkWorkflowVersionAndReferences(r *Report, w apiv1.Workflow, 
 	return canInterpret
 }
 
-func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
-	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
-	states := map[string]bool{}
+// workflowStateNames collects every declared state name — tasks, gates,
+// parallels, then DSL 3.1 maps — reporting each repeated name once per
+// repetition.
+func workflowStateNames(r *Report, w apiv1.Workflow, file string) map[string]bool {
+	names := make([]string, 0, len(w.Spec.Tasks)+len(w.Spec.Gates)+len(w.Spec.Parallels)+len(w.Spec.Maps))
 	for _, t := range w.Spec.Tasks {
-		if states[t.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", t.Name)
-		}
-		states[t.Name] = true
+		names = append(names, t.Name)
 	}
 	for _, g := range w.Spec.Gates {
-		if states[g.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", g.Name)
-		}
-		states[g.Name] = true
+		names = append(names, g.Name)
 	}
-
 	for _, p := range w.Spec.Parallels {
-		if states[p.Name] {
-			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", p.Name)
-		}
-		states[p.Name] = true
+		names = append(names, p.Name)
 	}
+	for _, m := range w.Spec.Maps {
+		names = append(names, m.Name)
+	}
+	states := make(map[string]bool, len(names))
+	for _, name := range names {
+		if states[name] {
+			r.add(errorDuplicateState, Error, file, "Workflow", w.Name, "duplicate state name %q", name)
+		}
+		states[name] = true
+	}
+	return states
+}
+
+func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
+	states := workflowStateNames(r, w, file)
 
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
 		r.add(errorStartState, Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
@@ -2522,6 +2612,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	ix.addImplicitWritableWorkspaceWarnings(r, def, file, w)
+	addSiblingOverlapSequencingWarnings(r, def, file, w)
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
 	}
@@ -2610,7 +2701,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w)
+	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w, ix.gaggleRef(w.Spec.Gaggle))
 	// A stage's own subprocess can carry a longer wall-clock ceiling than the
 	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
 	// under a 25-minute stage timeout. Warning, not error: detection only
@@ -2628,7 +2719,15 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// internal/workflow's stage-contract test).
 }
 
-func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+// gaggleRef returns the named gaggle, or nil when the config does not declare it.
+func (ix *index) gaggleRef(name string) *apiv1.Gaggle {
+	if g, ok := ix.gaggles[name]; ok {
+		return &g
+	}
+	return nil
+}
+
+func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file string, w apiv1.Workflow, gaggle *apiv1.Gaggle) {
 	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
 	// defensive refusals, but a retired input is visible in the workflow and
 	// must be rejected here before the stage can claim work and fail a run.
@@ -2638,15 +2737,21 @@ func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file 
 	for _, msg := range wf.CheckProviderStageUnsetDefaults(def) {
 		r.addWarning(WarningProviderInputDefaulted, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
-	checkLifecycleLabelContracts(r, w, file)
+	if lifecycleLabelContractsApply(w.DSLVersion) {
+		checkLifecycleLabelContracts(r, w, file, gaggle)
+	}
 	// Bounded waits must finish before the executor can terminate their stage;
-	// command-specific clamps are modeled by the workflow check itself.
+	// command-specific clamps are modeled by the workflow check itself. A
+	// duration the runtime cannot parse fails every run, so it is an error too.
+	for _, msg := range wf.CheckStageDurationInputs(def) {
+		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
+	}
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
 		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 }
 
-func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string) {
+func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string, gaggle *apiv1.Gaggle) {
 	for _, task := range w.Spec.Tasks {
 		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
 			continue
@@ -2661,15 +2766,27 @@ func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string) {
 				checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
 			}
 		case "backlog-query":
-			checkBacklogQueryLifecycleLabelContracts(r, file, w, task)
+			checkBacklogQueryLifecycleLabelContracts(r, file, w, task, effectiveBacklogQueryInputs(task, gaggle))
 		default:
 			checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
 		}
 	}
 }
 
-func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Workflow, task apiv1.Task) {
-	inputs := task.Inputs
+// effectiveBacklogQueryInputs resolves the inputs a backlog-query stage
+// actually receives at dispatch: the gaggle's spec.requireLabels default
+// (when the task declares none) and the gaggle's spec.backlog.labels scope,
+// applied exactly as cmd/goobers/run_continue.go does. Judging the raw task
+// inputs alone would reject a workflow whose ready label comes from its gaggle.
+func effectiveBacklogQueryInputs(task apiv1.Task, gaggle *apiv1.Gaggle) map[string]string {
+	if gaggle == nil {
+		return task.Inputs
+	}
+	inputs := backlogdefaults.RequireLabels(task, task.Inputs, strings.Join(gaggle.Spec.RequireLabels, ","))
+	return backlogdefaults.ApplyBacklogScope(task, inputs, strings.Join(gaggle.Spec.Backlog.Labels, ","), "")
+}
+
+func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Workflow, task apiv1.Task, inputs map[string]string) {
 	args := task.Run.Command[2:]
 	claim := commandHasArg(args, "--claim")
 	readOnly := commandHasArg(args, "--read-only")
@@ -2881,6 +2998,16 @@ func commandHasArg(args []string, flag string) bool {
 	return false
 }
 
+// lifecycleLabelContractsApply reports whether LCL001 governs a workflow. The
+// contract landed after DSL 2.0 shipped, so it is part of the DSL 3.0+
+// language only: a DSL 2.x workflow validates exactly as it did before the
+// contract existed. Shipped DSL 2.x workflows are held to it by
+// TestLifecycleLabelContractsHoldForShippedWorkflows instead.
+func lifecycleLabelContractsApply(dslVersion string) bool {
+	order, ok := supportmatrix.CompareDSLVersions(dslVersion, supportmatrix.V3DSLVersion)
+	return ok && order >= 0
+}
+
 func addLifecycleLabelContractIssue(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
 	r.add(
 		errorLifecycleLabelContract,
@@ -2900,6 +3027,12 @@ func addLifecycleLabelContractIssue(r *Report, file string, w apiv1.Workflow, ta
 func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
 	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def, ix.gooberSpecs()) {
 		r.addWarning(WarningImplicitWritableWorkspace, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
+	}
+}
+
+func addSiblingOverlapSequencingWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	for _, msg := range wf.CheckSiblingOverlapSequencing(def) {
+		r.addWarning(WarningSiblingOverlapUnsequenced, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 }
 
@@ -2998,6 +3131,7 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
 			continue
 		}
+		addReadOnlyAfterRebindFindings(r, indexed, machine)
 		safetyOptions := workflowsafety.Options{BinaryIdentity: version.Version + ":" + version.Commit}
 		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
 			safetyOptions.GaggleRunControls = gaggle.Spec.RunControls
@@ -3013,6 +3147,19 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 				Message: finding.Message(), Safety: &details,
 			})
 		}
+	}
+}
+
+// addReadOnlyAfterRebindFindings reports WS002: a repo-readonly stage the
+// compiled machine can reach from a stage that rebinds the run's workspace
+// branch. The runner refuses to create that workspace on a rebound branch, so
+// the stage fails on every run that rebinds — after the stages before it have
+// already been paid for — while nothing else in validation notices (#5390).
+func addReadOnlyAfterRebindFindings(r *Report, indexed indexedWorkflow, machine *wf.Machine) {
+	w := indexed.definition
+	for _, finding := range wf.ReadOnlyWorkspacesAfterRebind(machine) {
+		line, col := safetyPosition(indexed, finding.Stage)
+		r.addLocated(errorReadOnlyAfterRebind, Error, indexed.file, line, col, "Workflow", w.Name, "%s", finding.Message(w.Name))
 	}
 }
 

@@ -2,3 +2,10 @@ ERROR   gaggles/example/workflows/default-implement.yaml Workflow/default-implem
 ERROR   gaggles/example/workflows/default-implement.yaml Workflow/default-implement: task "query-backlog" next state "also-missing" is not defined
 
 config directory failed validation
+the config directory is loaded as one unit (fail closed): no gaggle, goober, or workflow in it loads until every error is fixed
+files with errors (1):
+  gaggles/example/workflows/default-implement.yaml
+files without errors of their own, also not loaded (3):
+  gaggles/example/gaggle.yaml (Gaggle/example)
+  gaggles/example/goobers/coder/goober.yaml (Goober/coder)
+  manifest.yaml (Manifest/example-instance)

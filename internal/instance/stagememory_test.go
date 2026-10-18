@@ -142,3 +142,39 @@ func TestPodLimitLessReserveWouldNotHaveStoppedTheIncident(t *testing.T) {
 			len(escaped), derived, escaped)
 	}
 }
+
+func TestResolvePodTmpfsSize(t *testing.T) {
+	if q, err := (&RunnerConfig{}).ResolvePodTmpfsSize(); err != nil || !q.IsZero() {
+		t.Fatalf("unset = %v, %v; want zero quantity", q, err)
+	}
+	if q, err := (&RunnerConfig{PodTmpfsSize: "1Gi"}).ResolvePodTmpfsSize(); err != nil || q.Value() != 1<<30 {
+		t.Fatalf("1Gi = %v, %v", q, err)
+	}
+	for _, bad := range []string{"lots", "0", "-1Gi"} {
+		if _, err := (&RunnerConfig{PodTmpfsSize: bad}).ResolvePodTmpfsSize(); err == nil {
+			t.Fatalf("podTmpfsSize %q accepted", bad)
+		}
+	}
+}
+
+func TestPodTmpMedium(t *testing.T) {
+	for _, tc := range []struct {
+		medium     PodTmpMedium
+		diskBacked bool
+		valid      bool
+	}{
+		{"", false, true},
+		{PodTmpMediumMemory, false, true},
+		{PodTmpMediumDisk, true, true},
+		{"ssd", false, false},
+		{"Disk", false, false},
+	} {
+		c := RunnerConfig{PodTmpMedium: tc.medium}
+		if got := c.PodTmpDiskBacked(); got != tc.diskBacked {
+			t.Fatalf("podTmpMedium %q disk-backed = %v, want %v", tc.medium, got, tc.diskBacked)
+		}
+		if err := c.validatePodTmpMedium(); (err == nil) != tc.valid {
+			t.Fatalf("podTmpMedium %q validation err = %v, want valid=%v", tc.medium, err, tc.valid)
+		}
+	}
+}

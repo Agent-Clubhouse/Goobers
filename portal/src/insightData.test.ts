@@ -77,6 +77,20 @@ describe("Insight aggregate admission", () => {
 });
 
 describe("Insight cost trend buckets", () => {
+  it.each([
+    ["24h", 1],
+    ["7d", 7],
+    ["30d", 30],
+  ] as const)("uses exact 24-hour buckets for %s", (window, count) => {
+    const now = new Date("2026-07-22T12:00:00Z");
+    const buckets = insightTrendBuckets(window, now);
+    expect(buckets).toHaveLength(count);
+    for (const bucket of buckets) {
+      expect(Date.parse(bucket.until) - Date.parse(bucket.since)).toBe(24 * 60 * 60 * 1000);
+    }
+    expect(buckets.at(-1)?.until).toBe(now.toISOString());
+  });
+
   it("splits a 7-day window into 7 contiguous, ascending daily buckets", () => {
     const now = new Date("2026-07-22T12:00:00Z");
 

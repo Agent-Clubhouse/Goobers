@@ -102,6 +102,55 @@ func TestJitteredExponentialNonpositiveMaxReturnsZero(t *testing.T) {
 	}
 }
 
+func TestJitteredExponentialSymmetricJitter(t *testing.T) {
+	const largestDuration = time.Duration(1<<63 - 1)
+	tests := []struct {
+		name    string
+		base    time.Duration
+		max     time.Duration
+		attempt int
+		upper   bool
+		want    time.Duration
+	}{
+		{name: "floor", base: time.Second, max: 30 * time.Second, want: 750 * time.Millisecond},
+		{name: "ceiling", base: time.Second, max: 30 * time.Second, upper: true, want: 1250 * time.Millisecond},
+		{name: "exponential floor", base: time.Second, max: 30 * time.Second, attempt: 4, want: 12 * time.Second},
+		{name: "exponential ceiling", base: time.Second, max: 30 * time.Second, attempt: 4, upper: true, want: 20 * time.Second},
+		{name: "capped floor", base: time.Second, max: 30 * time.Second, attempt: 5, want: 22500 * time.Millisecond},
+		{name: "capped ceiling", base: time.Second, max: 30 * time.Second, attempt: 5, upper: true, want: 30 * time.Second},
+		{name: "jitter crosses cap", base: 28 * time.Second, max: 30 * time.Second, upper: true, want: 30 * time.Second},
+		{name: "large attempt", base: time.Second, max: 30 * time.Second, attempt: 100, upper: true, want: 30 * time.Second},
+		{name: "negative attempt", base: time.Second, max: 30 * time.Second, attempt: -1, want: 22500 * time.Millisecond},
+		{name: "duration overflow", base: largestDuration, max: largestDuration, upper: true, want: largestDuration},
+		{name: "sub-quarter precision", base: time.Nanosecond, max: time.Second, upper: true, want: time.Nanosecond},
+		{name: "zero base floor", max: 30 * time.Second, want: 22500 * time.Millisecond},
+		{name: "zero base ceiling", max: 30 * time.Second, upper: true, want: 30 * time.Second},
+		{name: "negative base floor", base: -time.Second, max: 30 * time.Second, want: 22500 * time.Millisecond},
+		{name: "negative base ceiling", base: -time.Second, max: 30 * time.Second, upper: true, want: 30 * time.Second},
+		{name: "zero max", base: time.Second},
+		{name: "negative max", base: time.Second, max: -time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := JitteredExponential(Policy{
+				Base: tt.base, Max: tt.max, SymmetricJitter: true,
+				randInt64N: func(n int64) int64 {
+					if n <= 0 {
+						t.Fatalf("random bound = %d, want positive", n)
+					}
+					if tt.upper {
+						return n - 1
+					}
+					return 0
+				},
+			}, tt.attempt)
+			if got != tt.want {
+				t.Fatalf("JitteredExponential = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUntilStopsOnNonRetryableError(t *testing.T) {
 	want := errors.New("permanent")
 	attempts := 0
@@ -163,5 +212,29 @@ func TestUntilWrapsDeadlineError(t *testing.T) {
 	wantText := fmt.Sprintf("retry deadline exceeded after %d attempt(s): %v", attempts, want)
 	if err.Error() != wantText {
 		t.Fatalf("Until error = %q, want %q", err, wantText)
+	}
+}
+
+// A request can begin just before the retry budget expires and return only a
+// context error, even after the server explained why every earlier call failed.
+func TestUntilInterruptedAttemptRetainsServerFailure(t *testing.T) {
+	for _, retryable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retryable=%t", retryable), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			want := errors.New("server returned 500")
+			attempts := 0
+			err := Until(ctx, time.Minute, Policy{}, func(ctx context.Context) (bool, error) {
+				attempts++
+				if attempts == 1 {
+					return true, want
+				}
+				cancel()
+				return retryable, fmt.Errorf("request interrupted: %w", ctx.Err())
+			})
+			if attempts != 2 || !errors.Is(err, want) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("Until = %v after %d attempts; want server failure and cancellation", err, attempts)
+			}
+		})
 	}
 }

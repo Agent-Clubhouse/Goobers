@@ -220,7 +220,7 @@ func TestDefectAggregateQueryCarriesOnlyTheClosedParameterSet(t *testing.T) {
 		Workflow:   "nomination",
 		Since:      since,
 		Aggregates: []Aggregate{AggregateGateNoise, AggregateStageFailureRate},
-		Thresholds: Thresholds{MinSamples: 7, MaxFailureRate: 0.4},
+		Thresholds: Thresholds{MinSamples: 7, MaxFailureRate: 0.4, MinCICheckFailureRuns: 3},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestDefectAggregateQueryCarriesOnlyTheClosedParameterSet(t *testing.T) {
 		"gaggle": true, "workflow": true, "since": true, "aggregates": true,
 		"minSamples": true, "maxFailureRate": true, "minErrorSignatureCount": true,
 		"minGateEvaluations": true, "maxGateEscalationRate": true, "maxFlaggedRuns": true,
-		"minCreditRuns": true, "minCreditFailureShare": true,
+		"minCreditRuns": true, "minCreditFailureShare": true, "minCICheckFailureRuns": true,
 	}
 	for name := range values {
 		if !admitted[name] {
@@ -238,6 +238,9 @@ func TestDefectAggregateQueryCarriesOnlyTheClosedParameterSet(t *testing.T) {
 		if len(values[name]) != 1 {
 			t.Fatalf("parameter %q was repeated, which the server refuses", name)
 		}
+	}
+	if values.Get("minCICheckFailureRuns") != "3" {
+		t.Fatalf("minCICheckFailureRuns = %q, want 3", values.Get("minCICheckFailureRuns"))
 	}
 	if values.Get("aggregates") != "gate-noise,stage-failure-rate" {
 		t.Fatalf("aggregates = %q", values.Get("aggregates"))
@@ -420,14 +423,14 @@ func TestDefectAggregatesUsesItsLongerBoundAndHonorsCallerDeadline(t *testing.T)
 }
 
 // TestParseAggregateAdmitsOnlyTheRuledFour pins the admitted set itself.
-func TestParseAggregateAdmitsOnlyTheRuledFour(t *testing.T) {
-	for _, name := range []string{"stage-failure-rate", "error-signature", "gate-noise", "credit-assignment"} {
+func TestParseAggregateAdmitsOnlyTheClosedSet(t *testing.T) {
+	for _, name := range []string{"stage-failure-rate", "error-signature", "gate-noise", "credit-assignment", "ci-check-failure"} {
 		if _, err := ParseAggregate(name); err != nil {
 			t.Fatalf("%q was refused: %v", name, err)
 		}
 	}
 	for _, name := range []string{
-		"all", "ci-check-failure", "workflow-untriggered", "stage-unreached",
+		"all", "workflow-untriggered", "stage-unreached",
 		"learning-episode", "", "  ", "Error-Signature", "stage-failure-rate;drop",
 	} {
 		if _, err := ParseAggregate(name); err == nil {
@@ -439,8 +442,8 @@ func TestParseAggregateAdmitsOnlyTheRuledFour(t *testing.T) {
 	if _, err := ParseAggregate("  gate-noise  "); err != nil {
 		t.Fatalf("a padded name was refused: %v", err)
 	}
-	if len(AdmittedAggregates()) != 4 {
-		t.Fatalf("admitted set = %v, want exactly the ruled four", AdmittedAggregates())
+	if len(AdmittedAggregates()) != 5 {
+		t.Fatalf("admitted set = %v, want the ruled four plus ci-check-failure (#6707)", AdmittedAggregates())
 	}
 	// The slice must be a copy: a caller that mutates it must not be able to
 	// widen the plane for everyone else in the process.

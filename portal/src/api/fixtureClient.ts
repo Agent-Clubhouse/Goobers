@@ -16,11 +16,13 @@ import type {
   GooberPage,
   Health,
   Instance,
+  InstanceReadiness,
   PageRequest,
   PortalConfig,
   RequestOptions,
   RunEvent,
   RunDetail,
+  ChildHistoryPage,
   RunList,
   RunListOptions,
   RunPhase,
@@ -47,6 +49,7 @@ import type {
 export interface DaemonFixtures {
   health: Health;
   instance: Instance;
+  readiness?: InstanceReadiness;
   gaggles: GagglePage;
   goobers?: Record<string, GooberPage>;
   workflows?: Record<string, WorkflowPage>;
@@ -55,6 +58,7 @@ export interface DaemonFixtures {
   runs: RunList;
   runDetails?: Record<string, RunDetail>;
   runEvents?: Record<string, EventList>;
+  runChildren?: Record<string, ChildHistoryPage>;
   stageUsage?: Record<string, FixtureStageUsage[]>;
   stageAttempts?: Record<string, AttemptList>;
   artifacts?: Record<string, ArtifactContent>;
@@ -99,6 +103,7 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     chatUrl: null,
     links: [],
   },
+  connectionLocality: "unknown",
   capabilities: {
     revealRun: true,
     workflowEnable: true,
@@ -108,6 +113,21 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
 interface FixtureRunCursor {
   startedAt: string;
   id: string;
+}
+
+function fixtureReadiness(fixtures: DaemonFixtures): InstanceReadiness {
+  return {
+    apiVersion: fixtures.instance.apiVersion,
+    schemaVersion: fixtures.instance.schemaVersion,
+    computerName: fixtures.instance.computerName,
+    instanceRoot: fixtures.instance.instanceRoot,
+    rootIdentity: fixtures.instance.rootIdentity,
+    ready: fixtures.instance.ready,
+    recovery: fixtures.health.startup ?? {
+      phase: fixtures.instance.ready ? "" : "starting",
+      since: fixtures.health.freshness.observedAt,
+    },
+  };
 }
 
 export class FixtureDaemonClient implements DaemonClient {
@@ -130,6 +150,10 @@ export class FixtureDaemonClient implements DaemonClient {
 
   getInstance(options?: RequestOptions): Promise<Instance> {
     return fixture(this.fixtures.instance, options);
+  }
+
+  getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness> {
+    return fixture(this.fixtures.readiness ?? fixtureReadiness(this.fixtures), options);
   }
 
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
@@ -256,6 +280,12 @@ export class FixtureDaemonClient implements DaemonClient {
     return fixture(required(this.fixtures.runEvents, runId, "run events"), options);
   }
 
+  async listRunChildren(runId: string, cursor = "", options?: RequestOptions): Promise<ChildHistoryPage> {
+    const run = required(this.fixtures.runDetails, runId, "run");
+    const value = this.fixtures.runChildren?.[fixtureKey(runId, cursor)];
+    return fixture(value ?? { runId, gaggle: run.gaggle, status: "unavailable", observedAt: new Date().toISOString(), items: [], nextCursor: "" }, options);
+  }
+
   async listStageAttempts(
     runId: string,
     stage: string,
@@ -327,6 +357,7 @@ export class FixtureDaemonClient implements DaemonClient {
       models: stats.models,
       curation: stats.curation,
       readyPool: stats.readyPool,
+      attributionEval: stats.attributionEval,
       trend: request?.trendBuckets
         ? Array.from({ length: request.trendBuckets }, (_, index) => {
             const start = new Date(request.trendSince ?? 0).getTime();
@@ -396,6 +427,7 @@ export class FixtureDaemonClient implements DaemonClient {
       items: page.items
         .filter((item) => !request?.provider || item.provider === request.provider)
         .filter((item) => !request?.kind || item.kind === request.kind)
+        .filter((item) => !request?.gaggle || item.gaggle === request.gaggle)
         .slice(0, request?.limit ?? page.items.length),
     }));
   }

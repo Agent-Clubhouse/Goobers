@@ -100,6 +100,8 @@ type CostRunAggregate struct {
 	RunID                  string
 	Gaggle                 string
 	Workflow               string
+	TriggerKind            string
+	TriggerRef             string
 	Status                 string
 	StartedAt              time.Time
 	UsageAttempts          int
@@ -138,6 +140,8 @@ type costRun struct {
 	id               string
 	gaggle           string
 	workflow         string
+	triggerKind      string
+	triggerRef       string
 	status           string
 	started          time.Time
 	issues           map[string]string
@@ -482,14 +486,14 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string, query CostQuery
 
 func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery) (map[string]*costRun, []string, error) {
 	query := `
-		SELECT r.run_id, r.gaggle, r.workflow, COALESCE(r.status, ''), r.started_at, a.repository, a.external_kind, a.external_id, COALESCE(a.url, '')
+		SELECT r.run_id, r.gaggle, r.workflow, COALESCE(r.trigger_kind, ''), COALESCE(r.trigger_ref, ''), COALESCE(r.status, ''), r.started_at, a.repository, a.external_kind, a.external_id, COALESCE(a.url, '')
 		FROM runs r
 		JOIN run_cost_attribution a ON a.run_id = r.run_id
 		WHERE a.provider = ? AND a.external_kind IN ('pr', 'issue')`
 	args := []any{provider}
 	query, args = appendCostRunScope(query, args, "r", costQuery)
 	query += `
-		GROUP BY r.run_id, r.gaggle, r.workflow, r.status, r.started_at, a.repository, a.external_kind, a.external_id, a.url
+		GROUP BY r.run_id, r.gaggle, r.workflow, r.trigger_kind, r.trigger_ref, r.status, r.started_at, a.repository, a.external_kind, a.external_id, a.url
 		ORDER BY r.started_at, r.run_id, a.external_kind, a.repository, a.external_id`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -500,8 +504,8 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, cos
 	byID := make(map[string]*costRun)
 	var order []string
 	for rows.Next() {
-		var runID, gaggle, workflow, status, startedText, repository, kind, externalID, itemURL string
-		if err := rows.Scan(&runID, &gaggle, &workflow, &status, &startedText, &repository, &kind, &externalID, &itemURL); err != nil {
+		var runID, gaggle, workflow, triggerKind, triggerRef, status, startedText, repository, kind, externalID, itemURL string
+		if err := rows.Scan(&runID, &gaggle, &workflow, &triggerKind, &triggerRef, &status, &startedText, &repository, &kind, &externalID, &itemURL); err != nil {
 			return nil, nil, fmt.Errorf("rollup: scan cost-attributed run: %w", err)
 		}
 		run := byID[runID]
@@ -510,7 +514,10 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, cos
 			if err != nil {
 				return nil, nil, fmt.Errorf("rollup: parse cost run start %q: %w", startedText, err)
 			}
-			run = &costRun{id: runID, gaggle: gaggle, workflow: workflow, status: status, started: started, issues: map[string]string{}, prs: map[string]string{}}
+			run = &costRun{
+				id: runID, gaggle: gaggle, workflow: workflow, triggerKind: triggerKind, triggerRef: triggerRef,
+				status: status, started: started, issues: map[string]string{}, prs: map[string]string{},
+			}
 			byID[runID] = run
 			order = append(order, runID)
 		}
@@ -528,7 +535,42 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, cos
 	if err := rows.Close(); err != nil {
 		return nil, nil, fmt.Errorf("rollup: close cost-attributed runs: %w", err)
 	}
+	for _, run := range byID {
+		foldUnqualifiedCostReferences(run.issues)
+		foldUnqualifiedCostReferences(run.prs)
+	}
 	return byID, order, nil
+}
+
+// foldUnqualifiedCostReferences merges a run's repository-less reference into
+// the run's single repository-qualified reference to the same external id.
+//
+// #6796: ADO claim and claim-release receipts were recorded without a URL, so
+// already-ingested rows carry an empty repository beside the qualified rows the
+// same run wrote for the same work item. Kept apart, they split one item into
+// two aggregates at half cost each. The fold is per run and only when exactly
+// one qualified identity exists for the id; with zero or several candidates the
+// unqualified reference stays as it is, because an identity the evidence does
+// not determine must stay unknown rather than be guessed (#5266).
+func foldUnqualifiedCostReferences(refs map[string]string) {
+	qualified := make(map[string][]string)
+	for identity := range refs {
+		repository, externalID := costReferenceParts(identity)
+		if repository != "" {
+			qualified[externalID] = append(qualified[externalID], identity)
+		}
+	}
+	for identity := range refs {
+		repository, externalID := costReferenceParts(identity)
+		if repository != "" || len(qualified[externalID]) != 1 {
+			continue
+		}
+		target := qualified[externalID][0]
+		if refs[target] == "" {
+			refs[target] = refs[identity]
+		}
+		delete(refs, identity)
+	}
 }
 
 func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
@@ -918,7 +960,8 @@ func issueCostRunAggregate(run *costRun, measures costMeasures, targets []string
 
 func costRunAggregateFrom(run *costRun, aggregate CostAggregate) CostRunAggregate {
 	return CostRunAggregate{
-		RunID: run.id, Gaggle: run.gaggle, Workflow: run.workflow, Status: run.status, StartedAt: run.started,
+		RunID: run.id, Gaggle: run.gaggle, Workflow: run.workflow,
+		TriggerKind: run.triggerKind, TriggerRef: run.triggerRef, Status: run.status, StartedAt: run.started,
 		UsageAttempts: run.attempts, MeasuredAttempts: run.measuredAttempts,
 		InputTokens: aggregate.InputTokens, OutputTokens: aggregate.OutputTokens,
 		CacheReadTokens: aggregate.CacheReadTokens, CacheWriteTokens: aggregate.CacheWriteTokens,

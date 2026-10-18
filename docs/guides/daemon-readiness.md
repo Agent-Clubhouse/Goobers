@@ -51,10 +51,25 @@ it is not a promise that run admission will succeed. Retrying the same key and
 payload returns the same acceptance identity and the recorded dispatch state.
 `goobers run --no-wait` succeeds on that acceptance.
 
-`--api-timeout` bounds remote root validation and acceptance (default `30s`,
-positive durations only). It does not limit the run's lifetime. If submission
+`--api-timeout` bounds remote root validation, including any wait for a
+restarting daemon described below, and acceptance (default `30s`, positive
+durations only). It does not limit the run's lifetime. If submission
 times out, acceptance is unknown: retry with the request ID printed by the CLI
 and the same workflow/options, rather than generating a new delivery.
+
+Right after `goobers up` starts, API requests get HTTP 503 with a `Retry-After`
+header until startup finishes. Until the full API is installed, every request
+except the probes gets a plain-text `daemon is starting` reply. While crash
+recovery then runs, every route that is not recovery-safe answers a JSON error
+with code `recovering`. This window is expected after every restart; it is not
+an identity, configuration, or permissions problem. CLI commands that send a
+change through the daemon API (`run`, `run cancel`, `run abort`, `approve`,
+`override`, `rerun-stage`, and `escalations resolve`) first confirm the
+daemon's root identity, and they wait through this window instead of failing:
+`goobers run` for up to `--api-timeout`, the others for up to 30 seconds. They
+print a note while waiting and, if the daemon is still not ready when the wait
+runs out, say so instead of reporting an identity failure. Any other identity
+failure is reported immediately.
 
 The daemon derives one run ID from the durable acceptance identity and passes
 it through manual and priority dispatch. Reopening the queue does not allocate

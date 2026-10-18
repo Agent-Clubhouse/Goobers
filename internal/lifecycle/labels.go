@@ -9,5 +9,6 @@ const (
 	LabelNeedsHuman       = "goobers:needs-human"
 	LabelNeedsRemediation = "goobers:needs-remediation"
 	LabelBlockedOnSibling = "goobers:blocked-on-sibling"
+	LabelMergeEscalated   = "goobers:merge-escalated"
 	LabelStatusInReview   = "goobers/status:in-review"
 )

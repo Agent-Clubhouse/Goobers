@@ -2,6 +2,7 @@ package validate
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
@@ -126,11 +127,24 @@ func TestRemediationBriefV3InlineCommentIDsRemainOptional(t *testing.T) {
 	}
 }
 
+// currentRemediationBriefDoc is a minimal valid brief at the CURRENT wire
+// version, with a feedback snapshot. The closed-schema cases below each
+// change exactly one thing about it, so they fail for that reason and not
+// because they name an older version (#6126).
+const currentRemediationBriefDoc = `{"schema":"goobers.dev/remediation-brief/v4","integrity":"unapproved","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]},"feedbackSnapshot":{"schema":"goobers.dev/pr-feedback-snapshot/v1","provider":"github","repository":"github:example/repo","pullRequest":"55","headSHA":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capturedAt":"2026-09-30T00:00:00Z","complete":true,"generalComments":[],"reviews":[],"reviewThreads":[],"snapshotDigest":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}}`
+
+func TestRemediationBriefCurrentVersionControlDocumentIsValid(t *testing.T) {
+	if err := newV(t).ValidateJSON(schemas.RemediationBrief, []byte(currentRemediationBriefDoc)); err != nil {
+		t.Fatalf("the closed-schema control document must itself be valid: %v", err)
+	}
+}
+
 func TestRemediationBriefSchemaIsClosedAndVersioned(t *testing.T) {
 	v := newV(t)
 	for name, doc := range map[string]string{
-		"wrong version": `{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]}}`,
-		"unknown field": `{"schema":"goobers.dev/remediation-brief/v3","integrity":"unapproved","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]},"futureSection":{}}`,
+		"wrong version":                   `{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]}}`,
+		"unknown field":                   strings.Replace(currentRemediationBriefDoc, `}}`, `},"futureSection":{}}`, 1),
+		"unknown feedback snapshot field": strings.Replace(currentRemediationBriefDoc, `"snapshotDigest":`, `"futureField":true,"snapshotDigest":`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := v.ValidateJSON(schemas.RemediationBrief, []byte(doc)); err == nil {

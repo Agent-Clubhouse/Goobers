@@ -281,6 +281,64 @@ func TestRemediationSelectionDrainsOverlapWaveLazily(t *testing.T) {
 	}
 }
 
+// TestRemediationDemandForGreenOverlapNeedsSequencingState pins #5592's
+// deadlock: two green, unlabeled, behind-base overlapping PRs carry no
+// remediation demand on their own, so a merge-review graph that ends the
+// overlap branch without electing a lander (validation's WF028) leaves demand
+// at zero forever. Demand appears only once apply-verdict records the
+// blocked-on-sibling relationship that crowns the lander.
+func TestRemediationDemandForGreenOverlapNeedsSequencingState(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+	server.addIssue(243, "overlapping lander")
+	server.addIssue(258, "overlapping sibling")
+	provider := server.newGitHubProvider("token")
+
+	selectFor := func(prs []providers.PullRequestSummary) ([]providers.PullRequestSummary, int) {
+		t.Helper()
+		eligible, blockedDependents, err := filterRemediationPullRequests(
+			context.Background(), provider, repo, prs, nil,
+		)
+		if err != nil {
+			t.Fatalf("filter: %v", err)
+		}
+		probes := 0
+		candidates, _, err := selectRemediationCandidates(
+			eligible,
+			blockedDependents,
+			func(providers.PullRequestSummary) (bool, error) {
+				probes++
+				return true, nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("select: %v", err)
+		}
+		return candidates, probes
+	}
+
+	unsequenced := []providers.PullRequestSummary{{Number: 243}, {Number: 258}}
+	for cycle := 1; cycle <= 3; cycle++ {
+		candidates, probes := selectFor(unsequenced)
+		if len(candidates) != 0 || probes != 0 {
+			t.Fatalf("cycle %d without sequencing state: candidates = %+v, probes = %d; want no demand (lazy policy unchanged)", cycle, candidates, probes)
+		}
+	}
+
+	server.addComment(258, blockedOnSiblingCommentFor(t, 243))
+	sequenced := []providers.PullRequestSummary{
+		{Number: 243},
+		{Number: 258, Labels: []string{blockedOnSiblingLabel}},
+	}
+	candidates, probes := selectFor(sequenced)
+	if len(candidates) != 1 || candidates[0].Number != 243 {
+		t.Fatalf("candidates after election = %+v, want only crowned lander #243", candidates)
+	}
+	if probes != 1 {
+		t.Fatalf("behind-base probes after election = %d, want only the crowned lander probed", probes)
+	}
+}
+
 func TestRemediationSelectionDoesNotParkIndependentLiveCause(t *testing.T) {
 	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
 	server := newFakeGitHubServer(t, repo.Owner, repo.Name)

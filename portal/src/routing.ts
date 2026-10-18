@@ -15,6 +15,7 @@ export type Route =
       page: "work-items";
       kind?: "pr" | "issue";
       gaggle?: string;
+      outcome?: "done" | "in-progress" | "bad-terminal";
       query?: string;
       provider?: string;
       repository?: string;
@@ -39,6 +40,7 @@ export type InstanceDetailKind = "recovery" | "retention" | "warnings";
 
 export interface RunRouteFilters extends ScopeFilters {
   status?: RunStatusFilter;
+  showNoWork?: boolean;
 }
 
 export type InsightSection = "contributors" | "usage" | "failures" | "latency";
@@ -116,10 +118,16 @@ export function parseRoute(hash = window.location.hash): Route {
       };
     }
     const filterKind = optionalQuery(search, "kind");
+    const filterOutcome = optionalQuery(search, "outcome");
     return {
       page: "work-items",
       kind: filterKind === "pr" || filterKind === "issue" ? filterKind : undefined,
       gaggle: optionalQuery(search, "gaggle"),
+      outcome: filterOutcome === "done" ||
+        filterOutcome === "in-progress" ||
+        filterOutcome === "bad-terminal"
+        ? filterOutcome
+        : undefined,
       query: optionalQuery(search, "q"),
     };
   }
@@ -134,8 +142,11 @@ export function parseRoute(hash = window.location.hash): Route {
     const filters: RunRouteFilters = {
       ...parseScopeFilters(search),
       status: runStatusQuery(search),
+      showNoWork: search.get("showNoWork") === "1" ? true : undefined,
     };
-    return hasScopeFilters(filters) || filters.status ? { page: "runs", filters } : { page: "runs" };
+    return hasScopeFilters(filters) || filters.status || filters.showNoWork
+      ? { page: "runs", filters }
+      : { page: "runs" };
   }
   if (area === "errors") {
     return {
@@ -200,6 +211,7 @@ export function routeHash(route: Route): string {
     const search = new URLSearchParams();
     writeQuery(search, "kind", route.kind);
     writeQuery(search, "gaggle", route.gaggle);
+    writeQuery(search, "outcome", route.outcome);
     writeQuery(search, "q", route.query);
     return `#/work-items${search.size > 0 ? `?${search.toString()}` : ""}`;
   }
@@ -211,6 +223,9 @@ export function routeHash(route: Route): string {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
     writeQuery(search, "status", route.filters.status);
+    if (route.filters.showNoWork) {
+      search.set("showNoWork", "1");
+    }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/runs${suffix}`;
   }
@@ -251,7 +266,11 @@ export function activeArea(route: Route): PrimaryArea {
   return route.page;
 }
 
-export type Navigate = (route: Route) => void;
+export interface NavigateOptions {
+  replace?: boolean;
+}
+
+export type Navigate = (route: Route, options?: NavigateOptions) => void;
 
 function optionalQuery(search: URLSearchParams, name: string): string | undefined {
   return search.get(name) || undefined;

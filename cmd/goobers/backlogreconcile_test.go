@@ -12,9 +12,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -22,6 +24,42 @@ import (
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestBacklogReconcileExhaustedBudgetDoesNotRetry(t *testing.T) {
+	for _, exhausted := range []string{"requests", "elapsed time"} {
+		t.Run(exhausted, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				budget := newBacklogReconcileBudget(1, start, time.Now)
+				if exhausted == "requests" {
+					if err := budget.Consume(); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					budget.deadline = start
+				}
+				spent := budget.Spent()
+				networkRequests := 0
+				provider := providers.NewGitHubProvider("token", providers.WithHTTPClient(httpClientFunc(func(*http.Request) (*http.Response, error) {
+					networkRequests++
+					return nil, errors.New("request reached network after budget exhaustion")
+				})))
+				restore := installBacklogReconcileBudget(provider, budget)
+				defer restore()
+				attempts := &requestCountingHTTPClient{inner: provider.Client}
+				provider.Client = attempts
+				repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+				_, err := provider.GetWorkItem(context.Background(), repo, "7")
+				if !errors.Is(err, errBacklogReconcileBudgetExhausted) {
+					t.Fatalf("GetWorkItem() error = %v, want exhausted budget", err)
+				}
+				if attempts.Count() != 1 || networkRequests != 0 || budget.Spent() != spent || time.Since(start) != 0 {
+					t.Fatalf("attempts=%d network=%d spent=%d elapsed=%v, want one refusal without network, budget, or time cost", attempts.Count(), networkRequests, budget.Spent(), time.Since(start))
+				}
+			})
+		})
+	}
+}
 
 func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *testing.T) {
 	root := initDemo(t)
@@ -1408,7 +1446,7 @@ func TestRestoreInvisibleClaimsWindowRevalidatesLeaseBeforeRestore(t *testing.T)
 	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !released && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/8") {
 			released = true
-			if err := ledger.ReleaseScoped(key, "live-run"); err != nil {
+			if err := ledger.ReleaseScoped(key, "live-run", claimrelease.Completed.Reason()); err != nil {
 				t.Errorf("release live claim during provider read: %v", err)
 			}
 		}

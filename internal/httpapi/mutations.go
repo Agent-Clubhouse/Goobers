@@ -2,10 +2,8 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"mime"
 	"net"
@@ -186,22 +184,9 @@ func isLoopbackAuthority(authority string) bool {
 }
 
 func decodeInterventionRequest(request *http.Request) (InterventionRequest, error) {
-	defer func() { _ = request.Body.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxInterventionBody))
-	decoder.DisallowUnknownFields()
 	var input InterventionRequest
-	if err := decoder.Decode(&input); err != nil {
-		if errors.Is(err, io.EOF) {
-			return InterventionRequest{}, errors.New("JSON request body is required")
-		}
-		return InterventionRequest{}, fmt.Errorf("invalid JSON request body: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return InterventionRequest{}, errors.New("request body must contain one JSON object")
-		}
-		return InterventionRequest{}, fmt.Errorf("invalid JSON request body: %w", err)
+	if err := decodeWriteRequestBounded(request, &input, maxInterventionBody); err != nil {
+		return InterventionRequest{}, err
 	}
 	input.RunID = request.PathValue("run")
 	input.Stage = request.PathValue("stage")

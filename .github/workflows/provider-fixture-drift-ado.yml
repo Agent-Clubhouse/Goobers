@@ -35,31 +35,32 @@ jobs:
         env:
           ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
           ADO_PROJECT: ${{ vars.ADO_PROJECT }}
-          ADO_PROVIDER_FIXTURE_WORK_ITEM: ${{ vars.ADO_PROVIDER_FIXTURE_WORK_ITEM }}
           ADO_PAT: ${{ secrets.ADO_PAT }}
         run: |
           missing=""
           [ -n "$ADO_ORG_URL" ] || missing="$missing ADO_ORG_URL"
           [ -n "$ADO_PROJECT" ] || missing="$missing ADO_PROJECT"
-          [ -n "$ADO_PROVIDER_FIXTURE_WORK_ITEM" ] || missing="$missing ADO_PROVIDER_FIXTURE_WORK_ITEM"
           [ -n "$ADO_PAT" ] || missing="$missing ADO_PAT"
           if [ -n "$missing" ]; then
-            echo "::error title=ADO provider fixture refresh is not provisioned::Missing:$missing. Configure the stable seeded work item before making live calls."
+            echo "::error title=ADO provider fixture refresh is not provisioned::Missing:$missing. Configure the ADO organization, project and PAT before making live calls."
             exit 1
           fi
 
+      # The workflow owns the fixture's lifecycle: refresh resolves the oldest
+      # open work item titled and tagged as the fixture, and creates one when
+      # it was closed, removed or never seeded, so no manually preserved work
+      # item number can turn this check red.
       - name: Refresh normalized candidate
         env:
           ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
           ADO_PROJECT: ${{ vars.ADO_PROJECT }}
-          ADO_PROVIDER_FIXTURE_WORK_ITEM: ${{ vars.ADO_PROVIDER_FIXTURE_WORK_ITEM }}
           ADO_PAT: ${{ secrets.ADO_PAT }}
         run: >-
           go run ./test/providerfixtures refresh
           -provider ado
           -organization-url "$ADO_ORG_URL"
           -project "$ADO_PROJECT"
-          -work-item "$ADO_PROVIDER_FIXTURE_WORK_ITEM"
+          -provision-fixture
           -output ado-provider-fixture-candidate.json
 
       - name: Provider contract assertions

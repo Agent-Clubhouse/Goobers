@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/pr-feedback-snapshot-v1.schema.json",
+  "title": "PRFeedbackSnapshotV1",
+  "description": "Immutable, provider-neutral identity of the human pull-request feedback a remediation run answered. It records identities and content digests, never raw provider payloads; publication stages compare a live re-read against it and reject stale input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "provider",
+    "repository",
+    "pullRequest",
+    "headSHA",
+    "capturedAt",
+    "complete",
+    "generalComments",
+    "reviews",
+    "reviewThreads",
+    "snapshotDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "goobers.dev/pr-feedback-snapshot/v1",
+      "description": "Feedback snapshot wire version."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Repository provider kind the feedback was read from."
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider-complete canonical repository identity."
+    },
+    "pullRequest": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "Pull request number the feedback belongs to."
+    },
+    "headSHA": {
+      "type": "string",
+      "pattern": "^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
+      "description": "Exact full pull-request head SHA the feedback was captured at; part of the snapshot identity."
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Capture time from the capturing host's clock; informational and excluded from the digest."
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "Whether every feedback source was read in full; part of the digest input."
+    },
+    "generalComments": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/comment"},
+      "description": "Human general pull-request comments, ordered by id."
+    },
+    "reviews": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/review"},
+      "description": "Human native review bodies with non-empty text, ordered by id."
+    },
+    "reviewThreads": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/thread"},
+      "description": "Review threads, ordered by thread id."
+    },
+    "snapshotDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "sha256 over the canonical JSON of every field except capturedAt and snapshotDigest."
+    }
+  },
+  "$defs": {
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "author", "bodySha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "description": "Provider-stable comment id."},
+        "author": {"type": "string", "description": "Provider-stable author identity, or display name where none exists."},
+        "inReplyTo": {"type": "string", "description": "Provider-stable id of the comment this one replies to, when any."},
+        "bodySha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the comment body with line endings and surrounding whitespace normalized."}
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "author", "bodySha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "description": "Provider-stable review id."},
+        "author": {"type": "string", "description": "Review author identity; review state is excluded because providers rewrite it on push."},
+        "bodySha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the normalized review body."}
+      }
+    },
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threadId", "resolved", "outdated", "contentDigest", "comments"],
+      "properties": {
+        "threadId": {"type": "string", "minLength": 1, "description": "Provider-stable review thread id."},
+        "resolved": {"type": "boolean", "description": "Thread resolution state at capture."},
+        "outdated": {"type": "boolean", "description": "Whether the thread was outdated against headSHA at capture."},
+        "contentDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256 over the thread's canonical human comments only."},
+        "comments": {"type": "array", "items": {"$ref": "#/$defs/comment"}, "description": "Human comments on the thread, ordered by id."}
+      }
+    }
+  }
+}

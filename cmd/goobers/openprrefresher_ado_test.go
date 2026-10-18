@@ -43,7 +43,7 @@ func (f *recordingADOOpenPRLister) lastRepo() (providers.RepositoryRef, bool) {
 // by build.
 func adoOpenPRDeps(build func(instance.RepoRef) (localscheduler.OpenPRLister, error)) runtimeDeps {
 	deps := productionRuntimeDeps()
-	deps.openPRListers.ado = func(repo instance.RepoRef, _ runner.SecretRegistrar, _ credentials.StoreResolver) (localscheduler.OpenPRLister, error) {
+	deps.openPRListers.ado = func(repo instance.RepoRef, _ runner.SecretRegistrar, _ credentials.StoreResolver, _ providers.QuotaObserver) (localscheduler.OpenPRLister, error) {
 		return build(repo)
 	}
 	return deps
@@ -93,7 +93,7 @@ func TestBuildOpenPRRefresherEnforcesADOCap(t *testing.T) {
 		return fake, nil
 	})
 
-	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil)
+	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test", nil)
 	if err != nil {
 		t.Fatalf("buildOpenPRRefresher: %v", err)
 	}
@@ -124,10 +124,37 @@ func TestBuildOpenPRRefresherEnforcesADOCap(t *testing.T) {
 	}
 }
 
+// flakyADOOpenPRLister answers its first ListOpenPullRequests with prs and
+// fails every later one, counting the calls.
+type flakyADOOpenPRLister struct {
+	mu    sync.Mutex
+	calls int
+	prs   []providers.OpenPRSummary
+}
+
+func (f *flakyADOOpenPRLister) ListOpenPullRequests(context.Context, providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls > 1 {
+		return nil, errors.New("ado unavailable")
+	}
+	return f.prs, nil
+}
+
+// pollOpenPRRefresherOnce runs one eager poll of every refresher in set:
+// Run polls once before it first waits, and returns at that wait when ctx is
+// already done.
+func pollOpenPRRefresherOnce(set *localscheduler.OpenPRRefresherSet) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	set.Run(ctx)
+}
+
 // TestBuildOpenPRRefresherADOFailsOpen pins the ruling for ADO-N30: a count
-// that cannot be read (here, the provider cannot be built) stays unknown and
-// Admit admits, the same fail-open behavior every provider has. An ADO project
-// with no configured binding gets no refresher at all.
+// that cannot be read stays unknown and Admit admits, the same fail-open
+// behavior every provider has. An ADO project with no configured binding gets
+// no refresher at all.
 func TestBuildOpenPRRefresherADOFailsOpen(t *testing.T) {
 	t.Parallel()
 	workflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{
@@ -136,29 +163,68 @@ func TestBuildOpenPRRefresherADOFailsOpen(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "web"},
 	}}
+	identity := localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: "implementation"}
+	readiness := apiv1.ReadinessConditions{MaxConcurrentRuns: 10, MaxOpenPRs: 1}
 
-	t.Run("provider build error leaves the count unknown", func(t *testing.T) {
+	// Each poll is driven explicitly and counted, so "unknown" is asserted
+	// after a poll that really ran and failed — never confused with the
+	// initial unknown of a refresher that has not polled yet — and a failure
+	// after a success is shown to reset a count that was known.
+	t.Run("a failed poll leaves or resets the count unknown", func(t *testing.T) {
+		lister := &flakyADOOpenPRLister{prs: []providers.OpenPRSummary{{Head: "goobers/implementation/run-1"}}}
+		var builds int
 		deps := adoOpenPRDeps(func(instance.RepoRef) (localscheduler.OpenPRLister, error) {
-			return nil, errors.New("no credential")
+			builds++
+			if builds == 1 {
+				return nil, errors.New("no credential")
+			}
+			return lister, nil
 		})
 		projects := map[string]apiv1.RepoRef{
 			"example": {Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "web"},
 		}
-		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil)
+		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test", nil)
 		if err != nil || set == nil {
 			t.Fatalf("set = %v, err = %v; want a refresher", set, err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() { set.Run(ctx); close(done) }()
-		cancel()
-		<-done
-		if _, known := set.OpenPRCount("example", "implementation"); known {
-			t.Fatal("a failed poll must leave the count unknown")
-		}
 		c := localscheduler.NewConditions()
 		c.SetOpenPRCounter(set)
-		if ok, reason := c.AdmitProviderWorkflow(localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: "implementation"}, apiv1.ProviderADO, apiv1.ReadinessConditions{MaxConcurrentRuns: 10, MaxOpenPRs: 1}, time.Now()); !ok {
+
+		// Poll 1: the provider cannot be built.
+		pollOpenPRRefresherOnce(set)
+		if builds != 1 {
+			t.Fatalf("provider builds after the first poll = %d, want 1 (the poll must have run)", builds)
+		}
+		if _, known := set.OpenPRCount("example", "implementation"); known {
+			t.Fatal("a poll whose provider cannot be built must leave the count unknown")
+		}
+		if ok, reason := c.AdmitProviderWorkflow(identity, apiv1.ProviderADO, readiness, time.Now()); !ok {
+			t.Fatalf("Admit ok=%v reason=%q, want admitted (fail-open)", ok, reason)
+		}
+
+		// Poll 2: the build is retried and the list succeeds, so the count
+		// is known and the cap binds.
+		pollOpenPRRefresherOnce(set)
+		if n, known := set.OpenPRCount("example", "implementation"); !known || n != 1 {
+			t.Fatalf("count after a successful poll = (%d, %v), want (1, true)", n, known)
+		}
+		if ok, reason := c.AdmitProviderWorkflow(identity, apiv1.ProviderADO, readiness, time.Now()); ok || reason != localscheduler.ReasonOpenPRCap {
+			t.Fatalf("Admit ok=%v reason=%q, want blocked with %q", ok, reason, localscheduler.ReasonOpenPRCap)
+		}
+
+		// Poll 3: the list fails, which must drop the known count rather
+		// than keep enforcing a stale one.
+		pollOpenPRRefresherOnce(set)
+		lister.mu.Lock()
+		calls := lister.calls
+		lister.mu.Unlock()
+		if builds != 2 || calls != 2 {
+			t.Fatalf("builds = %d, list calls = %d; want the built provider reused and polled twice", builds, calls)
+		}
+		if _, known := set.OpenPRCount("example", "implementation"); known {
+			t.Fatal("a failed poll after a successful one must reset the count to unknown")
+		}
+		if ok, reason := c.AdmitProviderWorkflow(identity, apiv1.ProviderADO, readiness, time.Now()); !ok {
 			t.Fatalf("Admit ok=%v reason=%q, want admitted (fail-open)", ok, reason)
 		}
 	})
@@ -171,7 +237,7 @@ func TestBuildOpenPRRefresherADOFailsOpen(t *testing.T) {
 		projects := map[string]apiv1.RepoRef{
 			"example": {Provider: apiv1.ProviderADO, Owner: "example-org", Project: "other-project", Name: "site"},
 		}
-		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil)
+		set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{}, nil, t.TempDir(), nil, "generation-test", nil)
 		if err != nil || set != nil {
 			t.Fatalf("set = %v, err = %v; want nil, nil", set, err)
 		}

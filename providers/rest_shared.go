@@ -61,6 +61,14 @@ type restOpenPullRequestHooks struct {
 	isCreateRaceError func(error) bool
 }
 
+type restCreateWorkItemHooks[Issue, Labels any] struct {
+	ready       func() error
+	labels      func(context.Context, RepositoryRef, []string) (Labels, error)
+	createBody  func(CreateWorkItemRequest, string, Labels) interface{}
+	mapIssue    func(Issue) WorkItem
+	findRunItem func(context.Context, RepositoryRef, string) (WorkItem, bool, error)
+}
+
 // restWorkItemMutator adds the common issue workflow used by shared updates.
 // The HTTP details remain provider-owned. restPager reads the comment history
 // an update's operation marker is looked up in (#2657).
@@ -122,6 +130,69 @@ type restRepository struct {
 	Owner   githubUser `json:"owner"`
 }
 
+type restPRProjection struct {
+	Number         int
+	Title          string
+	URL            string
+	State          string
+	Merged         bool
+	MergedAt       *time.Time
+	Mergeable      *bool
+	Draft          bool
+	Labels         []string
+	HeadBranch     string
+	HeadRepository *RepositoryRef
+	HeadSHA        string
+	BaseBranch     string
+	BaseSHA        string
+	MergeSHA       string
+	UpdatedAt      time.Time
+	Body           string
+}
+
+func pullSummaryFromProjection(pr restPRProjection, checkState CheckState) PullRequestSummary {
+	return PullRequestSummary{
+		ID:         strconv.Itoa(pr.Number),
+		Number:     pr.Number,
+		URL:        pr.URL,
+		Title:      pr.Title,
+		State:      pr.State,
+		Merged:     pr.Merged || pr.MergedAt != nil,
+		Head:       pr.HeadBranch,
+		Base:       pr.BaseBranch,
+		HeadSHA:    pr.HeadSHA,
+		BaseSHA:    pr.BaseSHA,
+		MergeSHA:   pr.MergeSHA,
+		Draft:      pr.Draft,
+		Labels:     pr.Labels,
+		CheckState: checkState,
+		UpdatedAt:  pr.UpdatedAt,
+		Body:       pr.Body,
+		Integrity:  apiintegrity.Unapproved,
+	}
+}
+
+func pullPollResultFromProjection(pr restPRProjection) PullRequestPollResult {
+	return PullRequestPollResult{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          pr.Draft,
+		Labels:         pr.Labels,
+		HeadBranch:     pr.HeadBranch,
+		HeadRepository: pr.HeadRepository,
+		HeadSHA:        pr.HeadSHA,
+		BaseSHA:        pr.BaseSHA,
+		BaseBranch:     pr.BaseBranch,
+		Body:           pr.Body,
+		URL:            pr.URL,
+		Integrity:      apiintegrity.Unapproved,
+	}
+}
+
 // doStatus performs a request with the provider's transient-failure retries.
 // Status codes in allowStatus are treated as success (used to tolerate a 404
 // when removing a label that is not present); the response body is not decoded
@@ -150,16 +221,7 @@ func allIssueComments(ctx context.Context, c restPager, baseURL string, repo Rep
 	if err != nil {
 		return nil, err
 	}
-	var all []restComment
-	err = c.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageItems []restComment
-		if err := json.Unmarshal(page, &pageItems); err != nil {
-			return fmt.Errorf("decode comments page: %w", err)
-		}
-		all = append(all, pageItems...)
-		return nil
-	})
-	return all, err
+	return collectPagedJSON[restComment](ctx, c, endpoint, "decode comments page")
 }
 
 // claimWinner reads trusted issue comments and returns the run id of the recognized
@@ -321,7 +383,7 @@ func pullRequestComments(ctx context.Context, c restPager, baseURL string, repo 
 		for _, comment := range raw {
 			comments = append(comments, PullRequestComment{
 				ID: comment.ID, Author: comment.User.Login, Body: comment.Body, URL: comment.HTMLURL,
-				CreatedAt: comment.CreatedAt, Integrity: apiintegrity.Unapproved,
+				CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt, Integrity: apiintegrity.Unapproved,
 			})
 		}
 		return nil
@@ -406,6 +468,57 @@ func createRESTWorkItemComment(ctx context.Context, c restMutationRecorder, kind
 	return mapComment(comment), nil
 }
 
+func createRESTWorkItem[Issue, Labels any](ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req CreateWorkItemRequest, hooks restCreateWorkItemHooks[Issue, Labels]) (WorkItem, error) {
+	if hooks.ready != nil {
+		if err := hooks.ready(); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return WorkItem{}, err
+	}
+	if err := checkCreateWorkItemGraphFields(req); err != nil {
+		return WorkItem{}, err
+	}
+	itemBody := withRunIDFooter(req.Body, req.RunID)
+	itemBody, err := withAttribution(itemBody, attribution, "issue-create")
+	if err != nil {
+		return WorkItem{}, err
+	}
+	if req.RunID != "" {
+		if existing, found, err := hooks.findRunItem(ctx, req.Repository, req.RunID); err != nil {
+			return WorkItem{}, err
+		} else if found {
+			return existing, nil
+		}
+	}
+	labels, err := hooks.labels(ctx, req.Repository, replaceStatusLabel(req.Labels, req.Status))
+	if err != nil {
+		return WorkItem{}, err
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
+	if err != nil {
+		return WorkItem{}, err
+	}
+	var issue Issue
+	if err := c.do(ctx, http.MethodPost, endpoint, hooks.createBody(req, itemBody, labels), &issue); err != nil {
+		return WorkItem{}, err
+	}
+	item := hooks.mapIssue(issue)
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider:  kind,
+		Ref:       issueRef(req.Repository, item.ID),
+		URL:       item.URL,
+		Operation: "create",
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(req.Title)},
+			"body":  {After: digestString(itemBody)},
+		},
+	})
+	return item, nil
+}
+
 func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, kind ProviderKind, baseURL string, attribution Attribution, req ClaimWorkItemRequest) (WorkItem, error) {
 	before, final, releasedRunID, err := releaseClaimWithProtocol(ctx, req, releaseClaimProtocolHooks{
 		validate: func() (string, error) {
@@ -430,7 +543,7 @@ func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, 
 			return c.GetWorkItem(ctx, req.Repository, req.ID)
 		},
 		postRelease: func(ctx context.Context, winner string) error {
-			return postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release")
+			return postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner, req.Reason), "claim-release")
 		},
 		hasLabel: func(item WorkItem, label string) bool {
 			return item.HasLabel(label)
@@ -486,11 +599,7 @@ func findRESTWorkItemsByMarker[T any](ctx context.Context, c restPager, baseURL 
 		return nil, err
 	}
 	var matches []WorkItem
-	if err := c.getAllPages(ctx, endpoint, func(page []byte) error {
-		var issues []T
-		if err := json.Unmarshal(page, &issues); err != nil {
-			return fmt.Errorf("decode issues page: %w", err)
-		}
+	if err := walkPagedJSON(ctx, c, endpoint, "decode issues page", func(issues []T) error {
 		for _, issue := range issues {
 			meta := issueMeta(issue)
 			if !meta.IsPullRequest && containsExactLine(meta.Body, marker) {
@@ -513,6 +622,7 @@ type restClosedPull struct {
 type restOpenedPull struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
+	Draft   *bool  `json:"draft"`
 }
 
 func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks) (PullRequestResult, error) {
@@ -526,6 +636,10 @@ func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind Prov
 	} else if ok {
 		return updateRESTPullRequest(ctx, c, kind, baseURL, req, existing.Number, title, prBody)
 	}
+	return createRESTPullRequest(ctx, c, kind, baseURL, req, hooks, title, prBody)
+}
+
+func createRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks, title, prBody string) (PullRequestResult, error) {
 	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
 	if err != nil {
 		return PullRequestResult{}, err
@@ -540,7 +654,7 @@ func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind Prov
 		return PullRequestResult{}, err
 	}
 	recordRESTPullRequestMutation(ctx, c, kind, req, out, "open", title, prBody)
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL, Draft: out.Draft}, nil
 }
 
 func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, req PullRequestRequest, number int, title, prBody string) (PullRequestResult, error) {
@@ -553,7 +667,7 @@ func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind Pro
 		return PullRequestResult{}, err
 	}
 	recordRESTPullRequestMutation(ctx, c, kind, req, out, "update", title, prBody)
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL, Draft: out.Draft}, nil
 }
 
 func recordRESTPullRequestMutation(ctx context.Context, c restMutationRecorder, kind ProviderKind, req PullRequestRequest, out restOpenedPull, operation, title, body string) {
@@ -613,15 +727,8 @@ func restPullRequestFiles(ctx context.Context, c restPager, baseURL string, repo
 	if err != nil {
 		return nil, err
 	}
-	var files []githubPullRequestFile
-	if err := c.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageOut []githubPullRequestFile
-		if err := json.Unmarshal(page, &pageOut); err != nil {
-			return fmt.Errorf("decode pull files page: %w", err)
-		}
-		files = append(files, pageOut...)
-		return nil
-	}); err != nil {
+	files, err := collectPagedJSON[githubPullRequestFile](ctx, c, endpoint, "decode pull files page")
+	if err != nil {
 		return nil, err
 	}
 	out := make([]ChangedFile, 0, len(files))

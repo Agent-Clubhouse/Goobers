@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -174,15 +173,11 @@ func runBacklogAssignmentWithMutationHook(
 		Assignments: applied,
 		NoWork:      len(applied) == 0,
 	}
-	data, err := json.Marshal(report)
-	if err != nil {
-		pf(stderr, "error: marshal assignment report: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "backlog-assignment.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, report, stageResultOptions{
+		MarshalLabel: "marshal assignment report",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "assigned %d backlog item(s); %d remain unassigned\n", len(applied), report.Unassigned)
 	return 0

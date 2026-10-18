@@ -123,28 +123,28 @@ func markStalenessUnavailable(items []providers.WorkItem) []curationClaimedItem 
 }
 
 func readBacklogStalenessPolicy() (backlogStalenessPolicy, error) {
-	rawDays := strings.TrimSpace(providerInput("staleAfterDays", strconv.Itoa(int(defaultStaleAfter/(24*time.Hour)))))
-	days, err := strconv.Atoi(rawDays)
-	if err != nil || days < 1 || days > maxStaleAfterDays {
-		return backlogStalenessPolicy{}, fmt.Errorf(
-			"invalid staleAfterDays %q (want an integer from 1 through %d)",
-			rawDays,
-			maxStaleAfterDays,
-		)
+	days, err := parseIntInput(
+		strings.TrimSpace(providerInput("staleAfterDays", strconv.Itoa(int(defaultStaleAfter/(24*time.Hour))))),
+		func(value int) bool { return value >= 1 && value <= maxStaleAfterDays },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("invalid staleAfterDays %q (want an integer from 1 through %d)", raw, maxStaleAfterDays)
+		},
+	)
+	if err != nil {
+		return backlogStalenessPolicy{}, err
 	}
 
-	rawAutoClose := strings.TrimSpace(providerInput("staleAutoClose", "false"))
-	switch rawAutoClose {
-	case "true":
-		return backlogStalenessPolicy{thresholdDays: days, autoCloseStale: true}, nil
-	case "false":
-		return backlogStalenessPolicy{thresholdDays: days}, nil
-	default:
-		return backlogStalenessPolicy{}, fmt.Errorf(
-			"invalid staleAutoClose %q (want true or false)",
-			rawAutoClose,
-		)
+	autoClose, err := parseBoolInput(
+		strings.TrimSpace(providerInput("staleAutoClose", "false")),
+		func(raw string, _ bool) bool { return raw == "true" || raw == "false" },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("invalid staleAutoClose %q (want true or false)", raw)
+		},
+	)
+	if err != nil {
+		return backlogStalenessPolicy{}, err
 	}
+	return backlogStalenessPolicy{thresholdDays: days, autoCloseStale: autoClose}, nil
 }
 
 func enrichClaimedItemsWithStaleness(

@@ -72,6 +72,12 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "", "rebaseBaseSha": "",
 			"policyExcluded": "false", "policyExcludedReason": "",
 		}},
+		runID + ":retry-failed-ci": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			"ciStatus": "passing", "selectedNumber": "77", "head": rebindBranch,
+			"remediationCauses": "",
+			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "", "rebaseBaseSha": "",
+			"policyExcluded": "false", "policyExcludedReason": "",
+		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"continueRemediation": "false", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
@@ -107,7 +113,7 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
-	want := []string{"update-behind-pr", "gather-pr-context", "gather-ci-failures", "gather-sibling-context", "rebase-pr", "remediation-checkpoint", "release-claim"}
+	want := []string{"update-behind-pr", "gather-pr-context", "gather-ci-failures", "gather-sibling-context", "rebase-pr", "retry-failed-ci", "remediation-checkpoint", "release-claim"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Fatalf("stage order = %v, want %v", visited, want)
 	}

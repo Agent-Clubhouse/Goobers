@@ -108,3 +108,34 @@ func TestNamedSlotAllowsCompleteDSLNameGrammar(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingPublication(t *testing.T) {
+	tests := []struct {
+		name     string
+		contract *apiv1.ArtifactPublication
+		slot     string
+		message  string
+	}{
+		{"nil contract", nil, "", `missing_artifact_slot: slot ""`},
+		{"empty slots", &apiv1.ArtifactPublication{}, "", `missing_artifact_slot: slot ""`},
+		{"populated slots", &apiv1.ArtifactPublication{Slots: []apiv1.ArtifactSlot{{Name: "report"}, {Name: "evidence"}}}, "report", `missing_artifact_slot: slot "report"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := MissingPublication(tt.contract)
+			var pe *PublicationError
+			if !errors.As(err, &pe) {
+				t.Fatalf("error = %T, want *PublicationError", err)
+			}
+			if pe.Code != MissingSlotCode || pe.Slot != tt.slot {
+				t.Fatalf("code/slot = %q/%q", pe.Code, pe.Slot)
+			}
+			if err.Error() != tt.message {
+				t.Fatalf("message = %q, want %q", err.Error(), tt.message)
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatal("errors.Is(err, ErrInvalid) = false")
+			}
+		})
+	}
+}

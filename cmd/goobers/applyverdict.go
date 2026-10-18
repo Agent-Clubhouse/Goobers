@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"slices"
 	"sort"
@@ -20,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/prstatus"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -48,8 +48,8 @@ type canonicalFinding struct {
 // pr-remediation, fail -> a human must look (§4 D2: fail is never burned on
 // remediation budget, unlike needs-changes).
 //
-// needs-changes gets one further split (#747): when the findings carry a
-// cross-PR-ordering ask and no real defect, the PR isn't broken — it's waiting
+// needs-changes and defer get one further split (#747): when the findings carry
+// a cross-PR-ordering ask and no real defect, the PR isn't broken — it's waiting
 // on a sibling. Routing that to needs-remediation hands pr-remediation a defect
 // that doesn't exist; it reproduces the identical diff, checkpoints
 // byte-identical, and escalates (the stuck-loop pattern this issue exists to
@@ -77,9 +77,7 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 	case apiv1.VerdictPass:
 		return "goobers:merge-ready"
 	case apiv1.VerdictFail, apiv1.VerdictEscalate:
-		return "goobers:merge-escalated"
-	case apiv1.VerdictDefer:
-		return blockedOnSiblingLabel
+		return remediationEscalatedLabel
 	default:
 		if sequencingOnly(findings) {
 			return blockedOnSiblingLabel
@@ -482,9 +480,15 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 	"pin, re-check that pin against the PR's current head/base, and — if\n" +
 	"still valid — publish the verdict. Managed PRs receive a native GitHub\n" +
 	"review plus the PR-comment handoff; non-pass verdicts also receive a\n" +
-	"remediation label. advisoryMode=true publishes only the non-blocking\n" +
-	"comment, without closing, labeling, electing, or merging the PR. A\n" +
-	"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n" +
+	"remediation label. Every published verdict also sets the\n" +
+	"goobers/merge-review commit status on the reviewed head (success for\n" +
+	"pass, failure for needs-changes/fail/escalate, pending for defer; the\n" +
+	"description records the reviewed base), which a required status check\n" +
+	"enforces on every merge path (#4199). advisoryMode=true publishes only\n" +
+	"the non-blocking comment, without closing, labeling, electing, or\n" +
+	"merging the PR. A stale SHA pin voids the verdict: no new verdict, the\n" +
+	"standing comment is marked stale, and a standing verdict status on the\n" +
+	"unchanged head turns pending; exit 0 (this\n" +
 	"cycle's work is simply moot, not an error — merge-review re-reviews\n" +
 	"next tick). Requires selectedNumber, selectedHeadSha, and\n" +
 	"selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or\n" +
@@ -655,11 +659,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// source: remediation can tell "no current review" from "these findings
 		// still stand". Best-effort — a comment write must never turn a moot
 		// verdict into a stage failure, since the re-review next cycle is what
-		// actually resolves this.
+		// actually resolves this. The native verdict status is withdrawn the
+		// same way (#4199).
 		if providerRouted {
-			if cerr := markMergeReviewVerdictStale(ctx, prProvider, repo, selectedNumber, reason); cerr != nil {
-				pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
-			}
+			withdrawStandingVerdict(ctx, root, prProvider, repo, selectedNumber, selectedHeadSHA, current, reason, stderr)
 		}
 		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
@@ -864,13 +867,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	var removeLabels []string
 	switch label {
 	case needsRemediationLabel:
+		removeLabels = []string{blockedOnSiblingLabel}
 		escalationSuppressedRemediation, err = verdictEscalationStillBlocks(ctx, provider, repo, current)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
 		}
 		if escalationSuppressedRemediation {
 			addLabels = nil
-			removeLabels = []string{needsRemediationLabel}
+			removeLabels = append(removeLabels, needsRemediationLabel)
 		}
 	case remediationEscalatedLabel:
 		removeLabels = []string{needsRemediationLabel}
@@ -950,8 +954,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
+	record := verdictRecord{provider: prProvider, statusPublisher: reviewProvider, repo: repo, number: selectedNumber, author: verdictAuthor, current: current, standing: statusComments}
 	if posted.Decision == apiv1.VerdictPass {
-		if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		if err := record.publish(ctx, comment, posted, stdout, stderr); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
 		releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
@@ -971,7 +976,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
-	if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+	if err := record.publish(ctx, comment, posted, stdout, stderr); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
 	releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
@@ -1129,6 +1134,101 @@ func markMergeReviewVerdictStale(ctx context.Context, provider remediationProvid
 		mergeReviewStatusMarker, reason)
 	if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
 		return fmt.Errorf("update merge-review status comment: %w", err)
+	}
+	return nil
+}
+
+// withdrawStandingVerdict retracts a verdict that no longer stands (the void
+// path): the sticky comment is marked stale, and when the PR is still at the
+// reviewed head its native verdict status becomes pending, so a pass recorded
+// for an older base cannot keep authorizing a native merge (#4199). A moved
+// head needs nothing: the old head's status never reaches it, and the new
+// head carries no verdict status until merge-review reviews it. Best-effort,
+// like the comment: the re-review next cycle is what resolves a void verdict.
+func withdrawStandingVerdict(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, number int, reviewedHead string, current providers.PullRequestSummary, reason string, stderr io.Writer) {
+	if err := markMergeReviewVerdictStale(ctx, provider, repo, number, reason); err != nil {
+		pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", number, err)
+	}
+	if current.HeadSHA != reviewedHead {
+		return
+	}
+	publisher, err := newVerdictStatusPublisher(root, repo)
+	if err == nil {
+		req := prstatus.StaleVerdictStatusRequest(repo, strconv.Itoa(number), current.HeadSHA, current.BaseSHA, reason, current.URL)
+		err = publishVerdictStatus(ctx, publisher, req, true, io.Discard, stderr)
+	}
+	if err != nil {
+		pf(stderr, "warning: could not withdraw PR #%d's %s status: %v\n", number, providers.MergeReviewStatusContext, err)
+	}
+}
+
+// newVerdictStatusPublisher builds the identity that publishes the verdict
+// status: the review identity (github:pr:review), the same one that submits
+// the native review, so a repository can trust that one source for the
+// required check.
+func newVerdictStatusPublisher(root string, repo providers.RepositoryRef) (remediationProvider, error) {
+	token, err := providerToken(capability.GitHubPRReview)
+	if err != nil {
+		return nil, err
+	}
+	return remediationStageProviderWithRecorder(root, repo, token, false, sidecarMutationRecorder{kind: "pr"})
+}
+
+// verdictRecord publishes one authoritative merge-review verdict on GitHub or
+// Gitea: the sticky status comment, then the native verdict status on the
+// reviewed head (#4199). The comment comes first so the status can link to
+// it, and so a pass never authorizes a native merge before its durable
+// record exists.
+type verdictRecord struct {
+	provider        remediationProvider
+	statusPublisher any
+	repo            providers.RepositoryRef
+	number          int
+	author          string
+	current         providers.PullRequestSummary
+	standing        []providers.Comment
+}
+
+func (r verdictRecord) publish(ctx context.Context, comment string, posted apiv1.Verdict, stdout, stderr io.Writer) error {
+	if err := reconcileMergeReviewStatusCommentAs(ctx, r.provider, r.repo, r.number, r.author, comment); err != nil {
+		return err
+	}
+	req, err := prstatus.VerdictStatusRequest(r.repo, strconv.Itoa(r.number), string(posted.Decision),
+		r.current.HeadSHA, r.current.BaseSHA, prstatus.VerdictSummary(posted.Summary, posted.Rationale), r.targetURL())
+	if err != nil {
+		return err
+	}
+	return publishVerdictStatus(ctx, r.statusPublisher, req, false, stdout, stderr)
+}
+
+// targetURL links the status to the sticky verdict comment when one already
+// stands (reconciliation keeps it in place), else to the pull request.
+func (r verdictRecord) targetURL() string {
+	for _, comment := range mergeReviewStatusComments(r.standing, r.author) {
+		if comment.URL != "" {
+			return comment.URL
+		}
+	}
+	return r.current.URL
+}
+
+// publishVerdictStatus posts (or, withdrawing, retracts) a verdict status
+// through prstatus, reporting a degraded publication as a warning.
+func publishVerdictStatus(ctx context.Context, publisher any, req providers.PullRequestStatusRequest, withdraw bool, stdout, stderr io.Writer) error {
+	publish := prstatus.PublishVerdict
+	if withdraw {
+		publish = prstatus.WithdrawVerdict
+	}
+	result, err := publish(ctx, publisher, req)
+	switch {
+	case err != nil:
+		return err
+	case result.Warning != "":
+		pf(stderr, "warning: %s\n", result.Warning)
+	case result.Unchanged:
+		pf(stdout, "%s/%s on %s is already current\n", req.Genre, req.Name, req.HeadSHA)
+	default:
+		pf(stdout, "published %s/%s = %s on %s\n", req.Genre, req.Name, req.State, req.HeadSHA)
 	}
 	return nil
 }
@@ -1641,15 +1741,17 @@ func publishADOPassVerdict(
 ) int {
 	pullID := strconv.Itoa(selectedNumber)
 	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
-		Repository:  repo,
-		PullID:      pullID,
-		Genre:       "goobers",
-		Name:        "validation",
-		State:       providers.CheckStatePassing,
-		Description: "goobers merge-review verdict: pass",
+		Repository: repo,
+		PullID:     pullID,
+		Genre:      "goobers",
+		Name:       "validation",
+		State:      providers.CheckStatePassing,
+		// "pass for base <sha>": the same base-pinned description the
+		// GitHub/Gitea verdict status carries (#4199).
+		Description: prstatus.VerdictDescription(string(apiv1.VerdictPass), current.BaseSHA, prstatus.VerdictSummary(verdict.Summary, verdict.Rationale)),
 		// Pin to the reviewed head: a push after the pin check must not
-		// inherit this pass on ADO's latest iteration. The non-pass path
-		// stays unpinned, since a failing status on a newer head only blocks.
+		// inherit this pass on ADO's latest iteration. The non-pass path stays
+		// unpinned, since a failing status on a newer head only blocks.
 		HeadSHA: current.HeadSHA,
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
@@ -1668,7 +1770,7 @@ func publishADOPassVerdict(
 			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
 		}
 	}
-	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderADOVerdictThreadComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
 	pf(stdout, "approved PR #%d at %s via goobers/validation PR status and PR thread\n", selectedNumber, current.HeadSHA)
@@ -1689,7 +1791,10 @@ func publishADOPassVerdict(
 //     merge on. needs-changes and fail BOTH publish CheckStateFailing ("failed"):
 //     the PR must not land until reworked, and a status genre cannot carry the
 //     needs-changes/fail split — the remediation label below is the routing
-//     signal, exactly as GitHub carries it in verdictLabel.
+//     signal, exactly as GitHub carries it in verdictLabel. A defer fails
+//     too: without an ADO sibling election it routes to remediation below.
+//     The status is posted unpinned on the latest iteration (a failure can
+//     only block) and its description records the reviewed base (#4199).
 //  2. The goobers:needs-remediation PR label, written via the native ADO
 //     PR-labels endpoint (AddPullRequestLabels), NEVER UpdateWorkItem(ID: PR#).
 //     ListPullRequests already surfaces ADO PR labels, so pr-remediation's
@@ -1717,13 +1822,18 @@ func publishADONonPassVerdict(
 	stdout, stderr io.Writer,
 ) int {
 	pullID := strconv.Itoa(selectedNumber)
+	// Deliberately unpinned, unlike the pass: a failing status can only
+	// block, so posting it on the latest iteration is fail-closed even when a
+	// push landed after the pin check, and the next review of that iteration
+	// replaces it. Pinning would instead leave an earlier iteration's pass as
+	// the latest goobers/validation status on a policy without reset-on-push.
 	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
 		Repository:  repo,
 		PullID:      pullID,
 		Genre:       "goobers",
 		Name:        "validation",
 		State:       providers.CheckStateFailing,
-		Description: "goobers merge-review verdict: " + string(verdict.Decision),
+		Description: prstatus.VerdictDescription(string(verdict.Decision), current.BaseSHA, prstatus.VerdictSummary(verdict.Summary, verdict.Rationale)),
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish %s verdict status for PR #%d", verdict.Decision, selectedNumber), err, resultFile)
 	}
@@ -1749,6 +1859,7 @@ func publishADONonPassVerdict(
 		addLabels = []string{remediationEscalatedLabel}
 		removeLabels = []string{needsRemediationLabel}
 	case needsRemediationLabel:
+		removeLabels = []string{blockedOnSiblingLabel}
 		// Verdict-side escalation suppression (behavior 3d): if the PR already
 		// carries an active escalation, keep it parked — clear any stale
 		// needs-remediation rather than pulling it back into the budget.
@@ -1757,7 +1868,7 @@ func publishADONonPassVerdict(
 			return failProviderStage(stderr, fmt.Sprintf("read labels for PR #%d", selectedNumber), err, resultFile)
 		}
 		if hasAnyLabel(names, []string{remediationEscalatedLabel}) {
-			removeLabels = []string{needsRemediationLabel}
+			removeLabels = append(removeLabels, needsRemediationLabel)
 		} else {
 			addLabels = []string{needsRemediationLabel}
 		}
@@ -1788,7 +1899,7 @@ func publishADONonPassVerdict(
 			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
 		}
 	}
-	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderADOVerdictThreadComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
 	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, labels %v (cleared %v), and PR thread\n",
@@ -1840,16 +1951,10 @@ func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedN
 	if reason != "" {
 		out["reason"] = reason
 	}
-	data, err := json.Marshal(out)
-	if err != nil {
-		pf(stderr, "error: marshal verdict result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", path, err)
-		return 2
-	}
-	return 0
+	return writeStageResultJSON(stderr, path, out, stageResultOptions{
+		MarshalLabel:       "marshal verdict result",
+		WriteErrorExitCode: 2,
+	})
 }
 
 // readLatestGateVerdict reads runID's own journal and returns the Verdict
@@ -1924,6 +2029,14 @@ func renderVerdictComment(v apiv1.Verdict) string {
 		s += "\n\n" + payload
 	}
 	return s
+}
+
+// renderADOVerdictThreadComment renders the verdict for ADO's append-only PR
+// thread. Each pass posts a fresh comment the watcher sees, so it carries a
+// "none" feedback-ack frontier: a status projection acknowledges no human
+// feedback and cannot mask comments left during remediation (#6918).
+func renderADOVerdictThreadComment(v apiv1.Verdict) string {
+	return withFeedbackAck(renderVerdictComment(v), feedbackAckMarker(time.Time{}))
 }
 
 // verdictJSONPattern matches the machine-readable payload

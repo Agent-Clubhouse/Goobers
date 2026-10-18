@@ -41,6 +41,11 @@
             }
           ]
         },
+        "scheduleCatchUp": {
+          "type": "string",
+          "enum": ["coalesce", "all"],
+          "description": "Missed schedule policy. Omitted or coalesce captures one firing from the preceding hour. All durably retains each nominal occurrence, discovering at most 100 per sweep with normal admission and idle backoff. Requires 1..1000 schedule declarations. Does not promise execution ordering."
+        },
         "readiness": {
           "type": "object",
           "description": "Admission limits that bound when runs may start. maxChainDepth is reserved and is not currently enforced.",
@@ -52,18 +57,23 @@
             "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. An operator may explicitly bypass the ceiling for one manual invocation with `goobers run --force`. Zero or omitted both fall back to the scheduler default of 10 — NOT unlimited (that is instance.yaml's runConditions.maxParallelRuns, where zero does mean unlimited). Set an explicit large value if you want a high hourly ceiling." },
             "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. An operator may explicitly bypass the ceiling for one manual invocation with `goobers run --force`. Zero or omitted disables the daily cap." },
             "maxChainDepth": { "type": "integer", "minimum": 0, "description": "Reserved maximum depth for signal-triggered workflow chains. The scheduler does not currently enforce this field, and configuring it has no effect." },
-            "maxOpenPRs": { "type": "integer", "minimum": 0, "description": "Maximum open pull requests produced by this workflow. Zero or omitted disables the cap." }
+            "maxOpenPRs": { "type": "integer", "minimum": 0, "description": "Maximum open pull requests produced by this workflow. Zero or omitted disables the cap." },
+            "requireProviderAuthorization": { "type": "boolean", "description": "Opt-in pre-claim readiness predicate. When true, autonomous dispatch first performs a non-mutating check that the instance's resolved provider credential can read the gaggle repository and its issues. Invalid, revoked, insufficient, unsupported, or unverifiable credentials fail closed: no run starts and the scheduler reports a stable provider-auth-unhealthy reason. Manual runs stay available for diagnosis." }
           }
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
         "backprop": {
           "type": "object",
-          "description": "Explicitly enrolls terminal runs in provenance-aware Backprop attribution. Omitted or enabled=false performs no attribution work.",
+          "description": "Explicitly enrolls terminal runs in provenance-aware Backprop attribution. Omitted, mode=off, or enabled=false without a mode performs no attribution work.",
           "additionalProperties": false,
-          "required": ["enabled", "version"],
+          "required": ["version"],
+          "anyOf": [{ "required": ["enabled"] }, { "required": ["mode"] }],
+          "not": { "required": ["enabled", "mode"], "properties": { "enabled": { "const": true }, "mode": { "enum": ["off", "shadow"] } } },
           "properties": {
-            "enabled": { "type": "boolean", "description": "Whether terminal runs produce attribution records." },
-            "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." }
+            "enabled": { "type": "boolean", "description": "Legacy enrollment switch: true means mode=active when mode is omitted." },
+            "mode": { "enum": ["off", "shadow", "active"], "description": "Attribution mode. off performs no work; shadow does no work at run end and computes attribution on demand from the run journal for the shadow comparison report, which filing, gates, and default read surfaces never consume; active publishes the attribution record. Overrides enabled when set; enabled=true is accepted only with mode=active." },
+            "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." },
+            "granularity": { "enum": ["run", "stage"], "description": "Preview. When attribution is recorded: run (default) writes only the end-of-run record; stage also writes a best-effort, read-only checkpoint after each stage finishes that the end-of-run record composes. A failed checkpoint never blocks a stage transition. Applies only to active mode: shadow runs write no stage checkpoints." }
           }
         },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Absolute local filesystem root (or ~/ path) where durable journal outbox files are additionally mirrored. Tasks may override it." },
@@ -97,7 +107,8 @@
         },
         "tasks": { "type": "array", "description": "Work states in the workflow state machine.", "items": { "$ref": "#/$defs/task" } },
         "gates": { "type": "array", "description": "Validation and branching states in the workflow state machine.", "items": { "$ref": "#/$defs/gate" } },
-        "parallels": { "type": "array", "description": "Static fan-out/fan-in states in the workflow state machine.", "items": { "$ref": "#/$defs/parallel" } }
+        "parallels": { "type": "array", "description": "Static fan-out/fan-in states in the workflow state machine.", "items": { "$ref": "#/$defs/parallel" } },
+        "maps": { "type": "array", "maxItems": 128, "description": "DSL 3.1 preview data-driven fan-out states. Each runs one declared task once per entry of a frozen roster document. Runtimes refuse maps at run start until they implement them.", "items": { "$ref": "#/$defs/map" } }
       }
     }
   },
@@ -118,12 +129,22 @@
                   "not": {
                     "anyOf": [
                       { "required": ["artifactSlots"] },
-                      { "required": ["artifactInputs"] }
+                      { "required": ["artifactInputs"] },
+                      { "required": ["childWorkflows"] }
                     ]
                   }
                 }
+              },
+              "parallels": {
+                "items": {
+                  "not": { "required": ["selection"] },
+                  "properties": {
+                    "branches": { "items": { "not": { "required": ["optional"] } } }
+                  }
+                }
               }
-            }
+            },
+            "not": { "required": ["maps"] }
           }
         }
       }
@@ -136,8 +157,48 @@
       "required": ["name", "start"],
       "properties": {
         "name": { "type": "string", "minLength": 1, "description": "Branch identifier used in journal events, completeness records, and branch-qualified input references." },
-        "start": { "type": "string", "minLength": 1, "description": "Name of this branch's first task or gate." }
+        "start": { "type": "string", "minLength": 1, "description": "Name of this branch's first task or gate." },
+        "optional": { "type": "boolean", "description": "DSL 3.1 preview. When true, the branch runs only when the parallel's frozen selection names it; requires the parallel to declare selection. Non-optional branches always run." }
       }
+    },
+    "fanOutSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "slot"],
+      "properties": {
+        "task": { "type": "string", "minLength": 1, "description": "Task that publishes the source document. It must run before the fan-out on every path." },
+        "slot": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$", "description": "Name of an application/json artifactSlots entry on the source task." }
+      }
+    },
+    "map": {
+      "description": "DSL 3.1 preview data-driven fan-out state: runs one declared task once per entry of a frozen roster document (api/schemas/fanout-roster.schema.json), through the static parallel executor, then runs join once. failurePolicy, join and onFailure keep static parallel semantics.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "task", "failurePolicy", "join"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "State name used as a transition target." },
+        "source": { "$ref": "#/$defs/fanOutSource", "description": "Producer slot holding the roster document." },
+        "task": { "type": "string", "minLength": 1, "description": "Mapped task declared in spec.tasks. Only this map may enter it, and it must end at @join, @abort or @escalate." },
+        "bindings": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Mapped-task invocation input names bound to a per-item value: item, identity or digest. A binding name must not collide with a static task input.",
+          "propertyNames": { "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+          "additionalProperties": { "type": "string", "enum": ["item", "identity", "digest"] }
+        },
+        "failurePolicy": { "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"], "description": "How item failures affect sibling items, the join state, and failure routing." },
+        "join": { "type": "string", "minLength": 1, "description": "State run once after every item settles when the failure policy permits joining." },
+        "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes an item failure." },
+        "itemTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Declared per-item budget, with static branchTimeoutSeconds semantics." },
+        "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 32, "description": "Maximum number of items dispatched concurrently. Omit or set to 1 for sequential execution." }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "failurePolicy": { "const": "continue_on_error" } }, "required": ["failurePolicy"] },
+          "then": { "not": { "required": ["onFailure"] } },
+          "else": { "required": ["onFailure"] }
+        }
+      ]
     },
     "parallel": {
       "description": "A fan-out/fan-in state: forks the run into a statically-declared set of named branches and joins them at a single successor once every branch has settled. failurePolicy is required — there is no default. onFailure is required for fail_fast/all_or_nothing and forbidden under continue_on_error, where the join always runs and owns the decision.",
@@ -151,7 +212,16 @@
         "join": { "type": "string", "minLength": 1, "description": "State run once after all branches settle when the failure policy permits joining." },
         "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes a branch failure." },
         "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Declared branch budget used only for compile-time task-timeout coherence checks. The runner does not currently enforce a branch wall-clock timeout." },
-        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum number of branches dispatched concurrently. Omit or set to 1 for deterministic sequential execution. Values greater than 1 are supported only when every reachable branch stage uses a scratch or repo-readonly workspace; writable branch workspaces are rejected." }
+        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum number of branches dispatched concurrently. Omit or set to 1 for deterministic sequential execution. Values greater than 1 are supported only when every reachable branch stage uses a scratch or repo-readonly workspace; writable branch workspaces are rejected." },
+        "selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source"],
+          "description": "DSL 3.1 preview. Makes this a selective parallel: branches marked optional run only when the frozen selection document (api/schemas/fanout-selection.schema.json) names them. Runtimes refuse selective parallels at run start until they implement them.",
+          "properties": {
+            "source": { "$ref": "#/$defs/fanOutSource", "description": "Producer slot holding the selection document." }
+          }
+        }
       },
       "allOf": [
         {
@@ -176,9 +246,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times a run may be routed back to the same already-completed stage before escalation. The count is cumulative per target stage across the run, charged by automated and agentic gate outcomes that route back to that stage and by producer retries after an invalid handoff. Only policy outcomes (anything other than pass, infra, or timeout) are charged: a pass branch into a completed stage is a forward step, infra and timeout outcomes spend their own retry and polling budgets, and human-gate decisions are never charged." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
-        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum active execution time of a run (its age less host suspension and durable child waits), expressed as a Go duration. Omit to disable." }
       }
     },
     "trigger": {
@@ -291,6 +361,18 @@
             }
           ]
         },
+        "childWorkflows": {
+          "type": "object",
+          "description": "DSL 3.1 preview policy for bounded child-workflow proposals. Omission disables child tools. Execution remains refused until the child runtime is implemented.",
+          "additionalProperties": false,
+          "required": ["allowedGoobers"],
+          "properties": {
+            "allowedGoobers": { "type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S" }, "description": "Existing Goober names in this workflow's gaggle that a child may use." },
+            "allowedCapabilities": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/task/properties/capabilities/items" }, "description": "Registered stage capabilities a child may request. Omitted or empty grants none; enclosing policy still limits actual authority." },
+            "maxChildren": { "type": "integer", "minimum": 1, "maximum": 32, "default": 4, "description": "Maximum child invocations per stage occurrence; default four, hard ceiling 32, one unfinished child at a time." },
+            "allowPRPublication": { "type": "boolean", "default": false, "description": "Whether a child submission may request PR publication, further constrained by enclosing publication policy." }
+          }
+        },
         "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for an agentic task. Deterministic tasks use run.workspace instead." },
         "outbox": {
           "type": "array",
@@ -366,9 +448,11 @@
               "close-issues",
               "close-pr",
               "comment-on-issue",
+              "comment-on-pr-advisory",
               "create-issue",
               "delete-branch",
               "demote-pr",
+              "disarm-landing",
               "edit-issue",
               "escalate-pr",
               "fan-out-remediation",
@@ -569,7 +653,7 @@
         },
         {
           "if": { "properties": { "type": { "const": "deterministic" } } },
-          "then": { "required": ["run"], "not": { "required": ["goober"] } }
+          "then": { "required": ["run"], "not": { "anyOf": [{ "required": ["goober"] }, { "required": ["childWorkflows"] }] } }
         },
         {
           "if": { "properties": { "onTimeout": { "const": "salvage" } }, "required": ["onTimeout"] },

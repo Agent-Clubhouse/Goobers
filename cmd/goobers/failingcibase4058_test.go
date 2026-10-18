@@ -134,7 +134,7 @@ func TestBaseAdvanceUnparkResetsRemediationBudget(t *testing.T) {
 			baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 			liveBase := baseSHA
 			if tt.baseMoved {
-				liveBase = "0000000000000000000000000000000000004058"
+				liveBase = advanceRemediationCheckpointOriginMain(t)
 			}
 			priorComment, err := remediationStateComment(remediationState{
 				Cycles:               3,

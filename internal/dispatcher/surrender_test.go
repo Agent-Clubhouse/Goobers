@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -324,5 +328,58 @@ func TestReadSurrenderedResultAcceptsContractShapes(t *testing.T) {
 		if got.Result.Status != doc.Result.Status {
 			t.Fatalf("document %d status = %q, want %q", i, got.Result.Status, doc.Result.Status)
 		}
+	}
+}
+
+// TestSurrenderDirPutSucceedsWhenChmodUnsupported simulates the CIFS blob
+// share (nounix) where chmod returns EPERM (outage 2026-10-04).
+func TestSurrenderDirPutSucceedsWhenChmodUnsupported(t *testing.T) {
+	old := chmodStaged
+	chmodStaged = func(string, fs.FileMode) error {
+		return &os.PathError{Op: "chmod", Path: "x", Err: syscall.EPERM}
+	}
+	t.Cleanup(func() { chmodStaged = old })
+	plane, err := NewSurrenderDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plane.Put(context.Background(), "run-1", "stage", 1, []byte("result")); err != nil {
+		t.Fatalf("Put with EPERM chmod: %v", err)
+	}
+}
+
+// TestSurrenderDirFirstPublicationWinsWithoutHardLinks keeps first-writer-wins
+// on the CIFS blob share (nounix), where chmod and link both return EPERM.
+func TestSurrenderDirFirstPublicationWinsWithoutHardLinks(t *testing.T) {
+	oldChmod, oldLink := chmodStaged, linkStaged
+	chmodStaged = func(string, fs.FileMode) error { return &os.PathError{Op: "chmod", Err: syscall.EPERM} }
+	linkStaged = func(a, b string) error { return &os.LinkError{Op: "link", Old: a, New: b, Err: syscall.EPERM} }
+	t.Cleanup(func() { chmodStaged, linkStaged = oldChmod, oldLink })
+
+	root := t.TempDir()
+	plane, err := NewSurrenderDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := plane.Put(ctx, "run-1", "stage", 1, []byte("first")); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+	if err := plane.Put(ctx, "run-1", "stage", 1, []byte("second")); err != nil {
+		t.Fatalf("second Put: %v", err)
+	}
+	var found []byte
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			b, _ := os.ReadFile(p)
+			found = append(found, b...)
+			if strings.HasPrefix(d.Name(), ".surrender-") {
+				t.Errorf("staged file remains: %s", p)
+			}
+		}
+		return nil
+	})
+	if string(found) != "first" {
+		t.Fatalf("stored = %q, want first publication preserved", found)
 	}
 }

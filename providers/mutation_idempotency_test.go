@@ -60,18 +60,18 @@ func TestCreateWorkItemIdempotentOnRetry(t *testing.T) {
 // stamps the run footer into the body, POSTs, and records a create ref carrying
 // the RunID.
 func TestCreateWorkItemCreatesWhenNoRunItemExists(t *testing.T) {
-	var createdBody string
+	var createdBody struct {
+		Body      string   `json:"body"`
+		Labels    []string `json:"labels"`
+		Assignees []string `json:"assignees"`
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/search/issues", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{"items": []map[string]interface{}{}})
 	})
 	mux.HandleFunc("/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
-		var body struct {
-			Body string `json:"body"`
-		}
-		decodeJSON(t, r, &body)
-		createdBody = body.Body
+		decodeJSON(t, r, &createdBody)
 		writeJSON(t, w, map[string]interface{}{
 			"id": 77, "number": 77, "title": "New", "state": "open",
 			"html_url": "https://github.com/acme/app/issues/77",
@@ -82,9 +82,14 @@ func TestCreateWorkItemCreatesWhenNoRunItemExists(t *testing.T) {
 
 	rec := &recordingRecorder{}
 	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+	provider.SetAttribution(Attribution{
+		Instance: "instance", Gaggle: "gaggle", Workflow: "implementation",
+		Task: "task", Goober: "implementer", Run: "run-new",
+	})
 	item, err := provider.CreateWorkItem(context.Background(), CreateWorkItemRequest{
 		Repository: RepositoryRef{Owner: "acme", Name: "app"},
-		Title:      "New", Body: "do it", RunID: "run-new",
+		Title:      "New", Body: "do it", RunID: "run-new", Assignee: "octocat",
+		Labels: []string{"route/backend", "goobers/status:ready"}, Status: WorkItemStatusClaimed,
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkItem returned error: %v", err)
@@ -92,12 +97,26 @@ func TestCreateWorkItemCreatesWhenNoRunItemExists(t *testing.T) {
 	if item.ID != "77" {
 		t.Fatalf("created item = %#v", item)
 	}
-	if !strings.Contains(createdBody, runFooter("run-new")) {
-		t.Fatalf("created body missing run footer: %q", createdBody)
+	if !strings.Contains(createdBody.Body, runFooter("run-new")) {
+		t.Fatalf("created body missing run footer: %q", createdBody.Body)
+	}
+	attribution, found, err := ParseAttribution(createdBody.Body)
+	if err != nil || !found || attribution.Action != "issue-create" || attribution.Run != "run-new" {
+		t.Fatalf("created body attribution = %+v, found=%v, err=%v", attribution, found, err)
+	}
+	if strings.Join(createdBody.Labels, ",") != "route/backend,goobers/status:claimed" {
+		t.Fatalf("created labels = %#v, want foreign label plus replacement status", createdBody.Labels)
+	}
+	if strings.Join(createdBody.Assignees, ",") != "octocat" {
+		t.Fatalf("created assignees = %#v, want octocat", createdBody.Assignees)
 	}
 	ref, ok := rec.last()
-	if !ok || ref.Operation != "create" || ref.RunID != "run-new" {
+	if !ok || ref.Provider != ProviderGitHub || ref.Ref != "acme/app#77" ||
+		ref.URL != "https://github.com/acme/app/issues/77" || ref.Operation != "create" || ref.RunID != "run-new" {
 		t.Fatalf("expected a create ref carrying the run id, got %#v (ok=%v)", ref, ok)
+	}
+	if ref.Fields["title"].After != digestString("New") || ref.Fields["body"].After != digestString(createdBody.Body) {
+		t.Fatalf("create ref field digests = %#v, want posted title and body digests", ref.Fields)
 	}
 }
 

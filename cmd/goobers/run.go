@@ -63,12 +63,17 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"combined with --pr because targeted pull-request runs are signal triggers.\n" +
 	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
-	"submits through its API automatically — dispatched through\n" +
-	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
+	"submits through its API automatically. Both paths durably capture a\n" +
+	"start before normal scheduler admission. Exit codes after waiting: 0 =\n" +
 	"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n" +
 	"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n" +
 	"escalated. The submission-only --no-wait mode exits 0 on durable API\n" +
 	"acceptance, before dispatch.\n" +
+	"Standalone and detached starts accept --request-id for exact retries.\n" +
+	"They queue a pinned definition and attempt only their own receipt.\n" +
+	"If capacity holds it, the command prints its receipt and request ID,\n" +
+	"then exits nonzero; retry that ID or start `goobers up` to drain it.\n" +
+	"Standalone --no-wait still returns after admission.\n" +
 	"Without --no-wait, local API callers observe dispatch status then wait\n" +
 	"for the run's terminal journal phase. API failures never silently fall\n" +
 	"back to files. When TLS publishes only a wildcard bind address, the CLI\n" +
@@ -100,7 +105,8 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"webhook receiver, another pod — can start a run at all. Nothing local is\n" +
 	"read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a\n" +
 	"retry use the same acceptance identity. --api-timeout bounds remote validation\n" +
-	"and acceptance (default 30s; must be positive). A timed-out submission has\n" +
+	"and acceptance (default 30s; must be positive), including any wait for a\n" +
+	"daemon that is still starting after a restart. A timed-out submission has\n" +
 	"unknown acceptance; retry the printed request ID with the same options.\n" +
 	"The command returns once the daemon accepts the trigger because\n" +
 	"a remote client cannot watch the run's journal. For local file delegation,\n" +
@@ -121,7 +127,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	api := fs.String("api", "", "submit the trigger to this daemon API base URL (default $GOOBERS_DAEMON_API)")
 	noAPI := fs.Bool("no-api", false, "explicitly use local execution/file delegation instead of the daemon API")
 	apiTimeout := fs.Duration("api-timeout", remoteTriggerTimeout, "maximum duration for remote API validation and trigger acceptance")
-	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API submission (default: random)")
+	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API or standalone submission (default: random)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -137,6 +143,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	target.PR = *pr
 	target.Force = *force
+	target.RequestID = *requestID
 	if err := validateRunTargetOptions(args, target); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -207,16 +214,17 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if *noWait && runProcessExits {
 		release()
-		return runDetachedTrigger(ctx, l, detachedRunSelector(target), root, stdout, stderr)
+		return runDetachedQueuedTrigger(ctx, l, target, root, stdout, stderr)
 	}
 	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
 }
 
 type runTarget struct {
-	Gaggle   string
-	Workflow string
-	PR       int
-	Force    bool
+	RequestID string
+	Gaggle    string
+	Workflow  string
+	PR        int
+	Force     bool
 }
 
 func (t runTarget) String() string {
@@ -244,7 +252,7 @@ func detachedRunSelector(target runTarget) string {
 	if target.Force {
 		name += "#force"
 	}
-	return name
+	return detachedSelectorWithRequest(name, target.RequestID)
 }
 
 func parseRunTarget(selector, gaggleFlag string) (runTarget, error) {
@@ -386,28 +394,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 			wg.Wait()
 		}
 	}()
-	var runID string
-	if target.Gaggle != "" || target.PR > 0 {
-		identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}
-		if target.PR > 0 {
-			if target.Gaggle != "" {
-				runID, err = sched.TriggerSignalExact(triggerCtx, identity, webhookhttp.SignalName("pull_request"),
-					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
-			} else {
-				runID, err = sched.TriggerSignal(triggerCtx, target.Workflow, webhookhttp.SignalName("pull_request"),
-					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
-			}
-		} else {
-			runID, err = sched.TriggerExactWithOptions(triggerCtx, identity, time.Now(), localscheduler.ManualTriggerOptions{
-				BypassCadenceBudgets: target.Force,
-			})
-		}
-
-	} else {
-		runID, err = sched.TriggerWithOptions(triggerCtx, target.Workflow, time.Now(), localscheduler.ManualTriggerOptions{
-			BypassCadenceBudgets: target.Force,
-		})
-	}
+	runID, err := dispatchStandaloneStart(triggerCtx, l, setup, sched, target, stdout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -442,12 +429,11 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if !isTerminalPhase(phase) {
-		// A cancelled wait (Ctrl-C, cancelled Actions job) can return a
-		// non-terminal phase with no error; close the Check Run rather than
-		// leave it stuck at "in progress" until the workflow job times out.
-		reporter.Finalize(ctx.Err())
-	}
+	// A cancelled wait (Ctrl-C, cancelled Actions job) can return a
+	// non-terminal phase with no error, and a terminal publish can be lost
+	// to a transient GitHub failure; close the Check Run rather than leave
+	// it stuck at "in progress" until the workflow job times out.
+	reporter.Finalize(ctx.Err())
 
 	// waitForRunTerminal polls the run's OWN journal and returns as soon as
 	// it sees a terminal phase — that races trackedStarter.Start's dispatch
@@ -573,7 +559,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, state)
 	}
 	if !pullRequestURLMatchesRepository(resolvedRepo, pr.URL, number) {
-		return fmt.Errorf("pull request #%d resolves outside configured repository %s", number, repoDisplay)
+		return adoPullRequestURLByIDMatch(ctx, provider, repo, resolvedRepo, pr.URL, number, repoDisplay)
 	}
 	return nil
 }
@@ -638,10 +624,11 @@ func pullRequestURLMatchesRepository(repo apiv1.RepoRef, rawURL string, number i
 // server's opaque _apis URL whenever _links.web.href was empty, so a
 // configured PR target with such a URL always failed the browser-form match
 // and the target was rejected as unresolvable even though it was correct.
-// The repository segment is only ever accepted when it equals the
-// configured repository's name (EqualFold) — an opaque GUID there is never
-// verified against anything this process can check without an extra network
-// call, so it is always rejected rather than trusted.
+// The repository segment is only accepted here when it equals the
+// configured repository's name (EqualFold) — an opaque GUID is never trusted
+// by this matcher. validateTargetedPullRequest instead verifies a GUID-form
+// URL against the configured repository's own ids, one extra read on that
+// path only (adoPullRequestURLByIDMatch, #5960).
 func adoAPIPullRequestURLMatchesRepository(parts []string, host, visualStudioHost string, repo apiv1.RepoRef, numberText string) bool {
 	for i := 1; i+5 < len(parts); i++ {
 		organizationMatches := host == visualStudioHost ||
@@ -1103,7 +1090,9 @@ const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] [--req
 	"terminal outcome later. Exit codes:\n" +
 	"0 = cancelled or engine cancellation requested, 1 = business error\n" +
 	"(already terminal, not currently running, or no daemon to cancel it),\n" +
-	"2 = usage/IO error (unknown run).\n"
+	"2 = usage/IO error (unknown run).\n" +
+	"To pause a workflow or gaggle before cancelling its runs, see\n" +
+	"docs/guides/desired-concurrency-and-pause.md.\n"
 
 func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("run cancel", flag.ContinueOnError)
@@ -1284,16 +1273,6 @@ func githubProgressEnabled(ctx context.Context) bool {
 	return enabled
 }
 
-// isTerminalPhase reports whether a run has reached one of the four terminal
-// phases waitForRunTerminal waits for.
-func isTerminalPhase(p journal.RunPhase) bool {
-	switch p {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true
-	}
-	return false
-}
-
 func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.RunPhase, error) {
 	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, io.Discard))
 }
@@ -1318,7 +1297,7 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			// appended to, so a second read can see the terminal event that
 			// this one missed, and returning on it would drop the final
 			// stage's "finished" line from user-visible progress (#1557).
-			if phase := journal.PhaseFromEvents(events); isTerminalPhase(phase) {
+			if phase := journal.PhaseFromEvents(events); phase.IsTerminal() {
 				return phase, nil
 			}
 		} else if errors.Is(err, journal.ErrNotRunDirectory) {
@@ -1339,7 +1318,7 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
 				return journal.PhaseRunning, fmt.Errorf("open run %s after wait timeout: %w", runID, err)
 			}
-			if isTerminalPhase(phase) {
+			if phase.IsTerminal() {
 				return phase, nil
 			}
 			return phase, fmt.Errorf("run %s did not reach a terminal phase and made no journal progress for %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
@@ -1369,12 +1348,10 @@ func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance
 				reporter = newHostedRunWaitReporter(ctx, runID, dir, progress)
 			}
 			phase, waitErr := waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
-			if waitErr != nil || !isTerminalPhase(phase) {
-				// Close any hosted-progress Check Run on abnormal exit so
-				// the workflow job's remote view does not linger at
-				// "in progress" past the run's actual end.
-				reporter.Finalize(waitErr)
-			}
+			// Close any hosted-progress Check Run (abnormal exit or a lost
+			// terminal publish) so the workflow job's remote view does not
+			// linger at "in progress" past the run's actual end.
+			reporter.Finalize(waitErr)
 			return phase, waitErr
 		}
 		if !errors.Is(err, iofs.ErrNotExist) {

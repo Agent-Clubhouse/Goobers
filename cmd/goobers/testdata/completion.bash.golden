@@ -134,7 +134,7 @@ _goobers_completion()
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;
         worker)
-            flags+=" --instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --blob-probe-wait --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         config-seed)
             flags+=" --mirror --instance"
@@ -154,9 +154,13 @@ _goobers_completion()
         rerun-stage)
             flags+=" --addendum --actor --api"
             ;;
+        signal)
+            flags+=" --request-id"
+            ;;
         workflow)
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
+                validate-child) flags+=" --gaggle --parent --stage --backend --json" ;;
             esac
             ;;
         runs)
@@ -166,7 +170,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=" --api --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --api --agents --runs-only --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -232,6 +236,9 @@ _goobers_completion()
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
                 export) flags+=" --since --until" ;;
                 mark-fix) flags+=" --finding --applied-at" ;;
+                label) flags+=" --run --outcome --reason --by --labeled-at" ;;
+                claim) flags+=" --kind --stage --attempt --agent --artifact --statement --evidence --confidence" ;;
+                shadow) flags+=" --json --gaggle --workflow --since --until" ;;
                 prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
                 compact) flags+=" --dry-run" ;;
@@ -240,6 +247,11 @@ _goobers_completion()
         journal)
             case "${COMP_WORDS[2]:-}" in
                 redact) flags+=" --run --path --reason --secret-file" ;;
+            esac
+            ;;
+        pr)
+            case "${COMP_WORDS[2]:-}" in
+                retry) flags+=" --pr --route --reason --gaggle --actor --dry-run --json" ;;
             esac
             ;;
         backlog-health)
@@ -291,7 +303,7 @@ _goobers_completion()
             flags+=" --gate"
             ;;
         pr-claim)
-            flags+=" --release"
+            flags+=" --release --verify-feedback --classify-feedback-repass"
             ;;
         remediation-checkpoint)
             flags+=" --budget --escalate --escalation-outcome"
@@ -301,6 +313,9 @@ _goobers_completion()
             ;;
         mcp-io)
             flags+=" --config"
+            ;;
+        advisory-pr-reset)
+            flags+=" --gaggle --owner --repo --review-type --pr"
             ;;
     esac
     if [[ "${cur}" == -* ]]; then
@@ -400,7 +415,7 @@ _goobers_completion()
             ;;
         workflow)
             if (( COMP_CWORD == 2 )); then
-                candidates="show"
+                candidates="show validate-child"
             elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete workflows 2>/dev/null)"
@@ -455,12 +470,17 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="configure test merges stats errors export mark-fix prune prune-orphans compact"
+                candidates="configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact"
             fi
             ;;
         journal)
             if (( COMP_CWORD == 2 )); then
                 candidates="redact"
+            fi
+            ;;
+        pr)
+            if (( COMP_CWORD == 2 )); then
+                candidates="retry"
             fi
             ;;
         help)

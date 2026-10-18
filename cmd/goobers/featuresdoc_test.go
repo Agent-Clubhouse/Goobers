@@ -67,8 +67,11 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		},
 		"WorkflowSpec.Backprop": {
 			"workflow.spec.backprop.enabled",
+			"workflow.spec.backprop.granularity",
+			"workflow.spec.backprop.mode",
 			"workflow.spec.backprop.version",
 		},
+		"WorkflowSpec.ScheduleCatchUp":  {"workflow.spec.scheduleCatchUp"},
 		"WorkflowSpec.OutboxMirrorPath": {"workflow.spec.outboxMirrorPath"},
 		"WorkflowSpec.Start":            {"workflow.spec.start"},
 		"WorkflowSpec.DocsRoots":        {"workflow.spec.docsRoots"},
@@ -81,10 +84,17 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"WorkflowSpec.Tasks":     {"workflow.spec.tasks"},
 		"WorkflowSpec.Gates":     {"workflow.spec.gates"},
 		"WorkflowSpec.Parallels": {"workflow.spec.parallels"},
+		"WorkflowSpec.Maps": {
+			"workflow.spec.maps", "workflow.spec.maps.source", "workflow.spec.maps.task", "workflow.spec.maps.bindings",
+			"workflow.spec.maps.failurePolicy", "workflow.spec.maps.join", "workflow.spec.maps.onFailure",
+			"workflow.spec.maps.itemTimeoutSeconds", "workflow.spec.maps.maxConcurrent",
+		},
 
 		"GaggleSpec.DisplayName":  {"gaggle.spec.displayName"},
 		"GaggleSpec.Enabled":      {"gaggle.spec.enabled"},
 		"GaggleSpec.Cost":         {"gaggle.spec.cost.enabled"},
+		"GaggleSpec.Health":       {"gaggle.spec.health"},
+		"GaggleSpec.Backprop":     {"gaggle.spec.backprop.mode"},
 		"GaggleSpec.SelfIdentity": {"gaggle.spec.selfIdentity"},
 		"GaggleSpec.Project": {
 			"gaggle.spec.project",
@@ -188,6 +198,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"Task.ContextFrom":          {"task.contextFrom"},
 		"Task.PolicyActions":        {"task.policyActions"},
 		"Task.NestedAgentPolicy":    {"task.nestedAgentPolicy"},
+		"Task.ChildWorkflows":       {"task.childWorkflows", "task.childWorkflows.allowedGoobers", "task.childWorkflows.allowedCapabilities", "task.childWorkflows.maxChildren", "task.childWorkflows.allowPRPublication"},
 		"Task.Retry":                {"task.retry"},
 		"Task.TimeoutSeconds":       {"task.timeoutSeconds"},
 		"Task.Limits":               {"task.limits"},

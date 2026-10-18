@@ -117,6 +117,7 @@ func TestSchemaAndExplainIntrospectInstanceConfig(t *testing.T) {
 		"instance.runner.capabilities",
 		"instance.runner.envPassthrough",
 		"instance.runner.defaultStageTimeout",
+		"instance.runner.recoveryCustodyTimeout",
 	} {
 		explanation := runExplainJSON(t, selector)
 		if strings.TrimSpace(explanation.Description) == "" ||

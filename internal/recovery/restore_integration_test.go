@@ -5,8 +5,10 @@ package recovery
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -108,11 +110,15 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 	recoveryTestGit(t, repository, "add", ".")
 	recoveryTestGit(t, repository, "commit", "-m", "conflicting main")
 	conflictingMain := recoveryTestGit(t, repository, "rev-parse", "HEAD")
-	if commit, err := RestoreSnapshot(context.Background(), repository, record, conflictingMain, "conflict", 1<<20); err == nil || commit != "" {
-		t.Fatalf("conflicted restore acknowledged: %q %v", commit, err)
+	if commit, err := RestoreSnapshot(context.Background(), repository, record, conflictingMain, "conflict", 1<<20); err == nil || commit != "" || !errors.Is(err, ErrIncompatibleSnapshot) {
+		t.Fatalf("conflicted restore = %q, %v; want ErrIncompatibleSnapshot", commit, err)
 	}
 	if got := recoveryTestGit(t, repository, "for-each-ref", "--format=%(refname)", "refs/heads/conflict"); got != "" {
 		t.Fatalf("conflict created a branch: %s", got)
+	}
+	rewritten := recoveryTestGit(t, repository, "commit-tree", mainTree, "-m", "rewritten main")
+	if commit, err := RestoreSnapshot(context.Background(), repository, record, rewritten, "stale", 1<<20); err == nil || commit != "" || !strings.Contains(err.Error(), "checkpoint is stale") || !errors.Is(err, ErrIncompatibleSnapshot) {
+		t.Fatalf("divergent-base restore = %q, %v; want explicit stale refusal", commit, err)
 	}
 }
 

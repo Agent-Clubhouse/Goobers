@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blockerclear"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/gooberassets"
@@ -21,6 +22,9 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/parallelworkspace"
+	"github.com/goobers/goobers/internal/parallelworkspace/spec"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -29,23 +33,17 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// instructionsPath resolves a goober's Instructions field to an absolute
-// file path. Instructions is documented as "relative to the goober
-// definition directory" (api/v1alpha1.GooberSpec), which config-as-code
-// objects don't retain after instance.LoadConfigDir flattens them into a
-// ConfigSet — but every shipped config (internal/instance/starter,
-// config-examples/, reference-workflows/) lays goobers out at the same fixed path, so
-// that layout convention is reproduced here rather than widening ConfigSet's
-// shape for this one field.
+// gooberDefinitionDir is the conventional, name-derived directory of a goober
+// definition. It is only the fallback for callers holding no loaded ConfigSet:
+// resolvedGooberDefinitionDir prefers the parsed definition file's own
+// directory, which validation also resolves instructions and assets against,
+// so a goober directory not named after metadata.name behaves the same at
+// runtime (#6611).
 func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
 	if spec.Gaggle == "" {
 		return filepath.Join(filepath.Dir(configDir), "goobers", gooberName)
 	}
 	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
-}
-
-func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string) string {
-	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
 func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(context.Context, string) error {
@@ -92,6 +90,7 @@ type runnerCompositionInput struct {
 	ExecutionFence           executionFenceStart
 	Layout                   instance.Layout
 	Config                   *instance.Config
+	Definitions              *instance.ConfigSet
 	Goobers                  map[string]apiv1.GooberSpec
 	InstructionsByGoober     map[string]string
 	SkillPackages            map[string][]workflow.SkillFile
@@ -250,7 +249,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		if _, ok := input.InstructionsByGoober[name]; !ok {
 			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
-		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
+		assets, err := gooberassets.Load(filepath.Join(resolvedGooberDefinitionDir(l.ConfigDir(), input.Definitions, spec, name), gooberassets.SourceDir))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
 		}
@@ -294,9 +293,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
+		RecoveryObserved: blockerclear.Reporter(l.SchedulerDir()),
 		RunControls:      cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
-			exec, err := buildDeterministicExecutor(deterministicExecutorInput{
+			exec, err := buildAutomationDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
@@ -309,17 +309,17 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
-			exec, err := buildAgenticExecutor(agenticExecutorInput{
-				GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
-				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
-				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
-				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
-				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
-			})
-			if err != nil {
-				return nil, err
+			ordinary := func() (invoke.Goober, error) {
+				return buildAgenticExecutor(agenticExecutorInput{
+					GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
+					HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
+					Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
+					SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
+					GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
+					ChildWorkflows: childWorkflowAccessFor(instanceRoot, reg),
+				})
 			}
-			return claimFencedGoober{Goober: exec, start: executionFence}, nil
+			return bindParentRouting(instanceRoot, gooberName, rec, ordinary, assetsByGoober[gooberName] != nil, executionFence)
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a
@@ -398,6 +398,25 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	}
 	cfg.IssueOwnershipAssignees = input.IssueOwnershipAssignees
 	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
+	cloneURL := cfg.RepoCloneURL
+	if cloneURL == nil {
+		cloneURL = runner.DefaultRepoCloneURL
+	}
+	archives := parentArchiveRestorer{layout: input.Layout, config: input.Config, worktrees: cfg.Worktrees, cloneURL: cloneURL, scrubber: input.SharedRegistry}
+	forkSources := parallelworkspace.Service{Worktrees: cfg.Worktrees, CloneURL: cloneURL, Policy: func(workspace string) (recovery.SnapshotPolicy, error) {
+		return childSnapshotPolicy(workspace, input.Layout.Root, input.Config)
+	}}
+	cfg.PrepareParentForkSource = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.Request, previous *spec.Source) (spec.Source, error) {
+		return forkSources.Prepare(ctx, rec, request, previous)
+	}
+	cfg.PrepareParentForkResult = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.ResultRequest, previous *spec.Source) (spec.Source, error) {
+		return forkSources.Result(ctx, rec, request, previous)
+	}
+	cfg.JoinParentFork = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.JoinRequest) error {
+		return forkSources.Join(ctx, rec, request)
+	}
+	cfg.RestoreParentArchive = archives.restore
+	cfg.RetireParentWorkspaces = archives.retire
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {

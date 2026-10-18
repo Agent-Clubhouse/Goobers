@@ -28,7 +28,7 @@ func TestShippedWorkflowsCompileOnTopologyB(t *testing.T) {
 	for _, subject := range matrixSubjects(t) {
 		dir := subject.build(t, apiv1.ProviderADO)
 		moveBacklogsToGitHub(t, dir)
-		findings, workflows := compileSubject(t, subject.name+"/topology-b", apiv1.ProviderADO, dir)
+		findings, workflows, _ := compileSubject(t, subject.name+"/topology-b", apiv1.ProviderADO, dir)
 		if workflows == 0 && len(findings) == 0 {
 			t.Fatalf("%s in topology (b) loaded no workflows; the gate would pass vacuously", subject.name)
 		}
@@ -70,7 +70,8 @@ func TestTopologyBColumnIsReallyMixed(t *testing.T) {
 }
 
 // moveBacklogsToGitHub rewrites every gaggle.yaml under dir so its backlog
-// lives in the GitHub repository topologyBBacklog, leaving its project as is.
+// lives in the GitHub repository topologyBBacklog, leaving its project as is,
+// and moves the manifest's backlog connections to GitHub with it.
 func moveBacklogsToGitHub(t *testing.T, dir string) {
 	t.Helper()
 	rewritten := 0
@@ -88,6 +89,7 @@ func moveBacklogsToGitHub(t *testing.T, dir string) {
 	if rewritten == 0 {
 		t.Fatalf("no gaggle.yaml under %s; the topology (b) column would be vacuous", dir)
 	}
+	rewriteManifestConnections(t, dir, map[string]apiv1.Provider{"backlog": apiv1.ProviderGitHub})
 }
 
 func moveBacklogToGitHub(t *testing.T, path string) {

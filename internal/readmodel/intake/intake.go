@@ -43,12 +43,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"path/filepath"
-	"strings"
 	"time"
 
-	sqlite "modernc.org/sqlite"
+	_ "modernc.org/sqlite"
+
+	"github.com/goobers/goobers/internal/sqlitebusy"
+	"github.com/goobers/goobers/internal/sqliteschema"
+	"github.com/goobers/goobers/internal/sqliteuri"
 )
 
 // FileName is the intake store's name inside the instance directory.
@@ -59,8 +61,6 @@ const FileName = "intake.db"
 // _txlock=immediate makes each explicit write transaction acquire its lock at
 // BEGIN, avoiding the non-waitable read-to-write upgrade race between processes.
 const dsnParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate"
-
-const busyRetryMaxAttempts = 12
 
 // timeFormat matches read.db's, so the two stores' timestamps are comparable
 // without conversion when a human is reading both.
@@ -89,7 +89,7 @@ type Marker struct {
 // and requiring an owner would mean a run started by `goobers run` while the
 // daemon is down records nothing.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", fileURI(path)+dsnParams)
+	db, err := sql.Open("sqlite", intakeURI(path)+dsnParams)
 	if err != nil {
 		return nil, fmt.Errorf("intake: open %s: %w", path, err)
 	}
@@ -104,9 +104,9 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) migrate(ctx context.Context) error {
 	var err error
-	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= sqlitebusy.MaxAttempts; attempt++ {
 		err = s.migrateOnce(ctx)
-		if err == nil || !isSQLiteBusy(err) {
+		if err == nil || !sqlitebusy.Is(err) {
 			return err
 		}
 		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
@@ -121,47 +121,7 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) migrateOnce(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
-		return fmt.Errorf("create schema_meta: %w", err)
-	}
-	version, err := schemaVersionTx(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if version > len(migrations) {
-		return fmt.Errorf("store schema version %d is newer than this build supports (%d)",
-			version, len(migrations))
-	}
-	for i := version; i < len(migrations); i++ {
-		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
-			return fmt.Errorf("apply migration %d: %w", i+1, err)
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM schema_meta`); err != nil {
-			return fmt.Errorf("reset schema_meta after migration %d: %w", i+1, err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
-			return fmt.Errorf("record schema version %d: %w", i+1, err)
-		}
-	}
-	return tx.Commit()
-}
-
-func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
-	var version int
-	err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read schema version: %w", err)
-	}
-	return version, nil
+	return sqliteschema.Migrate(ctx, s.db, "intake", migrations)
 }
 
 // Path reports the file backing this store.
@@ -334,10 +294,10 @@ func (s *Store) AckRemoval(ctx context.Context, runID string) error {
 // retries the whole transaction when SQLite reports resolvable contention.
 func (s *Store) execWriteWithBusyRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	var err error
-	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= sqlitebusy.MaxAttempts; attempt++ {
 		var result sql.Result
 		result, err = s.execWriteOnce(ctx, query, args...)
-		if err == nil || !isSQLiteBusy(err) {
+		if err == nil || !sqlitebusy.Is(err) {
 			return result, err
 		}
 		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
@@ -365,15 +325,6 @@ func (s *Store) execWriteOnce(ctx context.Context, query string, args ...any) (s
 		return nil, err
 	}
 	return result, nil
-}
-
-func isSQLiteBusy(err error) bool {
-	var sqliteErr *sqlite.Error
-	if !errors.As(err, &sqliteErr) {
-		return false
-	}
-	code := sqliteErr.Code() & 0xFF
-	return code == 5 || code == 6
 }
 
 // Get returns one run's marker, if any.
@@ -438,26 +389,6 @@ func (s *Store) OldestPending(ctx context.Context) (time.Time, bool, error) {
 // PathFor returns the intake store's path inside an instance directory.
 func PathFor(instanceDir string) string { return filepath.Join(instanceDir, FileName) }
 
-// fileURI renders a path as a file: URI so DSN parameters apply.
-//
-// The absolute path must be given a leading slash before it reaches url.URL.
-// On Windows filepath.ToSlash yields "C:/dir/intake.db", whose first segment
-// contains a colon; url.URL.String then prefixes "./" so the segment cannot be
-// mistaken for a scheme, producing "file:./C:/dir/intake.db" — a relative URI
-// SQLite cannot open (SQLITE_CANTOPEN). Rooting the path first yields
-// "file:///C:/dir/intake.db". POSIX paths are already rooted and unaffected.
-func fileURI(path string) string {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		absolute = path
-	}
-	slashed := filepath.ToSlash(absolute)
-	if !strings.HasPrefix(slashed, "/") {
-		slashed = "/" + slashed
-	}
-	return "file://" + (&url.URL{Path: slashed}).EscapedPath()
-}
-
 // Store satisfies readmodel.Intake. The assertion lives here rather than in
 // readmodel, which must not import this package: intake is a SEPARATE database
 // with its own lifecycle, and a dependency from the projected-facts store to the
@@ -466,3 +397,11 @@ var _ interface {
 	Observed(ctx context.Context, runID string, journalSeq uint64) error
 	Removing(ctx context.Context, runID string) error
 } = (*Store)(nil)
+
+func intakeURI(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = path
+	}
+	return sqliteuri.File(absolute)
+}

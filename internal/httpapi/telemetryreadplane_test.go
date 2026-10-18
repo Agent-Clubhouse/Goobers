@@ -194,16 +194,18 @@ func TestHumanTelemetryReadsAreUnchanged(t *testing.T) {
 			if name == "resolver wired" {
 				options = append(options, WithPodRunGaggle(gaggleResolver(map[string]string{"run-1": "core"}, nil)))
 			}
-			handler, err := NewHandler(reader, RequireRoles(), discardLogger(), options...)
-			if err != nil {
-				t.Fatal(err)
-			}
 			for _, path := range []string{
 				TelemetryStatsPath,
 				TelemetryErrorsPath,
 				TelemetryErrorSignaturesPath,
 				apicontract.TelemetryImplementationOutcomesPath,
 			} {
+				// Each parity check owns its admission pool; a prior response
+				// may still be releasing the completed handler's slot.
+				handler, err := NewHandler(reader, RequireRoles(), discardLogger(), options...)
+				if err != nil {
+					t.Fatal(err)
+				}
 				response := httptest.NewRecorder()
 				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 				if response.Code != http.StatusOK {
@@ -249,6 +251,12 @@ func TestImplementationOutcomesQueryParsing(t *testing.T) {
 	}
 
 	for _, query := range []string{"?since=yesterday", "?workflow=implement", "?gaggle=a&gaggle=b"} {
+		// Query cases must not inherit admission slots still draining from
+		// a previous response; admission saturation has its own tests.
+		handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger())
+		if err != nil {
+			t.Fatal(err)
+		}
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet,
 			apicontract.TelemetryImplementationOutcomesPath+query, nil))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,9 @@ type instanceState struct {
 	workerDivergence      map[string]WorkerConfigDivergenceStatus
 	telemetryRetention    *TelemetryRetentionStatus
 	configReloadRejection *ConfigReloadRejectionStatus
+	// blockerClears is the newest blocker.cleared observation per clear key
+	// (#5404).
+	blockerClears map[string]time.Time
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -70,6 +74,9 @@ func (s *instanceState) apply(event journal.Event) {
 	s.engineFallbacks.apply(event)
 	s.applyConfigReload(event)
 	s.applyClusterCheck(event)
+	s.applyProviderAuthHealth(event)
+	s.applyBlockerCleared(event)
+	s.applyWorkflowRefusal(event)
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -108,20 +115,6 @@ func (s *instanceState) apply(event journal.Event) {
 		}
 		if blocking, ok := localscheduler.RefillBlockedReason(event.Reason); ok && event.Workflow != "" {
 			s.blockRefill(event.Gaggle, event.Workflow, blocking)
-		}
-	case journal.EventWorkflowRefused:
-		key := event.Gaggle + "/" + event.Workflow
-		if _, known := s.refusals[key]; !known {
-			s.refusalOrder = append(s.refusalOrder, key)
-		}
-		if s.refusals == nil {
-			s.refusals = make(map[string]WorkflowRefusalStatus)
-		}
-		s.refusals[key] = WorkflowRefusalStatus{
-			Gaggle:   event.Gaggle,
-			Workflow: event.Workflow,
-			Reason:   event.Reason,
-			At:       event.Time,
 		}
 	case journal.EventDaemonDirtyRestart:
 		s.dirtyReason = event.Reason
@@ -185,6 +178,45 @@ func (s *instanceState) applyClusterCheck(event journal.Event) {
 	s.clusterChecks[result.Check] = result
 }
 
+// applyProviderAuthHealth surfaces a workflow blocked by its pre-claim
+// provider authorization predicate (#5317) as a refused workflow, so status
+// reports it with the stable reason until a run starts or config reloads.
+func (s *instanceState) applyProviderAuthHealth(event journal.Event) {
+	key := event.Gaggle + "/" + event.Workflow
+	switch event.Type {
+	case journal.EventTickSkipped:
+		reason := event.Reason
+		if blocking, ok := localscheduler.RefillBlockedReason(reason); ok {
+			reason = blocking
+		}
+		if event.Workflow == "" {
+			return
+		}
+		if !strings.HasPrefix(reason, localscheduler.ReasonProviderAuthUnhealthy) {
+			// Any other refusal means the auth gate passed or is no longer
+			// the blocker, so it must not mask the current reason.
+			s.clearProviderAuthRefusal(key)
+			return
+		}
+		if _, known := s.refusals[key]; !known {
+			s.refusalOrder = append(s.refusalOrder, key)
+		}
+		if s.refusals == nil {
+			s.refusals = make(map[string]WorkflowRefusalStatus)
+		}
+		s.refusals[key] = WorkflowRefusalStatus{Gaggle: event.Gaggle, Workflow: event.Workflow, Reason: reason, At: event.Time}
+	case journal.EventRunStarted:
+		s.clearProviderAuthRefusal(key)
+	}
+}
+
+func (s *instanceState) clearProviderAuthRefusal(key string) {
+	if refusal, ok := s.refusals[key]; ok && strings.HasPrefix(refusal.Reason, localscheduler.ReasonProviderAuthUnhealthy) {
+		delete(s.refusals, key)
+		s.refusalOrder = slices.DeleteFunc(s.refusalOrder, func(candidate string) bool { return candidate == key })
+	}
+}
+
 // applyConfigReload keeps the newest rejected reload until an accepted reload
 // or a daemon start supersedes it (#5596).
 func (s *instanceState) applyConfigReload(event journal.Event) {
@@ -244,6 +276,38 @@ func (s *instanceState) blockRefill(gaggle, workflow, blocking string) {
 	s.refillBlocked[localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflow}] = blocking
 }
 
+// applyWorkflowRefusal folds workflow.refused and workflow.readmitted: the
+// latest refusal per workflow, cleared when a transient harness refusal
+// lifts (#6017).
+func (s *instanceState) applyWorkflowRefusal(event journal.Event) {
+	key := event.Gaggle + "/" + event.Workflow
+	switch event.Type {
+	case journal.EventWorkflowRefused:
+		if _, known := s.refusals[key]; !known {
+			s.refusalOrder = append(s.refusalOrder, key)
+		}
+		if s.refusals == nil {
+			s.refusals = make(map[string]WorkflowRefusalStatus)
+		}
+		s.refusals[key] = WorkflowRefusalStatus{
+			Gaggle:   event.Gaggle,
+			Workflow: event.Workflow,
+			Reason:   event.Reason,
+			At:       event.Time,
+		}
+	case journal.EventWorkflowReadmitted:
+		s.removeRefusal(key)
+	}
+}
+
+func (s *instanceState) removeRefusal(key string) {
+	if _, known := s.refusals[key]; !known {
+		return
+	}
+	delete(s.refusals, key)
+	s.refusalOrder = slices.DeleteFunc(slices.Clone(s.refusalOrder), func(candidate string) bool { return candidate == key })
+}
+
 func (s *instanceState) resetRefusals() {
 	s.refusalOrder = nil
 	s.refusals = nil
@@ -278,6 +342,7 @@ func (s instanceState) clone() instanceState {
 	clone.refusalOrder = append([]string(nil), s.refusalOrder...)
 	clone.refusals = maps.Clone(s.refusals)
 	clone.refillBlocked = maps.Clone(s.refillBlocked)
+	clone.blockerClears = maps.Clone(s.blockerClears)
 	clone.workerDivergenceOrder = append([]string(nil), s.workerDivergenceOrder...)
 	clone.workerDivergence = maps.Clone(s.workerDivergence)
 	return clone

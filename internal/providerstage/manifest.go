@@ -61,6 +61,21 @@ type CapabilityUse struct {
 	// configs (the ed11ae81 class; see the package comment).
 	sinceDSL string
 	untilDSL string
+
+	// alternatives are capabilities that satisfy this use in place of
+	// Capability. Each pair is an explicit, reviewed per-command statement
+	// (ADR 0002 forbids implicit aliases). It exists so a command can move to
+	// a new capability without rejecting configs that already declare the
+	// one it used before: when pr-select moved from github:pr:write to
+	// provider:pr:write, existing configs declaring github:pr:write stopped
+	// validating (v0.6.0-alpha.3).
+	alternatives []capability.Capability
+}
+
+// AcceptedCapabilities returns every capability that satisfies this use:
+// Capability first, then its explicitly accepted alternatives.
+func (u CapabilityUse) AcceptedCapabilities() []capability.Capability {
+	return append([]capability.Capability{u.Capability}, u.alternatives...)
 }
 
 // RequiresExactCapability reports whether a separately brokered credential
@@ -100,6 +115,9 @@ type Command struct {
 
 	mutatesClaimLedger bool
 	claimMutationFlags []string
+	// valueFlags names non-boolean CLI flags whose next argument is a value.
+	// Boolean-condition scans need this arity to preserve positional boundaries.
+	valueFlags []string
 
 	// sinceDSL/untilDSL bound the DSL versions in which the command exists,
 	// with the same window semantics as CapabilityUse. Entry metadata
@@ -113,6 +131,12 @@ type Command struct {
 
 func required(cap capability.Capability, consequence string) CapabilityUse {
 	return CapabilityUse{Capability: cap, Consequence: consequence}
+}
+
+// requiredAnyOf requires cap or one of alternatives; see
+// CapabilityUse.alternatives.
+func requiredAnyOf(cap capability.Capability, alternatives []capability.Capability, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, alternatives: alternatives}
 }
 
 func requiredExact(cap capability.Capability, consequence string) CapabilityUse {
@@ -354,6 +378,8 @@ var commands = map[string]Command{
 			// On Azure DevOps the routing labels are native pull-request labels
 			// on the project provider, which github:pr:write authorizes there
 			// (docs/design/ado-parity-dsl-2-0.md §3.1).
+			// With blockUnansweredFeedback "true" (policy action disarm-landing)
+			// the same credential cancels an armed auto-complete before routing.
 			optional(capability.GitHubPRWrite, "required on Azure DevOps: without it the pull-request comment read and label routing fail at runtime; unused on GitHub and Gitea"),
 		},
 	},
@@ -361,7 +387,25 @@ var commands = map[string]Command{
 		ResultFile:         "selected-pr.json",
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+			// github:pr:write was the requirement through v0.6.0-alpha.2 and
+			// stays accepted so configs written against it keep validating.
+			// Validation only: at runtime pr-select still reads the
+			// provider:pr:write credential until the providers are split.
+			requiredAnyOf(capability.ProviderPRWrite, []capability.Capability{capability.GitHubPRWrite},
+				"the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+		},
+	},
+	"advisory-pr-select": {
+		ResultFile:         "advisory-selection.json",
+		mutatesClaimLedger: true,
+		Capabilities: []CapabilityUse{
+			requiredExact(capability.GitHubPRRead, "the read-only pull-request credential is not injected, so advisory selection fails at runtime"),
+		},
+	},
+	"advisory-pr-publish": {
+		ResultFile: "advisory-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the pull-request write credential is not injected, so advisory publication fails at runtime"),
 		},
 	},
 	"pr-claim": {
@@ -446,6 +490,7 @@ var commands = map[string]Command{
 		},
 	},
 	"recovery-resume": {
+		ResultFile: "recovery-resume.json",
 		Capabilities: []CapabilityUse{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so recovery cannot fetch current main for restoration"),
 		},
@@ -514,7 +559,7 @@ func requiredCapabilitiesIn(table map[string]Command, dslVersion, command string
 	}
 	var required []CapabilityUse
 	for _, use := range entry.Capabilities {
-		if use.required(args) {
+		if use.required(args, entry.valueFlags) {
 			required = append(required, use)
 		}
 	}
@@ -526,7 +571,7 @@ func mutatesClaimLedgerIn(table map[string]Command, dslVersion, command string, 
 	if !ok {
 		return false
 	}
-	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags)
+	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags, entry.valueFlags)
 }
 
 // lookupIn resolves command's entry in table as seen at dslVersion: an entry
@@ -656,15 +701,15 @@ func SupportsResultFile(command string) (ResultFileSupport, bool) {
 	return entry.effectiveSupport(), true
 }
 
-func (u CapabilityUse) required(args []string) bool {
+func (u CapabilityUse) required(args, valueFlags []string) bool {
 	if u.optional {
 		return false
 	}
 	if len(u.anyFlags) > 0 {
-		return anyFlagEnabled(args, u.anyFlags)
+		return anyFlagEnabled(args, u.anyFlags, valueFlags)
 	}
 	if len(u.unlessFlags) > 0 {
-		return !anyFlagEnabled(args, u.unlessFlags)
+		return !anyFlagEnabled(args, u.unlessFlags, valueFlags)
 	}
 	if u.flag == "" {
 		return true
@@ -688,15 +733,24 @@ func (u CapabilityUse) required(args []string) bool {
 	return false
 }
 
-func anyFlagEnabled(args, flags []string) bool {
+func anyFlagEnabled(args, flags, valueFlags []string) bool {
 	enabled := make(map[string]bool, len(flags))
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
 			break
 		}
 		name := strings.TrimPrefix(arg, "-")
 		name = strings.TrimPrefix(name, "-")
 		name, value, hasValue := strings.Cut(name, "=")
+		if slices.Contains(valueFlags, name) {
+			// Like flag.FlagSet, consume even a dash-prefixed value or "--".
+			// Unrelated boolean flags do not consume a following positional.
+			if !hasValue {
+				i++
+			}
+			continue
+		}
 		for _, flag := range flags {
 			if name != flag {
 				continue

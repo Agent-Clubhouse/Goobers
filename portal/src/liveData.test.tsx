@@ -1391,7 +1391,7 @@ describe("live page integration", () => {
       await settle();
     });
     expect(
-      screen.getByRole("heading", { name: "Run 01JZ441DAEMONAPI" }),
+      screen.getByRole("heading", { name: "#3088 · Operator status progress" }),
     ).toBeInTheDocument();
     const visibleReads = getRun.mock.calls.length;
 
@@ -1506,7 +1506,7 @@ describe("live page integration", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
@@ -1536,7 +1536,7 @@ describe("live page integration", () => {
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     act(() => {
       window.location.hash = "#/workflows";
@@ -1563,7 +1563,7 @@ describe("live page integration", () => {
     const { container } = render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Live updates connected");
 

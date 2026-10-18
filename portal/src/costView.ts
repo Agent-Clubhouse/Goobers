@@ -23,11 +23,17 @@ export interface ExternalCostRow {
 
 export type ExternalCostSortKey =
   | "work-item"
-  | "provider"
+  | "gaggle"
   | "aic"
   | "runs";
 
 export type ExternalCostSortDirection = "asc" | "desc";
+
+export function externalCostGaggles(row: ExternalCostRow): string[] {
+  return [...new Set(
+    row.runs.map((run) => run.gaggle).filter((gaggle): gaggle is string => Boolean(gaggle)),
+  )].sort((left, right) => left.localeCompare(right));
+}
 
 export function deriveExternalCostRows(result: TelemetryCostResult): ExternalCostRow[] {
   return [...result.pullRequests, ...result.issues].map((aggregate) =>
@@ -58,6 +64,8 @@ export function filterExternalCostRows(
         run.runId,
         run.gaggle ?? "",
         run.workflow ?? "",
+        run.triggerKind ?? "",
+        run.triggerRef ?? "",
         run.status ?? "",
         run.startedAt,
         ...run.billingModels,
@@ -121,8 +129,9 @@ function compareExternalCostRows(
         left.externalKind.localeCompare(right.externalKind) ||
         compareExternalIds(left.externalId, right.externalId)
       );
-    case "provider":
-      return left.provider.localeCompare(right.provider) || left.label.localeCompare(right.label);
+    case "gaggle":
+      return externalCostGaggles(left).join(", ").localeCompare(externalCostGaggles(right).join(", ")) ||
+        left.label.localeCompare(right.label);
     case "aic":
       return compareOptionalNumbers(left.aicValue, right.aicValue);
     case "runs":
@@ -175,7 +184,7 @@ function formatAIC(
   if (!amount) {
     return empty;
   }
-  return `${formatAICNumber(amount.value)} AIC${amount.estimated ? " estimated" : ""}`;
+  return `${formatAICNumber(amount.value)} AIC`;
 }
 
 function formatAICNumber(value: number): string {

@@ -321,13 +321,13 @@ func (r *runJournal) mutationIssues(ctx workflow.Context, stage string, attempt 
 func (r *runJournal) mutations(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact) {
 	for _, mutation := range mutations {
 		externalURL := providers.MutationWorkItemURL(mutation.Provider, mutation.Kind, mutation.ID, mutation.URL, mutation.MergeConfirmation, mutation.QueueAdmission, mutation.LandingIntent)
-		r.append(ctx, journal.WithMutationOutcome(journal.Event{
+		r.append(ctx, journal.WithSemanticMutation(journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{
 				Provider: mutation.Provider, Kind: mutation.Kind, ID: mutation.ID, URL: externalURL,
 			},
 			Runner: providers.MutationReceiptRunnerFields(mutation.ReceiptID, mutation.Operation, mutation.MergeConfirmation, mutation.QueueAdmission, mutation.LandingIntent),
-		}, mutation.RunID, mutation.Outcome, mutation.ErrorCode, mutation.ProviderRunID))
+		}, mutation.RunID, mutation.Outcome, mutation.ErrorCode, mutation.ProviderRunID), mutation.SemanticMutation))
 	}
 }
 
@@ -583,6 +583,18 @@ func (r *runJournal) lastFinishedAttempt(stage string) (int, journal.AttemptClas
 		}
 	}
 	return 0, ""
+}
+
+// workspaceHeadMoved journals why a run ended superseded (#6019): the error
+// event naming runner.WorkspaceHeadMovedErrorCode at the stage or gate the run
+// ended on. The terminal handlers read exactly this marker back to keep the
+// moved pull request's failure streak, no-work streak and remediation budget
+// untouched, so it is journaled on both the task and the gate arm.
+func (r *runJournal) workspaceHeadMoved(ctx workflow.Context, stage, message string) {
+	r.append(ctx, journal.Event{
+		Type: journal.EventError, Stage: stage,
+		Error: &journal.ErrorDetail{Code: runner.WorkspaceHeadMovedErrorCode, Message: message},
+	})
 }
 
 // blocked mirrors taskOutcome's #544 arm: the blocked cause journaled before

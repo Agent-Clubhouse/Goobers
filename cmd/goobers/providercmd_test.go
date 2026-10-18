@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,7 @@ type fakeIssue struct {
 	commentAuthors []string
 	commentTypes   []string
 	commentTimes   []time.Time
+	commentUpdates []time.Time
 	assignee       string
 	milestone      int
 	children       []int
@@ -89,6 +91,7 @@ type fakeReview struct {
 	body      string
 	commitSHA string
 	state     string
+	author    string
 }
 
 type fakeInlineReviewComment struct {
@@ -134,6 +137,9 @@ type fakeGitHubServer struct {
 	// BranchTipSHA) — the LIVE base-branch tip the merge-escalated self-heal
 	// check (#1052) compares against, distinct from any PR's pinned baseSHA.
 	branchTips map[string]string
+	// branchTipLookup lets fixtures that perform real pushes serve their remote refs.
+	branchTipLookup func(context.Context, string) (string, error)
+	branchDelete    func(context.Context, string) error
 	// repoLabels is the repository's label set (GET/POST /repos/o/r/labels),
 	// distinct from any issue's applied labels. It lets a test model a label the
 	// code names but the repository does not actually define — the #1801 failure,
@@ -165,6 +171,7 @@ type fakeGitHubServer struct {
 	dependencyRequests      int
 	dependencyFailureStatus map[int]int
 	authenticatedLogin      string
+	tokenLogins             map[string]string
 	// issueEventRequests counts GET /repos/o/r/issues/events pages served, so a
 	// test can price one backlog-health cycle's full-history walk against its
 	// resumed successor (#3392).
@@ -176,6 +183,14 @@ type fakeGitHubServer struct {
 	issueEventQuotaLimit     int
 	issueEventQuotaRemaining int
 	issueEventQuotaDrain     int
+	// issueEventWindow, when > 0, makes the repository-wide issue-events
+	// endpoint serve only the newest issueEventWindow events, as a provider
+	// that stops serving old repository history does (#6986). The per-issue
+	// events endpoint still serves an issue's complete history unless
+	// hideItemEvents is set.
+	issueEventWindow  int
+	hideItemEvents    bool
+	itemEventRequests int
 	// globalQuotaLimit/globalQuotaRemaining, when globalQuotaLimit > 0, stamp
 	// X-RateLimit-Limit/-Remaining on EVERY response this server serves —
 	// unlike issueEventQuotaLimit/Remaining above, which is scoped to the
@@ -191,6 +206,9 @@ type fakeGitHubServer struct {
 	issueItemGetRequests int
 	hiddenIssueLabels    map[int]map[string]int
 	issueGetMutations    map[int][]func(*fakeGitHubServer, *fakeIssue)
+	// bumpUpdatedAtOnWrite makes comment and label-add writes advance the
+	// issue's updated_at, as real GitHub does (#6903).
+	bumpUpdatedAtOnWrite bool
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -208,6 +226,11 @@ type fakeGitHubServer struct {
 	reviewThreadsFailure  map[int]int
 	pullGetMutations      map[int][]func(*fakeGitHubServer, *fakePR)
 	labelRemovalMutations map[int][]func(*fakeGitHubServer, *fakePR)
+	// commitStatuses records POST /statuses/{sha} in order, and
+	// GET /commits/{sha}/status serves them after the fixture CI status;
+	// statusWriteFailure makes the POST answer that status instead (#4199).
+	commitStatuses     map[string][]fakeCommitStatus
+	statusWriteFailure int
 }
 
 // setIssueCommentsFailure makes GET /issues/{number}/comments respond with
@@ -331,7 +354,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 		securityAlertQueries:  map[string][]url.Values{},
 		securityAlertFailures: map[string]int{},
 		issueGetMutations:     map[int][]func(*fakeGitHubServer, *fakeIssue){},
-		nextPR:                1, authenticatedLogin: "goobers",
+		nextPR:                1, authenticatedLogin: "goobers", tokenLogins: map[string]string{},
 	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
@@ -344,9 +367,11 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/issues/", s.handleIssueItem)
 	mux.HandleFunc(prefix+"/pulls/", s.handlePullItem)
 	mux.HandleFunc(prefix+"/commits/", s.handleCommitItem)
+	mux.HandleFunc(prefix+"/statuses/", s.handleCommitStatusWrite)
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
+	mux.HandleFunc(prefix+"/git/refs/heads/", s.handleDeleteGitRef)
 	mux.HandleFunc(prefix+"/activity", s.handleActivity)
 	mux.HandleFunc(prefix+"/labels", s.handleRepoLabels)
 	mux.HandleFunc(prefix+"/code-scanning/alerts", s.handleSecurityAlerts("code-scanning"))
@@ -590,7 +615,17 @@ func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *htt
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 		return
 	}
-	writeFakeJSON(w, map[string]string{"login": s.authenticatedLogin})
+	login := s.authenticatedLogin
+	if tokenLogin := s.tokenLogins[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]; tokenLogin != "" {
+		login = tokenLogin
+	}
+	writeFakeJSON(w, map[string]string{"login": login})
+}
+
+func (s *fakeGitHubServer) setTokenLogin(token, login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokenLogins[token] = login
 }
 
 func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) {
@@ -603,6 +638,12 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 	}
 	for _, label := range labels {
 		s.appendLabelEventLocked(number, label, true, createdAt)
+	}
+}
+
+func (s *fakeGitHubServer) bumpUpdatedAtLocked(issue *fakeIssue) {
+	if s.bumpUpdatedAtOnWrite {
+		issue.updatedAt = issue.updatedAt.Add(time.Hour)
 	}
 }
 
@@ -716,6 +757,24 @@ func (s *fakeGitHubServer) setBranchTip(branch, sha string) {
 	s.branchTips[branch] = sha
 }
 
+// setBranchTipLookup connects API ref reads to a fixture's actual remote.
+// The callback runs outside the server mutex and replaces only ref-map reads.
+func (s *fakeGitHubServer) setBranchTipLookup(lookup func(context.Context, string) (string, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branchTipLookup = lookup
+}
+
+func (s *fakeGitHubServer) lookupBranchTip(ctx context.Context, branch string) (string, error) {
+	s.mu.Lock()
+	lookup, sha := s.branchTipLookup, s.branchTips[branch]
+	s.mu.Unlock()
+	if lookup != nil {
+		return lookup(ctx, branch)
+	}
+	return sha, nil
+}
+
 func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -724,10 +783,12 @@ func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) 
 	prefix := "/repos/" + s.owner + "/" + s.repo + "/git/ref/"
 	ref := strings.TrimPrefix(r.URL.Path, prefix) // e.g. "heads/main"
 	branch := strings.TrimPrefix(ref, "heads/")
-	s.mu.Lock()
-	sha, ok := s.branchTips[branch]
-	s.mu.Unlock()
-	if !ok {
+	sha, err := s.lookupBranchTip(r.Context(), branch)
+	if err != nil {
+		http.Error(w, "branch tip lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if sha == "" {
 		// Unset on purpose: a test that reaches BranchTipSHA without seeding a
 		// tip should fail loudly, not silently resolve to a phantom SHA.
 		http.Error(w, "no branch tip registered for "+branch, http.StatusNotFound)
@@ -739,6 +800,26 @@ func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (s *fakeGitHubServer) handleDeleteGitRef(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	branch := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/git/refs/heads/")
+	s.mu.Lock()
+	remove := s.branchDelete
+	s.mu.Unlock()
+	if remove == nil {
+		http.Error(w, "branch deletion is not configured", http.StatusNotFound)
+		return
+	}
+	if err := remove(r.Context(), branch); err != nil {
+		http.Error(w, "branch deletion failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *fakeGitHubServer) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -746,10 +827,12 @@ func (s *fakeGitHubServer) handleActivity(w http.ResponseWriter, r *http.Request
 	}
 	ref := r.URL.Query().Get("ref")
 	branch := strings.TrimPrefix(ref, "refs/heads/")
-	s.mu.Lock()
-	_, ok := s.branchTips[branch]
-	s.mu.Unlock()
-	if !ok {
+	sha, err := s.lookupBranchTip(r.Context(), branch)
+	if err != nil {
+		http.Error(w, "branch activity lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if sha == "" {
 		http.Error(w, "no branch activity registered for "+branch, http.StatusNotFound)
 		return
 	}
@@ -940,6 +1023,9 @@ func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Requ
 	for i, event := range s.issueEvents {
 		newestFirst[len(s.issueEvents)-1-i] = event
 	}
+	if s.issueEventWindow > 0 && len(newestFirst) > s.issueEventWindow {
+		newestFirst = newestFirst[:s.issueEventWindow]
+	}
 	perPage := 30
 	if pp, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && pp > 0 {
 		if pp > 100 {
@@ -1006,6 +1092,20 @@ func (s *fakeGitHubServer) issueEventRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.issueEventRequests
+}
+
+// setIssueEventWindow limits the repository-wide issue-events endpoint to the
+// newest window events and, with hideItem, empties the per-issue history too.
+func (s *fakeGitHubServer) setIssueEventWindow(window int, hideItem bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueEventWindow, s.hideItemEvents = window, hideItem
+}
+
+func (s *fakeGitHubServer) itemEventRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.itemEventRequests
 }
 
 func (s *fakeGitHubServer) resetIssueEventRequestCount() {
@@ -1135,13 +1235,17 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			if !issue.commentTimes[i].IsZero() {
 				comment["created_at"] = issue.commentTimes[i]
 			}
+			if i < len(issue.commentUpdates) && !issue.commentUpdates[i].IsZero() {
+				comment["updated_at"] = issue.commentUpdates[i]
+			}
 			out = append(out, comment)
 		}
 		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+		s.itemEventRequests++
 		out := make([]map[string]any, 0)
 		for _, event := range s.issueEvents {
-			if event.number != num {
+			if event.number != num || s.hideItemEvents {
 				continue
 			}
 			out = append(out, map[string]any{
@@ -1157,11 +1261,13 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		decodeFakeJSON(r, &body)
 		s.nextCommentID++
+		s.bumpUpdatedAtLocked(issue)
 		issue.comments = append(issue.comments, body.Body)
 		issue.commentIDs = append(issue.commentIDs, s.nextCommentID)
 		issue.commentAuthors = append(issue.commentAuthors, s.authenticatedLogin)
 		issue.commentTypes = append(issue.commentTypes, "Bot")
 		issue.commentTimes = append(issue.commentTimes, time.Now().UTC())
+		issue.commentUpdates = append(issue.commentUpdates, time.Now().UTC())
 		writeFakeJSON(w, map[string]interface{}{"id": s.nextCommentID, "body": body.Body})
 	case len(parts) == 2 && parts[1] == "labels" && r.Method == http.MethodPost:
 		var body struct {
@@ -1172,6 +1278,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			if hasAllLabels(issue.labels, []string{label}) {
 				continue
 			}
+			s.bumpUpdatedAtLocked(issue)
 			issue.labels = append(issue.labels, label)
 			if pr := s.prs[num]; pr != nil {
 				pr.labels = append(pr.labels, label)
@@ -1255,6 +1362,9 @@ func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Requ
 				}
 				decodeFakeJSON(r, &body)
 				issue.comments[i] = body.Body
+				if i < len(issue.commentUpdates) {
+					issue.commentUpdates[i] = time.Now().UTC()
+				}
 				writeFakeJSON(w, map[string]interface{}{"id": id, "body": body.Body})
 			case http.MethodDelete:
 				issue.comments = append(issue.comments[:i], issue.comments[i+1:]...)
@@ -1262,6 +1372,9 @@ func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Requ
 				issue.commentAuthors = append(issue.commentAuthors[:i], issue.commentAuthors[i+1:]...)
 				issue.commentTypes = append(issue.commentTypes[:i], issue.commentTypes[i+1:]...)
 				issue.commentTimes = append(issue.commentTimes[:i], issue.commentTimes[i+1:]...)
+				if i < len(issue.commentUpdates) {
+					issue.commentUpdates = append(issue.commentUpdates[:i], issue.commentUpdates[i+1:]...)
+				}
 				w.WriteHeader(http.StatusNoContent)
 			default:
 				http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -1364,7 +1477,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			out = append(out, map[string]interface{}{
 				"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 				"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
-				"user": map[string]string{"login": "goobers-reviewer"},
+				"user": map[string]string{"login": review.author},
 			})
 		}
 		writeFakeJSON(w, out)
@@ -1404,13 +1517,27 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		}
 		review := fakeReview{
 			id: int64(len(pr.reviews) + 1), body: body.Body,
-			commitSHA: body.CommitID, state: state,
+			commitSHA: body.CommitID, state: state, author: s.authenticatedLogin,
 		}
 		pr.reviews = append(pr.reviews, review)
 		writeFakeJSON(w, map[string]interface{}{
 			"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
 		})
+	case len(parts) == 4 && parts[1] == "reviews" && parts[3] == "dismissals" && r.Method == http.MethodPut:
+		reviewID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			http.Error(w, "bad review id", http.StatusBadRequest)
+			return
+		}
+		for i := range pr.reviews {
+			if pr.reviews[i].id == reviewID {
+				pr.reviews[i].state = "DISMISSED"
+				writeFakeJSON(w, map[string]interface{}{"id": reviewID, "state": "DISMISSED"})
+				return
+			}
+		}
+		http.Error(w, "review not found", http.StatusNotFound)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.inlineComments))
 		for _, comment := range pr.inlineComments {
@@ -1483,9 +1610,10 @@ func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Reque
 	s.mu.Unlock()
 	switch kind {
 	case "status":
-		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": []map[string]interface{}{
+		statuses := []map[string]interface{}{
 			{"context": "ci", "state": state, "target_url": "", "description": ""},
-		}})
+		}
+		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": append(statuses, s.commitStatusesFor(sha)...)})
 	case "check-runs":
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
 	default:
@@ -1578,7 +1706,7 @@ func (s *fakeGitHubServer) prDetailJSON(pr *fakePR) map[string]interface{} {
 		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
 	}
 	return map[string]interface{}{
-		"number": pr.number, "html_url": s.prHTMLURL(pr.number),
+		"number": pr.number, "title": pr.title, "html_url": s.prHTMLURL(pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft, "mergeable": pr.mergeable,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
@@ -1703,6 +1831,10 @@ func (s *fakeGitHubServer) setPRMergeable(number int, mergeable bool) {
 }
 
 func (s *fakeGitHubServer) addPRReview(number int, state string) {
+	s.addPRReviewAs(number, "reviewer", state)
+}
+
+func (s *fakeGitHubServer) addPRReviewAs(number int, author, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pr := s.prs[number]
@@ -1711,6 +1843,7 @@ func (s *fakeGitHubServer) addPRReview(number int, state string) {
 		body:      "review body",
 		commitSHA: pr.headSHA,
 		state:     state,
+		author:    author,
 	})
 }
 
@@ -1789,6 +1922,7 @@ func (s *fakeGitHubServer) addRawCommentAtAsType(number int, author, authorType,
 	s.issues[number].commentAuthors = append(s.issues[number].commentAuthors, author)
 	s.issues[number].commentTypes = append(s.issues[number].commentTypes, authorType)
 	s.issues[number].commentTimes = append(s.issues[number].commentTimes, createdAt)
+	s.issues[number].commentUpdates = append(s.issues[number].commentUpdates, createdAt)
 }
 
 func (s *fakeGitHubServer) addChild(parent, child int) {

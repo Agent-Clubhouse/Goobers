@@ -4,6 +4,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 )
 
 // PinnedWorkflowGraphInputName is the immutable input snapshot containing the
@@ -108,6 +109,9 @@ type RunIdentity struct {
 	ConfigGeneration string `json:"configGeneration,omitempty"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
+	// Child identifies a generated child admitted through durable start custody.
+	// Nil preserves the identity and behavior of ordinary and historical runs.
+	Child *ChildLineage `json:"child,omitempty"`
 	// Driver names the component walking this run's stages. Empty — the only
 	// value any run.yaml written before this field existed can carry — means
 	// the daemon's in-process runner, so every existing journal keeps both
@@ -120,6 +124,10 @@ type RunIdentity struct {
 	Trigger Trigger `json:"trigger"`
 	// Inputs are the content-digested input snapshots pinned at run start.
 	Inputs []InputRef `json:"inputs,omitempty"`
+	// MutationHistory freezes inherited intent/completion evidence. It is metadata
+	// only: no provider operation is skipped on its authority.
+	MutationHistory []mutationreceipt.Receipt `json:"mutationHistory,omitempty"`
+
 	// ContinuedFromRunID links this run to the terminal run it continues.
 	ContinuedFromRunID string `json:"continuedFromRunId,omitempty"`
 	// SourceTerminalSeq is the terminal event generation selected by the

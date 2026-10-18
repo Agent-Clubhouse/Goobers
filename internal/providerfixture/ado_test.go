@@ -100,6 +100,13 @@ func TestRefreshADONormalizesAndUsesProviderRequestShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	secondRaw, err := canonical(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, secondRaw) {
+		t.Fatalf("canonical ADO fixture bytes changed across refreshes\nfirst:\n%s\nsecond:\n%s", raw, secondRaw)
+	}
 	for _, want := range []string{
 		`"provider": "ado"`,
 		`"owner": "fixture-org"`,
@@ -154,6 +161,55 @@ func TestRefreshADORejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestRefreshADOPreservesMaxResponseSizeError(t *testing.T) {
+	t.Parallel()
+
+	_, err := RefreshADO(context.Background(), ADORefreshConfig{
+		OrganizationURL: "https://dev.azure.com/acme",
+		Project:         "Widgets",
+		WorkItem:        "7",
+		Token:           "ado-pat",
+		Client: httpClientFunc(func(*http.Request) (*http.Response, error) {
+			return fixtureHTTPResponse(http.StatusOK, bytes.Repeat([]byte("x"), maxResponseBytes+1)), nil
+		}),
+	})
+	want := fmt.Sprintf("list-open-work-items response exceeds %d bytes", maxResponseBytes)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("RefreshADO() error = %v, want containing %q", err, want)
+	}
+}
+
+func TestRefreshADOMatchesExistingCanonicalFixtureBytes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "test", "providers", "testdata", "ado_contract.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := RefreshADO(context.Background(), ADORefreshConfig{
+		OrganizationURL: "https://dev.azure.com/" + baseline.Repository.Owner,
+		Project:         baseline.Repository.Name,
+		WorkItem:        baseline.Issue,
+		Token:           "ado-pat",
+		Client:          fixtureReplayClient(t, baseline),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := canonical(refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = append(after, '\n')
+	if !bytes.Equal(before, after) {
+		t.Fatalf("canonical ADO fixture bytes changed after refresh\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestADOProviderFixtureWorkflowIsDispatchOnly(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join("..", "..")
@@ -167,13 +223,18 @@ func TestADOProviderFixtureWorkflowIsDispatchOnly(t *testing.T) {
 		"secrets.ADO_PAT",
 		"vars.ADO_ORG_URL",
 		"vars.ADO_PROJECT",
-		"vars.ADO_PROVIDER_FIXTURE_WORK_ITEM",
 		"-provider ado",
+		"-provision-fixture",
 		"test/providers/testdata/ado_contract.json",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("ADO fixture workflow does not contain %q", want)
 		}
+	}
+	// The workflow owns the fixture's lifecycle; a pinned work-item number
+	// turns the check red as soon as that item is closed (#6372).
+	if strings.Contains(workflow, "ADO_PROVIDER_FIXTURE_WORK_ITEM") || strings.Contains(workflow, "-work-item") {
+		t.Fatal("ADO provider fixture workflow must resolve its fixture, not pin a work-item number")
 	}
 	if strings.Contains(workflow, "pull_request:") {
 		t.Fatal("ADO provider fixture workflow must not run in pull-request CI")

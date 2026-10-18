@@ -24,6 +24,10 @@ type RetentionRequest struct {
 	CleanupRoots    []string
 	MaxSnapshots    int
 	MaxArchiveBytes int64
+	// ParentPolicy opts a host-held parent checkout into preserving independent
+	// HEAD, index and working trees in the same bounded retention archive.
+	// The caller derives it from verified parent custody, never worker input.
+	ParentPolicy *SnapshotPolicy
 	// SkipEmpty permits cleanup without publishing when no implementation
 	// differs from the cumulative base. It returns a zero record and empty path.
 	// RetainAbandonedPreparation applies it to a preparation that differs in
@@ -38,6 +42,13 @@ type RetentionRequest struct {
 	// full, so this capture is not refused when reclaimable capacity exists
 	// (#4823). Nil disables eviction; a full inventory then still refuses.
 	EvictFull EvictFunc
+	// EnsureBase optionally makes a delta archive's base commit present and
+	// reachable from its base ref in Repository before import (#6306). A
+	// pure-pod gaggle's host mirror is never fetched by a host stage, so the
+	// base may be absent or newer than the mirror's copy of the base ref,
+	// which would force a full-history host bundle. Nil keeps the
+	// self-contained, no-fetch behaviour.
+	EnsureBase func(ctx context.Context, repository, sha, ref string) error
 	// OverflowRoot enables the overflow tier (#5370): when the inventory is
 	// still full after every reclamation has run, the snapshot is published
 	// here as a ref-backed record with no bundle instead of refusing the
@@ -68,11 +79,22 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	if log == nil {
 		return Record{}, "", fmt.Errorf("recovery requires a durable publication journal")
 	}
-	prepared, err := PrepareRecord(ctx, request.Repository, request.RepositoryKey, request.RunID, request.BaseRef, request.IdentityTime, request.RetainUntil)
+	prepared, err := prepareRetentionRecord(ctx, request)
 	if err != nil {
 		return Record{}, "", err
 	}
-	if request.SkipEmpty && prepared.PatchDigest == emptyPatchDigest {
+	return RetainPrepared(ctx, request, prepared, log)
+}
+
+// RetainPrepared publishes an already captured snapshot using the same capacity,
+// overflow and acknowledgement policy as Retain. The caller must verify durable
+// ownership of the exact record and hold the repository's cleanup lock. This
+// never recaptures the current checkout, which may have changed since capture.
+func RetainPrepared(ctx context.Context, request RetentionRequest, prepared Record, log PublicationJournal) (Record, string, error) {
+	if err := validateRetentionPreparation(request, prepared, log); err != nil {
+		return Record{}, "", err
+	}
+	if request.ParentPolicy == nil && request.SkipEmpty && prepared.PatchDigest == emptyPatchDigest {
 		return Record{}, "", nil
 	}
 	retained, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
@@ -113,4 +135,20 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 		}
 	}
 	return retained, path, nil
+}
+
+func validateRetentionPreparation(request RetentionRequest, prepared Record, log PublicationJournal) error {
+	if log == nil {
+		return fmt.Errorf("recovery requires a durable publication journal")
+	}
+	if err := prepared.validateSnapshot(); err != nil {
+		return err
+	}
+	if prepared.RepositoryKey != request.RepositoryKey || prepared.RunID != request.RunID || !prepared.CreatedAt.Equal(request.IdentityTime) || !prepared.RetainUntil.Equal(request.RetainUntil) {
+		return fmt.Errorf("prepared recovery ownership or retention window changed")
+	}
+	if prepared.ArchiveDigest != "" || prepared.ArchiveBytes != 0 || prepared.ArchiveFormat != "" {
+		return fmt.Errorf("prepared recovery must precede archive publication")
+	}
+	return nil
 }

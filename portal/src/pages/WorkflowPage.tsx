@@ -1,3 +1,9 @@
+import { Tab, TabList } from "../ui/Tabs";
+import { PageHeading, SectionHeading } from "../ui/Heading";
+import { MetadataGrid } from "../ui/MetadataGrid";
+import { ControlGroup } from "../ui/Filters";
+import { Action } from "../ui/Action";
+import { Timestamp } from "../ui/Timestamp";
 import { useState } from "react";
 import { RunTiming } from "../components/RunTiming";
 import { QueueEligibilityPanel } from "../components/QueueEligibilityPanel";
@@ -14,7 +20,6 @@ import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import { ScopePivot } from "../components/ScopePivot";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
-import { formatTimestamp } from "../runDetailData";
 import type { Navigate } from "../routing";
 import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
@@ -24,6 +29,8 @@ import { Inspector } from "../ui/Inspector";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useWorkflowDetail } from "../workflowDetailData";
 import { useInsightStats } from "../insightData";
+import { distinctTriggerRef, runWorkTitle } from "../operationalData";
+import { RunWorkTitle, workItemHref } from "../components/RunWorkTitle";
 import { formatTriggers } from "./WorkflowsPage";
 
 export function WorkflowPage({
@@ -66,9 +73,9 @@ export function WorkflowPage({
           <h1>Workflow unavailable</h1>
           <p>{query.state.error.message}</p>
         </div>
-        <button className="reconnect-button" onClick={query.retry} type="button">
+        <Action variant="primary" className="reconnect-button" onClick={query.retry} type="button">
           {standalone ? "Reload" : "Retry"}
-        </button>
+        </Action>
       </section>
     );
   }
@@ -97,7 +104,12 @@ export function WorkflowPage({
             : undefined
         }
       />
-      <QueueEligibilityPanel key={`${gaggle}/${workflowName}`} client={client} gaggle={gaggle} workflow={workflowName} />
+      <QueueEligibilityPanel
+        key={`${gaggle}/${workflowName}`}
+        client={client}
+        gaggle={gaggle}
+        workflow={workflowName}
+      />
     </>
   );
 }
@@ -124,7 +136,7 @@ function WorkflowDetailWorkspace({
     workflow.stages.find((stage) => stage.name === selectedStageId) ?? workflow.stages[0];
 
   return (
-    <>
+    <div className="workflow-detail-page">
       <nav aria-label="Breadcrumb" className="breadcrumbs">
         <button onClick={() => navigate({ page: "workflows" })} type="button">
           Workflows
@@ -139,79 +151,86 @@ function WorkflowDetailWorkspace({
         <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>
-      <header className="detail-heading">
-        <div>
-          <span className="definition-label">Workflow definition</span>
-          <div className="detail-heading-line">
-            <h1>{workflow.displayName}</h1>
-            <ScopePivot
-              label={`${workflow.identity.gaggle} / ${workflow.displayName}`}
-              scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
-            />
-          </div>
-          <p>{workflow.purpose}</p>
-        </div>
-        <dl className="detail-meta workflow-detail-meta">
-          <div>
-            <dt>Trigger</dt>
-            <dd>{formatTriggers(workflow)}</dd>
-          </div>
-          <div>
-            <dt>Concurrency</dt>
-            <dd>
-              {workflow.concurrency.activeRuns} active
-              {workflow.concurrency.desiredRuns !== undefined
-                ? ` / ${workflow.concurrency.desiredRuns} desired`
-                : ""}{" "}
-              / {workflow.concurrency.maxConcurrentRuns} max
-              {workflow.concurrency.admissionBlocked && (
-                <small>Blocked: {workflow.concurrency.blockingCondition}</small>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Gaggle</dt>
-            <dd>{workflow.identity.gaggle}</dd>
-          </div>
-          <div>
-            <dt>Definition</dt>
-            <dd className="mono workflow-definition-pin">
-              v{workflow.definition.version} · {workflow.definition.digest}
-            </dd>
-          </div>
-          <div>
-            <dt>Backprop</dt>
-            <dd>{workflow.backprop?.enabled ? `Enabled (${workflow.backprop.version})` : "Disabled"}</dd>
-          </div>
-        </dl>
-      </header>
+      <PageHeading
+        title={workflow.displayName}
+        className="workflow-detail-heading"
+        description={workflow.purpose}
+        fullWidth
+      />
 
-      <section aria-label="Workflow configuration summary" className="workflow-config-summary">
-        <dl>
-          <div>
-            <dt>Owners</dt>
-            <dd>
-              {workflow.owners.length > 0
-                ? workflow.owners.map((owner) => `${owner.gaggle}/${owner.name}`).join(", ")
-                : "None declared"}
-            </dd>
-          </div>
-          <div>
-            <dt>Stages</dt>
-            <dd>{workflow.stageCount}</dd>
-          </div>
-          <div>
-            <dt>Readiness</dt>
-            <dd>{formatReadiness(workflow.readiness)}</dd>
-          </div>
-        </dl>
-      </section>
+      <ControlGroup className="workflow-detail-controls" label="Workflow scope">
+        <ScopePivot
+          label={`${workflow.identity.gaggle} / ${workflow.displayName}`}
+          scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
+        />
+        <section aria-label="Workflow configuration summary" className="workflow-detail-summary">
+          <MetadataGrid>
+            <div>
+              <dt>Trigger</dt>
+              <dd>{formatTriggers(workflow)}</dd>
+            </div>
+            <div>
+              <dt>Concurrency</dt>
+              <dd>
+                {workflow.concurrency.activeRuns} active
+                {workflow.concurrency.desiredRuns !== undefined
+                  ? ` / ${workflow.concurrency.desiredRuns} desired`
+                  : ""}{" "}
+                / {workflow.concurrency.maxConcurrentRuns} max
+                {workflow.concurrency.admissionBlocked && (
+                  <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Gaggle</dt>
+              <dd>{workflow.identity.gaggle}</dd>
+            </div>
+            <div>
+              <dt>Definition</dt>
+              <dd
+                className="mono workflow-definition-pin"
+                title={`v${workflow.definition.version} · ${workflow.definition.digest}`}
+              >
+                v{workflow.definition.version} · {workflow.definition.digest}
+              </dd>
+            </div>
+            <div>
+              <dt>Backprop</dt>
+              <dd>
+                {backpropLabel(workflow.backprop)}
+              </dd>
+            </div>
+            <div>
+              <dt>Owners</dt>
+              <dd>
+                {workflow.owners.length > 0
+                  ? workflow.owners.map((owner) => (
+                      <div key={`${owner.gaggle}/${owner.name}`}>
+                        {owner.gaggle}/{owner.name}
+                      </div>
+                    ))
+                  : "None declared"}
+              </dd>
+            </div>
+            <div>
+              <dt>Stages</dt>
+              <dd>{workflow.stageCount}</dd>
+            </div>
+            <div>
+              <dt>Readiness</dt>
+              <dd>{formatReadiness(workflow.readiness)}</dd>
+            </div>
+          </MetadataGrid>
+        </section>
+      </ControlGroup>
 
       <ConfigurationWarnings context="workflow" {...configurationWarnings} />
 
       <section className="graph-layout">
         <GraphFrame
           action={<span className="graph-legend">Select a stage to inspect its definition</span>}
+          eyebrow=""
         >
           <WorkflowTopologyGraph
             graph={workflow.graph}
@@ -224,8 +243,15 @@ function WorkflowDetailWorkspace({
       </section>
 
       <RecentRuns runs={runs} workflow={workflow} />
-    </>
+    </div>
   );
+}
+
+function backpropLabel(backprop: WorkflowDetail["backprop"]): string {
+  const mode = backprop?.mode ?? (backprop?.enabled ? "active" : "off");
+  if (mode === "active") return `Active (${backprop?.version})`;
+  if (mode === "shadow") return `Shadow (${backprop?.version})`;
+  return "Disabled";
 }
 
 function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
@@ -256,8 +282,8 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
         </div>
       </div>
       <p className="inspector-description">{stage.goal || "No stage goal declared."}</p>
-      <div className="definition-view-toggle" role="tablist" aria-label="Stage config view">
-        <button
+      <TabList className="definition-view-toggle" role="tablist" aria-label="Stage config view">
+        <Tab
           type="button"
           role="tab"
           aria-selected={view === "fields"}
@@ -265,8 +291,8 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
           onClick={() => setView("fields")}
         >
           Fields
-        </button>
-        <button
+        </Tab>
+        <Tab
           type="button"
           role="tab"
           aria-selected={view === "yaml"}
@@ -274,8 +300,8 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
           onClick={() => setView("yaml")}
         >
           Raw YAML
-        </button>
-      </div>
+        </Tab>
+      </TabList>
       {view === "fields" ? (
         <dl className="property-list">
           <div>
@@ -350,16 +376,48 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
   );
 }
 
+function WorkflowRunRow({ run }: { run: RunSummary }) {
+  const workTitle = runWorkTitle(run, " · ");
+  const triggerRef = distinctTriggerRef(run);
+  return (
+    <DataRow
+      href={routeHash({ page: "run", id: run.id })}
+      interactiveChildren={Boolean(workItemHref(run))}
+      label={`Open run ${run.id}`}
+    >
+      <span className="row-primary">
+        {workTitle ? (
+          <span className="row-title" title={workTitle}>
+            <RunWorkTitle run={run} separator=" · " />
+          </span>
+        ) : (
+          <span className="row-title mono">{run.id}</span>
+        )}
+        <span className="row-subtitle">
+          {run.trigger.kind}
+          {triggerRef ? ` · ${triggerRef}` : ""} · <Timestamp value={run.startedAt} />
+          {workTitle ? <span className="mono"> · {run.id}</span> : null}
+        </span>
+      </span>
+      <StatusBadge status={run.phase} />
+      <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
+      <RunTiming run={run} />
+    </DataRow>
+  );
+}
+
 function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: WorkflowDetail }) {
   return (
     <section className="content-section">
-      <div className="section-heading">
-        <div>
-          <p className="section-kicker">History</p>
-          <h2>Recent runs</h2>
-        </div>
-        <span className="section-count">{runs.length}</span>
-      </div>
+      <SectionHeading
+        title="Recent runs"
+        className=""
+        actions={
+          <>
+            <span className="section-count">{runs.length}</span>
+          </>
+        }
+      />
       {runs.length === 0 ? (
         <p className="inline-empty">No runs are recorded for this workflow.</p>
       ) : (
@@ -369,23 +427,7 @@ function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: Workflow
           gridClassName="workflow-runs-grid"
         >
           {runs.map((run) => (
-            <DataRow
-              href={routeHash({ page: "run", id: run.id })}
-              key={run.id}
-              label={`Open run ${run.id}`}
-            >
-              <span className="row-primary">
-                <span className="row-title mono">{run.id}</span>
-                <span className="row-subtitle">
-                  {run.trigger.kind}
-                  {run.trigger.ref ? ` · ${run.trigger.ref}` : ""} ·{" "}
-                  <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
-                </span>
-              </span>
-              <StatusBadge status={run.phase} />
-              <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
-              <RunTiming run={run} />
-            </DataRow>
+            <WorkflowRunRow key={run.id} run={run} />
           ))}
         </DataList>
       )}
@@ -418,5 +460,7 @@ function stageKindLabel(stage: StageDefinition): string {
       return "Gate";
     case "parallel":
       return "Parallel";
+    case "map":
+      return "Map";
   }
 }

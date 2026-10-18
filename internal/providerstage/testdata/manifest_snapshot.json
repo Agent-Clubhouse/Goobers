@@ -1,5 +1,27 @@
 [
   {
+    "command": "advisory-pr-publish",
+    "resultFile": "advisory-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the pull-request write credential is not injected, so advisory publication fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "advisory-pr-select",
+    "resultFile": "advisory-selection.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:pr:read",
+        "consequence": "the read-only pull-request credential is not injected, so advisory selection fails at runtime",
+        "exact": true
+      }
+    ]
+  },
+  {
     "command": "apply-verdict",
     "resultFile": "verdict-result.json",
     "capabilities": [
@@ -359,8 +381,11 @@
     "mutatesClaimLedger": true,
     "capabilities": [
       {
-        "capability": "github:pr:write",
-        "consequence": "the capability-scoped credential is not injected, so pull-request selection fails at runtime"
+        "capability": "provider:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so pull-request selection fails at runtime",
+        "alternatives": [
+          "github:pr:write"
+        ]
       }
     ]
   },
@@ -486,6 +511,7 @@
   },
   {
     "command": "recovery-resume",
+    "resultFile": "recovery-resume.json",
     "capabilities": [
       {
         "capability": "repo:push",

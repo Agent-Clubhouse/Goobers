@@ -11,6 +11,7 @@ import (
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -114,7 +115,7 @@ func runSecurityAlertsQuery(args []string, stdout, stderr io.Writer) int {
 	// Alerts are read through the routed provider, so a backlog on another
 	// provider (topology (b)) keeps the routed repository.
 	req.Repository = backlogRepoRefForStage(root, repo)
-	if backlogOnOtherProvider(repo, req.Repository) {
+	if providerconfig.BacklogOnOtherProvider(repo, req.Repository) {
 		req.Repository = repo
 	}
 	// Validate the whole request against the shared contract before a

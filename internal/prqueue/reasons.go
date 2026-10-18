@@ -14,6 +14,7 @@ const (
 	Demoted           = "merge-demoted"
 	SiblingBlocked    = "blocked on a sibling"
 	TutorSignoff      = "awaiting human signoff"
+	BranchOccupied    = "branch owned by a live run"
 )
 
 // NextStep gives conservative guidance, not an instruction to remove safety
@@ -40,6 +41,8 @@ func NextStep(reason string) string {
 		return "Inspect the blocking sibling pull request and re-evaluate after it resolves."
 	case TutorSignoff:
 		return "Obtain the required human signoff for this tutor change."
+	case BranchOccupied:
+		return "Wait for the owning run to release the branch, then re-evaluate."
 	default:
 		return "Inspect the recorded exclusion details; no automatic recovery action is known."
 	}

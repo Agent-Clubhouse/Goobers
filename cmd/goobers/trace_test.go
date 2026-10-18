@@ -294,6 +294,16 @@ func TestTraceSurfacesPersistedBackpropRecord(t *testing.T) {
 	if err := journal.WriteFileAtomic(filepath.Join(runDir, creditgraph.RecordFileName), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	stages, err := json.Marshal(creditgraph.StageRecordSet{
+		Schema: creditgraph.StageRecordSchemaVersion, RunID: runID,
+		Records: []creditgraph.StageRecord{{Stage: "plan", Attempt: 1, Status: "success", FromSequence: 1, ThroughSequence: 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(runDir, creditgraph.StageRecordsFileName), stages, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
 	if code != 0 {
@@ -306,9 +316,15 @@ func TestTraceSurfacesPersistedBackpropRecord(t *testing.T) {
 	if got.Attribution == nil || got.Attribution.EffectiveVersion != "sha256:effective" {
 		t.Fatalf("trace attribution = %+v", got.Attribution)
 	}
+	// The fabricated checkpoint does not verify against the journal, so trace
+	// reports it instead of presenting it as recorded fact.
+	if got.Stages != nil || !strings.Contains(got.StagesError, "not enrolled") {
+		t.Fatalf("trace stage attribution = %+v, error = %q", got.Stages, got.StagesError)
+	}
 
 	code, stdout, stderr = runArgs(t, "trace", "--summary", runID, root)
-	if code != 0 || !strings.Contains(stdout, "backprop: complete (v1)") {
+	if code != 0 || !strings.Contains(stdout, "backprop: complete (v1)") ||
+		!strings.Contains(stdout, "backprop stages: unverified (") {
 		t.Fatalf("trace --summary: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }

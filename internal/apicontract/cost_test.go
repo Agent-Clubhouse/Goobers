@@ -61,6 +61,11 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		if route.ID == RouteCredentialResolve || route.ID == RouteCredentialRefresh {
 			continue
 		}
+		// The escalation-candidates scan is a stage-pod read over many
+		// per-run journals; see TestJournalScanBudget.
+		if route.ID == RouteJournalEscalationCandidates {
+			continue
+		}
 		// Defect nomination is a stage-pod read with its own five-minute
 		// client deadline, not a Portal request with a ten-second abort.
 		if route.ID == RouteTelemetryDefectAggregates {
@@ -69,7 +74,7 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		// Worker recovery uploads stream a bounded binary archive; they do
 		// not use the Portal's JSON client or its ten-second abort.
 		if route.ID == RouteRunRecoveryPublish {
-			if route.Budget != BlobBudget || route.Cost != CostMutation {
+			if route.Budget != RecoveryPublishBudget || route.Cost != CostMutation {
 				t.Error("recovery upload lost its transfer budget or mutation admission")
 			}
 			continue
@@ -120,6 +125,12 @@ func TestBlobRoutesCarryTheLargerBudget(t *testing.T) {
 		switch route.Cost {
 		case CostBlob:
 			sawBlob = true
+			if route.ID == RouteRunRecovery {
+				if route.Budget != RecoveryDownloadBudget {
+					t.Errorf("recovery download carries budget %s, want %s", route.Budget, RecoveryDownloadBudget)
+				}
+				continue
+			}
 			if route.Budget != BlobBudget {
 				t.Errorf("blob route %s carries budget %s, want %s", route.ID, route.Budget, BlobBudget)
 			}
@@ -237,6 +248,27 @@ func TestCredentialResolveBudget(t *testing.T) {
 	}
 }
 
+// TestJournalScanBudget pins the escalation-candidates route's scan budget:
+// above the 8s mutation/bounded budget it used to inherit (which 503'd the
+// production scan every time), still mutation-admitted like its journal-plane
+// siblings, and not a blob-sized allowance.
+func TestJournalScanBudget(t *testing.T) {
+	route, ok := V1Route(RouteJournalEscalationCandidates)
+	if !ok {
+		t.Fatal("journal escalation-candidates route is not in the V1 contract")
+	}
+	if route.Budget != JournalScanBudget {
+		t.Errorf("budget = %s, want JournalScanBudget (%s)", route.Budget, JournalScanBudget)
+	}
+	if route.Cost != CostMutation || route.ActionClass != ActionWorkflowExecution {
+		t.Errorf("route is %s/%s, want mutation/workflow-execution admission like its siblings", route.Cost, route.ActionClass)
+	}
+	if JournalScanBudget <= MutationBudget || JournalScanBudget > BlobBudget {
+		t.Errorf("JournalScanBudget %s must exceed MutationBudget %s and not exceed BlobBudget %s",
+			JournalScanBudget, MutationBudget, BlobBudget)
+	}
+}
+
 func knownCostClass(class CostClass) bool {
 	switch class {
 	case CostBounded, CostSingleRun, CostAggregate, CostBlob, CostStream, CostMutation:
@@ -277,4 +309,41 @@ func TestBlobBudgetsExceedTheClientAbort(t *testing.T) {
 	t.Logf("known mismatch: blob routes budget %s against a %s client abort; the trailing %s "+
 		"is unreachable until the portal gains a per-request timeout for downloads",
 		BlobBudget, clientAbort, BlobBudget-clientAbort)
+}
+
+// TestRecoveryPublishBudgetCarriesAMaximumArchive pins that the recovery upload
+// route's budget is derived from the archive size cap and the minimum
+// throughput, not borrowed from the blob budget that cut every real upload at
+// 65s (blob budget plus write-deadline margin).
+func TestRecoveryPublishBudgetCarriesAMaximumArchive(t *testing.T) {
+	route, ok := V1Route(RouteRunRecoveryPublish)
+	if !ok {
+		t.Fatal("recovery publish route missing")
+	}
+	if route.Budget != RecoveryPublishBudget {
+		t.Fatalf("budget = %s, want %s", route.Budget, RecoveryPublishBudget)
+	}
+	transfer := time.Duration(RecoveryArchiveMaxBytes/RecoveryPublishMinThroughput) * time.Second
+	if RecoveryPublishBudget != transfer+RecoveryPublishOverhead {
+		t.Fatalf("budget %s is not transfer %s + overhead %s", RecoveryPublishBudget, transfer, RecoveryPublishOverhead)
+	}
+	if RecoveryPublishBudget <= BlobBudget {
+		t.Fatalf("budget %s must exceed the blob budget %s that truncated uploads", RecoveryPublishBudget, BlobBudget)
+	}
+	if got, want := RecoveryPublishBudget, 316*time.Second; got != want {
+		t.Fatalf("budget = %s, want %s", got, want)
+	}
+}
+
+// TestRecoveryDownloadBudgetCarriesAMaximumArchive pins that resuming from
+// custody can stream a maximum archive: the route is sized like the upload.
+func TestRecoveryDownloadBudgetCarriesAMaximumArchive(t *testing.T) {
+	route, ok := V1Route(RouteRunRecovery)
+	if !ok || route.Budget != RecoveryDownloadBudget {
+		t.Fatalf("recovery download route budget = %v (found %v), want %s", route.Budget, ok, RecoveryDownloadBudget)
+	}
+	transfer := time.Duration(RecoveryArchiveMaxBytes/RecoveryPublishMinThroughput) * time.Second
+	if RecoveryDownloadBudget <= transfer || RecoveryDownloadBudget <= BlobBudget {
+		t.Fatalf("download budget %s cannot carry a maximum archive (%s transfer, blob %s)", RecoveryDownloadBudget, transfer, BlobBudget)
+	}
 }

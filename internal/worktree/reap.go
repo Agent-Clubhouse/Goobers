@@ -664,6 +664,9 @@ func canonicalAbsentLeafPath(path string) string {
 type registeredWorktree struct {
 	Path   string
 	Branch string
+	// Prunable is true when Git reports the registration's working directory
+	// as gone (a stale administrative record `git worktree prune` would drop).
+	Prunable bool
 }
 
 // registeredWorktrees parses Git's stable porcelain records once for callers
@@ -693,6 +696,8 @@ func registeredWorktrees(ctx context.Context, repoDir string) ([]registeredWorkt
 			current = &registeredWorktree{Path: path}
 		case current != nil && strings.HasPrefix(line, "branch "):
 			current.Branch = strings.TrimPrefix(line, "branch ")
+		case current != nil && (line == "prunable" || strings.HasPrefix(line, "prunable ")):
+			current.Prunable = true
 		}
 	}
 	if current != nil {

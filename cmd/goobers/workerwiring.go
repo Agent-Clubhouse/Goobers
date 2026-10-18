@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -182,6 +183,11 @@ type gaggleSeams struct {
 	// build re-preflights the failed harness instead of pinning a transient
 	// failure for the life of the snapshot (#5949).
 	harnessRefusals map[localscheduler.WorkflowIdentity]string
+	// harnessRetryAt names, among harnessRefusals, the workflows whose every
+	// harness failure was a transient provider failure, with when the
+	// harness may next be probed (#6017). Their refusal carries that time so
+	// the engine does not retry the stage, and so re-probe, before then.
+	harnessRetryAt map[localscheduler.WorkflowIdentity]time.Time
 }
 
 // degraded reports whether some workflow's harness failed this kit's
@@ -206,7 +212,11 @@ func (g *gaggleSeams) refuseUnavailableHarness(env apiv1.InvocationEnvelope) err
 	if !refused {
 		return nil
 	}
-	return invoke.InfrastructureFailure(fmt.Errorf("worker: harness preflight: workflow %q (gaggle %q): %s", identity.Workflow, identity.Gaggle, reason))
+	err := fmt.Errorf("worker: harness preflight: workflow %q (gaggle %q): %s", identity.Workflow, identity.Gaggle, reason)
+	if retryAt, transient := g.harnessRetryAt[identity]; transient {
+		return invoke.InfrastructureFailureUntil(err, retryAt)
+	}
+	return invoke.InfrastructureFailure(err)
 }
 
 // newWorkerSeams loads an instance from root and prepares per-gaggle executor
@@ -314,7 +324,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
 	}
-	harnessInfo, harnessRefusals, err := preflightWorkerHarnesses(cfg, set, goobers, stores)
+	harnessInfo, harnessRefusals, harnessRetryAt, err := preflightWorkerHarnesses(cfg, set, goobers, stores)
 	if err != nil {
 		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
@@ -334,6 +344,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		},
 		Layout:               scoped,
 		Config:               cfg,
+		Definitions:          set,
 		Goobers:              goobers,
 		InstructionsByGoober: instructions,
 		SkillPackages:        snapshot.skillPackages[gaggle],
@@ -370,7 +381,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		return nil, fmt.Errorf("worker: buildRunnerConfig returned no worktree manager for gaggle %q", gaggle)
 	}
 	return &builtGaggleSeams{
-		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr, harnessRefusals: harnessRefusals},
+		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr, harnessRefusals: harnessRefusals, harnessRetryAt: harnessRetryAt},
 		fingerprint: fingerprint,
 	}, nil
 }
@@ -380,17 +391,24 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 // as the daemon scopes it (#5163): the worker used to fail the WHOLE kit, so
 // one workflow's transient harness failure (a rate-limited sign-in check)
 // failed every unrelated workflow's activity that triggered the build
-// (#5949). Any other preflight error still fails the build closed.
-func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
-	info, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
+// (#5949). Any other preflight error still fails the build closed. retryAt
+// holds the refused workflows whose refusal is wholly transient (#6017).
+func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (info harnessPreflightInfo, refusals map[localscheduler.WorkflowIdentity]string, retryAt map[localscheduler.WorkflowIdentity]time.Time, err error) {
+	info, err = preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
 	if err == nil {
-		return info, nil, nil
+		return info, nil, nil, nil
 	}
 	var failures *harnessPreflightFailures
 	if !errors.As(err, &failures) || len(failures.Refusals) == 0 {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return info, maps.Clone(failures.Refusals), nil
+	retryAt = make(map[localscheduler.WorkflowIdentity]time.Time)
+	for identity := range failures.Refusals {
+		if refusal := failures.transientRefusal(identity); refusal != nil {
+			retryAt[identity] = refusal.retryAt
+		}
+	}
+	return info, maps.Clone(failures.Refusals), retryAt, nil
 }
 
 // recorderFor returns the artifact recorder and secret registrar for one run.
@@ -498,57 +516,83 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 	return exec.Run(ctx, env, run)
 }
 
-type workerGoober struct{ seams *workerSeams }
+type workerGoober struct {
+	seams          *workerSeams
+	acquire        func(context.Context, apiv1.InvocationEnvelope) (*gaggleSeams, func(), error)
+	materialize    func(context.Context, *gaggleSeams, apiv1.InvocationEnvelope) error
+	mergeAuthority func(context.Context, apiv1.InvocationEnvelope) (context.Context, error)
+}
+
+type workerExecutorContext struct {
+	ctx     context.Context
+	exec    invoke.Goober
+	release func()
+}
 
 func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	prepared, err := a.prepareExecutor(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	defer prepared.release()
+	return prepared.exec.Invoke(prepared.ctx, env)
+}
+
+func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	prepared, err := a.prepareExecutor(ctx, env)
+	if err != nil {
+		return apiv1.Verdict{}, err
+	}
+	defer prepared.release()
+	return prepared.exec.Review(prepared.ctx, env)
+}
+
+func (a workerGoober) prepareExecutor(ctx context.Context, env apiv1.InvocationEnvelope) (prepared workerExecutorContext, err error) {
 	// Resolve the gaggle's kit ONCE for the whole call, BY THE RUN'S PIN.
 	// Resolving again for materialize would let a reload landing
 	// mid-invocation hand the same attempt two different trees; resolving
 	// without the pin would let a reload landing between two attempts hand
 	// the same RUN two different curators (#3884).
-	g, release, err := a.seams.forInvocationGaggle(ctx, env, true)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+	acquire := a.acquire
+	if acquire == nil {
+		acquire = func(ctx context.Context, env apiv1.InvocationEnvelope) (*gaggleSeams, func(), error) {
+			return a.seams.forInvocationGaggle(ctx, env, true)
+		}
 	}
-	defer release()
-	if err := g.refuseUnavailableHarness(env); err != nil {
-		return apiv1.ResultEnvelope{}, err
+	g, release, err := acquire(ctx, env)
+	if err != nil {
+		return workerExecutorContext{}, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			release()
+		}
+	}()
+	if err = g.refuseUnavailableHarness(env); err != nil {
+		return workerExecutorContext{}, err
 	}
 	exec, err := a.executor(g, env)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+		return workerExecutorContext{}, err
 	}
-	if err := a.seams.materialize(ctx, g, env); err != nil {
-		return apiv1.ResultEnvelope{}, err
+	materialize := a.materialize
+	if materialize == nil {
+		materialize = a.seams.materialize
 	}
-	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
+	if err = materialize(ctx, g, env); err != nil {
+		return workerExecutorContext{}, err
+	}
+	mergeAuthority := a.mergeAuthority
+	if mergeAuthority == nil {
+		mergeAuthority = a.seams.mergeAuthorityContext
+	}
+	ctx, err = mergeAuthority(ctx, env)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+		return workerExecutorContext{}, err
 	}
-	return exec.Invoke(ctx, env)
-}
-
-func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	g, release, err := a.seams.forInvocationGaggle(ctx, env, true)
-	if err != nil {
-		return apiv1.Verdict{}, err
-	}
-	defer release()
-	if err := g.refuseUnavailableHarness(env); err != nil {
-		return apiv1.Verdict{}, err
-	}
-	exec, err := a.executor(g, env)
-	if err != nil {
-		return apiv1.Verdict{}, err
-	}
-	if err := a.seams.materialize(ctx, g, env); err != nil {
-		return apiv1.Verdict{}, err
-	}
-	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
-	if err != nil {
-		return apiv1.Verdict{}, err
-	}
-	return exec.Review(ctx, env)
+	transferred = true
+	return workerExecutorContext{ctx: ctx, exec: exec, release: release}, nil
 }
 
 func (a workerGoober) executor(g *gaggleSeams, env apiv1.InvocationEnvelope) (invoke.Goober, error) {

@@ -11,16 +11,20 @@ package journal
 // wrong event to the wrong branch. Here every decision is keyed on
 // (Branch, Seq), so interleaving cannot corrupt it.
 func reconstructBranchCursors(events []Event) ([]BranchCursor, bool) {
-	// Find the last parallel that started and has not finished. Events are in
-	// seq order, and parallel lifecycle events are recorded on the root
-	// branch, so a forward scan is exact.
+	// Find the last fan-out (a parallel or a map) that started and has not
+	// finished. Events are in seq order, and fan-out lifecycle events are
+	// recorded on the root branch, so a forward scan is exact. A finish closes
+	// only the same construct's start.
 	var openParallel string
+	var openFinish EventType
 	for _, e := range events {
 		switch e.Type {
 		case EventParallelStarted:
-			openParallel = e.Parallel
-		case EventParallelFinished:
-			if e.Parallel == openParallel {
+			openParallel, openFinish = e.Parallel, EventParallelFinished
+		case EventMapStarted:
+			openParallel, openFinish = e.Parallel, EventMapFinished
+		case EventParallelFinished, EventMapFinished:
+			if e.Type == openFinish && e.Parallel == openParallel {
 				openParallel = ""
 			}
 		}
@@ -56,6 +60,8 @@ func reconstructBranchCursors(events []Event) ([]BranchCursor, bool) {
 			c.Branch = e.Branch
 			c.Name = e.BranchName
 			c.Parallel = e.Parallel
+			c.ItemIdentity = e.MapItemIdentity
+			c.ItemDigest = e.MapItemDigest
 			c.MachineState = e.Stage
 			c.Status = ""
 			c.seen = true

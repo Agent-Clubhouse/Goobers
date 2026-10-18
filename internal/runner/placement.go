@@ -91,7 +91,7 @@ func placementDeclared(runnersDeclared bool, environ []string) bool {
 // recordsPlacement is placementDeclared bound to this runner's configuration
 // and the live process environment.
 func (r *Runner) recordsPlacement() bool {
-	return placementDeclared(r.cfg.RunnersDeclared, os.Environ())
+	return r.cfg.childExecution == nil && placementDeclared(r.cfg.RunnersDeclared, os.Environ())
 }
 
 // SelfPlacement is selfPlacement, exported for the ENGINE's in-process stage

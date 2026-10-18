@@ -46,6 +46,8 @@ var names = []string{
 	// The offline demo provider (`goobers init --demo`): the seeded demo
 	// gaggle's workflow stages shell out to it by design.
 	"__demo-provider",
+	"advisory-pr-publish",
+	"advisory-pr-select",
 	"apply-verdict",
 	"backlog-assignment",
 	"backlog-dedupe",

@@ -22,6 +22,10 @@ type Fold struct {
 	itemRepos      map[string]ItemRepository
 	itemReposByRun map[string]map[string]ItemRepository
 	worktreeStates map[string]string
+	// abandonments holds every operator recovery-abandoned record, the only
+	// events recovery.ExplicitlyAbandoned consults, so the recovery capacity
+	// reading can mark them without re-reading the whole instance log.
+	abandonments []journal.Event
 }
 
 var folds sync.Map // scheduler directory -> *Fold
@@ -75,6 +79,7 @@ func (f *Fold) reset(state journal.InstanceLogState) {
 	f.itemRepos = nil
 	f.itemReposByRun = nil
 	f.worktreeStates = nil
+	f.abandonments = nil
 }
 
 func (f *Fold) apply(events []journal.Event) {
@@ -84,6 +89,9 @@ func (f *Fold) apply(events []journal.Event) {
 		}
 		if event.Type != journal.EventRunnerAnnotation {
 			continue
+		}
+		if event.Runner["operation"] == "recovery-abandoned" {
+			f.abandonments = append(f.abandonments, event)
 		}
 		switch event.Runner["annotation"] {
 		case ItemRepositoryAnnotation:
@@ -100,9 +108,11 @@ func (f *Fold) apply(events []journal.Event) {
 			project, _ := event.Runner["project"].(string)
 			name, _ := event.Runner["name"].(string)
 			kind, _ := event.Runner["kind"].(string)
+			purpose, _ := event.Runner["purpose"].(string)
 			f.itemRepos[key] = ItemRepository{
 				Repository: providers.RepositoryRef{Provider: providers.ProviderKind(provider), Owner: owner, Project: project, Name: name},
 				Kind:       kind,
+				Purpose:    purpose,
 			}
 			run, keyedItem, ok := strings.Cut(key, "#")
 			if ok && run != "" {
@@ -151,6 +161,16 @@ func (f *Fold) WorktreeState(schedulerDir, runID, worktreeID string) (string, er
 	return f.worktreeStates[runID+"\x00"+worktreeID], nil
 }
 
+// RecoveryAbandonments returns every operator recovery-abandoned record.
+func (f *Fold) RecoveryAbandonments(schedulerDir string) ([]journal.Event, error) {
+	if err := f.refresh(schedulerDir); err != nil {
+		return nil, fmt.Errorf("read instance log for recovery abandonments: %w", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]journal.Event(nil), f.abandonments...), nil
+}
+
 // ItemRepositories returns the permissive latest-write view for requested items.
 func (f *Fold) ItemRepositories(schedulerDir, runID string, itemIDs []string) (map[string]ItemRepository, error) {
 	if err := f.refresh(schedulerDir); err != nil {
@@ -177,10 +197,12 @@ func (f *Fold) AllItemRepositories(schedulerDir, runID string) (map[string]ItemR
 	return maps.Clone(f.itemReposByRun[runID]), nil
 }
 
-// ItemRepository retains the selection-time repository and item kind.
+// ItemRepository retains the selection-time repository, item kind and the
+// claim's declared selection purpose ("" for an ordinary work claim).
 type ItemRepository struct {
 	Repository providers.RepositoryRef
 	Kind       string
+	Purpose    string
 }
 
 // ItemRepositoryAnnotation identifies a durable selection-time ownership record.

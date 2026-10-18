@@ -61,10 +61,13 @@ func seedRemediationResponseRunWithReview(t *testing.T, root, runID string, verd
 		t.Fatalf("create remediation run journal: %v", err)
 	}
 	contextData, err := json.Marshal(apiv1.RemediationBrief{
-		Schema:    apiv1.RemediationBriefVersion,
-		Integrity: apiv1.IntegrityUnapproved,
+		Schema:           apiv1.RemediationBriefVersion,
+		Integrity:        apiv1.IntegrityUnapproved,
+		SelectedNumber:   "1",
+		FeedbackSnapshot: &apiv1.PRFeedbackSnapshot{Complete: true},
 		GatherPRContext: apiv1.RemediationPRContext{
-			Verdict: verdict,
+			Verdict:  verdict,
+			Comments: []apiv1.RemediationThreadComment{{Author: "dev", Body: "Please fix.", CreatedAt: remediationFixtureFeedbackAt}},
 		},
 	})
 	if err != nil {
@@ -279,10 +282,22 @@ func TestRespondToFindingsDispatchesToGitea(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if len(comments) != 1 || !strings.Contains(comments[0]["body"].(string), remediationResponseMarker(runID)) {
+	if len(comments) != 1 {
 		t.Fatalf("Gitea comments = %+v, want one run-scoped remediation response", comments)
 	}
+	body, _ := comments[0]["body"].(string)
+	if !strings.Contains(body, remediationResponseMarker(runID)) {
+		t.Fatalf("Gitea comments = %+v, want one run-scoped remediation response", comments)
+	}
+	// #6918: the response acknowledges only the feedback its snapshot read.
+	if frontier, bound := parseFeedbackAck(body); !bound || frontier.Format(time.RFC3339) != remediationFixtureFeedbackAt {
+		t.Fatalf("response frontier = %v bound=%v, want %s:\n%s", frontier, bound, remediationFixtureFeedbackAt, body)
+	}
 }
+
+// remediationFixtureFeedbackAt is the newest feedback the seeded brief's
+// snapshot read.
+const remediationFixtureFeedbackAt = "2026-01-02T03:04:05Z"
 
 func TestRespondToFindingsRejectsIncompleteAccountBeforePosting(t *testing.T) {
 	verdict := apiv1.Verdict{

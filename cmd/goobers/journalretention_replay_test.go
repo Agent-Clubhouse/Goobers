@@ -49,6 +49,7 @@ func TestJournalCatchupRetentionBoundary(t *testing.T) {
 			// deletion from the intentionally excluded pre-enrollment history.
 			primer := startRetentionReplayClient(t, cfg)
 			waitRetentionReplay(t, func() bool { return telemetry.InspectAzureReplayRoot(spool).AccountingReady })
+			flushRetentionReplayClient(t, primer)
 			stopRetentionReplayClient(t, primer)
 			verifyRetentionEnrollment(t, spool)
 			var restore func()
@@ -86,7 +87,7 @@ func TestJournalCatchupRetentionBoundary(t *testing.T) {
 
 func verifyRetentionEnrollment(t *testing.T, spool string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", sqliteuri.File(filepath.Join(spool, ".journal-cursors.db"))+"?mode=ro")
+	db, err := sql.Open("sqlite", sqliteuri.File(filepath.Join(spool, ".journal-cursors.db"))+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +97,15 @@ func verifyRetentionEnrollment(t *testing.T, spool string) {
 	var since int64
 	if err := db.QueryRowContext(ctx, "SELECT since FROM enrollment WHERE id=1").Scan(&since); err != nil || since <= 0 || since > time.Now().UnixNano() {
 		t.Fatalf("enrollment was not persisted before source creation: since=%d err=%v", since, err)
+	}
+}
+
+func flushRetentionReplayClient(t *testing.T, client *telemetry.Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := client.Flush(ctx); err != nil {
+		t.Fatalf("flush replay fixture: %v", err)
 	}
 }
 

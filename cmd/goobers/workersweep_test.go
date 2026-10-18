@@ -196,14 +196,14 @@ func TestTemporalRunStatesLeavesPodWithoutStampedDriver(t *testing.T) {
 
 // recordingSweeper captures the resolver the wiring hands to SweepOrphans.
 type recordingSweeper struct {
-	disposed []string
-	err      error
-	states   dispatcher.RunStates
+	reaped []dispatcher.OrphanReap
+	err    error
+	states dispatcher.RunStates
 }
 
-func (r *recordingSweeper) SweepOrphans(_ context.Context, states dispatcher.RunStates) ([]string, error) {
+func (r *recordingSweeper) SweepOrphansWithReport(_ context.Context, states dispatcher.RunStates) ([]dispatcher.OrphanReap, error) {
 	r.states = states
-	return r.disposed, r.err
+	return r.reaped, r.err
 }
 
 type recurringSweepCall struct {
@@ -216,20 +216,28 @@ type recurringSweeper struct {
 	next  int
 }
 
-func (r *recurringSweeper) SweepOrphans(ctx context.Context, _ dispatcher.RunStates) ([]string, error) {
+func (r *recurringSweeper) SweepOrphansWithReport(ctx context.Context, _ dispatcher.RunStates) ([]dispatcher.OrphanReap, error) {
 	r.next++
 	call := recurringSweepCall{number: r.next, ctx: ctx}
 	r.calls <- call
 	if call.number == 1 {
 		return nil, errors.New("temporary apiserver failure")
 	}
-	return []string{"terminal-from-prior-worker"}, nil
+	return []dispatcher.OrphanReap{{
+		Namespace: "gaggle",
+		Pod:       "terminal-from-prior-worker",
+		Reason:    "owning workflow terminal",
+	}}, nil
 }
 
 // The boot wiring: the worker sweeps with a Temporal-backed resolver and
 // reports what it disposed.
 func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
-	sweeper := &recordingSweeper{disposed: []string{"gbn-open-pr-run1-a2"}}
+	sweeper := &recordingSweeper{reaped: []dispatcher.OrphanReap{{
+		Namespace: "gaggle-e2e",
+		Pod:       "gbn-open-pr-run1-a2",
+		Reason:    "owning workflow terminal",
+	}}}
 	withFakeSweepDial(t, &fakeSweepDescriber{})
 	var stdout, stderr bytes.Buffer
 	sweepWorkerStageOrphans(sweeper, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
@@ -246,6 +254,9 @@ func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "gbn-open-pr-run1-a2") {
 		t.Fatalf("stdout %q does not name the disposed pod", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "owning workflow terminal") {
+		t.Fatalf("stdout %q does not log the disposal reason", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr %q", stderr.String())

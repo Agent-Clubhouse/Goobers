@@ -43,6 +43,8 @@ type snapshotCapabilityUse struct {
 	UnlessFlags []string              `json:"unlessFlags,omitempty"`
 	SinceDSL    string                `json:"sinceDSL,omitempty"`
 	UntilDSL    string                `json:"untilDSL,omitempty"`
+	// Alternatives sorts last so existing rows render byte-identically.
+	Alternatives []capability.Capability `json:"alternatives,omitempty"`
 }
 
 // snapshotCommand mirrors Command plus its manifest key.
@@ -52,6 +54,7 @@ type snapshotCommand struct {
 	ResultFileSupport  ResultFileSupport       `json:"resultFileSupport,omitempty"`
 	MutatesClaimLedger bool                    `json:"mutatesClaimLedger,omitempty"`
 	ClaimMutationFlags []string                `json:"claimMutationFlags,omitempty"`
+	ValueFlags         []string                `json:"valueFlags,omitempty"`
 	SinceDSL           string                  `json:"sinceDSL,omitempty"`
 	UntilDSL           string                  `json:"untilDSL,omitempty"`
 	Capabilities       []snapshotCapabilityUse `json:"capabilities"`
@@ -72,16 +75,17 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 		uses := make([]snapshotCapabilityUse, 0, len(entry.Capabilities))
 		for _, use := range entry.Capabilities {
 			uses = append(uses, snapshotCapabilityUse{
-				Capability:  use.Capability,
-				Consequence: use.Consequence,
-				Optional:    use.optional,
-				Exact:       use.exact,
-				Flag:        use.flag,
-				FlagValue:   use.flagValue,
-				AnyFlags:    use.anyFlags,
-				UnlessFlags: use.unlessFlags,
-				SinceDSL:    use.sinceDSL,
-				UntilDSL:    use.untilDSL,
+				Capability:   use.Capability,
+				Consequence:  use.Consequence,
+				Optional:     use.optional,
+				Exact:        use.exact,
+				Flag:         use.flag,
+				FlagValue:    use.flagValue,
+				AnyFlags:     use.anyFlags,
+				UnlessFlags:  use.unlessFlags,
+				SinceDSL:     use.sinceDSL,
+				UntilDSL:     use.untilDSL,
+				Alternatives: use.alternatives,
 			})
 		}
 		entries = append(entries, snapshotCommand{
@@ -90,6 +94,7 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 			ResultFileSupport:  entry.ResultFileSupport,
 			MutatesClaimLedger: entry.mutatesClaimLedger,
 			ClaimMutationFlags: entry.claimMutationFlags,
+			ValueFlags:         entry.valueFlags,
 			SinceDSL:           entry.sinceDSL,
 			UntilDSL:           entry.untilDSL,
 			Capabilities:       uses,
@@ -209,6 +214,7 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 		for name, entry := range commands {
 			entry.Capabilities = append([]CapabilityUse(nil), entry.Capabilities...)
 			entry.claimMutationFlags = append([]string(nil), entry.claimMutationFlags...)
+			entry.valueFlags = append([]string(nil), entry.valueFlags...)
 			out[name] = entry
 		}
 		return out
@@ -220,6 +226,11 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 	}{
 		{"command removed", func(table map[string]Command) {
 			delete(table, "backlog-dedupe")
+		}},
+		{"value flag added", func(table map[string]Command) {
+			entry := table["backlog-query"]
+			entry.valueFlags = []string{"label"}
+			table["backlog-query"] = entry
 		}},
 		{"command added", func(table map[string]Command) {
 			table["invented-command"] = Command{Capabilities: []CapabilityUse{required(capability.RepoRead, "test-only")}}
@@ -301,6 +312,11 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 			entry := table["backlog-dedupe"]
 			entry.sinceDSL = "3.0"
 			table["backlog-dedupe"] = entry
+		}},
+		{"accepted alternative removed", func(table map[string]Command) {
+			entry := table["pr-select"]
+			entry.Capabilities[0].alternatives = nil
+			table["pr-select"] = entry
 		}},
 		{"command retired at a DSL version", func(table map[string]Command) {
 			entry := table["backlog-dedupe"]

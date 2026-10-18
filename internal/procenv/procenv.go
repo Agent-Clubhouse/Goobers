@@ -75,6 +75,8 @@ var Vars = []string{
 	"LANG",
 	"SSL_CERT_FILE",
 	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	// Lowercase spellings: curl (hence git) reads only https_proxy/http_proxy.
+	"http_proxy", "https_proxy", "no_proxy",
 	"GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE",
 	"GOFLAGS", "GOPROXY", "GOSUMDB", "GOPRIVATE", "GONOSUMCHECK",
 	"GOTOOLCHAIN",

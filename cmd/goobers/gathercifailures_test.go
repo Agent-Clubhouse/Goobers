@@ -155,6 +155,36 @@ func TestGatherCIFailuresPassingCIAddsNothingAndMakesNoAPICalls(t *testing.T) {
 	}
 }
 
+// A run whose gather-pr-context wrote a v3 brief before the v4 binary
+// deployed resumes at gather-ci-failures: the older brief is read and written
+// back as the current version, not refused as unreadable.
+func TestGatherCIFailuresResumesAnInFlightV3Brief(t *testing.T) {
+	v3 := remediationBriefFixture(false)
+	v3.Schema = "goobers.dev/remediation-brief/v3"
+	root, resultFile := runGatherCIFixture(t, v3)
+
+	code, stdout, stderr := runArgs(t, "gather-ci-failures", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	got := readGatherCIBrief(t, resultFile)
+	want := remediationBriefFixture(false)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("v3 brief was not migrated unchanged to the current version:\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestRemediationBriefSchemaFileCoversEveryReadableVersion(t *testing.T) {
+	for _, version := range apiv1.SupportedRemediationBriefVersions() {
+		if _, ok := remediationBriefSchemaFile(version); !ok {
+			t.Errorf("readable remediation-brief version %q has no schema file", version)
+		}
+	}
+	if _, ok := remediationBriefSchemaFile("goobers.dev/remediation-brief/v99"); ok {
+		t.Error("an unknown remediation-brief version must not map to a schema")
+	}
+}
+
 func TestGatherCIFailuresAddsSummariesAndAnnotationsWithoutRawLogs(t *testing.T) {
 	brief := remediationBriefFixture(true)
 	root, resultFile := runGatherCIFixture(t, brief)

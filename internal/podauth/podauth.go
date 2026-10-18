@@ -251,6 +251,8 @@ type Authenticator struct {
 	// grants verifies stage credential-refresh grants (Goobers#6120). Nil
 	// refuses every grant-prefixed bearer rather than passing it to fallback.
 	grants *SignedKey
+	// childGrants is separately enabled once the child operation service is wired.
+	childGrants *SignedKey
 }
 
 // WithCredentialGrants makes the authenticator admit stage credential-refresh
@@ -292,28 +294,25 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 
 // Authenticate verifies pod or shared-key worker bearers. A worker credential
 // carries a distinct identity, never a synthetic run. Unknown credentials with
-// either reserved prefix fail closed instead of reaching human authentication.
+// a reserved prefix fail closed instead of reaching human authentication.
 func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	token := bearerToken(request)
+	if strings.HasPrefix(token, WorkflowParentPodPrefix) {
+		return a.authenticateWorkflowParentPod(token)
+	}
+	if strings.HasPrefix(token, childPodTokenPrefix) {
+		return a.authenticateChildPod(token)
+	}
+	if strings.HasPrefix(token, ChildWorkflowGrantPrefix) {
+		return a.authenticateChildWorkflow(token)
+	}
 	if IsCredentialGrant(token) {
 		return a.authenticateGrant(token)
 	}
-	if strings.HasPrefix(token, workerSurrenderTokenPrefix) {
-		return a.authenticateWorkerSurrender(token)
-	}
-	if strings.HasPrefix(token, workerBlobTokenPrefix) {
-		return a.authenticateWorkerBlob(token)
-	}
-	if strings.HasPrefix(token, workerTokenPrefix) {
-		verifier, ok := a.verifier.(interface{ verifyWorkerConfigDigest(string) (string, error) })
-		if !ok {
-			return nil, ErrUnknownToken
+	for _, kind := range workerTokenKinds {
+		if strings.HasPrefix(token, kind.prefix) {
+			return a.authenticateWorker(kind, token)
 		}
-		workerID, err := verifier.verifyWorkerConfigDigest(token)
-		if err != nil {
-			return nil, err
-		}
-		return &httpapi.Principal{Subject: "worker:" + workerID, Issuer: httpapi.WorkerPrincipalIssuer}, nil
 	}
 	if !isPodToken(token) {
 		return a.fallback.Authenticate(request)
@@ -362,4 +361,14 @@ func bearerToken(request *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(authorization[len(prefix):])
+}
+
+// authenticateWith resolves the configured verifier to the interface V a token
+// form needs; a verifier lacking it fails closed with an explanatory error.
+func authenticateWith[V any](a *Authenticator, authenticate func(V) (*httpapi.Principal, error)) (*httpapi.Principal, error) {
+	v, ok := a.verifier.(V)
+	if !ok {
+		return nil, fmt.Errorf("%w: verifier %T does not support this token type", ErrUnknownToken, a.verifier)
+	}
+	return authenticate(v)
 }

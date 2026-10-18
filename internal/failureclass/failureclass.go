@@ -12,6 +12,8 @@ package failureclass
 import (
 	"regexp"
 	"strings"
+
+	"github.com/goobers/goobers/internal/stringpolicy"
 )
 
 // dependencyFetchMarkers say the failing command was a dependency or
@@ -47,7 +49,7 @@ var dependencyFetchMarkers = []string{
 var goModuleFetchPattern = regexp.MustCompile(`(?m)(?:^|; failure: )go: [^\s@]+@[^\s:]+: get "https?://`)
 
 func isDependencyFetch(message string) bool {
-	return containsAny(message, dependencyFetchMarkers) || goModuleFetchPattern.MatchString(message)
+	return stringpolicy.ContainsAny(message, dependencyFetchMarkers...) || goModuleFetchPattern.MatchString(message)
 }
 
 // transportDenialTokens say the network refused or could not reach that
@@ -75,7 +77,7 @@ var transportDenialTokens = []string{
 func IsDependencyTransportDenial(message string) bool {
 	message = strings.ToLower(message)
 	return isDependencyFetch(message) &&
-		(containsAny(message, transportDenialTokens) || dependencyTransportHint(message) != "")
+		(stringpolicy.ContainsAny(message, transportDenialTokens...) || dependencyTransportHint(message) != "")
 }
 
 // DependencyTransportHint supplies operator guidance for recognizable DNS and
@@ -92,20 +94,11 @@ func DependencyTransportHint(message string) string {
 
 func dependencyTransportHint(message string) string {
 	switch {
-	case containsAny(message, []string{"no such host", "server misbehaving", "temporary failure in name resolution", "enotfound", "eai_again"}):
+	case stringpolicy.ContainsAny(message, "no such host", "server misbehaving", "temporary failure in name resolution", "enotfound", "eai_again"):
 		return "check runner DNS resolution and connectivity to the configured module proxy or package registry"
-	case containsAny(message, []string{"401 unauthorized", "401 authorization required", "401 authentication required"}):
+	case stringpolicy.ContainsAny(message, "401 unauthorized", "401 authorization required", "401 authentication required"):
 		return "check the runner's module proxy or package registry credentials and repository access"
 	default:
 		return ""
 	}
-}
-
-func containsAny(message string, tokens []string) bool {
-	for _, token := range tokens {
-		if strings.Contains(message, token) {
-			return true
-		}
-	}
-	return false
 }

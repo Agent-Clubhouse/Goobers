@@ -26,6 +26,7 @@ export const defaultPortalConfig: PortalConfig = {
     chatUrl: null,
     links: [],
   },
+  connectionLocality: "unknown",
   capabilities: {
     revealRun: false,
     workflowEnable: false,
@@ -102,7 +103,10 @@ export function readCachedPortalConfig(): PortalConfig | undefined {
 
 export function writeCachedPortalConfig(config: PortalConfig): void {
   try {
-    window.sessionStorage.setItem(portalConfigCacheKey, JSON.stringify(config));
+    window.sessionStorage.setItem(
+      portalConfigCacheKey,
+      JSON.stringify({ ...config, connectionLocality: "unknown" }),
+    );
   } catch {
     // The cache only avoids a cold-brand flash; storage failure is harmless.
   }
@@ -116,6 +120,10 @@ function isPortalConfig(value: unknown): value is PortalConfig {
     typeof value.brand === "object" &&
     value.brand !== null &&
     "name" in value.brand &&
-    typeof value.brand.name === "string"
+    typeof value.brand.name === "string" &&
+    "connectionLocality" in value &&
+    (value.connectionLocality === "local" ||
+      value.connectionLocality === "remote" ||
+      value.connectionLocality === "unknown")
   );
 }

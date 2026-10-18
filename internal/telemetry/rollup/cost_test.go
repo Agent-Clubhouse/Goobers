@@ -237,6 +237,45 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	}
 }
 
+func TestCostAggregatesCarryRunTriggerClassification(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	db := openTestDB(t, tmp)
+	ingested := writeCostFixture(t, runsDir, "run-ingested", []string{
+		costRefEvent(4, fixtureStart.Add(3*time.Second), "pr", "10", "open"),
+	}, []costAttemptFixture{{attempt: 1, status: "success", nanoAIU: int64Pointer(5)}})
+	if err := db.IngestRun(context.Background(), ingested); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	seedCostRow(t, db, "run-legacy", fixtureStart.Add(time.Hour), []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(10)}})
+	seedCostRow(t, db, "run-scheduled", fixtureStart.Add(2*time.Hour), []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(20)}})
+	if _, err := db.sql.Exec(`UPDATE runs SET trigger_kind = 'schedule', trigger_ref = 'nightly' WHERE run_id = 'run-scheduled'`); err != nil {
+		t.Fatalf("set trigger: %v", err)
+	}
+
+	costs, err := db.CostAggregates(context.Background(), CostQuery{
+		Provider: "github", Since: fixtureStart.Add(-time.Hour), Until: fixtureStart.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CostAggregates: %v", err)
+	}
+	type classification struct{ gaggle, workflow, kind, ref string }
+	want := map[string]classification{
+		"run-ingested":  {"web", "wf", "manual", ""},
+		"run-legacy":    {"test", "implement", "", ""},
+		"run-scheduled": {"test", "implement", "schedule", "nightly"},
+	}
+	if len(costs.PullRequests) != 1 || len(costs.PullRequests[0].Runs) != 3 || len(costs.Issues) != 1 || len(costs.Issues[0].Runs) != 3 {
+		t.Fatalf("cost aggregates = %#v", costs)
+	}
+	for _, run := range append(append([]CostRunAggregate{}, costs.PullRequests[0].Runs...), costs.Issues[0].Runs...) {
+		got := classification{run.Gaggle, run.Workflow, run.TriggerKind, run.TriggerRef}
+		if got != want[run.RunID] {
+			t.Errorf("run %s classification = %+v, want %+v", run.RunID, got, want[run.RunID])
+		}
+	}
+}
+
 func TestCostAggregatesBoundsWindowAndFiltersExternalID(t *testing.T) {
 	tmp := t.TempDir()
 	db := openTestDB(t, tmp)

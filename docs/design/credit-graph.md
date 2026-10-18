@@ -20,20 +20,38 @@
 
 ## Workflow enrollment
 
-Backprop is opt-in per workflow on DSL 3.0:
+For an operator walkthrough of enabling Backprop, reading attribution and
+fault-audit findings, and verifying fixes, see the
+[Backprop user guide](../guides/backprop.md).
+
+Backprop is opt-in per workflow on DSL 3.0 and 3.1 (preview):
 
 ```yaml
 dslVersion: "3.0"
 spec:
   backprop:
-    enabled: true
+    mode: active   # off | shadow | active
     version: v1
 ```
 
-Omitting `backprop`, or setting `enabled: false`, performs no attribution work.
+`mode` selects how a workflow takes part:
+
+| Mode | Attribution work | Record | Consumed by fault audit, filing, cohorts, `goobers trace` |
+|---|---|---|---|
+| `off` | none | none | no |
+| `shadow` | none at terminalization; computed on demand from the journal | none | **no** |
+| `active` | computed after terminalization | `attribution.json` | yes |
+
+The legacy `enabled` switch remains supported: `enabled: true` without a mode
+means `active`, and omitting `backprop` or setting `enabled: false` without a
+mode performs no attribution work. When `mode` is set it is authoritative;
+`enabled: true` is accepted only with `mode: active`; combining it with `off`
+or `shadow` is rejected, because binaries that predate `mode` read only
+`enabled` and would otherwise publish a shadow run's record as active.
+
 For an enrolled workflow, terminalization durably appends `run.finished` and
-then writes `attribution.json` beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,
-workload, run ID, contract version, deterministic attribution, and an explicit
+then writes the record beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,
+workload, run ID, contract version, mode, deterministic attribution, and an explicit
 `complete`, `insufficient-evidence`, or `failed` analysis status. Analysis is
 read-only and best effort: a failure is reported independently and never changes
 the run's phase, gate verdict, CI admission, or publication path.
@@ -43,10 +61,112 @@ for every analysis status so incompatible runs cannot enter the same cohort.
 Runs containing more than one model/harness pair have no defined
 EffectiveVersion and are excluded from cohort aggregation.
 
+### Stage granularity (preview)
+
+`spec.backprop.granularity` is `run` (the default) or `stage`. With `stage`,
+the daemon's journal observer queues a checkpoint each time a journal append
+lands. A single bounded worker handles the queue (at most 1024 pending runs) and
+writes `attribution-stages.json`
+(`goobers.dev/backprop/stage-records/v1`). The file has one record for each
+`stage.finished`. Each record covers the contiguous journal segment since the
+previous record and carries the following:
+
+- its sequence range, a SHA-256 segment digest, and a digest of the record itself;
+- the inputs, outputs, artifacts, and gate verdicts of that stage attempt;
+- provisional contributions and causes for the attempt, filtered from a build
+  over the journal prefix.
+
+The checkpoint is read-only with respect to the run. The observer only enqueues
+work, never on the stage-transition path. A write, verify, or build failure is
+logged and dropped and never changes a phase or blocks a transition. A pass
+reads only the journal until a `stage.finished` lies past the last checkpoint;
+span content is read, and existing records verified, only when there is a new
+stage to record. While
+the latest `run.finished` stands, no more records are written. A `run.resumed`,
+`gate.overridden` or `stage.rerun.requested` after it reopens the run, and
+checkpointing continues from the last record.
+
+Each record's segment is persisted as JSON Lines under `attribution-segments/`,
+content-addressed by its segment digest. The segment is written before the
+record set that references it.
+
+At terminalization `WriteRunRecord` first verifies the checkpoint set against
+the journal: the set's `runId` must equal the run's identity, and the records
+must tile the journal by position, sequence range, segment digest, record digest
+and a full rebuild of each record from its journal prefix, provisional
+attribution included, so an edited record is refused even with a recomputed
+digest. It then builds the analysis input from the persisted
+segments, not from the journal, followed by the journal tail that no checkpoint
+covers. Each persisted segment must match its digest and event count.
+
+Attribution is a global function of the whole graph: shares are normalized
+across stages, and edge weights depend on the final outcome. So composition
+works on the persisted evidence segments rather than summing provisional
+per-stage contributions. Because the segments tile the journal, the composed
+record is identical to the run-level analysis of the same journal.
+`TestStageComposedAttributionEqualsRunLevel` pins that property for full,
+lagging, and absent checkpoint sets.
+`TestStageCompositionConsumesPersistedSegments` pins two more things. First,
+the checkpointed prefix is rebuilt from the persisted segments alone. Second, a
+missing or altered segment refuses composition even when the journal is intact.
+When a checkpoint fails
+verification, the record falls back to the whole journal and discloses the
+reason in `stageComposition.error`, so the stage data never stands in for
+evidence that could not be verified. Re-deriving covers each record's
+status, inputs, outputs, artifacts, verdicts, contributions and causes. `goobers trace` shows only
+records that verify, including their persisted segments. A checkpoint
+pass publishes under a per-run file lock, `attribution.lock`, which
+`WriteRunRecord` also holds while it composes and writes `attribution.json`.
+Under the lock the pass re-checks for `run.finished` and drops its write if the
+run has finished. Since `run.finished` is durable before the record is
+composed, checkpoints either land before composition reads them or are never
+written, so a late checkpoint cannot contradict the composed end-of-run record.
+`TestStageCheckpointPublicationIsAtomicWithTerminalization` pins both orders. Feeding stage records forward into later
+stages is still out of scope.
+
+### Shadow mode
+
+Shadow mode lets an operator try Backprop on an existing workflow without
+enrolling it. Terminalization does no attribution work for a shadow run, so
+shadow mode adds nothing to run completion, terminalization latency, or
+dispatch-slot release: the runner and engine terminal hooks attribute only
+active runs. The same analysis is computed on demand, in memory, from the
+persisted journal when `goobers telemetry shadow` asks for it, and nothing is
+written. Nothing that files, gates, or reports sees it: `creditgraph.ReadRunRecord`
+— the only reader behind the fault audit, candidate-findings filing pass,
+cohort and contributing-path surfaces, and `goobers trace` — reads
+`attribution.json` alone, which shadow runs never write, and rejects a
+shadow-mode record found there. A shadow run therefore never starts a filing
+cooldown, records a verification baseline, or produces a finding. Run phase,
+scheduling, CI admission, and gate verdicts are unchanged. Stage granularity
+applies only to active runs: the stage checkpointer skips shadow runs, so a
+shadow run never writes `attribution-stages.json`, and its on-demand analysis
+reads the whole journal.
+
+`goobers status` prints `backprop: shadow (v1)` or `backprop: active (v1)` per
+workflow, and the status JSON, read API, and portal workflow page report
+`backprop.mode`; `backprop.enabled` stays true only for active workflows.
+
+**Promotion path.** Run a workflow in `mode: shadow`, inspect `goobers
+telemetry shadow` for the analysis status and findings you would expect, then
+change the workflow to `mode: active` and redeploy. New terminal runs then
+write `attribution.json` and enter the fault audit; earlier shadow runs are
+never backfilled into the active namespace, so promotion does not
+retroactively file findings. Demote by setting `mode: shadow` or `off`.
+
+**Gaggle override.** `gaggle.spec.backprop.mode: off|shadow` observes every
+workflow in the gaggle that does not declare its own mode. Precedence:
+workflow `mode`, then workflow `enabled: true`, then the gaggle override, then
+off. Like a workflow-declared shadow run, an override run writes nothing at
+terminalization; `goobers telemetry shadow` analyzes both kinds from the
+journal on request and compares the findings the
+fault audit would have filed with actual run phases and actual filings. That
+report is read-only and is not read by any gate, filing pass, or default view.
+
 ## Cross-workflow fault audit
 
-The read-only Backprop fault auditor consumes only persisted records from
-enrolled workflows. Its default seven-day window, sample floor, observation
+The read-only Backprop fault auditor consumes only persisted active-mode records
+from enrolled workflows; shadow attribution is never read. Its default seven-day window, sample floor, observation
 cap, finding budget, evidence/run caps, and cooldown make every pass bounded;
 the output is always `report-only` and never files an issue, edits a workflow,
 or rolls back a run. Operators can select a narrower gaggle, workflow, or time
@@ -56,7 +176,34 @@ under a separate finite scan budget so sparse enrollment cannot hide later
 evidence.
 
 One stable signature produces one deterministic finding across duplicate runs
-and repeated passes. Shared daemon, worktree, scheduler, journal, claim,
+and repeated passes. Each cause's candidate domain is decided by its evidence
+in order of authority. The failure class comes first: `bad-tool-choice`,
+`bad-interpretation`, `weak-instructions`, `routing`, and `topology` are
+workflow-definition causes, and `model` is external. The attributor's summaries
+are fixed text per class, so words in them never override the class. For
+example, a routing cause says "the model that ran…" and is still a routing
+cause. Next comes the failing stage's recorded error code (`errorCode` on the
+cause, copied from `stage.finished`). Only codes whose emitter guarantees the
+owner decide. Workspace, journal, claims-lock, workspace and context
+provisioning, and agentic-kit codes are Goobers runtime. Rate-limit, provider
+auth, network, unavailable-credential, and `harness.failure` codes are external.
+Catch-all codes decide nothing: `provider_error`, `poll_provider_error`, and
+`executor_error` are stamped on any failure nothing earlier classified. So do
+codes either side can own, such as `infra_git_failed` and the required
+`goobers-io` MCP server being unavailable, and anything matched only by a
+prefix. Component keywords count only for a cause that neither its class nor
+its code resolves. They are read only from cause text, never from the
+attributor's environment template, its `intervention:` notes, or graph node IDs,
+which embed stage, agent, and tool names. An `environment` cause rules out the
+workflow but names no owner, so with no code or named component it stays
+`mixed-or-unknown` instead of defaulting to external. A workflow-definition
+cause's signature is scoped to its workflow and stage, so one instruction
+template failing in two workflows yields two workflow findings. Shared-component
+signatures stay unscoped, because crossing workflows is their evidence. Node
+paths are compared with each run's own `run:<id>` node replaced by a
+placeholder (`run`, which is also what findings' `nodePaths` show), so a
+failure can localize to one path across runs, and a post-fix run can exercise
+the affected path. Shared daemon, worktree, scheduler, journal, claim,
 admission, publication, recovery, or shared-CI failures must cross unrelated
 workflow boundaries before they are assigned to Goobers product reliability.
 Harness, model, provider, credential, network, filesystem, operating-system,
@@ -78,14 +225,224 @@ cohort never counts as recovery. Stored audit passes durably record report
 cooldowns and operator fix markers in `scheduler/backprop-audit/state.json`;
 cooldowns are scoped by gaggle and workflow so a narrow read cannot suppress a
 broader cross-workflow classification. Only the candidate-findings pass that
-feeds filing applies and records the cooldown; `goobers telemetry stats` and
-the other status/read surfaces show every current finding and record only
+feeds filing applies and records the cooldown; the daemon's telemetry stats
+read API (`GET /api/v1/telemetry/stats`) and the other status/read surfaces
+show every current finding and record only
 verification baselines, so viewing a finding never hides it from the filing
-pass. Unfixed cooldowns and baselines older than 30 days are pruned; fix
+pass. (The `goobers telemetry stats` CLI reads only the local rollup and does
+not include attribution cohorts or fault-audit findings.) Unfixed cooldowns and baselines older than 30 days are pruned; fix
 markers and the baselines they verify against are kept. Operators record a deployed fix with
 `goobers telemetry mark-fix --finding=<backprop-id>` (optionally pinning its
 RFC3339 deployment time with `--applied-at`). This is auditor metadata only
 and does not mutate workflows, issues, or run journals.
+
+## Ground-truth labels
+
+Terminal phase is not the same as correctness: a run can succeed and still be
+wrong, or fail for reasons the user does not care about. Operators record their
+own verdict for an enrolled run with
+
+```sh
+goobers telemetry label --run=<run-id> --outcome=correct|incorrect \
+  [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+```
+
+Each label is appended to `labels.json` (schema
+`goobers.dev/backprop/labels/v1`) beside the run's `attribution.json`, with
+provenance: who recorded it (`--by`, defaulting to the OS user), its source
+(`human` today), when the verdict was reached (`labeledAt`), and when it was
+stored (`recordedAt`). Only runs that already carry an attribution record can
+be labeled. The history is append-only and keyed by a content-derived ID, so
+re-recording an identical verdict is a no-op and an earlier label is never
+rewritten.
+
+Labels may land long after the run. Aggregates are recomputed from the stored
+records on every read, and each run contributes its *effective* label: the one
+with the latest `labeledAt`, ties broken by ID. That rule is independent of the
+order labels were recorded in, so a late label re-scores its cohort
+deterministically. Cohort aggregates expose a `groundTruth` summary
+(`labeledRunCount`, `correctRunCount`, `incorrectRunCount`) beside `runCount`,
+omitted when no run in the cohort is labeled, so partial label coverage stays
+visible rather than being presented as the whole cohort.
+
+The effective label also weights scores. A correct verdict confirms a run's
+journal-derived attribution and an incorrect verdict contradicts it:
+
+| Effective label | Run weight | Run confidence `c` becomes |
+|---|---|---|
+| none | 1 | `c` |
+| `correct` | 2 | `c + (1 - c) / 2` |
+| `incorrect` | 0.5 | `c / 2` |
+
+A cohort's `topContributingPaths[].share` and `.confidence` are weighted means
+over the cohort's runs using the run weight and calibrated confidence, and a
+fault-audit finding's `confidence` is the weighted mean of its signals'
+calibrated cause confidences (before the existing sparse, provenance, and
+mixed-domain caps). Unlabeled cohorts score exactly as before. Labels do not
+change fault-domain classification, finding IDs, or verification state.
+
+Labels are read-only inputs. Recording one never touches the run journal, the
+attribution record, the run's phase, or any gate verdict.
+
+Not yet implemented (follow-ups under #7121): declaring ground-truth sources in
+workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
+bug, reopened issue, main CI breakage), user-provided checker commands, and
+feeding labels into per-run credit propagation (`attribution.json` itself).
+
+## Agent claims
+
+Agents inside an enrolled run can state what the journal cannot infer: who
+owned a piece of work, what they relied on, and whom they credit or blame.
+From inside an agentic stage an agent runs
+
+```sh
+goobers telemetry claim --kind=assignment|reliance|credit|blame \
+  (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) \
+  [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+```
+
+which appends one line (schema `goobers.dev/backprop/claim/v1`,
+`api/schemas/backprop-claim-v1.schema.json`) to `backprop-claims.jsonl` in the
+stage attempt's `GOOBERS_TELEMETRY_DIR`. When the agent exits, the harness
+journals the attempt's claims as one `runner.annotation` of kind
+`backprop-claims`. **The journal is the claim log**: it is run-scoped,
+append-only, and replayed in order. Gates (reviewer invocations) do not
+ingest claims.
+
+- **Writer attribution.** The runner, not the claim, names the writer: the
+  annotation's stage and attempt, and the stage's root nested agent when the
+  transcript names exactly one. A claim cannot assert who wrote it.
+- **Bounds.** An attempt records at most 32 claims, each line at most 8 KiB,
+  each statement at most 1024 bytes after sanitizing, and at most 8 evidence
+  links. Graph construction evaluates the first 256 claims of a run in journal
+  order. Lines refused at ingestion and claims past the run bound are counted
+  in `droppedClaims`, never silently discarded. The run bound is enforced at
+  read time because harness appenders cannot see other attempts' batches.
+- **Untrusted text.** Statements have invalid UTF-8, control characters, and
+  Unicode format characters (bidirectional overrides, zero-width characters)
+  removed and whitespace collapsed, both when written and again when the
+  graph reads the journal; stage and agent references must be short,
+  printable, and space-free; artifact references must be `sha256:` digests.
+  Unknown fields are refused, and `confidence` is required (an omitted value
+  is refused, not read as 0). Statements are also secret-scrubbed before they
+  are journaled.
+- **Durability.** A batch the runner cannot journal (no event appender, or a
+  failed append) fails the stage attempt; a recorded claim never vanishes.
+- **Reading earlier claims.** Before an agentic stage starts, the runner
+  snapshots the claims journaled earlier in the run into `run-claims.json` in
+  its `GOOBERS_TELEMETRY_DIR` (schema `goobers.dev/backprop/run-claims/v1`),
+  and `goobers telemetry claims` prints it. Each entry carries the claim, its
+  runner-attributed writer, and the `id` Build reports it under; entries are
+  re-validated and bounded like Build's input but not verified. A journal the
+  runner cannot read is written as an `error`, never as an empty list. A
+  dispatched (pod) worker has no local run journal, so its stages currently
+  get that error rather than earlier claims.
+
+**Verification.** Build evaluates each claim against only the records
+journaled *before* its batch. A claim is `verified` when all of these hold:
+
+1. The writing stage attempt recorded `stage.started`, and the writer agent,
+   if any, recorded a lifecycle.
+2. The target resolves to a recorded graph node (`stage:<stage>#<attempt>`,
+   `subagent:<id>`, or `evidence:<digest>`). An omitted target attempt means
+   the latest attempt started before the claim.
+3. A reliance, credit, or blame claim does not target the writer's own stage
+   attempt, agent, or artifact.
+4. A credit or blame claim has at least one evidence link, and every link
+   names an artifact recorded earlier or the `seq` of an earlier event.
+
+Verified claims are listed in the graph's `claims` with `writerNodeId` and
+`targetNodeId`. Every other claim is listed in `unverifiedClaims` with its
+`reasons` and no node IDs. **Claims never become nodes or edges**: traversal,
+shares, scores, uncertainties, confidences, and cause classes are identical
+with or without them. `attribution.json` carries the same three fields, and
+each verified `blame` claim is cited (as `agent claim <id> ...`) in the
+evidence of the cause findings for the stage attempt or node it targets. That
+citation is correlational: verification checks that the claim refers to real,
+earlier records, not that the statement is true. Reliance is not yet
+cross-checked against the context pointers the writer actually received.
+
+Not yet implemented (follow-ups under #7121): verifying claims in the in-run
+snapshot, weighting propagation by verified claims, and cross-checking
+reliance against stage inputs.
+
+## Attribution accuracy eval
+
+Ground-truth labels say whether a run's *result* was right; they do not say
+whether Backprop blamed the right thing. The attribution eval measures that.
+`test/attributioneval/testdata/v1.json` (schema
+`goobers.dev/backprop/attribution-eval/v1`) is a versioned set of failed runs,
+each carrying its journal and span content inline plus a label naming the
+responsible fault domain, workflow, stage, decisive step (graph node ID), and
+failure class. Label sources are `synthetic` (a failure injected at a known
+step), `human`, or `fix-marker`. v1 holds 12 synthetic cases and 6 real failed
+runs from a dogfood instance, imported with their journals. A human or
+fix-marker label must carry `provenance`: the source run, `labeledBy`,
+`labeledAt` (a date), and `reason`, the fields the ground-truth label store
+(`goobers telemetry label`) records. A fix-marker label also names the fix
+commit and PR that resolved the failure in `reference`. The label store only
+says whether a run's attribution was correct, so the eval label adds the
+responsible domain, stage, step, and class. `go run ./test/attributioneval
+-import=<run-dir>` prints a case built from a run directory, with its
+provenance seeded from the run's label store, for a labeler to complete.
+
+`go run ./test/attributioneval` builds and attributes each case, takes the most
+confident cause, derives its fault domain with `creditgraph.CauseFaultDomain`
+(the auditor's per-signal rule), and scores it independently at each
+granularity (`domain`, `workflow`, `stage`, `step`, `class`). Workflow is credited when the blamed
+cause sits in a stage of the labeled workflow, so it only discriminates
+run-level from stage-level blame. A case for which attribution produces no
+cause earns no credit at any granularity and is counted as `unattributed`. The
+report also gives the Brier score and
+expected calibration error (five equal-width bins) of cause confidence against
+fault-domain correctness, the granularity the auditor files on. Results are ordered by case ID and the set digest is
+order-independent, so a fixed set always yields the same report.
+
+It prints per-granularity accuracy and writes the full JSON report with
+`-report=PATH`. The same command, and `TestAttributionEvalRegressionGuard` in
+CI, fails when accuracy at any granularity falls below
+`test/attributioneval/testdata/v1.baseline.json`, or when the set's version
+or content digest no longer matches the baseline. After an intended change,
+record a new baseline with `go run ./test/attributioneval -update`.
+
+Labels use [MAST](https://arxiv.org/abs/2503.13657)'s top-level categories as
+the vocabulary, extended with a bucket for failures outside the agent system
+and an explicit unknown. A label's MAST category must match its class:
+
+| Failure class | MAST category | Default fault domain |
+|---|---|---|
+| `weak-instructions`, `routing` | `specification` | `workflow-definition` |
+| `bad-tool-choice`, `topology` | `inter-agent-misalignment` | `workflow-definition` |
+| `bad-interpretation` | `task-verification` | `workflow-definition` |
+| `model`, `environment` | `outside-agent-system` | `harness-model-provider-environment` |
+| `bad-tool-result`, `unknown` | `unknown` | `mixed-or-unknown` |
+
+The default domain applies when the cause's text names no shared runtime or
+external component; the auditor's keyword rules can override it either way.
+
+`-publish=<instance-root>` records the checked report's summary (schema
+`goobers.dev/backprop/attribution-eval-summary/v1`: set version and digest,
+accuracy, domain calibration bins) in
+`scheduler/backprop-audit/attribution-eval.json`. A summary calibrated against
+any other granularity is rejected, and publishing is refused with `-update`
+and after a regression. The telemetry stats API returns it as
+`attributionEval`, and the portal's Insight page shows it at instance scope as
+"Attribution accuracy" (per-granularity accuracy and populated calibration
+bins). The fault auditor
+derives its filing threshold from it: the upper bound of the highest populated
+calibration bin whose accuracy is below 0.8, else the lower bound of the lowest
+populated bin, never below the default 0.5 (used when nothing is published).
+When the bin that includes confidence 1 falls short, no confidence is safe:
+the threshold sets `noneFileable` and no finding is fileable. v1 yields 0.6.
+Every audit report carries `filingThreshold` (confidence, `noneFileable`,
+source, eval set) and each finding `fileable`; only fileable findings start
+the filing pass's report cooldown. A malformed published summary is an error,
+not a silent fallback to the default. Every published score must lie in [0,1],
+each accuracy must be scored over every case, and every accuracy must match its
+correct and total counts.
+
+Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
+command and counterfactual fault-injection generators.
 
 ## Why
 
@@ -191,7 +548,10 @@ failing, `Attribute` emits `CauseFinding`s drawn from a fixed taxonomy:
 `bad-tool-choice`, `bad-tool-result`, `bad-interpretation`,
 `weak-instructions`, `routing`, `model`, `topology`, `environment`, and
 `unknown`. Each finding names the node it attributes, the assumptions the rule
-rests on, and the evidence behind it. Contradictory signals — a passing
+rests on, and the evidence behind it. When the failing stage's `stage.finished`
+recorded an error code, each of that stage's findings carries it as
+`errorCode`. The code is provenance about which component failed. It never
+changes the class, summary, or confidence. Contradictory signals — a passing
 evaluator verdict on a failing stage, successful tool results beside a failing
 one — lower a finding's confidence and are recorded as assumptions rather than
 resolved by fiat. A repeated stage attempt whose outcome differed is recorded
@@ -281,7 +641,8 @@ No credit data migrates between the two stores, and none needs to:
   derived projection of run journals. They are rebuilt from the journals, not
   from creditgraph, and their meaning does not change.
 - Per-run attribution is the `attribution.json` record written at
-  terminalization for a workflow enrolled in `backprop` (DSL 3.0). The read
+  terminalization for a workflow enrolled in `backprop` in active mode (DSL
+  3.0/3.1). Shadow-mode runs write no record. The read
   service reads that record, and rebuilds the graph from the journal only for
   evidence links and environment labels. Runs with no record (unenrolled, or
   finished before enrollment) are skipped. They are not backfilled from the

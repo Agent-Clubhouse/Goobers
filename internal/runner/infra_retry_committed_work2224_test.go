@@ -128,6 +128,11 @@ func infraRetryWorkflow(t *testing.T, prepare bool) *workflow.Machine {
 	return machine
 }
 
+// parallelInfraRetryWorkflow's branch stages declare repo-readonly: the
+// compiler rejects writable repo workspaces inside parallel branches, and under
+// a pinned lease repo-readonly is backed by the shared pinned checkout. An
+// explicit scratch declaration is a disposable non-repository directory even
+// when pinned (#5650), so it cannot observe the preserved commit.
 func parallelInfraRetryWorkflow(t *testing.T) *workflow.Machine {
 	t.Helper()
 	spec := apiv1.WorkflowSpec{
@@ -136,22 +141,22 @@ func parallelInfraRetryWorkflow(t *testing.T) *workflow.Machine {
 		Tasks: []apiv1.Task{
 			{
 				Name: "implement", Type: apiv1.TaskAgentic, Goober: "implementer", Goal: "implement",
-				Workspace: apiv1.WorkspaceScratch, Retry: &apiv1.RetryPolicy{MaxAttempts: 2}, Next: "review",
+				Workspace: apiv1.WorkspaceRepoReadOnly, Retry: &apiv1.RetryPolicy{MaxAttempts: 2}, Next: "review",
 			},
 			{
 				Name: "inspect", Type: apiv1.TaskDeterministic, Goal: "inspect",
-				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceRepoReadOnly},
 				Next: workflow.TargetJoin,
 			},
 			{
 				Name: "collate", Type: apiv1.TaskDeterministic, Goal: "collate",
-				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceRepoReadOnly},
 				Next: workflow.TerminalComplete,
 			},
 		},
 		Gates: []apiv1.Gate{{
 			Name: "review", Evaluator: apiv1.EvaluatorAgentic,
-			Agentic: &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceScratch},
+			Agentic: &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceRepoReadOnly},
 			Branches: map[string]string{
 				string(apiv1.VerdictPass):         workflow.TargetJoin,
 				string(apiv1.VerdictNeedsChanges): "implement",

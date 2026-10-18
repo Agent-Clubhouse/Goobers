@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
+
+	"github.com/goobers/goobers/internal/mutationreceipt"
 )
 
 // These seams let a provider report facts to higher layers (the run journal and
@@ -110,6 +112,8 @@ type ExternalRef struct {
 	Outcome           string                 `json:"outcome,omitempty"`       // success, failure, or contention for claim attempts
 	ErrorCode         string                 `json:"errorCode,omitempty"`     // stable classification; never raw provider error text
 	ProviderRunID     string                 `json:"providerRunId,omitempty"` // provider owner on claim contention or ledger mismatch
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // RateLimitEvent describes a single rate-limit backoff decision.
@@ -125,7 +129,9 @@ type RateLimitEvent struct {
 	// was present and parsed. Remaining is meaningless when this is false —
 	// an absent header must never be read as a genuine "0 remaining"
 	// (ADO-N40) — and json's zero-value default (false, omitted) already
-	// matches "unknown" for any event built without setting it.
+	// matches "unknown" for any event built without setting it. The GitHub
+	// and ADO providers parse X-RateLimit-Remaining and set it; Gitea's
+	// events never read that header, so they always report unknown (#5960).
 	RemainingKnown bool          `json:"remainingKnown,omitempty"`
 	Reset          time.Time     `json:"reset,omitempty"`
 	RetryAfter     time.Duration `json:"retryAfter,omitempty"`

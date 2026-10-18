@@ -11,6 +11,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/goobers/goobers/internal/sqliteuri"
 )
 
 func TestAzureReplayIndexCoalescesTinyFilesAndRetainsFailedBatch(t *testing.T) {
@@ -182,7 +184,7 @@ func TestAzureReplayIndexV1AuditMigrationPreservesPayloads(t *testing.T) {
 	}
 	// Recreate the preceding schema shape in this isolated fixture, retaining
 	// manifest rows and authoritative files; opening must migrate, not reset.
-	if _, err := s.index.db.ExecContext(t.Context(), `DROP TABLE reconciliation; UPDATE schema_meta SET version=1`); err != nil {
+	if _, err := s.index.db.ExecContext(t.Context(), `DROP TABLE reconciliation; ALTER TABLE directories DROP COLUMN observed; UPDATE schema_meta SET version=1`); err != nil {
 		t.Fatal(err)
 	}
 	other := &azureReplayIndex{root: s.index.root, streams: []string{""}}
@@ -196,6 +198,118 @@ func TestAzureReplayIndexV1AuditMigrationPreservesPayloads(t *testing.T) {
 	}
 	if stats := s.stats(); stats.PendingRecords != 1 || stats.PendingFiles != 1 {
 		t.Fatalf("migration lost payload: %+v", stats)
+	}
+}
+
+// coalesceReplayDirectoryStamp runs publish, then restores the stream
+// directory's modification time to the manifest's stored stamp. This models a
+// filesystem whose coarse timestamp tick hid the publication (#6893).
+func coalesceReplayDirectoryStamp(t *testing.T, root, stream string, publish func()) {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join(root, azureReplayIndexName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", sqliteuri.File(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stamp int64
+	err = db.QueryRowContext(t.Context(), `SELECT modified FROM directories WHERE stream=?`, stream).Scan(&stamp)
+	if closeErr := db.Close(); err != nil || closeErr != nil {
+		t.Fatalf("read stored stamp: %v %v", err, closeErr)
+	}
+	publish()
+	dir := filepath.Join(root, stream)
+	at := time.Unix(0, stamp)
+	if err = os.Chtimes(dir, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := directoryStamp(dir); err != nil || got != stamp {
+		t.Fatalf("coalesced stamp=%d want %d err=%v", got, stamp, err)
+	}
+}
+
+// A stamp observed well after its directory last changed stays trusted on
+// open, so short-lived openers do not rescan a settled backlog; the periodic
+// audit owns mutations hidden behind such a stamp.
+func TestAzureReplayIndexOpenTrustsSettledDirectoryStamp(t *testing.T) {
+	f := newReplayIndexOpenFixture(t, 1)
+	reopen := func() int { return f.reopenIndexedJournalFiles(t) }
+	if files := reopen(); files != 1 {
+		t.Fatalf("initial files=%d", files)
+	}
+	coalesceReplayDirectoryStamp(t, f.root, "journal", func() {
+		if err := os.WriteFile(filepath.Join(f.root, "journal", "racy.ndjson"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if files := reopen(); files != 2 {
+		t.Fatalf("open missed a publication in the stamped tick: files=%d", files)
+	}
+	settled := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(f.root, "journal"), settled, settled); err != nil {
+		t.Fatal(err)
+	}
+	if files := reopen(); files != 2 {
+		t.Fatalf("settled restamp files=%d", files)
+	}
+	coalesceReplayDirectoryStamp(t, f.root, "journal", func() {
+		if err := os.WriteFile(filepath.Join(f.root, "journal", "settled.ndjson"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if files := reopen(); files != 2 {
+		t.Fatalf("open rescanned a settled directory stamp: files=%d", files)
+	}
+}
+
+func (f replayIndexOpenFixture) reopenIndexedJournalFiles(t *testing.T) int {
+	t.Helper()
+	index := f.index()
+	if err := index.open(t.Context()); err != nil {
+		_ = index.closeDatabases()
+		t.Fatal(err)
+	}
+	var files int
+	err := index.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM files WHERE stream='journal'`).Scan(&files)
+	if closeErr := index.closeDatabases(); err != nil || closeErr != nil {
+		t.Fatalf("count files: %v %v", err, closeErr)
+	}
+	return files
+}
+
+// A transaction that did not rescan must not refresh a racy stamp's
+// confirmation, or a later restart would trust the stamp (#6893).
+func TestAzureReplayIndexNoopMutationKeepsRacyStampUnconfirmed(t *testing.T) {
+	f := newReplayIndexOpenFixture(t, 1)
+	index := f.index()
+	index.ready = make(chan struct{})
+	close(index.ready)
+	if err := index.open(t.Context()); err != nil {
+		_ = index.closeDatabases()
+		t.Fatal(err)
+	}
+	// Model a stamp confirmed in its own modification tick, long ago, so a
+	// refreshed confirmation time would make it look settled.
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(f.root, "journal"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.db.ExecContext(t.Context(), `UPDATE directories SET modified=?,observed=? WHERE stream='journal'`, past.UnixNano(), past.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	coalesceReplayDirectoryStamp(t, f.root, "journal", func() {
+		if err := os.WriteFile(filepath.Join(f.root, "journal", "hidden.ndjson"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	err := index.withLock(t.Context(), func(*sql.Tx) error { return nil })
+	if closeErr := index.closeDatabases(); err != nil || closeErr != nil {
+		t.Fatalf("no-op mutation: %v %v", err, closeErr)
+	}
+	if files := f.reopenIndexedJournalFiles(t); files != 2 {
+		t.Fatalf("restart trusted an unconfirmed racy stamp: files=%d", files)
 	}
 }
 

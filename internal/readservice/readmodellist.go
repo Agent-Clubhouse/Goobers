@@ -114,7 +114,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 			InjectedInputs:     append([]journal.InputRef(nil), row.Operator.InjectedInputs...),
 		}
 	}
-	return RunSummary{
+	return withRunReliability(RunSummary{
 		EngineFallback:    row.Operator.EngineFallback,
 		RequiredMCP:       row.Operator.RequiredMCP,
 		RetryBackoff:      row.Operator.RetryBackoff,
@@ -137,19 +137,22 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		FinishedAt:   row.FinishedAt,
 		// Computed at read time, not stored, so a quiet in-flight run keeps
 		// ageing rather than freezing at projection time (§5.3).
-		DurationMillis:   row.Duration(observedAt).Milliseconds(),
-		LastActivityAt:   row.LastActivity,
-		LastSeq:          row.LastSeq,
-		RepassCount:      row.RepassCount,
-		RetryCount:       row.RetryCount,
-		PolicyRetryCount: row.PolicyRetryCount,
-		InfraRetryCount:  row.InfraRetryCount,
-		Lineage:          lineage,
-		NoWork:           row.Disposition == readmodel.DispositionNoWork,
-		TerminalReason:   terminalReasonFromReadModel(row),
-		Operator:         operatorFromReadModel(row, observedAt),
-		Stages:           row.Stages,
-	}
+		DurationMillis:     row.Duration(observedAt).Milliseconds(),
+		LastActivityAt:     row.LastActivity,
+		LastSeq:            row.LastSeq,
+		RepassCount:        row.RepassCount,
+		RetryCount:         row.RetryCount,
+		PolicyRetryCount:   row.PolicyRetryCount,
+		InfraRetryCount:    row.InfraRetryCount,
+		Lineage:            lineage,
+		NoWork:             row.Disposition == readmodel.DispositionNoWork,
+		TerminalReason:     terminalReasonFromReadModel(row),
+		Operator:           operatorFromReadModel(row, observedAt),
+		Stages:             row.Stages,
+		reliabilityFacts:   row.Operator.Reliability,
+		workspaceBranch:    row.Operator.WorkspaceBranch,
+		workspaceBranchSHA: row.Operator.WorkspaceBranchSHA,
+	})
 }
 
 // terminalReasonFromReadModel degrades the terminal-cause projection to what
@@ -171,12 +174,14 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 		Liveness:          "no-heartbeat",
 		PullRequest:       facts.PullRequest,
 		PROpenerStage:     facts.PROpenerStage,
+		ResumedFromRunID:  facts.ResumedFromRunID,
+		DisplayTitle:      facts.DisplayTitle,
 		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
 		LatestError:       facts.LatestError,
 		PotentialBlockers: []string{},
 	}
 	if facts.IssueNumber != "" || facts.IssueTitle != "" {
-		operator.Issue = &OperatorIssue{Number: facts.IssueNumber, Title: facts.IssueTitle}
+		operator.Issue = &OperatorIssue{Number: facts.IssueNumber, Title: facts.IssueTitle, URL: facts.IssueURL}
 	}
 	if facts.LastHeartbeatAt != nil {
 		heartbeat := *facts.LastHeartbeatAt
@@ -200,21 +205,11 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 			Rationale:           facts.ReviewRationale,
 			ReasonCode:          facts.ReviewReasonCode,
 			Findings:            facts.ReviewFindings,
+			Synthesized:         facts.ReviewSynthesized,
 			LegacyFailAmbiguous: facts.ReviewVerdict == "fail" && facts.ReviewReasonCode == "",
 		}
 	}
-	if facts.ReviewProblem != "" {
-		operator.PotentialBlockers = append(operator.PotentialBlockers, facts.ReviewProblem)
-	}
-	if operator.LatestError != nil {
-		operator.PotentialBlockers = append(operator.PotentialBlockers,
-			operator.LatestError.Code+": "+operator.LatestError.Message)
-	}
-	if operator.Review != nil && operator.Review.Verdict != "" &&
-		operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
-		operator.PotentialBlockers = append(operator.PotentialBlockers,
-			"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
-	}
+	operator.addRecordedBlockers(facts.ReviewProblem, facts.ReviewAt, facts.LatestErrorAt, observedAt)
 	return operator
 }
 

@@ -103,27 +103,45 @@ func (s *SignedKey) MintScoped(runID string, ttl time.Duration, scopes ...string
 	return tokenPrefix + payload + "." + s.sign(payload), nil
 }
 
-// verifySigned resolves a presented signed token to its run ID and scopes.
-func (s *SignedKey) verifySigned(token string) (string, []string, error) {
-	rest, ok := strings.CutPrefix(token, tokenPrefix)
-	if !ok {
-		return "", nil, ErrMalformedToken
+// maxSignedTokenBytes bounds every signed bearer before any MAC work is done.
+const maxSignedTokenBytes = 4096
+
+// verifyMAC is the single prefix-cut, length-cap and constant-time MAC check
+// shared by every signed token form. domain is prepended to the payload before
+// signing; it returns the payload the MAC covers.
+func (s *SignedKey) verifyMAC(token, prefix, domain string) (string, error) {
+	rest, ok := strings.CutPrefix(token, prefix)
+	if !ok || len(rest) > maxSignedTokenBytes {
+		return "", ErrMalformedToken
 	}
 	idx := strings.LastIndex(rest, ".")
 	if idx <= 0 || idx == len(rest)-1 {
-		return "", nil, ErrMalformedToken
+		return "", ErrMalformedToken
 	}
 	payload, mac := rest[:idx], rest[idx+1:]
 	// Constant-time compare: a byte-wise early return here leaks how much of a
 	// forged MAC was correct.
-	if subtle.ConstantTimeCompare([]byte(mac), []byte(s.sign(payload))) != 1 {
-		return "", nil, ErrUnknownToken
+	if subtle.ConstantTimeCompare([]byte(mac), []byte(s.sign(domain+payload))) != 1 {
+		return "", ErrUnknownToken
+	}
+	return payload, nil
+}
+
+func (s *SignedKey) unexpired(exp int64) bool {
+	return time.Unix(exp, 0).After(s.now())
+}
+
+// verifySigned resolves a presented signed token to its run ID and scopes.
+func (s *SignedKey) verifySigned(token string) (string, []string, error) {
+	payload, err := s.verifyMAC(token, tokenPrefix, "")
+	if err != nil {
+		return "", nil, err
 	}
 	runID, scopes, exp, err := parseSignedPayload(payload)
 	if err != nil {
 		return "", nil, err
 	}
-	if !time.Unix(exp, 0).After(s.now()) {
+	if !s.unexpired(exp) {
 		return "", nil, ErrUnknownToken
 	}
 	return runID, scopes, nil

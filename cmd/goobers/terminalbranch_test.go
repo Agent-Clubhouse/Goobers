@@ -126,6 +126,24 @@ func TestFinalizeTerminalBranchDecisions(t *testing.T) {
 			wantReason:  "branch-not-found",
 		},
 		{
+			// An open pull request based on the branch keeps it (the
+			// stacked-branch guard the ADO arm applies, PRL-072).
+			name:        "stacked branch is kept",
+			pushed:      true,
+			deleteErr:   &providers.BranchInUseError{Name: "run", PullID: 7, AsBase: true},
+			wantCalls:   1,
+			wantOutcome: branchCleanupSkipped,
+			wantReason:  "stacked-pull-request-open",
+		},
+		{
+			name:        "branch an open pull request comes from is kept",
+			pushed:      true,
+			deleteErr:   &providers.BranchInUseError{Name: "run", PullID: 7},
+			wantCalls:   1,
+			wantOutcome: branchCleanupSkipped,
+			wantReason:  "pull-request-open",
+		},
+		{
 			name:        "provider failure is journaled",
 			pushed:      true,
 			deleteErr:   providerErr,
@@ -565,12 +583,14 @@ func TestBuildTerminalBranchPreparerSkipsCleanupWithoutARepo(t *testing.T) {
 // A provider terminal cleanup has no deleter for fails BEFORE any credential
 // is materialized: the repository's token reference is deliberately unset, so
 // reaching Materialize would surface a credential error instead of this one.
+// Every provider Goobers ships has a deleter (#5957 added Azure DevOps), so the
+// case is an unrecognized kind.
 func TestBuildTerminalBranchDeleteRefusesAnUnsupportedProviderBeforeMinting(t *testing.T) {
+	const unsupported = providers.ProviderKind("unsupported-forge")
 	t.Setenv("TERMINAL_UNSUPPORTED_PROVIDER_TOKEN", "")
 	cfg := &instance.Config{Repos: []instance.RepoRef{{
-		Provider: string(providers.ProviderADO),
+		Provider: string(unsupported),
 		Owner:    "example-org",
-		Project:  "example-project",
 		Name:     "example-repo",
 		Token:    instance.TokenRef{Env: "TERMINAL_UNSUPPORTED_PROVIDER_TOKEN"},
 	}}}
@@ -579,7 +599,7 @@ func TestBuildTerminalBranchDeleteRefusesAnUnsupportedProviderBeforeMinting(t *t
 		t.Fatal(err)
 	}
 	_, err = deleteBranch(context.Background(), providers.DeleteBranchRequest{Repository: repo, Name: "goobers/implementation/run"})
-	want := `terminal branch cleanup does not support repository provider "` + string(providers.ProviderADO) + `"`
+	want := `terminal branch cleanup does not support repository provider "` + string(unsupported) + `"`
 	if err == nil || err.Error() != want {
 		t.Fatalf("deleteBranch error = %v, want %q before any credential is materialized", err, want)
 	}

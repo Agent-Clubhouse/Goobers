@@ -42,6 +42,12 @@ const (
 	// prRevisionSourcePublication: the expectation is the head this run's own
 	// push-remediated published (and verified through its lease).
 	prRevisionSourcePublication = "publication"
+	// prRevisionSourceRebase: the expectation is the head this run's own
+	// rebase-pr force-pushed (lease-verified against the head it expected)
+	// before continuing into the agentic chain. Distinct from publication:
+	// it is not the remediated work, so push-remediated still leases against
+	// the checkpoint's recorded head and still refuses an unchanged branch.
+	prRevisionSourceRebase = "rebase"
 
 	prSelectionStage   = "gather-pr-context"
 	prPublicationStage = "push-remediated"
@@ -205,7 +211,7 @@ func latestPRRevisionRecord(rd journalclient.Reader, runID string, events []jour
 			continue
 		}
 		if attempted, pushed, ok := prRebasePushedHead(event); ok && err == nil && head != "" && strings.EqualFold(attempted, head) {
-			head, source = pushed, prRevisionSourcePublication
+			head, source = pushed, prRevisionSourceRebase
 		}
 	}
 	if err != nil {

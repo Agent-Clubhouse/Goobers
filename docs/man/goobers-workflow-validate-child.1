@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW VALIDATE CHILD" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow validate-child \- validate a child proposal against its configured parent
+.SH SYNOPSIS
+\fBgoobers workflow validate-child\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+
+Validate one generated child Workflow against an opted-in parent stage in
+the instance's current active config/ tree (default path "."). The parent
+supplies policy; child grants are also bounded by the parent's stage capabilities.
+The proposal must pin DSL 3.1 and declare only a plain manual trigger.
+
+This is advisory current-config validation, not durable run admission. It
+does not start or queue work, resolve credentials, invoke a model, or refresh
+workflowSource. --backend selects the validation target (default runner).
+Config digests identify declarative validation inputs, not an execution archive.
+--json emits child-workflow-validation/v1 diagnostics and digests.
+Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

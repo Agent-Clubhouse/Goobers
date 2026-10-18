@@ -213,9 +213,10 @@ func TestClaudeAdapterRunCombinesDeclaredMCPServersWithGoobersIO(t *testing.T) {
 		},
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
-		Runner:  runner,
-		SelfBin: "/usr/local/bin/goobers",
+		KeychainReader: absentClaudeKeychain,
+		Command:        []string{"claude"},
+		Runner:         runner,
+		SelfBin:        "/usr/local/bin/goobers",
 	}
 	envelope := testEnvelope(workspace, "contents:read")
 	envelope.Inputs = map[string]interface{}{InputArtifactFile: "findings.md"}

@@ -53,3 +53,26 @@ func TestOpenRefusesANewerSchema(t *testing.T) {
 		t.Errorf("error = %v; want a clear newer-schema refusal", err)
 	}
 }
+
+// An intake.db stamped by the previous hand-rolled migrator (one schema_meta
+// row holding the applied slice length) must reopen as fully applied: no
+// migration re-runs and the stamp is unchanged.
+func TestReopenKeepsTheAppliedVersionStamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	for range 2 {
+		store, err := Open(path)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		var count, version int
+		if err := store.db.QueryRow(`SELECT COUNT(*), MAX(version) FROM schema_meta`).Scan(&count, &version); err != nil {
+			t.Fatalf("read schema_meta: %v", err)
+		}
+		if count != 1 || version != len(migrations) {
+			t.Fatalf("schema_meta count=%d version=%d, want count=1 version=%d", count, version, len(migrations))
+		}
+		if err := store.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}
+}

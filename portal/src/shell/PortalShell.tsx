@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { formatRelativeTimestamp as formatTimestamp } from "../dateTime";
 import { createPortal } from "react-dom";
 import type { BuildMetadata, DaemonClient, Instance } from "../api/types";
 import { useCobrand } from "../cobrand";
@@ -17,8 +18,21 @@ import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
 import type { Theme } from "../theme";
 import { useUpdateNotice } from "../updateNotice";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 import { SupportFooter } from "./SupportFooter";
+
+const compactShellQuery =
+  "(max-width: 820px), (max-width: 900px) and (max-height: 500px) and (orientation: landscape)";
+
+const areaLabels: Record<PrimaryArea, string> = {
+  overview: "Overview",
+  workflows: "Workflows",
+  goobers: "Goobers",
+  runs: "Runs",
+  "work-items": "Work Items",
+  insight: "Insight",
+  cost: "Cost",
+};
 
 interface HeaderIdentity {
   build?: BuildMetadata;
@@ -31,8 +45,10 @@ interface HeaderIdentity {
 export interface PortalHeaderHost {
   /** Stable, same-document container owned by the embedding application. */
   target: HTMLElement;
-  /** Additional host controls; Portal branding, freshness and theme controls remain intact. */
+  /** Additional host controls rendered in the shared compact app bar. */
   actions?: React.ReactNode;
+  /** Suppress Portal's phone navigation when the embedding host supplies its own. */
+  providesMobileNavigation?: boolean;
 }
 
 interface PortalShellProps {
@@ -40,10 +56,7 @@ interface PortalShellProps {
   activeGaggle?: string;
   children: React.ReactNode;
   client: DaemonClient;
-  currentScope: Pick<
-    ScopeFilters,
-    "gaggle" | "workflow" | "stage" | "since" | "until" | "window"
-  >;
+  currentScope: Pick<ScopeFilters, "gaggle" | "workflow" | "stage" | "since" | "until" | "window">;
   hostContext: "daemon" | "fleet" | "standalone";
   headerHost?: PortalHeaderHost;
   navigate: Navigate;
@@ -75,15 +88,13 @@ export function PortalShell({
       ? currentScope
       : undefined;
   const { config } = useCobrand();
-  const {
-    admissionState,
-    dataFreshness,
-    freshness,
-    lastSSEFailure,
-    liveUpdateDetails,
-  } = useLiveData();
+  const { admissionState, dataFreshness, freshness, lastSSEFailure, liveUpdateDetails } =
+    useLiveData();
   const updateNotice = useUpdateNotice();
+  const compactShell = useMediaQuery(compactShellQuery);
   const mainContent = useRef<HTMLElement>(null);
+  const mobileMenu = useRef<HTMLDialogElement>(null);
+  const mobileMenuOpener = useRef<HTMLButtonElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const headerIdentity = useLiveQuery<HeaderIdentity>({
     cacheKey: dataCacheKey("portal-header-identity"),
@@ -108,7 +119,78 @@ export function PortalShell({
       : undefined;
   const instanceIdentity = headerData?.instance;
   const build = headerData?.build;
+  const buildVersion = build?.version.trim();
+  const buildCommit =
+    build?.commit && build.commit !== "none" ? build.commit : undefined;
+  const buildIdentity =
+    buildVersion === "dev"
+      ? `dev${buildCommit ? ` (${buildCommit})` : ""}`
+      : buildVersion
+        ? `${buildVersion}${buildCommit ? ` (${buildCommit})` : ""}`
+        : buildCommit;
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
+  const mobileStatus = mobileConnectionStatus(freshness);
+
+  useEffect(() => {
+    const dialog = mobileMenu.current;
+    if (!dialog) return;
+    if (mobileMenuOpen && !dialog.open) {
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      } else {
+        dialog.setAttribute("open", "");
+      }
+    } else if (!mobileMenuOpen && dialog.open) {
+      if (typeof dialog.close === "function") {
+        dialog.close();
+      } else {
+        dialog.removeAttribute("open");
+      }
+      mobileMenuOpener.current?.focus();
+      mobileMenuOpener.current = null;
+    }
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
+    const closeOnBack = () => setMobileMenuOpen(false);
+    window.addEventListener("popstate", closeOnBack);
+    return () => window.removeEventListener("popstate", closeOnBack);
+  }, []);
+
+  useEffect(() => {
+    if (compactShell || !mobileMenuOpen) return;
+    mobileMenuOpener.current = null;
+    if (window.history.state?.portalMenu) {
+      window.history.back();
+    }
+    setMobileMenuOpen(false);
+  }, [compactShell, mobileMenuOpen]);
+
+  const openMobileMenu = (event?: React.MouseEvent<HTMLButtonElement>) => {
+    if (mobileMenuOpen) return;
+    if (!compactShell) return;
+    mobileMenuOpener.current = event?.currentTarget ?? null;
+    window.history.pushState({ ...window.history.state, portalMenu: true }, "");
+    setMobileMenuOpen(true);
+  };
+
+  const closeMobileMenu = () => {
+    if (window.history.state?.portalMenu) {
+      window.history.back();
+    } else {
+      setMobileMenuOpen(false);
+    }
+  };
+
+  const navigateFromMobileMenu: Navigate = (route) => {
+    if (window.history.state?.portalMenu) {
+      const { portalMenu: _portalMenu, ...state } = window.history.state;
+      window.history.replaceState(state, "");
+    }
+    mobileMenuOpener.current = null;
+    setMobileMenuOpen(false);
+    navigate(route, { replace: true });
+  };
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -116,100 +198,138 @@ export function PortalShell({
   };
 
   const header = (
-      <header className={headerHost ? "topbar topbar-hosted" : "topbar"}>
-        <div className="topbar-primary">
+    <header className={headerHost ? "topbar topbar-hosted" : "topbar"}>
+      {compactShell && !headerHost?.providesMobileNavigation && (
+        <nav aria-label="Mobile primary" className="mobile-primary-nav">
           <button
-            aria-label="Go to overview"
-            className="topbar-brand"
-            onClick={() => navigate({ page: "overview" })}
-            title={config.brand.tagline}
+            aria-expanded={mobileMenuOpen}
+            aria-haspopup="dialog"
+            aria-label="Open navigation menu"
+            className="mobile-nav-item mobile-nav-item-active"
+            onClick={openMobileMenu}
             type="button"
           >
-            <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
-            {headerHost ? (
-              <span className="topbar-hosted-brand-copy">
-                <strong>{config.brand.name}</strong>
-                <small>{config.brand.tagline}</small>
-              </span>
-            ) : <strong>{config.brand.name}</strong>}
+            <Icon name="menu" />
+            <span>{areaLabels[activeArea]}</span>
           </button>
-          <span aria-hidden="true" className="topbar-divider" />
-          <div className="topbar-instance-context" aria-label="Instance context">
-            <span className="topbar-instance-name">
-              {instanceIdentity?.name ?? "Loading instance"}
+        </nav>
+      )}
+      <div className="topbar-primary">
+        <button
+          aria-label="Go to overview"
+          className="topbar-brand"
+          onClick={() => navigate({ page: "overview" })}
+          title={config.brand.tagline}
+          type="button"
+        >
+          <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
+          {headerHost ? (
+            <span className="topbar-hosted-brand-copy">
+              <strong>{config.brand.name}</strong>
+              <small>{config.brand.tagline}</small>
             </span>
-            {instanceIdentity?.computerName && (
-              <>
-                <span aria-hidden="true" className="topbar-context-separator">•</span>
-                <span className="topbar-computer-name">{instanceIdentity.computerName}</span>
-              </>
-            )}
-            {instanceIdentity?.environment && (
-              <>
-                <span aria-hidden="true" className="topbar-context-separator">•</span>
-                <span className="topbar-environment">
-                  {instanceIdentity.environment}
-                  {build?.commit && build.commit !== "none" ? ` (${build.commit})` : ""}
-                </span>
-              </>
-            )}
-            <span className="topbar-info-wrap">
-              <button
-                aria-describedby="portal-context-tooltip"
-                aria-label="Show portal details"
-                className="topbar-info"
-                type="button"
-              >
-                <Icon name="info" size={17} />
-              </button>
-              <span className="topbar-info-tooltip" id="portal-context-tooltip" role="tooltip">
-                <strong>{config.brand.tagline}</strong>
-                <span className="topbar-tooltip-grid">
-                  <span>Host</span>
-                  <span>{hostContextLabel(hostContext)}</span>
-                  <span>Instance</span>
-                  <span>{instanceIdentity?.name ?? "Loading"}</span>
-                  <span>Version</span>
-                  <span>{build ? `${build.version} · ${build.commit || "none"}` : "Unavailable"}</span>
-                  <span>Computer</span>
-                  <span>{instanceIdentity?.computerName ?? "Unavailable"}</span>
-                  <span>Environment</span>
-                  <span>{instanceIdentity?.environment ?? "Unavailable"}</span>
-                  <span>Instance root</span>
-                  <span>{instanceIdentity?.instanceRoot ?? "Unavailable"}</span>
-                  <span>Instance ID</span>
-                  <span>{instanceIdentity?.rootIdentity?.id ?? "Unavailable"}</span>
-                </span>
-              </span>
-            </span>
-          </div>
-        </div>
-        <div className="topbar-actions">
-          <LiveUpdatesIndicator
-            connectionStatus={connectionStatus}
-            details={liveUpdateDetails}
-            failure={lastSSEFailure}
-            freshness={freshness}
-            state={dataFreshness}
-          />
-          <button
-            aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
-            className="theme-button"
-            onClick={toggleTheme}
-            type="button"
-          >
-            <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
-          </button>
-          {headerHost?.actions && (
-            <div className="topbar-host-actions">{headerHost.actions}</div>
+          ) : (
+            <strong>{config.brand.name}</strong>
           )}
+        </button>
+        <span aria-hidden="true" className="topbar-divider" />
+        <div className="topbar-instance-context" aria-label="Instance context">
+          <span className="topbar-instance-name">
+            {instanceIdentity?.name ?? "Loading instance"}
+          </span>
+          {instanceIdentity?.computerName && (
+            <>
+              <span aria-hidden="true" className="topbar-context-separator">
+                •
+              </span>
+              <span className="topbar-computer-name">{instanceIdentity.computerName}</span>
+            </>
+          )}
+          {buildIdentity && (
+            <>
+              <span aria-hidden="true" className="topbar-context-separator">
+                •
+              </span>
+              <span className="topbar-build">{buildIdentity}</span>
+            </>
+          )}
+          {instanceIdentity?.environment && (
+            <span className="topbar-environment">env: {instanceIdentity.environment}</span>
+          )}
+          <span className="topbar-info-wrap">
+            <button
+              aria-describedby="portal-context-tooltip"
+              aria-label="Show portal details"
+              className="topbar-info"
+              onClick={openMobileMenu}
+              type="button"
+            >
+              <Icon name="info" size={17} />
+            </button>
+            <span className="topbar-info-tooltip" id="portal-context-tooltip" role="tooltip">
+              <strong>{config.brand.tagline}</strong>
+              <span className="topbar-tooltip-grid">
+                <span>Host</span>
+                <span>{hostContextLabel(hostContext)}</span>
+                <span>Instance</span>
+                <span>{instanceIdentity?.name ?? "Loading"}</span>
+                <span>Version</span>
+                <span>
+                  {build ? `${build.version} · ${build.commit || "none"}` : "Unavailable"}
+                </span>
+                <span>Computer</span>
+                <span>{instanceIdentity?.computerName ?? "Unavailable"}</span>
+                <span>Environment</span>
+                <span>{instanceIdentity?.environment ?? "Unavailable"}</span>
+                <span>Instance root</span>
+                <span>{instanceIdentity?.instanceRoot ?? "Unavailable"}</span>
+                <span>Instance ID</span>
+                <span>{instanceIdentity?.rootIdentity?.id ?? "Unavailable"}</span>
+              </span>
+            </span>
+          </span>
         </div>
-      </header>
+      </div>
+      <div className="topbar-actions">
+        {compactShell && (
+          <span
+            aria-label={connectionStatus}
+            className={`mobile-live-status mobile-live-status-${freshness}`}
+            role="status"
+          >
+            <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
+            {mobileStatus}
+          </span>
+        )}
+        <LiveUpdatesIndicator
+          connectionStatus={connectionStatus}
+          details={liveUpdateDetails}
+          failure={lastSSEFailure}
+          freshness={freshness}
+          state={dataFreshness}
+        />
+        <button
+          aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
+          className="theme-button"
+          onClick={toggleTheme}
+          type="button"
+        >
+          <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
+        </button>
+        {headerHost?.actions && <div className="topbar-host-actions">{headerHost.actions}</div>}
+      </div>
+    </header>
   );
 
   return (
     <div
-      className={headerHost ? "portal-frame portal-frame-hosted-header" : "portal-frame"}
+      className={[
+        "portal-frame",
+        headerHost ? "portal-frame-hosted-header" : "",
+        headerHost?.providesMobileNavigation ? "portal-frame-host-navigation" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       data-host={hostContext}
     >
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
@@ -217,18 +337,6 @@ export function PortalShell({
       </a>
       {headerHost ? createPortal(header, headerHost.target) : header}
       <aside className="sidebar">
-        <button
-          aria-controls="portal-secondary-navigation"
-          aria-expanded={mobileMenuOpen}
-          aria-label="Show gaggles, status, and support links"
-          className="mobile-navigation-button"
-          onClick={() => setMobileMenuOpen((open) => !open)}
-          type="button"
-        >
-          <Icon name="menu" />
-          <span>{mobileMenuOpen ? "Close" : "More"}</span>
-        </button>
-
         <nav className="primary-nav" aria-label="Primary">
           <button
             aria-current={activeArea === "overview" ? "page" : undefined}
@@ -292,20 +400,17 @@ export function PortalShell({
           </button>
           <button
             aria-current={activeArea === "cost" ? "page" : undefined}
-            aria-label="AIC"
+            aria-label="Cost"
             className={activeArea === "cost" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => navigate({ page: "cost", filters: scopedFilters })}
             type="button"
           >
             <Icon name="cost" />
-            <span className="nav-label">AIC</span>
+            <span className="nav-label">Cost</span>
           </button>
         </nav>
 
-        <div
-          className={`sidebar-secondary${mobileMenuOpen ? " sidebar-secondary-open" : ""}`}
-          id="portal-secondary-navigation"
-        >
+        <div className="sidebar-secondary" id="portal-secondary-navigation">
           <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
           <SupportFooter />
         </div>
@@ -315,9 +420,8 @@ export function PortalShell({
         <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
           {admissionState && (
             <div className="admission-degraded" role="alert">
-              <strong>Daemon is busy.</strong>{" "}
-              Live refresh is backing off automatically. New navigation requests are not held
-              behind unlimited retries.
+              <strong>Daemon is busy.</strong> Live refresh is backing off automatically. New
+              navigation requests are not held behind unlimited retries.
             </div>
           )}
           {updateNotice.update && (
@@ -326,7 +430,191 @@ export function PortalShell({
           {children}
         </main>
       </div>
+
+      {compactShell && (
+        <dialog
+          aria-labelledby="portal-mobile-menu-title"
+          className="mobile-menu-sheet"
+          onCancel={(event) => {
+            event.preventDefault();
+            closeMobileMenu();
+          }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeMobileMenu();
+          }}
+          onKeyDown={containDialogFocus}
+          ref={mobileMenu}
+        >
+          <div className="mobile-menu-content">
+            <div className="mobile-menu-scroll">
+            <div className="mobile-menu-heading">
+              <div>
+                <span className="mobile-menu-brand">
+                  <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
+                  <strong id="portal-mobile-menu-title">{config.brand.name}</strong>
+                </span>
+                <span>{config.brand.tagline}</span>
+              </div>
+              <button
+                aria-label="Close portal menu"
+                className="mobile-menu-close"
+                onClick={closeMobileMenu}
+                type="button"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+
+            <nav aria-label="More destinations" className="mobile-secondary-nav">
+              <MobileDestination
+                active={activeArea === "overview"}
+                icon="overview"
+                label="Overview"
+                onClick={() => navigateFromMobileMenu({ page: "overview" })}
+              />
+              <MobileDestination
+                active={activeArea === "workflows"}
+                icon="workflow"
+                label="Workflows"
+                onClick={() => navigateFromMobileMenu({ page: "workflows" })}
+              />
+              <MobileDestination
+                active={activeArea === "runs"}
+                icon="run"
+                label="Runs"
+                onClick={() => navigateFromMobileMenu({ page: "runs", filters: scopedFilters })}
+              />
+              <MobileDestination
+                active={activeArea === "goobers"}
+                icon="goober"
+                label="Goobers"
+                onClick={() => navigateFromMobileMenu({ page: "goobers" })}
+              />
+              <MobileDestination
+                active={activeArea === "work-items"}
+                icon="work-item"
+                label="Work Items"
+                onClick={() => navigateFromMobileMenu({ page: "work-items" })}
+              />
+              <MobileDestination
+                active={activeArea === "insight"}
+                icon="insight"
+                label="Insight"
+                onClick={() => navigateFromMobileMenu({ page: "insight", filters: scopedFilters })}
+              />
+              <MobileDestination
+                active={activeArea === "cost"}
+                icon="cost"
+                label="Cost"
+                onClick={() => navigateFromMobileMenu({ page: "cost", filters: scopedFilters })}
+              />
+            </nav>
+
+            <div className="mobile-menu-details" aria-label="Portal details">
+              <div className="mobile-menu-instance">
+                <strong>{instanceIdentity?.name ?? "Loading instance"}</strong>
+                <span>{connectionStatus}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>Host</dt>
+                  <dd>{hostContextLabel(hostContext)}</dd>
+                </div>
+                <div>
+                  <dt>Version</dt>
+                  <dd>{build ? `${build.version} · ${build.commit || "none"}` : "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Computer</dt>
+                  <dd>{instanceIdentity?.computerName ?? "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Environment</dt>
+                  <dd>{instanceIdentity?.environment ?? "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Instance root</dt>
+                  <dd>{instanceIdentity?.instanceRoot ?? "Unavailable"}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <GaggleNav
+              activeGaggle={activeGaggle}
+              client={client}
+              navigate={navigateFromMobileMenu}
+            />
+            <SupportFooter />
+            </div>
+          </div>
+        </dialog>
+      )}
     </div>
+  );
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(
+    () => typeof window.matchMedia === "function" && window.matchMedia(query).matches,
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+
+  return matches;
+}
+
+function containDialogFocus(event: React.KeyboardEvent<HTMLDialogElement>) {
+  if (event.key !== "Tab") return;
+  const focusable = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (!first || !last) return;
+  if (
+    event.shiftKey &&
+    (document.activeElement === first || document.activeElement === event.currentTarget)
+  ) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function MobileDestination({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: IconName;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      aria-current={active ? "page" : undefined}
+      className={
+        active ? "mobile-secondary-item mobile-secondary-item-active" : "mobile-secondary-item"
+      }
+      onClick={onClick}
+      type="button"
+    >
+      <Icon name={icon} />
+      <span>{label}</span>
+    </button>
   );
 }
 
@@ -346,8 +634,7 @@ function GaggleNav({
   navigate: Navigate;
 }) {
   const { state } = useGaggleList(client);
-  const gaggles =
-    state.status === "ready" || state.status === "stale" ? state.data : undefined;
+  const gaggles = state.status === "ready" || state.status === "stale" ? state.data : undefined;
 
   if (!gaggles || gaggles.length === 0) {
     return null;
@@ -409,6 +696,21 @@ function describeConnectionStatus(
   return `${freshnessLabel[freshness]} — ${causeChunk}`;
 }
 
+function mobileConnectionStatus(freshness: LiveFreshness): string {
+  switch (freshness) {
+    case "connected":
+      return "Live";
+    case "polling-fallback":
+      return "Polling";
+    case "reconnecting":
+      return "Reconnecting";
+    case "stale":
+      return "Stale";
+    default:
+      return "Offline";
+  }
+}
+
 /**
  * Renders how current the data is.
  *
@@ -436,11 +738,7 @@ export function DataFreshnessIndicator({ state }: { state: DataFreshness }) {
   );
 }
 
-function PollingFallbackIndicator({
-  state,
-}: {
-  state: DataFreshness;
-}) {
+function PollingFallbackIndicator({ state }: { state: DataFreshness }) {
   const dataLabel = state.kind === "unknown" ? "Data current" : dataFreshnessLabel(state);
   return (
     <span
@@ -580,31 +878,6 @@ function describeLastPoll(details: LiveUpdateDetails): string {
   }
   const result = details.lastPollSucceeded ? "succeeded" : "failed";
   return `${formatTimestamp(details.lastPollAt)}; ${result}`;
-}
-
-function formatTimestamp(timestamp: number | undefined): string {
-  if (timestamp === undefined) {
-    return "Never";
-  }
-  const difference = timestamp - Date.now();
-  const absolute = new Date(timestamp).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  const elapsed = Math.abs(difference);
-  const amount =
-    elapsed < 1_000
-      ? "now"
-      : elapsed < 60_000
-        ? `${Math.round(elapsed / 1_000)}s`
-        : elapsed < 3_600_000
-          ? `${Math.round(elapsed / 60_000)}m`
-          : `${Math.round(elapsed / 3_600_000)}h`;
-  if (amount === "now") {
-    return `${absolute} (now)`;
-  }
-  return `${absolute} (${difference > 0 ? `in ${amount}` : `${amount} ago`})`;
 }
 
 function dataFreshnessLabel(state: DataFreshness): string {

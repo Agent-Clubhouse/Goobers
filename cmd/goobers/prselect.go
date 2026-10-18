@@ -6,16 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/prqueue"
+	"github.com/goobers/goobers/internal/runner"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -68,7 +74,8 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
 	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
 	"PRs labeled goobers:no-merge-review are always excluded. A run-aborted\n" +
-	"PR is excluded unless audited recovery proves a later remediation completed.\n" +
+	"PR is excluded unless audited recovery proves a later remediation completed\n" +
+	"or a valid merge-review pass matches its current head and base.\n" +
 	"Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
@@ -105,7 +112,7 @@ func runPRSelectCore(
 	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
 	authorScope := providerInput("authorScope", authorScopeGoobers)
-	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+	if !validMergeReviewAuthorScope(authorScope) {
 		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
 		return 1
 	}
@@ -131,6 +138,11 @@ func runPRSelectCore(
 		Author:            providerInput("author", ""),
 		Assignee:          providerInput("assignee", ""),
 		RequestedReviewer: providerInput("requestedReviewer", ""),
+	}
+	identityFilters.TitlePredicate, err = fieldpredicate.CompileTitlePredicate(providerInput("titlePredicate", ""))
+	if err != nil {
+		pf(stderr, "error: invalid titlePredicate: %v\n", err)
+		return 1
 	}
 
 	ctx, cancel := providerCommandContext()
@@ -204,6 +216,11 @@ func runPRSelectCore(
 	exclusions := newPRSelectExclusions()
 	exclusions.report.ObservedAt = now
 	exclusions.report.CompleteSnapshot = bool(completeness)
+	branchOccupancies, err := prSelectBranchOccupancies(ctx, root, repo)
+	if err != nil {
+		pf(stderr, "error: inspect PR branch occupancy: %v\n", err)
+		return 1
+	}
 	for _, pr := range prs {
 		matchesTargetedPull := hasTargetedPullNumber && strconv.Itoa(pr.Number) == targetedPullNumber
 		if pr.State != "open" || (!matchesTargetedPull && pr.Base != base) ||
@@ -222,7 +239,7 @@ func runPRSelectCore(
 			continue
 		}
 		if hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
-			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr)
+			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr, expectedAuthorLogin)
 			if err != nil {
 				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
 			}
@@ -251,6 +268,13 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, exclusionPolicy)
 			continue
 		}
+		occupancy, occupied := branchOccupancies[pr.Head]
+		if occupied {
+			pf(stdout, "excluded PR #%d: branch %s is registered to run %s\n",
+				pr.Number, pr.Head, occupancy.OwnerRunID)
+			exclusions.recordPR(pr.Number, exclusionBranchOccupied)
+			continue
+		}
 		blocked, blockCode, blockReason, gateCode := prSelectSafetyGatesBlock(
 			ctx, gateProvider, repo, pr, gateState.siblingBlocked[pr.Number],
 			gateState.siblingHoldReason[pr.Number], stdout, stderr,
@@ -273,6 +297,10 @@ func runPRSelectCore(
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
 		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
+}
+
+func validMergeReviewAuthorScope(authorScope string) bool {
+	return authorScope == authorScopeGoobers || authorScope == authorScopeAny
 }
 
 func targetedPullRequest(prs []providers.PullRequestSummary, targetedPullNumber string, targeted bool) (providers.PullRequestSummary, bool) {
@@ -481,7 +509,11 @@ func pullRequestsForSelectionCommon(
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
-		if !req.identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+		matched, err := req.identityFilters.MatchesSummary(pr)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !matched {
 			if req.completeness != prSelectCompleteSnapshot {
 				return nil, openPRs, nil
 			}
@@ -512,7 +544,11 @@ func pullRequestsForSelectionCommon(
 		if req.authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, req.headPrefixes, req.expectedAuthorLogin) {
 			continue
 		}
-		if !req.identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+		matched, err := req.identityFilters.MatchesSummary(pr)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !matched {
 			continue
 		}
 		if err := resolver.resolve(ctx, &pr); err != nil {
@@ -578,14 +614,14 @@ type prSelectSourceRequest struct {
 // comment, file, or branch operations.
 func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
 	if repo.Provider == providers.ProviderADO {
-		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
+		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.ProviderPRWrite))
 		if err != nil {
 			return nil, nil, err
 		}
 		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider)}, nil, nil
 	}
 
-	token, err := providerToken(capability.GitHubPRWrite)
+	token, err := providerToken(capability.ProviderPRWrite)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -655,7 +691,109 @@ const (
 	exclusionDemoted           = prqueue.Demoted
 	exclusionSiblingBlocked    = prqueue.SiblingBlocked
 	exclusionTutorSignoff      = prqueue.TutorSignoff
+	exclusionBranchOccupied    = prqueue.BranchOccupied
 )
+
+// runningInStagePod reports whether this process is a goobers-CLI stage inside
+// a dispatcher pod. EnvPodToken is deliberately stripped from stage commands
+// (DispatcherPrivilegedEnv), so it only identifies the dispatch-exec process
+// itself; EnvPodAttempt is dispatcher-owned run identity that CLI stages keep.
+func runningInStagePod() bool {
+	return os.Getenv(dispatcher.EnvPodAttempt) != "" || os.Getenv(dispatcher.EnvPodToken) != ""
+}
+
+func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.RepositoryRef) (map[string]worktree.BranchOccupancy, error) {
+	// Stage pods use fresh clones and have neither shared host occupancies nor instance config.
+	if runningInStagePod() {
+		return map[string]worktree.BranchOccupancy{}, nil
+	}
+	layout := layoutFor(root)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		// No instance config means no host-managed workcopies to inspect
+		// (a pod or scratch checkout the pod signal did not identify).
+		if errors.Is(err, fs.ErrNotExist) {
+			return map[string]worktree.BranchOccupancy{}, nil
+		}
+		return nil, err
+	}
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		return nil, err
+	}
+	if report == nil {
+		return nil, errors.New("load config directory: validation report is nil")
+	}
+
+	gaggleName := strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
+	var gaggles []*apiv1.Gaggle
+	if gaggleName != "" {
+		gaggle := configuredGaggle(set, gaggleName)
+		if gaggle == nil {
+			gaggles = append(gaggles, &apiv1.Gaggle{})
+		} else {
+			gaggles = append(gaggles, gaggle)
+		}
+	} else {
+		for i := range set.Gaggles {
+			gaggles = append(gaggles, &set.Gaggles[i])
+		}
+	}
+
+	cloneURLFn := repoCloneURL
+	if cloneURLFn == nil {
+		cloneURLFn = runner.DefaultRepoCloneURL
+	}
+	repoURL, err := cloneURLFn(apiv1.RepoRef{
+		Provider: apiv1.Provider(repo.Provider),
+		BaseURL:  repo.URL,
+		Owner:    repo.Owner,
+		Project:  repo.Project,
+		Name:     repo.Name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository clone URL: %w", err)
+	}
+
+	occupancies := make(map[string]worktree.BranchOccupancy)
+	seenRoots := make(map[string]bool)
+	for _, gaggle := range gaggles {
+		scopedGaggle := gaggle.Name
+		if scopedGaggle == "" {
+			scopedGaggle = gaggleName
+		}
+		scoped, err := instance.EffectiveWorkcopiesLayout(layout.ForGaggle(scopedGaggle), cfg, gaggle)
+		if err != nil {
+			return nil, fmt.Errorf("resolve workcopies root for gaggle %q: %w", gaggle.Name, err)
+		}
+		workcopiesRoot := scoped.WorkcopiesDir()
+		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+			workcopiesRoot = scoped.WorkcopiesBaseDir()
+		}
+		if seenRoots[workcopiesRoot] {
+			continue
+		}
+		seenRoots[workcopiesRoot] = true
+		manager, err := worktree.NewManager(workcopiesRoot)
+		if err != nil {
+			return nil, err
+		}
+		found, err := manager.BranchOccupancies(ctx, repoURL)
+		if err != nil {
+			return nil, err
+		}
+		for branch, occupancy := range found {
+			if existing, duplicate := occupancies[branch]; duplicate &&
+				(existing.OwnerRunID != occupancy.OwnerRunID ||
+					existing.Status != occupancy.Status ||
+					existing.OwnerProcessLive != occupancy.OwnerProcessLive) {
+				return nil, fmt.Errorf("branch %q has conflicting occupancy records across workcopies roots", branch)
+			}
+			occupancies[branch] = occupancy
+		}
+	}
+	return occupancies, nil
+}
 
 // prSelectExclusions tallies why the pull requests this workflow is
 // responsible for did not become eligible (#2969).
@@ -1054,6 +1192,7 @@ func adoSelectionCandidate(ctx context.Context, provider adoSelectProvider, repo
 		ID:                 strconv.Itoa(poll.Number),
 		Number:             poll.Number,
 		URL:                poll.URL,
+		Title:              poll.Title,
 		Author:             poll.Author,
 		Assignees:          poll.Assignees,
 		RequestedReviewers: poll.RequestedReviewers,
@@ -1212,6 +1351,7 @@ func clearStaleRunAbortedPR(
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pr providers.PullRequestSummary,
+	configuredAuthor string,
 ) (providers.PullRequestSummary, bool, error) {
 	if provider == nil || !hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
 		return pr, false, nil
@@ -1237,12 +1377,30 @@ func clearStaleRunAbortedPR(
 	if poll.Mergeable == nil || !*poll.Mergeable {
 		return pr, false, nil
 	}
-	if len(poll.CommentsSince) != 0 {
-		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+	recovery := runAbortedRecoveryUnreviewed
+	authors := runAbortedCommentAuthors{configured: configuredAuthor}
+	if len(poll.CommentsSince) > 0 {
+		authors.authenticated, err = provider.AuthenticatedLogin(ctx)
+		if err != nil {
+			return pr, false, nil
+		}
+	}
+	switch {
+	case runAbortedPRHasCurrentPass(poll, authors):
+		recovery = runAbortedRecoveryPassed
+	case !latestTrustedRemediationResponse(poll.CommentsSince, authors).IsZero():
+		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll, configuredAuthor)
 		if err != nil || !recovered {
 			return pr, false, nil
 		}
-	} else {
+		recovery = runAbortedRecoveryRemediated
+	case hasNonGoobersComments(poll.CommentsSince, authors):
+		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll, configuredAuthor)
+		if err != nil || !recovered {
+			return pr, false, nil
+		}
+		recovery = runAbortedRecoveryRemediated
+	default:
 		if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll); err != nil || reviewed {
 			return pr, false, nil
 		}
@@ -1255,7 +1413,7 @@ func clearStaleRunAbortedPR(
 		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
 	}
 	refreshed.Labels = removeLabel(refreshed.Labels, abortedRunLabel)
-	verified, safe, err := verifyClearedRunAbortedPR(ctx, provider, repo, pullID, refreshed, len(poll.CommentsSince) != 0)
+	verified, safe, err := verifyClearedRunAbortedPR(ctx, provider, repo, pullID, refreshed, recovery, configuredAuthor)
 	if err == nil && safe {
 		return verified, true, nil
 	}
@@ -1279,13 +1437,22 @@ type runAbortedLabelHistoryProvider interface {
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
 }
 
+type runAbortedRecovery int
+
+const (
+	runAbortedRecoveryUnreviewed runAbortedRecovery = iota
+	runAbortedRecoveryRemediated
+	runAbortedRecoveryPassed
+)
+
 func verifyClearedRunAbortedPR(
 	ctx context.Context,
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pullID string,
 	pr providers.PullRequestSummary,
-	reviewedRemediation bool,
+	recovery runAbortedRecovery,
+	configuredAuthor string,
 ) (providers.PullRequestSummary, bool, error) {
 	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
 		Repository: repo,
@@ -1307,15 +1474,94 @@ func verifyClearedRunAbortedPR(
 		}) {
 		return refreshed, false, nil
 	}
-	if reviewedRemediation {
-		safe, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+	if recovery == runAbortedRecoveryRemediated {
+		safe, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll, configuredAuthor)
 		return refreshed, safe, err
 	}
-	if len(poll.CommentsSince) != 0 {
+	authors := runAbortedCommentAuthors{configured: configuredAuthor}
+	if len(poll.CommentsSince) > 0 {
+		authors.authenticated, err = provider.AuthenticatedLogin(ctx)
+		if err != nil {
+			return refreshed, false, err
+		}
+	}
+	if recovery == runAbortedRecoveryPassed {
+		return refreshed, runAbortedPRHasCurrentPass(poll, authors), nil
+	}
+	if hasNonGoobersComments(poll.CommentsSince, authors) {
 		return refreshed, false, nil
 	}
 	reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll)
 	return refreshed, !reviewed && err == nil, err
+}
+
+type runAbortedCommentAuthors struct {
+	authenticated string
+	configured    string
+}
+
+func hasNonGoobersComments(comments []providers.PullRequestComment, authors runAbortedCommentAuthors) bool {
+	for _, comment := range comments {
+		if !authors.trusts(comment) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a runAbortedCommentAuthors) trusts(comment providers.PullRequestComment) bool {
+	if !isTrustedMergeReviewAuthor(comment.Author, a.authenticated) &&
+		!isTrustedMergeReviewAuthor(comment.Author, a.configured) {
+		return false
+	}
+	_, found, err := providers.ParseAttribution(comment.Body)
+	return err == nil && found
+}
+
+func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authors runAbortedCommentAuthors) bool {
+	latestVerdict := -1
+	var verdict apiv1.Verdict
+	for i, comment := range poll.CommentsSince {
+		if !authors.trusts(comment) || !isMergeReviewStatusComment(comment.Body) {
+			continue
+		}
+		parsed, ok := parseVerdictComment(comment.Body)
+		if ok && (latestVerdict == -1 || pullRequestCommentAfter(comment, i, poll.CommentsSince[latestVerdict], latestVerdict)) {
+			latestVerdict = i
+			verdict = parsed
+		}
+	}
+	if latestVerdict == -1 ||
+		verdict.Decision != apiv1.VerdictPass ||
+		verdict.HeadSHA == "" || verdict.HeadSHA != poll.HeadSHA ||
+		verdict.BaseSHA == "" || verdict.BaseSHA != poll.BaseSHA {
+		return false
+	}
+	for i, comment := range poll.CommentsSince {
+		if !authors.trusts(comment) &&
+			pullRequestCommentAfter(comment, i, poll.CommentsSince[latestVerdict], latestVerdict) {
+			return false
+		}
+	}
+	return true
+}
+
+func pullRequestCommentAfter(a providers.PullRequestComment, aIndex int, b providers.PullRequestComment, bIndex int) bool {
+	aTime := a.UpdatedAt
+	if aTime.IsZero() {
+		aTime = a.CreatedAt
+	}
+	bTime := b.UpdatedAt
+	if bTime.IsZero() {
+		bTime = b.CreatedAt
+	}
+	if !aTime.IsZero() && !bTime.IsZero() && !aTime.Equal(bTime) {
+		return aTime.After(bTime)
+	}
+	if a.ID != 0 && b.ID != 0 && a.ID != b.ID {
+		return a.ID > b.ID
+	}
+	return aIndex > bIndex
 }
 
 func runAbortedPRHasVerifiedRemediation(
@@ -1325,6 +1571,7 @@ func runAbortedPRHasVerifiedRemediation(
 	pullID string,
 	labels []string,
 	poll providers.PullRequestPollResult,
+	configuredAuthor string,
 ) (bool, error) {
 	if hasAnyLabel(labels, []string{
 		noMergeReviewLabel,
@@ -1338,11 +1585,16 @@ func runAbortedPRHasVerifiedRemediation(
 	if poll.ReviewDecision == providers.ReviewDecisionChangesRequested || poll.RequestedChanges > 0 {
 		return false, nil
 	}
-	author, err := provider.AuthenticatedLogin(ctx)
+	authors := runAbortedCommentAuthors{configured: configuredAuthor}
+	var err error
+	authors.authenticated, err = provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return false, err
 	}
-	responseAt := latestTrustedRemediationResponse(poll.CommentsSince, author)
+	responseAt := latestTrustedRemediationResponse(
+		poll.CommentsSince,
+		authors,
+	)
 	if responseAt.IsZero() {
 		return false, nil
 	}
@@ -1376,11 +1628,11 @@ func runAbortedPRHasVerifiedRemediation(
 	return countLiveUnresolvedReviewThreads(threads) == 0, nil
 }
 
-func latestTrustedRemediationResponse(comments []providers.PullRequestComment, author string) time.Time {
+func latestTrustedRemediationResponse(comments []providers.PullRequestComment, authors runAbortedCommentAuthors) time.Time {
 	const markerPrefix = "<!-- goobers:remediation-response:"
 	var latest time.Time
 	for _, comment := range comments {
-		if !strings.EqualFold(comment.Author, author) ||
+		if !authors.trusts(comment) ||
 			!strings.HasPrefix(comment.Body, markerPrefix) ||
 			comment.CreatedAt.IsZero() {
 			continue

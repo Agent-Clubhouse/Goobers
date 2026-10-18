@@ -27,8 +27,9 @@
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
-| [`goobers workflow`](#goobers-workflow) | inspect workflows |
+| [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+| [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
 
 ## Advanced operator commands
 
@@ -36,6 +37,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-reset`](#goobers-advisory-pr-reset) | clear one private advisory disposition by explicit operator action |
 | [`goobers agent-kit`](#goobers-agent-kit) | install, inspect, or update the release-matched agent toolkit |
 | [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
@@ -106,6 +108,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension install`](#goobers-portal-extension-install) | install the bundled Goobers Portal extension for the current user |
 | [`goobers portal-extension status`](#goobers-portal-extension-status) | report installed Goobers Portal extension version and drift |
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
+| [`goobers pr`](#goobers-pr) | operator actions on pull requests |
+| [`goobers pr retry`](#goobers-pr-retry) | route an escalated or parked PR to merge-review, remediation, or human hold (audited) |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
 | [`goobers recovery-abandon`](#goobers-recovery-abandon) | explicitly abandon one retained recovery snapshot |
@@ -138,15 +142,19 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
 | [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, prune, or compact telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry |
+| [`goobers telemetry claim`](#goobers-telemetry-claim) | append a Backprop claim from inside an agentic stage |
+| [`goobers telemetry claims`](#goobers-telemetry-claims) | print the Backprop claims earlier stages of this run recorded |
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry label`](#goobers-telemetry-label) | record a ground-truth verdict for a Backprop-enrolled run |
 | [`goobers telemetry mark-fix`](#goobers-telemetry-mark-fix) | mark a Backprop finding for post-fix verification |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
+| [`goobers telemetry shadow`](#goobers-telemetry-shadow) | compare Backprop shadow-mode findings with actual run outcomes |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry test`](#goobers-telemetry-test) | send one secret-safe Application Insights connectivity probe |
 | [`goobers temporal`](#goobers-temporal) | operate Temporal payload services |
@@ -163,6 +171,8 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-publish`](#goobers-advisory-pr-publish) | publish an advisory observation or private skip (a workflow stage) |
+| [`goobers advisory-pr-select`](#goobers-advisory-pr-select) | select one open PR for a private advisory review (a workflow stage) |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
@@ -211,6 +221,54 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate-plan`](#goobers-validate-plan) | validate a decomposition plan against its selector artifact and the live parent (a workflow stage) |
+
+## `goobers advisory-pr-publish`
+
+publish an advisory observation or private skip (a workflow stage)
+
+~~~text
+Usage: goobers advisory-pr-publish [path]
+
+Publish a strict advisory reviewer artifact or record a permanent private skip. Inputs: reviewType, reviewerStage, selectionStage.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-publish
+~~~
+
+## `goobers advisory-pr-reset`
+
+clear one private advisory disposition by explicit operator action
+
+~~~text
+Usage: goobers advisory-pr-reset --gaggle NAME --owner OWNER --repo REPO --review-type TYPE --pr NUMBER [path]
+
+Explicitly clear one private advisory disposition on the local instance.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance
+~~~
+
+## `goobers advisory-pr-select`
+
+select one open PR for a private advisory review (a workflow stage)
+
+~~~text
+Usage: goobers advisory-pr-select [path]
+
+Select one open PR for a private-disposition advisory review. Input: reviewType.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-select
+~~~
 
 ## `goobers agent-kit`
 
@@ -346,9 +404,15 @@ cross-check its optional SHA echo against the deterministic review
 pin, re-check that pin against the PR's current head/base, and — if
 still valid — publish the verdict. Managed PRs receive a native GitHub
 review plus the PR-comment handoff; non-pass verdicts also receive a
-remediation label. advisoryMode=true publishes only the non-blocking
-comment, without closing, labeling, electing, or merging the PR. A
-stale SHA pin voids the verdict: no comment, no label, exit 0 (this
+remediation label. Every published verdict also sets the
+goobers/merge-review commit status on the reviewed head (success for
+pass, failure for needs-changes/fail/escalate, pending for defer; the
+description records the reviewed base), which a required status check
+enforces on every merge path (#4199). advisoryMode=true publishes only
+the non-blocking comment, without closing, labeling, electing, or
+merging the PR. A stale SHA pin voids the verdict: no new verdict, the
+standing comment is marked stale, and a standing verdict status on the
+unchanged head turns pending; exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
 selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
@@ -414,14 +478,31 @@ surface ranked duplicate candidates for curator judgment (a workflow stage)
 Usage: goobers backlog-dedupe [path]
 
 Surface ranked likely-duplicate pairs for the current curation run. The
-command compares this run's claimed issues against every open backlog item
-using title/body similarity, shared closing references, external references,
-and links. It writes a structured candidate artifact for curator judgment;
-it never changes or closes an issue. A candidate's closeEligibleId is present
-only when its newer issue belongs to this run's claimed, trusted batch;
-unclaimed comparison issues are read-only evidence.
+command compares this run's claimed issues against a comparison set (by
+default every open backlog item) using title/body similarity, shared closing
+references, external references, and links. It writes a structured candidate
+artifact for curator judgment; it never changes or closes an issue. A
+candidate's closeEligibleId is present only when its newer issue belongs to
+this run's claimed, trusted batch; unclaimed comparison issues are read-only
+evidence.
 
 The maxCandidates stage input defaults to 20 and must be between 1 and 100.
+It bounds the ranked output only (outputTruncated).
+
+Comparison scope inputs, independent of how the claimed work was selected:
+compareState is open (default) or all (open plus closed history);
+compareLabels lists labels every comparison item must carry, sent to the
+provider query; compareFieldPredicate filters retrieved items by native
+fields exactly (Azure DevOps also narrows its query by required exact
+System.AreaPath and System.WorkItemType equalities when it accepts them);
+compareScanLimit (default 10000, at most 50000) bounds the raw candidates
+read and is never exceeded. Claimed items must fall inside the comparison
+scope to be compared. The artifact's input section reports whether
+collection was complete, why it stopped, which constraints every provider
+query applied, how many pages fell back to a broader query, the claimed
+items not compared, and that pages are not an atomic snapshot. An
+incomplete input is a usable but partial assessment; a complete one with
+no candidates does not prove that no duplicate exists.
 
 Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
 error, 2 = usage error.
@@ -1083,9 +1164,12 @@ like a pasted token is rejected.
 Use owner/repository for GitHub, or organization/project/repository (or a
 dev.azure.com URL) for Azure DevOps. Initialize ADO instances with
 --template=standard --provider=ado first; init defaults the repository to
-azure-cli authentication. Connect records PAT authentication for ADO, reading
-GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or
-managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.
+azure-cli authentication. Connect keeps the repository's existing credential
+source (azure-cli, workload-identity, managed-identity, or a PAT's own token
+reference) unless --token-env is given explicitly; then it records PAT
+authentication reading that variable (GOOBERS_ADO_TOKEN is the ADO default).
+A kept source that names no token variable skips the token reachability
+check (run validate --check-repos) and --seed authenticates through it.
 Connect never changes an existing provider.
 See docs/guides/ado-authentication.md for other authentication modes.
 
@@ -1166,7 +1250,8 @@ running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
 --wait-for-daemon optionally waits up to 30s for a concurrently starting
 daemon's read API; recovery may still be running when the portal opens.
-Use --wait-for-daemon=<duration> to choose another bound.
+Use --wait-for-daemon=<duration> to choose another bound. A daemon that
+reports its startup budget or progress extends that bound (up to 1h).
 --listen overrides the full bind address (host:port) and takes the place
 of --port when given; binding a non-loopback host requires api.auth to be
 configured in instance.yaml (SEC-043) — there is no insecure override.
@@ -1333,6 +1418,7 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
   temporal-namespace required* §2/§4  configured Temporal namespace is registered
+  temporal-worker-routing required* §2/§4 worker deployment routes tasks to live engine workers
   registry           optional  §1     registry reachable (host-side sanity)
 
   apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint
@@ -1383,6 +1469,13 @@ by a denied attempt from an in-cluster negative control, never by doctor
 
 --temporal-codec reports per-instance opt-in and strict mode without probing keys.
 --k8s --instance <root> applies the instance Temporal TLS and payload codec.
+
+temporal-worker-routing compares the "goobers" worker deployment's current and
+ramping traffic shares with the builds polling the engine task queue
+(engine.taskQueue with --instance, else goobers-engine). It fails when no live
+worker serves any share, warns when a share has no live worker, a live build
+that is not draining gets none, or routing cannot be read, and hints the
+Temporal CLI command to run. It never changes the routing itself.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -1448,6 +1541,8 @@ has been delivered — the daemon picks it up and begins draining on its
 next sweep. With no live daemon for this instance, fails fast with a
 clear message rather than hanging. Exit codes: 0 = shutdown requested,
 1 = no live daemon found, 2 = usage/IO error.
+A supervisor restarts the daemon at boot or logon; to keep work paused,
+see docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -1746,13 +1841,21 @@ the workflow through its own engine starter. The run id is the
 scheduler's, and --dedupe-key is refused, because the daemon mints a
 fresh run id per admission.
 
---direct bypasses the daemon and starts the workflow straight on
+--direct bypasses scheduler admission and queues an exact input for
 Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
 workflow and --dedupe-key. That is the only mode in which --dedupe-key
 means anything: a direct start's run id IS its dedupe unit, whereas a
 delegated dispatch dedupes DELIVERIES (by request id) and not work.
 A direct start takes no scheduler slot and fires no terminal hooks.
 --direct is implied when no daemon is running.
+
+Direct starts commit their complete input and exact frontend, namespace
+and task queue to the shared start ledger before contacting Temporal.
+Same-key retries reuse that input. Changed options or credential selectors
+refuse; no current workflow is substituted. The daemon can drain pending
+direct receipts and reconcile an uncertain reply. After any attempted
+start, missing or deleted history remains uncertain and is never resent.
+Confirmation requires the exact input and task queue in Temporal history.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
@@ -2362,13 +2465,17 @@ add native reviews and anchored inline threads to a remediation brief (a workflo
 ~~~text
 Usage: goobers gather-review-threads [path]
 
-Read this run's latest remediation brief and replace only its
-gatherReviewThreads section with native review bodies and inline review
-comments. File, line, side, diff-hunk, resolved, and outdated metadata
-are preserved so the remediator can distinguish live feedback from stale
-threads. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
-context gathered (possibly empty), 1 = business/provider/journal error,
-2 = usage/IO error.
+Read this run's latest remediation brief and replace its gatherReviewThreads
+section with native review bodies and inline review comments, refresh its
+general PR comments from the same read, and pin all of it in an immutable
+feedbackSnapshot (goobers.dev/pr-feedback-snapshot/v1) that later stages
+compare against before acting on the feedback. File, line, side,
+diff-hunk, resolved, and outdated metadata are preserved so the remediator
+can distinguish live feedback from stale threads. A pull request that is
+no longer at this run's selected head ends the run as a stale-selection
+no-work. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
+context gathered (possibly empty) or no-work, 1 = business/provider/journal
+error, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -2582,8 +2689,9 @@ select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
 with their three canonical personas by default. Use --workflows to select
-implementation, backlog-curation, merge-review (Azure DevOps only), and/or
-work-nomination.
+implementation, backlog-curation, merge-review, and/or work-nomination. On
+GitHub, merge-review's pull-request, review, merge and branch-delete
+capabilities use the --pr-token-env token.
 --repo accepts a GitHub owner/name or Azure DevOps identity; --branch
 defaults to main.
 Implementation requires either --pr-ci or an explicit --ci-command JSON argv
@@ -2739,7 +2847,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -2793,6 +2901,9 @@ Merge a pull request, but only when every independent conjunct holds:
 verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's
 live head/base, and — for a sibling-overlap PR — completed single-lander
 election evidence (elected:true, #1071) — never a bare self-approval.
+When the live head carries the goobers/merge-review verdict status
+(GitHub, Gitea), it must be a pass recorded for the pinned base: a
+failure, a pending, or a pass for another base refuses the merge.
 Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,
 all required; in the shipped merge-review workflow, headSha/baseSha
 come from gather-sibling-context's selectedHeadSha/selectedBaseSha,
@@ -2802,11 +2913,28 @@ the default commit message; supplied by
 apply-verdict), advisoryMode (default false — report only, no merge
 attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
-issues), resultFile (default merge-result.json). Successful merges
-also report headBranch and branchCleanup (deleted, skipped-stacked, or
-failed). Exit codes: 0 = evaluated (merged or not — see the result
-file's "merged" field), 1 = business error (missing capability/config,
-malformed inputs, provider failure), 2 = usage/IO error.
+issues), preMergeCheck (optional; one command per line, run without a
+shell on the PR head merged onto the CURRENT base branch tip — a
+failure refuses the merge as pre-merge-check-failed),
+blockUnansweredFeedback (default true: refuse as unanswered-human-feedback
+while the newest open human review feedback — a PR comment, a submitted
+review body, or a comment in an unresolved review thread, on Azure
+DevOps any active thread — is unacknowledged by every Goobers response;
+approving reviews and Bot-typed authors never wait on an answer. The
+feedback is read again after a preMergeCheck, right before landing.
+record-merge-refusal routes the PR to remediation, and parks it
+goobers:needs-human when the same comment is refused again. Gitea reports
+no thread resolution and keeps a dismissed review's state, so there every
+review comment counts until answered. Feedback that
+cannot be read refuses as human-feedback-unverifiable. Comments are
+classified as pr-comment-watch classifies them, under the same
+identityMode and excludeAuthors inputs. Set false to merge over
+comments), resultFile (default merge-result.json). Successful merges
+also report headBranch and branchCleanup (deleted, skipped-stacked,
+skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
+(merged or not — see the result file's "merged" field), 1 = business
+error (missing capability/config, malformed inputs, provider failure),
+2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -2831,8 +2959,18 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
-the pull request and reports skipped without remediation. Exit codes:
+not a swallowed warning. A live goobers:no-merge-review or run-aborted
+opt-out, or a route to remediation that removed goobers:merge-ready,
+withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the
+armed auto-complete) and reports skipped without remediation. Each poll
+of a still-queued pull request also runs merge-pr's unanswered-human-
+feedback check (#6134; blockUnansweredFeedback, identityMode,
+verdictAuthor (merge-pr's, bound via inputsFrom) and
+excludeAuthors as on merge-pr, default on): open human review feedback
+that no Goobers response has acknowledged withdraws the pull request,
+removes goobers:merge-ready and routes it to remediation with the
+unanswered-human-feedback reason. A feedback read that fails keeps it
+queued and is retried on the next poll. Exit codes:
 0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
 see the result file's queueOutcome field),
 1 = business error (missing capability/config,
@@ -3040,9 +3178,11 @@ rather than a static value:
         title: prTitle
 
 Title precedence: an explicitly set non-empty title wins; otherwise the
-claimed item's title, recovered from the run journal (so it survives a
-resume or repass); otherwise the generic "Automated implementation". An
-empty value is not an override — every empty input falls back.
+claimed item's title, recovered from the run journal (or the journal
+plane in a stage pod, so it survives a resume, repass, or pod placement);
+otherwise the generic "Automated implementation" with a warning naming
+why no item title was available. An empty value is not an override — every
+empty input falls back.
 
 itemID explicitly identifies a selected backlog item when the workflow
 read it without claiming. If a claimed item also exists, the IDs must
@@ -3214,12 +3354,63 @@ errors), 1 = business error, 2 = usage/IO error.
 $ goobers post-merge
 ~~~
 
+## `goobers pr`
+
+operator actions on pull requests
+
+~~~text
+Usage: goobers pr <retry> [flags]
+
+retry: route an escalated or parked pull request to merge-review,
+       remediation, or human hold with an audited operator reason.
+~~~
+
+## `goobers pr retry`
+
+route an escalated or parked PR to merge-review, remediation, or human hold (audited)
+
+~~~text
+Usage: goobers pr retry --pr <number> --route merge-review|remediation|hold --reason <text>
+                        [--gaggle <name>] [--actor <identity>] [--dry-run] [--json] [path]
+
+Move a parked or escalated pull request to an explicit lifecycle route
+without hand-editing provider labels or durable remediation state:
+  merge-review  clear escalation and remediation labels and reset the
+                durable retry state so merge-review can elect a lander
+  remediation   clear escalation labels, reset the durable retry state
+                and apply goobers:needs-remediation
+  hold          park the PR for a human (goobers:merge-escalated and
+                goobers:needs-human); remediation labels are cleared
+
+--dry-run reports the PR's current labels, claim lease, remediation
+checkpoint and escalation generation, head/base SHA, and the proposed
+transition without mutating anything. Otherwise the transition is applied,
+an audit comment naming the operator and reason is recorded on the PR, and
+the provider state is re-read to verify the result. Re-running a completed
+retry changes nothing. The command refuses a closed, merged, or healthy
+PR, a PR whose claim lease is still live, and a merge-review route for a PR
+with failing CI or both goobers:needs-remediation and
+goobers:blocked-on-sibling.
+--reason is required; --actor defaults to the invoking user. The provider
+credential is read like any stage's (github:pr:write).
+The resulting eligibility is printed and is immediately visible in
+goobers status, which reads the same provider labels.
+Exit codes: 0 = applied, already applied, or dry-run reported; 1 = refused or
+provider error; 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers pr retry --pr 533 --route remediation --reason 'review contract corrected' --dry-run
+~~~
+
 ## `goobers pr-claim`
 
 check PR liveness or release its remediation claim (a workflow stage)
 
 ~~~text
-Usage: goobers pr-claim [--release] [path]
+Usage: goobers pr-claim [--release] [--verify-feedback] [--classify-feedback-repass] [path]
 
 At a pr-remediation stage boundary, verify that this run's claimed pull
 request is still open and still at the exact source revision this run
@@ -3228,6 +3419,17 @@ claim and return a terminal no-work result; if it moved to a different
 head, release the claim and return a distinct stale-selection no-work
 result, so the runner stops the workflow either way. A missing or
 malformed head fails closed.
+With --verify-feedback, also re-read the PR's review threads and comments
+and compare them with the feedback snapshot this run's brief pinned; a
+difference keeps the claim and reports a typed staleInput reason
+(new_feedback, changed_feedback, missing_feedback, changed_thread_state,
+incomplete_collection, stale_head) for the workflow to route on; beside a
+stale verdict it records the workspace head as localHead.
+With --classify-feedback-repass, report feedbackNoop=true when this run
+re-gathered stale feedback and the agent's repass left the branch at the
+head the stale check recorded (already reviewed, CI-validated or
+published): the feedback is acknowledged with no change needed. No
+provider call is made.
 With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
@@ -3255,7 +3457,14 @@ newest comment with goobers:needs-remediation, so pr-remediation updates
 that PR in place. A PR parked for a human (needs-human / merge-escalated)
 is un-parked when a fresh human comment lands: the park label is cleared
 and needs-remediation added, since the human the PR was parked for has
-now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
+now weighed in. With blockUnansweredFeedback "true" (declare policy
+action disarm-landing) a PR that is landing (goobers:merge-ready) is
+scanned too, by its open feedback: fresh human feedback first disarms
+its armed landing — on Azure DevOps it cancels the auto-complete; on
+GitHub queue-watch withdraws the queued PR once it is routed — then
+removes merge-ready and routes it. Default false: landing PRs are
+skipped, as before; set it false to merge over comments.
+Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
 general comments and review-thread replies both count; deleted comments
 and system threads (votes, pushes, policy status) never do.
 
@@ -3264,9 +3473,21 @@ attribution footer or a review-thread response marker) on a line of its
 own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
-identity, such a comment is that person's and counts as human. Comments
-landing mid-remediation after the brief snapshot can be masked by
-Goobers' response until the human comments again (accepted v1 limit).
+identity, such a comment is that person's and counts as human.
+rebase-pr and update-behind-pr classify comments by this same rule
+before they clear needs-remediation; give them the same identityMode and
+excludeAuthors.
+
+Remediation responses carry a feedback-ack frontier: the newest
+timestamp in the feedback snapshot the run assessed, to the second. Such
+a response acknowledges only human comments within that second or
+earlier, so feedback that lands after the snapshot stays fresh until a
+run assesses it; comments sharing the frontier's second count as
+assessed, and edits never re-route. Azure DevOps verdict thread comments
+carry an empty frontier and acknowledge nothing. A Goobers comment
+without a frontier keeps the legacy rule (it acknowledges every earlier
+human comment); PRs whose newest human comment only such a comment
+acknowledges are listed as unboundAcknowledged in the result.
 
 Inputs: maxPullRequests (default 20), headPrefixes (default the branch
 namespace), base (default the gaggle base branch), excludeLabels (labels
@@ -3302,7 +3523,8 @@ defaults to goobers;
 set it to any to admit PRs outside headPrefixes as advisory-only. PRs
 may be filtered by exact author, assignee, and requestedReviewer inputs.
 PRs labeled goobers:no-merge-review are always excluded. A run-aborted
-PR is excluded unless audited recovery proves a later remediation completed.
+PR is excluded unless audited recovery proves a later remediation completed
+or a valid merge-review pass matches its current head and base.
 Before selection,
 park narrower PRs behind open PRs that clearly dominate a shared-file
 rewrite or deletion. Writes the
@@ -3517,8 +3739,17 @@ detected causes are allowed to trigger remediation; the shipped default is
 fully liberal. behind-base is accepted vocabulary but cannot fire yet (no
 detection reaches this stage's decision today). human-comment fires when a
 genuinely new human comment postdates the watermark recorded in the sticky
-remediation-state comment; detection runs only when the declared policy
-names human-comment, so an old pinned policy is unaffected.
+remediation-state comment, or when no Goobers response has acknowledged the
+newest human comment (the rule pr-comment-watch routes on), so a clean
+rebase never clears goobers:needs-remediation over unanswered feedback;
+detection runs only when the declared policy names human-comment, so an
+old pinned policy is unaffected. Comments are classified as
+pr-comment-watch classifies them, under the same identityMode (dedicated or
+shared; default shared on Azure DevOps, dedicated elsewhere) and
+excludeAuthors inputs; set them to pr-comment-watch's values. On Azure
+DevOps every live general and file-thread comment counts; on GitHub and
+Gitea, submitted review bodies and unresolved review-thread comments
+count alongside PR comments (the feedback merge-pr refuses to land over).
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -3587,7 +3818,10 @@ Usage: goobers record-merge-refusal [path]
 Record a merge-pr refusal against the selected PR's durable demotion
 counter (#950). After a bounded number of refusals at an unchanged
 head, apply goobers:merge-demoted so the election crowns a sibling
-instead and the cluster drains around the stuck PR. Runs on
+instead and the cluster drains around the stuck PR. A refusal for
+unanswered human review feedback is not counted: the PR is routed to
+remediation instead (goobers:needs-remediation added,
+goobers:merge-ready removed). Runs on
 merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
 do), 1 = business error, 2 = usage/IO error.
 ~~~
@@ -3648,10 +3882,16 @@ restore retained implementation into the receiving run (a workflow stage)
 Usage: goobers recovery-resume [instance]
 
 Restore the current run's single claimed issue onto freshly fetched main,
-then fast-forward its clean receiving worktree to the restored commit.
+then fast-forward its clean receiving worktree to the restored commit. A
+claim with no retained checkpoint succeeds without changing the branch.
 Requires workflow run context and repository credentials. Refuses another
-branch, changed or dirty work, and expired claims. Verified retries resume
-the prepared result; completed adoption removes its preparation branch.
+branch, changed or dirty work, and expired claims. Retained work whose base
+diverged or whose patch conflicts is skipped, and the claim starts fresh.
+Verified retries resume the prepared result; completed adoption removes its
+preparation branch. Writes recovery-resume.json with resume status and
+source-run provenance (recovery ref, base and snapshot commits, patch
+digest, workflow, terminal phase and run.finished sequence) for the run
+journal.
 Does not push, open a PR, release the claim, or remove retained state.
 ~~~
 
@@ -3784,8 +4024,17 @@ Usage: goobers resolve-review-threads [path]
 
 Validate the implementer's threadResponses against every gathered live review
 thread, reply to each thread, resolve addressed threads after the reply is
-visible, and re-query the published PR head. Exit codes: 0 = responses
-applied and verified, 1 = business/provider error, 2 = usage/IO error.
+visible, and re-query the published PR head. Before and during publication
+the live feedback is compared with the run's recorded feedback snapshot:
+new, changed or missing feedback, or a thread whose state someone else
+changed, stops publication with a typed staleInput result the workflow
+routes back to gather-review-threads; a head that moved off the published
+SHA ends the run as no-work. The result file is a versioned publication
+receipt (goobers.dev/review-thread-publication/v1), rewritten after every
+verified reply and resolution; a retry reconciles the run's newest matching
+receipt with re-read provider state and never publishes a mutation twice.
+Exit codes: 0 = responses applied and verified, stale input reported, or
+no-work; 1 = business/provider error; 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -3892,12 +4141,17 @@ manual run. All other run conditions remain enforced. --force cannot be
 combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
-submits through its API automatically — dispatched through
-the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
+submits through its API automatically. Both paths durably capture a
+start before normal scheduler admission. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
 escalated. The submission-only --no-wait mode exits 0 on durable API
 acceptance, before dispatch.
+Standalone and detached starts accept --request-id for exact retries.
+They queue a pinned definition and attempt only their own receipt.
+If capacity holds it, the command prints its receipt and request ID,
+then exits nonzero; retry that ID or start `goobers up` to drain it.
+Standalone --no-wait still returns after admission.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. When TLS publishes only a wildcard bind address, the CLI
@@ -3929,7 +4183,8 @@ drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
 retry use the same acceptance identity. --api-timeout bounds remote validation
-and acceptance (default 30s; must be positive). A timed-out submission has
+and acceptance (default 30s; must be positive), including any wait for a
+daemon that is still starting after a restart. A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal. For local file delegation,
@@ -4015,6 +4270,8 @@ terminal outcome later. Exit codes:
 0 = cancelled or engine cancellation requested, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
+To pause a workflow or gaggle before cancelling its runs, see
+docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -4306,7 +4563,7 @@ a private release mirror).
 
 ~~~console
 $ goobers self-update --policy on-release
-$ goobers self-update --policy manual --target v0.5.1
+$ goobers self-update --policy manual --target v0.6.1
 ~~~
 
 ## `goobers service`
@@ -4560,19 +4817,21 @@ $ goobers set-milestone --item 1227 --milestone 22
 fire an external signal to subscribed workflows
 
 ~~~text
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id <key>] <name> [path]
 
-Fire an external signal by name, dispatching every workflow with a
-type=signal trigger subscribed to it, through the same scheduler (run
-conditions, instance journal, single-instance lock) a live `goobers up`
-daemon uses (default path "."). A signal may match zero, one, or many
-workflows; waits for every dispatched run to reach a terminal state or
-pause before returning (same blocking UX as `goobers run`).
-Exit codes after waiting: 0 = every admitted run completed (also used when
-none were admitted), 1 = any run failed/aborted or a business error, 2 =
-usage/IO error, 3 = any run escalated. Escalation takes precedence for
-mixed outcomes; successful submission-only modes exit 0 because they do
-not observe a terminal phase.
+Durably accept a named signal and its matching type=signal workflows
+through the instance scheduler (default path "."). Reuse --request-id
+to recover the original recipient set after a lost reply; without it, a
+new key is printed before acceptance. A signal may match zero, one, or
+many workflows. Waits for each dispatched run to finish or pause.
+Capacity-held starts remain queued for goobers up or a same-key retry.
+A submission-only receipt still requires dispatch and completion.
+The command requires the instance lock; stop its daemon first.
+
+Exit codes: 0 = all admitted runs completed or no workflows matched,
+1 = a run failed/aborted, a start remains queued, or a business error,
+2 = usage/IO error, 3 = a run escalated. Escalation takes precedence
+when completed runs have mixed outcomes.
 ~~~
 
 **Examples**
@@ -4667,7 +4926,7 @@ $ goobers stats --since 24h --json
 validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--api=<url>] [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--api=<url>] [--daemon | --agents | --runs-only | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
@@ -4677,6 +4936,9 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
 source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+With an engine configured, it checks that the Temporal worker deployment routes tasks to the
+live engine workers and warns with the set-current-version command when it does not, or says
+unknown when Temporal cannot be read (JSON: engineRouting).
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
 Manual-only workflows are summarized by default; use --all or --workflow to show
@@ -4697,6 +4959,11 @@ invoking run when it is itself a stage. It needs no credentials and makes no pro
 calls, so it is safe to run from inside a container during a deploy window. Combine it
 with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and
 --watch are refused because the probe reports only the live moment.
+With --runs-only, skip workflow health and provider-backed status queries and return
+only the bounded run table, without recovery decoration; combine it with --json and
+--limit for fast operator probes. A ready, current status projection is required.
+The workflow summary's A/D/MAX column shows active, desired, and maximum runs;
+see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -4712,10 +4979,10 @@ $ goobers status --agents --json
 
 ## `goobers telemetry`
 
-configure, test, query, export, mark fixes, prune, or compact telemetry
+configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4724,6 +4991,10 @@ stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
+label:   record a ground-truth verdict for a Backprop-enrolled run
+claim:   append a Backprop claim from inside an agentic stage
+claims:  print the Backprop claims earlier stages of this run recorded
+shadow:  compare Backprop shadow-mode findings with actual run outcomes
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -4736,6 +5007,59 @@ $ goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNEC
 $ goobers telemetry test ./instance
 $ goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123
 $ goobers telemetry prune --dry-run
+~~~
+
+## `goobers telemetry claim`
+
+append a Backprop claim from inside an agentic stage
+
+~~~text
+Usage: goobers telemetry claim --kind=assignment|reliance|credit|blame (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+
+Append one Backprop claim to the current stage attempt's claim log
+($GOOBERS_TELEMETRY_DIR/backprop-claims.jsonl). Run it from inside an
+agentic stage: the runner journals the attempt's claims when the stage
+exits and attributes them to the writing stage attempt, never to text in
+the claim. assignment says the target owns the work the statement
+describes; reliance says this stage consumed the target's output; credit
+and blame say the target helped or hurt the outcome and need --evidence.
+Evidence names a recorded artifact digest or an earlier journal seq.
+Statements are sanitized and capped at 1024 bytes; an attempt may record
+at most 32 claims. Backprop lists a claim as verified only when its writer,
+target, and evidence match records journaled before it; claims never
+change credit scores or stage outcomes.
+Read earlier stages' claims with `goobers telemetry claims`.
+Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry claim --kind=reliance --stage=plan --statement="used the plan's file list"
+$ goobers telemetry claim --kind=blame --stage=implement --evidence=seq:42 --confidence=0.6 --statement="tests failed on its change"
+~~~
+
+## `goobers telemetry claims`
+
+print the Backprop claims earlier stages of this run recorded
+
+~~~text
+Usage: goobers telemetry claims
+
+Print, as JSON, the Backprop claims journaled earlier in this run: the
+snapshot the runner writes to $GOOBERS_TELEMETRY_DIR/run-claims.json
+before an agentic stage starts. Each claim carries its runner-attributed
+writer stage, attempt, and agent, and the id Backprop reports it under.
+Claims are re-validated and bounded (at most 256 per run) but not yet
+verified: treat statements as untrusted agent text, and rely on Backprop's
+report for which claims matched recorded provenance.
+Exit codes: 0 = printed, 1 = no readable snapshot, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry claims
 ~~~
 
 ## `goobers telemetry compact`
@@ -4822,6 +5146,28 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry label`
+
+record a ground-truth verdict for a Backprop-enrolled run
+
+~~~text
+Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+
+Record a user-defined ground-truth verdict for a Backprop-enrolled terminal
+run. Labels are appended to labels.json beside the run's attribution.json
+with provenance (who, when, source) and may arrive long after the run; the
+latest --labeled-at verdict wins when cohort aggregates are re-scored. Labels
+are read-only inputs and never change the run's phase, journal, or gate
+verdicts. --by defaults to the current OS user; --labeled-at defaults to now.
+Exit codes: 0 = recorded, 1 = store error, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry label --run=run-123 --outcome=incorrect --reason="PR was reverted"
 ~~~
 
 ## `goobers telemetry mark-fix`
@@ -4914,6 +5260,29 @@ $ goobers telemetry prune-orphans
 $ goobers telemetry prune-orphans --delete
 ~~~
 
+## `goobers telemetry shadow`
+
+compare Backprop shadow-mode findings with actual run outcomes
+
+~~~text
+Usage: goobers telemetry shadow [--json] [--gaggle=name] [--workflow=name] [--since=RFC3339] [--until=RFC3339] [path]
+
+Compare what Backprop's active fault audit would have filed and recommended
+from shadow-mode attribution with what actually happened to those runs.
+Shadow runs come from workflows with backprop.mode: shadow and from
+workflows observed through a gaggle's backprop.mode: shadow override. This
+report is read-only: it records no filing, cooldown, or verification state,
+and no gate, filing pass, or default portal view reads it. Exit codes:
+0 = OK, 1 = query error, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry shadow
+$ goobers telemetry shadow --json --gaggle=goobers
+~~~
+
 ## `goobers telemetry stats`
 
 success rate and duration aggregates per workflow and stage
@@ -4986,9 +5355,10 @@ verified when the workflow is absent from the live reconciled config.
 In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +
 GOOBERS_GAGGLE) the query is answered by the daemon's bounded
 defect-aggregate plane instead of a local rollup file. That plane serves
-only --aggregate stage-failure-rate, error-signature, gate-noise and
-credit-assignment with --format candidate-findings, error signatures are
-normalized by the daemon before they cross, and the read is contained to
+only --aggregate stage-failure-rate, error-signature, gate-noise,
+credit-assignment and ci-check-failure with --format candidate-findings,
+error signatures are normalized by the daemon before they cross, and the
+read is contained to
 the stage's own gaggle. Anything outside that — another --format, another
 aggregate, --learning-action, a path argument, or a threshold governing an
 unserved family — is refused rather than answered narrowly. Off the plane,
@@ -5100,7 +5470,9 @@ Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
 It does not skip the harness admission preflight: a workflow whose agentic
 stage needs a harness that fails its startup check is still refused, while
-other workflows keep running.
+other workflows keep running. A check that failed only because the model
+provider was rate limiting or unreachable is re-run with backoff, and the
+workflow is admitted again once it passes.
 
 A Git workflowSource continuously reconciles its tracked ref. Local Git
 ref changes wake the loop immediately; periodic fetch-and-compare polling
@@ -5150,8 +5522,16 @@ API-update a clean behind-base PR, else route to remediation (a workflow stage)
 Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
-is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. A run dispatched for one
+is mergeable, CI-clean, and carries no substantive findings. A behind
+PR whose failing checks all failed on its base branch too, at its
+merge-base or at a base commit since, is red because its base was, so
+it is updated the same way. Other candidates are routed to full
+remediation, including a PR carrying goobers:needs-remediation that has
+human feedback no Goobers response has answered: this lane clears that
+label, and the feedback needs the agentic path. Comments are classified
+as pr-comment-watch classifies them, under the same identityMode
+(dedicated or shared; default dedicated) and excludeAuthors inputs; set
+them to pr-comment-watch's values. A run dispatched for one
 pull request (goobers run --pr, or a pull_request webhook delivery)
 selects that PR and no other; when the target is not selectable the
 stage reports no-work naming the reason instead of falling back to
@@ -5182,7 +5562,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -5326,6 +5706,7 @@ Host a Temporal worker for the tier-3 engine (experimental): connect to the
 configured Temporal frontend, register the engine workflow and activities,
 and serve the named task queue(s) until SIGTERM/SIGINT, then drain — stop
 polling and let in-flight activities finish within --drain-timeout.
+Child dispatch cleanup can take up to 5 additional minutes before exit.
 
 The tier-3 engine is not on the local (V0) execution path; this command is
 the deployable worker shape for the cloud ladder. Automated gate checks and
@@ -5427,12 +5808,12 @@ $ goobers worker --task-queue goobers-engine --drain-timeout 60s
 
 ## `goobers workflow`
 
-inspect workflows
+inspect workflows and validate child proposals
 
 ~~~text
-Usage: goobers workflow show [flags] <name> [path]
+Usage: goobers workflow <show | validate-child> [flags]
 
-Show the named workflow as a text DAG or Graphviz DOT (default path ".").
+Show a workflow DAG or validate a generated child proposal against its configured parent.
 
 Workflow
 
@@ -5456,6 +5837,32 @@ kinds, and transition targets as a text DAG or Graphviz DOT
 ~~~console
 $ goobers workflow show default-implement
 $ goobers workflow show default-implement --dot
+~~~
+
+## `goobers workflow validate-child`
+
+validate a child proposal against its configured parent
+
+~~~text
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+
+Validate one generated child Workflow against an opted-in parent stage in
+the instance's current active config/ tree (default path "."). The parent
+supplies policy; child grants are also bounded by the parent's stage capabilities.
+The proposal must pin DSL 3.1 and declare only a plain manual trigger.
+
+This is advisory current-config validation, not durable run admission. It
+does not start or queue work, resolve credentials, invoke a model, or refresh
+workflowSource. --backend selects the validation target (default runner).
+Config digests identify declarative validation inputs, not an execution archive.
+--json emits child-workflow-validation/v1 diagnostics and digests.
+Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml
 ~~~
 
 ## `goobers workspace`

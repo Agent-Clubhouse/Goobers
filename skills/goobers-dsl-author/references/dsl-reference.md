@@ -102,6 +102,15 @@ never appear in the gaggle. Every non-empty project or backlog `connectionRef`
 must resolve there. Use a `repo` connection for the project and a `backlog`
 connection for the backlog.
 
+`spec.health` is optional and shared across supported workflow DSL pins. Omission
+enables conservative observation, warning notifications, and only the built-in
+idempotent orphaned-claim repair. It may set the evaluation interval; detector
+thresholds; per-code `observe`, `repair`, or `escalate` handling; severity
+increases; notification escalation; and a filtered notification-only
+`eventWorkflow`. Never invent finding codes or use a workflow as repair
+authority: validation rejects unknown codes, severity reductions, and repairs
+outside the product's hard safety allowlist.
+
 ### Goober
 
 Provide:
@@ -212,6 +221,43 @@ every other status. Use only outcomes and parameters accepted by the target
 release. Agentic gates must cover `pass`, `fail`, and `needs-changes`. Human
 gates may be present in a schema before a runner supports them, so always
 confirm them with `goobers validate`.
+
+### Choosing a control-flow construct
+
+Pick the cheapest construct that fits each decision in the workflow:
+
+| You need | Use | Decided by | Shape fixed by the author |
+|---|---|---|---|
+| One path out of several | Gate `branches` | Gate verdict | All paths |
+| A fixed set of branches, all run | Static `parallel` | Nothing; every branch runs | Branches and width |
+| A fixed set of different branches, a subset run | Selective `parallel` | Selection artifact | Branches; width at most the declared count |
+| The same task over a data-determined list | `map` | Roster artifact | Task template; width at most 32 |
+| A composition nobody can know until run time | Child workflow | The parent agent writes a Workflow | Policy ceiling only |
+| Skip the whole fan-out | Gate before the parallel or map | Gate verdict | Both paths |
+
+- Don't emulate a selective parallel with a gate at each branch start that
+  routes to `@join`. The join can't tell "did not apply" from "ran and found
+  nothing", and each branch still takes a concurrency slot.
+- Don't reach for a child workflow when the branches or the task are known when
+  the workflow is written. A child is a separately admitted run with its own
+  workspace fork, custody and wait.
+- Selective parallels and maps are DSL 3.1 preview features. The workflow must
+  pin `dslVersion: "3.1"` and set the
+  `goobers.dev/allow-preview-features: "true"` annotation. They run on the
+  local runner only; the Temporal engine refuses them at run start.
+- A selective parallel adds `selection: {source: {task, slot}}` and marks the
+  branches it may skip `optional: true`. Non-optional branches always run.
+- A map runs one declared task once per roster item. The mapped task ends at
+  `@join` and uses a `scratch` or `repo-readonly` workspace. It can't declare
+  `childWorkflows`.
+- The selection or roster is a JSON document published through an
+  `artifactSlots` entry (`mediaType: application/json`) of a task that runs
+  before the fan-out on every path. No expression language exists; compute
+  the decision in that task.
+
+See the
+[graph and execution reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/workflow-primitives/graph-and-execution.md)
+for the full fields and document formats.
 
 ## Canonical capabilities
 

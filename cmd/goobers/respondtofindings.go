@@ -149,7 +149,12 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "PR #%d: remediated branch was not published, so no finding response was posted\n", selectedNumber)
 		return 0
 	}
-	comment := renderRemediationResponse(runID, result)
+	brief, err := readLatestRemediationBrief(root, runID)
+	if err != nil {
+		pf(stderr, "error: read remediation brief: %v\n", err)
+		return 1
+	}
+	comment := withFeedbackAck(renderRemediationResponse(runID, result), remediationFeedbackAck(brief))
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -322,10 +327,12 @@ func remediationBriefVerdict(rd journalclient.Reader, ref journal.Ref) (apiv1.Ve
 	if err := json.Unmarshal(data, &brief); err != nil {
 		return apiv1.Verdict{}, fmt.Errorf("unmarshal remediation-brief.json artifact: %w", err)
 	}
-	if brief.Schema != apiv1.RemediationBriefVersion {
+	// Any readable wire version: a run whose gather-pr-context wrote an older
+	// brief before this binary deployed must still be able to respond.
+	if !apiv1.SupportedRemediationBriefVersion(brief.Schema) {
 		return apiv1.Verdict{}, fmt.Errorf(
-			"remediation-brief.json artifact schema is %q, want %q",
-			brief.Schema, apiv1.RemediationBriefVersion,
+			"remediation-brief.json artifact schema is %q, want one of %s",
+			brief.Schema, strings.Join(apiv1.SupportedRemediationBriefVersions(), ", "),
 		)
 	}
 	if brief.GatherPRContext.Verdict == nil {

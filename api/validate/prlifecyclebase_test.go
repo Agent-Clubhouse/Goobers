@@ -81,7 +81,7 @@ func TestPRLifecycleBaseMatchesGaggleBranchValidatesClean(t *testing.T) {
       inputs:
         base: release
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - flag-foundation-coupling
 `

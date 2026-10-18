@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -122,7 +123,7 @@ func stampClaimsPlaneEnv(t *testing.T, plane *claimsPlane, runID, token string) 
 func normalizeClaimEntries(entries []claimsclient.Entry) []claimsclient.Entry {
 	out := make([]claimsclient.Entry, 0, len(entries))
 	for _, entry := range entries {
-		entry.ClaimedAt, entry.ExpiresAt = time.Time{}, time.Time{}
+		entry.ClaimedAt, entry.RenewedAt, entry.ExpiresAt = time.Time{}, time.Time{}, time.Time{}
 		if entry.ReleasedAt != nil {
 			released := time.Time{}
 			entry.ReleasedAt = &released
@@ -201,7 +202,7 @@ func TestClaimLedgerFileAndPlaneParity(t *testing.T) {
 		}
 		out.Namespace = normalizeClaimEntries(listing.Entries)
 		// A non-holder's release is the ledger's idempotent no-op.
-		if err := otherRun.ReleaseScoped(ctx, item, "run-2"); err != nil {
+		if err := otherRun.ReleaseScoped(ctx, item, "run-2", claimrelease.Completed.Reason()); err != nil {
 			t.Fatalf("non-holder release: %v", err)
 		}
 		stillHeld, err := ledger.ForRunAll(ctx, "run-1")
@@ -209,10 +210,10 @@ func TestClaimLedgerFileAndPlaneParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		out.NonHolderReleaseOK = len(stillHeld) == 2
-		if err := ledger.ReleaseScoped(ctx, second, "run-1"); err != nil {
+		if err := ledger.ReleaseScoped(ctx, second, "run-1", claimrelease.Completed.Reason()); err != nil {
 			t.Fatalf("release: %v", err)
 		}
-		released, err := ledger.ReleaseAllForRun(ctx, "run-1")
+		released, err := ledger.ReleaseAllForRun(ctx, "run-1", claimrelease.Completed.Reason())
 		if err != nil {
 			t.Fatalf("ReleaseAllForRun: %v", err)
 		}
@@ -305,7 +306,7 @@ func TestClaimLedgerPlaneContainsPodToItsRun(t *testing.T) {
 	if _, err := asOther.ForRunAll(ctx, "run-2"); !errors.As(err, &planeErr) || planeErr.Code != "run_mismatch" {
 		t.Fatalf("list another run: err = %v, want run_mismatch", err)
 	}
-	if _, err := asOther.ReleaseAllForRun(ctx, "run-2"); !errors.As(err, &planeErr) || planeErr.Code != "run_mismatch" {
+	if _, err := asOther.ReleaseAllForRun(ctx, "run-2", claimrelease.Completed.Reason()); !errors.As(err, &planeErr) || planeErr.Code != "run_mismatch" {
 		t.Fatalf("release-all for another run: err = %v, want run_mismatch", err)
 	}
 	if _, err := asOther.ListNamespace(ctx, "other-gaggle", "github"); !errors.As(err, &planeErr) || planeErr.Code != "gaggle_mismatch" {
@@ -505,6 +506,7 @@ func TestBacklogReconcileReservationOverThePlane(t *testing.T) {
 	}
 	stampClaimsPlaneEnv(t, plane, "curation-run", token)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	podRoot := instance.NewLayout(t.TempDir())
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 
@@ -524,6 +526,11 @@ func TestBacklogReconcileReservationOverThePlane(t *testing.T) {
 	}
 	if entry, ok := reopened.LookupScoped(localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "6"}); !ok || entry.RunID != "curation-run" {
 		t.Fatalf("daemon ledger entry for 6 = %+v, %v; want held by curation-run", entry, ok)
+	} else if entry.Workflow != "backlog-curation" {
+		// The daemon's pinned-identity check compares the claim's workflow with
+		// the run's pinned workflow; the synthetic "backlog-reconcile" label is
+		// only valid on a synthesized RunID, never over the plane.
+		t.Fatalf("daemon ledger entry for 6 filed under workflow %q, want the run's own %q", entry.Workflow, "backlog-curation")
 	}
 	if err := releaseBacklogClaimReconciliation(podRoot, *reservation); err != nil {
 		t.Fatal(err)
@@ -582,7 +589,7 @@ func TestPullRequestClaimsOverThePlane(t *testing.T) {
 	if err != nil || len(available) != 2 || available[0].Number != 78 || available[1].Number != 79 {
 		t.Fatalf("claim-available PRs = %+v, %v; want 78 (ours) and 79 (free)", available, err)
 	}
-	if err := releasePRRemediationClaim(podRoot); err != nil {
+	if err := releasePRRemediationClaim(podRoot, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := claimedPullRequestNumber(podRoot); err != nil || ok {

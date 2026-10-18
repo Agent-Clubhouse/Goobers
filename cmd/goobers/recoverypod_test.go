@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
@@ -93,10 +96,44 @@ func TestPodRecoveryNonWritableWorkspaceNeedsNoCustody(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv(dispatcher.EnvStageWorkspace, mode)
 			t.Setenv(dispatcher.EnvDaemonAPI, "")
-			if err := publishPodRecovery(t.Context(), "missing-workspace"); err != nil {
+			if err := publishPodRecovery(t.Context(), "missing-workspace", nil); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestPodRecoveryPhaseNamesDeadlineAndReportsTiming(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var tracedPhase string
+	var tracedElapsed time.Duration
+	var tracedErr error
+	err := podRecoveryPhase(ctx, func(phase string, elapsed time.Duration, err error) {
+		tracedPhase = phase
+		tracedElapsed = elapsed
+		tracedErr = err
+	}, "inspect workspace", func(context.Context) error {
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "inspect workspace") {
+		t.Fatalf("podRecoveryPhase error = %v, want inspect workspace context cancellation", err)
+	}
+	if tracedPhase != "inspect workspace" || !errors.Is(tracedErr, context.Canceled) {
+		t.Fatalf("trace = (%q, %v), want inspect workspace cancellation", tracedPhase, tracedErr)
+	}
+	if tracedElapsed < 0 {
+		t.Fatalf("trace elapsed = %s, want non-negative", tracedElapsed)
+	}
+}
+
+func TestPodRecoveryPhaseWrapsOperationErrorWithPhase(t *testing.T) {
+	boom := errors.New("boom")
+	err := podRecoveryPhase(t.Context(), nil, "retain archive", func(context.Context) error {
+		return boom
+	})
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "retain archive") {
+		t.Fatalf("podRecoveryPhase error = %v, want retain archive boom", err)
 	}
 }
 
@@ -120,7 +157,7 @@ func TestPodRecoveryMissingClaimPreservesSource(t *testing.T) {
 	if err := os.WriteFile(path, []byte("retain me"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := publishPodRecovery(t.Context(), root); err != nil {
+	if err := publishPodRecovery(t.Context(), root, nil); err != nil {
 		t.Fatalf("missing claim recovery: %v", err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "retain me" {
@@ -128,6 +165,44 @@ func TestPodRecoveryMissingClaimPreservesSource(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("recovery made %d requests without a claim, want only the claim lookup", requests)
+	}
+}
+
+// #6920: a writable-repo stage that failed before its checkout created .git
+// has no repository to take into custody. Probing one fails with "not a git
+// repository" and used to stop the pod from ever surrendering.
+func TestPodRecoveryUnmaterializedWorkspaceNeedsNoCustody(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/v1/claims/list" {
+			t.Errorf("recovery request = %s, want only a claim lookup", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"entries":[{"runId":"pod-recovery","gaggle":"web","itemId":"42","expiresAt":"2030-01-01T00:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv(dispatcher.EnvStageWorkspace, "repo")
+	t.Setenv(dispatcher.EnvRunID, "pod-recovery")
+	t.Setenv(dispatcher.EnvGaggle, "web")
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvPodToken, "parent-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
+
+	var phases []string
+	err := publishPodRecovery(t.Context(), t.TempDir(), func(phase string, _ time.Duration, err error) {
+		phases = append(phases, phase)
+		if err != nil {
+			t.Errorf("recovery phase %s failed: %v", phase, err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("unmaterialized workspace recovery: %v", err)
+	}
+	if requests != 1 || len(phases) != 1 || phases[0] != "claim lookup" {
+		t.Fatalf("recovery made %d requests through phases %v, want only the claim lookup", requests, phases)
 	}
 }
 
@@ -154,7 +229,7 @@ func TestPodRecoveryEmptyDiffNeedsNoCustody(t *testing.T) {
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv(executor.BaseBranchEnvVar, "main")
 
-	if err := publishPodRecovery(t.Context(), root); err != nil {
+	if err := publishPodRecovery(t.Context(), root, nil); err != nil {
 		t.Fatalf("empty workspace recovery: %v", err)
 	}
 	if requests != 1 {

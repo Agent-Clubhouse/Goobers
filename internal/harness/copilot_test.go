@@ -453,7 +453,7 @@ func TestCopilotAdapterDoesNotUseAnotherGoobersGrantWhenStoredAuthIsAllowed(t *t
 		t.Fatalf("Run with stored auth fallback: %v", err)
 	}
 	for _, entry := range runner.lastReq.Env {
-		if entry == "COPILOT_GITHUB_TOKEN=other-goober-token" {
+		if entry == "COPILOT_GITHUB_TOKEN="+"other-goober-token" {
 			t.Fatalf("another goober's grant leaked into subprocess env: %v", runner.lastReq.Env)
 		}
 	}
@@ -664,7 +664,7 @@ func TestCopilotAdapterRepairKeepsStoredAuthRepoPushTokenOutOfSubprocess(t *test
 		t.Fatalf("process calls = %d, want initial call plus repair", len(calls))
 	}
 	for i, call := range calls {
-		if containsEnv(call.Env, "GH_TOKEN=repository-token") {
+		if containsEnv(call.Env, "GH_TOKEN="+"repository-token") {
 			t.Fatalf("call %d exposed repository token to stored-auth Copilot subprocess: %v", i+1, redactedNames(call.Env))
 		}
 	}
@@ -955,7 +955,7 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 			t.Fatalf("prompt text leaked into argv[%d] = %q, which a CLI may parse as flags", i, arg)
 		}
 	}
-	promptText, ok := copilotPromptArgValue(runner.lastReq.Command)
+	promptText, ok := copilotSentPrompt(runner.lastReq)
 	if !ok {
 		t.Fatalf("unexpected command: %v", runner.lastReq.Command)
 	}
@@ -992,12 +992,12 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	// The credential was injected as an env var, not a CLI arg.
 	foundEnv := false
 	for _, kv := range runner.lastReq.Env {
-		if kv == "GH_TOKEN=push-token-value" {
+		if kv == "GH_TOKEN="+"push-token-value" {
 			foundEnv = true
 		}
 	}
 	if !foundEnv {
-		t.Fatalf("expected GH_TOKEN=push-token-value in subprocess env, got %v", runner.lastReq.Env)
+		t.Fatalf("expected GH_TOKEN="+"push-token-value in subprocess env, got %v", runner.lastReq.Env)
 	}
 	telemetryPrefix := "GOOBERS_TELEMETRY_DIR="
 	foundTelemetryDir := false
@@ -1029,7 +1029,8 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 		wantIncluded     []string
 		wantOmitted      []string
 		wantCommandParts []string
-		wantIssues       bool
+		capabilities     []string
+		wantGitHubArg    string
 		externalMCP      bool
 	}{
 		{
@@ -1061,26 +1062,62 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			wantOmitted:  []string{"github-mcp-server-issue_write"},
 		},
 		{
-			name:         "shipped github group excludes shell",
-			tools:        []string{"github"},
-			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write"},
-			wantOmitted:  []string{"bash", "powershell"},
-			wantIssues:   true,
+			name:          "shipped github group excludes shell",
+			tools:         []string{"github"},
+			wantIncluded:  []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write"},
+			wantOmitted:   []string{"bash", "powershell"},
+			wantGitHubArg: "--add-github-mcp-toolset=issues",
 		},
 		{
-			name:         "shipped github and telemetry groups expand independently",
-			tools:        []string{"github", "telemetry"},
-			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write", "github-mcp-server-add_issue_comment", "github-mcp-server-search_issues", "view", "rg"},
-			wantOmitted:  []string{"bash", "powershell", "create"},
-			wantIssues:   true,
+			name:          "shipped github and telemetry groups expand independently",
+			tools:         []string{"github", "telemetry"},
+			wantIncluded:  []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write", "github-mcp-server-add_issue_comment", "github-mcp-server-search_issues", "view", "rg"},
+			wantOmitted:   []string{"bash", "powershell", "create"},
+			wantGitHubArg: "--add-github-mcp-toolset=issues",
 		},
 		{
-			name:         "external MCP tools are server-qualified without disabling declared GitHub",
-			tools:        []string{"github", "reachability"},
-			wantIncluded: []string{"github-mcp-server-issue_read", "context-github", "context-reachability"},
-			wantOmitted:  []string{"create", "context-github-mcp-server-issue_read"},
-			wantIssues:   true,
-			externalMCP:  true,
+			name:          "external MCP tools are server-qualified without disabling declared GitHub",
+			tools:         []string{"github", "reachability"},
+			wantIncluded:  []string{"github-mcp-server-issue_read", "context-github", "context-reachability"},
+			wantOmitted:   []string{"create", "context-github-mcp-server-issue_read"},
+			wantGitHubArg: "--add-github-mcp-toolset=issues",
+			externalMCP:   true,
+		},
+		{
+			name:          "github issue read capability keeps the read-only subset",
+			tools:         []string{"github"},
+			capabilities:  []string{"github:issues:read"},
+			wantIncluded:  []string{"github-mcp-server-issue_read"},
+			wantGitHubArg: "--add-github-mcp-toolset=issues",
+		},
+		{
+			// #5552: the issues toolset never registers issue_write or
+			// add_issue_comment, so a write-capable stage must get the full
+			// catalog, still scoped by --available-tools.
+			name:          "github issue write capability registers the full catalog",
+			tools:         []string{"github", "telemetry", "shell"},
+			capabilities:  []string{"telemetry:read", "github:issues:write"},
+			wantIncluded:  []string{"github-mcp-server-issue_write", "github-mcp-server-add_issue_comment", "bash"},
+			wantOmitted:   []string{"github-mcp-server-create_pull_request", "github-mcp-server-merge_pull_request"},
+			wantGitHubArg: "--enable-all-github-mcp-tools",
+		},
+		{
+			name:          "github issue approve capability registers the full catalog",
+			tools:         []string{"github"},
+			capabilities:  []string{"github:issues:approve"},
+			wantGitHubArg: "--enable-all-github-mcp-tools",
+		},
+		{
+			name:          "github milestone write capability registers the full catalog",
+			tools:         []string{"github"},
+			capabilities:  []string{"github:milestones:write"},
+			wantGitHubArg: "--enable-all-github-mcp-tools",
+		},
+		{
+			name:         "write capability without the github group registers no GitHub catalog",
+			tools:        []string{"shell"},
+			capabilities: []string{"github:issues:write"},
+			wantIncluded: []string{"bash"},
 		},
 	}
 
@@ -1110,11 +1147,11 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 				Runner:          runner,
 				EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
 			}
-			envelope := testEnvelope(workspace)
+			envelope := testEnvelope(workspace, tc.capabilities...)
 			var mcpServers []apiv1.MCPServer
 			var creds *credentials.Set
 			if tc.externalMCP {
-				envelope = testEnvelope(workspace, "agent:model")
+				envelope = testEnvelope(workspace, append([]string{"agent:model"}, tc.capabilities...)...)
 				mcpServers = []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
 				creds = mcpTestCredentials(t, "agent:model", "model-token")
 			}
@@ -1176,13 +1213,23 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 				!slices.Contains(runner.lastReq.Command, "--output-format=text") {
 				t.Fatalf("response completion flags missing: %v", runner.lastReq.Command)
 			}
-			if got := slices.Contains(runner.lastReq.Command, "--add-github-mcp-toolset=issues"); got != tc.wantIssues {
-				t.Fatalf("GitHub issues toolset enabled = %t, want %t: %v", got, tc.wantIssues, runner.lastReq.Command)
+			var githubArgs []string
+			for _, arg := range runner.lastReq.Command {
+				if strings.HasPrefix(arg, "--add-github-mcp-") || arg == "--enable-all-github-mcp-tools" {
+					githubArgs = append(githubArgs, arg)
+				}
+			}
+			var wantGitHubArgs []string
+			if tc.wantGitHubArg != "" {
+				wantGitHubArgs = []string{tc.wantGitHubArg}
+			}
+			if !slices.Equal(githubArgs, wantGitHubArgs) {
+				t.Fatalf("GitHub MCP registration = %v, want %v: %v", githubArgs, wantGitHubArgs, runner.lastReq.Command)
 			}
 			if tc.externalMCP && slices.Contains(runner.lastReq.Command, "--disable-builtin-mcps") {
 				t.Fatalf("declared GitHub group was disabled by external MCP isolation: %v", runner.lastReq.Command)
 			}
-			prompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+			prompt, ok := copilotSentPrompt(runner.lastReq)
 			if !ok {
 				t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
 			}
@@ -1351,7 +1398,7 @@ func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("transcript events = %#v, want user and assistant events", events)
 	}
-	sentPrompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+	sentPrompt, ok := copilotSentPrompt(runner.lastReq)
 	if !ok {
 		t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
 	}
@@ -1454,7 +1501,14 @@ func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		return runner.lastReq.Command
+		command := slices.Clone(runner.lastReq.Command)
+		logFlag := slices.Index(command, "--log-dir")
+		if logFlag < 0 || logFlag+1 >= len(command) {
+			t.Fatal("missing private log capture")
+		}
+		// Each invocation owns a fresh log directory regardless of tools.
+		command[logFlag+1] = "<private-log-directory>"
+		return command
 	}
 
 	absent := run(nil)
@@ -1501,7 +1555,7 @@ func TestCopilotAdapterRepairsInvalidResponseAndRecordsScrubbedDiagnostic(t *tes
 	if len(calls) != 2 {
 		t.Fatalf("process calls = %d, want initial call plus one repair", len(calls))
 	}
-	prompt, ok := copilotPromptArgValue(calls[1].Command)
+	prompt, ok := copilotSentPrompt(calls[1])
 	if !ok || !strings.Contains(prompt, "/outputs/token") || !strings.Contains(prompt, "expected") {
 		t.Fatalf("repair prompt = %q, want schema path and validation message", prompt)
 	}
@@ -1576,10 +1630,10 @@ func TestCopilotAdapterRefreshesModelCredentialBeforeRepair(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("process calls = %d, want initial call plus repair", len(calls))
 	}
-	if !containsEnv(calls[0].Env, "COPILOT_GITHUB_TOKEN=initial-installation-token") {
+	if !containsEnv(calls[0].Env, "COPILOT_GITHUB_TOKEN="+"initial-installation-token") {
 		t.Fatalf("initial env did not carry initial token: %v", redactedNames(calls[0].Env))
 	}
-	if !containsEnv(calls[1].Env, "COPILOT_GITHUB_TOKEN=refreshed-installation-token") {
+	if !containsEnv(calls[1].Env, "COPILOT_GITHUB_TOKEN="+"refreshed-installation-token") {
 		t.Fatalf("repair env did not carry refreshed token: %v", redactedNames(calls[1].Env))
 	}
 	if sourceCalls != 2 {
@@ -1647,9 +1701,10 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		},
 	}
 	initialReq := ProcessRequest{
-		Command: []string{copilotPromptArg(defaultPromptFlag, "initial")},
+		Command: []string{copilotPromptArg(defaultPromptFlag, "")},
+		Stdin:   []byte("initial"),
 		Dir:     workspace,
-		Env:     []string{"COPILOT_GITHUB_TOKEN=initial-installation-token"},
+		Env:     []string{"COPILOT_GITHUB_TOKEN=" + "initial-installation-token"},
 		Timeout: time.Second,
 	}
 	if _, err := runner.Run(context.Background(), initialReq); err != nil {
@@ -1668,9 +1723,6 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		func(_ context.Context, env []string, _ RunRequest) ([]string, error) {
 			return overrideEnv(env, "COPILOT_GITHUB_TOKEN", "refreshed-installation-token"), nil
 		},
-		0,
-		defaultPromptFlag,
-		nil,
 		true,
 		"",
 		time.Now(),
@@ -1703,9 +1755,6 @@ func TestCopilotCompletionRepairSkipsRefreshWhenBudgetExhausted(t *testing.T) {
 			refreshCalls++
 			return nil, errors.New("refresh should not run")
 		},
-		0,
-		defaultPromptFlag,
-		nil,
 		false,
 		"",
 		time.Now().Add(-time.Second),
@@ -1746,9 +1795,6 @@ func TestCopilotCompletionRepairBoundsCredentialRefreshByRemainingBudget(t *test
 			<-ctx.Done()
 			return env, ctx.Err()
 		},
-		0,
-		defaultPromptFlag,
-		nil,
 		false,
 		"",
 		started,
@@ -1856,7 +1902,7 @@ func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing
 	if !firstOK || !secondOK || firstSession != secondSession {
 		t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
 	}
-	prompt, ok := copilotPromptArgValue(calls[1].Command)
+	prompt, ok := copilotSentPrompt(calls[1])
 	if !ok {
 		t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 	}
@@ -1953,7 +1999,7 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 			if !firstOK || !secondOK || firstSession != secondSession {
 				t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
 			}
-			recoveryPrompt, ok := copilotPromptArgValue(calls[1].Command)
+			recoveryPrompt, ok := copilotSentPrompt(calls[1])
 			if !ok {
 				t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 			}
@@ -2947,7 +2993,7 @@ func TestCopilotAdapterPreflightCarriesAmbientModelToken(t *testing.T) {
 	}
 	found := false
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-headless-xyz" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-headless-xyz" {
 			found = true
 		}
 	}
@@ -2992,7 +3038,7 @@ func TestCopilotAdapterPreflightUsesModelCredentialWhenNoAmbient(t *testing.T) {
 	}
 	found := false
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3045,13 +3091,13 @@ func TestCopilotAdapterPreflightModelCredentialWinsOverAmbientEnv(t *testing.T) 
 		t.Fatal("ModelCredential must be consulted even when an ambient env var is set — it is the instance's declared credential")
 	}
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-ambient-env" {
 			t.Fatalf("auth probe env carries the ambient token; the configured credential must win: %v", authProbeEnv)
 		}
 	}
 	found := false
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3131,7 +3177,7 @@ func TestCopilotDiscoverModelsUsesModelCredentialWhenNoAmbient(t *testing.T) {
 	}
 	found := false
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3163,13 +3209,13 @@ func TestCopilotDiscoverModelsModelCredentialWinsOverAmbientEnv(t *testing.T) {
 		t.Fatal("ModelCredential must be consulted even when an ambient env var is set — it is the instance's declared credential")
 	}
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-ambient-env" {
 			t.Fatalf("discovery env carries the ambient token; the configured credential must win: %v", lister.lastEnv)
 		}
 	}
 	found := false
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3234,7 +3280,7 @@ func TestCopilotResolveConfigFileRefOnlyCredentialsSatisfiesDiscovery(t *testing
 	}
 	found := false
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3456,16 +3502,20 @@ func TestCopilotResolveConfigUnverifiedAllowsCapabilityGatedOptions(t *testing.T
 	}
 }
 
-// copilotPromptArgValue returns the prompt the adapter actually sent. The
-// prompt is bound to its flag in one argv element (`-p=<text>`) so that no
-// prompt content can be reparsed as flags — see copilotPromptArg.
-func copilotPromptArgValue(command []string) (string, bool) {
-	for _, arg := range command {
+// copilotSentPrompt returns the prompt the adapter actually sent. The prompt
+// travels on stdin (#6871); argv carries only the empty prompt-mode flag, so
+// ok is false when any argv element binds prompt content to the flag.
+func copilotSentPrompt(req ProcessRequest) (string, bool) {
+	sawFlag := false
+	for _, arg := range req.Command {
 		if value, ok := strings.CutPrefix(arg, defaultPromptFlag+"="); ok {
-			return value, true
+			if value != "" {
+				return "", false
+			}
+			sawFlag = true
 		}
 	}
-	return "", false
+	return string(req.Stdin), sawFlag
 }
 
 // Every goober body opens with YAML frontmatter, so the rendered prompt starts
@@ -3480,7 +3530,7 @@ func TestCopilotPromptWithLeadingDashesStaysBoundToItsFlag(t *testing.T) {
 	if !strings.HasPrefix(arg, defaultPromptFlag+"=") {
 		t.Fatalf("prompt argument is not bound to its flag: %q", arg)
 	}
-	got, ok := copilotPromptArgValue([]string{"copilot", arg, "--silent"})
+	got, ok := strings.CutPrefix(arg, defaultPromptFlag+"=")
 	if !ok || got != prompt {
 		t.Fatalf("prompt did not round-trip: %q, %v", got, ok)
 	}

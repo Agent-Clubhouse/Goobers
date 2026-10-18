@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -718,7 +719,7 @@ func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := buildReadModelIfNeeded(ctx, store, state, l); err != nil {
+	if err := buildReadModelIfNeeded(ctx, store, state, l, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -801,8 +802,12 @@ func TestBuildReadModelIfNeededCompletesReconstructionBeforeReady(t *testing.T) 
 	if before.Ready {
 		t.Fatal("fresh projection is ready before its journal build")
 	}
-	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+	var progress []string
+	if err := buildReadModelIfNeeded(ctx, store, before, l, func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
+	}
+	if want := "read model build: scanned 1/1 run directories"; !slices.Contains(progress, want) {
+		t.Fatalf("startup progress = %q, want %q so operators can tell slow from stuck", progress, want)
 	}
 	after, err := store.State(ctx)
 	if err != nil {
@@ -836,7 +841,7 @@ func TestBuildReadModelIfNeededIgnoresCanceledContext(t *testing.T) {
 	if before.Ready {
 		t.Fatal("fresh projection is ready before its journal build")
 	}
-	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+	if err := buildReadModelIfNeeded(ctx, store, before, l, nil); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.State(context.Background())
@@ -1461,7 +1466,7 @@ func TestRunAppearsInInstanceJournalAsManual(t *testing.T) {
 // exhausted by a run the scheduler's own Conditions tracks as active (seeded
 // via Reconcile from a hand-built in-flight run, mirroring
 // TestUpResumesInterruptedRun's fixture style), a second manual `goobers run`
-// for the same workflow must be rejected, not silently dispatch alongside it.
+// for the same workflow must remain queued with a nonzero exit and no new run.
 func TestRunRejectedOverMaxConcurrentRuns(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
@@ -1502,12 +1507,16 @@ func TestRunRejectedOverMaxConcurrentRuns(t *testing.T) {
 	// Left at PhaseRunning (no run.finished appended) — ActiveRunCounts and
 	// Scheduler.Reconcile both treat this as an active run for the workflow.
 
-	code, _, stderr := runArgs(t, "run", "default-implement", root)
+	code, stdout, stderr := runArgs(t, "run", "--request-id", "capacity-held", "default-implement", root)
 	if code != 1 {
 		t.Fatalf("code = %d, want 1, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "run conditions rejected") {
-		t.Fatalf("stderr = %q, want it to mention run conditions rejecting the trigger", stderr)
+	if !strings.Contains(stderr, "start remains queued") || !strings.Contains(stderr, "capacity-held") || strings.Contains(stdout, "created run") {
+		t.Fatalf("stdout=%q stderr=%q; want a capacity-held receipt without a created run", stdout, stderr)
+	}
+	queued, err := standaloneQueue(t, root).ByKey(t.Context(), "capacity-held")
+	if err != nil || string(queued.State) != "accepted" || queued.RunID != "" {
+		t.Fatalf("capacity-held receipt = %+v, %v", queued, err)
 	}
 }
 

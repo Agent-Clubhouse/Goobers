@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -542,6 +543,55 @@ func TestSweepStalledRunsCreditsGracefulDrainDowntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "drained-run", journal.PhaseEscalated)
+}
+
+// #5891: a host that slept must not spend a run's maxRunDuration budget, and
+// silence while it slept is not a stall. Runs that exceed either limit in
+// active time are still terminated.
+func TestSweepStalledRunsExcludesHostSuspension(t *testing.T) {
+	now := time.Date(2026, 10, 2, 20, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRunner, err := runner.New(runner.Config{Worktrees: manager, RunsDir: layout.RunsDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	durationControls := &apiv1.RunControls{MaxRepasses: 3, StalledRunTimeout: "45m", MaxRunDuration: "2h"}
+	stallControls := &apiv1.RunControls{MaxRepasses: 3, StalledRunTimeout: "45m"}
+	// Three hours old with a fresh heartbeat, 90 minutes of it asleep.
+	started := now.Add(-3 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "slept-within-budget", "implementation", "", &started, now.Add(-time.Minute), durationControls)
+	// Five hours old: still over budget once the same sleep is excluded.
+	started = now.Add(-5 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "over-budget-awake", "implementation", "", &started, now.Add(-time.Minute), durationControls)
+	// Silent for two hours, 90 minutes of it asleep.
+	eventTime := now.Add(-2 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "quiet-while-asleep", "implementation", "", &eventTime, time.Time{}, stallControls)
+	// Silent for three hours: 90 minutes awake is past the stall timeout.
+	eventTime = now.Add(-3 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "quiet-while-awake", "implementation", "", &eventTime, time.Time{}, stallControls)
+
+	deps := &stalledSweepDeps{HostSuspensions: hostsuspend.NewLedger(nil, []hostsuspend.Window{
+		{From: now.Add(-100 * time.Minute), To: now.Add(-10 * time.Minute)},
+	})}
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, deps, nil, nil, now, 45*time.Minute, 0); err != nil {
+		t.Fatal(err)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), "slept-within-budget", journal.PhaseRunning)
+	assertWatchdogPhase(t, layout.RunsDir(), "over-budget-awake", journal.PhaseAborted)
+	assertWatchdogPhase(t, layout.RunsDir(), "quiet-while-asleep", journal.PhaseRunning)
+	assertWatchdogPhase(t, layout.RunsDir(), "quiet-while-awake", journal.PhaseEscalated)
+
+	// Without the suspension record both remaining runs are terminated, as
+	// wall-clock enforcement did before.
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
+		t.Fatal(err)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), "slept-within-budget", journal.PhaseAborted)
+	assertWatchdogPhase(t, layout.RunsDir(), "quiet-while-asleep", journal.PhaseEscalated)
 }
 
 func TestCleanDaemonDowntimeCreditsOnlyGracefulGaps(t *testing.T) {

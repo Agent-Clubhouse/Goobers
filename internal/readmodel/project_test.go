@@ -80,6 +80,19 @@ func TestPinnedWorkspaceResetSuggestionRemainsVisibleAfterFailure(t *testing.T) 
 	}
 }
 
+func TestProjectRunRecordsRecoveredImplementationSource(t *testing.T) {
+	run := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage = "recovery-resume"
+			e.Status = "success"
+			e.Outputs = map[string]any{"resumed": true, "resumedFromRun": "source-run"}
+		}),
+	}).Run
+	if run.Operator.ResumedFromRunID != "source-run" {
+		t.Fatalf("resumed source = %q, want source-run", run.Operator.ResumedFromRunID)
+	}
+}
+
 // completedRunEvents is a run that starts, retries once, and completes.
 func completedRunEvents() []journal.Event {
 	return []journal.Event{

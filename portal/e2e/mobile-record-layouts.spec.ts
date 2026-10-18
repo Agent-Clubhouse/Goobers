@@ -216,7 +216,12 @@ for (const viewport of [
     await page.setViewportSize(viewport);
     await page.goto("/#/runs");
 
-    await expectTouchTargets(page.locator(".filter-bar :is(button, select, .filter-toggle)"));
+    const runFilters = page.getByRole("button", { name: "Filters", exact: true });
+    await expectTouchTargets(runFilters);
+    await runFilters.click();
+    const runDialog = page.getByRole("dialog", { name: "Filters" });
+    await expectTouchTargets(runDialog.locator(".filter-bar :is(button, select, .filter-toggle)"));
+    await runDialog.getByRole("button", { name: "Cancel filter changes" }).click();
     await expectTouchTargets(page.getByRole("link", { name: /^Open run / }));
     await page.locator(".content-section").evaluate((section) => {
       const loadMore = document.createElement("button");
@@ -227,7 +232,12 @@ for (const viewport of [
     await expectTouchTargets(page.getByRole("button", { name: "Load more runs" }));
 
     await page.goto("/#/work-items");
-    await expectTouchTargets(page.locator(".filter-bar :is(button, select, input)"));
+    const workItemFilters = page.getByRole("button", { name: "Filters", exact: true });
+    await expectTouchTargets(workItemFilters);
+    await workItemFilters.click();
+    const workItemDialog = page.getByRole("dialog", { name: "Filters" });
+    await expectTouchTargets(workItemDialog.locator(".filter-bar :is(button, select, input)"));
+    await workItemDialog.getByRole("button", { name: "Cancel filter changes" }).click();
     await expectTouchTargets(page.locator(".work-item-grid.data-row"));
     await page.locator(".content-section").evaluate((section) => {
       const retry = document.createElement("button");
@@ -253,7 +263,8 @@ test("shows semantic mobile context and preserves deep links and browser Back", 
 
   await page.goto("/#/work-items");
   const workItem = page.getByRole("button", { name: /^Open PR / }).first();
-  await expect(workItem.locator(".work-item-status")).toContainText("In progress");
+  await expect(workItem).toHaveAttribute("data-status", "in-progress");
+  await expect(workItem.locator(".work-item-identity .sr-only")).toHaveText("In progress");
   await expect(workItem.locator(".work-item-mobile-context")).toContainText(
     "core / implementation",
   );
@@ -289,7 +300,8 @@ test("renders a bounded large Work Items dataset without losing the first record
     name: "Open issue #10000 in organization/repository-with-a-long-name-0",
   });
   await expect(first).toBeVisible();
-  await expect(first.locator(".work-item-status")).toContainText("In progress");
+  await expect(first).toHaveAttribute("data-status", "in-progress");
+  await expect(first.locator(".work-item-identity .sr-only")).toHaveText("In progress");
   await expect(page.getByText("Showing the 200 most recently actioned work items.")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
     .toBeLessThanOrEqual(1);

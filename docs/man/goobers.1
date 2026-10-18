@@ -73,11 +73,17 @@ validate an instance or checked-in config source tree
 print build version, commit, and date (--json for structured output)
 .TP
 \fBgoobers workflow\fR
-inspect workflows
+inspect workflows and validate child proposals
 .TP
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
+.TP
+\fBgoobers workflow validate-child\fR
+validate a child proposal against its configured parent
 .SS Advanced operator commands
+.TP
+\fBgoobers advisory-pr-reset\fR
+clear one private advisory disposition by explicit operator action
 .TP
 \fBgoobers agent-kit\fR
 install, inspect, or update the release-matched agent toolkit
@@ -289,6 +295,12 @@ report installed Goobers Portal extension version and drift
 \fBgoobers portal-extension update\fR
 update the managed Goobers Portal extension to this binary's bundled version
 .TP
+\fBgoobers pr\fR
+operator actions on pull requests
+.TP
+\fBgoobers pr retry\fR
+route an escalated or parked PR to merge-review, remediation, or human hold (audited)
+.TP
 \fBgoobers preflight\fR
 check WSL full-isolation readiness and optionally hand off a command
 .TP
@@ -386,7 +398,13 @@ check the configured local speech engine without emitting sound
 speak the fixed local readiness phrase
 .TP
 \fBgoobers telemetry\fR
-configure, test, query, export, mark fixes, prune, or compact telemetry
+configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
+.TP
+\fBgoobers telemetry claim\fR
+append a Backprop claim from inside an agentic stage
+.TP
+\fBgoobers telemetry claims\fR
+print the Backprop claims earlier stages of this run recorded
 .TP
 \fBgoobers telemetry compact\fR
 drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -400,6 +418,9 @@ recent errors across runs, by class, with run/stage refs
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
 .TP
+\fBgoobers telemetry label\fR
+record a ground-truth verdict for a Backprop-enrolled run
+.TP
 \fBgoobers telemetry mark-fix\fR
 mark a Backprop finding for post-fix verification
 .TP
@@ -411,6 +432,9 @@ remove terminal runs outside configured retention bounds
 .TP
 \fBgoobers telemetry prune-orphans\fR
 report or delete old orphan and unfinished run directories
+.TP
+\fBgoobers telemetry shadow\fR
+compare Backprop shadow-mode findings with actual run outcomes
 .TP
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
@@ -439,6 +463,12 @@ explicitly recover pinned repository workspaces
 \fBgoobers workspace reset\fR
 tear down and re-materialize a pinned repository workspace
 .SS Workflow-stage and connector commands
+.TP
+\fBgoobers advisory-pr-publish\fR
+publish an advisory observation or private skip (a workflow stage)
+.TP
+\fBgoobers advisory-pr-select\fR
+select one open PR for a private advisory review (a workflow stage)
 .TP
 \fBgoobers apply-verdict\fR
 publish a managed or advisory merge-review verdict (a workflow stage)
@@ -584,6 +614,9 @@ API-update a clean behind-base PR, else route to remediation (a workflow stage)
 \fBgoobers validate-plan\fR
 validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
 .SH SEE ALSO
+\fBgoobers-advisory-pr-publish\fR(1),
+\fBgoobers-advisory-pr-reset\fR(1),
+\fBgoobers-advisory-pr-select\fR(1),
 \fBgoobers-agent-kit\fR(1),
 \fBgoobers-agent-kit-check\fR(1),
 \fBgoobers-agent-kit-install\fR(1),
@@ -689,6 +722,8 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-portal-extension-status\fR(1),
 \fBgoobers-portal-extension-update\fR(1),
 \fBgoobers-post-merge\fR(1),
+\fBgoobers-pr\fR(1),
+\fBgoobers-pr-retry\fR(1),
 \fBgoobers-pr-claim\fR(1),
 \fBgoobers-pr-comment-watch\fR(1),
 \fBgoobers-pr-select\fR(1),
@@ -747,14 +782,18 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-stats\fR(1),
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),
+\fBgoobers-telemetry-claim\fR(1),
+\fBgoobers-telemetry-claims\fR(1),
 \fBgoobers-telemetry-compact\fR(1),
 \fBgoobers-telemetry-configure\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-label\fR(1),
 \fBgoobers-telemetry-mark-fix\fR(1),
 \fBgoobers-telemetry-merges\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
 \fBgoobers-telemetry-prune-orphans\fR(1),
+\fBgoobers-telemetry-shadow\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
 \fBgoobers-telemetry-test\fR(1),
 \fBgoobers-telemetry-query\fR(1),
@@ -771,5 +810,6 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
 \fBgoobers-workflow-show\fR(1),
+\fBgoobers-workflow-validate-child\fR(1),
 \fBgoobers-workspace\fR(1),
 \fBgoobers-workspace-reset\fR(1)

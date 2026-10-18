@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -95,8 +96,17 @@ func TestContinuationProjectionUpgradeReplaysExistingRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Ready {
-		t.Fatal("continuation projection upgrade did not request a journal replay")
+	// A built store keeps its readiness; the old-rules row is instead queued
+	// for targeted re-projection at startup (#6895).
+	if !state.Ready {
+		t.Fatal("projection upgrade withdrew readiness from a built store")
+	}
+	stale, err := store.staleRunIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stale, []string{identity.RunID}) {
+		t.Fatalf("continuation projection upgrade did not request a journal replay: stale=%v", stale)
 	}
 	if err := store.UpsertRun(ctx, projection); err != nil {
 		t.Fatal(err)

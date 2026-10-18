@@ -2,11 +2,9 @@ package main
 
 import (
 	"io"
-	"os"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -36,19 +34,20 @@ func backlogQueryRequireLabels(env backlogQueryEnv) []string {
 	return appendMissingLabels(required, stageADOBacklogScope(env.root, env.stderr))
 }
 
-// stageADOBacklogScope reads the stage's gaggle (GOOBERS_GAGGLE) from the
-// instance config and returns its ADO backlog scope labels. An ungaggled
-// stage, an unreadable config (a stage pod — warned once, as the other
-// stage-side gaggle settings are) or a gaggle without an ADO backlog yields
-// nil, today's unscoped behavior.
+// stageADOBacklogScope reads the stage's gaggle (GOOBERS_GAGGLE) backlog
+// settings (stageGaggleBacklog: the instance config, or in a stage pod the
+// dispatcher's stamp, #5957) and returns its ADO backlog scope labels. An
+// ungaggled stage or a gaggle without an ADO backlog yields nil, today's
+// unscoped behavior. Settings that cannot be resolved also yield nil, with a
+// warning, but only defensively: backlog-query's ADO provider refuses to
+// build in that case (requireStageGaggleBacklog), before any query runs.
 func stageADOBacklogScope(root string, stderr io.Writer) []string {
-	gaggle := os.Getenv(executor.GaggleEnvVar)
-	if gaggle == "" {
+	gaggle, set, err := stageGaggleBacklog(root)
+	if err != nil {
+		warnStageGaggleBacklogUnresolved(err)
 		return nil
 	}
-	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
-	if err != nil || report == nil || set == nil {
-		warnStageGaggleConfigUnavailable("backlog.labels (the ADO claim scope)", gaggle, err)
+	if gaggle == "" {
 		return nil
 	}
 	labels, ado := gaggleADOBacklogLabels(set, gaggle)

@@ -38,6 +38,7 @@ import {
     renderCostPanel,
     renderRunDetailSummary,
     renderRunEventItems,
+    normalizeLegacyInsightCosts,
     renderOperatorPanel,
     renderRunRowCells,
     renderSnapshotCard,
@@ -692,6 +693,52 @@ test("insightUsageForScope matches the usage entry tagged with the scope's own k
     assert.equal(insightUsageForScope(stats, { kind: "gaggle", gaggle: "missing" }), undefined);
 });
 
+test("normalizeLegacyInsightCosts converts v0.5 USD aggregates and preserves native AIC", () => {
+    const normalized = normalizeLegacyInsightCosts({
+        stages: [{ p50CostUSD: 1.25, p95CostAIC: 250, p95CostUSD: 999, retryWasteCostUSD: 0.75 }],
+        usage: [{ costUSD: 1.5, p50CostUSD: 1.25, p95CostUSD: 2.5, retryWasteCostUSD: 0.75 }],
+        models: [{ costUSD: 1.5 }],
+        trend: [{ usage: [{ costUSD: 2 }] }],
+        trendPrevious: { usage: [{ costUSD: 1 }] },
+    });
+
+    assert.deepEqual(
+        {
+            stage: normalized.stages[0],
+            usage: normalized.usage[0],
+            model: normalized.models[0],
+            trend: normalized.trend[0].usage[0],
+            previous: normalized.trendPrevious.usage[0],
+        },
+        {
+            stage: {
+                p50CostUSD: 1.25, p50CostAIC: 125,
+                p95CostAIC: 250, p95CostUSD: 999,
+                retryWasteCostUSD: 0.75, retryWasteCostAIC: 75,
+                costAIC: undefined,
+            },
+            usage: {
+                costUSD: 1.5, costAIC: 150,
+                p50CostUSD: 1.25, p50CostAIC: 125,
+                p95CostUSD: 2.5, p95CostAIC: 250,
+                retryWasteCostUSD: 0.75, retryWasteCostAIC: 75,
+            },
+            model: {
+                costUSD: 1.5, costAIC: 150,
+                p50CostAIC: undefined, p95CostAIC: undefined, retryWasteCostAIC: undefined,
+            },
+            trend: {
+                costUSD: 2, costAIC: 200,
+                p50CostAIC: undefined, p95CostAIC: undefined, retryWasteCostAIC: undefined,
+            },
+            previous: {
+                costUSD: 1, costAIC: 100,
+                p50CostAIC: undefined, p95CostAIC: undefined, retryWasteCostAIC: undefined,
+            },
+        },
+    );
+});
+
 // A realistic instance-scope fixture exercising every major TelemetryStatsResult
 // section the panel renders: outcome breakdown, curation/ready-pool health,
 // credit assignment, usage, cost trend, and stage hotspots.
@@ -758,7 +805,7 @@ test("renderInsightPanel renders outcome, curation, credit, usage, trend, and st
     assert.match(html, /Tokens and retry waste/);
     assert.match(html, /1,234 AIC/);
     // AIC trend: only the most recent 8 (bucket count for 24h) buckets show, all 4 fixture buckets included here.
-    assert.match(html, /AIC over time/);
+    assert.match(html, /Cost over time/);
     assert.match(html, /300 AIC/);
     // Slowest stages.
     assert.match(html, /Slowest stages/);
@@ -846,7 +893,7 @@ test("the browser script inlines every Insights helper and render function", () 
     const page = renderHtml("inst-1");
     for (const name of [
         "INSIGHT_WINDOWS", "parseInsightScope", "insightScopeValue", "insightScopeLabel",
-        "insightRequestParams", "isInInsightScope", "renderInsightPanel",
+        "insightRequestParams", "isInInsightScope", "normalizeLegacyInsightCosts", "renderInsightPanel",
     ]) {
         assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
     }
@@ -966,12 +1013,12 @@ test("deriveExternalCostRows normalizes PR and issue cost aggregates", () => {
 test("renderCostPanel renders summary, trend, instance rollup, external breakdown, and lookup result", () => {
     const lookup = { ...COST_RESULT_FIXTURE, scope: "pr", externalId: "5183", issues: [] };
     const html = renderCostPanel(COST_STATS_FIXTURE, COST_RESULT_FIXTURE, { kind: "instance" }, "7d", lookup);
-    assert.match(html, /AIC summary/);
+    assert.match(html, /Cost Summary/);
     assert.match(html, /1,550 AIC/);
-    assert.match(html, /AIC over time/);
-    assert.match(html, /AIC by gaggle/);
+    assert.match(html, /Cost over time/);
+    assert.match(html, /Cost by gaggle/);
     assert.match(html, /core/);
-    assert.match(html, /AIC by pull request and issue/);
+    assert.match(html, /Cost by pull request and issue/);
     assert.match(html, /PR #5183/);
     assert.match(html, /Issue #99/);
     assert.match(html, /Lookup result/);
@@ -1007,7 +1054,7 @@ test("renderCostPanel orders mixed native and normalized costs by AIC value", ()
 
 test("renderCostPanel hides instance rollup outside instance scope and renders empty states", () => {
     const scoped = renderCostPanel(COST_STATS_FIXTURE, { pullRequests: [], issues: [] }, { kind: "gaggle", gaggle: "core" }, "all");
-    assert.doesNotMatch(scoped, /AIC by gaggle/);
+    assert.doesNotMatch(scoped, /Cost by gaggle/);
     assert.match(scoped, /bounded time window/);
     assert.match(scoped, /No pull request or issue cost was attributed/);
 
@@ -1080,7 +1127,7 @@ test("renderCostPanel caps external rows and per-row model details", () => {
     assert.doesNotMatch(html, /PR #1</);
 });
 
-test("renderHtml includes AIC tab controls and inlines every cost helper", () => {
+test("renderHtml includes Cost tab controls and inlines every cost helper", () => {
     const page = renderHtml("inst-1");
     assert.match(page, /dashboard-tab-cost/);
     assert.match(page, /id="cost-lookup-id"/);
@@ -1194,6 +1241,7 @@ test("renderWorkItemList renders rows, metadata, overflow, and explicit empty st
 test("renderWorkItemDetail renders cost coverage, related links, action filtering, and truncation", () => {
     const html = renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "comment");
     assert.match(html, /acme\/app#42/);
+    assert.match(html, /Attributed cost to date/);
     assert.match(html, /1\.25 AIC/);
     assert.match(html, /Lower bound; some usage is unmeasured/);
     assert.match(html, /1\/2 runs/);

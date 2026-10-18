@@ -9,7 +9,11 @@ package operator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -21,11 +25,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/configsync"
@@ -34,7 +42,11 @@ import (
 const (
 	// Label keys applied to operator-managed worker objects.
 	managedByLabel = "app.kubernetes.io/managed-by"
-	gaggleLabel    = "goobers.dev/gaggle"
+	// specHashAnnotation records the hash of the last-applied desired spec so
+	// API-server-defaulted fields on the live object don't force an Update
+	// every reconcile.
+	specHashAnnotation = "goobers.dev/spec-hash"
+	gaggleLabel        = "goobers.dev/gaggle"
 	// gaggleResourceLabel records the actual Gaggle CR name. It can differ from
 	// gaggleLabel when config-sync publishes generation-versioned resources.
 	gaggleResourceLabel = "goobers.dev/gaggle-resource"
@@ -183,6 +195,12 @@ func (r *GaggleReconciler) goobersFor(ctx context.Context, gaggle *v1alpha1.Gagg
 
 // applyDeployment creates or updates a worker Deployment and reports readiness.
 func (r *GaggleReconciler) applyDeployment(ctx context.Context, dep *appsv1.Deployment) (bool, error) {
+	specJSON, err := json.Marshal(dep.Spec)
+	if err != nil {
+		return false, err
+	}
+	sum := sha256.Sum256(specJSON)
+	hash := hex.EncodeToString(sum[:])
 	live := &appsv1.Deployment{}
 	live.Name = dep.Name
 	live.Namespace = dep.Namespace
@@ -193,7 +211,13 @@ func (r *GaggleReconciler) applyDeployment(ctx context.Context, dep *appsv1.Depl
 		for k, v := range dep.Labels {
 			live.Labels[k] = v
 		}
-		live.Spec = dep.Spec
+		if live.Annotations[specHashAnnotation] != hash {
+			live.Spec = dep.Spec
+		}
+		if live.Annotations == nil {
+			live.Annotations = map[string]string{}
+		}
+		live.Annotations[specHashAnnotation] = hash
 		return nil
 	}); err != nil {
 		return false, err
@@ -232,41 +256,25 @@ func (r *GaggleReconciler) workerImage() string {
 // SetupWithManager wires the reconciler to watch Gaggles, plus Goober and
 // Deployment changes mapped back to their owning gaggle.
 func (r *GaggleReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	// Generation publication has its own workqueue: API errors while finding
+	// Gaggles must be retried rather than discarded by a watch map callback.
+	generationEvents := make(chan event.GenericEvent)
+	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Gaggle{}).
 		Watches(&v1alpha1.Goober{}, handler.EnqueueRequestsFromMapFunc(gooberToGaggle)).
-		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.generationPointerToGaggles)).
+		WatchesRawSource(generationGaggleSource(generationEvents)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(workerToGaggle)).
-		Complete(r)
+		Complete(r); err != nil {
+		return err
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		Named("gaggle-generation-pointer").
+		For(&corev1.ConfigMap{}, builder.WithPredicates(predicate.NewPredicateFuncs(isGenerationPointer))).
+		Complete(&generationPointerReconciler{Client: r.Client, events: generationEvents})
 }
 
-func (r *GaggleReconciler) generationPointerToGaggles(ctx context.Context, obj client.Object) []reconcile.Request {
-	if obj.GetName() != configsync.GenerationConfigMapName {
-		return nil
-	}
-	cm, ok := obj.(*corev1.ConfigMap)
-	if !ok {
-		return nil
-	}
-	generation := cm.Data[configsync.GenerationConfigMapKey]
-	if generation == "" {
-		return nil
-	}
-	var gaggles v1alpha1.GaggleList
-	if err := r.List(ctx, &gaggles,
-		client.InNamespace(cm.Namespace),
-		configsync.GenerationSelector(generation),
-	); err != nil {
-		return nil
-	}
-	reqs := make([]reconcile.Request, 0, len(gaggles.Items))
-	for i := range gaggles.Items {
-		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-			Namespace: gaggles.Items[i].Namespace,
-			Name:      gaggles.Items[i].Name,
-		}})
-	}
-	return reqs
+func generationGaggleSource(events <-chan event.GenericEvent) source.Source {
+	return source.Channel(events, &handler.EnqueueRequestForObject{}, source.WithBufferSize[client.Object, reconcile.Request](32))
 }
 
 // gooberToGaggle maps a Goober change to a reconcile request for its gaggle.
@@ -429,7 +437,7 @@ func computeStatus(generation int64, gooberCount, readyWorkers int, prev v1alpha
 		Phase:              phase,
 		GooberCount:        int32(gooberCount),
 		ReadyWorkers:       int32(readyWorkers),
-		Conditions:         prev.Conditions,
+		Conditions:         slices.Clone(prev.Conditions),
 	}
 	apimeta.SetStatusCondition(&next.Conditions, metav1.Condition{
 		Type:               readyConditionType,

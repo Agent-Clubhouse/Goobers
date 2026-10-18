@@ -8,9 +8,23 @@ import (
 	"os"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+func workflowCommands() cliCommand {
+	return coreGroupCommand("workflow", runWorkflow,
+		coreSubcommand("workflow show", "show", apicontract.ActionReadOnlyNavigation, runWorkflowShow).
+			withSynopsis(synopsisByID["workflow show"]).
+			withHelp("show a workflow as a text DAG", workflowShowHelp).
+			withExamples("goobers workflow show default-implement", "goobers workflow show default-implement --dot"),
+		coreSubcommand("workflow validate-child", "validate-child", apicontract.ActionReadOnlyNavigation, runWorkflowValidateChild).
+			withSynopsis(workflowValidateChildSynopsis).
+			withHelp("validate a child proposal against its configured parent", workflowValidateChildHelp).
+			withExamples("goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml"),
+	).withHelp("inspect workflows and validate child proposals", workflowHelp)
+}
 
 func runWorkflow(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -28,8 +42,8 @@ func runWorkflow(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const workflowHelp = "Usage: goobers workflow show [flags] <name> [path]\n\n" +
-	"Show the named workflow as a text DAG or Graphviz DOT (default path \".\").\n\n" +
+const workflowHelp = "Usage: goobers workflow <show | validate-child> [flags]\n\n" +
+	"Show a workflow DAG or validate a generated child proposal against its configured parent.\n\n" +
 	"Workflow\n\n" +
 	workflowConcept + "\n"
 
@@ -72,6 +86,7 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 		printValidationIssues(stderr, report)
 		pf(stderr, "error: %v\n", err)
 		if errors.Is(err, instance.ErrInvalidConfig) {
+			instance.WriteInvalidConfigScope(stderr, l.ConfigDir(), report)
 			return 1
 		}
 		return 2
@@ -127,6 +142,8 @@ func printWorkflowDAG(w io.Writer, wf apiv1.Workflow, graph workflow.Graph) {
 			pf(w, "  %s (kind: gate, evaluator: %s)\n", node.ID, node.Evaluator)
 		case workflow.GraphNodeParallel:
 			pf(w, "  %s (kind: parallel, %s)\n", node.ID, parallelConcurrency(wf.Spec.Parallels, node.ID))
+		case workflow.GraphNodeMap:
+			pf(w, "  %s (kind: map, %s)\n", node.ID, mapConcurrency(wf.Spec.Maps, node.ID))
 		default:
 			for _, e := range out {
 				pf(w, "  %s (kind: %s) -> %s\n", node.ID, node.Kind, displayWorkflowTarget(e.Target))
@@ -136,6 +153,10 @@ func printWorkflowDAG(w io.Writer, wf apiv1.Workflow, graph workflow.Graph) {
 		for _, e := range out {
 			if e.Branch != "" {
 				pf(w, "    branch %s start: %s\n", e.Branch, e.Target)
+				continue
+			}
+			if node.Kind == workflow.GraphNodeMap && e.Outcome == "" {
+				pf(w, "    per-item task: %s\n", e.Target)
 				continue
 			}
 			pf(w, "    %s target: %s\n", e.Outcome, displayWorkflowTarget(e.Target))
@@ -160,6 +181,21 @@ func parallelConcurrency(parallels []apiv1.Parallel, name string) string {
 		}
 	}
 	return "maxConcurrentBranches: unknown"
+}
+
+// mapConcurrency describes how many of a map's items run at once. Unset
+// maxConcurrent means 1: the items run sequentially.
+func mapConcurrency(maps []apiv1.Map, name string) string {
+	for _, m := range maps {
+		if m.Name != name {
+			continue
+		}
+		if m.MaxConcurrent <= 1 {
+			return "maxConcurrent: 1, items run sequentially"
+		}
+		return fmt.Sprintf("maxConcurrent: %d", m.MaxConcurrent)
+	}
+	return "maxConcurrent: unknown"
 }
 
 func printWorkflowDOT(w io.Writer, graph workflow.Graph) {

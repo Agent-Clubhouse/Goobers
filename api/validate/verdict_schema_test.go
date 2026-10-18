@@ -139,3 +139,37 @@ func TestElectionVerdictWithOverlapClusterValidatesAgainstSchema(t *testing.T) {
 		t.Fatalf("overlap-cluster verdict should validate, got: %v", err)
 	}
 }
+
+// TestSynthesizedVerdictSchema is #5894's contract: a runner-synthesized
+// verdict validates with findings absent, and the schema refuses one that
+// also carries findings (even an empty list).
+func TestSynthesizedVerdictSchema(t *testing.T) {
+	v, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	verdict := apiv1.Verdict{
+		Decision:    apiv1.VerdictEscalate,
+		ReasonCode:  apiv1.VerdictReasonUnchangedRepass,
+		Rationale:   "runner: this repass produced no change",
+		Synthesized: true,
+	}
+	data, err := json.Marshal(verdict)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := v.ValidateJSON("verdict.schema.json", data); err != nil {
+		t.Fatalf("synthesized verdict should validate, got: %v", err)
+	}
+	for _, doc := range []string{
+		`{"decision":"fail","synthesized":true,"findings":[]}`,
+		`{"decision":"needs-changes","synthesized":true,"findings":[{"severity":"error","message":"x"}]}`,
+	} {
+		if err := v.ValidateJSON("verdict.schema.json", []byte(doc)); err == nil {
+			t.Errorf("synthesized verdict with findings should fail validation: %s", doc)
+		}
+	}
+	if err := v.ValidateJSON("verdict.schema.json", []byte(`{"decision":"pass","synthesized":false,"findings":[]}`)); err != nil {
+		t.Errorf("non-synthesized verdict with empty findings should validate, got: %v", err)
+	}
+}

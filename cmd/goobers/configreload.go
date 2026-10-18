@@ -103,6 +103,7 @@ type configReloader struct {
 	// digests publishes each applied digest to the config-digest plane, so a
 	// worker polling the daemon sees the tree actually in force (#4153).
 	digests         *configDigestPublisher
+	gaggleHealth    *daemonGaggleHealth
 	lastDigestError string
 	// lastRejectionMessage is set by reject() during the most recent poll
 	// call and cleared at the start of each pollOnce (#459) — it lets an
@@ -333,10 +334,17 @@ func (r *configReloader) poll(now time.Time) error {
 	// to attach one with. Carry the boot attachment across BEFORE the new
 	// entries go live, or every engine lane fails closed from this reload on.
 	definitions.EngineRuntime.adoptFrom(r.setup.EngineRuntime)
-	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
+	publish := func() error {
+		return r.publishOrdinaryDefinitions(definitions, func() error {
+			return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest)
+		})
+	}
+	if err := r.publishChildDefinitions(definitions.Set, publish); err != nil {
 		r.observedDigest = r.appliedDigest
 		return err
 	}
+	superseded := supersededWorkflows(newPinnedDefinitions(r.setup.Config, r.setup.Machines, r.setup.GooberDigests, r.setup.RepoRefs, r.setup.Definitions),
+		newPinnedDefinitions(r.setup.Config, definitions.Machines, definitions.GooberDigests, definitions.RepoRefs, definitions.Set))
 	r.setup.EngineRuntime = definitions.EngineRuntime
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
@@ -362,6 +370,9 @@ func (r *configReloader) poll(now time.Time) error {
 	if r.setup.MergedPRCostReconciler != nil {
 		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
 	}
+	if err := r.replaceGaggleHealth(definitions.Set); err != nil {
+		return err
+	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		r.observedDigest = r.appliedDigest
@@ -381,9 +392,9 @@ func (r *configReloader) poll(now time.Time) error {
 	// still resume from their pinned snapshot and which one would refuse —
 	// logged, never fatal, since an applied reload must not be reported as
 	// failed because its advisory report could not be written.
-	if drift, driftErr := inspectWorkflowDigestDrift(r.layout, r.setup.Machines); driftErr != nil {
+	if drift, driftErr := inspectWorkflowDigestDrift(r.layout, r.setup.Machines, superseded); driftErr != nil {
 		log.Printf("config reload: inspect workflow digest drift: %v", driftErr)
-	} else if driftErr := journalWorkflowDigestDrift(r.setup.InstanceLog, drift); driftErr != nil {
+	} else if driftErr := reportWorkflowDigestDrift(r.setup.InstanceLog, drift, log.Printf); driftErr != nil {
 		log.Printf("config reload: journal workflow digest drift: %v", driftErr)
 	}
 	r.appliedDigest = digest
@@ -397,6 +408,13 @@ func (r *configReloader) poll(now time.Time) error {
 		log.Printf("config reload: record advisory warnings: %v", err)
 	}
 	return nil
+}
+
+func (r *configReloader) replaceGaggleHealth(definitions *instance.ConfigSet) error {
+	if r.gaggleHealth == nil {
+		return nil
+	}
+	return r.gaggleHealth.Replace(definitions)
 }
 
 func (r *configReloader) publishReloadStatus(now time.Time) {

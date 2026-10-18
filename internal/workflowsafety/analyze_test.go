@@ -96,6 +96,8 @@ func TestSafetyEvidenceRoutes(t *testing.T) {
 		{"explicit alternate producer", "", apiv1.WorkspaceScratch, []string{"git", "diff", "main...HEAD"}, false},
 		{"explicit readonly evidence", "", apiv1.WorkspaceRepoReadOnly, []string{"git", "diff", "main...HEAD"}, false},
 		{"self comparison is empty", "", apiv1.WorkspaceScratch, []string{"git", "diff", "HEAD...HEAD"}, true},
+		{"range check implicit", "", "", []string{"git", "diff", "--check", "origin/main...HEAD"}, false},
+		{"range check is not a patch", "", apiv1.WorkspaceScratch, []string{"git", "diff", "--check", "origin/main...HEAD"}, true},
 		{"internal non-code review", "internal", apiv1.WorkspaceScratch, []string{"git", "diff", "--check"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +131,25 @@ func publicationDefinition(t testing.TB) wf.Definition {
 	return d
 }
 
+func unpushedRemediationDefinition(t testing.TB) wf.Definition {
+	t.Helper()
+	d := reviewDefinition()
+	selector := shell("gather-pr-context", "implement", "goobers", "gather-pr-context")
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+		selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+	}
+	d.Spec.Start = selector.Name
+	d.Spec.Tasks = append([]apiv1.Task{selector}, d.Spec.Tasks...)
+	d.Spec.Gates[0].Branches["fail"] = "park-escalated"
+	d.Spec.Gates[0].Branches["needs-changes"] = "park-escalated"
+	park := shell("park-escalated", wf.TargetEscalate, "goobers", "remediation-checkpoint", "--escalate")
+	park.Capabilities = []string{"github:pr:write", "repo:push"}
+	park.PolicyActions = []string{"record-remediation-checkpoint", "escalate-pr"}
+	d.Spec.Tasks = append(d.Spec.Tasks, park)
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+	return d
+}
+
 func TestSafetyPublicationIsPathAndVerdictSpecific(t *testing.T) {
 	d := publicationDefinition(t)
 	bad := assertFinding(t, compile(t, d), PublishCode, true)
@@ -147,6 +168,22 @@ func TestSafetyPublicationIsPathAndVerdictSpecific(t *testing.T) {
 
 	// A publisher can fail and still reach a park when continueOnError is set.
 	d.Spec.Tasks[2].ContinueOnError = true
+	assertFinding(t, compile(t, d), PublishCode, true)
+}
+
+func TestSafetyTerminalParkRecordsUnpushedRemediationReview(t *testing.T) {
+	d := unpushedRemediationDefinition(t)
+	assertFinding(t, compile(t, d), PublishCode, false)
+
+	d.Spec.Gates[0].Branches["fail"] = wf.TargetAbort
+	assertFinding(t, compile(t, d), PublishCode, true)
+
+	d = unpushedRemediationDefinition(t)
+	d.Spec.Tasks[2].Next = "push-remediated"
+	push := shell("push-remediated", "review", "goobers", "push-remediated")
+	push.Capabilities = []string{"github:issues:write", "github:pr:write", "repo:push"}
+	push.PolicyActions = []string{"push-pr-branch", "clear-remediation"}
+	d.Spec.Tasks = append(d.Spec.Tasks, push)
 	assertFinding(t, compile(t, d), PublishCode, true)
 }
 
@@ -204,6 +241,71 @@ func TestSafetyPatchMustBelongToSelectedSubject(t *testing.T) {
 	d.Spec.Tasks[1].Run.Command = []string{"custom-subject-patch"}
 	annotate(t, &d, Contracts{Stages: map[string]StageContract{"check": {Evidence: "patch"}}})
 	assertFinding(t, compile(t, d), EvidenceCode, false)
+}
+
+func TestSafetyConditionalRebindSeparatesManagedAndAdvisoryReview(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-sibling-context"
+	d.Spec.Tasks = []apiv1.Task{shell("gather-sibling-context", "review", "goobers", "gather-sibling-context")}
+	d.Spec.Gates[0].Branches["needs-changes"] = wf.TargetAbort
+	d.Spec.Tasks[0].InputsFrom = map[string]string{"selectedNumber": "number", "advisoryMode": "advisoryMode"}
+	d.Spec.Tasks[0].Inputs = map[string]string{"resultFile": "sibling-context.json"}
+	d.Spec.Tasks[0].PolicyActions = []string{"flag-scope-drift", "route-verdict"}
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-sibling-context", nil) {
+		d.Spec.Tasks[0].Capabilities = append(d.Spec.Tasks[0].Capabilities, string(use.Capability))
+	}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+
+	got := assertFinding(t, compile(t, d), EvidenceCode, true)
+	if len(got) != 1 {
+		t.Fatalf("conditional rebind should report only the advisory path, got %+v", got)
+	}
+	witness := strings.Join(got[0].Details.WitnessPath, " -> ")
+	if !strings.Contains(witness, "advisoryMode=true without workspaceBranch") ||
+		strings.Contains(witness, "managed subject workspaceBranch") {
+		t.Fatalf("SAF001 witness does not isolate advisory path: %+v", got[0])
+	}
+	if got[0].Details.Confidence != "high" || got[0].Details.Coverage != "modeled" {
+		t.Fatalf("advisory path should be a modeled classification, got %+v", got[0].Details)
+	}
+
+	d.Spec.Tasks[0].Run.Command = []string{"goobers", "gather-pr-context"}
+	d.Spec.Tasks[0].Capabilities = nil
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+		d.Spec.Tasks[0].Capabilities = append(d.Spec.Tasks[0].Capabilities, string(use.Capability))
+	}
+	assertFinding(t, compile(t, d), EvidenceCode, false)
+}
+
+func TestSafetyExplicitDiffAfterReboundWorkspaceSatisfiesPRReview(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		inputsFrom map[string]string
+		want       bool
+	}{
+		{"same selected PR", map[string]string{"selectedNumber": "selectedNumber", "head": "head", "base": "base"}, false},
+		{"unproven selected PR", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := reviewDefinition()
+			selector := shell("gather-pr-context", "advisory-siblings", "goobers", "gather-pr-context")
+			for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+				selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+			}
+			siblings := shell("advisory-siblings", "implement", "goobers", "gather-sibling-context", "--no-verdict-cache")
+			for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-sibling-context", nil) {
+				siblings.Capabilities = append(siblings.Capabilities, string(use.Capability))
+			}
+			siblings.InputsFrom = tc.inputsFrom
+			siblings.PolicyActions = []string{"flag-scope-drift", "route-verdict"}
+			d.Spec.Start = selector.Name
+			d.Spec.Tasks = append([]apiv1.Task{selector, siblings}, d.Spec.Tasks...)
+			d.Spec.Tasks[3].Run.Command = []string{"git", "diff", "main...HEAD"}
+			d.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceRepo
+			annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+			assertFinding(t, compile(t, d), EvidenceCode, tc.want)
+		})
+	}
 }
 
 func TestSafetyFeedbackUsesRuntimeContextSelection(t *testing.T) {
@@ -318,6 +420,59 @@ func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
 				t.Fatalf("CommandEffects(%v) = %+v, want known=%v changes=%v parks=%v", tc.task.Run.Command, got, tc.known, tc.changes, tc.parks)
 			}
 		})
+	}
+}
+
+// #5680: first-party stage commands have exact, deliberately narrow effects.
+// Provider-side commands (open-pr, merge-pr, post-merge, ...) are recognized
+// but claim no publication or park: catalog effects are static wiring
+// knowledge, not proof of live delivery.
+func TestSafetyFirstPartyStageCommandEffects(t *testing.T) {
+	withInputs := func(task apiv1.Task, inputs, inputsFrom map[string]string) apiv1.Task {
+		task.Inputs, task.InputsFrom = inputs, inputsFrom
+		return task
+	}
+	for _, tc := range []struct {
+		name string
+		task apiv1.Task
+		want Effects
+	}{
+		{"open-pr", shell("s", "", "goobers", "open-pr"), Effects{Known: true}},
+		{"ci-poll kind", withInputs(shell("s", "", "goobers", "ci-poll"), map[string]string{"kind": "ci-poll"}, nil), Effects{Known: true}},
+		{"ci-poll without kind", shell("s", "", "goobers", "ci-poll"), Effects{}},
+		{"reconcile-post-merge", shell("s", "", "goobers", "reconcile-post-merge"), Effects{Known: true}},
+		{"elect-lander", shell("s", "", "goobers", "elect-lander"), Effects{Known: true}},
+		{"merge-pr", shell("s", "", "goobers", "merge-pr"), Effects{Known: true}},
+		{"merge-queue-poll", shell("s", "", "goobers", "merge-queue-poll"), Effects{Known: true}},
+		{"post-merge", shell("s", "", "goobers", "post-merge"), Effects{Known: true}},
+		{"record-merge-refusal", shell("s", "", "goobers", "record-merge-refusal"), Effects{Known: true}},
+		{"remediation-checkpoint", shell("s", "", "goobers", "remediation-checkpoint"), Effects{Known: true}},
+		{"remediation-checkpoint budget", shell("s", "", "goobers", "remediation-checkpoint", "--budget", "3"), Effects{Known: true}},
+		{"remediation-checkpoint escalate", shell("s", "", "goobers", "remediation-checkpoint", "--escalate=stalled"), Effects{Known: true, Parks: true}},
+		{"respond-to-findings", shell("s", "", "goobers", "respond-to-findings"), Effects{Known: true}},
+		{"respond-to-findings check", shell("s", "", "goobers", "respond-to-findings", "--check"), Effects{Known: true}},
+		{"issue-close-out default", shell("s", "", "goobers", "issue-close-out"), Effects{Known: true}},
+		{"issue-close-out in-review", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "in-review"}, nil), Effects{Known: true}},
+		{"issue-close-out done", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "done"}, nil), Effects{Known: true}},
+		// Issue parks label the work item, not the PR, so they never discharge
+		// a pending PR rejection the way remediation-checkpoint --escalate does.
+		{"issue-close-out needs-human", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "needs-human"}, map[string]string{"reason": "conflictReason"}), Effects{Known: true}},
+		{"issue-close-out needs-remediation", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "needs-remediation"}, nil), Effects{Known: true}},
+		{"issue-close-out unsupported status", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "closed"}, nil), Effects{}},
+		{"issue-close-out dynamic status", withInputs(shell("s", "", "goobers", "issue-close-out"), nil, map[string]string{"status": "status"}), Effects{}},
+		{"issue-close-out extra argv", shell("s", "", "goobers", "issue-close-out", "--status", "done"), Effects{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CommandEffects(tc.task); got != tc.want {
+				t.Fatalf("CommandEffects(%v) = %+v, want %+v", tc.task.Run.Command, got, tc.want)
+			}
+		})
+	}
+	// Every inventoried stage command is explicitly classified in its bare form.
+	for _, name := range builtincmd.Names() {
+		if !CommandEffects(shell("s", "", "goobers", name)).Known {
+			t.Errorf("built-in stage command %q is not classified by the safety catalog", name)
+		}
 	}
 }
 
@@ -587,7 +742,12 @@ func TestSafetyCommandCatalogExactForms(t *testing.T) {
 		{[]string{"git", "diff", "--check"}, Effects{Known: true, EmptySuccess: true, CodeSubject: true}},
 		{[]string{"git", "diff", "main...HEAD"}, Effects{Known: true, Patch: true, CodeSubject: true}},
 		{[]string{"git", "diff", "--stat"}, Effects{}},
-		{[]string{"git", "diff", "--check", "main...HEAD"}, Effects{}},
+		{[]string{"git", "diff", "--check", "main...HEAD"}, Effects{Known: true, EmptySuccess: true, CodeSubject: true}},
+		{[]string{"git", "diff", "--check", "origin/main...HEAD"}, Effects{Known: true, EmptySuccess: true, CodeSubject: true}},
+		{[]string{"git", "diff", "--check", "--stat"}, Effects{}},
+		{[]string{"git", "diff", "--check", "-x...HEAD"}, Effects{}},
+		{[]string{"git", "diff", "--check", "main..HEAD"}, Effects{}},
+		{[]string{"git", "diff", "--check", "main...HEAD", "--", "docs"}, Effects{}},
 		{[]string{"sh", "-c", "goobers apply-verdict"}, Effects{}},
 		{[]string{"goobers", "apply-verdict"}, Effects{Known: true, Publishes: "review"}},
 		{[]string{"goobers", "apply-verdict", "--gate", "renamed"}, Effects{Known: true, Publishes: "renamed"}},
@@ -602,5 +762,105 @@ func TestSafetyCommandCatalogExactForms(t *testing.T) {
 				t.Fatalf("catalog got %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+func coverageStages(findings []Finding) []string {
+	var stages []string
+	for _, f := range findingsFor(findings, CoverageCode) {
+		stages = append(stages, f.Details.Stage)
+	}
+	return stages
+}
+
+// #5842: unknown stages with no dependent obligation must not each emit SAF006.
+func TestSafetyUnknownStagesWithoutObligationsAreQuiet(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-context"
+	d.Spec.Tasks[1].Next = "poll-ci"
+	d.Spec.Tasks = append(d.Spec.Tasks,
+		shell("gather-context", "implement", "custom-gather"),
+		shell("poll-ci", "review", "custom-ci-poll"),
+		shell("release-claim", "close-out", "custom-release"),
+		shell("close-out", "", "custom-close-out"),
+		shell("park", wf.TargetEscalate, "custom-park"))
+	d.Spec.Gates[0].Branches = map[string]string{"pass": "release-claim", "needs-changes": "implement", "fail": "park"}
+	if findings := Analyze(compile(t, d), Options{}); len(findings) != 0 {
+		t.Fatalf("unknown stages without a dependent obligation produced findings: %+v", findings)
+	}
+}
+
+func TestSafetyUnknownStageBlockingPublicationIsReported(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-context"
+	d.Spec.Tasks = append(d.Spec.Tasks,
+		shell("gather-context", "implement", "custom-gather"),
+		shell("notify", wf.TargetEscalate, "custom-notify"))
+	d.Spec.Gates[0].Branches = map[string]string{"pass": "", "needs-changes": "notify", "fail": "notify"}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+	findings := Analyze(compile(t, d), Options{})
+	if got := coverageStages(findings); !slices.Equal(got, []string{"notify"}) {
+		t.Fatalf("SAF006 stages = %v, want only the stage after the rejection; findings=%+v", got, findings)
+	}
+	coverage := findingsFor(findings, CoverageCode)[0]
+	if path := strings.Join(coverage.Details.WitnessPath, " -> "); !strings.HasSuffix(path, "notify -> @escalate") ||
+		!strings.Contains(coverage.Details.Impact, `gate "review"`) {
+		t.Fatalf("SAF006 does not name the blocked obligation: %+v", coverage)
+	}
+	if publish := findingsFor(findings, PublishCode); len(publish) != 1 || publish[0].Details.Confidence != "uncertain" {
+		t.Fatalf("publication finding = %+v", publish)
+	}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}, "notify": {Publishes: "review"}}})
+	if findings := Analyze(compile(t, d), Options{}); len(findings) != 0 {
+		t.Fatalf("declared publisher left findings: %+v", findings)
+	}
+}
+
+func TestSafetyUnknownStageBlockingRejectionCycleIsReported(t *testing.T) {
+	d := wf.Definition{Name: "cycle", Version: 1, DSLVersion: "2.0", Spec: apiv1.WorkflowSpec{
+		Gaggle: "example", Start: "custom", Tasks: []apiv1.Task{shell("custom", "verify", "custom-fix")},
+		Gates: []apiv1.Gate{{Name: "verify", Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{"pass": "", "fail": "custom"}}},
+	}}
+	findings := Analyze(compile(t, d), Options{})
+	if got := coverageStages(findings); !slices.Equal(got, []string{"custom"}) || len(findingsFor(findings, CycleCode)) != 0 {
+		t.Fatalf("unknown cycle stage findings = %+v", findings)
+	}
+	d.Spec.Gates[0].Branches["fail"] = wf.TargetAbort
+	if findings := Analyze(compile(t, d), Options{}); len(findings) != 0 {
+		t.Fatalf("acyclic unknown stage produced findings: %+v", findings)
+	}
+	d.Spec.Gates[0].Branches["fail"] = "custom"
+	d.Spec.Tasks[0].Run.Command = []string{"true"}
+	findings = Analyze(compile(t, d), Options{})
+	if len(findingsFor(findings, CycleCode)) != 1 || len(findingsFor(findings, CoverageCode)) != 0 {
+		t.Fatalf("known non-changing cycle findings = %+v", findings)
+	}
+}
+
+func TestSafetyUnknownStageSupersededByKnownChangeIsNotBlamed(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-context"
+	d.Spec.Tasks = append(d.Spec.Tasks, shell("gather-context", "implement", "custom-gather"))
+	d.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "code"}}})
+	findings := Analyze(compile(t, d), Options{})
+	if len(findingsFor(findings, EvidenceCode)) == 0 || len(findingsFor(findings, CoverageCode)) != 0 {
+		t.Fatalf("unknown stage before the subject change was blamed for missing evidence: %+v", findings)
+	}
+}
+func TestSafetyUnknownStageBeforeUnboundPRChangeIsBlamed(t *testing.T) {
+	d := reviewDefinition()
+	selector := shell("select", "checkout", "goobers", "pr-select")
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("pr-select", nil) {
+		selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+	}
+	selector.PolicyActions = []string{"flag-foundation-coupling"}
+	d.Spec.Start = selector.Name
+	d.Spec.Tasks = append(d.Spec.Tasks, selector, shell("checkout", "implement", "custom-checkout"))
+	findings := Analyze(compile(t, d), Options{})
+	if len(findingsFor(findings, EvidenceCode)) == 0 || !slices.Equal(coverageStages(findings), []string{"checkout"}) {
+		t.Fatalf("unknown stage that may bind the selected PR was not blamed: %+v", findings)
 	}
 }

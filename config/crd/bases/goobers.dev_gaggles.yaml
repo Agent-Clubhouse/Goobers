@@ -225,6 +225,25 @@ spec:
                 - project
                 - provider
                 type: object
+              backprop:
+                description: |-
+                  Backprop overrides Backprop attribution for this gaggle's workflows
+                  without editing them. mode=shadow observes every workflow that declares
+                  neither its own backprop.mode nor enabled=true; the override can never
+                  activate filing. Omitted or mode=off applies no override.
+                properties:
+                  mode:
+                    description: |-
+                      Mode is the override applied to workflows without their own mode.
+                      Only off and shadow are accepted: a gaggle cannot enroll workflows
+                      in active filing.
+                    enum:
+                    - "off"
+                    - shadow
+                    type: string
+                required:
+                - mode
+                type: object
               branchNamespace:
                 description: |-
                   BranchNamespace is the refs/heads/ root this gaggle's run branches live
@@ -276,6 +295,112 @@ spec:
                   finish normally.
                 nullable: true
                 type: boolean
+              health:
+                description: |-
+                  Health configures gaggle health observation, escalation, and the narrow
+                  set of product-authorized idempotent repairs. Omitted uses conservative
+                  defaults: observation is enabled and destructive behavior is disabled.
+                properties:
+                  enabled:
+                    description: Enabled controls periodic evaluation. Null or omitted
+                      defaults to true.
+                    nullable: true
+                    type: boolean
+                  evaluationInterval:
+                    description: EvaluationInterval is a Go duration. Omitted defaults
+                      to five minutes.
+                    type: string
+                  eventWorkflow:
+                    description: |-
+                      EventWorkflow emits filtered health transitions to a workflow. It can
+                      observe events but can never authorize or perform a repair.
+                    properties:
+                      enabled:
+                        type: boolean
+                      eventTypes:
+                        items:
+                          type: string
+                        type: array
+                      findingCodes:
+                        items:
+                          type: string
+                        type: array
+                      minimumSeverity:
+                        enum:
+                        - info
+                        - warning
+                        - error
+                        - critical
+                        type: string
+                      workflow:
+                        type: string
+                    type: object
+                  findings:
+                    additionalProperties:
+                      description: |-
+                        GaggleFindingPolicy selects handling and an optional bounded severity
+                        override for one known finding code.
+                      properties:
+                        mode:
+                          enum:
+                          - observe
+                          - repair
+                          - escalate
+                          type: string
+                        severity:
+                          enum:
+                          - info
+                          - warning
+                          - error
+                          - critical
+                          type: string
+                      required:
+                      - mode
+                      type: object
+                    description: |-
+                      Findings overrides handling for known finding codes. Unknown codes are
+                      rejected; omission retains the code's hard safety policy.
+                    type: object
+                  notifications:
+                    description: Notifications configures bounded operator notifications
+                      and escalation.
+                    properties:
+                      enabled:
+                        description: Enabled defaults to true.
+                        nullable: true
+                        type: boolean
+                      escalateAfter:
+                        description: |-
+                          EscalateAfter is a Go duration after which an unresolved finding is
+                          escalated. Omitted defaults to one hour.
+                        type: string
+                      minimumSeverity:
+                        description: MinimumSeverity suppresses lower-severity notifications.
+                        enum:
+                        - info
+                        - warning
+                        - error
+                        - critical
+                        type: string
+                    type: object
+                  thresholds:
+                    description: Thresholds bound detector windows and retained evidence.
+                    properties:
+                      evidenceRetention:
+                        type: string
+                      flappingCount:
+                        format: int32
+                        type: integer
+                      flappingWindow:
+                        type: string
+                      noProgress:
+                        type: string
+                      prolongedDegradation:
+                        type: string
+                      triggerSilence:
+                        type: string
+                    type: object
+                type: object
               isolation:
                 description: Isolation declares the per-gaggle boundary (namespace
                   + workload identity).
@@ -443,14 +568,21 @@ spec:
                 properties:
                   maxRepasses:
                     description: |-
-                      MaxRepasses bounds how many times gates may route a run back to the same
-                      already-completed stage before escalation, regardless of gate or outcome.
+                      MaxRepasses bounds how many times a run may be routed back to the same
+                      already-completed stage before escalation. The count is cumulative per
+                      target stage across the run, charged by automated and agentic gate
+                      outcomes that route back to that stage and by producer retries after an
+                      invalid handoff. Only policy outcomes (anything other than pass, infra,
+                      or timeout) are charged: a pass branch into a completed stage is a
+                      forward step, infra and timeout outcomes spend their own retry and
+                      polling budgets, and human-gate decisions are never charged.
                     format: int32
                     minimum: 1
                     type: integer
                   maxRunDuration:
                     description: |-
-                      MaxRunDuration is the maximum total wall-clock age of a run. Empty
+                      MaxRunDuration is the maximum active execution time of a run: its age
+                      less time the host spent suspended and durable child waits. Empty
                       disables the total-duration limit. It uses Go duration syntax.
                     minLength: 1
                     type: string

@@ -1,5 +1,6 @@
 import { Children } from "react";
 import { Icon } from "./Icon";
+import { TableHeader, TableShell } from "./DataTable";
 
 // Defense-in-depth cap (DASH-15): operational lists are fed bounded data
 // (DASH-12 Overview groups, DASH-14 paginated Runs history), but DataList also
@@ -39,14 +40,13 @@ export function DataList({
   const hidden = rows.length - visible.length;
 
   return (
-    <div aria-label={ariaLabel} className="data-table data-table-shell" role="region">
+    <TableShell ariaLabel={ariaLabel} className="data-table">
       {columns && (
-        <div aria-hidden="true" className={`data-header data-table-header ${gridClassName}`}>
-          {columns.map((column, index) => (
-            <span key={`${column}-${index}`}>{column}</span>
-          ))}
-          {showTrailingColumn && <span />}
-        </div>
+        <TableHeader
+          columns={columns}
+          className={gridClassName}
+          trailingColumn={showTrailingColumn}
+        />
       )}
       {visible}
       {hidden > 0 && (
@@ -59,7 +59,7 @@ export function DataList({
           )}
         </p>
       )}
-    </div>
+    </TableShell>
   );
 }
 
@@ -117,12 +117,7 @@ export function DataRow({
 
   if (href) {
     return (
-      <a
-        aria-label={label}
-        className="data-row"
-        data-focus-restore={restoreKey}
-        href={href}
-      >
+      <a aria-label={label} className="data-row" data-focus-restore={restoreKey} href={href}>
         {content}
       </a>
     );

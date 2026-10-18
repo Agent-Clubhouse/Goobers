@@ -285,7 +285,7 @@ func TestPortalConfigHandlerUsesSharedReadService(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
 		t.Fatal(err)
 	}
-	if reader.called != 1 || config.Brand.Name != "Acme Ops" {
+	if reader.called != 1 || config.Brand.Name != "Acme Ops" || config.ConnectionLocality != connectionLocalityRemote {
 		t.Fatalf("reader called %d times, config = %+v", reader.called, config)
 	}
 }
@@ -1205,4 +1205,9 @@ func TestConstructorsRequireDependencies(t *testing.T) {
 	if _, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), discardLogger(), nil); err == nil {
 		t.Fatal("expected missing server option error")
 	}
+}
+
+func (f *fakeReader) RunChildren(_ context.Context, runID, _ string) (readservice.ChildHistoryPage, error) {
+	f.runID = runID
+	return readservice.ChildHistoryPage{RunID: runID, Status: "unavailable", Items: []readservice.ChildHistoryItem{}}, f.err
 }

@@ -100,6 +100,11 @@
       "sinceVersion": "v0.4.0"
     },
     {
+      "name": "gaggle.spec.health",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.isolation.identityRef",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -895,6 +900,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.readiness.requireProviderAuthorization",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.requires.capabilities",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -916,6 +926,11 @@
     },
     {
       "name": "workflow.spec.runControls.stalledRunTimeout",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.scheduleCatchUp",
       "stability": "ga",
       "sinceVersion": "dev"
     },

@@ -10,7 +10,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -149,6 +151,17 @@ func TestStatusEqual(t *testing.T) {
 	}
 }
 
+func TestComputeStatusDoesNotMutatePrevConditions(t *testing.T) {
+	prev := computeStatus(1, 1, 1, v1alpha1.GaggleStatus{})
+	next := computeStatus(1, 1, 0, prev)
+	if statusEqual(prev, next) {
+		t.Error("Ready-condition-only change must not compare equal")
+	}
+	if c := apimeta.FindStatusCondition(prev.Conditions, readyConditionType); c.Status != metav1.ConditionTrue {
+		t.Errorf("prev condition mutated: %v", c.Status)
+	}
+}
+
 func TestMapFuncs(t *testing.T) {
 	reqs := gooberToGaggle(context.Background(), &v1alpha1.Goober{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "goobers-system"},
@@ -212,7 +225,7 @@ func TestReconcile_GoobersAreNamespaceScoped(t *testing.T) {
 
 // --- reconcile (fake client) ----------------------------------------------
 
-func newReconciler(t *testing.T, reg WorkflowRegistrar, objs ...client.Object) (*GaggleReconciler, client.Client) {
+func newReconciler(t *testing.T, reg WorkflowRegistrar, objs ...client.Object) (*GaggleReconciler, client.WithWatch) {
 	t.Helper()
 	scheme, err := NewScheme()
 	if err != nil {
@@ -301,11 +314,6 @@ func TestReconcile_IgnoresUnpublishedGeneration(t *testing.T) {
 	err := c.Get(context.Background(), types.NamespacedName{Name: "gaggle-web"}, &ns)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("unpublished generation should not create namespace, got err=%v", err)
-	}
-
-	reqs := r.generationPointerToGaggles(context.Background(), generationPointer("gnew"))
-	if len(reqs) != 1 || reqs[0].Name != pending.Name || reqs[0].Namespace != pending.Namespace {
-		t.Fatalf("generation pointer map = %+v, want %s/%s", reqs, pending.Namespace, pending.Name)
 	}
 }
 
@@ -469,5 +477,58 @@ func TestReconcile_Idempotent(t *testing.T) {
 	}
 	if len(deps.Items) != 1 {
 		t.Errorf("expected exactly 1 worker after 2 reconciles, got %d", len(deps.Items))
+	}
+}
+
+func TestApplyDeployment_NoUpdateWhenSpecUnchanged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &GaggleReconciler{Client: c}
+	desired := func() *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "w", Namespace: "ns"},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
+		}
+	}
+	ctx := context.Background()
+	if _, err := r.applyDeployment(ctx, desired()); err != nil {
+		t.Fatal(err)
+	}
+	key := types.NamespacedName{Name: "w", Namespace: "ns"}
+	live := &appsv1.Deployment{}
+	if err := c.Get(ctx, key, live); err != nil {
+		t.Fatal(err)
+	}
+	live.Spec.RevisionHistoryLimit = ptr.To(int32(10)) // server-side defaulting
+	if err := c.Update(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, key, live); err != nil {
+		t.Fatal(err)
+	}
+	before := live.ResourceVersion
+	if _, err := r.applyDeployment(ctx, desired()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, key, live); err != nil {
+		t.Fatal(err)
+	}
+	if live.ResourceVersion != before || live.Spec.RevisionHistoryLimit == nil {
+		t.Fatalf("unexpected update: rv %s -> %s", before, live.ResourceVersion)
+	}
+
+	changed := desired()
+	changed.Spec.Replicas = ptr.To(int32(3))
+	if _, err := r.applyDeployment(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, key, live); err != nil {
+		t.Fatal(err)
+	}
+	if *live.Spec.Replicas != 3 {
+		t.Fatalf("replicas = %d, want 3", *live.Spec.Replicas)
 	}
 }

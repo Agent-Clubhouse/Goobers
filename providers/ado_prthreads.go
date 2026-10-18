@@ -106,18 +106,17 @@ func (p *ADOProvider) ListPullRequestThreadComments(ctx context.Context, repo Re
 	if pullID == "" {
 		return nil, errPullIDRequired
 	}
-	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
+	threads, err := p.listADOPullRequestThreads(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
 	}
-	var resp adoPullRequestThreadsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
-		return nil, err
-	}
 	comments := make([]Comment, 0)
-	for _, thread := range resp.Value {
+	for _, thread := range threads {
+		if thread.IsDeleted {
+			continue
+		}
 		for _, comment := range thread.Comments {
-			if strings.EqualFold(comment.CommentType, "system") {
+			if comment.IsDeleted || strings.EqualFold(comment.CommentType, "system") {
 				continue
 			}
 			comments = append(comments, mapADOPullRequestThreadComment(pullID, thread.ID, comment))
@@ -472,6 +471,7 @@ func (p *ADOProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pu
 		ID:                 pullID,
 		Number:             poll.Number,
 		URL:                poll.URL,
+		Title:              poll.Title,
 		Author:             poll.Author,
 		RequestedReviewers: poll.RequestedReviewers,
 		State:              poll.State,

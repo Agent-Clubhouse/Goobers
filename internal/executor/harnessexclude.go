@@ -5,7 +5,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gitexclude"
-	"github.com/goobers/goobers/internal/mutationsidecar"
+	"github.com/goobers/goobers/internal/publicationpaths"
 )
 
 // effectiveResultFile resolves the result file this stage will write: the
@@ -55,7 +55,9 @@ func ExcludeStageArtifacts(ctx context.Context, workspace, resultFile string) {
 	if workspace == "" {
 		return
 	}
-	patterns := []gitexclude.Pattern{{Line: "/" + mutationsidecar.FileName}}
+	// Apply the same policy as checkout provisioning, including callers whose
+	// workspace was supplied outside the managed checkout path.
+	patterns := publicationpaths.ExcludePatterns()
 	if pattern, ok := gitexclude.Anchored(resultFile); ok {
 		patterns = append(patterns, pattern)
 	}

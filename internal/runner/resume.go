@@ -26,6 +26,10 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 // snapshotted Item and workflow Definition); RepoRef is not journaled, so the
 // caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
+	// OnRecoveryOwned runs with journal and cancellation ownership acquired,
+	// before stage effects. The context observes operator interruption. Other
+	// callback errors leave execution suspended.
+	OnRecoveryOwned func(context.Context) error
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
 	// Machine is the compiled workflow (#9) this run was walking. When nil,
@@ -142,6 +146,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	if err := r.admitChildWorkflowResume(ctx, in.Machine, dir); err != nil {
+		return Result{}, err
+	}
 
 	// A fresh registrar/scrubber per resume, exactly like Start — a run's
 	// secrets have no business outliving one process's handling of it.
@@ -151,8 +158,25 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowExecutionJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend recovered execution journal: %w", err)
+	}
+	defer releaseJournal()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		if in.OnRecoveryOwned != nil {
+			if err := in.OnRecoveryOwned(stalledAttemptContext(ctx)); err != nil {
+				if request, ok := stalledRequestFromContext(ctx); ok {
+					_, state, inspectErr := runPhaseAndState(dir)
+					if inspectErr != nil {
+						return Result{}, inspectErr
+					}
+					return r.finishStalled(in.RunID, jr, state, 0, request)
+				}
+				return Result{}, err
+			}
+		}
 		return r.resumeOwned(ctx, in, jr, registrar, dir)
 	})
 }
@@ -168,6 +192,9 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	}
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
+	}
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
+		return Result{}, err
 	}
 	in.Target = strings.TrimSpace(in.Target)
 	if in.Target == "" && !in.Complete {
@@ -195,6 +222,11 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowExecutionJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend resumed child journal: %w", err)
+	}
+	defer releaseJournal()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
 		rd, err := journal.OpenRead(dir)
@@ -349,6 +381,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if res, refused, verr := r.verifyResumePin(jr, &in, rd, id); refused || verr != nil {
 		return res, verr
 	}
+	if err := r.admitExecution(ctx, in.Machine); err != nil {
+		return Result{}, err
+	}
 	if err := resetRetryBackoffOnResume(jr, events); err != nil {
 		return Result{}, fmt.Errorf("runner: clear retry backoff on resume: %w", err)
 	}
@@ -362,15 +397,12 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err := validateHumanResumeDecision(in, humanProgress); err != nil {
 		return Result{}, err
 	}
-	rerun, seedEvents, err := pendingRerun(events, in.Machine)
+	rerun, seedEvents, err := resumeSeedEvents(events, in.Machine)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: restore pending stage rerun for run %q: %w", in.RunID, err)
 	}
-	if rerun == nil {
-		seedEvents = events
-	}
 
-	f, err := r.newResumeFrame(ctx, jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	f, err := r.newResumeFrame(ctx, jr, rd, in, id, registrar, events, seedEvents, rerun, humanProgress)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
 	}
@@ -406,6 +438,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// the walkState is built above, so they are filled in rather than rebuilt
 	// into a second StartInput (#4235).
 	ws.in.Item, ws.in.RunControls = item, runControls
+	f.seedGateBudgets(in.Machine)
 	if completedGate != nil {
 		next, res, advance, gerr := r.gateTransition(ctx, ws, *completedGate)
 		if gerr != nil {
@@ -454,7 +487,6 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return res, nil
 	}
 
-	f.seedGateBudgets(in.Machine)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -642,6 +674,24 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 	return nil
 }
 
+// resumeSeedEvents selects the events a resume reconstructs from — the
+// pending rerun's seed, or the whole journal — and refuses them when a
+// recorded selective-parallel visit conflicts (a typed workflow_integrity
+// failure, never repaired by rerunning the source task).
+func resumeSeedEvents(events []journal.Event, machine *workflow.Machine) (*rerunContext, []journal.Event, error) {
+	rerun, seedEvents, err := pendingRerun(events, machine)
+	if err != nil {
+		return nil, nil, err
+	}
+	if rerun == nil {
+		seedEvents = events
+	}
+	if err := verifyRecordedSelections(seedEvents, machine); err != nil {
+		return nil, nil, err
+	}
+	return rerun, seedEvents, nil
+}
+
 // newResumeFrame reconstructs the walk-local state a live run only ever holds
 // in memory — pointers accumulated so far (#107) and the last finished stage's
 // result (#108), the subject a resumed gate needs. Both are exactly what a live
@@ -655,25 +705,29 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 // have been resolved, so resumeOwned fills those two in.
 func (r *Runner) newResumeFrame(
 	ctx context.Context,
-	jr *journal.Run, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
+	jr *journal.Run, rd *journal.Reader, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
 ) (*resumeFrame, error) {
-	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
+	activeParallel, parallelStart, err := pendingParallel(seedEvents, in.Machine)
+	if err != nil {
+		return nil, fmt.Errorf("runner: resume run %q: %w", in.RunID, err)
+	}
 	pointerEvents := seedEvents
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	branch := 0
-	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
+	if activeParallel != nil && !parallelUsesDispatcher(in.Machine, activeParallel.spec) && activeParallel.current() != nil {
 		branch = activeParallel.current().id
 	}
-	startIn, err := r.restoreResumeWorkspaceRevision(ctx, StartInput{
+	startIn, err := r.restoreExecutionWorkspace(ctx, rd, id, StartInput{
 		instanceID:       id.InstanceID,
 		configGeneration: id.ConfigGeneration,
 		RunID:            in.RunID,
 		Machine:          in.Machine,
 		GooberDigest:     in.GooberDigest,
 		Gaggle:           id.Gaggle,
+		Child:            id.Child,
 		Trigger:          id.Trigger,
 		RepoRef:          in.RepoRef,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
@@ -694,6 +748,9 @@ func (r *Runner) newResumeFrame(
 	ws.visitedStages = stageVisitSeed(seedEvents)
 	ws.parallel = activeParallel
 	ws.fanIn = pendingFanIn(seedEvents, in.Machine)
+	// A finished map whose join has not run gets its join inputs back from
+	// the same journal assembly the live run used (§9).
+	ws.fanOutResults = assembleMapJoin(in.RunID, seedEvents, in.Machine, ws.fanIn)
 	if activeParallel != nil {
 		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		jr.SetBranchCursors(activeParallel.cursors())
@@ -704,7 +761,7 @@ func (r *Runner) newResumeFrame(
 	if humanProgress.waiting {
 		ws.humanDecision = in.HumanDecision
 	}
-	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
+	lastStage, lastResult, hasLast := lastFinishedSubject(mapJoinSubjectEvents(seedEvents, ws.fanIn))
 	ws.lastStage, ws.lastResult = lastStage, lastResult
 	ws.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, ws.lastResult)
 	ws.workspaceBranch = id.WorkspaceBranch
@@ -722,7 +779,7 @@ func (r *Runner) newResumeFrame(
 		segment:            segment,
 		rerun:              rerun,
 		parallelTransition: pendingParallelTransition(seedEvents, in.Machine),
-		concurrentResume:   activeParallel != nil && activeParallel.spec.MaxConcurrentBranches > 1,
+		concurrentResume:   activeParallel != nil && parallelUsesDispatcher(in.Machine, activeParallel.spec),
 		humanProgress:      humanProgress,
 		resumeTarget:       resumeTarget,
 		lastStage:          lastStage,
@@ -778,6 +835,9 @@ func (f *resumeFrame) resolveStartState(rd *journal.Reader, machine *workflow.Ma
 	if ws.parallel != nil {
 		current := ws.parallel.current()
 		switch {
+		case current == nil && ws.parallel.runnable() == 0:
+			// The frozen selection skipped every branch; only the join remains.
+			startState = workflow.TargetJoin
 		case current == nil:
 			return "", fmt.Errorf("runner: restore active parallel %q: no current branch", ws.parallel.spec.Name)
 		case current.settled:
@@ -847,6 +907,9 @@ func (f *resumeFrame) attemptContext(machine *workflow.Machine, stage string) *r
 	if _, isTask := machine.Task(stage); !isTask || f.concurrentResume {
 		return nil
 	}
+	if restored, ok := recoverChildTaskContext(f.segment, stage); ok {
+		return restored
+	}
 	if attempt := interruptedAttempt(f.segment, stage); attempt > 0 {
 		return &resumeContext{
 			stage:                  stage,
@@ -899,13 +962,11 @@ func (r *Runner) replayFinishedTask(ctx context.Context, f *resumeFrame, startSt
 	if ws.parallel != nil {
 		switch f.lastResult.Status {
 		case apiv1.ResultFailure:
-			if !t.ContinueOnError {
-				if _, nextIsGate := ws.in.Machine.Gate(t.Next); !nextIsGate {
-					ws.parallel.markCurrentFailed()
-					ws.lastResult.Outputs = nil
-					*startState = workflow.TargetJoin
-					return Result{}, true, nil
-				}
+			if failsParallelBranch(ws.in.Machine, t, isInvalidHandoffFailure(f.lastResult)) {
+				ws.parallel.markCurrentFailed()
+				ws.lastResult.Outputs = nil
+				*startState = workflow.TargetJoin
+				return Result{}, true, nil
 			}
 		case apiv1.ResultNoWork:
 			ws.parallel.markCurrentNoOutput()
@@ -1149,6 +1210,22 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 		case journal.EventGatePaused, journal.EventGateStarted, journal.EventGateEvaluated:
 			return "", false
 		case journal.EventRunnerAnnotation:
+			if e.Runner["kind"] == handoffValidationRetryAnnotationKind && e.Stage == subjectStage {
+				if _, ok := invalidHandoffRetryFromResult(subject); !ok {
+					return "", false
+				}
+				// An escalated annotation never reroutes: recovery replays the
+				// consumer's result so the escalation is re-applied instead.
+				target, ok := invalidHandoffPrunedProducer(e)
+				if !ok {
+					return "", false
+				}
+				switch target {
+				case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+					return "", false
+				}
+				return target, true
+			}
 			if e.Runner["kind"] != retryDecisionKind || e.Stage != subjectStage {
 				continue
 			}
@@ -1413,12 +1490,9 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 	}
 	for _, e := range events {
 		switch e.Type {
-		case journal.EventParallelStarted:
-			branchNames = map[int]string{}
+		case journal.EventParallelStarted, journal.EventMapStarted:
+			branchNames = fanOutBranchNames(e)
 			branchPointers = map[int][]apiv1.ContextPointer{}
-			for _, branch := range e.Completeness {
-				branchNames[branch.Branch] = branch.Name
-			}
 		case journal.EventBranchStarted:
 			if branchNames == nil {
 				branchNames = map[int]string{}
@@ -1446,21 +1520,15 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 				},
 			}})
 		case journal.EventRunnerAnnotation:
-			kind, _ := e.Runner["kind"].(string)
-			if kind != "learning.episode.injected" || e.Ref == nil {
+			if pruned, ok := pruneInvalidHandoffPointers(out, branchPointers, e); ok {
+				out = pruned
 				continue
 			}
-			record(e.Branch, []apiv1.ContextPointer{{
-				Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
-				Integrity: e.Ref.Integrity,
-				Artifact: &apiv1.ArtifactPointer{
-					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
-					MediaType: "application/json", Integrity: e.Ref.Integrity,
-				},
-			}})
-		case journal.EventParallelFinished:
-			spec, ok := machine.Parallel(e.Parallel)
-			if ok && e.Target == spec.Join {
+			if pointer, ok := learningEpisodePointer(e); ok {
+				record(e.Branch, []apiv1.ContextPointer{pointer})
+			}
+		case journal.EventParallelFinished, journal.EventMapFinished:
+			if join, ok := fanOutJoin(machine, e.Parallel); ok && e.Target == join {
 				flushBranches(e.Completeness)
 			} else {
 				discardBranches()
@@ -1478,6 +1546,23 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 		}
 	}
 	return out
+}
+
+// learningEpisodePointer returns the context pointer journaled by a
+// learning-episode injection annotation.
+func learningEpisodePointer(e journal.Event) (apiv1.ContextPointer, bool) {
+	kind, _ := e.Runner["kind"].(string)
+	if kind != "learning.episode.injected" || e.Ref == nil {
+		return apiv1.ContextPointer{}, false
+	}
+	return apiv1.ContextPointer{
+		Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
+		Integrity: e.Ref.Integrity,
+		Artifact: &apiv1.ArtifactPointer{
+			Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+			MediaType: "application/json", Integrity: e.Ref.Integrity,
+		},
+	}, true
 }
 
 func runnerUint64(value any) uint64 {
@@ -1501,44 +1586,26 @@ func runnerUint64(value any) uint64 {
 }
 
 // pendingParallel rebuilds the in-memory execution state for the latest
-// parallel.started that has not reached parallel.finished. A run.resumed event
-// starts a new run segment, so prior branch state must not cross that boundary;
-// run.finished alone does not, because RerunStage can reopen the branch.
-func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parallelExec, int) {
-	start := -1
-	for i, event := range events {
-		switch event.Type {
-		case journal.EventParallelStarted:
-			start = i
-		case journal.EventParallelFinished:
-			if start >= 0 && event.Parallel == events[start].Parallel {
-				start = -1
-			}
-		case journal.EventRunResumed:
-			if event.Target == workflow.TargetJoin {
-				if parallel, _, ok := interventionParallelContext(events[:i], machine, event.Gate); ok {
-					for candidate := i - 1; candidate >= 0; candidate-- {
-						if events[candidate].Type == journal.EventParallelStarted &&
-							events[candidate].Parallel == parallel {
-							start = candidate
-							break
-						}
-					}
-				}
-			} else {
-				start = -1
-			}
-		}
+// fan-out visit — a parallel.started or map.started — that has not reached its
+// finish event (design plan-driven-dynamic-fan-out.md §8). findPendingFanOut
+// locates the visit and verifies every map visit strictly; the branch set is
+// rebuilt from the start event alone, then branch lifecycle and stage events
+// are applied by numeric branch id. A map visit whose records are missing,
+// extra, duplicated or conflicting returns a typed workflow_integrity error.
+func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parallelExec, int, error) {
+	pending, err := findPendingFanOut(events, machine)
+	if err != nil {
+		return nil, -1, err
 	}
-	if start < 0 {
-		return nil, -1
+	if pending.start < 0 {
+		return nil, -1, nil
 	}
-
-	spec, ok := machine.Parallel(events[start].Parallel)
-	if !ok {
-		return nil, -1
+	start := pending.start
+	par := pending.exec(events, machine)
+	if par == nil {
+		return nil, -1, nil
 	}
-	par := newParallelExec(spec)
+	spec := par.spec
 	branchByID := func(id int) (*branchState, int) {
 		for i, branch := range par.branches {
 			if branch.id == id {
@@ -1596,10 +1663,8 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			lastStage[event.Branch] = event
 			switch event.Status {
 			case string(apiv1.ResultFailure):
-				if taskKnown && !task.ContinueOnError {
-					if _, nextIsGate := machine.Gate(task.Next); !nextIsGate {
-						branch.failed = true
-					}
+				if taskKnown && failsParallelBranch(machine, task, isInvalidHandoffFailureEvent(event)) {
+					branch.failed = true
 				}
 			case string(apiv1.ResultNoWork):
 				branch.noOutput = true
@@ -1641,6 +1706,9 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			// correction is journaled and not dispatched, and the repass's
 			// derived-integrity downgrade silently disappears.
 			if branch == nil {
+				continue
+			}
+			if replayInvalidHandoffAnnotation(branch, event) {
 				continue
 			}
 			kind, _ := event.Runner["kind"].(string)
@@ -1686,7 +1754,7 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			}
 		}
 	}
-	return par, start
+	return par, start, nil
 }
 
 func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {
@@ -1715,23 +1783,79 @@ func interventionParallelContext(events []journal.Event, machine *workflow.Machi
 func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelExec {
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if event.Type != journal.EventParallelFinished {
+		if event.Type != journal.EventParallelFinished && event.Type != journal.EventMapFinished {
 			continue
 		}
-		spec, ok := machine.Parallel(event.Parallel)
-		if !ok || event.Target != spec.Join {
+		join, ok := fanOutJoin(machine, event.Parallel)
+		if !ok || event.Target != join {
 			continue
 		}
 		for _, later := range events[i+1:] {
-			stageFinished := later.Type == journal.EventStageFinished && later.Stage == spec.Join && !isInterruptedAttemptMarker(later)
-			gateFinished := later.Type == journal.EventGateEvaluated && later.Gate == spec.Join
+			stageFinished := later.Type == journal.EventStageFinished && later.Stage == join && !isInterruptedAttemptMarker(later)
+			gateFinished := later.Type == journal.EventGateEvaluated && later.Gate == join
 			if stageFinished || gateFinished {
 				return nil
 			}
 		}
-		return fanInFromFinished(spec, event)
+		return fanInFromFinishedEvent(events[:i], machine, event)
 	}
 	return nil
+}
+
+// fanInFromFinishedEvent rebuilds the fan-in a parallel.finished or
+// map.finished recorded. A map's comes from its map.started roster, so the
+// join sees the same identities and digests the visit ran.
+func fanInFromFinishedEvent(before []journal.Event, machine *workflow.Machine, finished journal.Event) *parallelExec {
+	if spec, ok := machine.Parallel(finished.Parallel); ok {
+		return fanInFromFinished(spec, finished)
+	}
+	def, ok := machine.Map(finished.Parallel)
+	if !ok {
+		return nil
+	}
+	for i := len(before) - 1; i >= 0; i-- {
+		started := before[i]
+		if started.Type != journal.EventMapStarted || started.Parallel != def.Name || started.MapRoster == nil {
+			continue
+		}
+		fanIn := newMapExec(def, *started.MapRoster, started.Seq)
+		for _, outcome := range finished.Completeness {
+			if outcome.Branch < 1 || outcome.Branch > len(fanIn.branches) {
+				continue
+			}
+			branch := fanIn.branches[outcome.Branch-1]
+			branch.status, branch.artifacts, branch.settled = outcome.Status, outcome.Artifacts, true
+		}
+		return fanIn
+	}
+	return nil
+}
+
+// fanOutJoin returns the join of the parallel or map named name.
+func fanOutJoin(machine *workflow.Machine, name string) (string, bool) {
+	if spec, ok := machine.Parallel(name); ok {
+		return spec.Join, true
+	}
+	if def, ok := machine.Map(name); ok {
+		return def.Join, true
+	}
+	return "", false
+}
+
+// fanOutBranchNames maps every branch id a fan-out start declares to its
+// name: a parallel's declared branches, or a map's roster identities.
+func fanOutBranchNames(started journal.Event) map[int]string {
+	names := map[int]string{}
+	if started.MapRoster != nil {
+		for i, item := range started.MapRoster.Items {
+			names[i+1] = item.Identity
+		}
+		return names
+	}
+	for _, branch := range started.Completeness {
+		names[branch.Branch] = branch.Name
+	}
+	return names
 }
 
 type parallelResumeTransition struct {
@@ -1753,11 +1877,11 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 			return nil
 		case journal.EventStageStarted, journal.EventStageFinished,
 			journal.EventGatePaused, journal.EventGateStarted, journal.EventGateEvaluated,
-			journal.EventParallelStarted:
+			journal.EventParallelStarted, journal.EventMapStarted:
 			if event.Branch == 0 {
 				return nil
 			}
-		case journal.EventParallelFinished:
+		case journal.EventParallelFinished, journal.EventMapFinished:
 			if event.Branch == 0 {
 				finished = i
 			}
@@ -1771,7 +1895,7 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 	}
 
 	event := events[finished]
-	spec, ok := machine.Parallel(event.Parallel)
+	spec, ok := finishedFanOutSpec(events[:finished], machine, event)
 	if !ok || event.Target == spec.Join {
 		return nil
 	}
@@ -1789,11 +1913,29 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		if target == event.Target {
 			transition.task = task
 			transition.gate = gate
-			transition.aggregate = false
+			// An invalid-handoff escalation has no task or gate to replay; it
+			// escalates the run directly like an aggregate terminal.
+			transition.aggregate = task == nil && gate == nil
 			break
 		}
 	}
 	return transition
+}
+
+// finishedFanOutSpec is the (expanded) declaration of the parallel or map a
+// finish event closes: a map's branches are its visit's frozen roster.
+func finishedFanOutSpec(before []journal.Event, machine *workflow.Machine, finished journal.Event) (apiv1.Parallel, bool) {
+	if spec, ok := machine.Parallel(finished.Parallel); ok {
+		return spec, true
+	}
+	if finished.Type != journal.EventMapFinished {
+		return apiv1.Parallel{}, false
+	}
+	fanIn := fanInFromFinishedEvent(before, machine, finished)
+	if fanIn == nil {
+		return apiv1.Parallel{}, false
+	}
+	return fanIn.spec, true
 }
 
 // rerunFanIn restores the fan-in associated with an explicitly rerun join;
@@ -1801,12 +1943,11 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 func rerunFanIn(events []journal.Event, machine *workflow.Machine, stage string) *parallelExec {
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if event.Type != journal.EventParallelFinished || event.Target != stage {
+		if (event.Type != journal.EventParallelFinished && event.Type != journal.EventMapFinished) || event.Target != stage {
 			continue
 		}
-		spec, ok := machine.Parallel(event.Parallel)
-		if ok && spec.Join == stage {
-			return fanInFromFinished(spec, event)
+		if join, ok := fanOutJoin(machine, event.Parallel); ok && join == stage {
+			return fanInFromFinishedEvent(events[:i], machine, event)
 		}
 	}
 	return pendingFanIn(events, machine)
@@ -1821,6 +1962,7 @@ func fanInFromFinished(spec apiv1.Parallel, event journal.Event) *parallelExec {
 		}
 		branch.status = outcome.Status
 		branch.artifacts = outcome.Artifacts
+		branch.reason = outcome.Reason
 		branch.settled = true
 	}
 	return fanIn
@@ -1890,6 +2032,19 @@ func isInterruptedAttemptMarker(e journal.Event) bool {
 func gateRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			gateName := "handoff.validation:" + e.Stage
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			seed[gateName] = n
+			continue
+		}
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
@@ -1951,6 +2106,20 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 func targetRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			if n > seed[target] {
+				seed[target] = n
+			}
+			continue
+		}
 		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra || e.Verdict == gate.OutcomeTimeout {
 			continue
 		}
@@ -1977,6 +2146,9 @@ func infrastructureTargetRepassSeed(events []journal.Event) map[string]int {
 	gateTargets := make(map[string]string)
 	for _, e := range events {
 		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if e.Verdict == gate.OutcomeTimeout {
 			continue
 		}
 		if e.Verdict != gate.OutcomeInfra {
@@ -2187,12 +2359,13 @@ func interruptedAttemptMutated(events []journal.Event, stageName string, attempt
 }
 
 func policyAttemptsBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	yielded := childYieldedAttempts(events, stageName)
 	var attempts int32
 	for _, event := range events {
 		if event.Type != journal.EventStageStarted ||
 			event.Stage != stageName ||
 			event.Attempt >= interruptedAttempt ||
-			event.AttemptClass == journal.AttemptInfra {
+			event.AttemptClass == journal.AttemptInfra || yielded[event.Attempt] {
 			continue
 		}
 		attempts++
@@ -2235,4 +2408,26 @@ func resumeItem(rd *journal.Reader, id journal.RunIdentity) (*apiv1.BacklogItem,
 		return &item, nil
 	}
 	return nil, nil
+}
+
+// admitChildWorkflowResume checks the supplied or pinned definition without
+// repairing the journal or claiming execution. Existing resume code retains
+// ownership of malformed/missing-journal diagnostics and terminalization.
+func (r *Runner) admitChildWorkflowResume(ctx context.Context, machine *workflow.Machine, dir string) error {
+	if machine != nil {
+		return r.admitExecution(ctx, machine)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		return nil
+	}
+	id, err := rd.Identity()
+	if err != nil {
+		return nil
+	}
+	machine, err = PinnedWorkflowMachine(rd, id)
+	if err != nil {
+		return nil
+	}
+	return r.admitExecution(ctx, machine)
 }

@@ -47,7 +47,7 @@ func TestShippedImageProbesRunWithRealBinary(t *testing.T) {
 
 	t.Run("stage", func(t *testing.T) {
 		stage := exec.Command("/bin/sh", "-ec", linuxImageStagePrepare)
-		stage.Env = append(os.Environ(), pathEnv, "GOOBERS_STAGE_SMOKE_DIR="+t.TempDir())
+		stage.Env = append(releaseLikeEnviron(), pathEnv, "GOOBERS_STAGE_SMOKE_DIR="+t.TempDir())
 		output, err := stage.CombinedOutput()
 		if err != nil {
 			t.Fatalf("shipped stage probe failed outside a container — it would fail the release too: %v\n%s", err, output)
@@ -59,7 +59,7 @@ func TestShippedImageProbesRunWithRealBinary(t *testing.T) {
 
 	t.Run("dsl3", func(t *testing.T) {
 		dsl3 := exec.Command("/bin/sh", "-ec", linuxImageDSL3Prepare)
-		dsl3.Env = append(os.Environ(), pathEnv, "GOOBERS_DSL3_SMOKE_DIR="+filepath.Join(t.TempDir(), "dsl3-demo"))
+		dsl3.Env = append(releaseLikeEnviron(), pathEnv, "GOOBERS_DSL3_SMOKE_DIR="+filepath.Join(t.TempDir(), "dsl3-demo"))
 		output, err := dsl3.CombinedOutput()
 		if err != nil {
 			t.Fatalf("shipped DSL 3.0 probe failed outside a container — it would fail the release too: %v\n%s", err, output)
@@ -97,5 +97,39 @@ func TestShippedImageProbesStillRunTheDemo(t *testing.T) {
 				t.Error("CI half runs the sandboxed demo; a hermetic stage cannot see a test's PATH and will exit 127")
 			}
 		})
+	}
+}
+
+// releaseLikeEnviron is the ambient environment minus GOOBERS_* variables.
+// A pod-placed local-ci stage runs with dispatcher-owned identity in its
+// environment (GOOBERS_APPLIED_CONFIG_DIGEST, GOOBERS_CONFIG_GENERATION, ...),
+// and every goobers invocation then enforces that run's config generation
+// against the freshly scaffolded instance and exits config_generation_mismatch.
+// The shipped image never carries those variables, so inheriting them makes the
+// probe test the CI host rather than the release.
+func releaseLikeEnviron() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "GOOBERS_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
+}
+
+func TestReleaseLikeEnvironDropsStageIdentity(t *testing.T) {
+	t.Setenv("GOOBERS_APPLIED_CONFIG_DIGEST", "sha256:x")
+	t.Setenv("GOOBERS_POD_ATTEMPT", "1")
+	t.Setenv("KEEP_ME", "1")
+	var kept bool
+	for _, kv := range releaseLikeEnviron() {
+		if strings.HasPrefix(kv, "GOOBERS_") {
+			t.Fatalf("leaked %s", kv)
+		}
+		kept = kept || kv == "KEEP_ME=1"
+	}
+	if !kept {
+		t.Fatal("non-GOOBERS variables must be preserved")
 	}
 }

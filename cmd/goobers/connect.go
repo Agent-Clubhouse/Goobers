@@ -16,6 +16,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
@@ -84,9 +85,12 @@ const connectHelp = "Usage: goobers connect <repository> [--token-env NAME] [--s
 	"Use owner/repository for GitHub, or organization/project/repository (or a\n" +
 	"dev.azure.com URL) for Azure DevOps. Initialize ADO instances with\n" +
 	"--template=standard --provider=ado first; init defaults the repository to\n" +
-	"azure-cli authentication. Connect records PAT authentication for ADO, reading\n" +
-	"GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or\n" +
-	"managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.\n" +
+	"azure-cli authentication. Connect keeps the repository's existing credential\n" +
+	"source (azure-cli, workload-identity, managed-identity, or a PAT's own token\n" +
+	"reference) unless --token-env is given explicitly; then it records PAT\n" +
+	"authentication reading that variable (GOOBERS_ADO_TOKEN is the ADO default).\n" +
+	"A kept source that names no token variable skips the token reachability\n" +
+	"check (run validate --check-repos) and --seed authenticates through it.\n" +
 	"Connect never changes an existing provider.\n" +
 	"See docs/guides/ado-authentication.md for other authentication modes.\n\n" +
 	"For GitHub, --seed derives two label sets from the connected gaggles and idempotently\n" +
@@ -221,7 +225,7 @@ func runConnect(args []string, stdout, stderr io.Writer) int {
 				pf(stderr, "error: ADO connect requires a valid token environment variable name\n")
 				return 2
 			}
-			return executeConnect(connectOptions{ado: &ado, owner: ado.Organization, name: ado.Repository, root: root, tokenEnv: *tokenEnv, seed: *seed, replace: *replace, json: *jsonOutput}, stdout, stderr)
+			return executeConnect(connectOptions{ado: &ado, owner: ado.Organization, name: ado.Repository, root: root, tokenEnv: *tokenEnv, explicitTokenEnv: explicitToken, seed: *seed, replace: *replace, json: *jsonOutput}, stdout, stderr)
 		}
 		pf(stderr, "error: %v (GitHub is the only supported provider in v1)\n", err)
 		return 2
@@ -254,9 +258,18 @@ type connectOptions struct {
 	name     string
 	root     string
 	tokenEnv string
-	seed     bool
-	replace  bool
-	json     bool
+	// explicitTokenEnv records that --token-env was given: on Azure DevOps it
+	// switches a repository to PAT authentication instead of keeping its
+	// existing non-PAT credential source (connectADOTarget).
+	explicitTokenEnv bool
+	// keptADOAuth is the connected Azure DevOps repository entry when connect
+	// kept a credential source that names no token variable; the token
+	// variable is then unused, and stores resolves the source's references.
+	keptADOAuth *instance.RepoRef
+	stores      credentials.StoreResolver
+	seed        bool
+	replace     bool
+	json        bool
 }
 
 func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
@@ -295,8 +308,17 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	opts = connectKeptADOCredential(cfg, opts)
+	if opts.keptADOAuth != nil {
+		if opts.stores, err = secretstore.NewRegistry(cfg.SecretStores); err != nil {
+			pf(stderr, "error: secretStores: %v\n", err)
+			return 1
+		}
+	}
 
-	tokenSet := os.Getenv(opts.tokenEnv) != ""
+	// A kept source with no token variable has no token to preflight with;
+	// validate --check-repos checks that source instead.
+	tokenSet := opts.keptADOAuth == nil && os.Getenv(opts.tokenEnv) != ""
 	checksPassed := false
 	if tokenSet {
 		stores, err := secretstore.NewRegistry(cfg.SecretStores)
@@ -1015,6 +1037,10 @@ func connectSeedRepository(opts connectOptions, selectors, applied []string, res
 
 func printConnectResult(stdout io.Writer, opts connectOptions, result onboardingActionResult) {
 	pf(stdout, "connected %s at %s\n", connectRepositoryName(opts), result.Path)
+	if opts.keptADOAuth != nil {
+		pf(stdout, "  kept     %s authentication (pass --token-env NAME, with --replace once connected, to read a PAT from that variable instead)\n",
+			connectADOAuthLabel(*opts.keptADOAuth))
+	}
 	for _, item := range result.Updated {
 		pf(stdout, "  updated  %s\n", item)
 	}

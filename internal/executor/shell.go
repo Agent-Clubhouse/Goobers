@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -173,6 +172,10 @@ type ShellExecutor struct {
 	AppliedConfigDigest string
 	// ConfigDirectory is the immutable config-as-code tree selected for CLI stages.
 	ConfigDirectory string
+	// AutomationReadCache explicitly enables shared provider reads for ordinary
+	// automation CLI stages. Human/unknown executors leave this false; a gaggle
+	// or archived generation alone never grants an automation cache partition.
+	AutomationReadCache bool
 	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
 	// command token before exec. Deterministic stages declare their command as
 	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
@@ -289,6 +292,13 @@ type ShellExecutor struct {
 	// to a stage pod. Empty for every other provider, and by default, which
 	// stamps nothing.
 	RepoAuthScheme string
+	// CredentialSchemes is the scheme of each credential key whose source
+	// states its own (#5957): a credentials: entry's personal access token is
+	// "basic" even when RepoAuthScheme is "bearer". Whenever RepoAuthScheme is
+	// stamped, each materialized credential with an entry here also gets
+	// CredentialSchemeEnvVar; one without uses RepoAuthScheme. The credential
+	// plane states the same per-credential scheme to a stage pod.
+	CredentialSchemes map[string]string
 	// CredentialGrants mints the stage credential-refresh grant a
 	// goobers-CLI stage with an expiring credential receives (Goobers#6120,
 	// appendCredentialGrant). Nil — every caller but the daemon's own local
@@ -803,11 +813,8 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
 	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
-	if env.Workspace == "" {
-		// exec.Cmd treats Dir == "" as "run in the daemon's own working
-		// directory" — a silent, surprising fallback (#122) rather than the
-		// fail-closed misconfiguration error an unset workspace should be.
-		return apiv1.ResultEnvelope{}, errors.New("executor: InvocationEnvelope.Workspace is empty")
+	if err := validateShellChildWorkspace(ctx, env); err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	command, commandEnv, cleanup, err := DeterministicCommand(run)
 	if err != nil {
@@ -839,18 +846,18 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// (command[0] names the wrapper) but needs the same context its nested invocation does.
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
 	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
+	stageEnv, materialized, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
-	stageEnv = append(stageEnv, commandEnv...)
+	stageEnv = e.providerReadEnvironment(append(stageEnv, commandEnv...), env, injectRunContext)
 	if injectRunContext {
 		stageEnv = append(stageEnv, e.runContextEnv(ctx, env)...)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
-	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext)
+	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext, materialized, registry)
 	stageEnv, revokeGrant := e.appendCredentialGrant(stageEnv, env, injectRunContext, resolvedTimeout.Duration, registry)
 	defer revokeGrant()
 	if implicitResultFile != "" {
@@ -950,6 +957,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
+	stopWriters, joinedWriters := invoke.TrackWorkspaceProcess(runCtx, tree, groupKillWaitDelay)
+	defer joinedWriters()
 	defer e.observeExecutionDeadline(runCtx, env)()
 	// Released only after the stage is fully accounted for: the bound's own
 	// record of whether it fired (the child cgroup's memory.events) has to
@@ -979,61 +988,29 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	var timedOut, canceled bool
-	var waitErr error
-	select {
-	case waitErr = <-waitDone:
-	case <-runCtx.Done():
-		// runCtx.Done() fires both when its own timeout elapses and when the
-		// caller's ctx is canceled out from under it — distinguishing the two
-		// via context.Cause matters even though only the timeout path is
-		// reachable today (internal/runner's dispatch always uses
-		// context.WithoutCancel): a future hard-shutdown path that DOES
-		// cancel ctx must not be mislabeled as a retryable timeout (#122).
-		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
-			timedOut = true
-		} else {
-			canceled = true
-		}
-		// On a TIMEOUT, first SIGQUIT the whole process group so every Go
-		// process in it dumps its full goroutine trace to the captured
-		// stdout/stderr before dying — a stage that blew its timeout is exactly
-		// the case worth diagnosing, and SIGKILL alone leaves no trace of WHY
-		// it hung (the long-standing "killed at 10m, cmd/goobers never finished,
-		// no dump" record). The final SIGKILL sweep always runs: the direct
-		// child exiting after SIGQUIT does not prove that signal-ignoring
-		// descendants exited too. A deliberate cancel (not a timeout) goes
-		// straight to SIGKILL — nothing to diagnose there.
-		waited := false
-		if timedOut {
+	waitOutcome := proc.WaitOrKill(runCtx, tree, waitDone, proc.WaitOptions{
+		KillWait: groupKillWaitDelay,
+		StopTree: stopWriters,
+		BeforeKill: func(timedOut bool) (bool, error) {
+			if !timedOut {
+				return false, nil
+			}
 			// SIGQUIT the whole tree so every Go process in it dumps its full
 			// goroutine trace and exits before the force-kill below. A platform
 			// that can't signal tree members (windows Job Objects) reports the
 			// request unsupported, and we fall straight through to Kill.
 			if supported, _ := tree.RequestDump(); supported {
 				select {
-				case waitErr = <-waitDone:
-					waited = true // goroutine traces are now in the captured output
+				case err := <-waitDone:
+					return true, err
 				case <-time.After(timeoutDumpGrace):
 				}
 			}
-		}
-		// Kill the whole tree, not just the direct child, so a runaway
-		// subprocess tree can't outlive the stage.
-		_ = tree.Kill()
-		if !waited {
-			select {
-			case waitErr = <-waitDone:
-			case <-time.After(groupKillWaitDelay):
-				// A descendant escaped the process group (e.g. via setsid) and
-				// is still holding a stdout/stderr pipe open, so cmd.Wait()
-				// never returns (#119) — give up waiting rather than hang the
-				// stage (and graceful drain) forever. waitErr stays nil here,
-				// but it's only read below in the non-timeout/non-canceled path,
-				// so this bound never masks a real exit code.
-			}
-		}
-	}
+			return false, nil
+		},
+	})
+	waitErr := waitOutcome.Err
+	timedOut, canceled := waitOutcome.TimedOut, waitOutcome.Canceled
 
 	if diagStop != nil {
 		// Signal the watchdog to stop and wait for it to fully exit before
@@ -1579,6 +1556,14 @@ func providerResultIntegrity(data []byte) (apiv1.Integrity, error) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		return "", fmt.Errorf("decode JSON: %w", err)
 	}
+	// An empty top-level array is a provider's "nothing to claim" result
+	// (e.g. forward curation with no claimable backlog item, #6199). It
+	// carries no provider-sourced item, so there is nothing to label and no
+	// attacker-controllable content: the artifact is the provider's own
+	// derived output. Any other unlabeled shape still fails closed.
+	if list, ok := result.([]interface{}); ok && len(list) == 0 {
+		return apiv1.IntegrityDerived, nil
+	}
 	var grades []apiv1.Integrity
 	var walk func(interface{}) error
 	walk = func(value interface{}) error {
@@ -1760,13 +1745,18 @@ func (d *diagBuffer) Bytes() []byte {
 // appendRepoEnv appends the scheduler-routed repository variables a goobers
 // CLI stage reads (GOOBERS_REPO_PROVIDER and its siblings) when
 // injectRunContext is set, and RepoAuthSchemeEnvVar when the executor knows
-// the scheme of its Azure DevOps grants and the stage received at least one
-// of its declared GOOBERS_CRED_<capability> variables. The scheme follows the
-// credentials, not the CLI gate, so a local stage gets it on the same rule a
-// stage pod does (stageCredentialEnv in cmd/goobers/dispatchexec.go).
-// Extracted from Run for the same complexity-gate reason as runContextEnv
-// below.
-func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnvelope, injectRunContext bool) []string {
+// the scheme of its Azure DevOps grants and at least one declared credential
+// was materialized (materialized, from buildStageEnv). Each materialized
+// credential then also gets its own CredentialSchemeEnvVar (#5957). The
+// scheme follows the credentials the executor delivered, not the CLI gate and
+// not whatever GOOBERS_CRED_* the merged env happens to carry, so a local
+// stage gets it on the same rule a stage pod does (stageCredentialEnv in
+// cmd/goobers/dispatchexec.go). Extracted from Run for the same
+// complexity-gate reason as runContextEnv below.
+//
+// registry receives the Azure DevOps header forms of the materialized
+// credentials (registerADOCredentialForms).
+func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnvelope, injectRunContext bool, materialized []string, registry credentials.SecretRegistrar) []string {
 	repo := env.RepoRef
 	if injectRunContext && repo.Provider != "" {
 		stageEnv = append(stageEnv,
@@ -1778,22 +1768,47 @@ func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnv
 			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+repo.Project)
 		}
 	}
-	if e.RepoAuthScheme != "" && receivedCredential(stageEnv, env.Capabilities) {
-		stageEnv = append(stageEnv, RepoAuthSchemeEnvVar+"="+e.RepoAuthScheme)
+	if e.RepoAuthScheme == "" || len(materialized) == 0 {
+		return stageEnv
+	}
+	e.registerADOCredentialForms(stageEnv, materialized, registry)
+	stageEnv = append(stageEnv, RepoAuthSchemeEnvVar+"="+e.RepoAuthScheme)
+	for _, capability := range materialized {
+		if scheme := e.CredentialSchemes[capability]; scheme != "" {
+			stageEnv = append(stageEnv, CredentialSchemeEnvVar(capability)+"="+scheme)
+		}
 	}
 	return stageEnv
 }
 
-// receivedCredential reports whether stageEnv carries the GOOBERS_CRED_
-// variable of at least one declared capability.
-func receivedCredential(stageEnv, declared []string) bool {
-	for _, capability := range declared {
+// registerADOCredentialForms registers, for an Azure DevOps executor, every
+// form in which each materialized credential is sent in its own scheme
+// (providers.ADOCredential.ScrubForms): the bare base64 Basic value has no
+// "Basic " prefix for the pattern net to key on. The injector registered only
+// the raw value, so without this a credentials: PAT sent as Basic leaked its
+// encoded form locally while a stage pod redacted it (podStageScrubber).
+func (e *ShellExecutor) registerADOCredentialForms(stageEnv, materialized []string, registry credentials.SecretRegistrar) {
+	if e.RepoAuthScheme == "" || registry == nil {
+		return
+	}
+	for _, capability := range materialized {
+		scheme := e.CredentialSchemes[capability]
+		if scheme == "" {
+			scheme = e.RepoAuthScheme
+		}
+		kind := providers.ADOCredentialKindPAT
+		if strings.EqualFold(scheme, "bearer") {
+			kind = providers.ADOCredentialKindBearer
+		}
 		prefix := CredentialEnvVar(capability) + "="
-		if slices.ContainsFunc(stageEnv, func(entry string) bool { return strings.HasPrefix(entry, prefix) }) {
-			return true
+		for _, entry := range stageEnv {
+			if token, ok := strings.CutPrefix(entry, prefix); ok && token != "" {
+				for _, form := range (providers.ADOCredential{Kind: kind, Secret: token}).ScrubForms() {
+					registry.Register([]byte(form))
+				}
+			}
 		}
 	}
-	return false
 }
 
 // runContextEnv is the run-identity block injected into a stage that opts into
@@ -1827,6 +1842,9 @@ func (e *ShellExecutor) runContextEnv(ctx context.Context, env apiv1.InvocationE
 	}
 	if plane, ok := JournalPlaneFromContext(ctx); ok {
 		runEnv = append(runEnv, "GOOBERS_JOURNAL_ENDPOINT="+plane.Endpoint, "GOOBERS_JOURNAL_TOKEN="+plane.Token)
+	}
+	if resolved, err := e.resolveTimeout(env); err == nil && !resolved.Immediate() {
+		runEnv = append(runEnv, StageTimeoutEnvVar+"="+resolved.Duration.String())
 	}
 	return runEnv
 }

@@ -56,6 +56,7 @@ func collectOperationalEvidence(root string) *OperationalEvidence {
 	}
 	result.Coverage = "retained-window"
 	latest := make(map[string]OperationalObservation)
+	unsupportedSchema := false
 	for _, event := range events {
 		if !event.KnownSchema() || event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != "goobers.fleet.heartbeat" {
 			continue
@@ -66,7 +67,10 @@ func collectOperationalEvidence(root string) *OperationalEvidence {
 		}
 		schema, ok := attrs["schemaVersion"].(float64)
 		if !ok || schema != 1 {
-			result.Gaps = append(result.Gaps, "An unsupported diagnostic schema was omitted.")
+			if !unsupportedSchema {
+				unsupportedSchema = true
+				result.Gaps = append(result.Gaps, "An unsupported diagnostic schema was omitted.")
+			}
 			continue
 		}
 		observation := projectOperationalObservation(attrs)
@@ -130,7 +134,7 @@ func summaryOperational(b *strings.Builder, bundle Bundle) {
 			writeLine(b, "  Diagnostic records dropped by this daemon boot: %d (historical observation).", *dropped)
 		}
 		if backlog := observation.Backlog; backlog != nil {
-			writeLine(b, "  Pending work: %s (%s), coverage %s; claim availability unknown.", backlog.State, backlog.ReasonCode, backlog.Coverage)
+			writeLine(b, "  Pending work: %s (%s), coverage %s; %s.", backlog.State, backlog.ReasonCode, backlog.Coverage, backlogClaimabilityText(backlog))
 		}
 		if mcp := observation.RequiredMCP; mcp != nil {
 			writeLine(b, "  Required MCP: %s (%s), coverage %s; context %s/%s/%s.", mcp.State, mcp.Reason, mcp.Coverage, mcp.Workflow, mcp.Stage, mcp.Adapter)
@@ -140,6 +144,17 @@ func summaryOperational(b *strings.Builder, bundle Bundle) {
 		writeLine(b, "- Gap: %s", gap)
 	}
 	writeLine(b, "")
+}
+
+func backlogClaimabilityText(backlog *fleetdiagnostics.BacklogHealth) string {
+	switch {
+	case backlog.ClaimableCount == nil:
+		return "claim availability unknown"
+	case *backlog.ClaimableCount == 0:
+		return "all pending work observed held or waiting"
+	default:
+		return fmt.Sprintf("at least %d verified claimable at observation (not a reservation)", *backlog.ClaimableCount)
+	}
 }
 
 func projectOperationalMCP(attrs map[string]any) *fleetdiagnostics.MCPHealth {

@@ -20,7 +20,7 @@ func (f recoveryServiceFunc) StreamRecovery(ctx context.Context, run, key, issue
 }
 
 func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
-	for _, mode := range []string{"claims", "journal", "blob", "foreign", "view", "operate", "refused"} {
+	for _, mode := range []string{"claims", "journal", "blob", "foreign", "view", "operate", "refused", "not-found"} {
 		t.Run(mode, func(t *testing.T) {
 			principal := &Principal{Subject: "run:run-1", Issuer: PodPrincipalIssuer, Scopes: []string{ScopeClaims}}
 			want := http.StatusOK
@@ -38,6 +38,8 @@ func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
 				}
 			case "refused":
 				want = http.StatusForbidden
+			case "not-found":
+				want = http.StatusNotFound
 			}
 			called := false
 			service := recoveryServiceFunc(func(_ context.Context, run, key, issue string, out io.Writer) error {
@@ -47,6 +49,9 @@ func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
 				}
 				if mode == "refused" {
 					return errors.New("private service detail")
+				}
+				if mode == "not-found" {
+					return recovery.ErrNoMatchingSnapshot
 				}
 				_, err := io.WriteString(out, "archive")
 				return err
@@ -60,7 +65,7 @@ func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
 			if response.Code != want {
 				t.Fatalf("status=%d want=%d body=%s", response.Code, want, response.Body.String())
 			}
-			if called != (want == http.StatusOK || mode == "refused") {
+			if called != (want == http.StatusOK || mode == "refused" || mode == "not-found") {
 				t.Fatalf("unauthorized service call: %t", called)
 			}
 			if want == http.StatusOK && (response.Body.String() != "archive" || response.Header().Get("Cache-Control") != "no-store") {
@@ -89,6 +94,50 @@ func TestRecoveryRouteAbortsPartialDelivery(t *testing.T) {
 		}
 	}()
 	recoveryArchiveHandler(service, discardLogger()).ServeHTTP(response, request)
+}
+
+// TestRecoveryRouteCarriesSourceRunEvidenceOnlyWithArchive pins #5312: source
+// run evidence reported before archive bytes reaches the receiver as headers,
+// is withdrawn from a refusal, and cannot be reported once bytes have started.
+func TestRecoveryRouteCarriesSourceRunEvidenceOnlyWithArchive(t *testing.T) {
+	source := recovery.SourceRun{Workflow: "implementation", Phase: "escalated", TerminalSeq: 9}
+	for _, mode := range []string{"delivered", "refused", "late"} {
+		t.Run(mode, func(t *testing.T) {
+			service := recoveryServiceFunc(func(_ context.Context, _, _, _ string, out io.Writer) error {
+				reporter, ok := out.(recovery.SourceRunReporter)
+				if !ok {
+					t.Fatal("recovery stream cannot report source run evidence")
+				}
+				if mode == "late" {
+					_, _ = io.WriteString(out, "archive")
+				}
+				reporter.ReportSourceRun(source)
+				if mode == "refused" {
+					return errors.New("refused after selection")
+				}
+				if mode == "delivered" {
+					_, err := io.WriteString(out, "archive")
+					return err
+				}
+				return nil
+			})
+			request := httptest.NewRequest(http.MethodGet, "/?repositoryKey=repo&issue=7", nil)
+			request.SetPathValue("run", "run-1")
+			response := httptest.NewRecorder()
+			recoveryArchiveHandler(service, discardLogger()).ServeHTTP(response, request)
+			got, err := recovery.SourceRunFromHeaders(response.Header())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := recovery.SourceRun{}
+			if mode == "delivered" {
+				want = source
+			}
+			if got != want {
+				t.Fatalf("source run headers = %+v, want %+v (status %d)", got, want, response.Code)
+			}
+		})
+	}
 }
 
 func TestRecoveryRouteReportsOverflowPending(t *testing.T) {

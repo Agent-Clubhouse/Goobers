@@ -178,6 +178,20 @@ describe("HttpDaemonClient", () => {
     );
   });
 
+  it("sends the gaggle filter when listing work items", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ items: [], hasMore: false }),
+    );
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    await client.listWorkItems({ kind: "issue", gaggle: "core tools", limit: 25 });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/v1/work-items?kind=issue&gaggle=core+tools&limit=25",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("reports request status and endpoint to enabled portal diagnostics", async () => {
     const finish = vi.fn();
     const startRequest = vi.fn(() => ({ finish }));
@@ -279,6 +293,7 @@ describe("HttpDaemonClient", () => {
       client.listRuns({ gaggle: "core", latestPerWorkflow: true }),
     ).resolves.toEqual({ runs: [] });
     await client.getRun("run-1");
+    await client.listRunChildren("run-1", "child-page");
     await client.listRunEvents("run-1");
     await client.listStageAttempts("run-1", "implement");
     await expect(client.getArtifact("run-1", "sha256:abc")).resolves.toMatchObject({
@@ -344,6 +359,7 @@ describe("HttpDaemonClient", () => {
       "/api/v1/runs?gaggle=core&workflow=implementation&stage=implement&outcome=terminal&population=measured&phase=running&trigger=item&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=25&cursor=run-page",
       "/api/v1/runs?gaggle=core&latestPerWorkflow=true",
       "/api/v1/runs/run-1",
+      "/api/v1/runs/run-1/children?cursor=child-page",
       "/api/v1/runs/run-1/events",
       "/api/v1/runs/run-1/stages/implement/attempts",
       "/api/v1/runs/run-1/artifacts/sha256%3Aabc",
@@ -401,6 +417,108 @@ describe("HttpDaemonClient", () => {
       code: "telemetry_unavailable",
       message: "telemetry is not enabled",
     } satisfies Partial<DaemonApiError>);
+  });
+
+  it("normalizes legacy v0.5 USD telemetry to AIC without overriding native AIC", async () => {
+    const legacyStats = {
+      ...goWireFixtures.telemetryStats,
+      stages: [{
+        ...goWireFixtures.telemetryStats.stages[0],
+        p50CostAIC: undefined,
+        p95CostAIC: 250,
+        retryWasteCostAIC: undefined,
+        p50CostUSD: 1.25,
+        p95CostUSD: 999,
+        retryWasteCostUSD: 0.75,
+      }],
+      usage: [{
+        ...goWireFixtures.telemetryStats.usage[0],
+        costAIC: undefined,
+        p50CostAIC: undefined,
+        p95CostAIC: undefined,
+        retryWasteCostAIC: undefined,
+        costUSD: 1.5,
+        p50CostUSD: 1.25,
+        p95CostUSD: 2.5,
+        retryWasteCostUSD: 0.75,
+      }],
+      models: [{
+        ...goWireFixtures.telemetryStats.models[0],
+        costAIC: undefined,
+        costUSD: 1.5,
+      }],
+      trend: [{
+        since: "2026-10-01T00:00:00Z",
+        until: "2026-10-02T00:00:00Z",
+        usage: [{
+          ...goWireFixtures.telemetryStats.usage[0],
+          costAIC: undefined,
+          costUSD: 2,
+        }],
+      }],
+      trendPrevious: {
+        since: "2026-09-30T00:00:00Z",
+        until: "2026-10-01T00:00:00Z",
+        usage: [{
+          ...goWireFixtures.telemetryStats.usage[0],
+          costAIC: undefined,
+          costUSD: 1,
+        }],
+      },
+    };
+    const client = new HttpDaemonClient({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(legacyStats)),
+    });
+
+    const stats = await client.getTelemetryStats();
+
+    expect(stats.stages[0]).toMatchObject({
+      p50CostAIC: 125,
+      p95CostAIC: 250,
+      retryWasteCostAIC: 75,
+    });
+    expect(stats.usage[0]).toMatchObject({
+      costAIC: 150,
+      p50CostAIC: 125,
+      p95CostAIC: 250,
+      retryWasteCostAIC: 75,
+    });
+    expect(stats.models[0].costAIC).toBe(150);
+    expect(stats.trend?.[0].usage[0].costAIC).toBe(200);
+    expect(stats.trendPrevious?.usage[0].costAIC).toBe(100);
+  });
+
+  it("normalizes a legacy USD-only work item cost to nano-AIU", async () => {
+    const detail = {
+      provider: "github",
+      repository: "agent-clubhouse/goobers",
+      kind: "pr",
+      externalId: "1",
+      outcome: "done",
+      cost: {
+        costUSD: 1.25,
+        totalRuns: 1,
+        measuredRuns: 1,
+        totalAttempts: 1,
+        measuredAttempts: 1,
+        lowerBound: false,
+      },
+      relatedPullRequests: [],
+      actions: [],
+      truncated: false,
+    };
+    const client = new HttpDaemonClient({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(detail)),
+    });
+
+    const result = await client.getWorkItem(
+      "github",
+      "agent-clubhouse/goobers",
+      "pr",
+      "1",
+    );
+
+    expect(result.cost?.nanoAIU).toBe(125_000_000_000);
   });
 
   it("coalesces simultaneous identical reads", async () => {

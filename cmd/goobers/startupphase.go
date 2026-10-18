@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"io"
 	"sync"
 	"time"
@@ -24,19 +26,35 @@ type startupPhaseTracker struct {
 	budgetFloor   time.Duration
 	accumulation  startupAccumulation
 	recoveryScan  bool
+	recovery      *startupRecoveryCandidate
 	budgetUpdates chan struct{}
+	// progress counts startup advances; a starting daemon advertises it so a
+	// waiting worker can tell slow from stuck (#6895).
+	progress uint64
+	// daemonID names this daemon process in its startup hints, so a waiting
+	// worker does not mistake a restart's reset counter for progress.
+	daemonID string
 }
 
 func newStartupPhaseTracker(budgetFloor time.Duration) *startupPhaseTracker {
-	tracker := &startupPhaseTracker{}
+	tracker := &startupPhaseTracker{daemonID: newDaemonID()}
 	tracker.configureBudget(budgetFloor)
 	return tracker
+}
+
+// newDaemonID returns a random per-process id; a time-based one could collide
+// across a fast restart. A failed read only weakens restart detection.
+func newDaemonID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (t *startupPhaseTracker) set(phase, target string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.phase, t.target, t.started = phase, target, time.Now()
+	t.progress++
 }
 
 func (t *startupPhaseTracker) update(phase, target string) {
@@ -44,6 +62,7 @@ func (t *startupPhaseTracker) update(phase, target string) {
 	defer t.mu.Unlock()
 	if t.phase == phase {
 		t.target = target
+		t.progress++
 	}
 }
 
@@ -52,6 +71,9 @@ func (t *startupPhaseTracker) clear(phase string) {
 	defer t.mu.Unlock()
 	if t.phase == phase {
 		t.phase, t.target, t.started = "", "", time.Time{}
+		if phase == "crash-resume" {
+			t.recovery = nil
+		}
 	}
 }
 
@@ -59,6 +81,61 @@ func (t *startupPhaseTracker) snapshot() (phase, target string, since time.Time)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.phase, t.target, t.started
+}
+
+type startupRecoveryCandidate struct {
+	Total          int
+	Examined       int
+	Resumed        int
+	Reattached     int
+	Terminal       int
+	Skipped        int
+	RunID          string
+	Gaggle         string
+	Workflow       string
+	Disposition    string
+	Phase          string
+	Operation      string
+	StartedAt      time.Time
+	LastProgressAt time.Time
+}
+
+func (t *startupPhaseTracker) observeRecoveryProgress(outcome resumeOutcome) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.phase != "crash-resume" {
+		return
+	}
+	candidate := &startupRecoveryCandidate{
+		Total:      outcome.Total,
+		Examined:   outcome.Examined,
+		Resumed:    len(outcome.Resumed),
+		Reattached: len(outcome.Reattached),
+		Terminal:   len(outcome.Terminal),
+		Skipped:    len(outcome.Warned),
+	}
+	if outcome.Blocking != nil {
+		candidate.RunID = outcome.Blocking.RunID
+		candidate.Gaggle = outcome.Blocking.Gaggle
+		candidate.Workflow = outcome.Blocking.Workflow
+		candidate.Disposition = outcome.Blocking.Disposition
+		candidate.Phase = outcome.Blocking.Phase
+		candidate.Operation = outcome.Blocking.Operation
+		candidate.StartedAt = outcome.Blocking.StartedAt
+		candidate.LastProgressAt = outcome.Blocking.LastProgressAt
+	}
+	t.recovery = candidate
+	t.progress++
+}
+
+func (t *startupPhaseTracker) recoverySnapshot() *startupRecoveryCandidate {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.recovery == nil {
+		return nil
+	}
+	copy := *t.recovery
+	return &copy
 }
 
 // syncWriter serializes concurrent writers onto one underlying io.Writer.
@@ -152,6 +229,7 @@ func (t *startupPhaseTracker) budgetUpdateChannel() <-chan struct{} {
 }
 
 func (t *startupPhaseTracker) signalBudgetUpdateLocked() {
+	t.progress++
 	if t.budgetUpdates == nil {
 		t.budgetUpdates = make(chan struct{}, 1)
 	}

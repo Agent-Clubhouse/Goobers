@@ -42,7 +42,8 @@ type artifactSink interface {
 // re-derive it, so a mismatch published here would be served as the wrong
 // content forever.
 func (w *Writer) publishArtifact(ctx context.Context, run *liveRun, ref journal.Ref) error {
-	if w.sink == nil {
+	sink := w.requestArtifactSink(ctx)
+	if sink == nil {
 		return nil
 	}
 	rel, err := journal.ArtifactPath(ref.Digest)
@@ -56,7 +57,7 @@ func (w *Writer) publishArtifact(ctx context.Context, run *liveRun, ref journal.
 	if got := journal.Digest(data); got != ref.Digest || int64(len(data)) != ref.Size {
 		return fmt.Errorf("publish artifact %s: committed bytes hash to %s (%d bytes, want %d)", ref.Digest, got, len(data), ref.Size)
 	}
-	if err := w.sink.Put(ctx, ref.Digest, data); err != nil {
+	if err := sink.Put(ctx, ref.Digest, data); err != nil {
 		return fmt.Errorf("publish artifact %s to the blob plane: %w", ref.Digest, err)
 	}
 	return nil
@@ -70,7 +71,7 @@ func (w *Writer) publishArtifact(ctx context.Context, run *liveRun, ref journal.
 // Put is idempotent by digest, so re-publishing an already-present blob is a
 // no-op. Caller holds run.mu.
 func (w *Writer) republishArtifact(ctx context.Context, run *liveRun, op Op) error {
-	if w.sink == nil || op.Kind != OpArtifact || run.jr == nil {
+	if w.requestArtifactSink(ctx) == nil || op.Kind != OpArtifact || run.jr == nil {
 		return nil
 	}
 	ref, ok := run.artifactKeyRefs[op.Key]

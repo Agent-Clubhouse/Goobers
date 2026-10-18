@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -21,13 +19,13 @@ const cancelPendingCIHelp = "Usage: goobers cancel-pending-ci [path]\n\n" +
 	"non-fatal result states so a published review verdict is never hidden.\n"
 
 type cancelPendingCIResult struct {
-	Status     string   `json:"status"`
-	Reason     string   `json:"reason,omitempty"`
-	Examined   int      `json:"examined"`
-	Canceled   []string `json:"canceled,omitempty"`
-	Skipped    []string `json:"skipped,omitempty"`
-	HeadSHA    string   `json:"headSha"`
-	PullNumber string   `json:"pullNumber"`
+	CancelStatus string   `json:"cancelStatus"`
+	Reason       string   `json:"reason,omitempty"`
+	Examined     int      `json:"examined"`
+	Canceled     []string `json:"canceled,omitempty"`
+	Skipped      []string `json:"skipped,omitempty"`
+	HeadSHA      string   `json:"headSha"`
+	PullNumber   string   `json:"pullNumber"`
 }
 
 func runCancelPendingCI(args []string, stdout, stderr io.Writer) int {
@@ -83,7 +81,7 @@ func runCancelPendingCIWithProvider(
 	}
 	if err != nil {
 		return writeCancelPendingCIResult(resultFile, cancelPendingCIResult{
-			Status: "failed", Reason: "provider setup failed", HeadSHA: headSHA, PullNumber: pullNumber,
+			CancelStatus: "failed", Reason: "provider setup failed", HeadSHA: headSHA, PullNumber: pullNumber,
 		}, stdout, stderr)
 	}
 	defer cancel()
@@ -109,7 +107,7 @@ func runCancelPendingCIWithProvider(
 			reason = "credential cannot cancel provider CI"
 		}
 		return writeCancelPendingCIResult(resultFile, cancelPendingCIResult{
-			Status: status, Reason: reason, HeadSHA: headSHA, PullNumber: pullNumber,
+			CancelStatus: status, Reason: reason, HeadSHA: headSHA, PullNumber: pullNumber,
 		}, stdout, stderr)
 	}
 	status := "completed"
@@ -117,28 +115,26 @@ func runCancelPendingCIWithProvider(
 		status = "no-pending-checks"
 	}
 	return writeCancelPendingCIResult(resultFile, cancelPendingCIResult{
-		Status: status, Examined: result.Examined, Canceled: result.Canceled,
+		CancelStatus: status, Examined: result.Examined, Canceled: result.Canceled,
 		Skipped: result.Skipped, HeadSHA: headSHA, PullNumber: pullNumber,
 	}, stdout, stderr)
 }
 
 func writeCancelPendingCIResult(path string, result cancelPendingCIResult, stdout, stderr io.Writer) int {
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		pf(stderr, "error: encode pending-CI cancellation result: %v\n", err)
-		return 1
+	if code := writeStageResultJSON(stderr, path, result, stageResultOptions{
+		MarshalLabel:    "encode pending-CI cancellation result",
+		Indented:        true,
+		TrailingNewline: true,
+	}); code != 0 {
+		return code
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", path, err)
-		return 1
-	}
-	switch result.Status {
+	switch result.CancelStatus {
 	case "completed":
 		pf(stdout, "canceled %d pending CI run(s) for PR #%s at %s\n", len(result.Canceled), result.PullNumber, result.HeadSHA)
 	case "no-pending-checks":
 		pf(stdout, "no pending CI runs remain for PR #%s at %s\n", result.PullNumber, result.HeadSHA)
 	default:
-		pf(stderr, "warning: pending CI cancellation %s for PR #%s at %s: %s\n", result.Status, result.PullNumber, result.HeadSHA, result.Reason)
+		pf(stderr, "warning: pending CI cancellation %s for PR #%s at %s: %s\n", result.CancelStatus, result.PullNumber, result.HeadSHA, result.Reason)
 	}
 	return 0
 }

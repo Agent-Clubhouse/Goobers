@@ -26,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/truncate"
 )
 
 const (
@@ -370,10 +371,7 @@ func githubErrorMessage(body []byte) string {
 	}
 	message := strings.TrimSpace(payload.Message)
 	const maxMessage = 200
-	if len(message) > maxMessage {
-		message = message[:maxMessage] + "…"
-	}
-	return message
+	return truncate.Bytes(message, maxMessage, "…")
 }
 
 // parseRSAPrivateKey decodes a PEM-encoded RSA private key in either the

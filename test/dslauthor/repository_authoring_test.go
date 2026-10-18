@@ -30,7 +30,7 @@ import (
 
 const (
 	secretFixtureValue          = "FIXTURE_SECRET_MUST_NOT_APPEAR"
-	recordedAuthoringPathSHA256 = "549847b9b17a38db77a3bc9d5c80c3f010f69e7dab29ec210f0db4a8a1052835"
+	recordedAuthoringPathSHA256 = "5cac9e09588ff99e91292d918818d8ef5de9cb896139446403f53bc7ea5d107c"
 	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
 
@@ -364,13 +364,7 @@ func runCapturedScenario(t *testing.T, binaryPath string, scenario fixtureScenar
 
 func (r *captureReplayRunner) Run(_ context.Context, request harness.ProcessRequest) (harness.ProcessResult, error) {
 	r.t.Helper()
-	var prompt string
-	for _, arg := range request.Command {
-		if value, ok := strings.CutPrefix(arg, "-p="); ok {
-			prompt = value
-			break
-		}
-	}
+	prompt := string(request.Stdin)
 	if prompt == "" {
 		return harness.ProcessResult{}, fmt.Errorf("captured Copilot invocation has no prompt")
 	}

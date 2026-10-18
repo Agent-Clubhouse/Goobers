@@ -42,6 +42,8 @@ import (
 // and example workflow to this registry, so a shipped stage that stops
 // satisfying it fails CI.
 var stageRequiredInputs = map[string][]string{
+	"advisory-pr-select":  {"reviewType"},
+	"advisory-pr-publish": {"reviewType", "expectedAuthor"},
 	// cmd/goobers/applyverdict.go — selectedNumber/selectedHeadSha/selectedBaseSha
 	// (the #1039 SHA pin). This is the exact set whose omission caused #1061.
 	"apply-verdict": {"selectedNumber", "selectedHeadSha", "selectedBaseSha"},

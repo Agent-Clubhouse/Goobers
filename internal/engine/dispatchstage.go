@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -124,6 +125,13 @@ type DispatchStageInput struct {
 	// every history recorded before it — task dispatches all — decodes with
 	// Review false and replays through the task path unchanged.
 	Review bool `json:"review,omitempty"`
+	// RequireDiff marks a Review whose gate must judge a non-empty run diff
+	// (#5414, gateEvidence.RequireDiff): the pod fails the review closed when
+	// the diff evidence it computes is empty rather than asking a reviewer to
+	// judge a tree that does not carry the run's work. Additive and
+	// omitempty, so a history recorded before it decodes false and replays
+	// unchanged.
+	RequireDiff bool `json:"requireDiff,omitempty"`
 	// OwningWorkflowID is the id of the Temporal workflow execution whose
 	// activity is creating this pod — the one execution whose liveness
 	// decides whether the attempt is still being driven.
@@ -204,7 +212,7 @@ func gatePodAttempt(gateDispatches map[string]int, gate string) int {
 // #3844's instance-root refusal list is command-keyed and a gate declares
 // no command, so there is nothing of it to apply here; the pod entrypoint's
 // backstop still stands for anything a reviewer's harness might spawn.
-func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, requireDiff bool, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
 	workspace := g.EffectiveWorkspace()
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
@@ -229,6 +237,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		WorkspaceDelta:   workspaceDelta,
 		WorkspaceBranch:  workspaceBranch,
 		Review:           true,
+		RequireDiff:      requireDiff,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}).Get(ctx, &result)
 	placementAttempt := podAttempt
@@ -270,28 +279,34 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 // outcome without spending a pod). Each is a stated, narrowing cut.
 //
 // CLOSED since: credential injection (#3722), journal/artifact emission
-// (#3723), and goobers-CLI/providerstage wiring (this change) — the pod
-// resolves its own credentials, emits its own journal, and receives the run
-// context a CLI stage reads. The CLI refusal that stood here is gone.
+// (#3723), goobers-CLI/providerstage wiring, agentic stages (#3751) and the
+// pod-side repo checkout — the pod resolves its own credentials, emits its
+// own journal, receives the run context a CLI stage reads, and provisions a
+// repo-backed or scratch workspace.
 //
-// STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
-// so a stage declaring a workspace other than scratch is still refused.
+// STILL OPEN, the refusals below, in order:
+//   - every task of a topology (b) run (CrossProviderBacklogPodCode), as a
+//     journaled stage outcome;
+//   - a deterministic task with no run, command or script, and one declaring
+//     a workspace mode that is neither scratch nor repo-backed;
+//   - a command that reads the instance config directory;
+//   - a command or built-in kind that needs the daemon's instance root
+//     (decision 003 ruling 3), as a journaled stage outcome.
 func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
-	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
-	// declared command or script (dispatchexec), and invoking a goober through
-	// its harness has no pod-side path at all — the local arm reaches it via
-	// ActInvokeGoober, which the dispatch activity does not have.
+	// Topology (b) (a GitHub or Gitea backlog for Azure DevOps code,
+	// docs/design/ado-parity-dsl-2-0.md §7.2): every task of such a run, of
+	// either type, is refused a stage pod. A stage routes backlog work and
+	// backlog-family credentials by role, and it resolves the backlog
+	// repository from the instance config by its gaggle. A stage pod carries
+	// neither, so a backlog stage there would address the Azure DevOps
+	// repository with the backlog repository's credential.
 	//
-	// Refused HERE for the same reason as every other cut in this function:
-	// without it, an agentic task sails past the guards below (they are all
-	// inside the deterministic branch), a pod IS created, and the entrypoint
-	// finds no command and returns "stage_declaration_invalid" — an error that
-	// blames the workflow author's YAML for a substrate limitation, after
-	// spending a pod to say it.
-	//
-	// The runner inventory can already pin an agentic stage here: a
-	// harnesses:[copilot] runner class resolves and places, so this is
-	// reachable today rather than hypothetical.
+	// Cluster-substrate support for topology (b) is not planned for the 0.5.x
+	// or 0.6 lines. Supporting it would mean the dispatcher stamping the
+	// backlog repository and its bot login into the pod environment. Until
+	// then, this is a journaled stage outcome (dispatchRefusal) taken before a
+	// pod is created, and `goobers validate` warns about it at author time
+	// (RNR007) for any stage whose eligible runners exclude the daemon's host.
 	if in.RoleRoutedBacklogProvider != "" {
 		return dispatchRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, CrossProviderBacklogPodCode,
 			"stage of a topology (b) gaggle; refused before a pod was created",
@@ -439,7 +454,8 @@ func dispatchRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJo
 // no instance config, so a backlog stage there would address the Azure
 // DevOps repository with the backlog repository's credential. Every stage of
 // such a run is therefore refused before a pod is created; placing the
-// gaggle's stages on a self runner runs them.
+// gaggle's stages on a self runner runs them. `goobers validate` warns about
+// such a placement in advance (RNR007).
 const CrossProviderBacklogPodCode = "cross_provider_backlog_pod_unsupported"
 
 func crossProviderBacklogPodReason(taskName string, project, backlog apiv1.Provider) string {
@@ -598,10 +614,15 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	if input.Run == nil {
 		attempt.Agentic = true
 		envelope := input.Envelope
+		if envelope.ChildWorkflowOrigin != nil {
+			origin := *envelope.ChildWorkflowOrigin
+			envelope.ChildWorkflowOrigin = &origin
+		}
 		attempt.Envelope = &envelope
 		// The completion contract rides the attempt into the kit writer, which
 		// stamps it as agentickit.Kit.Mode inside the verified claim check.
 		attempt.Review = input.Review
+		attempt.ReviewRequiresDiff = input.Review && input.RequireDiff
 	}
 
 	// A goobers-CLI stage needs the run's operational identity to do its job:
@@ -651,10 +672,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// The rebound branch and the base sync are stamped on exactly the same
 		// arm as the delta, and for one reason: they all describe what happens
 		// to a WRITABLE run branch. A repo-readonly stage is detached at the
-		// pinned base on every substrate — the local runner ignores a rebound
-		// branch for it (createStageWorkspace's read-only arm passes Branch:
-		// "") — so stamping either here would be the pod quietly reading
-		// something the self runner does not.
+		// pinned base on every substrate — the local runner refuses one on a
+		// rebound branch (createStageWorkspace's read-only arm), and
+		// `goobers validate` rejects that ordering statically (WS002) — so
+		// stamping either here would be the pod quietly reading something the
+		// self runner does not.
 		attempt.WorkspaceBranch = strings.TrimSpace(input.WorkspaceBranch)
 		// SyncBase is already pinned inside input.Run (apiv1.DeterministicRun,
 		// #813) and travels with it; it is lifted onto the attempt because the
@@ -797,7 +819,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// the field surrenders nothing about it and is journaled as nothing,
 		// not as a verified fact.
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
-		Placement:               placementProvenance(report),
+		Placement:               placementProvenance(report), WorkspaceHeadMoved: surrendered.WorkspaceHeadMoved,
 	})
 	return result, withDispatchFailurePlacement(resultErr, report)
 }
@@ -813,9 +835,10 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 //   - The pod's own session failed (ResultFailure, no verdict): the failure
 //     is returned as an ERROR — the self arm's ReviewGoober does the same
 //     when Goober.Review errors — classed by the pod's own Retryable
-//     marking, so a substrate fault (kit, credential, checkout, context)
-//     retries on a fresh pod under the gate's evaluator retry bound and a
-//     harness failure fails the run. The two kit-FETCH codes are classed
+//     marking, so a substrate fault (kit, credential, checkout, context) or
+//     a reviewer session that ended without a verdict (#5543) retries on a
+//     fresh pod under the gate's evaluator retry bound, and a harness
+//     refusal fails the run. The two kit-FETCH codes are classed
 //     here regardless of that marking; see reviewKitFetchFailure (#3888).
 //   - No verdict on a successful session: refused. Nothing to route on.
 //   - An empty Decision, or a verdict the shared verdict schema rejects:
@@ -835,6 +858,11 @@ func (a *Activities) reviewActivityResult(ctx context.Context, input DispatchSta
 			code = "agentic_review_failed"
 		}
 		err := fmt.Errorf("engine: reviewer gate %q attempt %d failed in its pod: %s: %s", stage, number, code, message)
+		if code == runner.WorkspaceHeadMovedErrorCode {
+			// #6019: typed so the walk can end the run superseded. Never
+			// retried: a fresh pod clones the same moved head (#5948).
+			return stageActivityResult{}, temporal.NewNonRetryableApplicationError(err.Error(), FailureTypeWorkspaceHeadMoved, nil)
+		}
 		retryable := surrendered.Result.Error != nil && surrendered.Result.Error.Retryable
 		if retryable || reviewKitFetchFailure(code) {
 			return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(err))
@@ -964,6 +992,7 @@ func surrenderedMutationFacts(mutations []dispatcher.SurrenderedMutation) []muta
 	facts := make([]mutationFact, 0, len(mutations))
 	for _, m := range mutations {
 		facts = append(facts, mutationFact{
+			SemanticMutation:  m.SemanticMutation,
 			LandingIntent:     m.LandingIntent,
 			QueueAdmission:    m.QueueAdmission,
 			MergeConfirmation: m.MergeConfirmation,
@@ -997,6 +1026,14 @@ func classifyDispatchError(err error) error {
 	var label *dispatcher.LabelOverrideError
 	if errors.As(err, &selection) || errors.As(err, &skew) || errors.As(err, &restriction) || errors.As(err, &label) {
 		return classifySeamError(err)
+	}
+	// A held prior attempt pod defers the retry until its deadline (#6750).
+	var live *dispatcher.PriorAttemptLiveError
+	if errors.As(err, &live) {
+		return temporal.NewApplicationErrorWithOptions(err.Error(), FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
+			Details: []interface{}{live.RetryAt},
+			Cause:   temporal.NewApplicationError(live.Error(), failureTypePriorAttemptLive),
+		})
 	}
 	return classifySeamError(invoke.InfrastructureFailure(err))
 }

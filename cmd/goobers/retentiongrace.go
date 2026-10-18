@@ -53,9 +53,12 @@ type retentionGraceState struct {
 }
 
 type telemetryRetentionPass struct {
-	ID               string             `json:"id"`
-	Phase            string             `json:"phase"`
-	At               time.Time          `json:"at"`
+	ID    string    `json:"id"`
+	Phase string    `json:"phase"`
+	At    time.Time `json:"at"`
+	// JournalSeq is the instance journal's last sequence when the pass was
+	// created; its summary event, if appended, lies after it.
+	JournalSeq       uint64             `json:"journalSeq,omitempty"`
 	DryRun           bool               `json:"dryRun"`
 	CandidateCount   int                `json:"candidateCount"`
 	EnforceAt        time.Time          `json:"enforceAt,omitempty"`

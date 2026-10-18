@@ -11,6 +11,10 @@ import {
   isRecord,
 } from "./errors";
 import { apiRoutes, type ApiRoute } from "./contract.generated";
+import {
+  normalizeLegacyTelemetryCosts,
+  normalizeLegacyWorkItemCost,
+} from "./legacyCostCompatibility";
 import { publishUpdateAvailability } from "../updateNotice";
 import type {
   PortalDiagnostics,
@@ -31,10 +35,12 @@ import type {
   GooberPage,
   Health,
   Instance,
+  InstanceReadiness,
   PageRequest,
   PortalConfig,
   RequestOptions,
   RunDetail,
+  ChildHistoryPage,
   RunList,
   RunListOptions,
   TelemetryErrorSignaturesOptions,
@@ -208,6 +214,12 @@ export class HttpDaemonClient implements DaemonClient {
     return instance;
   }
 
+  async getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness> {
+    const readiness = await this.getJSON<InstanceReadiness>(clientRoutes.readiness, undefined, options);
+    assertSupportedContractVersion(readiness);
+    return readiness;
+  }
+
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
     return this.getJSON(clientRoutes.portalConfig, undefined, options);
   }
@@ -281,6 +293,10 @@ export class HttpDaemonClient implements DaemonClient {
 
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
     return this.getJSON(clientRoutes.runDetail, undefined, options, { run: runId });
+  }
+
+  listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage> {
+    return this.getJSON(clientRoutes.runChildren, { cursor }, options, { run: runId });
   }
 
   revealRun(runId: string, options?: RequestOptions): Promise<void> {
@@ -390,7 +406,7 @@ export class HttpDaemonClient implements DaemonClient {
     request?: TelemetryStatsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryStatsResult> {
-    return this.getJSON(
+    return this.getJSON<TelemetryStatsResult>(
       clientRoutes.telemetryStats,
       request && {
         workflow: request.workflow,
@@ -404,7 +420,7 @@ export class HttpDaemonClient implements DaemonClient {
         trendPreviousUntil: request.trendPreviousUntil,
       },
       options,
-    );
+    ).then(normalizeLegacyTelemetryCosts);
   }
 
   getTelemetryCosts(
@@ -475,6 +491,7 @@ export class HttpDaemonClient implements DaemonClient {
       request && {
         provider: request.provider,
         kind: request.kind,
+        gaggle: request.gaggle,
         limit: request.limit,
       },
       options,
@@ -488,12 +505,12 @@ export class HttpDaemonClient implements DaemonClient {
     externalId: string,
     options?: RequestOptions,
   ): Promise<WorkItemDetail> {
-    return this.getJSON(
+    return this.getJSON<WorkItemDetail>(
       clientRoutes.workItemDetail,
       { repository },
       options,
       { provider, kind, id: externalId },
-    );
+    ).then(normalizeLegacyWorkItemCost);
   }
 
   private async getJSON<T>(

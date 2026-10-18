@@ -11,11 +11,42 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 type instanceDropCounter struct{ count atomic.Uint64 }
 
 func (c *instanceDropCounter) InstanceJournalAppendDropped() { c.count.Add(1) }
+
+func TestInstanceLogAppendObserverFollowsDurableTransitions(t *testing.T) {
+	log, _, err := OpenInstanceLog(filepath.Join(t.TempDir(), "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	var observed atomic.Int32
+	log.SetAppendObserver(func(event Event) {
+		observed.Add(1)
+	})
+	transitions := []Event{
+		{Type: EventTriggerFired, Workflow: "implement"},
+		{Type: EventClaimAcquired, Name: "issue-1"},
+		{Type: EventRunStarted, RunID: testIdentity().RunID},
+		{Type: EventWorkerConfigDivergence, Name: "worker-1"},
+	}
+	for _, transition := range transitions {
+		if err := log.Append(transition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log.SetAppendObserver(nil)
+	if err := log.Append(Event{Type: EventClaimAcquired, Name: "issue-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := observed.Load(); got != int32(len(transitions)) {
+		t.Fatalf("observer calls = %d, want %d", got, len(transitions))
+	}
+}
 
 func TestInstanceLogBestEffortAppendCountsAndObservesFailures(t *testing.T) {
 	observer := &instanceDropCounter{}
@@ -328,6 +359,11 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventClaimAcquired, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
 		{Type: EventClaimReleased, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
 		{Type: EventClaimForceReleased, Name: "issue-9", RunID: testIdentity().RunID, Workflow: "implement"},
+		// #4421: a release carries its structured reason on the event itself.
+		{Type: EventClaimReleased, Name: "issue-10", RunID: testIdentity().RunID, Workflow: "implement", Reason: "failed",
+			ClaimRelease: &claimrelease.Reason{Disposition: claimrelease.Failed, Stage: "implement", Code: "agent_exit", Summary: "agent exited 2"}},
+		{Type: EventClaimForceReleased, Name: "issue-11", RunID: testIdentity().RunID, Workflow: "implement", Reason: "force-released",
+			Runner: map[string]any{"actor": "cli"}, ClaimRelease: &claimrelease.Reason{Disposition: claimrelease.ForceReleased, Actor: "cli"}},
 		{Type: EventClaimLockSlow, Runner: map[string]any{"operation": "backlog-query.claim", "pid": 42, "waitDuration": "6s", "holdDuration": "1ms"}},
 		{Type: EventConfigReloaded, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("new"))}},
 		{Type: EventConfigReloadRejected, Error: &ErrorDetail{Code: "config_reload_rejected", Message: "invalid workflow"}, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("invalid"))}},

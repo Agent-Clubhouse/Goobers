@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -279,6 +280,14 @@ func TestDaemonProbeHTTPNamesCrashResumeAsSchedulingBlocker(t *testing.T) {
 	started := time.Date(2026, 9, 16, 6, 10, 7, 0, time.UTC)
 	tracker := &startupPhaseTracker{}
 	tracker.set("crash-resume", "candidates=1481")
+	tracker.observeRecoveryProgress(resumeOutcome{
+		Total: 1481, Examined: 1481, Resumed: []string{"run-resumed"},
+		Blocking: &resumeBlockingCandidate{
+			RunID: "secret-run", Gaggle: "secret-gaggle", Workflow: "secret-workflow",
+			Disposition: "resolving-generation", Operation: "resolve execution generation",
+			StartedAt: started.Add(-time.Minute), LastProgressAt: started.Add(-10 * time.Second),
+		},
+	})
 	state := &daemonProbeState{
 		apiListening: &listening, planeReady: &planeReady, ready: &ready, configLoaded: &configLoaded,
 		stateOpen: &stateOpen, resumeComplete: &resumeComplete, sweepsStarted: &sweepsStarted,
@@ -306,5 +315,52 @@ func TestDaemonProbeHTTPNamesCrashResumeAsSchedulingBlocker(t *testing.T) {
 	}
 	if status.Startup == nil || status.Startup.Phase != "crash-resume" {
 		t.Fatalf("startup = %+v, want the blocking phase named", status.Startup)
+	}
+	if status.Startup.Target != "" {
+		t.Fatalf("unauthenticated readiness leaked startup target %q", status.Startup.Target)
+	}
+	if status.Startup.BlockingCandidate == nil {
+		t.Fatal("startup blocking candidate missing")
+	}
+	if status.Startup.BlockingCandidate.RunID != "" || status.Startup.BlockingCandidate.Gaggle != "" || status.Startup.BlockingCandidate.Workflow != "" {
+		t.Fatalf("unauthenticated readiness leaked candidate identity: %+v", status.Startup.BlockingCandidate)
+	}
+	if status.Startup.BlockingCandidate.Operation != "resolve execution generation" ||
+		status.Startup.BlockingCandidate.Progress.Examined != 1481 {
+		t.Fatalf("startup blocking candidate = %+v, want operation and progress", status.Startup.BlockingCandidate)
+	}
+}
+
+func TestInstanceReadinessIncludesCrashResumeCandidateIdentity(t *testing.T) {
+	started := time.Now().Add(-2 * time.Minute)
+	tracker := &startupPhaseTracker{}
+	tracker.set("crash-resume", "candidates=2")
+	tracker.observeRecoveryProgress(resumeOutcome{
+		Total: 2, Examined: 2, Reattached: []string{"engine-run"},
+		Blocking: &resumeBlockingCandidate{
+			RunID: "run-blocked", Gaggle: "goobers", Workflow: "implement",
+			Disposition: "dispatching", Operation: "journal resume annotation",
+			StartedAt: started, LastProgressAt: started.Add(time.Minute),
+		},
+	})
+	service := &daemonInstanceReadinessService{
+		instanceRoot: t.TempDir(),
+		tracker:      tracker,
+		ready:        func() bool { return false },
+	}
+
+	status, err := service.InstanceReadiness(context.Background())
+	if err != nil {
+		t.Fatalf("InstanceReadiness: %v", err)
+	}
+	candidate := status.Recovery.BlockingCandidate
+	if candidate == nil {
+		t.Fatal("blocking candidate missing")
+	}
+	if candidate.RunID != "run-blocked" || candidate.Gaggle != "goobers" || candidate.Workflow != "implement" {
+		t.Fatalf("candidate identity = %+v", candidate)
+	}
+	if candidate.Operation != "journal resume annotation" || candidate.Progress.Examined != 2 || candidate.Progress.Reattached != 1 {
+		t.Fatalf("candidate progress = %+v", candidate)
 	}
 }

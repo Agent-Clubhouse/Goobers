@@ -25,6 +25,8 @@ import (
 // reconcile sweep keys on (dispatcher §5: label + sweep, NOT a cross-namespace
 // ownerReference).
 const (
+	// EnvChildExecutionDigest names the host-published isolated child contract.
+	EnvChildExecutionDigest = "GOOBERS_CHILD_EXECUTION_DIGEST"
 	// LabelManagedBy marks every pod this dispatcher creates; the orphan
 	// sweep lists by it.
 	LabelManagedBy = "app.kubernetes.io/managed-by"
@@ -142,6 +144,27 @@ const (
 	//     local substrate would have said "" too.
 	//   - PRESENT AND SET: the login, applied as providers.WithConfiguredLogin.
 	ProviderBotLoginEnv = "GOOBERS_PROVIDER_BOT_LOGIN"
+	// GaggleBacklogEnv carries the attempt's gaggle backlog settings (the
+	// backlog provider, project, claim-scope labels and doneStates an Azure
+	// DevOps stage applies),
+	// JSON-encoded, resolved DAEMON-SIDE at dispatch from Config.GaggleBacklogs
+	// because a stage pod has no instance config to read them from (#5957).
+	// Without it, a pod's backlog-query addressed the code repository's
+	// project and counted a Resolved predecessor as done against a stricter
+	// configured doneStates: a silent fail-open.
+	//
+	// RUN IDENTITY, like ProviderBotLoginEnv and for the same reasons: a
+	// goobers-CLI stage keeps it, every other stage is stripped of it, a
+	// workflow may not author it, and it is STAMPED FOR EVERY CLI STAGE so a
+	// runner image cannot supply it. Its states:
+	//
+	//   - ABSENT: nobody resolved this (version skew, a hand-built attempt).
+	//   - PRESENT AND EMPTY: the dispatcher has no settings for this gaggle.
+	//   - PRESENT AND SET: the settings, applied in place of the config.
+	//
+	// The CLI refuses the first two when it needs the settings — an Azure
+	// DevOps stage of a named gaggle — rather than defaulting them.
+	GaggleBacklogEnv = "GOOBERS_GAGGLE_BACKLOG"
 	// ExternalTelemetryConnectorEnv carries the ONE connector's non-secret
 	// ConnectorConfig, JSON-encoded, that an inputs.kind=external-telemetry
 	// stage's inputs.connector names — resolved daemon-side at dispatch,
@@ -181,6 +204,10 @@ const (
 	// execution bound (which stops an orphan's container after the margin,
 	// rather than defining the stage's own timeout or deleting its Pod object).
 	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
+	// EnvRecoveryCustodyTimeout carries the post-stage recovery custody budget
+	// (Go duration string). dispatch-exec also clamps custody to the claim
+	// expiry, so this is an upper bound, not authority to retain work longer.
+	EnvRecoveryCustodyTimeout = "GOOBERS_RECOVERY_CUSTODY_TIMEOUT"
 	// EnvStageCapabilities carries the stage's declared credential capability
 	// NAMES as a JSON array. Names only: the pod resolves them against the
 	// credential plane itself, so no secret ever rides a pod spec — which is
@@ -189,6 +216,9 @@ const (
 	// EnvStageIsCLI marks a stage whose command is the goobers CLI, so the pod
 	// keeps its run context instead of stripping it with the control plane.
 	EnvStageIsCLI = "GOOBERS_STAGE_IS_CLI"
+	// EnvPublicationLeakScreen is a daemon-resolved, explicitly opted-in model
+	// grant delivered after pod start through the credential plane.
+	EnvPublicationLeakScreen = "GOOBERS_PUBLICATION_LEAK_SCREEN"
 
 	// EnvWorkspaceDelta carries the blob digest of the git bundle holding what
 	// earlier stages of this run committed (#3763). Privileged: it names a blob
@@ -333,20 +363,24 @@ const (
 // inherited environment.
 var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivilegedEnv...), DispatcherRunIdentityEnv...), DispatcherPlaneEnv...)
 
-// DispatcherPrivilegedEnv is the half of the control plane that NO stage may
-// ever see, goobers-CLI stage included. EnvPodToken is the reason the whole
-// filter exists: it authorizes surrendering this run's results, so a stage that
-// can read it can author its own outcome. The endpoints are here because a
+// DispatcherPrivilegedEnv is the half of the inherited control plane that NO
+// stage may see, goobers-CLI stage included. A credential-plane response may
+// separately inject EnvPublicationLeakScreen into an eligible CLI child after
+// this strip. EnvPodToken is the reason the whole filter exists: it authorizes
+// surrendering this run's results, so a stage that can read it can author its
+// own outcome. The endpoints are here because a
 // stage holding them plus any token is a step from the same place, and the
 // stage-spec vars because a stage rewriting its own command/capabilities is
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
+	EnvChildExecutionDigest,
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
-	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
+	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvArtifactPublication,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
+	EnvPublicationLeakScreen,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -360,7 +394,7 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvInstanceID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, EnvPodAttempt, ProviderBotLoginEnv,
+	EnvRunID, EnvInstanceID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, EnvPodAttempt, ProviderBotLoginEnv, GaggleBacklogEnv,
 }, runContextEnv...)
 
 // DispatcherPlaneEnv is the THIRD category, and it exists because neither of
@@ -411,7 +445,7 @@ var DispatcherPlaneEnv = []string{
 var runContextEnv = []string{
 	executorRepoProviderEnv, executorRepoBaseURLEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
-	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv,
+	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
 }
 
 // The executor package owns these names; they are restated rather than imported
@@ -428,6 +462,11 @@ const (
 	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
 	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
 	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
+	// executorStageTimeoutEnv restates executor.StageTimeoutEnvVar: the
+	// deadline dispatch-exec enforces, stamped for goobers-CLI stages so a
+	// provider command budgets against it rather than a default (#5572).
+	// EnvStageTimeout itself is privileged and never reaches the stage.
+	executorStageTimeoutEnv = "GOOBERS_EFFECTIVE_STAGE_TIMEOUT"
 	// executorInputKindKey, executorKindExternalTelemetry and
 	// executorInputTelemetryConnector restate executor.InputKind (itself
 	// boundedwait.InputKind), executor.KindExternalTelemetry, and
@@ -464,11 +503,23 @@ const (
 	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
 	// LinuxGoCachePath / WindowsGoCachePath is the durable module cache volume
 	// stage pods mount outside tmp:ephemeral so fresh pods reuse downloaded
-	// modules. GOCACHE remains under the attempt-private temp root.
+	// modules.
 	LinuxGoCachePath   = "/var/goobers/cache"
 	WindowsGoCachePath = `C:\var\goobers\cache`
 	goBuildCacheVolume = "go-build-cache"
 	goBuildCacheClaim  = "goobers-go-build-cache"
+	// LinuxGoBuildCachePath / WindowsGoBuildCachePath is where GOCACHE points
+	// in a stage pod: a disk-backed per-pod emptyDir, deliberately NOT the
+	// shared claim above and NOT /tmp. Images (the operator's goobers-ci
+	// overlay) set GOCACHE=/tmp/gocache, and under tmp:ephemeral /tmp is a
+	// size-limited tmpfs, so any Go build filled it and starved everything
+	// else that needs temp space (recovery custody's git dir). The shared claim
+	// is avoided because a build cache that outlives its pods grows without
+	// bound (the 10 GB history in internal/ephemeraltmp); a per-pod emptyDir is
+	// reclaimed with the pod, exactly as the tmpfs copy was.
+	LinuxGoBuildCachePath   = "/var/goobers/gocache"
+	WindowsGoBuildCachePath = `C:\var\goobers\gocache`
+	goCompileCacheVolume    = "go-compile-cache"
 )
 
 // Node scheduling contract.
@@ -1176,6 +1227,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		env = append(env, corev1.EnvVar{Name: EnvStageScript, Value: literalPodEnv(attempt.Script)})
 	}
 	env = append(env, corev1.EnvVar{Name: EnvStageTimeout, Value: attempt.stageTimeout().String()})
+	env = append(env, corev1.EnvVar{Name: EnvRecoveryCustodyTimeout, Value: cfg.recoveryCustodyTimeout().String()})
 	for _, key := range sortedKeys(attempt.Env) {
 		env = append(env, corev1.EnvVar{Name: key, Value: attempt.Env[key]})
 	}
@@ -1200,6 +1252,10 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		// supply the name) and why an empty value and an absent one are two
 		// different facts on the far side.
 		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: literalPodEnv(providerBotLogin(cfg, attempt))})
+		// The gaggle's backlog settings, for the same reason and with the
+		// same unconditional stamp (#5957). See GaggleBacklogEnv.
+		env = append(env, corev1.EnvVar{Name: GaggleBacklogEnv, Value: literalPodEnv(cfg.GaggleBacklogs[attempt.Gaggle])})
+		env = append(env, corev1.EnvVar{Name: executorStageTimeoutEnv, Value: attempt.stageTimeout().String()})
 	}
 	if stamp := externalTelemetryConnectorStamp(cfg, attempt); stamp != "" {
 		env = append(env, corev1.EnvVar{Name: ExternalTelemetryConnectorEnv, Value: literalPodEnv(stamp)})
@@ -1227,6 +1283,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: literalPodEnv(string(encoded))})
 		}
 	}
+	env = append(env, podEgressProxyEnv(cfg, attempt, class, alreadyOnContainer, env)...)
 	// env:default-deny (#3725). Stamped ONLY for a class that enforces it, so
 	// every other pod spec is byte-identical to before this existed.
 	if class[string(runnercap.RestrictionEnvDefaultDeny)] {
@@ -1237,6 +1294,50 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		)
 	}
 	return env
+}
+
+// podEgressProxyEnvNames lists every variable runner.podEgressProxy stamps.
+// Each setting is stamped under both spellings: Go and npm read either, but
+// curl (and so git) reads only the lowercase proxy variables.
+var podEgressProxyEnvNames = []string{
+	"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+}
+
+// podEgressProxyEnv renders runner.podEgressProxy (#6748) for a stage whose
+// class carries network:allowlist: such a pod has no direct route to module
+// registries, and neither runner classes nor agentic stages can declare env.
+// A name the stage already declares (run.env) or the template container already
+// carries is left alone, so an explicit value always wins. The names are in
+// stageEnvAllowlist, so env:default-deny keeps them, and in procenv.Vars, so
+// they reach the stage command and a harness's tool subprocesses.
+func podEgressProxyEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnContainer []string, stamped []corev1.EnvVar) []corev1.EnvVar {
+	p := cfg.PodEgressProxy
+	if !p.Enabled() || !class[string(runnercap.RestrictionNetworkAllowlist)] {
+		return nil
+	}
+	taken := func(name string) bool {
+		if slices.Contains(alreadyOnContainer, name) {
+			return true
+		}
+		if _, ok := attempt.Env[name]; ok {
+			return true
+		}
+		return slices.ContainsFunc(stamped, func(e corev1.EnvVar) bool { return e.Name == name })
+	}
+	var out []corev1.EnvVar
+	for _, pair := range []struct{ upper, value string }{
+		{"HTTPS_PROXY", p.HTTPSProxy}, {"HTTP_PROXY", p.HTTPProxy}, {"NO_PROXY", p.NoProxy},
+	} {
+		if pair.value == "" {
+			continue
+		}
+		for _, name := range []string{pair.upper, strings.ToLower(pair.upper)} {
+			if !taken(name) {
+				out = append(out, corev1.EnvVar{Name: name, Value: literalPodEnv(pair.value)})
+			}
+		}
+	}
+	return out
 }
 
 // providerBotLogin resolves the bot login for the repository this attempt was
@@ -1418,7 +1519,9 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// GOMODCACHE is stamped after this allowlist is generated when the
 	// durable cache volume is mounted. Keep it through env:default-deny's
 	// in-pod rebuild so restricted stage pods reuse the durable module cache.
-	names = append(names, "GOMODCACHE")
+	names = append(names, "GOMODCACHE", "GOCACHE")
+	// runner.podEgressProxy (#6748), stamped by podEgressProxyEnv.
+	names = append(names, podEgressProxyEnvNames...)
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
@@ -1426,10 +1529,11 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 
 // stampResources sets requests from the stage's runsOn minimums and limits
 // from the runner ceiling (dsl-3.0.md D2), with the tmpfs budget rule of
-// dispatcher §5: when a Linux tmp:ephemeral tmpfs is mounted, its explicit
-// sizeLimit is ADDED to the container memory limit — memory-backed emptyDir
-// usage counts against the limit, and a ceiling that never accounted for it
-// turns a full /tmp into an unattributed OOM.
+// dispatcher §5: when a memory-backed Linux tmp:ephemeral tmpfs is mounted,
+// its explicit sizeLimit is ADDED to the container memory limit — memory-
+// backed emptyDir usage counts against the limit, and a ceiling that never
+// accounted for it turns a full /tmp into an unattributed OOM. A disk-backed
+// /tmp (Config.TmpDiskBacked) costs no memory and is not budgeted here.
 func stampResources(cfg Config, attempt Attempt, runner RunnerSpec, container *corev1.Container, class map[string]bool, windows bool) {
 	requests := corev1.ResourceList{}
 	for name, minimum := range map[corev1.ResourceName]string{
@@ -1457,7 +1561,7 @@ func stampResources(cfg Config, attempt Attempt, runner RunnerSpec, container *c
 			limits[name] = quantity
 		}
 	}
-	if !windows && class[string(runnercap.RestrictionTmpEphemeral)] {
+	if budgetsTmpfsMemory(cfg, class, windows) {
 		if memory, ok := limits[corev1.ResourceMemory]; ok {
 			budgeted := memory.DeepCopy()
 			tmpfs := cfg.tmpfsSizeLimit()
@@ -1473,11 +1577,17 @@ func stampResources(cfg Config, attempt Attempt, runner RunnerSpec, container *c
 	}
 }
 
+// budgetsTmpfsMemory reports whether the pod mounts a memory-backed
+// tmp:ephemeral tmpfs whose size must be added to the memory limit.
+func budgetsTmpfsMemory(cfg Config, class map[string]bool, windows bool) bool {
+	return !windows && !cfg.TmpDiskBacked && class[string(runnercap.RestrictionTmpEphemeral)]
+}
+
 // stampVolumes mounts the writable workspace (always), the tmp:ephemeral
 // volume at the platform temp path (decision 006: Linux /tmp memory-backed
-// with an EXPLICIT sizeLimit; Windows the profile-nested temp,
-// node-disk-backed — memory-backed emptyDir is a Linux mechanism), and the
-// writable HOME a Linux fs-readonly pod needs.
+// with an EXPLICIT sizeLimit unless Config.TmpDiskBacked selects node disk;
+// Windows the profile-nested temp, node-disk-backed — memory-backed emptyDir
+// is a Linux mechanism), and the writable HOME a Linux fs-readonly pod needs.
 func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *corev1.Container, class map[string]bool, windows bool) {
 	workspace := corev1.Volume{
 		Name:         "workspace",
@@ -1510,29 +1620,7 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 	container.WorkingDir = workspacePath
 
 	if class[string(runnercap.RestrictionTmpEphemeral)] {
-		tmpfs := cfg.tmpfsSizeLimit()
-		tmp := corev1.Volume{
-			Name: "tmp",
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
-				SizeLimit: &tmpfs,
-			}},
-		}
-		tmpPath := LinuxTmpPath
-		if windows {
-			tmpPath = WindowsTmpPath
-		} else {
-			tmp.EmptyDir.Medium = corev1.StorageMediumMemory
-		}
-		spec.Volumes = append(spec.Volumes, tmp)
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "tmp", MountPath: tmpPath})
-		if windows {
-			container.Env = append(container.Env,
-				corev1.EnvVar{Name: "TMP", Value: tmpPath},
-				corev1.EnvVar{Name: "TEMP", Value: tmpPath},
-			)
-		} else {
-			container.Env = append(container.Env, corev1.EnvVar{Name: "TMPDIR", Value: tmpPath})
-		}
+		stampTmpVolume(cfg, spec, container, windows)
 	}
 
 	if !windows && class[string(runnercap.RestrictionFSReadonly)] {
@@ -1563,6 +1651,54 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 	container.Env = append(container.Env,
 		corev1.EnvVar{Name: "GOMODCACHE", Value: cachePath},
 	)
+
+	// GOCACHE moves off /tmp (see LinuxGoBuildCachePath) onto disk-backed
+	// pod-local storage, overriding any image-baked GOCACHE=/tmp/gocache.
+	buildCachePath := LinuxGoBuildCachePath
+	if windows {
+		buildCachePath = WindowsGoBuildCachePath
+	}
+	spec.Volumes = append(spec.Volumes, corev1.Volume{
+		Name:         goCompileCacheVolume,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name: goCompileCacheVolume, MountPath: buildCachePath,
+	})
+	container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
+		return env.Name == "GOCACHE"
+	})
+	container.Env = append(container.Env, corev1.EnvVar{Name: "GOCACHE", Value: buildCachePath})
+}
+
+// stampTmpVolume mounts the tmp:ephemeral volume with an explicit sizeLimit
+// and points the platform temp variables at it. Linux /tmp is a memory tmpfs
+// unless Config.TmpDiskBacked selects a node-disk emptyDir (#6758): Go's $WORK
+// and t.TempDir() land under TMPDIR, and a tmpfs big enough for a real build
+// costs pod memory.
+func stampTmpVolume(cfg Config, spec *corev1.PodSpec, container *corev1.Container, windows bool) {
+	size := cfg.tmpfsSizeLimit()
+	tmp := corev1.Volume{
+		Name: "tmp",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			SizeLimit: &size,
+		}},
+	}
+	if windows {
+		spec.Volumes = append(spec.Volumes, tmp)
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "tmp", MountPath: WindowsTmpPath})
+		container.Env = append(container.Env,
+			corev1.EnvVar{Name: "TMP", Value: WindowsTmpPath},
+			corev1.EnvVar{Name: "TEMP", Value: WindowsTmpPath},
+		)
+		return
+	}
+	if !cfg.TmpDiskBacked {
+		tmp.EmptyDir.Medium = corev1.StorageMediumMemory
+	}
+	spec.Volumes = append(spec.Volumes, tmp)
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "tmp", MountPath: LinuxTmpPath})
+	container.Env = append(container.Env, corev1.EnvVar{Name: "TMPDIR", Value: LinuxTmpPath})
 }
 
 // stampSecurity applies the restriction bindings by OS (decisions 006/007,

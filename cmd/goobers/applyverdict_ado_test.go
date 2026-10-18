@@ -414,6 +414,14 @@ func TestPublishADONonPassVerdictPublishesFailedStatusLabelAndThread(t *testing.
 	if !strings.Contains(threadContent, "verdict-json:") {
 		t.Fatalf("thread content = %q, want it to carry the verdict-json machine payload", threadContent)
 	}
+	// #6918: the append-only verdict comment must not acknowledge (mask)
+	// human feedback left during remediation.
+	if frontier, bound := parseFeedbackAck(threadContent); !bound || !frontier.IsZero() {
+		t.Fatalf("thread content = %q, want a none feedback-ack frontier", threadContent)
+	}
+	if _, ok := parseVerdictComment(threadContent); !ok {
+		t.Fatalf("thread content = %q, want the verdict to stay parseable", threadContent)
+	}
 	result := readVerdictResult(t, resultFile)
 	if result["decision"] != "needs-changes" {
 		t.Fatalf("result = %+v, want decision=needs-changes", result)
@@ -615,7 +623,11 @@ func adoNeedsChangesMux(t *testing.T, repo providers.RepositoryRef, prNumber int
 		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 	})
 	mux.HandleFunc(pr+"/iterations", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{map[string]int{"id": 1}}})
+		// The latest iteration carries the reviewed head: the non-pass status
+		// is pinned to it (#4199).
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{map[string]interface{}{
+			"id": 1, "sourceRefCommit": map[string]string{"commitId": headSHA},
+		}}})
 	})
 	mux.HandleFunc(pr+"/iterations/1/changes", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{

@@ -1,3 +1,4 @@
+import { Action } from "../ui/Action";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface Props {
@@ -36,19 +37,24 @@ export class RouteErrorBoundary extends Component<Props, State> {
             <p>Something went wrong rendering this page. Reload to try again.</p>
             <details>
               <summary>Error details</summary>
-              <pre>{[
-                `${this.state.error.name}: ${this.state.error.message}`,
-                this.state.componentStack,
-              ].filter(Boolean).join("\n")}</pre>
+              <pre>
+                {[
+                  `${this.state.error.name}: ${this.state.error.message}`,
+                  this.state.componentStack,
+                ]
+                  .filter(Boolean)
+                  .join("\n")}
+              </pre>
             </details>
           </div>
-          <button
+          <Action
+            variant="primary"
             className="reconnect-button"
             onClick={() => window.location.reload()}
             type="button"
           >
             Reload
-          </button>
+          </Action>
         </section>
       );
     }

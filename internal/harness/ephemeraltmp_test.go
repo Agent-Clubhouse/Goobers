@@ -174,6 +174,7 @@ func TestSandboxConfinementStillOwnsTMPDIRUnderEphemeralTmp(t *testing.T) {
 // other harness, so the self entry's declaration is true whichever one a
 // goober names.
 func TestClaudeAdapterBindsAndReclaimsEphemeralTmp(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	root := t.TempDir()
 	t.Setenv("TMPDIR", root)
 	t.Setenv("GOCACHE", filepath.Join(root, "gocache"))
@@ -186,6 +187,7 @@ func TestClaudeAdapterBindsAndReclaimsEphemeralTmp(t *testing.T) {
 		},
 	}
 	adapter := &ClaudeAdapter{
+		KeychainReader:   absentClaudeKeychain,
 		Command:          []string{"claude"},
 		Runner:           runner,
 		EphemeralTmp:     true,
@@ -243,6 +245,7 @@ func TestAdapterEphemeralTmpFailsClosed(t *testing.T) {
 	}
 
 	claude := &ClaudeAdapter{
+		KeychainReader:   absentClaudeKeychain,
 		Command:          []string{"claude"},
 		Runner:           &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
 		EphemeralTmp:     true,

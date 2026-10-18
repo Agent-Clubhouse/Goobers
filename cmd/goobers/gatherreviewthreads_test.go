@@ -50,7 +50,7 @@ func reviewThreadsBrief() apiv1.RemediationBrief {
 		HasSubstantiveFindings: "true",
 		HasFailingCI:           "false",
 		GatherPRContext: apiv1.RemediationPRContext{
-			HeadSHA: "head-sha",
+			HeadSHA: revisionSelectedSHA,
 			BaseSHA: "base-sha",
 			Comments: []apiv1.RemediationThreadComment{
 				{Author: "reviewer", Body: "Keep this issue-level context.", Integrity: apiv1.IntegrityUnapproved},
@@ -67,6 +67,10 @@ func TestGatherReviewThreadsAddsReviewEvidenceAndPreservesBrief(t *testing.T) {
 	root := initDemo(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/repos/your-org/your-repo/pulls/77":
+			_, _ = w.Write([]byte(`{"number":77,"state":"open","head":{"ref":"work","sha":"` + revisionSelectedSHA + `"},"base":{"ref":"main","sha":"base-sha"}}`))
+		case "/repos/your-org/your-repo/issues/77/comments":
+			_, _ = w.Write([]byte(`[{"id":9,"user":{"login":"reviewer","type":"User"},"body":"Keep this issue-level context."}]`))
 		case "/repos/your-org/your-repo/pulls/77/reviews":
 			_, _ = w.Write([]byte(`[{"id":1,"user":{"login":"goobers-bot"},"state":"CHANGES_REQUESTED","body":"Fix this.","commit_id":"head-sha","submitted_at":"2026-07-23T10:00:00Z","html_url":"https://example/reviews/1"}]`))
 		case "/repos/your-org/your-repo/pulls/77/comments":
@@ -125,6 +129,14 @@ func TestGatherReviewThreadsAddsReviewEvidenceAndPreservesBrief(t *testing.T) {
 			Integrity: apiv1.IntegrityUnapproved,
 		}},
 	}
+	snapshot := got.FeedbackSnapshot
+	if snapshot == nil || snapshot.Schema != apiv1.PRFeedbackSnapshotVersion || snapshot.HeadSHA != revisionSelectedSHA ||
+		len(snapshot.ReviewThreads) != 1 || snapshot.ReviewThreads[0].ThreadID != "PRRT_101" ||
+		len(snapshot.GeneralComments) != 1 || snapshot.GeneralComments[0].ID != "9" ||
+		len(snapshot.Reviews) != 1 || snapshot.SnapshotDigest != feedbackSnapshotDigest(*snapshot) {
+		t.Fatalf("feedback snapshot = %#v, want the gathered thread, comment and review pinned at the selected head", snapshot)
+	}
+	got.FeedbackSnapshot = nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("remediation brief = %#v, want %#v", got, want)
 	}

@@ -3,6 +3,7 @@
 package recovery
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,6 +12,19 @@ import (
 
 	"github.com/goobers/goobers/providers"
 )
+
+// ErrNoMatchingSnapshot reports that an authorized recovery lookup found no
+// usable retained implementation. Re-claim workflows treat this as the normal
+// fresh-implementation path; every other selection or restoration error stays
+// fail-closed.
+var ErrNoMatchingSnapshot = errors.New("no matching recovery snapshot")
+
+// ErrIncompatibleSnapshot reports that a selected retained implementation
+// cannot be restored onto current main: its base is no longer an ancestor, or
+// its patch no longer applies. Nothing has been adopted when it is returned,
+// so a re-claim may start fresh while the retained state stays available for
+// operator recovery.
+var ErrIncompatibleSnapshot = errors.New("retained checkpoint does not apply to current main")
 
 var (
 	runIdentity = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$`)
@@ -86,12 +100,12 @@ func (r Record) Validate() error {
 	return nil
 }
 
-// validateRestorable accepts a record from EITHER durability tier: a retained
+// ValidateRestorable accepts a record from EITHER durability tier: a retained
 // record with its archive binding, or an overflow record that declares no
 // archive because its objects are restored from the pinned mirror ref rather
 // than from a bundle (#5370). Nothing that consults the archive fields may
 // use it — it is for the restore path, which reads objects, not bytes on disk.
-func (r Record) validateRestorable() error {
+func (r Record) ValidateRestorable() error {
 	if r.ArchiveDigest == "" && r.ArchiveBytes == 0 && r.ArchiveFormat == "" {
 		return r.validateSnapshot()
 	}

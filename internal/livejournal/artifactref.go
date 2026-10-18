@@ -60,10 +60,10 @@ func (w *Writer) recordArtifact(ctx context.Context, run *liveRun, a *ArtifactOp
 		if err != nil {
 			return journal.Ref{}, err
 		}
-		return run.jr.RecordExpectedArtifactAnnotated(a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
+		return run.jr.RecordBranchExpectedArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
 	}
 	if a.Stage != "" {
-		return run.jr.RecordStageArtifactAnnotated(a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)
+		return run.jr.RecordBranchStageArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)
 	}
 	return run.jr.RecordArtifactAnnotated(a.Name, a.Data, integrity, meta)
 }
@@ -83,10 +83,11 @@ func (w *Writer) fetchArtifact(ctx context.Context, a *ArtifactOp, integrity api
 	if !integrity.Valid() || (ref.Integrity != "" && ref.Integrity != integrity) {
 		return nil, errors.New("artifact ref has invalid or conflicting integrity")
 	}
-	if w.artifacts == nil {
+	source := w.requestArtifactSource(ctx)
+	if source == nil {
 		return nil, errors.New("no bounded artifact source configured")
 	}
-	data, err := w.artifacts.GetBounded(ctx, ref.Digest, max(ref.Size, 1))
+	data, err := source.GetBounded(ctx, ref.Digest, max(ref.Size, 1))
 	if err != nil {
 		return nil, fmt.Errorf("fetch artifact %q: %w", a.Name, err)
 	}

@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,22 +110,30 @@ func resolveBacklogHealthScanOptions(stderr io.Writer) (backlogHealthScanOptions
 		maxPages:   defaultTransitionScanMaxPages,
 		quotaFloor: defaultTransitionScanQuotaFloor,
 	}
-	if raw := providerInput("transitionScanMaxPages", ""); raw != "" {
-		pages, err := strconv.Atoi(raw)
-		if err != nil || pages < 1 {
-			pf(stderr, "error: input transitionScanMaxPages must be an integer of at least 1, got %q\n", raw)
-			return opts, false
-		}
-		opts.maxPages = pages
+	pages, err := parseIntInput(
+		providerInput("transitionScanMaxPages", strconv.Itoa(defaultTransitionScanMaxPages)),
+		func(value int) bool { return value >= 1 },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("input transitionScanMaxPages must be an integer of at least 1, got %q", raw)
+		},
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return opts, false
 	}
-	if raw := providerInput("transitionScanQuotaFloor", ""); raw != "" {
-		floor, err := strconv.ParseFloat(raw, 64)
-		if err != nil || floor < 0 || floor >= 1 {
-			pf(stderr, "error: input transitionScanQuotaFloor must be a fraction in [0,1), got %q\n", raw)
-			return opts, false
-		}
-		opts.quotaFloor = floor
+	opts.maxPages = pages
+	floor, err := parseFloatInput(
+		providerInput("transitionScanQuotaFloor", strconv.FormatFloat(defaultTransitionScanQuotaFloor, 'f', -1, 64)),
+		func(value float64) bool { return !(value < 0 || value >= 1) },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("input transitionScanQuotaFloor must be a fraction in [0,1), got %q", raw)
+		},
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return opts, false
 	}
+	opts.quotaFloor = floor
 	return opts, true
 }
 
@@ -267,15 +273,11 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 }
 
 func writeBacklogHealthReport(report backlogHealthReport, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(report)
-	if err != nil {
-		pf(stderr, "error: marshal backlog health: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "backlog-health.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, report, stageResultOptions{
+		MarshalLabel: "marshal backlog health",
+	}); code != 0 {
+		return code
 	}
 	if report.ReadyPoolObservedAt == "" {
 		// A deferred snapshot deliberately carries no observation: an absent
@@ -342,6 +344,8 @@ func backlogHealthTransitions(
 		}, err
 	}
 	if repo.Provider == providers.ProviderADO {
+		// Deliberately no transition walk on ADO (#5960): ready ages come from
+		// System.ChangedDate instead (annotateBacklogReadyTimes).
 		return nil, backlogHealthScan{Mode: backlogHealthScanFull, Reason: backlogHealthScanUnsupported}, nil
 	}
 	itemProvider, ok := provider.(itemLabelTransitionProvider)
@@ -554,6 +558,7 @@ func backlogHealthItemTransitions(
 	label string,
 ) ([]providers.WorkItemLabelTransition, error) {
 	if repo.Provider == providers.ProviderADO {
+		// No per-item updates walk on ADO; see annotateBacklogReadyTimes.
 		return nil, nil
 	}
 	itemProvider, ok := provider.(itemLabelTransitionProvider)
@@ -607,6 +612,11 @@ func backlogReadyLedgerExitCode(err error, stderr io.Writer) int {
 // the ledger — not the repository — is wrong. That is the integrity mismatch
 // the bounded full rescan exists for, so it is retried once from scratch rather
 // than failing the stage.
+//
+// A full scan can still miss an item: the repository-wide event walk is
+// bounded (and the provider may not serve arbitrarily old history), so a label
+// added long ago may sit below its oldest page (#6986). Those items alone are
+// resolved from their own complete label history instead of failing the stage.
 func resolveBacklogReadyTimes(
 	ctx context.Context,
 	issueProvider backlogHealthProvider,
@@ -630,7 +640,7 @@ func resolveBacklogReadyTimes(
 		return filtered, scan, nil
 	}
 	if !scan.resumable() {
-		return nil, scan, &backlogReadyLedgerError{what: "snapshot ready backlog", err: annotateErr}
+		return resolveUnledgeredReadyItems(ctx, issueProvider, root, repo, items, readyLabel, filtered, scan, stdout)
 	}
 	pf(stdout, "resumed ready-transition ledger does not explain the live ready pool (%v); rescanning full history\n",
 		annotateErr)
@@ -645,7 +655,7 @@ func resolveBacklogReadyTimes(
 	}
 	filtered = transitionsForItems(transitions, items)
 	if err := annotateBacklogReadyTimes(repo.Provider, items, readyLabel, filtered); err != nil {
-		return nil, scan, &backlogReadyLedgerError{what: "snapshot ready backlog", err: err}
+		return resolveUnledgeredReadyItems(ctx, issueProvider, root, repo, items, readyLabel, filtered, scan, stdout)
 	}
 	return filtered, scan, nil
 }
@@ -661,11 +671,14 @@ func applyImplementationFeedback(
 	scan backlogHealthScan,
 	stdout, stderr io.Writer,
 ) int {
-	threshold, err := strconv.Atoi(providerInput(
-		"implementationFailureThreshold",
-		strconv.Itoa(defaultImplementationFailureThreshold),
-	))
-	if err != nil || threshold < 2 {
+	threshold, err := parseIntInput(
+		providerInput("implementationFailureThreshold", strconv.Itoa(defaultImplementationFailureThreshold)),
+		func(value int) bool { return value >= 2 },
+		func(_ string, _ error) string {
+			return "implementationFailureThreshold must be an integer of at least 2"
+		},
+	)
+	if err != nil {
 		pf(stderr, "error: implementationFailureThreshold must be an integer of at least 2\n")
 		return 1
 	}
@@ -931,15 +944,11 @@ func compactFeedbackText(raw string, limit int) string {
 }
 
 func writeImplementationFeedbackReport(report implementationFeedbackReport, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(report)
-	if err != nil {
-		pf(stderr, "error: marshal implementation feedback: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "implementation-feedback.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, report, stageResultOptions{
+		MarshalLabel: "marshal implementation feedback",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "routed %d chronically failing item(s) back to curation\n", report.Recurated)
 	return 0
@@ -986,11 +995,18 @@ func transitionsForItems(
 	return filtered
 }
 
-func annotateReadyTimes(
-	items []providers.WorkItem,
+// needsReadyTime reports whether an item is an open ready item whose ReadyAt
+// must be resolved from a label-add event.
+func needsReadyTime(item providers.WorkItem, readyLabel string) bool {
+	return item.HasLabel(readyLabel) && (item.State == "" || strings.EqualFold(item.State, "open"))
+}
+
+// activeReadyTimes replays transitions in event order and returns, per item,
+// the time of the label-add event that is still in effect.
+func activeReadyTimes(
 	readyLabel string,
 	transitions []providers.WorkItemLabelTransition,
-) error {
+) map[string]time.Time {
 	ordered := append([]providers.WorkItemLabelTransition(nil), transitions...)
 	sort.Slice(ordered, func(i, j int) bool {
 		if ordered[i].OccurredAt.Equal(ordered[j].OccurredAt) {
@@ -1009,9 +1025,17 @@ func annotateReadyTimes(
 			delete(active, transition.ItemID)
 		}
 	}
+	return active
+}
+
+func annotateReadyTimes(
+	items []providers.WorkItem,
+	readyLabel string,
+	transitions []providers.WorkItemLabelTransition,
+) error {
+	active := activeReadyTimes(readyLabel, transitions)
 	for i := range items {
-		if !items[i].HasLabel(readyLabel) ||
-			(items[i].State != "" && !strings.EqualFold(items[i].State, "open")) {
+		if !needsReadyTime(items[i], readyLabel) {
 			continue
 		}
 		readyAt, ok := active[items[i].ID]
@@ -1036,8 +1060,15 @@ func annotateBacklogReadyTimes(
 		if !items[i].HasLabel(readyLabel) {
 			continue
 		}
-		// Health skips ADO's per-item update walk; ChangedDate is a conservative
-		// timestamp for the current ready cohort, not a provider transition.
+		// Health skips ADO's per-item update walk on purpose (#5960 decision):
+		// ADO has no repository-wide label-event feed, so an exact ready time
+		// costs one paged GET workItems/{id}/updates walk per ready item on
+		// every health cycle, against the shared TSTU budget, for a metric
+		// that only trends. System.ChangedDate is used instead. It is never
+		// earlier than the item's ready-add, so the age is a lower bound:
+		// any later edit to the item (a comment, a tag, a field) restarts
+		// it. Claim-time ready ages (backlog-query) do walk the history and
+		// are exact. docs/guides/ado-limitations.md states this.
 		if items[i].UpdatedAt == nil {
 			return fmt.Errorf("ADO work item %s has %q but no ChangedDate", items[i].ID, readyLabel)
 		}
