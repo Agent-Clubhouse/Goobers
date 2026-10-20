@@ -145,6 +145,19 @@ func TestTraceDefaultTextShowsContinuationLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	db, err := rollup.Open(instance.NewLayout(root).TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{sourceID, continuationID} {
+		if err := db.IngestRun(t.Context(), filepath.Join(instance.NewLayout(root).RunsDir(), id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		runID string
 		want  []string
@@ -1997,9 +2010,20 @@ func TestTraceShowsRepassCount(t *testing.T) {
 			if !strings.Contains(stdout.String(), "\nlast activity: ") {
 				t.Fatalf("trace stdout missing last activity: %q", stdout.String())
 			}
-			if !strings.Contains(stdout.String(), "\n"+tt.want+"\nevents:") {
-				t.Fatalf("trace stdout missing repass header %q after phase: %q", tt.want, stdout.String())
+			wantHeaders := "\n" + tt.want + "continuations: incomplete (lineage index unavailable or awaiting journal ingestion)\n\nevents:"
+			if !strings.Contains(stdout.String(), wantHeaders) {
+				t.Fatalf("trace stdout missing ordered repass and incomplete-lineage headers %q: %q", wantHeaders, stdout.String())
 			}
 		})
+	}
+}
+
+func TestPrintRunLineageMarksPartialPagesAndHistory(t *testing.T) {
+	var output bytes.Buffer
+	printRunLineage(&output, &readservice.RunLineage{HistoricalRepassCountPartial: true, ContinuationsIncomplete: true, ContinuationsTruncated: true, ContinuationsNextCursor: "child-049"})
+	for _, want := range []string{"history: partial", "continuations: incomplete", "next cursor=child-049"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q: %s", want, output.String())
+		}
 	}
 }
