@@ -11,7 +11,7 @@ import (
 func TestImageArtifactRejectsSymlinkFilesAndParents(t *testing.T) {
 	target := Target{"linux", "amd64"}
 	data := finalArchiveBytes(t, target, []archiveEntry{{name: "goobers", mode: 0755, data: []byte("binary")}})
-	for _, name := range []string{"SHA256SUMS", target.archiveName("v0.4.0-rc.1")} {
+	for _, name := range []string{"SHA256SUMS", target.archiveName("v0.6.0-rc.1")} {
 		directory := finalArchiveFixture(t, target, data)
 		original := filepath.Join(directory, name)
 		if err := os.Rename(original, original+".real"); err != nil {
@@ -20,7 +20,7 @@ func TestImageArtifactRejectsSymlinkFilesAndParents(t *testing.T) {
 		if err := os.Symlink(original+".real", original); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil {
+		if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil {
 			t.Fatalf("symlink artifact %s accepted", name)
 		}
 	}

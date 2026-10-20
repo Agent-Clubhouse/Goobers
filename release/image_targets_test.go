@@ -68,7 +68,7 @@ func TestReleaseImageSubsetPreservesFullArchiveMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, target := range DefaultTargets {
-		archived, err := readFinalArchiveBinary(filepath.Join(root, "assets"), "v0.4.0-rc.1", target)
+		archived, err := readFinalArchiveBinary(filepath.Join(root, "assets"), "v0.6.0-rc.1", target)
 		if err != nil {
 			t.Fatalf("archive %s: %v", target, err)
 		}
@@ -108,7 +108,7 @@ func TestReleaseImageSubsetUsesOnlySelectedNativePlatform(t *testing.T) {
 		t.Fatalf("selected native Linux target must build exactly three families: %v", engine.images)
 	}
 	for _, target := range DefaultTargets {
-		if _, err := os.Stat(filepath.Join(root, "assets", target.archiveName("v0.4.0-rc.1"))); err != nil {
+		if _, err := os.Stat(filepath.Join(root, "assets", target.archiveName("v0.6.0-rc.1"))); err != nil {
 			t.Fatalf("archive target %s was omitted: %v", target, err)
 		}
 	}
@@ -122,7 +122,7 @@ func TestReleaseImageSubsetFailureKeepsBatchHidden(t *testing.T) {
 	if err := run(args, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "build invalid/arch failed") {
 		t.Fatalf("expected later archive failure: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "assets", "goobers_v0.4.0-rc.1_linux_arm64.tar.gz")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "assets", "goobers_v0.6.0-rc.1_linux_arm64.tar.gz")); err != nil {
 		t.Fatalf("selected archive must succeed before the later failure: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(root, "images")); !errors.Is(err, os.ErrNotExist) {

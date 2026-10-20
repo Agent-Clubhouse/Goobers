@@ -73,7 +73,7 @@ func TestReleasePreparesWindowsImageContextFromArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	directory := filepath.Join(root, "images", "windows-amd64")
-	archive, err := zip.OpenReader(filepath.Join(root, "assets", "goobers_v0.4.0-rc.1_windows_amd64.zip"))
+	archive, err := zip.OpenReader(filepath.Join(root, "assets", "goobers_v0.6.0-rc.1_windows_amd64.zip"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestReleasePreparesWindowsImageContextFromArchive(t *testing.T) {
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		t.Fatal(err)
 	}
-	want := imageContextMetadata{1, "goobers-base-build-inputs", "v0.4.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z", "windows/amd64"}
+	want := imageContextMetadata{1, "goobers-base-build-inputs", "v0.6.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z", "windows/amd64"}
 	if metadata != want {
 		t.Fatalf("metadata = %+v, want %+v", metadata, want)
 	}
@@ -148,7 +148,7 @@ func assertWindowsImageBinary(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stamp := range []string{"v0.4.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z"} {
+	for _, stamp := range []string{"v0.6.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z"} {
 		if !bytes.Contains(data, []byte(stamp)) {
 			t.Fatalf("%s missing linked build stamp %s", path, stamp)
 		}

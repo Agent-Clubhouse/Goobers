@@ -341,7 +341,7 @@ func TestImageBuildPreflightProtectsPlatformsAndExistingTags(t *testing.T) {
 	for _, scenario := range []string{"other architecture", "existing tag"} {
 		t.Run(scenario, func(t *testing.T) {
 			engine := useFakeImageEngine(t, Target{"linux", "arm64"})
-			opts := options{buildImages: true, imageContexts: "images", imagePrefix: "local-test", version: "v0.4.0-rc.1", commit: "abcdef0", targets: []Target{{"linux", "arm64"}}}
+			opts := options{buildImages: true, imageContexts: "images", imagePrefix: "local-test", version: "v0.6.0-rc.1", commit: "abcdef0", targets: []Target{{"linux", "arm64"}}}
 			if scenario == "other architecture" {
 				opts.targets = []Target{{"linux", "amd64"}}
 			} else {
@@ -370,7 +370,7 @@ func TestDefaultReleaseDoesNotContactDocker(t *testing.T) {
 func TestLocalImageOptionsRequireExplicitSafeInputs(t *testing.T) {
 	for _, scenario := range []string{"missing contexts", "missing prefix", "tagged prefix", "uppercase prefix", "nonhex commit", "oversized tag", "prefix without build"} {
 		t.Run(scenario, func(t *testing.T) {
-			opts := options{buildImages: true, imageContexts: "images", imagePrefix: "local-test", version: "v0.4.0-rc.1", commit: "abcdef0", targets: []Target{{"linux", "arm64"}}}
+			opts := options{buildImages: true, imageContexts: "images", imagePrefix: "local-test", version: "v0.6.0-rc.1", commit: "abcdef0", targets: []Target{{"linux", "arm64"}}}
 			switch scenario {
 			case "missing contexts":
 				opts.imageContexts = ""
@@ -400,7 +400,7 @@ func TestVerifyBuiltImageRefusesStampAndBaseDrift(t *testing.T) {
 	id := "sha256:" + strings.Repeat("a", 64)
 	description := dockerImageDescription{ID: id, OS: "linux", Architecture: "arm64"}
 	description.Config.User = "65532:65532"
-	metadata := imageContextMetadata{1, "goobers-base-build-inputs", "v0.4.0-rc.1", "abcdef0", "2026-09-07T12:00:00Z", "linux/arm64"}
+	metadata := imageContextMetadata{1, "goobers-base-build-inputs", "v0.6.0-rc.1", "abcdef0", "2026-09-07T12:00:00Z", "linux/arm64"}
 	engine.metadata[id] = metadata
 	if _, err := verifyBuiltImage(description, "goobers-base", "local-test/base", t.TempDir(), metadata); err == nil || !strings.Contains(err.Error(), "mismatched release stamp") {
 		t.Fatalf("stamp drift was accepted: %v", err)
