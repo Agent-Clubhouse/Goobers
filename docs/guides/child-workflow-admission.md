@@ -151,6 +151,15 @@ selected separately by self-only instance configuration, without extra flags.
 Public opt-in remains gated pending
 the complete supported parent/child journey below.
 
+Windows trusted-local child execution remains **unqualified preview** until the
+Windows runtime custody tests execute successfully; a cross-GOOS build is only
+compile qualification. Strict workspace launches use a Job Object that forbids
+breakaway before the suspended root starts. Stop/join must observe that exact
+Job's active-process count reach zero after termination. Missing custody,
+accounting errors, or timeout refuse snapshot and handoff acknowledgement;
+successful process cancellation alone is insufficient. This primitive does not
+by itself activate the trusted-local child backend.
+
 Each physical attempt receives a separately signed generated-child identity
 bound to its run and immutable execution contract. Its dedicated HTTP owners
 permit only declared artifacts, model credentials under current policy, bounded

@@ -38,26 +38,17 @@ func (t *Tree) StopAndWait(ctx context.Context) error {
 	if err := t.kill(); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
+	return waitForQuiescence(ctx, func() (bool, error) {
 		waiting := false
 		for _, process := range identities {
 			present, err := processIdentityPresent(process, Alive, StartTime)
 			if err != nil {
-				return err
+				return false, err
 			}
 			waiting = waiting || present
 		}
-		if !waiting {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("workspace writers did not stop: %w", ctx.Err())
-		case <-ticker.C:
-		}
-	}
+		return !waiting, nil
+	})
 }
 
 func processIdentityPresent(process processIdentity, alive func(int) bool, startTime func(int) (time.Time, bool)) (bool, error) {

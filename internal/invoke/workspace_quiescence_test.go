@@ -32,3 +32,16 @@ func TestWorkspaceQuiescenceRefusesUnverifiedTermination(t *testing.T) {
 		t.Fatal("ordinary invocations changed behavior")
 	}
 }
+
+func TestWorkspaceQuiescenceRequiredBeforeLaunch(t *testing.T) {
+	if RequiresWorkspaceQuiescence(t.Context()) {
+		t.Fatal("ordinary invocation requires custody")
+	}
+	ctx, proof := WithWorkspaceQuiescence(t.Context())
+	if !RequiresWorkspaceQuiescence(ctx) {
+		t.Fatal("strict invocation not marked before launch")
+	}
+	if proof.Verify() == nil {
+		t.Fatal("querying custody requirement fabricated writer acknowledgement")
+	}
+}

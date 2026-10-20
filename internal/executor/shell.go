@@ -948,7 +948,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	tree, memoryBound, err := proc.StartBounded(cmd, e.StageMemoryLimitBytes, e.AllowStageMemoryAddressSpaceFallback)
+	tree, memoryBound, err := proc.StartBounded(cmd, e.StageMemoryLimitBytes, e.AllowStageMemoryAddressSpaceFallback, proc.StartOptions{RequireQuiescence: invoke.RequiresWorkspaceQuiescence(runCtx)})
 	if err != nil {
 		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{

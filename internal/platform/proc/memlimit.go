@@ -127,15 +127,15 @@ func unenforcedBound(detail string) *MemoryBound {
 // MechanismNone with the reason, and the stage runs unbounded as it always
 // has. Failing the stage instead would turn a hardening feature into an
 // outage on every host without a delegated cgroup.
-func StartBounded(cmd *exec.Cmd, maxBytes uint64, allowRlimitFallback bool) (*Tree, *MemoryBound, error) {
+func StartBounded(cmd *exec.Cmd, maxBytes uint64, allowRlimitFallback bool, options ...StartOptions) (*Tree, *MemoryBound, error) {
 	if maxBytes == 0 {
-		return startUnbounded(cmd, "no bound requested")
+		return startUnbounded(cmd, "no bound requested", options...)
 	}
-	return startBounded(cmd, maxBytes, allowRlimitFallback)
+	return startBounded(cmd, maxBytes, allowRlimitFallback, options...)
 }
 
-func startUnbounded(cmd *exec.Cmd, detail string) (*Tree, *MemoryBound, error) {
-	tree, err := Start(cmd)
+func startUnbounded(cmd *exec.Cmd, detail string, options ...StartOptions) (*Tree, *MemoryBound, error) {
+	tree, err := Start(cmd, options...)
 	if err != nil {
 		return nil, nil, err
 	}
