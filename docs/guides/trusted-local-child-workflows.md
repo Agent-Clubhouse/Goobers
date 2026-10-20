@@ -72,6 +72,10 @@ GOOS=windows GOARCH=amd64 make build
 ```
 
 A cross-build does not qualify runtime writer custody. Windows local child
-execution remains **unqualified preview** until the strict Job Object runtime
-test passes on Windows. Missing Job custody or unobservable process accounting
-must fail closed; a dead root process does not establish an empty process tree.
+execution remains **unqualified preview**, and strict workspace custody stays
+refused. An empty non-breakaway Job proves membership only: WMI
+(`Win32_Process.Create`), WSL brokers, COM and service launches can escape it.
+`ErrQuiescenceJobMembershipOnly` cannot acknowledge workspace custody, even after
+the Windows membership tests pass. Missing Job custody or unobservable accounting
+also fails closed. No preview override is provided; any future opt-in must
+explicitly accept these escapes. Ordinary local-mode selection cannot authorize it.

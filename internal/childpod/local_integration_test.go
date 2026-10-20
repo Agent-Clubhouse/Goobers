@@ -5,8 +5,11 @@ package childpod
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -82,5 +86,60 @@ func TestIntegrationLocalExecutorReturnsRealProcessTreeAndFreshCheckout(t *testi
 		if _, err := recovery.CaptureChildResult(t.Context(), host, r.Identity.RunID, fork, r.StartedAt, r.StartedAt.Add(24*time.Hour)); err != nil {
 			t.Fatalf("return lost original fork lineage: %v", err)
 		}
+	}
+}
+
+func TestIntegrationLocalExecutorCancellationJoinsDescendantBeforeReturn(t *testing.T) {
+	testdep.Require(t, "sh", "sleep")
+	request := requestFixture()
+	blobs, err := blobstore.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var descendant int
+	returned := false
+	executor := LocalExecutor{Root: t.TempDir(), Blobs: blobs, Recorder: &recordFake{}, BeforeStart: func(context.Context, Request, Contract, string) error { return nil }, Returned: func(context.Context, Request, journal.Ref) error {
+		if descendant == 0 || proc.Alive(descendant) {
+			return errors.New("descendant still alive at workspace return")
+		}
+		returned = true
+		return nil
+	}}
+	ctx, err := credentials.WithChildCeiling(t.Context(), request.Ceiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ctx, proof := invoke.WithWorkspaceQuiescence(ctx)
+	_, err = executor.Execute(ctx, request, func(ctx context.Context, path string) (dispatcher.SurrenderedResult, error) {
+		done := make(chan error, 1)
+		go func() {
+			_, err := (harness.ExecProcessRunner{}).Run(ctx, harness.ProcessRequest{Command: []string{"/bin/sh", "-c", "sleep 300 & echo $! > descendant.pid; wait"}, Dir: path, Env: credentials.TrustedLocalBaseEnvironment(ctx, os.Environ()), Timeout: 30 * time.Second})
+			done <- err
+		}()
+		deadline := time.NewTimer(10 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for descendant == 0 {
+			select {
+			case err := <-done:
+				return dispatcher.SurrenderedResult{}, fmt.Errorf("process exited before descendant: %v", err)
+			case <-deadline.C:
+				cancel()
+				<-done
+				return dispatcher.SurrenderedResult{}, errors.New("descendant did not start")
+			case <-tick.C:
+				data, _ := os.ReadFile(filepath.Join(path, "descendant.pid"))
+				descendant, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			}
+		}
+		cancel()
+		<-done
+		return dispatcher.SurrenderedResult{}, context.Canceled
+	})
+	if !errors.Is(err, context.Canceled) || proof.Verify() != nil || !returned {
+		t.Fatalf("cancellation lost termination/return proof: err=%v proof=%v returned=%v", err, proof.Verify(), returned)
 	}
 }
