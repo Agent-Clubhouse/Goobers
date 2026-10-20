@@ -1,0 +1,10 @@
+{"kind":"header","format":"clubhouse-chat-fixture","version":1,"protocol":"copilot-sdk","source":"synthetic","synthesized":["all events from SDK v1.0.16 generated types"],"description":"Agent turn, tools, usage, schema drift and session idle"}
+{"from":"cli","msg":{"type":"assistant.turn_start","data":{"turnId":"t1"}}}
+{"from":"cli","msg":{"type":"tool.execution_start","data":{"toolCallId":"tool-1","toolName":"view","arguments":{"secret":"not emitted"}}}}
+{"from":"cli","msg":{"type":"tool.execution_complete","data":{"toolCallId":"tool-1","success":true}}}
+{"from":"cli","msg":{"type":"assistant.message_delta","data":{"messageId":"m1","deltaContent":"ok"}}}
+{"from":"cli","msg":{"type":"assistant.message","data":{"messageId":"m1","content":"ok"}}}
+{"from":"cli","msg":{"type":"assistant.usage","data":{"inputTokens":10,"outputTokens":2}}}
+{"from":"cli","msg":{"type":"assistant.turn_end","data":{"turnId":"t1"}}}
+{"from":"cli","msg":{"type":"future.protocol","data":{"secret":"never log RPC params"}}}
+{"from":"cli","msg":{"type":"session.idle","data":{}}}

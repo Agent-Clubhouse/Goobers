@@ -42,6 +42,9 @@ func (r *Registry) Start(ctx context.Context, provider string, o StartOptions) (
 			}
 			a.ErrorCode = p.ErrorCode
 			attempts = append(attempts, a)
+			if errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+				return nil, attempts, err
+			}
 			continue
 		}
 		begin = time.Now()
