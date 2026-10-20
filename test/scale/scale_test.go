@@ -534,6 +534,8 @@ func TestMeasureLargeScale(t *testing.T) {
 		t.Fatalf("%s=%q must be a positive float multiplier", scaleLargeEnv, raw)
 	}
 
+	progress := startScaleProgress(t)
+	progress("generate:start")
 	spec := scaledSpec(t.TempDir(), mult)
 	t.Logf("generating %d runs (+%d orphan dirs) + %d scheduler events at %g× the measured live instance",
 		spec.Runs, spec.OrphanDirs, spec.SchedulerEvents, mult)
@@ -541,10 +543,12 @@ func TestMeasureLargeScale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	m, err := measure(gen.Layout, gen, largeScaleSamples, fsyncDisabled())
+	progress("generate:complete")
+	m, err := measureWithProgress(gen.Layout, gen, largeScaleSamples, fsyncDisabled(), progress)
 	if err != nil {
 		t.Fatalf("measure: %v", err)
 	}
+	progress("measure:complete")
 	writeReport(&testLogWriter{t: t}, m)
 
 	// A minimal sanity bound that holds regardless of scale: the indexed page
