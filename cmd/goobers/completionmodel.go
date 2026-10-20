@@ -506,6 +506,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the claim"},
 		{name: "provider", takesArg: true, desc: "Provider owning the claim"},
 		{name: "force", desc: "Release a claim held by a non-terminal run"},
+		{name: "publication-custody-reason", takesArg: true, desc: "Explicitly override the named publication lock with an audited reason"},
 	},
 	"trace": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},

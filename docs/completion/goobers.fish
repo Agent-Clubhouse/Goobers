@@ -344,6 +344,7 @@ complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subc
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l gaggle -r -d 'Gaggle owning the claim'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l provider -r -d 'Provider owning the claim'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l force -d 'Release a claim held by a non-terminal run'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l publication-custody-reason -r -d 'Explicitly override the named publication lock with an audited reason'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l api -r -d 'Daemon API base URL for a remote daemon'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l follow -d 'Stream events until the run reaches a terminal phase'
