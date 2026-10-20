@@ -2344,10 +2344,17 @@ jobs:
         if: always()
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
-          CI_CANCELLED: ${{ cancelled() }}
           CI_NEEDS: ${{ toJSON(needs) }}
         # Selected jobs require success; only classified, explicitly excluded
         # backend jobs may be skipped. Missing profiles and cancellation fail.
+        run: go run ./test/cipolicy gate
+
+      # Status functions are supported in if, not env. Keep a final veto even
+      # when dependencies had already succeeded before manual cancellation.
+      - name: Reject cancelled validation
+        if: cancelled()
+        env:
+          CI_CANCELLED: "true"
         run: go run ./test/cipolicy gate
 
   sandbox:

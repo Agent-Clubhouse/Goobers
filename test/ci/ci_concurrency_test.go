@@ -98,9 +98,18 @@ func TestCICancellationCannotSkipCurrentHeadRequiredCheck(t *testing.T) {
 	}
 	gate := aggregate.step(t, "Verify required gates")
 	if aggregate.Name != pinnedRequiredCheck || aggregate.ContinueOnError ||
-		gate.Run != "go run ./test/cipolicy gate" || gate.If != "always()" || gate.ContinueOnError ||
-		gate.Env["CI_CANCELLED"] != "${{ cancelled() }}" {
+		gate.Run != "go run ./test/cipolicy gate" || gate.If != "always()" || gate.ContinueOnError {
 		t.Fatal("the pinned current-SHA check must retain the unconditional fail-closed gate")
+	}
+	veto := aggregate.step(t, "Reject cancelled validation")
+	if veto.If != "cancelled()" || veto.ContinueOnError || veto.Env["CI_CANCELLED"] != "true" ||
+		veto.Run != "go run ./test/cipolicy gate" || aggregate.Steps[len(aggregate.Steps)-1].Name != veto.Name {
+		t.Fatal("a final cancellation veto must reject an otherwise successful aggregate")
+	}
+	for _, cancelled := range []bool{false, true} {
+		if got := truthy(evalExpr(t, veto.If, nil, true, cancelled)); got != cancelled {
+			t.Fatal("cancellation veto does not follow workflow cancellation")
+		}
 	}
 }
 
@@ -139,6 +148,25 @@ func TestMainEscalationRetainsLatestCommitSignal(t *testing.T) {
 					t.Errorf("latest=%v result=%s step=%s got=%v want=%v", latest, result, name, got, want)
 				}
 			}
+		}
+	}
+}
+
+func TestCIStatusFunctionsStayOutOfEnvironmentExpressions(t *testing.T) {
+	t.Parallel()
+	w := loadCIWorkflow(t)
+	check := func(env map[string]string) {
+		for key, value := range env {
+			if strings.Contains(value, "${{") && hasStatusFunction(value) {
+				t.Errorf("env %s uses a status function outside an if condition: %s", key, value)
+			}
+		}
+	}
+	check(w.Env)
+	for _, job := range w.Jobs {
+		check(job.Env)
+		for _, step := range job.Steps {
+			check(step.Env)
 		}
 	}
 }

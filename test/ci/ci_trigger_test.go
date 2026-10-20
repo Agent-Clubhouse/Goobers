@@ -415,7 +415,7 @@ func TestCIScopeUsesCompleteDiffAndDoesNotSavePartialCaches(t *testing.T) {
 	}
 	gate := w.Jobs["required-ci"].step(t, "Verify required gates")
 	if gate.Run != "go run ./test/cipolicy gate" || gate.Env["CI_NEEDS"] != "${{ toJSON(needs) }}" ||
-		gate.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" || gate.Env["CI_CANCELLED"] != "${{ cancelled() }}" || gate.If != "always()" || gate.ContinueOnError {
+		gate.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" || gate.If != "always()" || gate.ContinueOnError {
 		t.Fatal("aggregate must verify every dependency result with the event-aware policy")
 	}
 }
