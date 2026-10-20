@@ -226,6 +226,28 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.displayName` | 3.0 | ga | preview | dev |
 | `gaggle.spec.enabled` | 3.0 | ga | preview | v0.4.0 |
 | `gaggle.spec.health` | 3.0 | ga | preview | dev |
+| `gaggle.spec.interactive` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.authorities.brokerRef` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.authorities.name` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.authorities.provider` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.authorityRefs` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.childWorkflows.commandCapabilities` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.childWorkflows.enabled` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.defaultExecutionMode` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.description` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.displayName` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.enabled` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.executionModes` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.gooberRef` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.mode` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.name` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.session.leaseSeconds` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.session.maxActive` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.session.maxActivePerOwner` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.session.maxChildren` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.session.maxTurnSeconds` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.tools` | 3.0 | preview | preview | dev |
+| `gaggle.spec.interactive.surfaces.workflows` | 3.0 | preview | preview | dev |
 | `gaggle.spec.isolation.identityRef` | 3.0 | ga | preview | dev |
 | `gaggle.spec.isolation.namespace` | 3.0 | ga | preview | dev |
 | `gaggle.spec.isolation.serviceAccount` | 3.0 | ga | preview | dev |
@@ -678,12 +700,12 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 2.0 -> 3.0
 
-- Added: `gaggle.spec.backprop.mode`, `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.capabilities.privilege.windows-admin`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.capabilities.privilege.windows-admin`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.capabilities.privilege.windows-admin`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`, `workflow.spec.backprop.enabled`, `workflow.spec.backprop.granularity`, `workflow.spec.backprop.mode`, `workflow.spec.backprop.version`
+- Added: `gaggle.spec.backprop.mode`, `gaggle.spec.interactive`, `gaggle.spec.interactive.authorities.brokerRef`, `gaggle.spec.interactive.authorities.name`, `gaggle.spec.interactive.authorities.provider`, `gaggle.spec.interactive.surfaces.authorityRefs`, `gaggle.spec.interactive.surfaces.childWorkflows.commandCapabilities`, `gaggle.spec.interactive.surfaces.childWorkflows.enabled`, `gaggle.spec.interactive.surfaces.defaultExecutionMode`, `gaggle.spec.interactive.surfaces.description`, `gaggle.spec.interactive.surfaces.displayName`, `gaggle.spec.interactive.surfaces.enabled`, `gaggle.spec.interactive.surfaces.executionModes`, `gaggle.spec.interactive.surfaces.gooberRef`, `gaggle.spec.interactive.surfaces.mode`, `gaggle.spec.interactive.surfaces.name`, `gaggle.spec.interactive.surfaces.session.leaseSeconds`, `gaggle.spec.interactive.surfaces.session.maxActive`, `gaggle.spec.interactive.surfaces.session.maxActivePerOwner`, `gaggle.spec.interactive.surfaces.session.maxChildren`, `gaggle.spec.interactive.surfaces.session.maxTurnSeconds`, `gaggle.spec.interactive.surfaces.tools`, `gaggle.spec.interactive.surfaces.workflows`, `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.capabilities.privilege.windows-admin`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.capabilities.privilege.windows-admin`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.capabilities.privilege.windows-admin`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`, `workflow.spec.backprop.enabled`, `workflow.spec.backprop.granularity`, `workflow.spec.backprop.mode`, `workflow.spec.backprop.version`
 - Removed: `gaggle.spec.requiredCapabilities`, `gaggle.spec.sandbox`, `stage.run.network.none`, `task.experiment`, `task.requiredCapabilities`
 - Level changes: none
 
 ### 3.0 -> 3.1
 
 - Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`, `workflow.spec.maps`, `workflow.spec.maps.bindings`, `workflow.spec.maps.failurePolicy`, `workflow.spec.maps.itemTimeoutSeconds`, `workflow.spec.maps.join`, `workflow.spec.maps.maxConcurrent`, `workflow.spec.maps.onFailure`, `workflow.spec.maps.source`, `workflow.spec.maps.task`, `workflow.spec.parallels.branches.optional`, `workflow.spec.parallels.selection`, `workflow.spec.parallels.selection.source`
-- Removed: none
+- Removed: `gaggle.spec.interactive`, `gaggle.spec.interactive.authorities.brokerRef`, `gaggle.spec.interactive.authorities.name`, `gaggle.spec.interactive.authorities.provider`, `gaggle.spec.interactive.surfaces.authorityRefs`, `gaggle.spec.interactive.surfaces.childWorkflows.commandCapabilities`, `gaggle.spec.interactive.surfaces.childWorkflows.enabled`, `gaggle.spec.interactive.surfaces.defaultExecutionMode`, `gaggle.spec.interactive.surfaces.description`, `gaggle.spec.interactive.surfaces.displayName`, `gaggle.spec.interactive.surfaces.enabled`, `gaggle.spec.interactive.surfaces.executionModes`, `gaggle.spec.interactive.surfaces.gooberRef`, `gaggle.spec.interactive.surfaces.mode`, `gaggle.spec.interactive.surfaces.name`, `gaggle.spec.interactive.surfaces.session.leaseSeconds`, `gaggle.spec.interactive.surfaces.session.maxActive`, `gaggle.spec.interactive.surfaces.session.maxActivePerOwner`, `gaggle.spec.interactive.surfaces.session.maxChildren`, `gaggle.spec.interactive.surfaces.session.maxTurnSeconds`, `gaggle.spec.interactive.surfaces.tools`, `gaggle.spec.interactive.surfaces.workflows`
 - Level changes: none

@@ -110,6 +110,116 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.interactive",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.authorities.brokerRef",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.authorities.name",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.authorities.provider",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.authorityRefs",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.childWorkflows.commandCapabilities",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.childWorkflows.enabled",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.defaultExecutionMode",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.description",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.displayName",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.enabled",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.executionModes",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.gooberRef",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.mode",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.name",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.session.leaseSeconds",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.session.maxActive",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.session.maxActivePerOwner",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.session.maxChildren",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.session.maxTurnSeconds",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.tools",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.interactive.surfaces.workflows",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.isolation.identityRef",
       "stability": "ga",
       "sinceVersion": "dev"
