@@ -176,7 +176,9 @@ describe("interactive workspace", () => {
     expect(await screen.findByText("Steering accepted · awaiting delivery")).toBeInTheDocument();
     const command = vi.mocked(fx.client.command).mock.calls[0][1];
     act(() => fx.event({sequence: 3, sessionId: "s-1", turnId: "t1", commandId: command.commandId, type: "steering.delivered", time: turn.startedAt, data: {}}));
-    expect(screen.getByText("Steering delivered")).toBeInTheDocument();
+    expect(await screen.findByText("Steering delivered")).toBeInTheDocument();
+    expect(screen.getByText("Focus on tests")).toBeInTheDocument();
+    expect(screen.getByText("Delivered")).toBeInTheDocument();
   });
   it("refreshes only a definitely rejected sequence while preserving the steering intent and fence", async () => {
     const turn = { id: "t1", text: "Wait", status: "running", attempt: 1, fence: 1, startedAt: "2026-10-17T09:00:00Z" };
@@ -234,7 +236,7 @@ describe("interactive workspace", () => {
     const fx = fixture(makeSession({children: [{id: "child-1", prompt: "Review tests", status: "proposed", requestedAt: "2026-10-17T09:00:00Z"}]}));
     render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
     fireEvent.click(await screen.findByRole("button", {name: "Review changes"}));
-    expect(await screen.findByLabelText("Cumulative diff")).toHaveTextContent("+fixed");
+    expect(await screen.findByLabelText("Diff for Changes 1")).toHaveTextContent("+fixed");
     fireEvent.click(screen.getByRole("tab", {name: /Children/}));
     fireEvent.click(screen.getByRole("button", {name: "Run child"}));
     await waitFor(() => expect(fx.client.command).toHaveBeenCalledWith("s-1", expect.objectContaining({type: "child.review", childId: "child-1", decision: "approve"})));
