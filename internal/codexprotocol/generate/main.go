@@ -56,7 +56,7 @@ func generate(binary, out string, check bool) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	if result, err := exec.Command(binary, "app-server", "generate-json-schema", "--out", dir).CombinedOutput(); err != nil {
 		return fmt.Errorf("generate schemas: %w: %s", err, result)
 	}
@@ -72,7 +72,7 @@ func generate(binary, out string, check bool) error {
 			return err
 		}
 		canonical, _ := json.Marshal(s)
-		fmt.Fprintf(hash, "%s\n%s\n", name, canonical)
+		_, _ = fmt.Fprintf(hash, "%s\n%s\n", name, canonical)
 		if name == "ServerNotification" || name == "ServerRequest" {
 			g.methods = append(g.methods, methodList(name, s))
 			continue
@@ -114,7 +114,7 @@ func generate(binary, out string, check bool) error {
 	if check {
 		old, err := os.ReadFile(out)
 		if err != nil || !bytes.Equal(old, data) {
-			return fmt.Errorf("Codex %s schema drift: run go run ./internal/codexprotocol/generate", version)
+			return fmt.Errorf("codex %s schema drift: run go run ./internal/codexprotocol/generate", version)
 		}
 		return nil
 	}
