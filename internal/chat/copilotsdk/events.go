@@ -65,6 +65,18 @@ func (s *session) onEvent(e sdk.SessionEvent) {
 
 func (s *session) finishTurn(aborted bool) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sendPending {
+		// SDK events may arrive before the Send RPC response. Preserve idle
+		// boundaries until admission is known so rejection cannot strand busy.
+		s.cancelRequestsLocked()
+		s.pendingIdle = append(s.pendingIdle, aborted)
+		return
+	}
+	s.finishTurnLocked(aborted)
+}
+
+func (s *session) finishTurnLocked(aborted bool) {
 	active := s.busy
 	reason := "end_turn"
 	if aborted || s.interrupted {
@@ -79,7 +91,6 @@ func (s *session) finishTurn(aborted bool) {
 	}
 	s.busy = !settled
 	s.cancelRequestsLocked()
-	s.mu.Unlock()
 	if active {
 		s.emit("turn_ended", map[string]any{"reason": reason, "settled": settled}, "")
 	}
@@ -97,4 +108,15 @@ func (s *session) emitUsage(d *rpc.AssistantUsageData) {
 		data["cacheReadTokens"] = *d.CacheReadTokens
 	}
 	s.emit("usage", data, "")
+}
+
+func (s *session) flushPendingIdle() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sendPending = false
+	pending := s.pendingIdle
+	s.pendingIdle = nil
+	for _, aborted := range pending {
+		s.finishTurnLocked(aborted)
+	}
 }
