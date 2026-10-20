@@ -48,23 +48,30 @@ func newExecutionGenerationRetainer(layout instance.Layout) (*configgeneration.R
 	if err != nil {
 		return nil, err
 	}
-	return &configgeneration.Retainer{Store: store, DurablePins: func(ctx context.Context) (map[string]bool, error) {
-		return retainedExecutionGenerationPins(ctx, instance.NewLayout(layout.Root))
-	}}, nil
+	return &configgeneration.Retainer{Store: store, DurablePins: executionGenerationPinsReader(instance.NewLayout(layout.Root))}, nil
+}
+
+// One cursor per store/retainer observes new journal appends without rereading
+// history on every Keep. It also invalidates on journal replacement/compaction.
+func executionGenerationPinsReader(layout instance.Layout) func(context.Context) (map[string]bool, error) {
+	applied := appliedExecutionGenerationReader(layout)
+	return func(ctx context.Context) (map[string]bool, error) {
+		generation, err := applied(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return retainedExecutionGenerationPinsWithApplied(ctx, layout, generation)
+	}
 }
 
 // A terminal journal can still be recoverable. Protect every retained identity;
 // journal retention, rather than an active-run registry, ends its ownership.
-func retainedExecutionGenerationPins(ctx context.Context, layout instance.Layout) (map[string]bool, error) {
+func retainedExecutionGenerationPinsWithApplied(ctx context.Context, layout instance.Layout, applied string) (map[string]bool, error) {
 	roots, err := layout.RunDirsContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	pins, err := retainedOrdinaryGenerationPins(ctx, layout)
-	if err != nil {
-		return nil, err
-	}
-	applied, err := lastAppliedExecutionGeneration(layout)
 	if err != nil {
 		return nil, err
 	}
@@ -272,9 +279,7 @@ func pinnedDirectEngineInput(ctx context.Context, layout instance.Layout, cfg *i
 	if err != nil {
 		return engine.RunInput{}, nil, err
 	}
-	store.DurablePins = func(ctx context.Context) (map[string]bool, error) {
-		return retainedExecutionGenerationPins(ctx, instance.NewLayout(layout.Root))
-	}
+	store.DurablePins = executionGenerationPinsReader(instance.NewLayout(layout.Root))
 	archive, generation, err := configgeneration.CaptureForInstance(ctx, layout.ConfigDir(), owner)
 	if err != nil {
 		return engine.RunInput{}, nil, err
