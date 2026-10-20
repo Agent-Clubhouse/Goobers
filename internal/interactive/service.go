@@ -388,23 +388,8 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 		receipt.TurnID = turnID
 		launch = &ExecutionRequest{SessionID: sessionID, TurnID: turnID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
 	case "steer":
-		if cmd.Delivery != "" && cmd.Delivery != "steer" && cmd.Delivery != "queued" && cmd.Delivery != "prompt" {
-			return receipt, problem(400, "invalid", "unknown steering delivery mode")
-		}
-		if cmd.SteeringMode != "" && cmd.SteeringMode != "interrupt-and-continue" {
-			return receipt, problem(400, "invalid", "unknown steering mode")
-		}
-		if (cmd.Delivery == "prompt") != (cmd.SteeringMode == "interrupt-and-continue") {
-			return receipt, problem(400, "invalid", "prompt delivery requires interrupt-and-continue")
-		}
-		if rec.Session.ExecutionMode == "local-tools" && (cmd.Delivery == "queued" || cmd.SteeringMode != "") {
-			return receipt, problem(409, "unsupported", "the demo supports immediate steering only")
-		}
-		if text == "" || cmd.TurnID == "" {
-			return receipt, problem(400, "invalid", "steering text and exact turnId are required")
-		}
-		if rec.Session.Status != "running" || rec.Session.ActiveTurnID != cmd.TurnID {
-			return receipt, problem(409, "stale_turn", "target turn is no longer active")
+		if err := validateSteeringCommand(cmd, text, rec.Session); err != nil {
+			return receipt, err
 		}
 		steerRun = s.active[sessionID][cmd.TurnID]
 		if steerRun == nil {
@@ -778,6 +763,29 @@ func (s *Service) checkControlLocked(owner, sessionID string) error {
 
 	if rec.Session.Status == "stopped" || rec.Session.Status == "stopping" || rec.Session.Status == "recovery_required" || rec.Session.CustodyPending || rec.Session.StopFencePending {
 		return problem(409, "invalid_state", "session control is fenced or awaiting recovery")
+	}
+	return nil
+}
+
+// validateSteeringCommand validates delivery intent and its active-turn target.
+func validateSteeringCommand(cmd Command, text string, session Session) error {
+	if cmd.Delivery != "" && cmd.Delivery != "steer" && cmd.Delivery != "queued" && cmd.Delivery != "prompt" {
+		return problem(400, "invalid", "unknown steering delivery mode")
+	}
+	if cmd.SteeringMode != "" && cmd.SteeringMode != "interrupt-and-continue" {
+		return problem(400, "invalid", "unknown steering mode")
+	}
+	if (cmd.Delivery == "prompt") != (cmd.SteeringMode == "interrupt-and-continue") {
+		return problem(400, "invalid", "prompt delivery requires interrupt-and-continue")
+	}
+	if session.ExecutionMode == "local-tools" && (cmd.Delivery == "queued" || cmd.SteeringMode != "") {
+		return problem(409, "unsupported", "the demo supports immediate steering only")
+	}
+	if text == "" || cmd.TurnID == "" {
+		return problem(400, "invalid", "steering text and exact turnId are required")
+	}
+	if session.Status != "running" || session.ActiveTurnID != cmd.TurnID {
+		return problem(409, "stale_turn", "target turn is no longer active")
 	}
 	return nil
 }
