@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Action } from "../ui/Action";
 
 // Composer-docked approvals and numbered provider options follow Clubhouse's
@@ -23,17 +23,34 @@ function optionKey(event: KeyboardEvent, count: number): number {
   return /^[1-9]$/.test(event.key) && Number(event.key) <= count ? Number(event.key) - 1 : -1;
 }
 interface CardProps { disabled: boolean; denyMessage?: boolean; onAnswer: (answer: ApprovalAnswer) => Promise<boolean> }
-export function PermissionCard({request, disabled, denyMessage, onAnswer}: CardProps & {request: PermissionRequest}) {
+function useResponseStatus(request: RequestBase) {
   const [status, setStatus] = useState<"idle" | "sending" | "accepted">("idle");
-  const sent = status !== "idle";
+  const responseSequence = useRef(request.responseSequence);
+  const attempt = useRef(0);
+  responseSequence.current = request.responseSequence;
   useEffect(() => { if (request.failure) setStatus("idle"); }, [request.failure, request.responseSequence]);
+  async function respond(send: () => Promise<boolean>) {
+    const currentAttempt = ++attempt.current;
+    const before = responseSequence.current;
+    setStatus("sending");
+    try {
+      const accepted = await send();
+      if (currentAttempt !== attempt.current) return;
+      // HTTP only proves admission. A newer durable event may already have
+      // rejected this response, so it owns the state even if HTTP arrives last.
+      setStatus(responseSequence.current !== before ? "idle" : accepted ? "accepted" : "idle");
+    } catch { if (currentAttempt === attempt.current) setStatus("idle"); }
+  }
+  return {status, respond};
+}
+export function PermissionCard({request, disabled, denyMessage, onAnswer}: CardProps & {request: PermissionRequest}) {
+  const {status, respond} = useResponseStatus(request);
+  const sent = status !== "idle";
   const [feedback, setFeedback] = useState("");
   const reviewable = request.preview.some(text => text.trim());
   async function choose(option: PermissionOption) {
     if (disabled || request.pending || sent || (option.optionId === "allow_once" && !reviewable)) return;
-    setStatus("sending");
-    try { setStatus(await onAnswer({type: "permission.respond", requestId: request.requestId, optionId: option.optionId, ...(denyMessage && option.optionId === "reject_once" && feedback.trim() ? {message: feedback.trim()} : {})}) ? "accepted" : "idle"); }
-    catch { setStatus("idle"); }
+    await respond(() => onAnswer({type: "permission.respond", requestId: request.requestId, optionId: option.optionId, ...(denyMessage && option.optionId === "reject_once" && feedback.trim() ? {message: feedback.trim()} : {})}));
   }
   return <section className="ix-approval-card" aria-label="Permission request" tabIndex={0} onKeyDown={event => {
     const index = optionKey(event, request.options.length);
@@ -50,7 +67,7 @@ export function PermissionCard({request, disabled, denyMessage, onAnswer}: CardP
     </Action>)}</div>
     {denyMessage && request.options.some(option => option.optionId === "reject_once") && <label>Deny with a message<input aria-label="Denial message" value={feedback} disabled={disabled || request.pending || sent} onChange={event => setFeedback(event.target.value)} /></label>}
     {feedback.trim() && <p>Number shortcuts are paused while you have unsent text. Choose Deny to send your message.</p>}
-    {status === "sending" && <p role="status">Sending response…</p>}
+    {status === "sending" && !request.pending && <p role="status">Sending response…</p>}
     {(status === "accepted" || request.pending) && <p role="status">Response accepted. Waiting for the driver to resolve this request.</p>}
   </section>;
 }
@@ -58,9 +75,8 @@ export function PermissionCard({request, disabled, denyMessage, onAnswer}: CardP
 export function QuestionCard({request, disabled, onAnswer}: CardProps & {request: QuestionRequest}) {
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [free, setFree] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState<"idle" | "sending" | "accepted">("idle");
+  const {status, respond} = useResponseStatus(request);
   const sent = status !== "idle";
-  useEffect(() => { if (request.failure) setStatus("idle"); }, [request.failure, request.responseSequence]);
   function choose(question: Question, id: string) {
     if (disabled || request.pending || sent) return;
     setFree(current => ({...current, [question.id]: ""}));
@@ -73,9 +89,7 @@ export function QuestionCard({request, disabled, onAnswer}: CardProps & {request
   const complete = request.questions.length > 0 && request.questions.every(question => resolved[question.id].length > 0);
   async function submit() {
     if (!complete || disabled || request.pending || sent) return;
-    setStatus("sending");
-    try { setStatus(await onAnswer({type: "question.answer", requestId: request.requestId, answers: resolved}) ? "accepted" : "idle"); }
-    catch { setStatus("idle"); }
+    await respond(() => onAnswer({type: "question.answer", requestId: request.requestId, answers: resolved}));
   }
   return <section className="ix-approval-card" aria-label="Question" tabIndex={0} onKeyDown={event => {
     const first = request.questions[0];
@@ -93,7 +107,7 @@ export function QuestionCard({request, disabled, onAnswer}: CardProps & {request
     </fieldset>)}
     {request.failure && <p role="alert">{request.failure}</p>}
     <Action disabled={!complete || disabled || request.pending || sent} onClick={() => void submit()}>Send answer</Action>
-    {status === "sending" && <p role="status">Sending answer…</p>}
+    {status === "sending" && !request.pending && <p role="status">Sending answer…</p>}
     {(status === "accepted" || request.pending) && <p role="status">Answer accepted. Waiting for the driver to resolve this request.</p>}
   </section>;
 }
