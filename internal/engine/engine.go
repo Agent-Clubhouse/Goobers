@@ -1055,6 +1055,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if err != nil {
 			return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
 		}
+		// Join completeness is host state; overwrite any subject output with
+		// the same key after flattening the automated inputs.
+		rec.staticJoinInputs(g.Name, env.Inputs)
 		ctx := stageActivityContext(ctx, env.Limits)
 		// An automated gate never dispatches a pod (podAttempt: 0, omitted).
 		rec.gateStarted(ctx, g, gatePolicyAttempts[g.Name]+1, 0)
@@ -1088,6 +1091,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			reviewerUpstream = ev.ReviewerPointers
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, reviewerUpstream, reviewerGoober)
+		rec.staticJoinInputs(g.Name, env.Inputs)
 		_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 		env.ReviewerMechanicalEscalationAllowed = gate.StructuredMechanicalEscalation(g)
 		env.InstructionAddendum = instructionAddendum

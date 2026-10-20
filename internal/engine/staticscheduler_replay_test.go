@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -33,9 +35,15 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 		}
 	})
 	c := server.Client()
-	for _, mode := range []string{"bounded", "budget", "timeout", "cancel", "legacy"} {
+	for _, mode := range []string{"bounded", "budget", "timeout", "cancel", "gate-join", "review-join", "legacy"} {
 		t.Run(mode, func(t *testing.T) {
 			in := schedulerInput("replay-scheduler-"+mode, 2)
+			if mode == "gate-join" {
+				in = gateJoinInput("replay-scheduler-"+mode, apiv1.EvaluatorAutomated)
+			}
+			if mode == "review-join" {
+				in = gateJoinInput("replay-scheduler-"+mode, apiv1.EvaluatorAgentic)
+			}
 			if mode == "budget" {
 				in.Limit = 3
 			}
@@ -73,8 +81,15 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 					case <-timer.C:
 					}
 				}
-				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"value": "frozen-root"}}, nil
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"value": "frozen-root", runner.BranchCompletenessInput: "FORGED"}}, nil
 			}}}
+			acts.Auto = automatedFunc(func(_ context.Context, _ apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
+				return "pass", validateReplayJoinCompleteness(env)
+			})
+			acts.Goober = &fakeInvoker{review: func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+				return apiv1.Verdict{Decision: apiv1.VerdictPass}, validateReplayJoinCompleteness(env)
+			}}
+
 			queue := "static-scheduler-" + mode
 			w := temporalworker.New(c, queue, temporalworker.Options{})
 			if mode == "legacy" {
@@ -110,7 +125,7 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 			if (err != nil) != (mode == "legacy") {
 				t.Fatalf("workflow error=%v", err)
 			}
-			if mode == "bounded" && (out.Result.Status != StatusCompleted || out.Error != "" || out.Result.Steps != 6) {
+			if (mode == "bounded" || mode == "gate-join" || mode == "review-join") && (out.Result.Status != StatusCompleted || out.Error != "" || out.Result.Steps != 6) {
 				t.Fatalf("result=%+v error=%s", out.Result, out.Error)
 			}
 			if mode == "budget" && (out.Error == "" || out.Result.Steps != 4) {
@@ -140,4 +155,24 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 			}
 		})
 	}
+}
+
+func validateReplayJoinCompleteness(env apiv1.InvocationEnvelope) error {
+	data, err := json.Marshal(env.Inputs[runner.BranchCompletenessInput])
+	if err != nil {
+		return err
+	}
+	var got []journal.BranchOutcome
+	if err := json.Unmarshal(data, &got); err != nil {
+		return err
+	}
+	if len(got) != 3 {
+		return fmt.Errorf("missing host join completeness: %s", data)
+	}
+	for i, outcome := range got {
+		if outcome.Branch != i+1 || outcome.Status != journal.BranchSucceeded {
+			return fmt.Errorf("invalid host join completeness: %s", data)
+		}
+	}
+	return nil
 }
