@@ -552,28 +552,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		return Outcome{}, err
 	}
 
-	// Isolate this run from the invoking user's ambient ~/.claude: an
-	// unsandboxed run must not inherit the host's personal settings, hooks,
-	// plugins, or MCP servers just because it happens to run on a machine
-	// with a populated home directory (a goober's behavior must depend only
-	// on what the DSL config declares). CLAUDE_CONFIG_DIR is redirected to a
-	// fresh, per-run directory seeded with nothing but a copy of the stored
-	// credentials (if any) unconditionally, for both sandboxed and
-	// unsandboxed runs.
-	configDir, tempDir, err := prepareClaudeRuntime(req.Workspace)
+	env, err = c.prepareRuntimeEnv(ctx, req.Workspace, env, hookVersionErr == nil)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+		return Outcome{}, err
 	}
-	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
-		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
-	}
-	if hookVersionErr == nil {
-		if err := writeClaudeHostSafetySettings(configDir, c.SelfBin); err != nil {
-			return Outcome{}, fmt.Errorf("harness: claude-code: install host-process safety hook: %w", err)
-		}
-	}
-	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
-	env = overrideEnv(env, "TMPDIR", tempDir)
 
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)
@@ -722,6 +704,31 @@ func runClaudeCompletionRepair(
 		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		Activity:                     telemetry.activityObserver(),
 	})
+}
+
+func (c *ClaudeAdapter) prepareRuntimeEnv(ctx context.Context, workspace string, env []string, installHook bool) ([]string, error) {
+	// Isolate this run from the invoking user's ambient ~/.claude: an
+	// unsandboxed run must not inherit the host's personal settings, hooks,
+	// plugins, or MCP servers just because it happens to run on a machine
+	// with a populated home directory (a goober's behavior must depend only
+	// on what the DSL config declares). CLAUDE_CONFIG_DIR is redirected to a
+	// fresh, per-run directory seeded with nothing but a copy of the stored
+	// credentials (if any) unconditionally, for both sandboxed and
+	// unsandboxed runs.
+	configDir, tempDir, err := prepareClaudeRuntime(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+	}
+	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
+		return nil, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+	}
+	if installHook {
+		if err := writeClaudeHostSafetySettings(configDir, c.SelfBin); err != nil {
+			return nil, fmt.Errorf("harness: claude-code: install host-process safety hook: %w", err)
+		}
+	}
+	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
+	return overrideEnv(env, "TMPDIR", tempDir), nil
 }
 
 func prepareClaudeRuntime(workspace string) (string, string, error) {
