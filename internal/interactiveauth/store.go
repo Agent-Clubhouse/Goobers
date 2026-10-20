@@ -33,6 +33,7 @@ type persisted struct {
 // Real credential custody and Microsoft acquisition intentionally remain unimplemented.
 type availability struct{ refreshable bool }
 
+// Broker mediates bounded provider access and persists operation receipts.
 type Broker struct {
 	mu             sync.Mutex
 	data           persisted
@@ -48,6 +49,7 @@ type Broker struct {
 	afterAdmission func()
 }
 
+// Open loads the controlled broker and its durable state.
 func Open(cfg Config) (*Broker, error) {
 	b := &Broker{path: cfg.Path, now: cfg.Now, checkExecution: cfg.CheckExecution, availability: map[string]availability{}}
 	if b.now == nil {
@@ -102,6 +104,7 @@ func Open(cfg Config) (*Broker, error) {
 	return b, nil
 }
 
+// Close marks the broker closed and releases store ownership.
 func (b *Broker) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -113,7 +116,7 @@ func (b *Broker) Close() error {
 }
 
 func (b *Broker) readyLocked(p Principal) error {
-	if !p.verified || p.identity.Issuer != "goobers:controlled-local" || p.identity.Subject == "" {
+	if !p.verified || p.identity.Issuer != controlledLocalIssuer || p.identity.Subject == "" {
 		return fault("unauthenticated", "a verified local prototype principal is required")
 	}
 	if b.closed || b.storageFailed {
@@ -137,7 +140,8 @@ func (b *Broker) persistLocked() error {
 		return fault("unavailable", "authority store could not be written")
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.Remove(name) }()
 	if err = f.Chmod(0600); err == nil {
 		_, err = f.Write(data)
 	}

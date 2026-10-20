@@ -27,22 +27,12 @@ type ReviewChildEvent struct {
 	Action            *Action `json:"action,omitempty"`
 }
 
+// ReviewChildOptions binds a child review to its snapshot and execution policy.
 type ReviewChildOptions struct {
 	// WorkflowYAML is the exact portable reviewed definition. No command is
 	// derived from the description. Empty preserves the default review wrapper.
 	WorkflowYAML          string
 	ApprovedPayloadDigest string
-}
-
-// RunReviewChild authors and executes one test-only native workflow in a scope
-// the caller has already admitted as a child. The caller must supply a separate
-// immutable repository snapshot through RepositoryForScope (or the ordinary
-// per-scope fixture copy). It shares this Service's admission pool. A failed
-// test is a normal returned Action; errors mean admission, custody, observation,
-// or cancellation failed. No model, provider action, or prompt-derived command
-// is supported.
-func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, prompt string, emit func(ReviewChildEvent) error) (Action, error) {
-	return s.RunReviewChildWithOptions(ctx, scope, requestID, prompt, ReviewChildOptions{}, emit)
 }
 
 // RunReviewChildWithOptions runs the exact approved bounded workflow, binding

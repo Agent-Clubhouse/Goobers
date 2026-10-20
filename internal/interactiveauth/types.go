@@ -5,14 +5,19 @@ package interactiveauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
+// Provider identifies a supported mediated provider.
 type Provider string
+
+// Action identifies an operation permitted by an authority.
 type Action string
 
+// Provider and action identifiers define the controlled broker vocabulary.
 const (
 	ADO             Provider = "ado"
 	AppInsights     Provider = "app_insights"
@@ -31,6 +36,8 @@ type Identity struct {
 	Cloud    string `json:"cloud"`
 }
 
+const controlledLocalIssuer = "goobers:controlled-local"
+
 // Principal is deliberately not wire-deserializable. Only a trusted server adapter
 // may choose its local owner; an HTTP request body cannot manufacture this value.
 type Principal struct {
@@ -44,8 +51,10 @@ func LocalPrincipal(serverOwner string) (Principal, error) {
 	if strings.TrimSpace(serverOwner) == "" || len(serverOwner) > 256 {
 		return Principal{}, fault("unauthenticated", "a server-authenticated local owner is required")
 	}
-	return Principal{Identity{Issuer: "goobers:controlled-local", Subject: serverOwner, TenantID: "demo-tenant", ObjectID: serverOwner, Cloud: ControlledLocal}, true}, nil
+	return Principal{Identity{Issuer: controlledLocalIssuer, Subject: serverOwner, TenantID: "demo-tenant", ObjectID: serverOwner, Cloud: ControlledLocal}, true}, nil
 }
+
+// Identity returns the identity established by the principal adapter.
 func (p Principal) Identity() Identity { return p.identity }
 
 // Resource is an exact canonical tuple, never a wildcard or prefix permission.
@@ -59,26 +68,35 @@ type Resource struct {
 	AppInsights   string   `json:"appInsights,omitempty"`
 }
 
+// DemoADOResource returns the controlled work-item fixture scope.
 func DemoADOResource() Resource {
 	return Resource{Provider: ADO, Organization: "goobers-demo", Project: "interactive", Repository: "sample-app"}
 }
+
+// DemoInsightsResource returns the controlled telemetry fixture scope.
 func DemoInsightsResource() Resource {
 	return Resource{Provider: AppInsights, Subscription: "demo-subscription", ResourceGroup: "interactive", AppInsights: "sample-app"}
 }
 
+// ConnectionRef identifies an immutable connection revision.
 type ConnectionRef struct {
 	ID       string `json:"connectionId"`
 	Revision uint64 `json:"bindingRevision"`
 }
+
+// AuthorityRef identifies an immutable authority revision.
 type AuthorityRef struct {
 	ID      string `json:"authorityId"`
 	Version uint64 `json:"authorityVersion"`
 }
+
+// Binding ties an authority to a connection and resource scopes.
 type Binding struct {
 	Connection ConnectionRef `json:"connectionRef"`
 	Resources  []Resource    `json:"resources"`
 }
 
+// Connection describes delegated connection metadata without credentials.
 type Connection struct {
 	Ref          ConnectionRef `json:"ref"`
 	Owner        Identity      `json:"owner"`
@@ -92,6 +110,7 @@ type Connection struct {
 	Epoch        uint64        `json:"epoch"`
 }
 
+// Authority defines immutable actor, scope, deadline, and operation limits.
 type Authority struct {
 	Ref            AuthorityRef  `json:"ref"`
 	Actor          Identity      `json:"actor"`
@@ -110,6 +129,7 @@ type Authority struct {
 	Mode           string        `json:"identityMode"`
 }
 
+// AuthorityRequest requests a bounded authority or attenuated child authority.
 type AuthorityRequest struct {
 	SessionID      string
 	ExecutionID    string
@@ -122,10 +142,13 @@ type AuthorityRequest struct {
 	MaxDepth       int
 }
 
+// Budget records the remaining operation allowance.
 type Budget struct {
 	Limit int `json:"limit"`
 	Used  int `json:"used"`
 }
+
+// AuthorityStatus combines an authority with its current fence and budget.
 type AuthorityStatus struct {
 	Authority Authority `json:"authority"`
 	State     string    `json:"state"`
@@ -140,6 +163,7 @@ type Payload struct {
 	Query      string `json:"query,omitempty"`
 }
 
+// OperationRequest identifies an idempotent mediated provider operation.
 type OperationRequest struct {
 	Authority      AuthorityRef `json:"authorityRef"`
 	SessionID      string       `json:"sessionId"`
@@ -159,6 +183,7 @@ type OperationRequest struct {
 	SimulateLostResponse bool `json:"simulateLostResponse,omitempty"`
 }
 
+// Decision records an authorization decision and its reason.
 type Decision struct {
 	ID            string       `json:"id"`
 	Authority     AuthorityRef `json:"authorityRef"`
@@ -169,6 +194,7 @@ type Decision struct {
 	CreatedAt     time.Time    `json:"createdAt"`
 }
 
+// Operation records an admitted operation and its observed outcome.
 type Operation struct {
 	ID                string         `json:"id"`
 	Authority         AuthorityRef   `json:"authorityRef"`
@@ -193,6 +219,7 @@ type Operation struct {
 	Message           string         `json:"message,omitempty"`
 }
 
+// Config configures broker persistence, time, and execution validation.
 type Config struct {
 	// Path must be outside the repository. Empty means in-memory tests only.
 	Path string
@@ -204,6 +231,7 @@ type Config struct {
 	CheckExecution func(context.Context, Identity, OperationRequest) error
 }
 
+// Error contains a stable broker error code and safe message.
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -211,8 +239,11 @@ type Error struct {
 
 func (e *Error) Error() string         { return e.Code + ": " + e.Message }
 func fault(code, message string) error { return &Error{Code: code, Message: message} }
+
+// ErrorCode extracts a broker code, including from wrapped errors.
 func ErrorCode(err error) string {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.Code
 	}
 	if err != nil {

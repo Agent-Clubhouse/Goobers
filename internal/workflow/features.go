@@ -121,7 +121,7 @@ func AllFeatures() []Feature {
 	features = append(features, childWorkflowFeatures()...)
 	features = append(features, fanOutFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
-	features = append(features, interactiveFeature())
+	features = append(features, interactiveFeatures()...)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
 	})

@@ -434,7 +434,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/config/reload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		revision, err := catalogs.reload(*configDir, *stateDir, service)
@@ -446,7 +446,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		owner, _ := principal(r)
@@ -468,7 +468,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/identity/select", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var request struct {
@@ -486,7 +486,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/connections/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		owner, _ := principal(r)

@@ -23,6 +23,10 @@ var auditedSQLOpeners = []string{
 	// future schemas; callers fail open to the authoritative daemon response.
 	"internal/apireadstore/store.go:Open:Open",
 	"internal/cancelreceipt/store.go:Open:Open",
+	// Interactive observation opens the private native CLI trigger queue in
+	// mode=ro. The native triggerqueue writer owns schema creation/migration;
+	// this observer performs no DDL and treats query failures as no receipt.
+	"internal/interactiveops/run.go:nativeReceipt:Open",
 	"internal/readmodel/existing_reader.go:OpenExistingReader:Open",
 	"internal/readmodel/intake/existing_reader.go:OpenExistingReader:Open",
 	"internal/readmodel/intake/intake.go:Open:Open",
