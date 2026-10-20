@@ -76,6 +76,23 @@ func (s *HTTPService) StartChildWorkflow(ctx context.Context, token, run, invoca
 	return childResponse(submission), nil
 }
 
+// StartHelper authenticates the parent before compiling or retaining shorthand.
+func (s *HTTPService) StartHelper(ctx context.Context, token, run, invocationKey string, request apicontract.HelperRequest) (apicontract.ChildWorkflowResponse, error) {
+	origin, err := s.authenticate(token, run)
+	if err != nil {
+		return apicontract.ChildWorkflowResponse{}, err
+	}
+	submission, err := s.Submission.SubmitHelper(ctx, origin, invocationKey, request)
+	if err != nil {
+		var invalid *ValidationError
+		if errors.As(err, &invalid) && len(invalid.Diagnostics) == 1 && invalid.Diagnostics[0].Code == "helper_selection_unsupported" {
+			return apicontract.ChildWorkflowResponse{}, childHTTPError(http.StatusUnprocessableEntity, "helper_selection_unsupported", "use the pinned Goober harness/model and parent snapshot; nondefault helper selection is not executable yet", nil)
+		}
+		return apicontract.ChildWorkflowResponse{}, childOperationError(err)
+	}
+	return childResponse(submission), nil
+}
+
 // ChildWorkflowStatus reads only the authenticated occurrence's invocation.
 func (s *HTTPService) ChildWorkflowStatus(ctx context.Context, token, run, invocationKey string) (apicontract.ChildWorkflowResponse, error) {
 	origin, err := s.authenticate(token, run)

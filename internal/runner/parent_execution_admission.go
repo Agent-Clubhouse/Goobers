@@ -19,6 +19,9 @@ import (
 // and it must provide durable handoff, capacity, shared journal and workspace
 // recovery owners.
 func (r *Runner) admitExecution(ctx context.Context, machine *workflow.Machine) error {
+	if err := workflow.RefuseChildSelectionExecution(machine.Def.Spec); err != nil {
+		return err
+	}
 	if err := refuseSelectiveChildParallel(machine); err != nil {
 		return err
 	}

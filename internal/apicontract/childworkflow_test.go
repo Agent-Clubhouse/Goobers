@@ -78,6 +78,39 @@ func TestChildWorkflowContractClosedAndGrantRequired(t *testing.T) {
 	}
 }
 
+func TestHelperStartOpenAPIClosedUnion(t *testing.T) {
+	raw, err := OpenAPIDocument(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource("contract.json", bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("contract.json#/components/schemas/ChildWorkflowStartRequest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []any{
+		map[string]any{"source": "kind: Workflow"},
+		map[string]any{"helper": map[string]any{"task": "Inspect", "goober": "coder"}},
+	} {
+		if err := schema.Validate(value); err != nil {
+			t.Fatalf("valid start rejected: %v", err)
+		}
+	}
+	for _, value := range []any{
+		map[string]any{"source": "x", "helper": map[string]any{"task": "Inspect", "goober": "coder"}},
+		map[string]any{"helper": map[string]any{"task": "Inspect", "goober": "coder", "capabilities": []any{"repo:push"}}},
+		map[string]any{"helper": map[string]any{"task": "Inspect", "goober": "coder"}, "grant": "forged"},
+		map[string]any{"helper": map[string]any{"goober": "coder"}},
+	} {
+		if err := schema.Validate(value); err == nil {
+			t.Fatalf("invalid start accepted: %v", value)
+		}
+	}
+}
+
 func TestChildWorkflowWireMatchesClosedSchemas(t *testing.T) {
 	schemas := openAPIChildWorkflowSchemas()
 	document := map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "components": map[string]any{"schemas": schemas}}

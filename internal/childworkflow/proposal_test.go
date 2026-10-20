@@ -92,6 +92,26 @@ func TestProposalPreservesSourceAndCanonicalIdentity(t *testing.T) {
 	}
 }
 
+func TestSelectionDeclarationsArePinnedButNotExecutable(t *testing.T) {
+	for _, profiles := range []bool{false, true} {
+		context := testContext()
+		before := AuthorityPolicyDigest(context)
+		if profiles {
+			context.ParentTask.ChildWorkflows.AllowedAgentProfiles = []apiv1.ChildAgentProfile{{Name: "fast", Goober: "coder", Harness: apiv1.HarnessCopilot, Model: "configured-model"}}
+		} else {
+			context.ParentTask.ChildWorkflows.AllowedBases = []apiv1.ChildBaseReference{{Name: "integration", Ref: "refs/heads/integration"}}
+		}
+		if before == AuthorityPolicyDigest(context) {
+			t.Fatal("selection declaration did not change authority digest")
+		}
+		_, err := NewValidator(context)
+		var problem *ValidationError
+		if !errors.As(err, &problem) || problem.Diagnostics[0].Code != "selection_unsupported" {
+			t.Fatalf("unimplemented selection execution not refused: %v", err)
+		}
+	}
+}
+
 func TestCanonicalIdentityDoesNotRoundLargeIntegers(t *testing.T) {
 	v := validator(t, testContext())
 	a := strings.Replace(validProposal, "name: generated-check", "name: generated-check\n  generation: 9007199254740992", 1)

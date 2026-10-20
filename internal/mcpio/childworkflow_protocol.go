@@ -13,7 +13,12 @@ func (s *Server) toolDefs() []toolDef {
 func childWorkflowToolDefs() []toolDef {
 	source := map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Workspace-relative regular UTF-8 Workflow DSL file, at most 1 MiB, outside .goobers and .git."}
 	key := map[string]interface{}{"type": "string", "minLength": 1, "maxLength": childworkflowwire.MaxChildWorkflowInvocationKeyBytes, "description": "Stable invocation key within this parent occurrence. Reuse the same key and exact source for retries."}
+	identifier := map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 128}
 	return []toolDef{
+		{Name: "start_helper", Description: "Compile a task for an allowed Goober into retained one-stage Workflow DSL and accept it through ordinary child admission. Uses the pinned Goober harness/model and parent snapshot; nondefault selections are refused. Retry with the same invocationKey and task; use get_child_workflow and resolve_child_workflow for status and custody.", InputSchema: childToolSchema([]string{"task", "goober", "invocationKey"}, map[string]interface{}{
+			"task": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": childworkflowwire.MaxHelperTaskBytes, "description": "Helper task text, at most 16 KiB UTF-8."}, "goober": identifier, "invocationKey": key,
+			"harness": identifier, "model": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 256}, "base": map[string]interface{}{"type": "string", "enum": []string{"parent"}},
+		})},
 		{Name: "validate_child_workflow", Description: "Validate a generated Workflow against this stage's pinned policy. Advisory only; creates no child and does not start execution.", InputSchema: childToolSchema([]string{"sourceFile"}, map[string]interface{}{"sourceFile": source})},
 		{Name: "start_child_workflow", Description: "Validate and accept one child workflow into durable custody. A queued receipt is not execution completion. Retry with the same invocationKey and unchanged source; get_child_workflow checks existing custody.", InputSchema: childToolSchema([]string{"sourceFile", "invocationKey"}, map[string]interface{}{"sourceFile": source, "invocationKey": key})},
 		{Name: "get_child_workflow", Description: "Read one child invocation owned by this parent stage occurrence. This is a bounded status read; it does not await completion, retrieve referenced artifacts, or merge child work.", InputSchema: childToolSchema([]string{"invocationKey"}, map[string]interface{}{"invocationKey": key})},

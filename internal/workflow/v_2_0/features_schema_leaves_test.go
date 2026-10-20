@@ -32,6 +32,12 @@ var authorSchemaFiles = map[string]string{
 // TestEmbeddedSchemaLeavesMapToFeatureRegistry; entries that become
 // registered (or leave the schemas) fail it too.
 var schemaLeafExceptions = map[string]string{
+	"workflow.spec.tasks.childWorkflows.allowedAgentProfiles.name":    "DSL 3.1-only child selection declaration; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedAgentProfiles.goober":  "DSL 3.1-only child selection declaration; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedAgentProfiles.harness": "DSL 3.1-only child selection declaration; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedAgentProfiles.model":   "DSL 3.1-only child selection declaration; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedBases.name":            "DSL 3.1-only child selection declaration; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedBases.ref":             "DSL 3.1-only child selection declaration; registered and rejected for older pins by the version router",
 	// DSL 3.1-only fan-out preview (#7382); registered in internal/workflow and
 	// rejected for older pins by the version router.
 	"workflow.spec.maps.bindings":                   "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",

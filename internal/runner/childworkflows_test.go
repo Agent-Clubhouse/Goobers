@@ -78,6 +78,40 @@ func TestChildWorkflowResumeReadsPinWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestChildSelectionsRefusedBeforeLocalEffects(t *testing.T) {
+	for _, profiles := range []bool{false, true} {
+		m := childEnabledMachine(t)
+		p := m.Def.Spec.Tasks[0].ChildWorkflows
+		if profiles {
+			p.AllowedAgentProfiles = []apiv1.ChildAgentProfile{{Name: "fast", Goober: "coder", Harness: apiv1.HarnessCopilot, Model: "configured-model"}}
+		} else {
+			p.AllowedBases = []apiv1.ChildBaseReference{{Name: "integration", Ref: "refs/heads/integration"}}
+		}
+		var err error
+		m, err = workflow.Compile(m.Def, workflow.WithPreviewFeatures(true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs := t.TempDir()
+		r := &Runner{cfg: Config{RunsDir: runs, AdmitParentExecution: func(context.Context, *workflow.Machine) error {
+			t.Fatal("selection declaration reached host execution admission")
+			return nil
+		}}}
+		if _, err := r.Start(context.Background(), StartInput{RunID: "blocked-selection", Machine: m}); !errors.Is(err, workflow.ErrChildSelectionExecutionUnsupported) {
+			t.Fatalf("start guard: %v", err)
+		}
+		newPinnedDefinitionRun(t, runs, "pinned-selection", m)
+		dir := filepath.Join(runs, "pinned-selection")
+		before := snapshotChildRunFiles(t, dir)
+		if _, err := r.Resume(context.Background(), ResumeInput{RunID: "pinned-selection"}); !errors.Is(err, workflow.ErrChildSelectionExecutionUnsupported) {
+			t.Fatalf("pinned resume guard: %v", err)
+		}
+		if after := snapshotChildRunFiles(t, dir); !reflect.DeepEqual(before, after) {
+			t.Fatal("selection refusal mutated pinned run")
+		}
+	}
+}
+
 func snapshotChildRunFiles(t *testing.T, root string) map[string]string {
 	t.Helper()
 	files := map[string]string{}

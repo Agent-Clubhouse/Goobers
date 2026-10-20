@@ -1,5 +1,7 @@
 package apicontract
 
+import "github.com/goobers/goobers/internal/apicontract/childworkflowwire"
+
 func parentAccessRoute(id RouteID) bool {
 	return id == RouteChildWorkflowAccessAcquire || id == RouteChildWorkflowAccessRevoke
 }
@@ -26,6 +28,15 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"resultRef": stringSchema(), "workspaceRef": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
 	})
 	return map[string]any{
+		"HelperRequest": closedChildObject([]string{"task", "goober"}, map[string]any{
+			"task":    map[string]any{"type": "string", "minLength": 1, "maxLength": childworkflowwire.MaxHelperTaskBytes, "x-goobers-max-bytes": childworkflowwire.MaxHelperTaskBytes},
+			"goober":  map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+			"harness": map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+			"model":   map[string]any{"type": "string", "minLength": 1, "maxLength": 256},
+			"base":    map[string]any{"type": "string", "enum": []string{"parent"}},
+		}),
+		"ChildWorkflowHelperRequest":  closedChildObject([]string{"helper"}, map[string]any{"helper": schemaRef("HelperRequest")}),
+		"ChildWorkflowStartRequest":   map[string]any{"oneOf": []any{schemaRef("ChildWorkflowSourceRequest"), schemaRef("ChildWorkflowHelperRequest")}},
 		"ChildWorkflowAccessRequest":  closedChildObject([]string{"contractDigest"}, map[string]any{"contractDigest": digest}),
 		"ChildWorkflowAccessResponse": closedChildObject([]string{"endpoint", "bearerToken"}, map[string]any{"endpoint": stringSchema(), "bearerToken": map[string]any{"type": "string", "description": "Short-lived secret delivered only to the authenticated parent attempt"}}),
 		"ChildWorkflowSourceRequest": closedChildObject([]string{"source"}, map[string]any{

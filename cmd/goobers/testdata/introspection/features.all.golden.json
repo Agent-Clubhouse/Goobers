@@ -810,6 +810,46 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.childWorkflows.allowedAgentProfiles",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedAgentProfiles.goober",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedAgentProfiles.harness",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedAgentProfiles.model",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedAgentProfiles.name",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedBases",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedBases.name",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedBases.ref",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.childWorkflows.allowedCapabilities",
       "stability": "preview",
       "sinceVersion": "dev"

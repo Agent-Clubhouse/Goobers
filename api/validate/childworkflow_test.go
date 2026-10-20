@@ -44,6 +44,14 @@ func TestChildWorkflowSchemaAndValidation(t *testing.T) {
 		{"duplicates", "[coder]", "[coder, coder]", false, false},
 		{"unknown field", "maxChildren: 4", "maxChildren: 4\n        bypass: true", false, false},
 		{"old DSL", "\"3.1\"", "\"3.0\"", false, false},
+		{"agent profile", "maxChildren: 4", "allowedAgentProfiles: [{name: fast, goober: coder, harness: copilot, model: configured-model}]", true, true},
+		{"profile unknown field", "maxChildren: 4", "allowedAgentProfiles: [{name: fast, goober: coder, harness: copilot, model: configured-model, flags: bypass}]", false, false},
+		{"profile missing model", "maxChildren: 4", "allowedAgentProfiles: [{name: fast, goober: coder, harness: copilot}]", false, false},
+		{"profile unlisted goober", "maxChildren: 4", "allowedAgentProfiles: [{name: fast, goober: other, harness: copilot, model: configured-model}]", true, false},
+		{"named base", "maxChildren: 4", "allowedBases: [{name: integration, ref: refs/heads/integration}]", true, true},
+		{"base expression", "maxChildren: 4", "allowedBases: [{name: integration, ref: 'refs/heads/main~1'}]", true, false},
+		{"base short ref", "maxChildren: 4", "allowedBases: [{name: integration, ref: main}]", false, false},
+		{"base unknown field", "maxChildren: 4", "allowedBases: [{name: integration, ref: refs/heads/main, url: foreign}]", false, false},
 		{"deterministic", "type: agentic", "type: deterministic\n      run: {command: [true]}", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

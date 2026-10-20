@@ -78,13 +78,18 @@ func childWorkflowProblems(def Definition, goobers map[string]apiv1.GooberSpec, 
 		if policy.MaxChildren < 0 || policy.MaxChildren > apiv1.MaxChildWorkflows {
 			add("maxChildren must be 1 to %d when set (omission defaults to %d)", apiv1.MaxChildWorkflows, apiv1.DefaultMaxChildWorkflows)
 		}
+		for _, problem := range childSelectionProblems(policy, seenNames) {
+			add("%s", problem)
+		}
 	}
 	return problems
 }
 
 func childWorkflowFeatures() []Feature {
 	var features []Feature
-	for _, suffix := range []string{"", ".allowedGoobers", ".allowedCapabilities", ".maxChildren", ".allowPRPublication"} {
+	for _, suffix := range []string{"", ".allowedGoobers", ".allowedCapabilities", ".maxChildren", ".allowPRPublication",
+		".allowedAgentProfiles", ".allowedAgentProfiles.name", ".allowedAgentProfiles.goober", ".allowedAgentProfiles.harness", ".allowedAgentProfiles.model",
+		".allowedBases", ".allowedBases.name", ".allowedBases.ref"} {
 		features = append(features, Feature{
 			ID: FeatureID("task.childWorkflows" + suffix), Level: SupportPreview,
 			SinceVersion: "dev",
@@ -109,6 +114,16 @@ func usedChildWorkflowFeatures(def Definition) []Feature {
 			}
 			if p.AllowPRPublication {
 				used["task.childWorkflows.allowPRPublication"] = true
+			}
+			if len(p.AllowedAgentProfiles) != 0 {
+				for _, suffix := range []string{"", ".name", ".goober", ".harness", ".model"} {
+					used[FeatureID("task.childWorkflows.allowedAgentProfiles"+suffix)] = true
+				}
+			}
+			if len(p.AllowedBases) != 0 {
+				for _, suffix := range []string{"", ".name", ".ref"} {
+					used[FeatureID("task.childWorkflows.allowedBases"+suffix)] = true
+				}
 			}
 		}
 	}

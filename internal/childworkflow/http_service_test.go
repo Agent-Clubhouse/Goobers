@@ -119,6 +119,50 @@ func TestChildHTTPServiceUsesRealGrantAndDurableSubmission(t *testing.T) {
 	}
 }
 
+func TestHelperHTTPServiceUsesRealGrantAndDurableSource(t *testing.T) {
+	for _, authenticated := range []bool{false, true} {
+		handler, s, resolver, token := childHTTPFixture(t, authenticated)
+		run := resolver.current.Origin.RunID
+		body := apicontract.ChildWorkflowHelperRequest{Helper: apicontract.HelperRequest{Task: "Inspect changes", Goober: "coder"}}
+		response := childHTTPCall(t, handler, token, run, "start", "helper-1", body)
+		var first apicontract.ChildWorkflowResponse
+		if response.Code != http.StatusAccepted || json.Unmarshal(response.Body.Bytes(), &first) != nil || first.State != "queued" || first.Duplicate {
+			t.Fatalf("helper: %d %s", response.Code, response.Body)
+		}
+		custody, err := s.Get(t.Context(), resolver.current.Origin, "helper-1")
+		if err != nil || custody.Envelope.SourceDigest != first.SourceDigest {
+			t.Fatalf("helper custody: %+v %v", custody, err)
+		}
+		retained, err := s.Queue.ChildProposal(t.Context(), custody.Child.Identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proposal, err := validator(t, resolver.current.Admission).Validate(retained.Source)
+		if err != nil || proposal.Workflow.Spec.Tasks[0].Goal != body.Helper.Task {
+			t.Fatalf("host did not retain ordinary task DSL: %v", err)
+		}
+		response = childHTTPCall(t, handler, token, run, "start", "helper-1", body)
+		var duplicate apicontract.ChildWorkflowResponse
+		if response.Code != http.StatusAccepted || json.Unmarshal(response.Body.Bytes(), &duplicate) != nil || !duplicate.Duplicate || duplicate.ChildID != first.ChildID {
+			t.Fatalf("helper duplicate: %d %s", response.Code, response.Body)
+		}
+		response = childHTTPCall(t, handler, token, "foreign-parent", "start", "helper-2", body)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("wrong parent accepted helper: %d", response.Code)
+		}
+		body.Helper.Model = "nondefault"
+		response = childHTTPCall(t, handler, token, run, "start", "helper-2", body)
+		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "helper_selection_unsupported") {
+			t.Fatalf("nondefault selection refusal: %d %s", response.Code, response.Body)
+		}
+		resolver.revoked = true
+		response = childHTTPCall(t, handler, token, run, "start", "helper-2", body)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("revoked helper grant accepted: %d", response.Code)
+		}
+	}
+}
+
 func TestChildHTTPServiceRejectsForgedGrantAndWrongParentBeforeEffects(t *testing.T) {
 	handler, s, resolver, token := childHTTPFixture(t, false)
 	run := resolver.current.Origin.RunID

@@ -21,3 +21,16 @@ func TestChildWorkflowPolicyDefaultsAndCopy(t *testing.T) {
 		t.Fatalf("explicit maximum=%d", got)
 	}
 }
+
+func TestChildSelectionPolicyDeepCopy(t *testing.T) {
+	task := Task{ChildWorkflows: &ChildWorkflowPolicy{
+		AllowedAgentProfiles: []ChildAgentProfile{{Name: "fast", Goober: "coder", Harness: HarnessCopilot, Model: "configured-model"}},
+		AllowedBases:         []ChildBaseReference{{Name: "integration", Ref: "refs/heads/integration"}},
+	}}
+	copy := task.DeepCopy()
+	copy.ChildWorkflows.AllowedAgentProfiles[0].Model = "another-model"
+	copy.ChildWorkflows.AllowedBases[0].Ref = "refs/tags/release"
+	if task.ChildWorkflows.AllowedAgentProfiles[0].Model != "configured-model" || task.ChildWorkflows.AllowedBases[0].Ref != "refs/heads/integration" {
+		t.Fatal("deepcopy aliases selection authority")
+	}
+}
