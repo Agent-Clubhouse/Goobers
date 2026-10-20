@@ -102,7 +102,6 @@ func TestDependenciesAreSorted(t *testing.T) {
 		{Name: "find", InstallHint: "install findutils (Debian/Ubuntu: apt-get install findutils)"},
 		{Name: "git", InstallHint: "install Git (Debian/Ubuntu: apt-get install git)"},
 		{Name: "go", InstallHint: "install the Go toolchain pinned in go.mod"},
-		{Name: "grep", InstallHint: "install grep (Debian/Ubuntu: apt-get install grep)"},
 		{Name: "head", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "java", InstallHint: "install a JDK (https://adoptium.net/)"},
 		{Name: "mkdir", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
