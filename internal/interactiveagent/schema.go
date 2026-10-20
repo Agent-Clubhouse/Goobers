@@ -3,13 +3,15 @@ package interactiveagent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
 	"strings"
 
-	"github.com/goobers/goobers/internal/secretpattern"
 	"github.com/santhosh-tekuri/jsonschema/v5"
+
+	"github.com/goobers/goobers/internal/secretpattern"
 )
 
 var toolName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -124,7 +126,7 @@ func uniqueJSON(raw []byte) (any, error) {
 	if err != nil {
 		return nil, ErrInvalidMessage
 	}
-	if _, err = d.Token(); err != io.EOF {
+	if _, err = d.Token(); !errors.Is(err, io.EOF) {
 		return nil, ErrInvalidMessage
 	}
 	return v, nil

@@ -14,6 +14,7 @@ import (
 
 const apiPrefix = "/api/v1/interactive"
 
+// Handler serves the interactive HTTP and event-stream endpoints.
 func (s *Service) Handler() http.Handler { return http.HandlerFunc(s.serveHTTP) }
 func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -163,6 +164,7 @@ func methodError(w http.ResponseWriter) {
 	writeError(w, problem(405, "method_not_allowed", "method is not supported"))
 }
 
+// Events returns the owner-visible durable events after a sequence cursor.
 func (s *Service) Events(owner, sessionID string, after uint64) ([]Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

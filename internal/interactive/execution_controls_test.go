@@ -101,7 +101,9 @@ func TestUnavailableOrUnpinnedHistoricalModesAreInspectOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			s.Close()
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
 			opts.AvailableExecutionModes = []string{ExecutionModeLocalTools}
 			next := openTest(t, opts)
 			current, err := next.Session("alice", session.ID)
