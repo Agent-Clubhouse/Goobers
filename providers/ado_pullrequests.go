@@ -229,6 +229,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		return PullRequestPollResult{}, err
 	}
 	result := PullRequestPollResult{
+		Mergeable:          adoMergeable(pr.MergeStatus),
 		Number:             pr.PullRequestID,
 		Title:              pr.Title,
 		Author:             adoIdentityName(pr.CreatedBy),
@@ -244,6 +245,9 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
 		URL:                p.pullRequestWebURL(pr.adoPullRequest),
 		Integrity:          apiintegrity.Unapproved,
+	}
+	if pr.Labels != nil {
+		result.Labels = adoLabelNames(pr.Labels)
 	}
 	projectName := pr.Repository.Project.Name
 	if projectName == "" {
@@ -549,6 +553,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			}
 		}
 		out = append(out, PullRequestSummary{
+			Mergeable:          adoMergeable(pr.MergeStatus),
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
 			URL:                p.pullRequestWebURL(pr),
@@ -644,6 +649,7 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 }
 
 type adoPullRequest struct {
+	MergeStatus           string        `json:"mergeStatus,omitempty"`
 	PullRequestID         int           `json:"pullRequestId"`
 	URL                   string        `json:"url"`
 	Status                string        `json:"status"`
@@ -680,7 +686,6 @@ type adoPullRequestDetail struct {
 	// "notSet"), LastMergeCommit is the landed commit once MergeStatus is
 	// "succeeded", and AutoCompleteSetBy is present iff auto-complete is
 	// currently armed (nil once ADO clears it — completion or eviction).
-	MergeStatus       string                `json:"mergeStatus,omitempty"`
 	MergeID           string                `json:"mergeId,omitempty"`
 	LastMergeCommit   adoCommitRef          `json:"lastMergeCommit"`
 	CompletionOptions *adoCompletionOptions `json:"completionOptions,omitempty"`
@@ -900,5 +905,20 @@ func adoChangedFileStatus(changeType string) string {
 		return "renamed"
 	default:
 		return "modified"
+	}
+}
+
+// adoMergeable distinguishes a confirmed merge conflict from pending computation
+// and policy/infrastructure failures, which do not prove a textual conflict.
+func adoMergeable(status string) *bool {
+	switch status {
+	case "conflicts":
+		value := false
+		return &value
+	case "succeeded":
+		value := true
+		return &value
+	default:
+		return nil
 	}
 }
