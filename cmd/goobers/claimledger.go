@@ -21,7 +21,7 @@ import (
 //     environment — a stage pod — else the file backend below. Fail closed in
 //     between: an endpoint without a bearer is an error, never a silent fall
 //     through to a ledger file the pod does not have.
-//   - fileClaimLedger / heldClaimLedger: the instance's own claims.json under
+//   - fileClaimLedger: the instance's own claims.json under
 //     the same withClaimLock discipline, operation labels, timeout and
 //     slow-lock journaling providercmd.go has always applied. The daemon's own
 //     paths (terminal cleanup, interventions) use these directly and never
@@ -120,22 +120,6 @@ func fileClaimLedgerForRunWithResolver(l instance.Layout, gaggle, runID string, 
 			return withClaimLockForRun(lockPath, operation, gaggle, runID, fn)
 		},
 		Options: opts,
-	})
-}
-
-// heldClaimLedger is the instance's ledger for a caller ALREADY inside its
-// own withClaimLock*: no lock is taken (a second flock on the held path
-// would wait on itself until the timeout), the ledger is opened fresh and
-// operated on directly.
-func heldClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	return heldClaimLedgerWithResolver(l, localLifecycleSharedClaimResolver(l), opts...)
-}
-
-func heldClaimLedgerWithResolver(l instance.Layout, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	return claimsclient.NewFile(claimsclient.FileConfig{
-		Shared:     resolver,
-		LedgerPath: filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-		Options:    opts,
 	})
 }
 
