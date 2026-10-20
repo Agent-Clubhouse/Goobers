@@ -147,6 +147,12 @@ func claimPullRequestInOrder(
 	runID, workflow string,
 	leaseDuration time.Duration,
 ) (*providers.PullRequestSummary, error) {
+	// Recheck immediately before admission, including pinned/direct callers
+	// that bypassed the ordinary remediation candidate filter.
+	candidates, _, err := stageLiveOriginPullRequests(root, runID, candidates)
+	if err != nil {
+		return nil, err
+	}
 	l := layoutFor(root)
 	instanceLog, closeLog, err := claimLedgerJournal(l)
 	if err != nil {

@@ -5,10 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/goobers/goobers/internal/apicontract"
 )
 
 // ErrSharedExecutionExpired denies execution after shared authority has ended.
 var ErrSharedExecutionExpired = errors.New("shared claim execution authority expired")
+
+// DefaultExecutionSnapshotTimeout allows the claims route's server budget plus
+// transport time. It bounds an observation, never a provider-acknowledged lease.
+const DefaultExecutionSnapshotTimeout = apicontract.MutationBudget + 2*time.Second
+
+// ExecutionFenceOptions configures observation independently of lease expiry.
+type ExecutionFenceOptions struct {
+	// SnapshotTimeout bounds each observation, including reads before any
+	// lease is known. Zero selects DefaultExecutionSnapshotTimeout.
+	SnapshotTimeout time.Duration
+}
 
 // StartExecutionFence monitors persisted, provider-acknowledged deadlines for
 // one run. The snapshot reader must honor cancellation. It runs independently
@@ -16,9 +29,23 @@ var ErrSharedExecutionExpired = errors.New("shared claim execution authority exp
 // must stop the monitor when execution finishes and propagate context.Cause
 // when it cancels their executor. This does not acquire or renew any lease.
 func StartExecutionFence(parent context.Context, runID string, snapshot func(context.Context) (Listing, error)) (context.Context, context.CancelFunc, error) {
+	return StartExecutionFenceWithOptions(parent, runID, snapshot, ExecutionFenceOptions{})
+}
+
+// StartExecutionFenceWithOptions starts a fence with a per-observation budget.
+// Increasing that budget never extends a known lease's independent timer.
+func StartExecutionFenceWithOptions(parent context.Context, runID string, snapshot func(context.Context) (Listing, error), options ExecutionFenceOptions) (context.Context, context.CancelFunc, error) {
 	ctx, cancel := context.WithCancelCause(parent)
 	stop := func() { cancel(context.Canceled) }
-	initial, err := executionSnapshot(ctx, cancel, snapshot)
+	if options.SnapshotTimeout < 0 {
+		err := fmt.Errorf("execution snapshot timeout must not be negative")
+		cancel(err)
+		return ctx, stop, err
+	}
+	if options.SnapshotTimeout == 0 {
+		options.SnapshotTimeout = DefaultExecutionSnapshotTimeout
+	}
+	initial, err := executionSnapshot(ctx, cancel, snapshot, options.SnapshotTimeout)
 	state := executionClaims{runID: runID, held: make(map[Key]Entry)}
 	if err == nil {
 		err = state.update(initial, time.Now())
@@ -40,7 +67,7 @@ func StartExecutionFence(parent context.Context, runID string, snapshot func(con
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				listing, err := executionSnapshot(ctx, cancel, snapshot)
+				listing, err := executionSnapshot(ctx, cancel, snapshot, options.SnapshotTimeout)
 				select {
 				case updates <- observation{listing, err}:
 				case <-ctx.Done():
@@ -88,8 +115,8 @@ func StartExecutionFence(parent context.Context, runID string, snapshot func(con
 // observation before the first claim is seen (or after an early release), when
 // no lease timer exists yet. Cancellation of execution is independent of the
 // snapshot function returning, including a stuck filesystem read.
-func executionSnapshot(ctx context.Context, cancel context.CancelCauseFunc, snapshot func(context.Context) (Listing, error)) (Listing, error) {
-	readCtx, readCancel := context.WithTimeout(ctx, time.Second)
+func executionSnapshot(ctx context.Context, cancel context.CancelCauseFunc, snapshot func(context.Context) (Listing, error), timeout time.Duration) (Listing, error) {
+	readCtx, readCancel := context.WithTimeout(ctx, timeout)
 	watchdog := context.AfterFunc(readCtx, func() {
 		if errors.Is(readCtx.Err(), context.DeadlineExceeded) {
 			cancel(ErrSharedExecutionExpired)

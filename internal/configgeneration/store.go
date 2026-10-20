@@ -24,6 +24,9 @@ const MaxGenerations = 64
 // MaxStoredBytes bounds archives, their shared-store copy, and extracted trees.
 const MaxStoredBytes = int64(256 << 20)
 
+// ErrCapacity means admitting a new generation would exceed a finite retention bound.
+var ErrCapacity = errors.New("config generation retention capacity exhausted by protected runs")
+
 // Store retains extracted immutable generations and publishes their archives
 // through the existing content-addressed stage transport. Workers use a local
 // cache; shared leases protect concurrent readers from catalogue pruning.
@@ -237,7 +240,7 @@ func (s Store) prune(ctx context.Context, protected map[string]bool, needed int6
 		total -= c.size
 	}
 	if count >= MaxGenerations || total+needed > MaxStoredBytes {
-		return errors.New("config generation retention capacity exhausted by protected runs")
+		return ErrCapacity
 	}
 	return nil
 }

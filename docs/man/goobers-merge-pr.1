@@ -40,7 +40,10 @@ review comment counts until answered. Feedback that
 cannot be read refuses as human-feedback-unverifiable. Comments are
 classified as pr-comment-watch classifies them, under the same
 identityMode and excludeAuthors inputs. Set false to merge over
-comments), resultFile (default merge-result.json). Successful merges
+comments), resultFile (default merge-result.json). It also refuses
+while a finding an earlier review raised on the live head stands
+unanswered: a later pass clears none without a resolved or rejected
+disposition (#5890). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked,
 skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
 (merged or not — see the result file's "merged" field), 1 = business

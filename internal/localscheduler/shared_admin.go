@@ -36,7 +36,7 @@ func (l *ClaimLedger) ForceReleaseCoordinatedShared(ctx context.Context, store s
 	if err := releaseSharedCustody(ctx, store, remoteKey, owner); err != nil {
 		return err
 	}
-	return l.forceRelease(storageKey, actor, owner)
+	return l.forceRelease(storageKey, actor, owner, "")
 }
 
 func (l *ClaimLedger) revokeSharedExecution(storageKey string, owner sharedclaim.Owner, actor string) (bool, error) {
@@ -46,7 +46,7 @@ func (l *ClaimLedger) revokeSharedExecution(storageKey string, owner sharedclaim
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entry, held := l.entries[storageKey]
-	if !held {
+	if !held || entry.IsPublicationClaim() {
 		return false, nil
 	}
 	if entry.SharedOwner != owner || entry.SharedDeadline.IsZero() {

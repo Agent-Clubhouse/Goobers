@@ -123,6 +123,7 @@ func (e apiReadCacheEntry) response(req *http.Request) *http.Response {
 
 // apiReadCache is a fail-open conditional-GET (ETag) HTTPClient decorator.
 type apiReadCache struct {
+	metadataClock       func() time.Time
 	mutationScope       string
 	mutationUnavailable atomic.Bool
 	partition           string
@@ -240,6 +241,9 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 
 	if c.partition != "" && !scopedCacheable(req) {
 		return c.do(req)
+	}
+	if c.adoStateMetadataRequest(req) {
+		return c.readADOStateMetadata(req)
 	}
 	key := apiReadCacheKey(req)
 	if c.partition != "" {

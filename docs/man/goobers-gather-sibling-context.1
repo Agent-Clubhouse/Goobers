@@ -27,7 +27,10 @@ so the stage forces a fresh review instead; --no-verdict-cache skips that
 lookup, always forcing a fresh review. It also resolves the selected PR's
 base drift deterministically (selectedBaseDrift: current|behind|unknown,
 with selectedMergeBaseSha/selectedBaseTipSha) so the reviewer is told
-whether the base moved instead of inferring it. Exit codes: 0 = context
+whether the base moved instead of inferring it, and lists as
+standingFindings the findings an earlier review raised on the selected
+head that no later review resolved or rejected, for the reviewer to
+answer (#5890). Exit codes: 0 = context
 gathered (possibly empty — no siblings is not an error), 1 = business
 error, 2 = usage/IO error.
 .fi

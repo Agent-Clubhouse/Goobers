@@ -34,18 +34,21 @@ const (
 	declaredCacheWarmJob  = "dependency-cache-warm"
 )
 
+type ciConcurrency struct {
+	Group            string `yaml:"group"`
+	CancelInProgress bool   `yaml:"cancel-in-progress"`
+}
+
 type ciWorkflow struct {
 	On          map[string]yaml.Node `yaml:"on"`
 	Permissions map[string]string    `yaml:"permissions"`
-	Concurrency struct {
-		Group            string `yaml:"group"`
-		CancelInProgress bool   `yaml:"cancel-in-progress"`
-	} `yaml:"concurrency"`
-	Env  map[string]string `yaml:"env"`
-	Jobs map[string]ciJob  `yaml:"jobs"`
+	Concurrency ciConcurrency        `yaml:"concurrency"`
+	Env         map[string]string    `yaml:"env"`
+	Jobs        map[string]ciJob     `yaml:"jobs"`
 }
 
 type ciJob struct {
+	Concurrency     ciConcurrency     `yaml:"concurrency"`
 	Name            string            `yaml:"name"`
 	RunsOn          string            `yaml:"runs-on"`
 	If              string            `yaml:"if"`

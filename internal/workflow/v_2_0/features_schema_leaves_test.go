@@ -1,4 +1,4 @@
-package v20
+package v20_test
 
 import (
 	"encoding/json"
@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/workflow"
+	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 )
 
 // authorSchemaFiles are the embedded schemas whose leaves the feature registry
@@ -103,6 +105,7 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.metadata.labels":      "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.metadata.name":        "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.dslVersion":           "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
+	"gaggle.dslVersion":             "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
 
 	// DSL 3.0-only surface (dsl-3.0.md §2/§4, issue #3505): the schemas are
 	// shared across interpreters, so these leaves are parseable here, but the
@@ -240,6 +243,26 @@ func TestEmbeddedSchemaLeavesMapToFeatureRegistry(t *testing.T) {
 	}
 }
 
+func TestInteractiveSchemaLeafGuardRejectsUnregisteredLeaf(t *testing.T) {
+	documents := map[string]map[string]any{"gaggle": {
+		"properties": map[string]any{"spec": map[string]any{
+			"properties": map[string]any{"interactive": map[string]any{
+				"properties": map[string]any{"surfaces": map[string]any{
+					"properties": map[string]any{
+						"enabled":             map[string]any{"type": "boolean"},
+						"unregisteredControl": map[string]any{"type": "string"},
+					},
+				}},
+			}},
+		}},
+	}}
+	violations := schemaLeafRegistryViolations(t, documents, nil)
+	wantViolation(t, violations, `leaf "gaggle.spec.interactive.surfaces.unregisteredControl" has no registered FeatureID`)
+	if len(violations) != 1 {
+		t.Fatalf("violations = %v, want only the unregistered leaf; enabled is publicly registered", violations)
+	}
+}
+
 // TestSchemaLeafGuardFires proves the guard actually rejects each failing
 // direction: a new unmapped leaf, a stale exception for a vanished leaf, and
 // an obsolete exception for a leaf that gained a FeatureID.
@@ -293,21 +316,20 @@ func TestSchemaLeafGuardFires(t *testing.T) {
 
 // TestSchemaLeafFeatureCandidates pins the selector-to-feature namespace
 // conventions shared with internal/authoring's selectorFeatureCandidates
-// (which cannot be imported here: internal/authoring imports internal/workflow,
-// which wraps this package).
+// while keeping interpreter-local and independently pinned public features separate.
 func TestSchemaLeafFeatureCandidates(t *testing.T) {
 	tests := []struct {
 		leaf string
-		want []FeatureID
+		want []v20.FeatureID
 	}{
-		{"workflow.spec.gaggle", []FeatureID{"workflow.spec.gaggle"}},
-		{"workflow.spec.tasks.retry.maxAttempts", []FeatureID{"workflow.spec.tasks.retry.maxAttempts", "task.retry.maxAttempts"}},
-		{"workflow.spec.tasks.run.command", []FeatureID{"workflow.spec.tasks.run.command", "stage.run.command"}},
-		{"workflow.spec.tasks.workspace", []FeatureID{"workflow.spec.tasks.workspace", "stage.workspace"}},
-		{"workflow.spec.gates.automated.check", []FeatureID{"workflow.spec.gates.automated.check", "gate.evaluator.automated.check"}},
-		{"workflow.spec.gates.branches", []FeatureID{"workflow.spec.gates.branches", "gate.branches"}},
-		{"workflow.spec.triggers.selector", []FeatureID{"workflow.spec.triggers.selector", "trigger.selector"}},
-		{"goober.spec.role", []FeatureID{"goober.spec.role"}},
+		{"workflow.spec.gaggle", []v20.FeatureID{"workflow.spec.gaggle"}},
+		{"workflow.spec.tasks.retry.maxAttempts", []v20.FeatureID{"workflow.spec.tasks.retry.maxAttempts", "task.retry.maxAttempts"}},
+		{"workflow.spec.tasks.run.command", []v20.FeatureID{"workflow.spec.tasks.run.command", "stage.run.command"}},
+		{"workflow.spec.tasks.workspace", []v20.FeatureID{"workflow.spec.tasks.workspace", "stage.workspace"}},
+		{"workflow.spec.gates.automated.check", []v20.FeatureID{"workflow.spec.gates.automated.check", "gate.evaluator.automated.check"}},
+		{"workflow.spec.gates.branches", []v20.FeatureID{"workflow.spec.gates.branches", "gate.branches"}},
+		{"workflow.spec.triggers.selector", []v20.FeatureID{"workflow.spec.triggers.selector", "trigger.selector"}},
+		{"goober.spec.role", []v20.FeatureID{"goober.spec.role"}},
 	}
 	for _, test := range tests {
 		got := schemaLeafFeatureCandidates(test.leaf)
@@ -386,14 +408,21 @@ func schemaLeafRegistryViolations(
 // featureCandidateKnown prefix rule, e.g. run.network -> stage.run.network.none).
 func schemaLeafRegistered(leaf string) bool {
 	for _, candidate := range schemaLeafFeatureCandidates(leaf) {
-		if _, ok := currentFeatureRegistry.Lookup(candidate); ok {
+		if _, ok := v20.LookupFeature(candidate); ok {
 			return true
 		}
-		for _, feature := range currentFeatureRegistry.All() {
+		for _, feature := range v20.AllFeatures() {
 			if strings.HasPrefix(string(feature.ID), string(candidate)+".") {
 				return true
 			}
 		}
+	}
+	// Interactive configuration has its own Gaggle pin and public preview
+	// registry; it must not acquire support in an older Workflow interpreter.
+	// Exact lookup keeps unknown children of a registered container fail-closed.
+	if strings.HasPrefix(leaf, "gaggle.spec.interactive.") {
+		_, ok := workflow.LookupFeature(workflow.FeatureID(leaf))
+		return ok
 	}
 	return false
 }
@@ -401,20 +430,20 @@ func schemaLeafRegistered(leaf string) bool {
 // schemaLeafFeatureCandidates mirrors the namespace conventions of
 // internal/authoring's selectorFeatureCandidates: tasks.* maps into the
 // task.*/stage.* namespaces, gates.* into gate.*/gate.evaluator.*, and
-// triggers.* into trigger.*. Reimplemented here because importing
-// internal/authoring from this package would cycle.
-func schemaLeafFeatureCandidates(leaf string) []FeatureID {
-	candidates := []FeatureID{FeatureID(leaf)}
+// triggers.* into trigger.*. Keep this guard independent of authoring
+// so a candidate-mapping regression cannot weaken both checks together.
+func schemaLeafFeatureCandidates(leaf string) []v20.FeatureID {
+	candidates := []v20.FeatureID{v20.FeatureID(leaf)}
 	switch {
 	case strings.HasPrefix(leaf, "workflow.spec.tasks."):
 		suffix := strings.TrimPrefix(leaf, "workflow.spec.tasks.")
 		switch {
 		case suffix == "run" || strings.HasPrefix(suffix, "run."):
-			candidates = append(candidates, FeatureID("stage."+suffix))
+			candidates = append(candidates, v20.FeatureID("stage."+suffix))
 		case suffix == "workspace":
-			candidates = append(candidates, FeatureID("stage.workspace"))
+			candidates = append(candidates, v20.FeatureID("stage.workspace"))
 		default:
-			candidates = append(candidates, FeatureID("task."+suffix))
+			candidates = append(candidates, v20.FeatureID("task."+suffix))
 		}
 	case strings.HasPrefix(leaf, "workflow.spec.gates."):
 		suffix := strings.TrimPrefix(leaf, "workflow.spec.gates.")
@@ -422,12 +451,12 @@ func schemaLeafFeatureCandidates(leaf string) []FeatureID {
 		case suffix == "automated" || strings.HasPrefix(suffix, "automated."),
 			suffix == "agentic" || strings.HasPrefix(suffix, "agentic."),
 			suffix == "human" || strings.HasPrefix(suffix, "human."):
-			candidates = append(candidates, FeatureID("gate.evaluator."+suffix))
+			candidates = append(candidates, v20.FeatureID("gate.evaluator."+suffix))
 		default:
-			candidates = append(candidates, FeatureID("gate."+suffix))
+			candidates = append(candidates, v20.FeatureID("gate."+suffix))
 		}
 	case strings.HasPrefix(leaf, "workflow.spec.triggers."):
-		candidates = append(candidates, FeatureID("trigger."+strings.TrimPrefix(leaf, "workflow.spec.triggers.")))
+		candidates = append(candidates, v20.FeatureID("trigger."+strings.TrimPrefix(leaf, "workflow.spec.triggers.")))
 	}
 	return candidates
 }

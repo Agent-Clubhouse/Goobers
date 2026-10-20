@@ -14,7 +14,8 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
-// releaseClaimsForRun releases every claim owned by runID. It is safe to call
+// releaseClaimsForRun releases work claims owned by runID, preserving fixed
+// publication custody until verified release or expiry. It is safe to call
 // after an explicit workflow release already did the same work.
 func releaseClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
 	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRunRelease, l.Gaggle(), runID, func() error {
@@ -153,6 +154,9 @@ func recoverClaimsWithResolver(
 	// Release reasons are read once per terminal run, outside the claims lock.
 	reasons := make(map[string]claimrelease.Reason)
 	for _, entry := range snapshot.Snapshot() {
+		if entry.IsPublicationClaim() {
+			continue
+		}
 		terminal, err := claimHolderTerminal(l.Root, entry)
 		if err != nil {
 			recordTerminalClaimInspectionError(log, entry, err)

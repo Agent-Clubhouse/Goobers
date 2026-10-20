@@ -12,6 +12,10 @@ import (
 // are local. The request names only the child; the signed contract selects the
 // parent whose original provider-acknowledged deadlines constrain execution.
 func remoteChildExecutionFence(ctx context.Context, baseURL, token string, contract childpod.Contract) (context.Context, context.CancelFunc, error) {
+	return remoteChildExecutionFenceWithOptions(ctx, baseURL, token, contract, claimsclient.ExecutionFenceOptions{})
+}
+
+func remoteChildExecutionFenceWithOptions(ctx context.Context, baseURL, token string, contract childpod.Contract, options claimsclient.ExecutionFenceOptions) (context.Context, context.CancelFunc, error) {
 	noop := func() {}
 	parent := contract.Identity.RunID
 	valid := contract.ParentOrigin != nil && contract.Validate() == nil
@@ -27,7 +31,7 @@ func remoteChildExecutionFence(ctx context.Context, baseURL, token string, contr
 		return ctx, noop, err
 	}
 	mode := ""
-	return claimsclient.StartExecutionFence(ctx, parent, func(ctx context.Context) (claimsclient.Listing, error) {
+	return claimsclient.StartExecutionFenceWithOptions(ctx, parent, func(ctx context.Context) (claimsclient.Listing, error) {
 		current, listing, err := observer.ExecutionSnapshot(ctx)
 		if err != nil {
 			return listing, err
@@ -44,5 +48,5 @@ func remoteChildExecutionFence(ctx context.Context, baseURL, token string, contr
 			}
 		}
 		return listing, nil
-	})
+	}, options)
 }

@@ -178,6 +178,26 @@ func TestApproveUsesRemoteDaemonAPIRejectsInvalidErrorBodyAndRedirect(t *testing
 	})
 }
 
+func TestDaemonMutationClientTimeoutContainsInterventionBudget(t *testing.T) {
+	for _, id := range []apicontract.RouteID{
+		apicontract.RouteApproveStage,
+		apicontract.RouteOverrideStage,
+		apicontract.RouteRerunStage,
+		apicontract.RouteResolveEscalation,
+	} {
+		route, ok := apicontract.V1Route(id)
+		if !ok {
+			t.Fatalf("%s route is not in the V1 contract", id)
+		}
+		if timeout := daemonMutationClientTimeout(id); timeout <= route.Budget {
+			t.Errorf("%s client timeout = %s, want above route budget %s", id, timeout, route.Budget)
+		}
+	}
+	if timeout := daemonMutationClientTimeout(apicontract.RouteCancelRun); timeout != remoteTriggerTimeout {
+		t.Errorf("cancel client timeout = %s, want ordinary mutation timeout %s", timeout, remoteTriggerTimeout)
+	}
+}
+
 func TestInterventionCLIRequiresAuditText(t *testing.T) {
 	code, _, stderr := runArgs(t, "override", "--actor=operator", "run-1", "review")
 	if code != 2 || !strings.Contains(stderr, "--rationale is required") {

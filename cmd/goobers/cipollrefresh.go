@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
@@ -11,6 +12,54 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
+
+// podCIPollADOCredentialSource keeps scheme, value and expiry from the same
+// broker response. It never reads ambient stage credentials or instance config.
+func podCIPollADOCredentialSource(creds []dispatcher.MintedCredential, scheme, name string, registrar credentials.SecretRegistrar) (providers.ADOCredentialSource, error) {
+	initial, err := mintedADOCredential(creds, scheme, name)
+	if err != nil {
+		return nil, err
+	}
+	client, err := credentialPlaneClient([]string{name})
+	if err != nil {
+		return nil, err
+	}
+	runID, stage := os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage)
+	return providers.NewADORefreshingCredentialSource(name, initial, func(ctx context.Context) (providers.ADOCredential, error) {
+		resolution, err := client.ResolveStage(ctx, runID, stage, []string{name})
+		if err != nil {
+			return providers.ADOCredential{}, err
+		}
+		return mintedADOCredential(resolution.Credentials, resolution.RepoAuthScheme, name)
+	}, registrar)
+}
+
+func mintedADOCredential(creds []dispatcher.MintedCredential, fallback, name string) (providers.ADOCredential, error) {
+	var out providers.ADOCredential
+	count := 0
+	for _, cred := range creds {
+		if cred.Capability != name {
+			continue
+		}
+		count++
+		switch strings.ToLower(strings.TrimSpace(cred.SchemeOr(fallback))) {
+		case "basic":
+			out.Kind = providers.ADOCredentialKindPAT
+		case "bearer":
+			out.Kind = providers.ADOCredentialKindBearer
+		default:
+			return out, fmt.Errorf("%w for %s: explicit Basic or Bearer scheme required", providers.ErrInvalidADOCredentialDelivery, name)
+		}
+		out.Secret = cred.Value
+		if cred.ExpiresAt != nil {
+			out.ExpiresAt = *cred.ExpiresAt
+		}
+	}
+	if count != 1 || strings.TrimSpace(out.Secret) == "" {
+		return out, fmt.Errorf("%w for %s: expected exactly one nonempty credential", providers.ErrInvalidADOCredentialDelivery, name)
+	}
+	return out, nil
+}
 
 // cipollrefresh.go ends the #3489 snapshot in both ci-poll paths
 // (Goobers#6120 phase 1). ci-poll runs in-process — in the daemon on the local

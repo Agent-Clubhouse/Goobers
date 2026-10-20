@@ -645,3 +645,60 @@ func TestRunnerResumesConflictRetryFromDurableGateDecision(t *testing.T) {
 		})
 	}
 }
+
+// The shipped implementation workflow uses failure-class, not status-equals.
+// A prepare conflict must repass implement even though its error is retryable.
+func TestRunnerPrepareConflictFailureClassRepassesImplement(t *testing.T) {
+	repo := newBatchLoadRepo(t, 1)
+	deterministic := &conflictRemediatingDeterministic{t: t}
+	r, runsDir := newWorktreeProvisioningTestRunner(t, repo.remote, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return deterministic, nil
+	})
+	r.cfg.RepoCloneURL = repo.cloneURL
+	runID := "run-prepare-conflict-failure-class"
+	deterministic.runDir = filepath.Join(runsDir, runID)
+	repo.runDir = deterministic.runDir
+	def := conflictRetryMachine(t, "", "implement", 0).Def
+	def.Spec.Gates[0].Automated.Check = "failure-class"
+	def.Spec.Gates[0].Branches["infra"] = "local-ci"
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseCompleted || deterministic.implementAttempts != 2 || deterministic.localCIAttempts != 1 {
+		t.Fatalf("phase=%s implement=%d local-ci=%d; want completed, 2, 1", result.Phase, deterministic.implementAttempts, deterministic.localCIAttempts)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawConflict, sawFail := false, false
+	for _, event := range events {
+		if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Error != nil && event.Error.Code == baseSyncConflictErrorCode {
+			sawConflict = true
+		}
+		if event.Gate == "local-gate" && event.Type == journal.EventGateEvaluated {
+			if event.Verdict == "infra" {
+				t.Fatal("prepare conflict routed as infrastructure")
+			}
+			if event.Verdict == "fail" {
+				sawFail = true
+			}
+		}
+	}
+	if !sawConflict || !sawFail {
+		t.Fatalf("conflict=%t fail verdict=%t", sawConflict, sawFail)
+	}
+}

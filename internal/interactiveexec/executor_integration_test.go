@@ -71,6 +71,7 @@ func integrationRequest() interactive.ExecutionRequest {
 }
 
 func TestIntegrationActualEditTestsAndCumulativeChildIsolation(t *testing.T) {
+	testdep.Require(t, "git", "node")
 	e := integrationExecutor(t, "local-tools")
 	req := integrationRequest()
 	req.Text = "investigate"
@@ -159,6 +160,7 @@ func TestIntegrationActualEditTestsAndCumulativeChildIsolation(t *testing.T) {
 }
 
 func TestIntegrationSteeringCancellationAndCustody(t *testing.T) {
+	testdep.Require(t, "git", "node")
 	e := integrationExecutor(t, "local-tools")
 	req := integrationRequest()
 	req.Text = "fix"
@@ -229,6 +231,7 @@ func TestIntegrationNativeCodexInvestigation(t *testing.T) {
 }
 
 func TestIntegrationFinalInspectionRetainsCustodyAndEarlierError(t *testing.T) {
+	testdep.Require(t, "git", "node")
 	e := integrationExecutor(t, "local-tools")
 	if _, err := e.prepare(context.Background(), integrationRequest()); err != nil {
 		t.Fatal(err)

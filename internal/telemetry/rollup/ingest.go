@@ -136,11 +136,11 @@ func insertRun(ctx context.Context, tx *sql.Tx, id runIdentity, events []journal
 		}
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms, instance_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms, instance_id, continued_from_run_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id.RunID, id.Workflow, id.WorkflowVersion, nullIfEmpty(id.WorkflowDigest), id.Gaggle,
 		nullIfEmpty(id.Trigger.Kind), nullIfEmpty(id.Trigger.Ref), nullIfEmpty(status),
-		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt), nullIfEmpty(instanceID))
+		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt), nullIfEmpty(instanceID), id.ContinuedFromRunID)
 	if err != nil {
 		return fmt.Errorf("rollup: insert run %s: %w", id.RunID, err)
 	}
@@ -1228,15 +1228,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	events, newGen, newOffset, _, eventSkips, err := readInstanceEventsFrom(schedulerDir, cursor.generation, cursor.byteOffset)
-	if err != nil {
-		return err
-	}
 	spanCursor, err := readSpansCursor(ctx, db.sql)
-	if err != nil {
-		return err
-	}
-	spans, newSpanOffset, _, spanSkips, err := readSchedulerSpansFrom(schedulerDir, spanCursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -1254,46 +1246,17 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// completes — never duplicates a row. No DELETE-then-reinsert of the whole
 	// table: that was O(journal) writes every tick and churned the WAL.
 	maxSeq := cursor.lastSeq
-	for _, ev := range events {
+	newGen, newOffset, _, eventSkips, err := readInstanceEventsFrom(ctx, schedulerDir, cursor.generation, cursor.byteOffset, func(ev journalEvent) error {
 		if ev.Seq <= cursor.lastSeq {
-			continue
+			return nil
 		}
 		if ev.Seq > maxSeq {
 			maxSeq = ev.Seq
 		}
-		switch ev.Type {
-		case eventInitCompleted, eventTriggerFired, eventTickSkipped, eventProviderQuotaReset, eventPollShed, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(seq) DO NOTHING`,
-				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
-				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
-			}
-			if ev.Type == eventError && ev.Error != nil {
-				if _, err := tx.ExecContext(ctx, `
-					INSERT INTO scheduler_errors (seq, code, error_class, message, occurred_at)
-					VALUES (?, ?, ?, ?, ?)
-					ON CONFLICT(seq) DO NOTHING`,
-					ev.Seq, ev.Error.Code, nullIfEmpty(string(telemetry.ClassifyError(ev.Error.Code))),
-					nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
-					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
-				}
-			}
-			if ev.Type == eventInitCompleted {
-				if err := upsertTimeToFirstPR(ctx, tx, ev.Time, time.Time{}); err != nil {
-					return err
-				}
-			}
-		case eventWorkflowStarved:
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(seq) DO NOTHING`,
-				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
-				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
-			}
-		}
+		return ingestSchedulerEvent(ctx, tx, ev)
+	})
+	if err != nil {
+		return err
 	}
 	// Incremental replay applies here too: spans is now bounded to the tail
 	// past spanCursor.byteOffset, not the whole rolling file (previously
@@ -1302,22 +1265,21 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// stays: it is what makes replaying an already-ingested span (the
 	// reset-from-head fallback in readSchedulerSpansFrom) harmless rather than
 	// a duplicate-key error.
-	for _, span := range spans {
+	var traceless jsonlSkips
+	newSpanOffset, _, spanSkips, err := readSchedulerSpansFrom(ctx, schedulerDir, spanCursor.byteOffset, func(span telemetry.SpanRecord) error {
 		if span.TraceID == "" {
-			// Decodable but unusable — the same class as an undecodable line
-			// (#5562): failing here would pin the cursor in front of it.
-			spanSkips = spanSkips.add(jsonlSkips{
-				count: 1, first: fmt.Errorf("rollup: scheduler span %q has no trace id", span.SpanID),
-			})
-			continue
+			traceless = traceless.add(jsonlSkips{count: 1, first: fmt.Errorf("rollup: scheduler span %q has no trace id", span.SpanID)})
+			return nil
 		}
 		if err := deleteSpan(ctx, tx, span.TraceID, span.SpanID); err != nil {
 			return err
 		}
-		if err := insertSpans(ctx, tx, span.TraceID, []telemetry.SpanRecord{span}); err != nil {
-			return err
-		}
+		return insertSpans(ctx, tx, span.TraceID, []telemetry.SpanRecord{span})
+	})
+	if err != nil {
+		return err
 	}
+	spanSkips = spanSkips.add(traceless)
 	if err := writeSchedulerCursor(ctx, tx, newGen, newOffset, maxSeq); err != nil {
 		return err
 	}
@@ -1343,6 +1305,45 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// delay, not a correctness problem, so its failure must never surface
 	// as an ingest failure.
 	checkpointWAL(ctx, db.sql)
+	return nil
+}
+
+// ingestSchedulerEvent projects one decoded record, releasing its potentially
+// large message before the next record is read. The caller owns the transaction.
+func ingestSchedulerEvent(ctx context.Context, tx *sql.Tx, ev journalEvent) error {
+	switch ev.Type {
+	case eventInitCompleted, eventTriggerFired, eventTickSkipped, eventProviderQuotaReset, eventPollShed, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
+		if _, err := tx.ExecContext(ctx, `
+				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(seq) DO NOTHING`,
+			ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
+			return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
+		}
+		if ev.Type == eventError && ev.Error != nil {
+			if _, err := tx.ExecContext(ctx, `
+					INSERT INTO scheduler_errors (seq, code, error_class, message, occurred_at)
+					VALUES (?, ?, ?, ?, ?)
+					ON CONFLICT(seq) DO NOTHING`,
+				ev.Seq, ev.Error.Code, nullIfEmpty(string(telemetry.ClassifyError(ev.Error.Code))),
+				nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
+				return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
+			}
+		}
+		if ev.Type == eventInitCompleted {
+			if err := upsertTimeToFirstPR(ctx, tx, ev.Time, time.Time{}); err != nil {
+				return err
+			}
+		}
+	case eventWorkflowStarved:
+		if _, err := tx.ExecContext(ctx, `
+				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(seq) DO NOTHING`,
+			ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
+			return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
+		}
+	}
 	return nil
 }
 

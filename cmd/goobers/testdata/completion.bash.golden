@@ -107,7 +107,7 @@ _goobers_completion()
             esac
             ;;
         up)
-            flags+=" --quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
+            flags+=" --quiet --diagnostics --notify --skip-preflight --recover-config-generation --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
             ;;
         self-update)
             flags+=" --policy --include-prerelease --branch --target --health-ticks --health-timeout"
@@ -208,7 +208,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 list) flags+=" --json --stale --gaggle --provider" ;;
                 active) flags+=" --json --gaggle --provider" ;;
-                release) flags+=" --gaggle --provider --force" ;;
+                release) flags+=" --gaggle --provider --force --publication-custody-reason" ;;
             esac
             ;;
         trace)

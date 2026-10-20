@@ -3,6 +3,7 @@ package execshim
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,6 +75,47 @@ func TestUnacknowledgedWriterRetainsCustody(t *testing.T) {
 	s, _ := d.Start(context.Background(), autoOptions())
 	_, _ = s.Send(context.Background(), chat.Text("first"), chat.SendOptions{Delivery: chat.Prompt})
 	if err := s.Close(); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+		t.Fatal(err)
+	}
+}
+
+func TestInterruptDeadlineDoesNotReleaseWriterCustody(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	driver := &Driver{Run: func(ctx context.Context, _ harness.RunRequest) (harness.Outcome, error) {
+		ack := invoke.RegisterWorkspaceWriter(ctx)
+		defer ack(nil)
+		close(started)
+		<-release
+		return harness.Outcome{}, ctx.Err()
+	}}
+	session, err := driver.Start(t.Context(), autoOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Send(t.Context(), chat.Text("first"), chat.SendOptions{Delivery: chat.Prompt}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	if err := session.Interrupt(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("interrupt did not honor deadline: %v", err)
+	}
+	if _, err := session.Send(t.Context(), chat.Text("second"), chat.SendOptions{Delivery: chat.Prompt}); !errors.Is(err, chat.ErrBusy) {
+		t.Fatalf("writer admitted before quiescence: %v", err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- session.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned before writer quiesced: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	unblock()
+	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}
 }

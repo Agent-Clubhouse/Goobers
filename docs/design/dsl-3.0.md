@@ -163,11 +163,12 @@ task does. Three rules are gate-specific:
 - **Only agentic gates are placeable.** An automated gate is a pure function over its inputs
   and a human gate pauses for a portal decision; both evaluate in the daemon/control plane by
   definition, so `runsOn` on either is a compile error (WF023), never a silently ignored block.
-- **A placed gate declares `cpu` and `memory`.** The gaggle floor deliberately carries no
-  quantities, and an agentic review is the most expensive stage class in a lane; inheriting the
-  floor's capabilities with no envelope would be a silent under-provision. A gate `runsOn`
-  without both is a compile error (WF023), not a default — default-to-self was rejected because
-  it makes "did my gate place?" invisible in the yaml.
+- **A distributed placed gate declares `cpu` and `memory`.** The gaggle floor
+  carries no quantities. The shared placement solver refuses missing gate resource
+  minimums on an inventory with non-self runners (RNR003), preventing an
+  under-provisioned reviewer. On a local inventory, missing quantities are advisory
+  (RNR004), consistent with D4. This check belongs to placement, not compilation:
+  the same workflow can run locally without inventing resource declarations.
 - **An agentic gate without `runsOn` is unplaced.** It contributes no solver row, receives no
   pin, and evaluates in the control plane byte-for-byte as before the field existed; `goobers
   fix --to 3.0` never invents one. A placed gate inherits its subject's repo state (no
@@ -474,7 +475,7 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | REF012 | Warning (always), **strict-neutral** | A Gaggle declares `connectionRef` at any of `spec.project`, `spec.backlog`, or `spec.additionalRepos[]` — the field reads as a credential selector, but the local runtime never consults it: `credentials.RunnerGrants`/`AdditionalReadGrants` select each access's token from `instance.yaml` `repos[]` by repository identity, and the named Connection's secret is never read (#3296). A declared-but-ignored credential selector is the one prohibited state, so validate reports every declaration — including the single-site case — rather than substituting silently. The scaffolder and the shipped `config-examples/`, `reference-workflows/`, starter, and guide configs stopped declaring the field in the same change, so the finding lands only on configs an author wrote. Strict-neutral alongside DVL020 and RNR006: an author who keeps the field for a cloud-tier deployment cannot silence it by editing their config, so promotion would redden existing pipelines purely on upgrade |
 | CAP005 | Error | Unknown restriction token, with did-you-mean suggestion; or a restriction a `windows`-placed stage cannot require (`network:none`, `network:allowlist`, `fs:readonly-except-workspace` — restrictions doc D4, #3619) |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |
-| WF023 | Error | `runsOn` on a non-agentic gate, an agentic gate `runsOn` without `cpu` and `memory`, or one without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |
+| WF023 | Error | `runsOn` on a non-agentic gate, or an agentic gate `runsOn` without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |
 | WF024 | retired | Was "gate placement declared but not honoured" while decision 001's engine half was unlanded; the engine honours gate placement now (§2 Gates) and the code is not reused |
 
 The structural `runsOn` problems (invalid os enum, malformed quantity, gaggle-vs-stage OS
@@ -651,3 +652,28 @@ deliberately leaves to implementation:
 10. Windows `network:none` escape hatch (#2034's host-global env override) versus
     per-runner restriction declarations — reconciled in the restrictions companion doc;
     the DSL surface here is unaffected.
+
+### 10.1 Graduation review status (v0.6.0 preparation)
+
+The graduation process and scope are recorded in
+[DSL lifecycle §3.3.2](./dsl-version-lifecycle.md#332-graduation-from-preview-to-supported).
+The provider access layer (#5749–#5754, milestone #38) is **DSL 3.x** roadmap work,
+not part of this 3.0 freeze. This status records source evidence, not a claim that
+all §9 smoke acceptance criteria have passed.
+
+| Open point | Resolution or outstanding evidence |
+|---|---|
+| 1 — package layout | Version-literal packages: `internal/workflow/v_2_0` and `v_3_0`. Isolation of the 3.1 continuation is required before freezing 3.0 (#4894). |
+| 2 — gaggle activation | Workflow pins govern compilation: a 2.0 workflow refuses a gaggle `runsOn` floor (`refusePreV30Surface`); 3.0 merges that floor into stage placement (`WithGaggleRunsOn`). Mixed pins must satisfy every pin. Workflow-less compatibility resolution must be fixed and tested before graduation; `NewestSupported()` must not silently invalidate legacy `requiredCapabilities`. |
+| 3 — providerstage version linkage | Per-entry version bounds, resolved into a version-specific manifest (`internal/providerstage/manifest.go`); input descriptors also carry `SinceDSL`/`UntilDSL` (`inputs.go`). Separate provider access layer work remains on the 3.x roadmap. |
+| 4 — instance schema | Explicit `schemaVersion: 2` gates runner inventory (`internal/instance/config.go`). Verify rollout migration and §9.5 evidence before lock; no deployment is implied by graduation. |
+| 5 — migrator inference | Closed by delivery decisions 001/002; §9.10 remains a mandatory regression gate. |
+| 6 — quantities | `v_3_0/runson.go` uses `k8s.io/apimachinery/pkg/api/resource`; diagnostics and digests retain author spelling, so `2000m` and `2` are not canonicalized. |
+| 7 — CEL limits | Stage and gaggle markers set capabilities `maxItems: 32` and restrictions `maxItems: 8` (`api/v1alpha1/{workflow,gaggle}_types.go`). Attach envtest install evidence before lock. |
+| 8 — solver and source trees | Shared `internal/runnersolve`; `goobers validate --source-tree` uses the example inventory as advisory unless `--instance` supplies the real inventory (`cmd/goobers/validatereality.go`). |
+| 9 — Linux preference wait | Outstanding graduation evidence: verify the runtime bounded-wait default and expiry diagnostic against D3 and §9.6; do not infer runtime behavior from solver unit tests. |
+| 10 — Windows restrictions | Outstanding graduation evidence: reconcile the host override and per-runner declaration with the restrictions companion design and attach the Windows smoke result. |
+
+The lock reviewer must link evidence for all ten §9 criteria and resolve the
+outstanding entries above. Existing local-runner gate `runsOn` validation is also
+under review before freezing; the freeze must include the agreed implementation.

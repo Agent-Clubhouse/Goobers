@@ -114,6 +114,11 @@ const (
 // as cold and the rest as the warm distribution. See minSamplesForP999 for why
 // the count matters to what may be claimed.
 func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bool) (Measurement, error) {
+	return measureWithProgress(layout, gen, samples, noFsync, func(string) {})
+}
+
+// measureWithProgress reports phase boundaries outside the timed operations.
+func measureWithProgress(layout instance.Layout, gen GenerateResult, samples int, noFsync bool, progress func(string)) (Measurement, error) {
 	if samples < 2 {
 		samples = 2 // one cold plus at least one warm, or there is no distribution
 	}
@@ -124,16 +129,12 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 		SchedulerEvents:      gen.SchedulerEvents,
 		SchedulerJournalSize: gen.SchedulerJournalSize,
 	}
-	// RebuildAll over every per-gaggle run root, not Rebuild over one directory:
-	// runs live in gaggles/<g>/runs, so the single-root form silently ingests
-	// nothing and every subsequent read measures an empty index.
-	roots, err := layout.RunDirs()
+	roots, err := measureRunFootprint(layout, &m, progress)
 	if err != nil {
-		return Measurement{}, fmt.Errorf("scale: enumerate run roots: %w", err)
+		return Measurement{}, err
 	}
-	m.RunEventsSize = treeSizeAcross(roots, "events.jsonl")
-	m.SpansSize = treeSizeUnderAcross(roots, "spans")
 
+	progress("measure:rollup-rebuild")
 	rebuildStart := time.Now()
 	if err := rollup.RebuildAll(context.Background(), layout.TelemetryDB(), roots, layout.SchedulerDir()); err != nil {
 		return Measurement{}, fmt.Errorf("scale: rebuild rollup: %w", err)
@@ -149,6 +150,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 		m.TelemetryDBSize = info.Size()
 	}
 
+	progress("measure:read-service")
 	db, err := rollup.Open(layout.TelemetryDB())
 	if err != nil {
 		return Measurement{}, fmt.Errorf("scale: open rollup: %w", err)
@@ -169,6 +171,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 	// off the request path with a background sampler (#1741), and a harness that
 	// omits it would measure a code path production does not take. Readers then
 	// serve the last sample from memory.
+	progress("measure:active-run-sample")
 	stopSampler := service.StartActiveRunSampler(time.Hour)
 	defer func() { _ = stopSampler() }()
 	// Wait for the first sample so the measurement reflects a warm daemon rather
@@ -180,6 +183,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 
 	// A deep cursor is resolved once, outside the timed loop, so the deep-page
 	// stat measures the page fetch rather than the walk that found the cursor.
+	progress("measure:resolve-samples")
 	deepCursor, err := cursorAtDepth(ctx, service, 10)
 	if err != nil {
 		return Measurement{}, err
@@ -277,6 +281,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 	m.Work = map[string]readprobe.Snapshot{}
 	readprobe.Enable()
 	for _, op := range ops {
+		progress("measure:work:" + op.name)
 		before := readprobe.Take()
 		if err := op.fn(); err != nil {
 			readprobe.Disable()
@@ -287,6 +292,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 	readprobe.Disable()
 
 	for _, op := range ops {
+		progress("measure:timing:" + op.name)
 		// The full status scan is the deliberately-unindexed worst case; at 1×
 		// it is seconds, so sampling it as often as an indexed page would make
 		// the harness's own runtime the bottleneck.
@@ -310,6 +316,18 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 
 // statusScanSamples caps repetitions of the unindexed full scan.
 const statusScanSamples = 3
+
+// measureRunFootprint visits every per-gaggle root, matching RebuildAll below.
+func measureRunFootprint(layout instance.Layout, m *Measurement, progress func(string)) ([]string, error) {
+	progress("measure:footprint")
+	roots, err := layout.RunDirs()
+	if err != nil {
+		return nil, fmt.Errorf("scale: enumerate run roots: %w", err)
+	}
+	m.RunEventsSize = treeSizeAcross(roots, "events.jsonl")
+	m.SpansSize = treeSizeUnderAcross(roots, "spans")
+	return roots, nil
+}
 
 // cursorAtDepth walks `pages` pages and returns the cursor that follows them, so
 // a deep page can be timed without the walk counting against it. An empty

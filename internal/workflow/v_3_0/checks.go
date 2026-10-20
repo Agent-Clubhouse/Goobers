@@ -181,7 +181,7 @@ func CheckRepoHandoffs(def Definition) []string {
 
 // CheckGateRunsOn reports the gate-only runsOn rules — WF023 (decision 001,
 // dsl-3.0.md §2 "Gates"): runsOn on a non-agentic gate, and an agentic gate
-// runsOn missing cpu or memory.
+// runsOn missing its reviewer. Resource completeness is inventory-dependent.
 func CheckGateRunsOn(def Definition) []string {
 	return gateRunsOnProblems(def)
 }

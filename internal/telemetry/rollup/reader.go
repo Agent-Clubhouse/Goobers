@@ -3,9 +3,9 @@ package rollup
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -132,25 +132,28 @@ func readEvents(runDir string) ([]journalEvent, error) {
 // idempotent (events: INSERT ... ON CONFLICT DO NOTHING keyed by seq), so
 // replaying already-ingested events costs one extra full read, not a
 // duplicate row.
-func readInstanceEventsFrom(schedulerDir string, cursorGen int, byteOffset int64) (events []journalEvent, newGen int, newOffset int64, reset bool, skipped jsonlSkips, err error) {
+func readInstanceEventsFrom(ctx context.Context, schedulerDir string, cursorGen int, byteOffset int64, visit func(journalEvent) error) (newGen int, newOffset int64, reset bool, skipped jsonlSkips, err error) {
 	path, gen, err := resolveSchedulerEventsGeneration(schedulerDir)
 	if err != nil {
-		return nil, cursorGen, 0, false, jsonlSkips{}, err
+		return cursorGen, 0, false, jsonlSkips{}, err
 	}
 	start := byteOffset
 	if gen != cursorGen {
 		start = 0
 		reset = true
 	}
-	events, newOffset, sizeReset, skipped, err := readJSONLTail[journalEvent](path, start)
-	if err != nil {
-		return nil, cursorGen, 0, false, jsonlSkips{}, err
-	}
-	events, skipped = dropSchemalessEvents(events, skipped, path)
-	if err := validateJournalEventSchemas(events); err != nil {
-		return nil, cursorGen, 0, false, jsonlSkips{}, fmt.Errorf("rollup: decode %s: %w", filepath.Base(path), err)
-	}
-	return events, gen, newOffset, reset || sizeReset, skipped, nil
+	var schemaless jsonlSkips
+	newOffset, sizeReset, skipped, err := readJSONLTail(ctx, path, start, func(event journalEvent) error {
+		if event.Schema == "" {
+			schemaless = schemaless.add(jsonlSkips{count: 1, first: fmt.Errorf("rollup: decode %s: record at seq %d has no schema", path, event.Seq)})
+			return nil
+		}
+		if err := validateJournalEventSchemas([]journalEvent{event}); err != nil {
+			return fmt.Errorf("rollup: decode %s: %w", filepath.Base(path), err)
+		}
+		return visit(event)
+	})
+	return gen, newOffset, reset || sizeReset, skipped.add(schemaless), err
 }
 
 // readSpans decodes spans/spans.jsonl, tolerating a missing file (a run may
@@ -184,96 +187,11 @@ func readSpans(runDir string) ([]telemetry.SpanRecord, error) {
 // events.jsonl: a steady-state ingest reads only the newly appended tail
 // instead of delete+reinserting every span ever recorded. See readJSONLTail
 // for the offset/reset contract.
-func readSchedulerSpansFrom(schedulerDir string, byteOffset int64) (spans []telemetry.SpanRecord, newOffset int64, reset bool, skipped jsonlSkips, err error) {
-	return readJSONLTail[telemetry.SpanRecord](filepath.Join(schedulerDir, dirSpans, fileSpans), byteOffset)
+func readSchedulerSpansFrom(ctx context.Context, schedulerDir string, byteOffset int64, visit func(telemetry.SpanRecord) error) (newOffset int64, reset bool, skipped jsonlSkips, err error) {
+	return readJSONLTail(ctx, filepath.Join(schedulerDir, dirSpans, fileSpans), byteOffset, visit)
 }
 
-// readJSONLTail decodes the newline-delimited records in path at or after
-// byteOffset — shared by readInstanceEventsFrom and readSchedulerSpansFrom,
-// the two append-only, unboundedly-growing logs the rollup ingests
-// incrementally.
-//
-// It returns the decoded records, the offset just past the last COMPLETE
-// record (where the next ingest resumes — a torn final line is re-read next
-// time, the same tolerance decodeJSONLTolerant applies), and reset=true when
-// the file is now shorter than byteOffset (rotation/compaction/truncation), in
-// which case it re-reads from the head — safe because both callers'
-// downstream writes are idempotent (ON CONFLICT DO NOTHING for events keyed by
-// seq; delete-then-insert for spans keyed by span id) so replaying an
-// already-ingested prefix is harmless, just redundant work. A missing file
-// (no `goobers up` yet, or no scheduler spans emitted yet) is not an error,
-// just zero records at offset 0.
-//
-// A complete line that does not decode is skipped and counted in skipped,
-// never fatal (#5562): these logs only grow, so failing the read on one bad
-// line pinned the cursor in front of it and froze ingestion of every later
-// record for as long as the line existed. The caller records the skip where
-// an operator can see it.
-func readJSONLTail[T any](path string, byteOffset int64) (records []T, newOffset int64, reset bool, skipped jsonlSkips, err error) {
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return nil, 0, false, jsonlSkips{}, nil
-	}
-	if err != nil {
-		return nil, 0, false, jsonlSkips{}, fmt.Errorf("rollup: stat %s: %w", path, err)
-	}
-	start := byteOffset
-	if start < 0 || info.Size() < start {
-		// The file shrank below where we last resumed — it was rotated,
-		// compacted, or truncated. Re-read from the head; the caller's own
-		// idempotent write keeps already-ingested rows untouched.
-		start = 0
-		reset = true
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, 0, false, jsonlSkips{}, fmt.Errorf("rollup: open %s: %w", path, err)
-	}
-	defer func() { _ = file.Close() }()
-	if start > 0 {
-		if _, err = file.Seek(start, io.SeekStart); err != nil {
-			return nil, 0, false, jsonlSkips{}, fmt.Errorf("rollup: seek %s: %w", path, err)
-		}
-	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, 0, false, jsonlSkips{}, fmt.Errorf("rollup: read %s: %w", path, err)
-	}
-	records, skipped = decodeJSONLSkipping[T](data, start)
-	if skipped.count > 0 {
-		skipped.first = fmt.Errorf("rollup: decode %s: %w", path, skipped.first)
-	}
-	// Advance only past the last complete (newline-terminated) record. -1 (no
-	// newline in this window) leaves the offset unchanged so the whole tail is
-	// re-read once it completes.
-	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
-		start += int64(nl) + 1
-	}
-	return records, start, reset, skipped, nil
-}
-
-// dropSchemalessEvents skips records that decoded but carry no schema at all
-// (`{}`, `null`, a fragment that happens to parse). They are corrupt lines of
-// the same class as an undecodable one (#5562); left in, the schema check
-// below would fail every ingest at them forever. A record that names a schema
-// this build does not support is different — an upgrade fixes it — so it
-// stays fatal.
-func dropSchemalessEvents(events []journalEvent, skipped jsonlSkips, path string) ([]journalEvent, jsonlSkips) {
-	kept := events[:0]
-	for _, event := range events {
-		if event.Schema != "" {
-			kept = append(kept, event)
-			continue
-		}
-		if skipped.first == nil {
-			skipped.first = fmt.Errorf("rollup: decode %s: record at seq %d has no schema", path, event.Seq)
-		}
-		skipped.count++
-	}
-	return kept, skipped
-}
-
-// jsonlSkips counts the complete lines decodeJSONLSkipping could not decode,
+// jsonlSkips counts complete records the scheduler reader could not decode,
 // with the first one's error (naming its byte offset) as the example.
 type jsonlSkips struct {
 	count int
@@ -286,40 +204,6 @@ func (s jsonlSkips) add(other jsonlSkips) jsonlSkips {
 	}
 	s.count += other.count
 	return s
-}
-
-// decodeJSONLSkipping is decodeJSONLTolerant for the append-only scheduler
-// logs: the same torn-tail rule, but a complete line that does not decode is
-// skipped and counted instead of failing every record after it (#5562).
-// base is data's offset in its file, so a skip names where the line is.
-// Lines are split directly rather than through a bufio.Scanner, so a line
-// longer than any scanner buffer is one skip, not a permanent read error.
-func decodeJSONLSkipping[T any](data []byte, base int64) ([]T, jsonlSkips) {
-	nl := bytes.LastIndexByte(data, '\n')
-	if nl < 0 {
-		return nil, jsonlSkips{}
-	}
-	var out []T
-	var skipped jsonlSkips
-	offset := base
-	for _, raw := range bytes.Split(data[:nl], []byte{'\n'}) {
-		lineOffset := offset
-		offset += int64(len(raw)) + 1
-		line := bytes.TrimSpace(raw)
-		if len(line) == 0 {
-			continue
-		}
-		var rec T
-		if err := json.Unmarshal(line, &rec); err != nil {
-			if skipped.first == nil {
-				skipped.first = fmt.Errorf("corrupt record at byte offset %d: %w", lineOffset, err)
-			}
-			skipped.count++
-			continue
-		}
-		out = append(out, rec)
-	}
-	return out, skipped
 }
 
 // decodeJSONLTolerant splits data on its last newline: everything before it

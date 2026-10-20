@@ -159,13 +159,13 @@ func waitGenerationGate(t *testing.T, entered <-chan harness.RunRequest, l insta
 	return harness.RunRequest{}
 }
 
-func startGenerationTestDaemon(t *testing.T, root string) func() {
+func startGenerationTestDaemon(t *testing.T, root string, options ...string) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	force := make(chan struct{})
 	output, diagnostics := newDaemonOutput(), newDaemonOutput()
 	done := make(chan int, 1)
-	go func() { done <- runUpContextWithForce(ctx, force, []string{root}, output, diagnostics) }()
+	go func() { done <- runUpContextWithForce(ctx, force, append(options, root), output, diagnostics) }()
 	stopped := false
 	stop := func() {
 		if stopped {

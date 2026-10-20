@@ -27,7 +27,8 @@ test("another loopback port cannot frame the authenticated portal", async ({ bro
     // Positive control: the same authenticated browser can load the portal at
     // top level; only embedding is refused.
     await page.goto(`${baseURL}/#/interactive`);
-    await expect(page.locator("#main-content")).toContainText("What are we working on?");
+    await expect(page.getByRole("main")).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/#/interactive`);
   } finally {
     await context.close();
     await new Promise<void>(resolve => preview.close(() => resolve()));
