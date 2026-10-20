@@ -5,15 +5,16 @@ package interactiveexec
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/chat/chattest"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/interactive"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
 type steeringDriver struct {
@@ -82,6 +83,7 @@ func TestLiveCopilotInteractiveSample(t *testing.T) {
 	}
 	e, req := bridgeExecutor(t)
 	e.config.Model = ""
+	e.config.Sandbox = nil // Live validation must use the actual platform sandbox.
 	req.Model = ""
 	req.Harness = "copilot"
 	req.Tools = nil

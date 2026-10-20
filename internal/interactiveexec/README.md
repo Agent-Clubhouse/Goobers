@@ -56,3 +56,26 @@ and verifies native custody before snapshot capture, storing the native session
 identity in host metadata so a later leased turn can resume it. Copilot's own
 session is long-lived across sends while an execution lease is active; a native
 idle event alone never permits a snapshot while the process is still alive.
+
+Native drivers require the platform OS sandbox, including execshim fallbacks;
+there is no unconfined fallback. All native request environments use a private
+HOME and provider runtime configuration. Missing isolated model authentication
+fails instead of inheriting an ordinary host profile. File-backed Codex login
+credentials are not copied; its isolated runtime requires OS keyring access or
+a scoped API credential.
+
+Agent workspaces live beside server state at `<state-dir>-workspaces`, and
+Codex native state at `<state-dir>-chat-state`. The whole human server state
+directory is read-denied by the OS wrapper. Existing workspaces formerly nested
+under state are not automatically migrated: operators must reconcile their
+writer custody before starting new sessions. Human approval credentials must
+stay inside server state, never in agent environment, argv, or runtime files.
+
+This is the same filesystem confinement used by stages. It does not isolate
+host networking or all IPC. The prototype remains a trusted same-user host;
+the human HTTP control plane must separately authenticate human authority.
+The per-invocation MCP bridge intentionally exposes only the pinned tool set
+under Check→Invoke; invoking that same bridge from a shell grants no additional
+authority. Native permission levels do not replace the outer sandbox. Execshim
+supports only Auto under host policy and rejects Plan, Ask, and AutoEdit rather
+than claiming prompt text enforces a restricted mode.

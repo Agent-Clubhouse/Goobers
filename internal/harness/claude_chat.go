@@ -101,6 +101,10 @@ func (c *ClaudeAdapter) prepareClaudeChat(ctx context.Context, req RunRequest, o
 	}
 	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
 	env = overrideEnv(env, "TMPDIR", tempDir)
+	env, err = isolateInteractiveHome(req, env)
+	if err != nil {
+		return launch, err
+	}
 	if req.Sandbox != nil {
 		roots, err := gitWritableRoots(req.Workspace)
 		if err != nil {

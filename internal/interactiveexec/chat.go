@@ -47,9 +47,17 @@ func (e *Executor) driverRegistry(provider string, request harness.RunRequest) *
 		adapter = c
 	case "claude":
 		request.HarnessOptions = nil
-		adapter = &harness.ClaudeAdapter{Command: []string{"claude"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp")}
+		c := &harness.ClaudeAdapter{Command: []string{"claude"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp")}
+		if e.runNative == nil {
+			_ = registry.Register(provider, c.ChatDriver(request))
+		}
+		adapter = c
 	case "codex":
-		adapter = &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp")}
+		c := &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp")}
+		if e.runNative == nil {
+			_ = registry.Register(provider, harness.NewCodexChatDriver(harness.CodexChatConfig{Adapter: c, Request: request, StateDir: chatStatePath(e.config.StateDir, request.Workspace)}))
+		}
+		adapter = c
 	}
 	if adapter == nil {
 		return registry
@@ -197,12 +205,12 @@ func readChatCompletion(workspace, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	file, err := root.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("chat completion is missing")
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
 	if err != nil {
 		return nil, err

@@ -104,6 +104,10 @@ func prepareCodexChat(ctx context.Context, cfg CodexChatConfig, o chat.StartOpti
 	for _, name := range []string{"TMPDIR", "TEMP", "TMP"} {
 		env = overrideEnv(env, name, tmp)
 	}
+	env, err = isolateInteractiveHome(req, env)
+	if err != nil {
+		return p, err
+	}
 	shell := codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(env, append(reserved, secrets...)), c.InstanceRoot)
 	p.argv = append(resolveStdioHarnessCommand(c.Command), "app-server", "--listen", "stdio://", "--disable", "hooks")
 	for _, override := range []string{

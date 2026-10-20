@@ -40,3 +40,9 @@ credit interpretation, richer subagent projection, effort switching, version
 range policy and Codex/Claude native transports remain follow-up work. SDK
 handshake compatibility is checked before fallback; a guessed version range
 is not used to block a working installed CLI.
+
+The recorded live smoke above predates interactive host confinement and is
+transport/lifecycle evidence only. Interactive execution now supplies the OS
+sandbox and a private HOME, read-denies human server state, and fails closed
+when those requirements or isolated authentication are unavailable. See the
+interactive executor README for the residual host network/IPC trust boundary.

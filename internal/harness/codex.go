@@ -484,6 +484,19 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		mcpOverrides = append(mcpOverrides, `cli_auth_credentials_store="keyring"`)
 	}
 
+	if req.IsolateHome && options.auth == CodexAuthAmbientChatGPT {
+		home, err := safepath.MkdirLeaf(req.Workspace, filepath.Join(sandboxRuntimeSubdir, "codex-home"), 0700)
+		if err != nil {
+			return preparedCodexInvocation{}, err
+		}
+		env = overrideEnv(env, "CODEX_HOME", home)
+		// File-only host logins do not cross the interactive isolation boundary.
+		mcpOverrides = append(mcpOverrides, `cli_auth_credentials_store="keyring"`)
+	}
+	env, err = isolateInteractiveHome(req, env)
+	if err != nil {
+		return preparedCodexInvocation{}, err
+	}
 	secretEnv := []string{codexModelEnv, "CODEX_HOME"}
 	for _, name := range c.EnvCapabilities {
 		secretEnv = append(secretEnv, name)

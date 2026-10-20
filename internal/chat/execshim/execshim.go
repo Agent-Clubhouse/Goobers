@@ -10,17 +10,21 @@ import (
 	"fmt"
 	"sync"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/invoke"
 )
 
+// Driver adapts a policy-bound per-turn harness to an interactive session.
 type Driver struct {
 	Adapter harness.Adapter
 	Request harness.RunRequest
 	Run     func(context.Context, harness.RunRequest) (harness.Outcome, error)
 }
 
+// ID identifies the per-turn compatibility transport.
 func (d *Driver) ID() string { return "execshim" }
 func capabilities() chat.Capabilities {
 	c := chat.MinimalCapabilities()
@@ -28,6 +32,8 @@ func capabilities() chat.Capabilities {
 	c.ModelSwitch = "per_turn"
 	return c
 }
+
+// Probe checks availability with the invocation's exact authentication config.
 func (d *Driver) Probe(ctx context.Context) (chat.Probe, error) {
 	p := chat.Probe{Capabilities: capabilities()}
 	if d.Run != nil {
@@ -37,12 +43,27 @@ func (d *Driver) Probe(ctx context.Context) (chat.Probe, error) {
 	if d.Adapter == nil {
 		return p, fmt.Errorf("execshim: adapter missing")
 	}
-	info, err := d.Adapter.Preflight(ctx)
+	var info harness.PreflightInfo
+	var err error
+	if configured, ok := d.Adapter.(interface {
+		PreflightConfig(context.Context, string, map[string]apiextensionsv1.JSON) (harness.PreflightInfo, error)
+	}); ok {
+		info, err = configured.PreflightConfig(ctx, d.Request.Model, d.Request.HarnessOptions)
+	} else {
+		info, err = d.Adapter.Preflight(ctx)
+	}
 	p.HandshakeOK = err == nil
 	p.CLIVersion = info.Version
 	return p, err
 }
+
+// Start refuses permission levels the underlying adapter cannot enforce.
 func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, error) {
+	// Per-turn adapters have no interactive permission responder. Never claim
+	// to enforce a planning or approval ceiling using prompt text alone.
+	if o.Ceiling.Clamp(o.Level) != chat.Auto {
+		return nil, fmt.Errorf("execshim requires auto level under the host policy: %w", chat.ErrUnsupported)
+	}
 	run := d.Run
 	if run == nil {
 		if d.Adapter == nil {

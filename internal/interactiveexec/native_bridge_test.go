@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,7 +45,7 @@ func bridgeExecutor(t *testing.T) (*Executor, interactive.ExecutionRequest) {
 		}
 		refs[provider] = connection.Ref
 	}
-	e, err := New(Config{StateDir: t.TempDir(), SourceDir: t.TempDir(), Mode: "local-tools", Model: "legacy-model", SelfBinary: "/trusted/host/goobers", Broker: broker, Principal: principal, TrustedLocalModelLogin: true, ResolveAuthority: func(_ context.Context, req interactive.ExecutionRequest, provider auth.Provider) (auth.ConnectionRef, error) {
+	e, err := New(Config{Sandbox: fixtureSandbox{}, StateDir: t.TempDir(), SourceDir: t.TempDir(), Mode: "local-tools", Model: "legacy-model", SelfBinary: "/trusted/host/goobers", Broker: broker, Principal: principal, TrustedLocalModelLogin: true, ResolveAuthority: func(_ context.Context, req interactive.ExecutionRequest, provider auth.Provider) (auth.ConnectionRef, error) {
 		for _, name := range req.AuthorityRefs {
 			if name == "demo-ado" && provider == auth.ADO || name == "demo-insights" && provider == auth.AppInsights {
 				return refs[provider], nil
@@ -474,7 +473,7 @@ func TestNoConfiguredToolsMeansNoNativeMCPBridge(t *testing.T) {
 		}
 		return successOutcome(), nil
 	}
-	if _, err := e.native(context.Background(), req, filepath.Join(t.TempDir(), "workspace"), "", func(string, map[string]any) error { return nil }); err != nil {
+	if _, err := e.native(context.Background(), req, t.TempDir(), "", func(string, map[string]any) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if toolsCalled.Load() != 0 {

@@ -3,18 +3,29 @@ package execshim
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/internal/chat"
-	"github.com/goobers/goobers/internal/chat/chattest"
-	"github.com/goobers/goobers/internal/harness"
-	"github.com/goobers/goobers/internal/invoke"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/chat"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/invoke"
 )
 
-func TestConformance(t *testing.T) {
-	chattest.Conformance(t, func() chat.Driver {
-		return &Driver{Run: func(context.Context, harness.RunRequest) (harness.Outcome, error) { return harness.Outcome{}, nil }}
-	})
+func autoOptions() chat.StartOptions {
+	return chat.StartOptions{Level: chat.Auto, Ceiling: chat.NewCeiling(chat.Auto, chat.Auto, chat.Auto)}
+}
+func TestPlanCeilingRefusesBeforeWriterStarts(t *testing.T) {
+	called := false
+	d := &Driver{Run: func(context.Context, harness.RunRequest) (harness.Outcome, error) {
+		called = true
+		return harness.Outcome{}, nil
+	}}
+	for _, level := range []chat.Level{chat.Plan, chat.Ask, chat.AutoEdit, chat.Auto, chat.FullAccess} {
+		s, err := d.Start(t.Context(), chat.StartOptions{Level: level, Ceiling: chat.NewCeiling(chat.Plan, chat.FullAccess, chat.FullAccess)})
+		if s != nil || !errors.Is(err, chat.ErrUnsupported) || called {
+			t.Fatal("planning ceiling permitted an unrestricted writer", err)
+		}
+	}
 }
 func TestInterruptJoinsBeforeContinuation(t *testing.T) {
 	started := make(chan struct{})
@@ -33,8 +44,8 @@ func TestInterruptJoinsBeforeContinuation(t *testing.T) {
 		}
 		return harness.Outcome{Payload: []byte(`{"status":"success"}`)}, nil
 	}}
-	s, _ := d.Start(context.Background(), chat.StartOptions{})
-	defer s.Close()
+	s, _ := d.Start(context.Background(), autoOptions())
+	defer func() { _ = s.Close() }()
 	_, _ = s.Send(context.Background(), chat.Text("first"), chat.SendOptions{Delivery: chat.Prompt})
 	<-started
 	if _, err := s.Send(context.Background(), chat.Text("steer"), chat.SendOptions{Delivery: chat.Steer}); !errors.Is(err, chat.ErrUnsupported) {
@@ -60,7 +71,7 @@ func TestUnacknowledgedWriterRetainsCustody(t *testing.T) {
 		_ = invoke.RegisterWorkspaceWriter(ctx)
 		return harness.Outcome{Payload: []byte(`{}`)}, nil
 	}}
-	s, _ := d.Start(context.Background(), chat.StartOptions{})
+	s, _ := d.Start(context.Background(), autoOptions())
 	_, _ = s.Send(context.Background(), chat.Text("first"), chat.SendOptions{Delivery: chat.Prompt})
 	if err := s.Close(); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
 		t.Fatal(err)
