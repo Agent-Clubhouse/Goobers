@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -231,6 +232,42 @@ func TestPodCIPollRefusesAmbientFallback(t *testing.T) {
 			_, err := podCIPollPoller("ambient-token", nil, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("missing pod authority: %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestADOPodRefreshRejectsMalformedSuccessfulDelivery(t *testing.T) {
+	for _, body := range []string{
+		`not-json`,
+		`{"credentials":[{"capability":"provider:pr:write","value":""}]}`,
+		`{"credentials":[{"capability":"provider:pr:write","value":"new","expiresAt":"invalid"}]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			setPodCIPollEnv(t, defaultCIPollFixture())
+			calls := 0
+			broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				_, _ = io.WriteString(w, body)
+			}))
+			defer broker.Close()
+			t.Setenv(dispatcher.EnvDaemonAPI, broker.URL)
+			expiry := time.Now().Add(time.Minute)
+			source, err := podCIPollADOCredentialSource([]dispatcher.MintedCredential{{
+				Capability: string(capability.ProviderPRWrite), Value: "still-valid",
+				Scheme: "bearer", ExpiresAt: &expiry,
+			}}, "", string(capability.ProviderPRWrite), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				got, err := source.Credential(context.Background())
+				if !errors.Is(err, providers.ErrADODeliveredCredentialRejected) || got.Secret != "" {
+					t.Fatalf("invalid delivery retained cached credential: %+v, %v", got, err)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("terminal delivery failure retried %d times", calls)
 			}
 		})
 	}
