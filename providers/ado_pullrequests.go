@@ -520,7 +520,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		}
 		author := adoIdentityName(pr.CreatedBy)
 		requestedReviewers := adoRequestedReviewerNames(pr.Reviewers)
-		if !req.MatchesIdentityFields(author, nil, requestedReviewers) {
+		if !adoMatchesPullRequestIdentities(req, author, requestedReviewers) {
 			continue
 		}
 		titleMatched, err := req.MatchesTitle(pr.Title)
