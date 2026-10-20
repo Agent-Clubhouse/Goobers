@@ -2005,9 +2005,6 @@ jobs:
       - name: Windows service transitions
         run: go test ./internal/winsvc
 
-      - name: Windows child terminal validation
-        run: go test ./internal/childresult -count=1
-
       - name: Windows bounded diagnostic history
         run: go test -v ./internal/diagnostics/history ./internal/diagnostics/featureusage -count=1
 
@@ -2042,7 +2039,7 @@ jobs:
         run: go test ./internal/testshard -count=1
 
       - name: Windows child proposal validation
-        run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook -count=1
+        run: go test ./internal/childresult ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook -count=1
 
       - name: Windows child admission authority
         run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild|TestOrdinaryRecovery|TestDirectEngine|TestSource' -count=1
