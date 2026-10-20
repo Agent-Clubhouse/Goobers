@@ -116,7 +116,7 @@ func (b *Broker) Close() error {
 }
 
 func (b *Broker) readyLocked(p Principal) error {
-	if !p.verified || p.identity.Issuer != "goobers:controlled-local" || p.identity.Subject == "" {
+	if !p.verified || p.identity.Issuer != controlledLocalIssuer || p.identity.Subject == "" {
 		return fault("unauthenticated", "a verified local prototype principal is required")
 	}
 	if b.closed || b.storageFailed {
