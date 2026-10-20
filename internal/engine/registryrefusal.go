@@ -19,21 +19,12 @@ var (
 type UnsupportedFeatureError = engineadmission.UnsupportedFeatureError
 type UnsupportedFeaturesError = engineadmission.UnsupportedFeaturesError
 
-func unsupportedEngineFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
-	return engineadmission.UnsupportedFeatures(spec)
-}
-
 func refuseUnsupportedEngineFeatures(name string, spec apiv1.WorkflowSpec) error {
 	return engineadmission.RefuseFeatures(name, spec)
 }
 
 func refuseHumanGate(g apiv1.Gate) error {
 	return engineadmission.RefuseHumanGate(g)
-}
-
-// RefuseDefinition checks the engine's supported-feature boundary before start.
-func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
-	return engineadmission.RefuseDefinition(name, spec)
 }
 
 // RefusePlacedDefinition also checks restrictions that depend on placement.
