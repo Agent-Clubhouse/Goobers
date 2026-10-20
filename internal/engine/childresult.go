@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
