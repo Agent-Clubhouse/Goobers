@@ -11,7 +11,7 @@ import (
 )
 
 const successfulImageDSL3SmokeOutput = `FIX Workflow/demo (gaggles/demo/workflows/demo.yaml): migrated to dslVersion 3.0 (written)
-DSLVERSION Workflow/demo: 3.0 (preview)
+DSLVERSION Workflow/demo: 3.0 (supported)
 stage curate finished (run=123, attempt=1, status=success, elapsed=0s)
 stage implement finished (run=123, attempt=1, status=success, elapsed=0s)
 stage review finished (run=123, attempt=1, status=success, elapsed=0s)
@@ -69,14 +69,14 @@ func TestImageStageSmokeRequiresSuccessfulCompletion(t *testing.T) {
 	}
 }
 
-func TestImageDSL3SmokeRequiresMigrationPreviewAndEveryStage(t *testing.T) {
+func TestImageDSL3SmokeRequiresMigrationSupportedAndEveryStage(t *testing.T) {
 	for _, tc := range []struct {
 		name, remove, replace string
 	}{
 		{"missing migration", "FIX Workflow/demo (gaggles/demo/workflows/demo.yaml): migrated to dslVersion 3.0 (written)", ""},
 		{"dry run migration", "(written)", "(dry run)"},
-		{"still DSL 2", "DSLVERSION Workflow/demo: 3.0 (preview)", "DSLVERSION Workflow/demo: 2.0 (supported)"},
-		{"false version marker", "DSLVERSION Workflow/demo: 3.0 (preview)", "log mentions DSLVERSION Workflow/demo: 3.0 (preview)"},
+		{"still DSL 2", "DSLVERSION Workflow/demo: 3.0 (supported)", "DSLVERSION Workflow/demo: 2.0 (supported)"},
+		{"false version marker", "DSLVERSION Workflow/demo: 3.0 (supported)", "log mentions DSLVERSION Workflow/demo: 3.0 (supported)"},
 		{"missing fourth stage", "stage merge-preview finished", "stage merge-preview started"},
 		{"failed stage", "stage review finished (run=123, attempt=1, status=success,", "stage review finished (run=123, attempt=1, status=failed,"},
 		{"missing completion", "finished: phase=completed", ""},
@@ -119,48 +119,16 @@ func TestImageDSL3SmokeUsesFreshOfflineContainer(t *testing.T) {
 	}
 }
 
-func TestImageDSL3SmokeAnnotatesWorkflowPreviewOnEveryPlatform(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		script      string
-		workflow    string
-		manifest    string
-		readTarget  string
-		writeTarget string
-	}{
-		{
-			name:   "linux",
-			script: linuxImageDSL3Smoke,
-			// Parameterised so TestShippedImageProbesRunWithRealBinary can
-			// execute this script against a temp directory; the image still
-			// uses /tmp/dsl3-demo via the default.
-			workflow:    `workflow="$demo"/config/gaggles/demo/workflows/demo.yaml`,
-			manifest:    "config/manifest.yaml",
-			readTarget:  `done < "$workflow" > "$preview_workflow"`,
-			writeTarget: `mv "$preview_workflow" "$workflow"`,
-		},
-		{
-			name:        "windows",
-			script:      windowsImageDSL3Smoke,
-			workflow:    `$workflow = Join-Path $demo 'config\gaggles\demo\workflows\demo.yaml'`,
-			manifest:    `config\manifest.yaml`,
-			readTarget:  `[IO.File]::ReadAllText($workflow)`,
-			writeTarget: `[IO.File]::WriteAllText($workflow,`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, want := range []string{
-				tc.workflow,
-				tc.readTarget,
-				tc.writeTarget,
-				`goobers.dev/allow-preview-features: "true"`,
-			} {
-				if !strings.Contains(tc.script, want) {
-					t.Fatalf("DSL 3.0 smoke does not target the demo Workflow; missing %q", want)
-				}
+func TestImageDSL3SmokeUsesStableVersionWithoutPreviewOptIn(t *testing.T) {
+	for platform, script := range map[string]string{"linux": linuxImageDSL3Smoke, "windows": windowsImageDSL3Smoke} {
+		t.Run(platform, func(t *testing.T) {
+			if strings.Contains(script, "allow-preview-features") {
+				t.Fatal("stable DSL smoke must exercise admission without preview opt-in")
 			}
-			if strings.Contains(tc.script, tc.manifest) {
-				t.Fatalf("DSL 3.0 smoke must not annotate the Manifest; found %q", tc.manifest)
+			for _, command := range []string{"goobers fix --to 3.0 --write", "goobers validate", "goobers run demo"} {
+				if !strings.Contains(script, command) {
+					t.Fatalf("missing %s", command)
+				}
 			}
 		})
 	}

@@ -1,0 +1,10 @@
+{
+  "digestsSha256": "ed88db8eee3fd623a9b15506ad217e529dff7b44d0994c8e58fb68f0f61a5fca",
+  "patches": [
+    {
+      "version": 1,
+      "binaryVersion": "v0.6.0",
+      "description": "Initial freeze of DSL 3.0 compiled and semantic digests for the v0.6.0 stable lock. No runtime patches applied. New semantics belong in the copied-forward DSL 3.1 interpreter; later changes here require a reviewed contract-preserving patch."
+    }
+  ]
+}

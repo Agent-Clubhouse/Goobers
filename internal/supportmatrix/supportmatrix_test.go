@@ -62,12 +62,11 @@ func TestCompareDSLVersions(t *testing.T) {
 }
 
 func TestNewestSupported(t *testing.T) {
-	// The live matrix: 2.0 is the only LevelSupported version, so anything that
-	// resolves an unpinned object (#3297) must land there — not on the
-	// deprecated V1DSLVersion.
+	// New authoring follows stable 3.0; workflow-less compatibility remains
+	// on 2.0 through OldestSupported.
 	got, ok := GetDSL().NewestSupported()
-	if !ok || got != V2DSLVersion {
-		t.Fatalf("GetDSL().NewestSupported() = %q, %v, want %q, true", got, ok, V2DSLVersion)
+	if !ok || got != V3DSLVersion {
+		t.Fatalf("GetDSL().NewestSupported() = %q, %v, want %q, true", got, ok, V3DSLVersion)
 	}
 
 	// Numeric major/minor order, not lexicographic: "10.0" beats "9.0" even
@@ -100,8 +99,10 @@ func TestGetDSLForReleaseOmitsFutureVersions(t *testing.T) {
 	if _, ok := v040.Lookup(V31DSLVersion); ok {
 		t.Fatalf("v0.4.0 release matrix includes future DSL %s", V31DSLVersion)
 	}
-	if err := ValidateSupportPolicyForRelease(v040, "v0.4.0"); err != nil {
-		t.Fatalf("v0.4.0 release matrix should validate: %v", err)
+	// Filtering omits future versions, not future transitions on existing
+	// versions. A stable-3.0 binary must never masquerade as v0.4.0.
+	if err := ValidateSupportPolicyForRelease(v040, "v0.4.0"); err == nil || !strings.Contains(err.Error(), `only reaches "preview"`) {
+		t.Fatalf("v0.4.0 must refuse the later 3.0 promotion: %v", err)
 	}
 
 	// v0.5.0 was cut from a release branch before DSL 3.1 landed (#6133), so

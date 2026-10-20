@@ -12,7 +12,7 @@ import (
 // The shipped image probes are shell scripts that otherwise execute only
 // inside a release build. Every other test around them asserts their TEXT —
 // TestImageStageSmokeRequiresSuccessfulCompletion stubs Docker, and
-// TestImageDSL3SmokeAnnotatesWorkflowPreviewOnEveryPlatform matches
+// TestImageDSL3SmokeUsesStableVersionWithoutPreviewOptIn matches
 // substrings. Both pass just as happily on a script that cannot run.
 //
 // That is how v0.4.0-rc.5 was signed and notarized before anyone learned its
@@ -25,7 +25,7 @@ import (
 // drift.
 func TestShippedImageProbesRunWithRealBinary(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell probes; the Windows scripts are covered by TestImageDSL3SmokeAnnotatesWorkflowPreviewOnEveryPlatform")
+		t.Skip("POSIX shell probes; the Windows scripts are covered by TestImageDSL3SmokeUsesStableVersionWithoutPreviewOptIn")
 	}
 	if testing.Short() {
 		t.Skip("builds the goobers binary")
@@ -65,9 +65,9 @@ func TestShippedImageProbesRunWithRealBinary(t *testing.T) {
 			t.Fatalf("shipped DSL 3.0 probe failed outside a container — it would fail the release too: %v\n%s", err, output)
 		}
 		text := string(output)
-		// Assert it exercised the preview path rather than silently degrading
+		// Assert it exercised the stable 3.0 path rather than silently degrading
 		// into a 2.0 run, which would prove nothing.
-		for _, want := range []string{"3.0 (preview)", "config/ valid"} {
+		for _, want := range []string{"3.0 (supported)", "config/ valid"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("probe did not exercise the DSL 3.0 path, missing %q:\n%s", want, text)
 			}

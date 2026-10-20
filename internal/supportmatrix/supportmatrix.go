@@ -48,11 +48,8 @@ const (
 	// V2DSLVersion is the copy-forward language version with its own
 	// interpreter and semantics.
 	V2DSLVersion = "2.0"
-	// V3DSLVersion is the Goobernetes language version (dsl-3.0.md): the
-	// runsOn/runners/repoFrom surface. PREVIEW while the Goobernetes v1 waves
-	// land — DVL010/DVL011 gate it behind the instance preview opt-in; GA is a
-	// later, separate lock ceremony staged under ValidateSupportPolicy's
-	// append-only rules.
+	// V3DSLVersion is the supported Goobernetes language version (v0.6.0):
+	// runsOn, runner inventory and explicit repoFrom handoffs.
 	V3DSLVersion = "3.0"
 	// V31DSLVersion carries DSL 3.0 semantics forward and adds the producer
 	// artifact-slot and consumer artifact-input contract surface.
@@ -178,20 +175,14 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
 		},
 	},
-	// DSL 3.0 enters at PREVIEW (dsl-3.0.md §8, issue #3505): the interpreter
-	// ships and is fully exercisable behind the instance preview opt-in
-	// (DVL010/DVL011), while the version-level GA is a later lock ceremony —
-	// the append-only evolution rules require lifecycle transitions to be
-	// staged across releases, so the preview entry and the supported flip
-	// cannot land in one PR. The since-version names the first release line
-	// after the latest tag (v0.3.3) rather than the "dev" sentinel, which the
-	// evolution check reserves for the pre-release baseline. NewestSupported()
-	// still resolves to 2.0 until the flip, so unversioned gaggles/goobers
-	// (#3297) keep resolving at 2.0 for the whole preview window.
+	// DSL 3.0 graduates in v0.6.0. Preserve the released preview history;
+	// workflow-less compatibility uses OldestSupported, while authoring
+	// follows NewestSupported. DSL 3.1 remains an independent preview.
 	V3DSLVersion: {
-		Level: LevelPreview,
+		Level: LevelSupported,
 		History: []SupportTransition{
 			{Level: LevelPreview, SinceVersion: "v0.4.0"},
+			{Level: LevelSupported, SinceVersion: "v0.6.0"},
 		},
 	},
 	// DSL 3.1 landed on main after the v0.5.0 release branch was cut (#6133,
