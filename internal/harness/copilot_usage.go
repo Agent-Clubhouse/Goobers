@@ -11,7 +11,41 @@ import (
 	"k8s.io/apimachinery/pkg/util/version"
 
 	"github.com/goobers/goobers/internal/diagnostictmp"
+	"github.com/goobers/goobers/internal/telemetry"
 )
+
+const copilotMissingUsageDiagnostic = "copilot_usage_missing: Copilot returned no token or billing usage after SDK, usage-file, and session capture fallbacks; usage is unknown"
+
+// Check after all capture fallbacks, including SDK metrics. Presence matters:
+// observed zero is usage, while a resolved model name alone is not accounting.
+func copilotUsageObserved(out Outcome) bool {
+	for _, key := range []string{
+		telemetry.AttrGenAIUsageInputTokens, telemetry.AttrGenAIUsageOutputTokens,
+		telemetry.AttrUsageCacheReadTokens, telemetry.AttrUsageCacheWriteTokens,
+		telemetry.AttrUsageReasoningTokens, telemetry.AttrUsageNanoAIU,
+		telemetry.AttrUsageCostUSD, telemetry.AttrCopilotPremiumRequests,
+	} {
+		if _, ok := out.Metrics[key]; ok {
+			return true
+		}
+	}
+	for _, usage := range out.ModelUsage {
+		if hasCopilotModelUsage(usage) || usage.CostUSD != nil {
+			return true
+		}
+	}
+	for _, event := range out.AgentEvents {
+		if event.Agent == nil {
+			continue
+		}
+		usage := event.Agent.Usage
+		if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil ||
+			usage.CacheWriteTokens != nil || usage.ReasoningTokens != nil || usage.NanoAIU != nil || usage.CostUSD != nil {
+			return true
+		}
+	}
+	return false
+}
 
 // The per-agent usage-file schema is documented in the upstream 1.0.81-1
 // release: https://github.com/github/copilot-cli/releases/tag/v1.0.81-1.
