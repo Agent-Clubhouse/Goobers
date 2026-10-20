@@ -113,8 +113,9 @@ func claimProviderReleaseLock(l instance.Layout) func(claimsclient.Key, func() e
 func fileClaimLedgerForRunWithResolver(l instance.Layout, gaggle, runID string, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	return claimsclient.NewFile(claimsclient.FileConfig{
-		Shared:     resolver,
-		LedgerPath: filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		Shared:              resolver,
+		LedgerPath:          filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		ProviderReleaseLock: claimProviderReleaseLock(l),
 		Lock: func(operation string, fn func() error) error {
 			return withClaimLockForRun(lockPath, operation, gaggle, runID, fn)
 		},

@@ -33,7 +33,8 @@ type FileConfig struct {
 	Open func(path string, opts ...localscheduler.LedgerOption) (FileLedger, error)
 	// Shared resolves the trusted workflow policy and repository binding.
 	// Nil retains the local-only assembly; shared-enabled assemblies must
-	// install this resolver for every claim, including nested Locked calls.
+	// install this resolver. Shared mutations are forbidden in Locked sessions;
+	// use the outer File primitives or Sequence so provider I/O stays outside.
 	Shared SharedClaimResolver
 }
 
@@ -62,7 +63,8 @@ const (
 
 // File is the file-ledger backend.
 type File struct {
-	cfg FileConfig
+	cfg       FileConfig
+	operation string
 }
 
 // NewFile constructs the file backend.
@@ -103,9 +105,21 @@ func (f *File) Locked(_ context.Context, operation string, fn func(Ledger) error
 
 // ClaimScoped implements Ledger under a default-labelled critical section.
 func (f *File) ClaimScoped(ctx context.Context, key Key, runID, workflow string, lease time.Duration) (ok bool, holder string, err error) {
-	err = f.Locked(ctx, fileOperationClaim, func(session Ledger) error {
+	if f.cfg.Shared != nil {
+		if f.cfg.Lock == nil {
+			return false, "", ErrSharedRequiresUnlocked
+		}
+		binding, resolveErr := f.cfg.Shared.Admission(ctx, key, runID, workflow)
+		if resolveErr != nil {
+			return false, "", resolveErr
+		}
+		if binding != nil {
+			return f.claimShared(ctx, key, runID, workflow, lease, *binding, nil)
+		}
+	}
+	err = f.Locked(ctx, f.operationName(fileOperationClaim), func(session Ledger) error {
 		var claimErr error
-		ok, holder, claimErr = session.ClaimScoped(ctx, key, runID, workflow, lease)
+		ok, holder, claimErr = session.(*fileSession).claimLocal(key, runID, workflow, lease)
 		return claimErr
 	})
 	return ok, holder, err
@@ -113,18 +127,40 @@ func (f *File) ClaimScoped(ctx context.Context, key Key, runID, workflow string,
 
 // ReleaseScoped implements Ledger under a default-labelled critical section.
 func (f *File) ReleaseScoped(ctx context.Context, key Key, runID string, reason claimrelease.Reason) error {
-	return f.Locked(ctx, fileOperationRelease, func(session Ledger) error {
-		return session.ReleaseScoped(ctx, key, runID, reason)
+	var shared *Entry
+	err := f.Locked(ctx, f.operationName(fileOperationRelease), func(session Ledger) error {
+		held := session.(*fileSession)
+		for _, entry := range held.ledger.ForRunAll(runID) {
+			if KeyForEntry(entry) == key && !entry.SharedDeadline.IsZero() {
+				shared = &entry
+				return nil
+			}
+		}
+		return held.ReleaseScoped(ctx, key, runID, reason)
 	})
+	if err != nil || shared == nil {
+		return err
+	}
+	return f.releaseShared(ctx, *shared, reason)
 }
 
-// ReleaseAllForRun implements Ledger under a default-labelled critical section.
+// ReleaseAllForRun snapshots under the claims lock and releases each exact
+// incarnation separately, allowing shared provider I/O between short sections.
 func (f *File) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) (released []Entry, err error) {
-	err = f.Locked(ctx, fileOperationReleaseAll, func(session Ledger) error {
-		var releaseErr error
-		released, releaseErr = session.ReleaseAllForRun(ctx, runID, reason)
-		return releaseErr
+	var entries []Entry
+	err = f.Locked(ctx, f.operationName(fileOperationReleaseAll), func(session Ledger) error {
+		entries = session.(*fileSession).ledger.ForRunAll(runID)
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if err = f.ReleaseExpected(ctx, entry, reason); err != nil {
+			return released, err
+		}
+		released = append(released, reportEntry(entry))
+	}
 	return released, err
 }
 
@@ -175,14 +211,12 @@ func (s *fileSession) Locked(_ context.Context, _ string, fn func(Ledger) error)
 
 func (s *fileSession) ClaimScoped(ctx context.Context, key Key, runID, workflow string, lease time.Duration) (bool, string, error) {
 	if s.file.cfg.Shared != nil && !localscheduler.IsPublicationClaimKey(key.ExternalID) {
-		binding, err := s.file.cfg.Shared.Admission(ctx, key, runID, workflow)
-		if err != nil {
-			return false, "", err
-		}
-		if binding != nil {
-			return s.claimShared(ctx, key, runID, workflow, lease, *binding)
-		}
+		return false, "", ErrSharedRequiresUnlocked
 	}
+	return s.claimLocal(key, runID, workflow, lease)
+}
+
+func (s *fileSession) claimLocal(key Key, runID, workflow string, lease time.Duration) (bool, string, error) {
 	if key.Gaggle == "" && key.Provider == "" {
 		return s.ledger.Claim(key.ExternalID, runID, workflow, lease)
 	}
@@ -192,7 +226,7 @@ func (s *fileSession) ClaimScoped(ctx context.Context, key Key, runID, workflow 
 func (s *fileSession) ReleaseScoped(ctx context.Context, key Key, runID string, reason claimrelease.Reason) error {
 	for _, entry := range s.ledger.ForRunAll(runID) {
 		if KeyForEntry(entry) == key && !entry.SharedDeadline.IsZero() {
-			return s.releaseShared(ctx, entry, reason)
+			return ErrSharedRequiresUnlocked
 		}
 	}
 	if key.Gaggle == "" && key.Provider == "" {
@@ -247,4 +281,79 @@ func (s *fileSession) MergeLock(ctx context.Context, lock MergeLock, fn func(con
 func reportEntry(entry Entry) Entry {
 	entry.Verification = entry.Verification.Report()
 	return entry
+}
+
+// ReleaseExpected releases a snapshot only if its exact incarnation still owns
+// the item. It is used by recovery so a stale scan never releases a successor.
+func (f *File) ReleaseExpected(ctx context.Context, expected Entry, reason claimrelease.Reason) error {
+	if !expected.SharedDeadline.IsZero() {
+		return f.releaseShared(ctx, expected, reason)
+	}
+	return f.Locked(ctx, f.operationName(fileOperationRelease), func(tx Ledger) error {
+		session := tx.(*fileSession)
+		for _, current := range session.ledger.ForRunAll(expected.RunID) {
+			if KeyForEntry(current) == KeyForEntry(expected) && current.ClaimedAt.Equal(expected.ClaimedAt) {
+				return session.releaseEntry(ctx, current, current.RunID, reason)
+			}
+		}
+		return nil
+	})
+}
+
+func (f *File) operationName(fallback string) string {
+	if f.operation != "" {
+		return f.operation
+	}
+	return fallback
+}
+
+// Sequence labels individual primitive operations without holding a claims
+// lock around selection or provider I/O. Admission itself arbitrates races,
+// just as it does for the HTTP backend. Use Locked for purely local atomic work.
+func Sequence(ctx context.Context, ledger Ledger, operation string, fn func(Ledger) error) error {
+	if file, ok := ledger.(*File); ok {
+		scoped := *file
+		scoped.operation = operation
+		return fn(&scoped)
+	}
+	return fn(ledger)
+}
+
+func matchingEntry(ledger FileLedger, expected Entry) (Entry, bool) {
+	for _, current := range ledger.ForRunAll(expected.RunID) {
+		if KeyForEntry(current) == KeyForEntry(expected) && current.ClaimedAt.Equal(expected.ClaimedAt) && current.SharedOwner == expected.SharedOwner {
+			return current, true
+		}
+	}
+	return Entry{}, false
+}
+
+// RenewExpected renews only the snapshot's current incarnation. Shared renewal
+// additionally requires unexpired execution authority before the remote write.
+func (f *File) RenewExpected(ctx context.Context, expected Entry, ttl time.Duration) (ok bool, err error) {
+	if !expected.SharedDeadline.IsZero() {
+		if f.cfg.Shared == nil || f.cfg.Lock == nil {
+			return false, ErrSharedRequiresUnlocked
+		}
+		binding, err := f.cfg.Shared.Admission(ctx, KeyForEntry(expected), expected.RunID, expected.Workflow)
+		if err != nil {
+			return false, err
+		}
+		if binding == nil || binding.Owner != expected.SharedOwner {
+			return false, fmt.Errorf("shared renewal requires its persisted owner")
+		}
+		ok, _, err := f.claimShared(ctx, KeyForEntry(expected), expected.RunID, expected.Workflow, ttl, *binding, &expected)
+		return ok, err
+	}
+	err = f.Locked(ctx, f.operationName(fileOperationClaim), func(tx Ledger) error {
+		session := tx.(*fileSession)
+		current, held := matchingEntry(session.ledger, expected)
+		if !held {
+			return nil
+		}
+		var err error
+		ok, _, err = session.claimLocal(KeyForEntry(current), current.RunID, current.Workflow, ttl)
+		return err
+	})
+	return ok, err
 }

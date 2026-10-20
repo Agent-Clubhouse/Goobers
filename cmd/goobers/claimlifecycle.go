@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -18,36 +19,30 @@ import (
 // publication custody until verified release or expiry. It is safe to call
 // after an explicit workflow release already did the same work.
 func releaseClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
-	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRunRelease, l.Gaggle(), runID, func() error {
-		return releaseClaimsForRunLocked(l, log, runID)
+	return releaseClaimsForRunUsing(l, log, runID, func(operation string, fn func() error) error {
+		return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), operation, l.Gaggle(), runID, fn)
 	})
 }
 
 func releaseClaimsForRunWithDefaultTimeout(l instance.Layout, log *journal.InstanceLog, runID string) error {
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	return withClaimLockBounds(lockPath, claimLockOperationRunRelease, instance.DefaultClaimsLockTimeout, claimLockSlowThreshold, claimLockEventContext{
-		Gaggle: l.Gaggle(),
-		RunID:  runID,
-	}, func() error {
-		return releaseClaimsForRunLocked(l, log, runID)
+	return releaseClaimsForRunUsing(l, log, runID, func(operation string, fn func() error) error {
+		return withClaimLockBounds(filepath.Join(l.SchedulerDir(), claimLockFileName), operation, instance.DefaultClaimsLockTimeout, claimLockSlowThreshold, claimLockEventContext{Gaggle: l.Gaggle(), RunID: runID}, fn)
 	})
 }
 
-// releaseClaimsForRunLocked runs inside the caller's held claims lock, so it
-// takes the lock-free file ledger (heldClaimLedger) — the daemon is the
-// writer here, never a plane client.
-func releaseClaimsForRunLocked(l instance.Layout, log *journal.InstanceLog, runID string) error {
-	ledger, err := heldClaimLedger(l, localscheduler.WithInstanceLog(log))
+func releaseClaimsForRunUsing(l instance.Layout, log *journal.InstanceLog, runID string, lock func(string, func() error) error) error {
+	ledger, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		Lock: lock, ProviderReleaseLock: claimProviderReleaseLock(l), Shared: localLifecycleSharedClaimResolver(l), Options: withClaimJournal(log)})
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
 	}
-	// Read the run journal for the reason only when there is a claim to end:
-	// usually issue-close-out already released them all.
 	if held, err := ledger.ForRunAll(claimContext(), runID); err != nil || len(held) == 0 {
 		return err
 	}
-	_, err = ledger.ReleaseAllForRun(claimContext(), runID, claimHolderReleaseReason(l, runID))
-	return err
+	return claimsclient.Sequence(claimContext(), ledger, claimLockOperationRunRelease, func(tx claimsclient.Ledger) error {
+		_, err := tx.ReleaseAllForRun(claimContext(), runID, claimHolderReleaseReason(l, runID))
+		return err
+	})
 }
 
 // claimHolderReleaseReason is why a terminal holder's claims end: the run's
@@ -99,15 +94,7 @@ func renewLiveClaims(ctx context.Context, l instance.Layout, probe localschedule
 	if len(live) == 0 {
 		return nil, probeErr, nil
 	}
-	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRenewal, func() error {
-		ledger, openErr := localscheduler.OpenClaimLedger(ledgerPath)
-		if openErr != nil {
-			return fmt.Errorf("open claim ledger: %w", openErr)
-		}
-		var renewErr error
-		renewed, renewErr = renewCoordinatedLiveClaims(ctx, l, ledger, live, leaseDuration, localLifecycleSharedClaimResolver(l))
-		return renewErr
-	})
+	renewed, err = renewCoordinatedLiveClaims(ctx, l, entries, live, leaseDuration, localLifecycleSharedClaimResolver(l))
 	return renewed, probeErr, err
 }
 
@@ -189,16 +176,12 @@ func recoverClaimsWithResolver(
 	}
 
 	var released []localscheduler.ClaimEntry
+	var sharedExpired, sharedTerminal []localscheduler.ClaimEntry
 	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRecovery, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			ledgerPath,
 			localscheduler.WithInstanceLog(log),
 		)
-		if err != nil {
-			return err
-		}
-		service := &daemonClaimService{layout: l, shared: resolver}
-		coordinated, err := service.coordinatedLedger(ledger)
 		if err != nil {
 			return err
 		}
@@ -220,8 +203,12 @@ func recoverClaimsWithResolver(
 				recorded[entry.RunID] = struct{}{}
 			}
 		}
-		sharedExpired, cleanupErr := recoverExpiredSharedClaims(claimContext(), ledger, coordinated, now)
-		released = append(released, sharedExpired...)
+		var cleanupErr error
+		for _, entry := range ledger.Snapshot() {
+			if !entry.SharedDeadline.IsZero() && !entry.ExpiresAt.After(now) {
+				sharedExpired = append(sharedExpired, entry)
+			}
+		}
 		expired, err := ledger.RecoverExpired(now)
 		if err != nil {
 			return errors.Join(cleanupErr, err)
@@ -243,7 +230,11 @@ func recoverClaimsWithResolver(
 			if !terminal {
 				continue
 			}
-			if err := coordinated.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(current), current.RunID, reasons[current.RunID]); err != nil {
+			if !current.SharedDeadline.IsZero() {
+				sharedTerminal = append(sharedTerminal, current)
+				continue
+			}
+			if err := ledger.ReleaseEntry(current, current.RunID, reasons[current.RunID]); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
 				continue
 			}
@@ -251,24 +242,43 @@ func recoverClaimsWithResolver(
 		}
 		return cleanupErr
 	})
-	return released, err
+	if err != nil {
+		return released, err
+	}
+	service := &daemonClaimService{layout: l, shared: resolver, log: log}
+	client, err := service.coordinatedLedger(claimLockOperationRecovery, httpapi.ClaimRequest{})
+	if err != nil {
+		return released, err
+	}
+	expired, cleanupErr := recoverExpiredSharedClaims(claimContext(), sharedExpired, client, now)
+	released = append(released, expired...)
+	for _, entry := range sharedTerminal {
+		if !entry.ExpiresAt.After(now) {
+			continue
+		} // already attempted above
+		if err := client.ReleaseExpected(claimContext(), entry, reasons[entry.RunID]); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
+		} else {
+			released = append(released, entry)
+		}
+	}
+	return released, cleanupErr
 }
 
-// Called under the same cross-process lock as the terminal recovery pass.
-// Retain failed cleanup in the ledger so a later pass can retry with the
-// exact persisted owner; an expired lease is never renewal authority.
-func recoverExpiredSharedClaims(ctx context.Context, ledger *localscheduler.ClaimLedger, coordinated claimsclient.Ledger, now time.Time) ([]localscheduler.ClaimEntry, error) {
+// Each release revalidates the snapshot under a short lock. Remote cleanup
+// cannot prevent an unrelated local claim or the next lifecycle read.
+func recoverExpiredSharedClaims(ctx context.Context, entries []localscheduler.ClaimEntry, coordinated *claimsclient.File, now time.Time) ([]localscheduler.ClaimEntry, error) {
 	var released []localscheduler.ClaimEntry
 	var cleanupErr error
-	for _, entry := range ledger.Snapshot() {
+	for _, entry := range entries {
 		if entry.SharedDeadline.IsZero() || entry.ExpiresAt.After(now) {
 			continue
 		}
-		if err := coordinated.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), entry.RunID, localscheduler.StallSweptReason()); err != nil {
+		if err := coordinated.ReleaseExpected(ctx, entry, localscheduler.StallSweptReason()); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release expired shared claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
-			continue
+		} else {
+			released = append(released, entry)
 		}
-		released = append(released, entry)
 	}
 	return released, cleanupErr
 }

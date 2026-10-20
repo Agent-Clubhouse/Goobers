@@ -96,21 +96,22 @@ type ClaimResponse struct {
 // same reason internal/dispatcher restates MintedCredential: this package is
 // the server, and the ledger package has no business depending on it.
 type ClaimEntry struct {
-	Verification   ClaimVerification `json:"verification"`
-	ItemID         string            `json:"itemId"`
-	Gaggle         string            `json:"gaggle,omitempty"`
-	Provider       string            `json:"provider,omitempty"`
-	ExternalID     string            `json:"externalId,omitempty"`
-	RunID          string            `json:"runId"`
-	Workflow       string            `json:"workflow"`
-	ClaimedAt      time.Time         `json:"claimedAt"`
-	RenewedAt      time.Time         `json:"renewedAt,omitzero"`
-	ExpiresAt      time.Time         `json:"expiresAt"`
-	ReleasePending bool              `json:"releasePending,omitempty"`
-	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
-	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
-	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
-	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
+	Verification           ClaimVerification `json:"verification"`
+	ItemID                 string            `json:"itemId"`
+	Gaggle                 string            `json:"gaggle,omitempty"`
+	Provider               string            `json:"provider,omitempty"`
+	ExternalID             string            `json:"externalId,omitempty"`
+	RunID                  string            `json:"runId"`
+	Workflow               string            `json:"workflow"`
+	ClaimedAt              time.Time         `json:"claimedAt"`
+	RenewedAt              time.Time         `json:"renewedAt,omitzero"`
+	ExpiresAt              time.Time         `json:"expiresAt"`
+	ReleasePending         bool              `json:"releasePending,omitempty"`
+	SharedAdmissionPending bool              `json:"sharedAdmissionPending,omitempty"`
+	SharedDeadline         time.Time         `json:"sharedDeadline,omitzero"`
+	SharedOwner            sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	SharedRevoked          bool              `json:"sharedRevoked,omitempty"`
+	ReleasedAt             *time.Time        `json:"releasedAt,omitempty"`
 	// ReleaseReason is why a released history entry ended; zero on live
 	// entries and on history recorded before it existed.
 	ReleaseReason claimrelease.Reason `json:"releaseReason,omitzero"`
