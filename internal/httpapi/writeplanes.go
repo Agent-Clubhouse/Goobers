@@ -55,6 +55,10 @@ type ClaimRequest struct {
 	// claimrelease.Unknown — and normalized (bounded, scrubbed) by the
 	// service. Refused on acquire and renew.
 	Reason claimrelease.Reason `json:"reason,omitzero"`
+	// ProviderCleanup asks the daemon to retain cleanup custody and remove the
+	// provider marker before releasing this exact claim incarnation.
+	ProviderCleanup bool      `json:"providerCleanup,omitempty"`
+	ClaimedAt       time.Time `json:"claimedAt,omitzero"`
 }
 
 // MaxClaimLeaseSeconds is the ceiling on ClaimRequest.LeaseSeconds: four
@@ -102,6 +106,7 @@ type ClaimEntry struct {
 	ClaimedAt      time.Time         `json:"claimedAt"`
 	RenewedAt      time.Time         `json:"renewedAt,omitzero"`
 	ExpiresAt      time.Time         `json:"expiresAt"`
+	ReleasePending bool              `json:"releasePending,omitempty"`
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
 	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
@@ -413,6 +418,10 @@ func registerClaimRoute(
 		}
 		if input.Outcome != "" && !settle {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "outcome is only valid for settle")
+			return
+		}
+		if !validClaimProviderCleanup(input, release) {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "providerCleanup requires a single-item release and claimedAt")
 			return
 		}
 		if !input.Reason.IsZero() && !settle && !release {
@@ -809,4 +818,12 @@ func writePlaneError(w http.ResponseWriter, errorLog *log.Logger, operation stri
 
 func isolatedClaimListAllowed(principal Principal, input ClaimListRequest) bool {
 	return principal.Subject == podPrincipalSubject(input.RunID) && input.Execution && input.IncludeHistory && input.Scope == ClaimListScopeRun && input.Gaggle == "" && input.Provider == ""
+}
+
+// Cleanup custody is valid only for a release naming one exact incarnation.
+func validClaimProviderCleanup(input ClaimRequest, release bool) bool {
+	if !input.ProviderCleanup && input.ClaimedAt.IsZero() {
+		return true
+	}
+	return release && input.ProviderCleanup && !input.ClaimedAt.IsZero() && input.ItemID != ""
 }

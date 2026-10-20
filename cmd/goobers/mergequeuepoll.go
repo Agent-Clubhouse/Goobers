@@ -349,14 +349,14 @@ func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePol
 
 // mergeQueueWithdrawLabel returns the label that withdraws a queued pull
 // request from landing, or "" while it should keep landing: the operator
-// opt-out, a cancelled originating run (#2238), or a route to remediation
+// opt-out, a cancelled originating run (#2238), an explicit human hold, or a route to remediation
 // that took the PR out of landing (#6134: pr-comment-watch and
 // record-merge-refusal remove goobers:merge-ready when they route human
 // feedback). needs-remediation alongside merge-ready is not a withdrawal:
 // post-merge's sibling fan-out labels a queued sibling that merely overlaps a
 // landed PR's files, and the queue's own combined build is what settles that.
 func mergeQueueWithdrawLabel(labels []string) string {
-	for _, label := range []string{noMergeReviewLabel, abortedRunLabel} {
+	for _, label := range []string{noMergeReviewLabel, abortedRunLabel, providers.LabelNeedsHuman, remediationEscalatedLabel} {
 		if hasAnyLabel(labels, []string{label}) {
 			return label
 		}

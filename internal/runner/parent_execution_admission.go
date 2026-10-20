@@ -41,11 +41,12 @@ func (r *Runner) admitExecution(ctx context.Context, machine *workflow.Machine) 
 }
 
 func (r *Runner) recordHostTaskPlacement(tf taskFrame, attempt int, class journal.AttemptClass) error {
-	if tf.t.ChildWorkflows != nil {
+	if tf.t.ChildWorkflows != nil && !r.cfg.TrustedLocalParents {
 		return nil
 	}
 	r.observeSelfExecution(false)
-	if !r.recordsPlacement() {
+	localParent := tf.t.ChildWorkflows != nil && r.cfg.TrustedLocalParents
+	if !r.recordsPlacement() && !localParent {
 		return nil
 	}
 	if err := tf.jr.Append(journal.PlacementEvent(tf.t.Name, attempt, class, selfPlacement())); err != nil {

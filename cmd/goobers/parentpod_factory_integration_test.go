@@ -44,8 +44,23 @@ func TestIntegrationParentRecoveryRejoinsOriginalWorkerAndPreservesDirtyTree(t *
 	testParentFactoryCustody(t, true, false)
 }
 
+func TestIntegrationCopilotParentCancellationAndRecovery(t *testing.T) {
+	testdep.Require(t, "git")
+	for _, lost := range []bool{false, true} {
+		name := "cancellation"
+		if lost {
+			name = "recovery"
+		}
+		t.Run(name, func(t *testing.T) { testParentHarnessFactoryCustody(t, lost, false, apiv1.HarnessCopilot) })
+	}
+}
+
 func testParentFactoryCustody(t *testing.T, lost, committed bool) {
-	f := containedParentFixture(t)
+	testParentHarnessFactoryCustody(t, lost, committed, apiv1.HarnessClaudeCode)
+}
+
+func testParentHarnessFactoryCustody(t *testing.T, lost, committed bool, selected apiv1.Harness) {
+	f := containedParentHarnessFixture(t, selected)
 	run, env := configuredChildStage(t, f)
 	env.RepoRef = f.applied.Gaggles[0].Spec.Project
 	repo := env.Workspace
@@ -165,7 +180,7 @@ func testParentFactoryCustody(t *testing.T, lost, committed bool) {
 		if err = json.Unmarshal(data, &kit); err != nil {
 			t.Fatal(err)
 		}
-		if kit.Envelope.Workspace != "" || kit.Envelope.ChildWorkflowOrigin == nil || kit.Goobers["coder"].Harness != apiv1.HarnessClaudeCode {
+		if kit.Envelope.Workspace != "" || kit.Envelope.ChildWorkflowOrigin == nil || kit.Goobers["coder"].Harness != selected {
 			t.Fatal("incorrect retained parent kit")
 		}
 		pod := t.TempDir()

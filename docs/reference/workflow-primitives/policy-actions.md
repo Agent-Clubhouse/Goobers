@@ -88,7 +88,7 @@ Some command modes change the required action set:
 | `backlog-health` feedback mode | `update-issue` |
 | `reconcile-branches --delete` or `inputs.deleteBranches: "true"` | `delete-branch` |
 | `file-issues` with `inputs.autoApprove: "deterministic-only"` | `approve-issue` in addition to its normal publication actions |
-| `pr-comment-watch` with `inputs.blockUnansweredFeedback` true (any value `strconv.ParseBool` accepts as true) | `disarm-landing` in addition to `label-issue` |
+| `pr-comment-watch` with `inputs.blockUnansweredFeedback` true (any value `strconv.ParseBool` accepts as true) | `disarm-landing` in addition to `label-issue` and `comment-on-issue` |
 | `file-issues --check` | No mutation actions |
 | `respond-to-findings --check` | No mutation actions |
 

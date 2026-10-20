@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -166,7 +167,7 @@ func TestPublishBeforeCleanupFailsClosed(t *testing.T) {
 				scrubber = nil
 			}
 			resp := tt.resp
-			if resp == (livejournal.EmitResponse{}) && tt.emitErr == nil && tt.wantCalls == 0 {
+			if reflect.DeepEqual(resp, livejournal.EmitResponse{}) && tt.emitErr == nil && tt.wantCalls == 0 {
 				resp = ok
 			}
 			emitter := &stubEmitter{resp: resp, err: tt.emitErr}

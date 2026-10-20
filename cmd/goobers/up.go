@@ -1140,7 +1140,10 @@ func (u *upSession) configureAPI() int {
 	u.cancelPlane.engine = newDaemonEngineCancelService(u.l, u.setup.Interventions, u.engineClient, u.engineGuards, u.setup.InstanceLog)
 	claimPlane := newDaemonClaimService(u.l, u.setup.InstanceLog, u.recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
+	claimPlane.markerRelease = u.releaseProviderClaimMarker
 	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(u.engineClient.Temporal(), surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
+	// Local parent admission requires the existing explicit workflow preview opt-in.
+	u.credentialPlane.installTrustedLocalChildren(u.liveJournals)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
 	journalService.reads = u.reads
 	journalService.definitions = u.setup.Interventions

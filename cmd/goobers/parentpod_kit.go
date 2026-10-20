@@ -16,7 +16,9 @@ import (
 )
 
 // parentKitWriter reuses ordinary kit composition under exact retained stage
-// authority. Provider permissions remain delegation metadata, never pod secrets.
+// authority. Separate provider grants remain delegation metadata, never pod
+// secrets. A Copilot parent retains its existing model token without attenuating
+// that token's GitHub scopes.
 type parentKitWriter struct {
 	service  *daemonCredentialService
 	identity journal.RunIdentity
@@ -60,7 +62,7 @@ func (w parentKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attemp
 	if err != nil {
 		return "", err
 	}
-	if err := narrowChildKit(kit, ceiling); err != nil {
+	if err := narrowAgenticKitCredentials(kit, ceiling); err != nil {
 		return "", err
 	}
 	if err := childworkflow.AttachParentAuthoringSkill(kit, lease.Authority); err != nil {

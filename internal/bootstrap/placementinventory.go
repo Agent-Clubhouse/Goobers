@@ -14,3 +14,10 @@ func placementPinInventory(cfg *instance.Config) (runnersolve.Inventory, bool) {
 	inv := cfg.PlacementInventory(runnersolve.HostOS())
 	return inv, !inv.LocalMode() || cfg.HasIsolationMandates() || cfg.SelfExecutionDenied()
 }
+
+func childPlacementPinInventory(cfg *instance.Config, requireLocalPins bool) (runnersolve.Inventory, bool) {
+	if requireLocalPins && cfg != nil {
+		return cfg.PlacementInventory(runnersolve.HostOS()), true
+	}
+	return placementPinInventory(cfg)
+}

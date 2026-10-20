@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,8 +95,17 @@ func fileClaimLedgerWithResolver(l instance.Layout, resolver claimsclient.Shared
 		MergeLock: func(fn func() error) error {
 			return withFileLock(filepath.Join(l.SchedulerDir(), mergeLockFileName), fn)
 		},
-		Options: opts,
+		ProviderReleaseLock: claimProviderReleaseLock(l),
+		Options:             opts,
 	})
+}
+
+func claimProviderReleaseLock(l instance.Layout) func(claimsclient.Key, func() error) error {
+	return func(key claimsclient.Key, fn func() error) error {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%q/%q/%q", key.Gaggle, key.Provider, key.ExternalID)))
+		path := filepath.Join(l.SchedulerDir(), fmt.Sprintf("claim-release-%x.lock", digest))
+		return withBoundedFileLock(path, "backlog.release.provider", fn)
+	}
 }
 
 // fileClaimLedgerForRunWithResolver uses withClaimLockForRun's lock

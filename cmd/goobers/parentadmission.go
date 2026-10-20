@@ -15,7 +15,7 @@ import (
 func containedParentAdmission(layout instance.Layout, generation string) func(context.Context, *workflow.Machine) error {
 	return func(ctx context.Context, machine *workflow.Machine) error {
 		service, ok := stageGrantMinterFor(layout.Root).(*daemonCredentialService)
-		if !ok || generation == "" || service.children == nil || service.parentExecutors == nil || service.parentRecovery == nil || service.parentBorrowJournal == nil || machine.Def.Spec.Gaggle != layout.Gaggle() {
+		if !ok || generation == "" || service.children == nil || (service.parentExecutors == nil && service.localParentExecutors == nil) || service.parentRecovery == nil || service.parentBorrowJournal == nil || machine.Def.Spec.Gaggle != layout.Gaggle() {
 			return childworkflow.ErrAuthorityUnavailable
 		}
 		store, err := executionGenerationStore(layout)

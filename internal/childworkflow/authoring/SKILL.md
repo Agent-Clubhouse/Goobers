@@ -47,8 +47,12 @@ toward the state limit like any other state.
    capabilities. Deterministic tasks use the normal `run.command` array. Declare
    required policy actions from the selected Goober; validation may refuse a
    persona whose mandatory actions exceed this parent's ceiling.
-3. Select compatible `runsOn` requirements from the declared Linux image runner
-   claims and the gaggle placement floor. Claims do not prove live capacity.
+3. Select compatible `runsOn` requirements from the catalog runner claims and
+   the gaggle placement floor. When `executionBackend` is `trusted-local`, work
+   runs on this daemon host and child attempts are serialized. Omit unnecessary
+   placement constraints; do not request a Linux image on a macOS or Windows host.
+   Child model authentication must use the parent's exact selected credential
+   or the same selected harness login. Claims do not prove live capacity.
    Validation and dispatch select the actual existing runner; never invent pods
    or runner definitions. A scratch command can request `runsOn.os: linux` and
    suitable catalog capability tags. A selector that still admits an unsupported

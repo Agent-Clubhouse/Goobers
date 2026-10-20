@@ -1355,8 +1355,12 @@ type PullRequestSummary struct {
 	// tell whether a candidate backlog issue already has an open PR, without
 	// a second round-trip per candidate (GitHub's list-pulls response
 	// already carries the body).
-	Body      string             `json:"body,omitempty"`
-	Integrity apiintegrity.Grade `json:"integrity,omitempty"`
+	Body string `json:"body,omitempty"`
+	// BodyIncomplete marks a list projection that may contain only a prefix.
+	// Consumers parsing the full description must read PR detail/references.
+	// ADO list descriptions are truncated; its detail and poll reads are full.
+	BodyIncomplete bool               `json:"bodyIncomplete,omitempty"`
+	Integrity      apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // ChangedFile is one file a pull request touches (issue #359's sibling-set

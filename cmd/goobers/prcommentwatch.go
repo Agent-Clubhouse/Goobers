@@ -93,6 +93,9 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"rebase-pr and update-behind-pr classify comments by this same rule\n" +
 	"before they clear needs-remediation; give them the same identityMode and\n" +
 	"excludeAuthors.\n\n" +
+	"Shared mode permits three routing attempts per PR head, recorded on the\n" +
+	"PR. Further attempts park it with needs-human and merge-escalated and a\n" +
+	"visible note; feedback remains unaddressed. A new head resets the budget.\n\n" +
 	"Remediation responses carry a feedback-ack frontier: the newest\n" +
 	"timestamp in the feedback snapshot the run assessed, to the second. Such\n" +
 	"a response acknowledges only human comments within that second or\n" +
@@ -135,6 +138,7 @@ type prCommentWatchLabeled struct {
 
 type prCommentWatchResult struct {
 	Scanned   int    `json:"scanned"`
+	Parked    int    `json:"parked"`
 	Labeled   int    `json:"labeled"`
 	Unparked  int    `json:"unparked"`
 	Errors    int    `json:"errors"`
@@ -318,6 +322,21 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 		if disarmed, err = forge.disarm(ctx, pr); err != nil {
 			return fmt.Errorf("disarm the armed landing: %w", err)
 		}
+	}
+	exhausted, err := reserveCommentWatchRoute(ctx, forge, pr, comments, classifier)
+	if err != nil {
+		return err
+	}
+	if exhausted {
+		remove := carriedLabels(pr.Labels, map[string]bool{mergeReadyLabel: true, needsRemediationLabel: true})
+		if len(remove) > 0 || !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) || !hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
+			if err := forge.park(ctx, pr, remove); err != nil {
+				return fmt.Errorf("park exhausted comment routing: %w", err)
+			}
+		}
+		result.Parked++
+		pf(stdout, "parked PR #%d: shared-identity routing budget exhausted for head %s; feedback requires human review\n", pr.Number, pr.HeadSHA)
+		return nil
 	}
 	if err := forge.route(ctx, pr, append(append([]string(nil), cleared...), landing...)); err != nil {
 		return fmt.Errorf("label %s: %w", needsRemediationLabel, err)

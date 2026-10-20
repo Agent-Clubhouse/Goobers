@@ -23,6 +23,9 @@ type FileConfig struct {
 	// MergeLock is the instance-wide merge flock (cmd/goobers's withFileLock
 	// over merge.lock). Nil refuses MergeLock.
 	MergeLock func(fn func() error) error
+	// ProviderReleaseLock serializes cleanup attempts for one item, separately
+	// from the claims lock. It must be cross-process and held across I/O.
+	ProviderReleaseLock func(Key, func() error) error
 	// Options configure every ledger open (instance log, clock).
 	Options []localscheduler.LedgerOption
 	// Open overrides the ledger open (tests inject fault-injecting ledgers);

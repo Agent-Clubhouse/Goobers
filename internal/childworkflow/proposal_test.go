@@ -233,7 +233,7 @@ func TestPinnedInputsCannotBeWidenedAfterConstruction(t *testing.T) {
 	}
 }
 
-func TestModelCredentialsCannotBypassPublicationCeiling(t *testing.T) {
+func TestRemoteModelCredentialsCannotBypassPublicationCeiling(t *testing.T) {
 	agentic := strings.Replace(validProposal, "type: deterministic", "type: agentic\n      goober: coder\n      capabilities: [agent:model]", 1)
 	agentic = strings.Replace(agentic, "      run:\n        command: [\"true\"]\n", "", 1)
 	reviewer := strings.Replace(validProposal, "next: \"\"", "next: review", 1) + `  gates:
@@ -245,6 +245,7 @@ func TestModelCredentialsCannotBypassPublicationCeiling(t *testing.T) {
 	for _, harness := range []apiv1.Harness{"", apiv1.HarnessCopilot} {
 		for _, source := range []string{agentic, reviewer} {
 			context := testContext()
+			context.Config.Engine = &instance.EngineConfig{}
 			goober := context.Goobers["coder"]
 			goober.Harness = harness
 			context.Goobers["coder"] = goober

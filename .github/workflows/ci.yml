@@ -2087,7 +2087,7 @@ jobs:
         run: go test ./internal/testshard -count=1
 
       - name: Windows child proposal validation
-        run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook ./internal/apicontract/childworkflowwire -count=1
+        run: go test ./internal/childresult ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook ./internal/apicontract/childworkflowwire -count=1
 
       - name: Windows child admission authority
         run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild|TestOrdinaryRecovery|TestDirectEngine|TestSource|TestStartHelper' -count=1
