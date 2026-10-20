@@ -1138,8 +1138,13 @@ func markMergeReviewVerdictStale(ctx context.Context, provider remediationProvid
 	body := fmt.Sprintf(
 		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer stands: %s.\n\n"+
 			"No current review stands. merge-review will re-review this PR on its next cycle; "+
-			"findings from the superseded review may already be resolved and should not be acted on.",
+			"unresolved findings remain evidence on their recorded head until explicitly resolved or rejected.",
 		mergeReviewStatusMarker, reason)
+	// With no migrated state, this payload may be the only evidence of a
+	// same-head finding. Staling review authority cannot dispose of findings.
+	if payload := verdictJSONPattern.FindString(marked[0].Body); payload != "" {
+		body += "\n\n" + payload
+	}
 	if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
 		return fmt.Errorf("update merge-review status comment: %w", err)
 	}

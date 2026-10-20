@@ -643,3 +643,44 @@ func TestRemediationReadersSeeADisguisedStandingFinding(t *testing.T) {
 		t.Fatal("sibling-overlap narrowing dropped a standing finding")
 	}
 }
+
+func TestReviewMergeRefusesFindingCommittedAfterLedgerRead(t *testing.T) {
+	for _, plane := range []bool{false, true} {
+		t.Run(fmt.Sprintf("plane=%t", plane), func(t *testing.T) { testMergeLateFinding(t, plane) })
+	}
+}
+
+func testMergeLateFinding(t *testing.T, remote bool) {
+	const head, base = "head123", "base456"
+	st := &mergePRServerState{checkState: "success", headSHA: head, baseSHA: base}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": head, "baseSha": base,
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	if remote {
+		claims := newClaimsPlane(t)
+		state := newStatePlane(t)
+		stampClaimsPlaneEnv(t, claims, "run-merge-1", claims.admitRun(t, "test", "run-merge-1"))
+		stampStatePlaneEnv(t, state, "test", state.admitRun(t, "test", "run-merge-1"))
+	}
+	st.beforePolicyRead = func() error {
+		publication, err := beginVerdictPublication(root, repo, 9)
+		if err != nil {
+			return err
+		}
+		_, err = publication.commit(apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges, Summary: "New blocker", HeadSHA: head, BaseSHA: base,
+			Findings: []apiv1.Finding{{ID: "new-blocker", Severity: apiv1.SeverityError, Class: apiv1.FindingSubstantive, Message: "New defect"}},
+		}, nil, nil, &strings.Builder{})
+		return err
+	}
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	stored, ok, err := loadVerdictState(root, repo, 9)
+	if err != nil || !ok || stored.Decision != apiv1.VerdictNeedsChanges {
+		t.Fatalf("fixture did not commit blocker: %+v %v", stored, err)
+	}
+	if code != 0 || st.mergeCalls != 0 || st.enqueueCalls != 0 {
+		t.Fatalf("landed despite committed same-head blocker: code=%d merge=%d enqueue=%d stdout=%s stderr=%s result=%v", code, st.mergeCalls, st.enqueueCalls, stdout, stderr, readMergeResult(t, dir))
+	}
+}

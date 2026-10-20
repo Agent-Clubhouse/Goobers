@@ -119,7 +119,7 @@ func capturedVerdictPublication(t *testing.T, store stateclient.Store) verdictPu
 	if err != nil {
 		t.Fatal(err)
 	}
-	return verdictPublication{store: store, key: key, observed: observed, root: newVerdictTestRoot(t), number: 55}
+	return verdictPublication{store: store, key: key, observed: observed, root: newVerdictTestRoot(t), repo: verdictCommitRepo, number: 55}
 }
 
 func TestVerdictCommitRetriesAgainstConcurrentFinding(t *testing.T) {

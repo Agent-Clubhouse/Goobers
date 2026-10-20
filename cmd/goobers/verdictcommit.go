@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -23,6 +24,7 @@ type verdictPublication struct {
 	key      string
 	observed stateclient.Value
 	root     string
+	repo     providers.RepositoryRef
 	number   int
 }
 
@@ -31,7 +33,7 @@ func beginVerdictPublication(root string, repo providers.RepositoryRef, number i
 	if err != nil {
 		return verdictPublication{}, fmt.Errorf("open remediation-verdict state: %w", err)
 	}
-	publication := verdictPublication{store: store, key: verdictRecordKey(repo, number), root: root, number: number}
+	publication := verdictPublication{store: store, key: verdictRecordKey(repo, number), root: root, repo: repo, number: number}
 	publication.observed, err = store.Get(stateContext(), verdictStateKey(publication.key))
 	if err == nil {
 		_, _, err = decodeVerdictRecord(publication.observed, publication.key)
@@ -47,8 +49,21 @@ func beginVerdictPublication(root string, repo providers.RepositoryRef, number i
 // after commit returns. The original candidate remains unchanged on every try.
 func (p verdictPublication) commit(candidate apiv1.Verdict, legacy []apiv1.Verdict, finalize func(apiv1.Verdict) (apiv1.Verdict, error), stdout io.Writer) (apiv1.Verdict, error) {
 	var committed apiv1.Verdict
+	err := withVerdictPublicationCustody(stateContext(), p.root, p.repo, func(ctx context.Context) error {
+		var commitErr error
+		committed, commitErr = p.commitHeld(ctx, candidate, legacy, finalize, stdout)
+		return commitErr
+	})
+	return committed, err
+}
+
+func (p verdictPublication) commitHeld(ctx context.Context, candidate apiv1.Verdict, legacy []apiv1.Verdict, finalize func(apiv1.Verdict) (apiv1.Verdict, error), stdout io.Writer) (apiv1.Verdict, error) {
+	var committed apiv1.Verdict
 	var result findingledger.FoldResult
-	err := p.store.Update(stateContext(), verdictStateKey(p.key), verdictStateLockOperation, func(value stateclient.Value) ([]byte, bool, error) {
+	err := p.store.Update(ctx, verdictStateKey(p.key), verdictStateLockOperation, func(value stateclient.Value) ([]byte, bool, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		current, exists, err := decodeVerdictRecord(value, p.key)
 		if err != nil {
 			return nil, false, err

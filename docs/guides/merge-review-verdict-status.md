@@ -147,3 +147,32 @@ The credential needs permission to contribute PR statuses. See
 - [GitHub token scopes](github-token-scopes.md) for the `github:pr:review` grant.
 - `goobers apply-verdict --help` and `goobers merge-pr --help` for the stage
   contracts.
+
+## Finding publication and landing custody
+
+An unresolved same-head finding remains authoritative until a disposition
+addresses that finding instance. A voided review retains its original pinned
+payload, including before migration from legacy comments. Marking review
+permission stale does not erase that evidence.
+
+Authoritative verdict commits (including advisory and Azure DevOps paths),
+legacy-state migration, and merge-pr's final ledger read through landing share
+a short durable publication claim. Local and claims-plane stages use the same
+claim record. The older, longer poll-through-merge lock remains in place;
+publication can finish during a pre-merge check or policy lookup, and the final
+ledger read then refuses the newly recorded finding.
+
+The publication claim waits at most two minutes. Its action, including the
+provider landing request, has a one-minute deadline inside a five-minute lease.
+Ownership is checked again after the action. A timeout or unverifiable custody
+fails visibly with an uncertain-outcome error and retains the claim until lease
+expiry; it does not report a successful guarded landing. Operators should
+inspect the actual provider result before retrying an uncertain landing.
+
+This contract requires one owning gaggle and sequential participating stages
+within each run: claims are owned by run, not individual stage. Legacy binaries,
+manual state writers, and another installation do not participate. Forge APIs
+do not accept a publication fencing token, so an already accepted HTTP request
+that completes remotely after cancellation cannot be rolled back by this
+protocol. The bounded request, retained lease and visible uncertainty contain
+that failure; they cannot make a provider transaction atomic with local state.

@@ -104,11 +104,13 @@ func migrateVerdictState(root string, repo providers.RepositoryRef, prNumber int
 		return
 	}
 	key := verdictRecordKey(repo, prNumber)
-	_ = updateVerdictRecord(stateContext(), store, key, func(current apiv1.Verdict, exists bool) (apiv1.Verdict, bool, error) {
-		if exists {
-			return current, false, nil
-		}
-		return verdict, true, nil
+	_ = withVerdictPublicationCustody(stateContext(), root, repo, func(ctx context.Context) error {
+		return updateVerdictRecord(ctx, store, key, func(current apiv1.Verdict, exists bool) (apiv1.Verdict, bool, error) {
+			if exists {
+				return current, false, nil
+			}
+			return verdict, true, nil
+		})
 	})
 }
 

@@ -374,7 +374,6 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		// #6134: never land over open human review feedback Goobers has not
 		// answered, whether or not the forge enforces conversation resolution.
 		reasons = feedbackGate.refuse(ctx, pullNumber, reasons)
-		// #5890: an earlier finding on this head must not stand unanswered.
 		reasons = append(reasons, outstandingFindingMergeRefusals(ctx, root, stageProvider, repo, pullNumber, verdictAuthor, poll)...)
 		// Tutor-change classification is GitHub-only: classifyRemoteTutorChanges
 		// takes the concrete *GitHubProvider and the tutor lane does not run on
@@ -454,7 +453,6 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		if checkErr != nil {
 			return nil
 		}
-		// #6134: a reviewer may comment while the check runs; re-read feedback.
 		if reasons = feedbackGate.afterPreMergeCheck(ctx, pullNumber, checkReason); len(reasons) > 0 {
 			return nil
 		}
@@ -479,13 +477,15 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 			return nil
 		}
 
-		mergeAttempted = true
-		landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
-			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
-			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
-			DeleteSourceBranch: adoCompletionDeletesSourceBranch(ctx, stageProvider, repo, poll.HeadBranch, isADO, &adoCleanup),
+		return withFindingCheckedLanding(ctx, root, stageProvider, repo, pullNumber, verdictAuthor, poll, &reasons, func(ctx context.Context) error {
+			mergeAttempted = true
+			landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
+				Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
+				CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
+				DeleteSourceBranch: adoCompletionDeletesSourceBranch(ctx, stageProvider, repo, poll.HeadBranch, isADO, &adoCleanup),
+			})
+			return nil
 		})
-		return nil
 	})
 	if lockErr != nil {
 		pf(stderr, "error: acquire merge lock: %v\n", lockErr)

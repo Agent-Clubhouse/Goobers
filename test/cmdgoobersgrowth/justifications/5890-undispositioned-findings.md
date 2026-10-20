@@ -48,3 +48,9 @@ The decision logic already lives elsewhere (`internal/findingledger`). The
 rest reads and writes this package's own record formats and stage seams.
 Moving it would mean exporting the comment-trust, payload and scheduler-state
 helpers from `cmd/goobers` first, which is a larger refactor than this fix.
+
+The landing-race follow-up adds approximately 120 non-test lines in
+`verdictfence.go`. It assembles the existing local/plane claim client around
+publication and landing, bounds the action before lease expiry, and verifies
+custody afterward. This belongs beside the command's existing state/claim
+selection seams. The pure finding rule still lives in `internal/findingledger`.

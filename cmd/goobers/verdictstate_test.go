@@ -13,7 +13,7 @@ import (
 
 func newVerdictTestRoot(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := initDemo(t)
 	if err := os.MkdirAll(filepath.Join(root, "scheduler"), 0o755); err != nil {
 		t.Fatal(err)
 	}
