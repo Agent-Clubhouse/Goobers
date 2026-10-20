@@ -140,7 +140,10 @@ type JournalProjection struct {
 type runJournal struct {
 	// Receipts are separate from projection ordinals and remain workflow state
 	// reconstructed from recorded activity results, never mutable journal reads.
-	childOrigins map[string]livejournal.ChildOriginReceipt
+	childOrigins       map[string]livejournal.ChildOriginReceipt
+	childTotal         int32 // Conservative per-run history bound before ECW-3 continuation support.
+	childCounts        map[string]int32
+	childContinuations map[string][]apiv1.ContextPointer
 
 	proj          JournalProjection
 	machine       *wf.Machine
@@ -216,6 +219,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 		machine: m,
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
+				Child:           in.childLineage,
 				InstanceID:      in.InstanceID,
 				RunID:           in.RunID,
 				Workflow:        in.WorkflowName,
@@ -906,6 +910,13 @@ func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
 
 func (r *runJournal) taskAttemptEnvelope(env apiv1.InvocationEnvelope, task apiv1.Task, attempt int) apiv1.InvocationEnvelope {
 	env.Attempt = int32(attempt)
+	if origin := r.committedChildOrigin(task.Name); origin != nil {
+		env.ChildWorkflowOrigin = origin
+		env.ContextPointers = append(append([]apiv1.ContextPointer(nil), env.ContextPointers...), r.childContinuations[origin.StageOccurrence]...)
+	}
 	env.ArtifactPublication = r.artifactPublication(task)
+	if receipt := r.committedChildReceipt(task.Name); receipt != nil && env.ArtifactPublication != nil {
+		env.ArtifactPublication.Visit = receipt.Seq
+	}
 	return env
 }

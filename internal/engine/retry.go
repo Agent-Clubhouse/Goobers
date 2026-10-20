@@ -139,13 +139,16 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	var policyAttempts, infrastructureFailures, priorAttemptDeferrals int32
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
-	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
+	var physicalAttempt int32
+	for retryOrdinal := int32(1); retryOrdinal <= maxAttempts; retryOrdinal++ {
+		physicalAttempt++
+		attempt := physicalAttempt
 		// The first attempt carries no class (normative); a retry carries the
 		// class its triggering failure selected — the journal attempt-class
 		// convention (§3.3). Infrastructure retries do not consume the policy
 		// budget.
 		class := journal.AttemptClass("")
-		if attempt > 1 {
+		if retryOrdinal > 1 {
 			class = nextRetryClass
 		}
 		if class != journal.AttemptInfra {
@@ -161,6 +164,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
 		rec.stageStarted(startedAt, t, int(attempt), class)
+		rec.bindChildStart(ctx, t, retryOrdinal > 1)
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
@@ -170,7 +174,12 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
-			activityResult, err = dispatch(ctx, int(attempt), class)
+			activityResult, err = dispatchWithChildWait(ctx, in, t, rec, &attempt, class, policyAttempts, infrastructureFailures, &usageBudget, pointers, dispatch)
+			physicalAttempt = attempt
+			var childErr childWaitError
+			if errors.As(err, &childErr) {
+				return apiv1.ResultEnvelope{}, err
+			}
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
