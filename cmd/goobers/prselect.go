@@ -191,10 +191,7 @@ func runPRSelectCore(
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
-	safetyGateBases := []string{base}
-	if targeted, ok := targetedPullRequest(prs, targetedPullNumber, hasTargetedPullNumber); ok && targeted.Base != "" && targeted.Base != base {
-		safetyGateBases = append(safetyGateBases, targeted.Base)
-	}
+	safetyGateBases := prSelectSafetyBases(prs, targetedPullNumber, hasTargetedPullNumber, base)
 
 	gateState, gateCode := loadPRSelectSafetyGateState(
 		ctx, gateProvider, repo, openPRs, safetyGateBases, headPrefixes, expectedAuthorLogin, stdout, stderr,
@@ -234,20 +231,9 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, exclusionDraft)
 			continue
 		}
-		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
-			exclusions.recordPR(pr.Number, exclusionChecks)
-			continue
-		}
-		if hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
-			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr, expectedAuthorLogin)
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
-			}
-			pr = refreshed
-			if cleared {
-				pf(stdout, "re-queued PR #%d: removed stale %s after verified recovery checks\n",
-					pr.Number, abortedRunLabel)
-			}
+		pr, err = reconcilePRSelectAborted(ctx, gateProvider, repo, pr, expectedAuthorLogin, stdout)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			exclusions.recordPR(pr.Number, exclusionLabel)
@@ -287,6 +273,20 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, blockCode)
 			continue
 		}
+		conflicted, err := excludePRSelectConflict(ctx, source, repo, pr,
+			isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin))
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("route conflict for PR #%d", pr.Number), err, "selected-pr.json")
+		}
+		if conflicted {
+			pf(stdout, "excluded PR #%d: forge reports a merge conflict\n", pr.Number)
+			exclusions.recordPR(pr.Number, prqueue.Conflicted)
+			continue
+		}
+		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
+			exclusions.recordPR(pr.Number, exclusionChecks)
+			continue
+		}
 		exclusions.report.Add(pr.Number, "")
 		eligible = append(eligible, pr)
 	}
@@ -297,6 +297,28 @@ func runPRSelectCore(
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
 		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
+}
+
+func prSelectSafetyBases(prs []providers.PullRequestSummary, number string, targeted bool, base string) []string {
+	bases := []string{base}
+	if pr, ok := targetedPullRequest(prs, number, targeted); ok && pr.Base != "" && pr.Base != base {
+		bases = append(bases, pr.Base)
+	}
+	return bases
+}
+
+func reconcilePRSelectAborted(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, author string, stdout io.Writer) (providers.PullRequestSummary, error) {
+	if !hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+		return pr, nil
+	}
+	refreshed, cleared, err := clearStaleRunAbortedPR(ctx, provider, repo, pr, author)
+	if err != nil {
+		return pr, err
+	}
+	if cleared {
+		pf(stdout, "re-queued PR #%d: removed stale %s after verified recovery checks\n", pr.Number, abortedRunLabel)
+	}
+	return refreshed, nil
 }
 
 func validMergeReviewAuthorScope(authorScope string) bool {
@@ -618,7 +640,11 @@ func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSour
 		if err != nil {
 			return nil, nil, err
 		}
-		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider)}, nil, nil
+		ado, ok := provider.(*providers.ADOProvider)
+		if !ok {
+			return nil, nil, fmt.Errorf("ADO selection requires an ADO provider")
+		}
+		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider), conflicts: prSelectADOConflictProvider{mergeReviewADOProvider{ADOProvider: ado}}}, nil, nil
 	}
 
 	token, err := providerToken(capability.ProviderPRWrite)
@@ -663,7 +689,8 @@ func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root st
 // self-identity or daemon-login lookup: ADO selection stays on the configured
 // branch-prefix ownership rule.
 type branchPolicyPRSelectSource struct {
-	provider adoSelectProvider
+	provider  adoSelectProvider
+	conflicts prSelectConflictProvider
 }
 
 func (s branchPolicyPRSelectSource) pullRequests(ctx context.Context, repo providers.RepositoryRef, request prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
@@ -1164,6 +1191,13 @@ func pullRequestsForSelectionADO(
 				return err
 			}
 			pr.CheckState = poll.CheckState
+			pr.Mergeable = poll.Mergeable
+			if poll.HeadSHA != "" {
+				pr.HeadSHA = poll.HeadSHA
+			}
+			if poll.Labels != nil {
+				pr.Labels = poll.Labels
+			}
 			if poll.State != "" {
 				pr.State = poll.State
 			}
@@ -1198,6 +1232,7 @@ func adoSelectionCandidate(ctx context.Context, provider adoSelectProvider, repo
 		RequestedReviewers: poll.RequestedReviewers,
 		State:              poll.State,
 		Merged:             poll.Merged,
+		Mergeable:          poll.Mergeable,
 		Head:               poll.HeadBranch,
 		Base:               poll.BaseBranch,
 		HeadSHA:            poll.HeadSHA,
