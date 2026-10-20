@@ -15,9 +15,9 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 	// The only inputs are ci-retarget.yml's optional merge inputs (#7017);
 	// left empty, a dispatch validates the dispatched commit.
 	assertRetargetDispatchInputs(t, w)
-	if w.Concurrency.Group != "ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}" || !w.Concurrency.CancelInProgress {
-		t.Fatal("CI concurrency must isolate frozen refs while preserving same-ref cancellation")
-	}
+	assertCIJobCancellationGroups(t, w, map[string]any{"github": map[string]any{
+		"workflow": "CI", "ref": "refs/heads/qualification", "event_name": "workflow_dispatch",
+	}}, "ci-CI-refs/heads/qualification")
 	if !maps.Equal(w.Permissions, map[string]string{"actions": "read", "contents": "read", "pull-requests": "read"}) {
 		t.Fatal("manual CI must retain read-only default permissions")
 	}

@@ -16,7 +16,7 @@ name: CI base retarget
 # head branch with that merge (see ci.yml's workflow_dispatch inputs). Every
 # CI job checks out the merge, base-aware checks read the new base, scope
 # verifies the inputs, and the run reports the required check on the head SHA
-# in the PR's own concurrency group, replacing the old-base result. Re-running
+# in the PR's validation-job cancellation groups, replacing old-base work. Re-running
 # the old pull_request run would not do: a re-run reuses the original event's
 # GITHUB_SHA (the old merge commit) and payload (the old base).
 #

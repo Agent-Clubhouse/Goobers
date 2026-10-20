@@ -266,6 +266,7 @@
       ".github/workflows/ci.yml#dependency-cache-warm/Set up Python:github-actions",
       ".github/workflows/ci.yml#deploy-reference/Checkout:github-actions",
       ".github/workflows/ci.yml#deploy-reference/Set up Go:github-actions",
+      ".github/workflows/ci.yml#escalate-main-failure/Check latest main commit:github-actions",
       ".github/workflows/ci.yml#escalate-main-failure/Close resolved main failure:github-actions",
       ".github/workflows/ci.yml#escalate-main-failure/File or update critical main failure:github-actions",
       ".github/workflows/ci.yml#integration/Checkout:github-actions",
