@@ -21,6 +21,16 @@ func (r *Runner) verifyToolchains(ctx context.Context, in StartInput) (retErr er
 		return v.VerifyIn(ctx, in.RequiredCapabilities, "")
 	}
 	if in.pinnedWorkspace != nil {
+		// Acquisition starts on the run branch. Select and verify a requested
+		// continuation branch before reading its directory-scoped SDK policy.
+		in.pinnedStage.Lock()
+		defer in.pinnedStage.Unlock()
+		if err := r.preparePinnedStage(ctx, in, false, in.WorkspaceBranch); err != nil {
+			return err
+		}
+		if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, in.WorkspaceBranch); err != nil {
+			return err
+		}
 		return v.VerifyIn(ctx, in.RequiredCapabilities, in.pinnedWorkspace.Path)
 	}
 	if in.childWorkspace != nil {
