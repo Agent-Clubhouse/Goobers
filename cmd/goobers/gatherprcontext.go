@@ -704,6 +704,17 @@ func gatherPRContextRankCandidates(
 	selection gatherPRContextCandidateSelection,
 	stdout, stderr io.Writer,
 ) (gatherPRContextRanking, bool, int) {
+	eligible, deferred, err := stageLiveOriginPullRequests(selection.root, os.Getenv(executor.RunIDEnvVar), selection.eligible)
+	if err != nil {
+		return gatherPRContextRanking{}, true, failProviderStage(stderr, "inspect live PR origin", err, remediationBriefResultFile)
+	}
+	for _, reason := range deferred {
+		pf(stdout, "%s\n", reason)
+	}
+	if len(eligible) == 0 && len(deferred) > 0 {
+		return gatherPRContextRanking{}, true, writeNoWorkResult(stdout, stderr, strings.Join(deferred, "; "))
+	}
+	selection.eligible = eligible
 	candidates := selection.eligible
 	var fallback func() ([]providers.PullRequestSummary, error)
 	var refusal string
