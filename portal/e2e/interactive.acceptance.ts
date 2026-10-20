@@ -3,8 +3,40 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { createServer } from "node:http";
 
 const api = "/api/v1/interactive";
+
+test("another loopback port cannot reuse captured cookies as human authority", async ({ browser, baseURL }) => {
+  let captured = "";
+  const preview = createServer((request, response) => {
+    captured = request.headers.cookie ?? "";
+    response.end("<!doctype html><title>Controlled preview fixture</title>");
+  });
+  await new Promise<void>(resolve => preview.listen(0, "127.0.0.1", resolve));
+  const address = preview.address();
+  if (!address || typeof address === "string") throw new Error("Preview fixture did not bind");
+  // No global extraHTTPHeaders: real browser navigations must never attach the
+  // portal's origin credential to a different server.
+  const context = await browser.newContext({ storageState: humanBrowserOptions().storageState });
+  try {
+    const page = await context.newPage();
+    await page.goto(`http://127.0.0.1:${address.port}${api}/preview`);
+    expect(captured).toContain("goobers-human-session=");
+    expect(await page.evaluate(() => localStorage.getItem("goobers.interactive.human-binding"))).toBeNull();
+    for (const [path, method] of [["/status", "GET"], ["/sessions/fixture/events", "GET"], ["/sessions/fixture/commands", "POST"], ["/operations/actions/fixture/apply", "POST"]]) {
+      const response = await fetch(`${baseURL}${api}${path}`, {
+        method, headers: { Cookie: captured, "Content-Type": "application/json" },
+        ...(method === "POST" ? { body: "{}" } : {}),
+      });
+      expect(response.status).toBe(403);
+      await response.arrayBuffer();
+    }
+  } finally {
+    await context.close();
+    await new Promise<void>(resolve => preview.close(() => resolve()));
+  }
+});
 const evidenceDirectory = resolve(
   process.env.INTERACTIVE_EVIDENCE_DIR ?? `${tmpdir()}/goobers-interactive-evidence`,
 );
@@ -311,7 +343,7 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   expect(disconnected.turns).toHaveLength(4);
   await capture(page, "interactive-disconnected");
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
-  await expect(page.getByText("Live stream", { exact: true })).toBeVisible();
+  await expect(page.locator("#main-content").getByText("Live stream", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Stop session", exact: true }).click();
   await expect.poll(async () => (await snapshot(request, id)).status).toBe("stopped");
   await expect(page.getByText("Session stopped. History and cumulative changes remain available for review.", { exact: true })).toBeVisible();

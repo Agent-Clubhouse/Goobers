@@ -8,7 +8,7 @@ const evidenceDirectory = resolve(process.env.INTERACTIVE_EVIDENCE_DIR ?? `${tmp
 export function humanBrowserOptions() {
   const storageState = `${evidenceDirectory}/human-browser-state.json`;
   const state = JSON.parse(readFileSync(storageState, "utf8"));
-  const csrf = state.cookies.find((cookie: {name: string}) => cookie.name === "goobers-human-csrf")?.value;
+  const csrf = state.origins[0]?.localStorage.find((item: {name: string}) => item.name === "goobers.interactive.human-binding")?.value;
   if (!csrf) throw new Error("Start the authenticated interactive fixture before acceptance tests");
   return { storageState, extraHTTPHeaders: { "X-Goobers-CSRF": csrf as string } };
 }

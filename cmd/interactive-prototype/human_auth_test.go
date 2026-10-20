@@ -30,8 +30,19 @@ func bootstrapHuman(t *testing.T, a *humanAuth, handler http.Handler) []*http.Co
 	if w.Code != 200 {
 		t.Fatalf("bootstrap status=%d", w.Code)
 	}
-	if strings.Contains(w.Body.String(), a.session) || strings.Contains(w.Body.String(), a.csrf) {
-		t.Fatal("bootstrap reflected secrets in response body")
+	if strings.Contains(w.Body.String(), a.session) {
+		t.Fatal("bootstrap reflected session cookie in response body")
+	}
+	var binding struct {
+		CSRF string `json:"csrf"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &binding) != nil || binding.CSRF != a.csrf {
+		t.Fatal("bootstrap omitted origin-scoped header binding")
+	}
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Value == a.csrf {
+			t.Fatal("header binding leaked into port-shared cookies")
+		}
 	}
 	return w.Result().Cookies()
 }
@@ -109,6 +120,28 @@ func TestHumanAuthenticationRejectsForgedSessionAndPersona(t *testing.T) {
 		h.ServeHTTP(w, r)
 		if w.Code != 401 {
 			t.Fatalf("forged %s status=%d", forged, w.Code)
+		}
+	}
+}
+
+func TestPortSharedCookiesCannotReadStreamOrControlWithoutOriginBinding(t *testing.T) {
+	a := testHumanAuth(t)
+	h := authenticatedPrototypeHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("cookie-only request reached authenticated routes")
+	}), "127.0.0.1", "8097", a)
+	cookies := bootstrapHuman(t, a, h)
+	for _, path := range []string{"/status", "/sessions/s/events", "/sessions/s/commands", "/operations/actions/a/apply"} {
+		for _, method := range []string{"GET", "POST"} {
+			r := httptest.NewRequest(method, "http://127.0.0.1:8097"+api+path, strings.NewReader(`{}`))
+			r.Header.Set("Content-Type", "application/json")
+			for _, cookie := range cookies {
+				r.AddCookie(cookie)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != 403 {
+				t.Fatalf("cookie-only %s %s status=%d", method, path, w.Code)
+			}
 		}
 	}
 }

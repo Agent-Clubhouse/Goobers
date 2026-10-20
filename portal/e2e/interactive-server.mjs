@@ -61,6 +61,7 @@ server.on("exit", (code, signal) => {
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; server.kill(signal); });
 let runtime;
 let humanCookies;
+let humanBinding;
 while (performance.now() - start < 30_000 && !exited) {
   try {
     const origin = `http://127.0.0.1:${port}`;
@@ -81,11 +82,13 @@ while (performance.now() - start < 30_000 && !exited) {
         const name = pair.slice(0, at);
         return { name, value: pair.slice(at + 1), domain: "127.0.0.1", path: name === "goobers-human-csrf" ? "/" : "/api/v1/interactive", expires: -1, httpOnly: name !== "goobers-human-csrf", secure: false, sameSite: "Strict" };
       });
+      humanBinding = (await exchange.json()).csrf;
+      if (typeof humanBinding !== "string" || humanBinding.length !== 43) throw new Error("Missing human header binding");
       bootstrapToken = undefined;
-      writeFileSync(`${evidence}/human-browser-state.json`, JSON.stringify({ cookies: humanCookies, origins: [] }), { mode: 0o600 });
+      writeFileSync(`${evidence}/human-browser-state.json`, JSON.stringify({ cookies: humanCookies, origins: [{ origin, localStorage: [{ name: "goobers.interactive.human-binding", value: humanBinding }] }] }), { mode: 0o600 });
     }
     if (!humanCookies) throw new Error("Waiting for human bootstrap");
-    const response = await fetch(`${origin}/api/v1/interactive/status`, { headers: { Cookie: humanCookies.map(c => `${c.name}=${c.value}`).join("; ") } });
+    const response = await fetch(`${origin}/api/v1/interactive/status`, { headers: { Cookie: humanCookies.map(c => `${c.name}=${c.value}`).join("; "), "X-Goobers-CSRF": humanBinding } });
     if (response.ok) { runtime = await response.json(); break; }
   } catch { /* Server is not listening yet. */ }
   await new Promise(resolve => setTimeout(resolve, 50));
