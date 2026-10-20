@@ -420,8 +420,7 @@ func registerClaimRoute(
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "outcome is only valid for settle")
 			return
 		}
-		if (input.ProviderCleanup || !input.ClaimedAt.IsZero()) &&
-			(!release || !input.ProviderCleanup || input.ClaimedAt.IsZero() || input.ItemID == "") {
+		if !validClaimProviderCleanup(input, release) {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "providerCleanup requires a single-item release and claimedAt")
 			return
 		}
@@ -819,4 +818,12 @@ func writePlaneError(w http.ResponseWriter, errorLog *log.Logger, operation stri
 
 func isolatedClaimListAllowed(principal Principal, input ClaimListRequest) bool {
 	return principal.Subject == podPrincipalSubject(input.RunID) && input.Execution && input.IncludeHistory && input.Scope == ClaimListScopeRun && input.Gaggle == "" && input.Provider == ""
+}
+
+// Cleanup custody is valid only for a release naming one exact incarnation.
+func validClaimProviderCleanup(input ClaimRequest, release bool) bool {
+	if !input.ProviderCleanup && input.ClaimedAt.IsZero() {
+		return true
+	}
+	return release && input.ProviderCleanup && !input.ClaimedAt.IsZero() && input.ItemID != ""
 }
