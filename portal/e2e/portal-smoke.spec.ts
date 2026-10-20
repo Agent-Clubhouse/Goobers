@@ -11,6 +11,7 @@ interface RouteCase {
 // Keyed by `Route["page"]` so the e2e typecheck fails the moment the routing
 // union gains a page that has no browser-level smoke coverage here (#4225).
 const ROUTES: Record<Route["page"], RouteCase> = {
+  interactive: { path: "/#/interactive", heading: "Interactive" },
   overview: { path: "/#/overview", heading: "Active runs" },
   "instance-detail": { path: "/#/instance/recovery", heading: "Recovery metadata" },
   workflows: { path: "/#/workflows", heading: "Workflows" },
@@ -98,7 +99,14 @@ for (const [name, { path, heading }] of Object.entries(ROUTES)) {
       await expect(queue).toContainText("Check other instances before reconciling the label.");
     }
 
-    expect(consoleErrors).toEqual([]);
+    // The ordinary fixture daemon intentionally has no experimental service.
+    // Its discovery requests return 404; render failures remain fatal.
+    if (name === "interactive") {
+      await expect(page.getByRole("heading", {name: "Interactive workspace unavailable"})).toBeVisible();
+      expect(consoleErrors.filter(error => !error.includes("404 (Not Found)"))).toEqual([]);
+    } else {
+      expect(consoleErrors).toEqual([]);
+    }
     expect(pageErrors).toEqual([]);
   });
 }
