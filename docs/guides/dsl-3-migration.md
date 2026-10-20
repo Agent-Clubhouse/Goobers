@@ -172,3 +172,9 @@ journal warning. DSL 2.0 and 3.0 reject the explicit field and preserve their
 historical harness-specific omitted-field behavior. Set `dslVersion: "3.1"` to
 opt into uniform MCP requiredness; migration does not silently change older
 pins.
+
+Claude Code does not emit its `system/init` MCP status until after the prompt
+has been submitted. For a required server failure, Goobers aborts as soon as
+that init status arrives, before accepting an assistant or tool event; the
+prompt may already have been submitted when the abort fires. No separate MCP
+server or tool probe is launched.
