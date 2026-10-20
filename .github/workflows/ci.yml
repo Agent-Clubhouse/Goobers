@@ -2005,6 +2005,9 @@ jobs:
       - name: Windows service transitions
         run: go test ./internal/winsvc
 
+      - name: Windows child terminal validation
+        run: go test ./internal/childresult -count=1
+
       - name: Windows bounded diagnostic history
         run: go test -v ./internal/diagnostics/history ./internal/diagnostics/featureusage -count=1
 
