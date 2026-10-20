@@ -47,6 +47,11 @@ func TestRootIdentityInitStableAndDistinct(t *testing.T) {
 	if err != nil || other == id {
 		t.Fatalf("roots share identity: %q %q %v", id, other, err)
 	}
+	for _, root := range []string{first, second} {
+		if _, err := os.Stat(filepath.Join(root, instanceIdentityFile)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("fresh root %q created a second identity file: %v", root, err)
+		}
+	}
 }
 
 func TestRootIdentityConcurrentLegacyAdoption(t *testing.T) {
@@ -67,6 +72,37 @@ func TestRootIdentityConcurrentLegacyAdoption(t *testing.T) {
 		if errs[i] != nil || ids[i] == "" || ids[i] != ids[0] {
 			t.Fatalf("split identity: ids=%v errors=%v", ids, errs)
 		}
+	}
+}
+
+func TestRootAndLayoutIdentityConcurrentInitializersAgree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(NewLayout(root).ConfigFile(), []byte("existing config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const count = 32
+	ids, errs := make([]string, count), make([]error, count)
+	var wg sync.WaitGroup
+	for i := range count {
+		i := i
+		wg.Go(func() {
+			if i%2 == 0 {
+				ids[i], errs[i] = EnsureRootIdentity(ctx, root)
+			} else {
+				ids[i], errs[i] = NewLayout(root).EnsureIdentity(ctx)
+			}
+		})
+	}
+	wg.Wait()
+	for i := range count {
+		if errs[i] != nil || ids[i] == "" || ids[i] != ids[0] {
+			t.Fatalf("split identity: ids=%v errors=%v", ids, errs)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, instanceIdentityFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("concurrent initialization created legacy identity: %v", err)
 	}
 }
 

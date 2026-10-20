@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,7 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	confirmation := &providers.MergeConfirmation{RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", MergeSHA: "commit"}
 	intent := &providers.LandingIntent{ID: strings.Repeat("b", 32), Operation: "merge", RepositoryAPIURL: confirmation.RepositoryAPIURL, PullID: "11", ExpectedHeadSHA: "head"}
 	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "11"}, Runner: providers.MutationRunnerFields("merge-intent", nil, nil, intent)}); err != nil {
@@ -85,6 +87,78 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Acknowledged ADO auto-complete settings (not completed merges): 1") || !strings.Contains(stdout, autoComplete.ID) {
 		t.Fatalf("human report lost ADO acknowledgement: %s", stdout)
+	}
+}
+
+func TestTelemetryMergesExpandsLegacyIdentityAfterUpgrade(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	canonical := strings.Repeat("a", 32)
+	legacy := strings.Repeat("b", 32)
+	for name, id := range map[string]string{
+		instance.RootIdentityFileName: canonical,
+		"instance-id":                 legacy,
+	} {
+		if err := os.WriteFile(filepath.Join(layout.Root, name), []byte(id+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := layout.EnsureIdentity(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for i, id := range []string{legacy, canonical} {
+		run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+			RunID: "upgrade-merge-" + id[:1], Workflow: "landing", Gaggle: "web", InstanceID: id,
+		}, nil, journal.WithClock(func() time.Time { return at }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		confirmation := &providers.MergeConfirmation{
+			RepositoryAPIURL: "https://forge.example/repos/acme/app",
+			PullID:           fmt.Sprint(i + 1),
+			MergeSHA:         fmt.Sprintf("commit-%d", i+1),
+		}
+		if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{
+			Provider: "github", Kind: "pr", ID: confirmation.PullID,
+		}, Runner: providers.MutationRunnerFields("merge", confirmation, nil, nil)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(layout.TelemetryDB()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runID := range []string{"upgrade-merge-b", "upgrade-merge-a"} {
+		runDir, err := layout.FindRunDir(runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.IngestRun(t.Context(), runDir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, filter := range []string{canonical, legacy} {
+		code, stdout, stderr := runArgs(t, "telemetry", "merges", "--json", "--instance-id="+filter,
+			"--since=2026-09-01T00:00:00Z", "--until=2026-09-02T00:00:00Z", layout.Root)
+		if code != 0 {
+			t.Fatalf("filter %s failed: %d %s", filter, code, stderr)
+		}
+		var report rollup.MergeReport
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Merges) != 2 {
+			t.Fatalf("filter %s returned %d merges, want pre- and post-upgrade records: %+v", filter, len(report.Merges), report.Merges)
+		}
 	}
 }
 

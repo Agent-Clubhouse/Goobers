@@ -19,6 +19,7 @@ func (db *DB) MergeProvenanceForInventory(ctx context.Context, query MergeReport
 		return MergeReport{}, fmt.Errorf("merge inventory proof requires at most %d PRs and an increasing window of at most 90 days", MaxMergeReportEvents)
 	}
 	query.InstanceID, query.Gaggle, query.RepositoryAPIURL = "", "", ""
+	query.InstanceIDs = nil
 	wanted, rawKeys, err := mergeInventoryProofKeys(query, inventory)
 	if err != nil {
 		return MergeReport{}, err

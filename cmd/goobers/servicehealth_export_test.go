@@ -57,6 +57,9 @@ func TestServiceHealthExportProductionWiring(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := instance.NewLayout(root).EnsureIdentity(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	done := startServiceHealth(ctx, root, &daemonIdentity{StartedAt: time.Now()}, setup, nil)
 	select {
 	case req := <-collector.requests:
