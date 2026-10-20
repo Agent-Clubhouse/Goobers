@@ -62,6 +62,9 @@ func installQualificationParentProbe(t *testing.T, bin string) {
 		// name-kill deny flags; arbitrary host inference fails.
 		probe = "#!/bin/sh\ncase \"$*\" in\n --version) echo 'GitHub Copilot CLI 1.0.98 (qualification preflight)' ;;\n --help) echo 'Usage: copilot [OPTIONS] [COMMAND]\nOptions:\n      --allow-all-tools\n      --log-level <level>\n      --log-dir <directory>\n      --session-id <id>\n      --no-remote-export' ;;\n '-p Reply with exactly: ok --allow-all-tools --available-tools= --no-remote-export --deny-tool=shell(pkill) --deny-tool=shell(killall) --deny-tool=shell(/usr/bin/pkill) --deny-tool=shell(/usr/bin/killall) --deny-tool=shell(/bin/pkill) --deny-tool=shell(/bin/killall) --deny-tool=shell(/usr/bin/env pkill) --deny-tool=shell(/usr/bin/env killall)') echo ok ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
 	}
+	if command == "codex" {
+		probe = qualificationCodexHostProbe
+	}
 	if err := os.WriteFile(filepath.Join(bin, command), []byte(probe), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -91,3 +94,13 @@ func qualificationParentGoober(t *testing.T, source, selectedHarness string) str
 	}
 	return string(data)
 }
+
+// Public help is read-only preflight evidence, not permission to execute a
+// model on the host. Keep the exact exec/help shape separate from inference.
+const qualificationCodexHostProbe = `#!/bin/sh
+case "$*" in
+ --version) echo '0.163.0 (qualification preflight)' ;;
+ 'exec --help') printf '%s\n' 'Options:' '  --json' '  --ignore-rules' '  --disable <FEATURE>' '  --sandbox <MODE>' '  --skip-git-repo-check' '  --cd <DIR>' '  --config <KEY=VALUE>' ;;
+ *) echo 'parent execution reached the host' >&2; exit 70 ;;
+esac
+`
