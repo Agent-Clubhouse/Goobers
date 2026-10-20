@@ -147,3 +147,64 @@ The credential needs permission to contribute PR statuses. See
 - [GitHub token scopes](github-token-scopes.md) for the `github:pr:review` grant.
 - `goobers apply-verdict --help` and `goobers merge-pr --help` for the stage
   contracts.
+
+## Finding publication and landing custody
+
+An unresolved same-head finding remains authoritative until a disposition
+addresses that finding instance. A voided review retains its original pinned
+payload, including before migration from legacy comments. Marking review
+permission stale does not erase that evidence.
+
+Authoritative verdict commits (including advisory and Azure DevOps paths),
+legacy-state migration, and merge-pr's final ledger read through landing share
+a short durable publication claim. Local and claims-plane stages use the same
+claim record. The older, longer poll-through-merge lock remains in place;
+publication can finish during a pre-merge check or policy lookup, and the final
+ledger read then refuses the newly recorded finding.
+
+The publication claim waits at most two minutes. Its action, including the
+provider landing request, has a one-minute deadline inside a five-minute lease.
+Ownership is checked again after the action. A timeout or unverifiable custody
+fails visibly with an uncertain-outcome error and retains the claim until lease
+expiry, including against retries in the same run; it does not report a
+successful guarded landing. Operators should
+inspect the actual provider result before retrying an uncertain landing.
+
+This contract requires one owning gaggle and sequential participating stages
+within each run: claims are owned by run, not individual stage. Legacy binaries,
+manual state writers, and another installation do not participate. Forge APIs
+do not accept a publication fencing token, so an already accepted HTTP request
+that completes remotely after cancellation cannot be rolled back by this
+protocol. The bounded request, retained lease and visible uncertainty contain
+that failure; they cannot make a provider transaction atomic with local state.
+
+Publication custody uses the reserved `publication-lock/` claim namespace.
+Generic run completion, terminal recovery, live-run renewal and continuation
+reclaim do not release, extend or transfer it. An explicit verified release
+ends a completed action's custody; otherwise its fixed expiry is the backstop,
+even if the workflow remains live or has already become terminal.
+
+An unconfirmed landing error (including a lost transport reply after provider
+acceptance) also retains that fixed lease. One bounded PR read can release it
+if the selected head is confirmed merged; an open or unreadable PR cannot prove
+that the provider rejected the request. Explicit provider refusals such as
+HTTP 405/409 release normally. Existing merge-result and error reporting stays
+unchanged.
+
+Generic force-release and bulk cleanup cannot remove publication custody. After
+checking the actual provider outcome, an operator with local instance access can
+explicitly override **one exact key**:
+
+```sh
+goobers claims release --force \
+  --publication-custody-reason="Verified the provider outcome; safe to release" \
+  --gaggle=review --provider=github \
+  publication-lock/github/example/repository /path/to/instance
+```
+
+Omit both scope flags for an unscoped local claim. This writes an audit intent
+with the invoking OS user ID, key, run and reason before releasing custody, then
+records `claim.force_released`. An unavailable audit journal blocks the override.
+The operator accepts responsibility for any still-running provider request; this
+escape hatch does not cancel a remote merge. Prefer the fixed expiry unless the
+outcome has been verified.

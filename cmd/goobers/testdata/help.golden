@@ -395,7 +395,11 @@ standing comment is marked stale, and a standing verdict status on the
 unchanged head turns pending; exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
-selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
+selectedBaseSha from Task.InputsFrom. Every published verdict carries
+standingFindings: the findings earlier reviews raised on the same head
+that no verdict answered in its dispositions (resolved with evidence,
+or rejected with a reason). A pass that leaves one standing is
+published as needs-changes (#5890). Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
 
 ### approve
@@ -648,11 +652,13 @@ Print item id, gaggle, provider, run id, workflow, claimed-at, and
 expires-at for each claim. Filters may be combined. Default path is ".".
 
 ### claims release
-Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
+Usage: goobers claims release [--publication-custody-reason=text] [--force] [--gaggle=name --provider=name] <item-id> [path]
 
 Print the claim holder, age, and expiry, then force-release the item.
 --force is required while the holding run is non-terminal. The override
-is recorded as claim.force_released in the instance journal. Default
+is recorded as claim.force_released in the instance journal. Publication
+locks additionally require --publication-custody-reason and audit the OS
+operator identity before release. Default
 path is ".". Scope flags are required when the item id exists in more
 than one namespace. Exit codes: 0 = released, 1 = refused/not found/
 ambiguous, 2 = usage/IO error.
@@ -1733,7 +1739,10 @@ so the stage forces a fresh review instead; --no-verdict-cache skips that
 lookup, always forcing a fresh review. It also resolves the selected PR's
 base drift deterministically (selectedBaseDrift: current|behind|unknown,
 with selectedMergeBaseSha/selectedBaseTipSha) so the reviewer is told
-whether the base moved instead of inferring it. Exit codes: 0 = context
+whether the base moved instead of inferring it, and lists as
+standingFindings the findings an earlier review raised on the selected
+head that no later review resolved or rejected, for the reviewer to
+answer (#5890). Exit codes: 0 = context
 gathered (possibly empty — no siblings is not an error), 1 = business
 error, 2 = usage/IO error.
 
@@ -1997,7 +2006,10 @@ review comment counts until answered. Feedback that
 cannot be read refuses as human-feedback-unverifiable. Comments are
 classified as pr-comment-watch classifies them, under the same
 identityMode and excludeAuthors inputs. Set false to merge over
-comments), resultFile (default merge-result.json). Successful merges
+comments), resultFile (default merge-result.json). It also refuses
+while a finding an earlier review raised on the live head stands
+unanswered: a later pass clears none without a resolved or rejected
+disposition (#5890). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked,
 skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
 (merged or not — see the result file's "merged" field), 1 = business
@@ -3566,7 +3578,11 @@ merge-base or at a base commit since, is red because its base was, so
 it is updated the same way. Other candidates are routed to full
 remediation, including a PR carrying goobers:needs-remediation that has
 human feedback no Goobers response has answered: this lane clears that
-label, and the feedback needs the agentic path. Comments are classified
+label, and the feedback needs the agentic path. So is a PR whose head
+carries a finding an earlier review raised and no later review resolved
+or rejected, even under a later pass: a current branch does not heal
+it (#5890). A verdict ledger that cannot be read fails the stage.
+Comments are classified
 as pr-comment-watch classifies them, under the same identityMode
 (dedicated or shared; default dedicated) and excludeAuthors inputs; set
 them to pr-comment-watch's values. A run dispatched for one
