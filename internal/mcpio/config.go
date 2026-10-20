@@ -50,12 +50,15 @@ type Config struct {
 	// artifact slots. publish_output refuses a manifest whose payload for any
 	// of these slots is absent, malformed, or violates its schema (#6868).
 	PublicationSchemas []PublicationSchema `json:"publicationSchemas,omitempty"`
-	ReceiptFile        string              `json:"receiptFile,omitempty"`
-	Inputs             map[string]string   `json:"inputs,omitempty"`
-	RunID              string              `json:"runId"`
-	WorkflowID         string              `json:"workflowId"`
-	TaskID             string              `json:"taskId"`
-	Gaggle             string              `json:"gaggle"`
+	// PublicationReceiptFile is the workspace-relative JSONL log of
+	// schema-bound publish_output outcomes the harness journals (#6868).
+	PublicationReceiptFile string            `json:"publicationReceiptFile,omitempty"`
+	ReceiptFile            string            `json:"receiptFile,omitempty"`
+	Inputs                 map[string]string `json:"inputs,omitempty"`
+	RunID                  string            `json:"runId"`
+	WorkflowID             string            `json:"workflowId"`
+	TaskID                 string            `json:"taskId"`
+	Gaggle                 string            `json:"gaggle"`
 }
 
 // LoadConfig reads and validates a config file at path.

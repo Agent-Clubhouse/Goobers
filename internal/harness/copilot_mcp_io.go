@@ -32,6 +32,10 @@ func goobersIOReceiptFile() string {
 	return filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ReceiptFileName)
 }
 
+func goobersIOPublicationReceiptFile() string {
+	return filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.PublicationReceiptFileName)
+}
+
 func collectGoobersIOReceipts(req RunRequest, selfBin string) ([]mcpio.InputInspectionReceipt, bool, error) {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return nil, false, nil
