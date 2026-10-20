@@ -47,7 +47,7 @@ type ADOProvider struct {
 	jitter           func(time.Duration) time.Duration
 
 	stateMu         sync.RWMutex
-	stateCategories map[string][]adoWorkItemState
+	stateCategories map[string]adoStateCategoryCache
 	// doneStates decides when a predecessor stops blocking (ADO-N32); the
 	// zero value means the default Resolved, Completed and Removed
 	// categories.

@@ -1452,14 +1452,15 @@ func (p *ADOProvider) adoWorkItemStateCategories(ctx context.Context, repo Repos
 	p.stateMu.RLock()
 	cached := p.stateCategories[key]
 	p.stateMu.RUnlock()
-	if cached != nil {
-		return cached, nil
+	if cached.fresh(p.now()) {
+		return cached.states, nil
 	}
 
 	endpoint, err := p.workURL(p.project(repo), "workitemtypes", itemType, "states")
 	if err != nil {
 		return nil, err
 	}
+	readStarted := p.now()
 	var response adoWorkItemStatesResponse
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		return nil, err
@@ -1467,14 +1468,14 @@ func (p *ADOProvider) adoWorkItemStateCategories(ctx context.Context, repo Repos
 	resolved := response.Value
 	p.stateMu.Lock()
 	if p.stateCategories == nil {
-		p.stateCategories = make(map[string][]adoWorkItemState)
+		p.stateCategories = make(map[string]adoStateCategoryCache)
 	}
-	if cached = p.stateCategories[key]; cached == nil {
-		p.stateCategories[key] = resolved
-		cached = resolved
+	if cached = p.stateCategories[key]; !cached.fresh(p.now()) {
+		cached = adoStateCategoryCache{states: resolved, stored: readStarted}
+		p.stateCategories[key] = cached
 	}
 	p.stateMu.Unlock()
-	return cached, nil
+	return cached.states, nil
 }
 
 // adoWorkItemTypeCategory is the shape of
