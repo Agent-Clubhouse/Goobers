@@ -155,6 +155,25 @@ func readCopilotSessionTranscript(path string, limit int64) (transcriptCapture, 
 	return capture, ok
 }
 
+func readCopilotSessionTranscripts(paths []string, limit int64) (transcriptCapture, bool) {
+	var readers []io.Reader
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		defer func() { _ = file.Close() }()
+		if len(readers) > 0 {
+			readers = append(readers, strings.NewReader("\n"))
+		}
+		readers = append(readers, file)
+	}
+	return convertCopilotSessionEvents(io.MultiReader(readers...), limit)
+}
+
 func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, bool) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), int(maxCopilotSessionEventBytes))

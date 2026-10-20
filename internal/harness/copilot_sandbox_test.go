@@ -174,7 +174,7 @@ func dirExists(path string) bool {
 
 // TestCopilotAdapterRecoveryTurnStaysConfined proves the contract-recovery
 // turn (a clean exit with no completion file) reuses the WRAPPED argv
-// unchanged and carries the recovery prompt on stdin (#6871) — the wrapper
+// with a fresh session id and carries the recovery prompt on stdin (#6871) — the wrapper
 // prefix must not corrupt the recovery invocation or escape the sandbox.
 func TestCopilotAdapterRecoveryTurnStaysConfined(t *testing.T) {
 	workspace := t.TempDir()
@@ -204,9 +204,7 @@ func TestCopilotAdapterRecoveryTurnStaysConfined(t *testing.T) {
 	if second[0] != "sandbox-stub" {
 		t.Fatalf("recovery argv is not sandbox-wrapped: %v", second)
 	}
-	if !slices.Equal(first, second) {
-		t.Fatalf("recovery argv differs from initial: %v vs %v", first, second)
-	}
+	assertCopilotRepairSessionArguments(t, first, second)
 	// The empty prompt-mode flag follows the wrapper prefix (2 args) and the
 	// base command (1); the prompt itself is never in argv.
 	if got := second[3]; got != defaultPromptFlag+"=" {

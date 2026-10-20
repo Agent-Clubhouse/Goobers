@@ -1245,6 +1245,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	defer captures.cleanup()
 	argv, env = captures.argv, captures.env
 	nativeTranscriptPath, usageOutputPath := captures.transcriptPath, captures.usagePath
+	repairUsage := &copilotRepairUsage{transcriptPath: nativeTranscriptPath, usagePath: usageOutputPath}
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
@@ -1281,6 +1282,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err != nil {
 		return Outcome{}, err
 	}
+	repairUsage.checkpoints = &nativeCheckpoints
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
@@ -1328,7 +1330,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
 			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv,
 			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+			repairUsage,
 		)
+		nativeTranscriptPath, usageOutputPath = repairUsage.transcriptPath, repairUsage.usagePath
 	}
 	out = Outcome{
 		Transcript:               result.Transcript,
@@ -1352,9 +1356,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
-	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry))
+	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry, repairUsage.previousTranscript))
 	applyControlledCopilotUsage(&out, runner)
-	applyCopilotUsageDocument(&out, usageOutputPath, req.UsageSink)
+	applyCopilotUsageDocument(&out, usageOutputPath, nil)
+	repairUsage.apply(&out)
+	if req.UsageSink != nil {
+		req.UsageSink(maps.Clone(out.Metrics))
+	}
 	if runErr != nil {
 		return out, runErr
 	}
@@ -1377,6 +1385,7 @@ func runCopilotCompletionRepair(
 	started time.Time,
 	completionErr error,
 	agentTelemetry *adapterAgentEmitter,
+	usage *copilotRepairUsage,
 ) (ProcessResult, []byte, error, error) {
 	if !repairableCompletionError(completionErr) {
 		return result, payload, nil, completionErr
@@ -1423,6 +1432,14 @@ func runCopilotCompletionRepair(
 		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
 		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		Activity:                     agentTelemetry.activityObserver(),
+	}
+	if usage != nil {
+		var err error
+		recoveryReq.Command, recoveryReq.Env, err = usage.prepare(ctx, runner, req, recoveryReq.Command, recoveryReq.Env)
+		if err != nil {
+			return result, payload, err, completionErr
+		}
+		nativeTranscriptPath = usage.transcriptPath
 	}
 	if restarter, ok := runner.(copilotRepairRestarter); ok {
 		if err := restarter.RestartCopilotForRepair(ctx, recoveryReq); err != nil {
@@ -1934,11 +1951,17 @@ func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunR
 	return nil
 }
 
-func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter) (runErr error) {
+func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter, previousPaths ...string) (runErr error) {
 	if nativeTranscriptPath != "" {
-		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+		native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes)
+		if ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
+		}
+		if len(previousPaths) > 0 && previousPaths[0] != "" {
+			native, ok = readCopilotSessionTranscripts(append(previousPaths, nativeTranscriptPath), req.MaxTranscriptBytes)
+		}
+		if ok {
 			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
 				runErr = fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err)
 			}

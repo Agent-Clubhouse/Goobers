@@ -1729,6 +1729,7 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		time.Now(),
 		fmt.Errorf("%w: invalid payload", ErrInvalidCompletion),
 		&adapterAgentEmitter{},
+		nil,
 	)
 	if runErr != nil || completionErr != nil || result.ExitCode != 0 {
 		t.Fatalf("repair result=(%+v, payload %q, runErr %v, completionErr %v), want success", result, repaired, runErr, completionErr)
@@ -1760,6 +1761,7 @@ func TestCopilotCompletionRepairSkipsRefreshWhenBudgetExhausted(t *testing.T) {
 		"",
 		time.Now().Add(-time.Second),
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 0 {
@@ -1800,6 +1802,7 @@ func TestCopilotCompletionRepairBoundsCredentialRefreshByRemainingBudget(t *test
 		"",
 		started,
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 1 {
