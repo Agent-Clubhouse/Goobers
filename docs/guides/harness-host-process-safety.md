@@ -140,6 +140,11 @@ tool allowlists, completion repairs, and fallback authentication prompts.
 keep denies authoritative alongside `--allow-all-tools`. The invocation
 record includes the effective denies.
 
+This is the enforced CLI and control-session mitigation for
+[#7394](https://github.com/Agent-Clubhouse/Goobers/issues/7394). The CLI deny
+arguments and host permission callback apply independently of the model's
+system-prompt instructions.
+
 Controlled SDK sessions also inspect `fullCommandText` before approving a
 shell permission. They refuse a missing command, `pkill` or `killall` anywhere
 in the text, and commands combining `pgrep` with `kill`. That covers literal
