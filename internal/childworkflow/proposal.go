@@ -129,6 +129,9 @@ func NewValidator(input AdmissionContext) (*Validator, error) {
 		return nil, errors.New("child validation requires an explicit execution backend")
 	}
 	policy := input.ParentTask.ChildWorkflows
+	if err := workflow.RefuseChildSelectionExecution(apiv1.WorkflowSpec{Tasks: []apiv1.Task{input.ParentTask}}); err != nil {
+		return nil, refusal("selection_unsupported", input.ParentTask.Name, "childWorkflows", err.Error())
+	}
 	if len(policy.AllowedGoobers) == 0 || len(policy.AllowedGoobers) > 128 || policy.EffectiveMaxChildren() < 1 || policy.EffectiveMaxChildren() > apiv1.MaxChildWorkflows {
 		return nil, errors.New("invalid pinned child-workflow policy")
 	}

@@ -559,6 +559,14 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.capabilities` | 3.1 | ga | preview | dev |
 | `task.childWorkflows` | 3.1 | preview | preview | dev |
 | `task.childWorkflows.allowPRPublication` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedAgentProfiles` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedAgentProfiles.goober` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedAgentProfiles.harness` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedAgentProfiles.model` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedAgentProfiles.name` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedBases` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedBases.name` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedBases.ref` | 3.1 | preview | preview | dev |
 | `task.childWorkflows.allowedCapabilities` | 3.1 | preview | preview | dev |
 | `task.childWorkflows.allowedGoobers` | 3.1 | preview | preview | dev |
 | `task.childWorkflows.maxChildren` | 3.1 | preview | preview | dev |
@@ -684,6 +692,6 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 3.0 -> 3.1
 
-- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`, `workflow.spec.maps`, `workflow.spec.maps.bindings`, `workflow.spec.maps.failurePolicy`, `workflow.spec.maps.itemTimeoutSeconds`, `workflow.spec.maps.join`, `workflow.spec.maps.maxConcurrent`, `workflow.spec.maps.onFailure`, `workflow.spec.maps.source`, `workflow.spec.maps.task`, `workflow.spec.parallels.branches.optional`, `workflow.spec.parallels.selection`, `workflow.spec.parallels.selection.source`
+- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedAgentProfiles`, `task.childWorkflows.allowedAgentProfiles.goober`, `task.childWorkflows.allowedAgentProfiles.harness`, `task.childWorkflows.allowedAgentProfiles.model`, `task.childWorkflows.allowedAgentProfiles.name`, `task.childWorkflows.allowedBases`, `task.childWorkflows.allowedBases.name`, `task.childWorkflows.allowedBases.ref`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`, `workflow.spec.maps`, `workflow.spec.maps.bindings`, `workflow.spec.maps.failurePolicy`, `workflow.spec.maps.itemTimeoutSeconds`, `workflow.spec.maps.join`, `workflow.spec.maps.maxConcurrent`, `workflow.spec.maps.onFailure`, `workflow.spec.maps.source`, `workflow.spec.maps.task`, `workflow.spec.parallels.branches.optional`, `workflow.spec.parallels.selection`, `workflow.spec.parallels.selection.source`
 - Removed: none
 - Level changes: none

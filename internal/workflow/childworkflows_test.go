@@ -81,6 +81,8 @@ func TestChildWorkflowPreviewAndCatalogBoundaries(t *testing.T) {
 	}
 	def.Spec.Tasks[0].ChildWorkflows.MaxChildren = 4
 	def.Spec.Tasks[0].ChildWorkflows.AllowPRPublication = true
+	def.Spec.Tasks[0].ChildWorkflows.AllowedAgentProfiles = []apiv1.ChildAgentProfile{{Name: "fast", Goober: "coder", Harness: apiv1.HarnessCopilot, Model: "configured-model"}}
+	def.Spec.Tasks[0].ChildWorkflows.AllowedBases = []apiv1.ChildBaseReference{{Name: "integration", Ref: "refs/heads/integration"}}
 	features, err := FeaturesForWorkflow(def)
 	if err != nil {
 		t.Fatal(err)

@@ -876,6 +876,87 @@ spec:
                             AllowPRPublication permits a submission to request PR publication.
                             False by default; true cannot widen the enclosing publication policy.
                           type: boolean
+                        allowedAgentProfiles:
+                          description: |-
+                            AllowedAgentProfiles declares exact Goober/harness/model combinations.
+                            These are ceilings, not grants. Execution with selection declarations is
+                            refused until the selection runtime is available.
+                          items:
+                            description: |-
+                              ChildAgentProfile permits one exact selection for an existing allowed Goober.
+                              Selecting a profile never replaces that Goober's instructions or capabilities.
+                            properties:
+                              goober:
+                                description: Goober must also occur in the parent's
+                                  allowedGoobers.
+                                maxLength: 128
+                                minLength: 1
+                                type: string
+                              harness:
+                                description: Harness is a configured harness identifier,
+                                  never an executable or flags.
+                                maxLength: 128
+                                minLength: 1
+                                pattern: ^[a-zA-Z0-9_-]+$
+                                type: string
+                              model:
+                                description: Model is a model identifier resolved
+                                  by host admission for this harness.
+                                maxLength: 256
+                                minLength: 1
+                                pattern: ^\S+$
+                                type: string
+                              name:
+                                description: Name is the unique profile identifier
+                                  within the parent policy.
+                                maxLength: 128
+                                minLength: 1
+                                pattern: ^[a-zA-Z0-9_-]+$
+                                type: string
+                            required:
+                            - goober
+                            - harness
+                            - model
+                            - name
+                            type: object
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                        allowedBases:
+                          description: |-
+                            AllowedBases names repository refs eligible as a child workspace base.
+                            Omission allows only the parent snapshot. Named-base execution is refused
+                            until immutable ref resolution and custody are available.
+                          items:
+                            description: |-
+                              ChildBaseReference declares a same-repository branch or tag by name.
+                              Launch must resolve the ref to an immutable commit before child acceptance.
+                            properties:
+                              name:
+                                description: Name is the unique selector within the
+                                  parent policy.
+                                maxLength: 128
+                                minLength: 1
+                                pattern: ^[a-zA-Z0-9_-]+$
+                                type: string
+                              ref:
+                                description: Ref is a fully qualified branch or tag
+                                  ref, not a revision expression.
+                                maxLength: 1024
+                                minLength: 1
+                                pattern: ^refs/(heads|tags)/.+$
+                                type: string
+                            required:
+                            - name
+                            - ref
+                            type: object
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
                         allowedCapabilities:
                           description: |-
                             AllowedCapabilities limits child grants to registered stage capabilities.

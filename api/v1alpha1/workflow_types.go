@@ -231,6 +231,22 @@ type ChildWorkflowPolicy struct {
 	// +listType=set
 	// +optional
 	AllowedCapabilities []string `json:"allowedCapabilities,omitempty" yaml:"allowedCapabilities,omitempty"`
+	// AllowedAgentProfiles declares exact Goober/harness/model combinations.
+	// These are ceilings, not grants. Execution with selection declarations is
+	// refused until the selection runtime is available.
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	AllowedAgentProfiles []ChildAgentProfile `json:"allowedAgentProfiles,omitempty" yaml:"allowedAgentProfiles,omitempty"`
+	// AllowedBases names repository refs eligible as a child workspace base.
+	// Omission allows only the parent snapshot. Named-base execution is refused
+	// until immutable ref resolution and custody are available.
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	AllowedBases []ChildBaseReference `json:"allowedBases,omitempty" yaml:"allowedBases,omitempty"`
 	// MaxChildren limits sequential child invocations per stage occurrence.
 	// Omitted uses four; the hard ceiling is 32. Only one child may be unfinished.
 	// +kubebuilder:validation:Minimum=1
