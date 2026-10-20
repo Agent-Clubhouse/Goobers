@@ -51,7 +51,8 @@ func (s *Service) persist(state diskState) error {
 		return err
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.Remove(name) }()
 	if err = f.Chmod(0600); err == nil {
 		_, err = f.Write(b)
 	}
@@ -69,8 +70,7 @@ func (s *Service) persist(state diskState) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	return errors.Join(dir.Sync(), dir.Close())
 }
 
 // mutate requires the coordinator mutex. No state or receipt becomes visible

@@ -54,7 +54,8 @@ func (e *Executor) CaptureRunSnapshot(ctx context.Context, owner, sessionID, run
 	if err != nil {
 		return "", err
 	}
-	defer os.RemoveAll(temporary)
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.RemoveAll(temporary) }()
 	if err := copySourceContext(ctx, parent, temporary); err != nil {
 		return "", err
 	}

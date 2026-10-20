@@ -27,6 +27,7 @@ type ReviewChildEvent struct {
 	Action            *Action `json:"action,omitempty"`
 }
 
+// ReviewChildOptions binds a child review to its snapshot and execution policy.
 type ReviewChildOptions struct {
 	// WorkflowYAML is the exact portable reviewed definition. No command is
 	// derived from the description. Empty preserves the default review wrapper.
