@@ -56,11 +56,11 @@ func ChildWorkflowToolNames(access *ChildWorkflowAccess, run string) []string {
 	if access == nil || access.Validate(run) != nil {
 		return nil
 	}
-	return []string{"validate_child_workflow", "start_child_workflow", "get_child_workflow", "resolve_child_workflow"}
+	return []string{"validate_child_workflow", "start_child_workflow", "get_child_workflow", "resolve_child_workflow", "start_helper"}
 }
 
 func isChildWorkflowTool(name string) bool {
-	return name == "validate_child_workflow" || name == "start_child_workflow" || name == "get_child_workflow" || name == "resolve_child_workflow"
+	return name == "validate_child_workflow" || name == "start_child_workflow" || name == "get_child_workflow" || name == "resolve_child_workflow" || name == "start_helper"
 }
 
 const childWorkflowTimeout = 10 * time.Second // HTTP server budget is eight seconds.
@@ -78,6 +78,14 @@ func (s *Server) callChildWorkflowTool(name string, raw json.RawMessage) (map[st
 	defer cancel()
 	var result any
 	switch name {
+	case "start_helper":
+		helper := helperFromArguments(args)
+		var response childworkflowwire.ChildWorkflowResponse
+		err = s.tools.callChildWorkflow(ctx, childworkflowwire.StartPath, args["invocationKey"], childworkflowwire.ChildWorkflowHelperRequest{Helper: helper}, &response)
+		if err != nil {
+			return nil, err
+		}
+		result = response
 	case "validate_child_workflow":
 		source, err := s.tools.childWorkflowSource(args["sourceFile"])
 		if err != nil {
@@ -230,6 +238,9 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 	if name == "start_child_workflow" {
 		required = append(required, "invocationKey")
 	}
+	if name == "start_helper" {
+		required = []string{"task", "goober", "invocationKey"}
+	}
 	if name == "get_child_workflow" {
 		required = []string{"invocationKey"}
 	}
@@ -248,7 +259,8 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 			return nil, errors.New("invalid child workflow arguments")
 		}
 		field, ok := key.(string)
-		allowed := childArgumentAllowed(field, required) || name == "resolve_child_workflow" && field == "expectedRequestDigest"
+		allowed := childArgumentAllowed(field, required) || name == "resolve_child_workflow" && field == "expectedRequestDigest" ||
+			name == "start_helper" && (field == "harness" || field == "model" || field == "base")
 		if !ok || !allowed {
 			return nil, errors.New("unknown child workflow argument")
 		}
@@ -283,7 +295,16 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 			return nil, err
 		}
 	}
+	if name == "start_helper" {
+		if err := helperFromArguments(values).Validate(); err != nil {
+			return nil, err
+		}
+	}
 	return values, nil
+}
+
+func helperFromArguments(args map[string]string) childworkflowwire.HelperRequest {
+	return childworkflowwire.HelperRequest{Task: args["task"], Goober: args["goober"], Harness: args["harness"], Model: args["model"], Base: args["base"]}
 }
 
 func validResolutionArguments(values map[string]string) error {

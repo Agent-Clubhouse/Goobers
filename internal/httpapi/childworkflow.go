@@ -97,13 +97,12 @@ func callChildWorkflow(request *http.Request, id apicontract.RouteID, service Ch
 		result, err := service.ChildWorkflowStatus(request.Context(), grant, run, key)
 		return result, http.StatusOK, err
 	}
-	key := ""
 	if id == apicontract.RouteChildWorkflowStart {
 		values := request.Header.Values(HeaderIdempotencyKey)
 		if len(values) != 1 || !validChildInvocationKey(values[0]) {
 			return nil, 0, invalidChildRequest("one Idempotency-Key header is required, up to 256 bytes without whitespace padding or control characters")
 		}
-		key = values[0]
+		return callChildStart(request, service, grant, run, values[0])
 	}
 	source, err := childStringBody(request, "source", apicontract.MaxChildWorkflowSourceBytes)
 	if err != nil {
@@ -113,8 +112,7 @@ func callChildWorkflow(request *http.Request, id apicontract.RouteID, service Ch
 		result, err := service.ValidateChildWorkflow(request.Context(), grant, run, []byte(source))
 		return result, http.StatusOK, err
 	}
-	result, err := service.StartChildWorkflow(request.Context(), grant, run, key, []byte(source))
-	return result, http.StatusAccepted, err
+	return nil, 0, invalidChildRequest("unknown child workflow operation")
 }
 
 func invalidChildRequest(message string) error {

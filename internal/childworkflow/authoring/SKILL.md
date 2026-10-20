@@ -66,6 +66,15 @@ toward the state limit like any other state.
 
 ## Validate and submit
 
+For one task using an allowed Goober's pinned defaults, `start_helper` accepts
+`task`, `goober`, and `invocationKey`. The host compiles and retains ordinary
+single-stage Workflow DSL and runs the same admission checks as authored source.
+Optional harness/model values must match that Goober's pinned defaults; `base`
+may only be `parent` in this slice. Other selections are refused, never silently
+substituted. Use the same key and task for retries and the ordinary child status
+and resolution tools for its receipt. This shorthand adds no publication stage
+or authority and does not create a new Goober.
+
 Call `validate_child_workflow` with `sourceFile`. Correct typed diagnostics in
 your file; validation is advisory and does not reserve capacity or run anything.
 Call `start_child_workflow` with that file and a stable `invocationKey`. Retry an

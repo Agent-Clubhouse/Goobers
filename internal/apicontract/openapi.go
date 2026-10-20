@@ -212,8 +212,10 @@ func openAPIRequestBody(route Route) map[string]any {
 	switch route.ID {
 	case RouteChildWorkflowAccessAcquire, RouteChildWorkflowAccessRevoke:
 		schema = schemaRef("ChildWorkflowAccessRequest")
-	case RouteChildWorkflowValidate, RouteChildWorkflowStart:
+	case RouteChildWorkflowValidate:
 		schema = schemaRef("ChildWorkflowSourceRequest")
+	case RouteChildWorkflowStart:
+		schema = schemaRef("ChildWorkflowStartRequest")
 	case RouteChildWorkflowStatus:
 		schema = schemaRef("ChildWorkflowStatusRequest")
 	case RouteChildWorkflowResolve:

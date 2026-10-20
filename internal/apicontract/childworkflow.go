@@ -5,6 +5,12 @@ import "github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 // ChildWorkflowSourceRequest carries authored DSL only.
 type ChildWorkflowSourceRequest = childworkflowwire.ChildWorkflowSourceRequest
 
+// HelperRequest is bounded shorthand compiled by the authenticated host.
+type HelperRequest = childworkflowwire.HelperRequest
+
+// ChildWorkflowHelperRequest selects shorthand on the child start transport.
+type ChildWorkflowHelperRequest = childworkflowwire.ChildWorkflowHelperRequest
+
 // ChildWorkflowStatusRequest selects a caller-owned invocation.
 type ChildWorkflowStatusRequest = childworkflowwire.ChildWorkflowStatusRequest
 
