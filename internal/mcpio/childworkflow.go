@@ -247,6 +247,37 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 	if name == "resolve_child_workflow" {
 		required = []string{"invocationKey", "action", "resultRef"}
 	}
+	values, err := decodeChildWorkflowArgs(name, raw, required)
+	if err != nil {
+		return nil, err
+	}
+	for _, field := range required {
+		if values[field] == "" {
+			return nil, errors.New("missing child workflow argument")
+		}
+	}
+	if key, ok := values["invocationKey"]; ok && !validChildInvocationKey(key) {
+		return nil, errors.New("invocationKey must be at most 256 bytes without padding or control characters")
+	}
+	if len(values["sourceFile"]) > 4096 {
+		return nil, errors.New("sourceFile path is too long")
+	}
+	if name == "resolve_child_workflow" {
+		if err := validResolutionArguments(values); err != nil {
+			return nil, err
+		}
+	}
+	if name == "start_helper" {
+		if err := helperFromArguments(values).Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return values, nil
+}
+
+// decodeChildWorkflowArgs rejects unknown and duplicate fields before any tool
+// transport runs. Tool-specific value checks remain in childWorkflowArgs.
+func decodeChildWorkflowArgs(name string, raw json.RawMessage, required []string) (map[string]string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	opening, err := decoder.Token()
 	if err != nil || opening != json.Delim('{') {
@@ -278,27 +309,6 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return nil, errors.New("one child workflow argument object required")
-	}
-	for _, field := range required {
-		if values[field] == "" {
-			return nil, errors.New("missing child workflow argument")
-		}
-	}
-	if key, ok := values["invocationKey"]; ok && !validChildInvocationKey(key) {
-		return nil, errors.New("invocationKey must be at most 256 bytes without padding or control characters")
-	}
-	if len(values["sourceFile"]) > 4096 {
-		return nil, errors.New("sourceFile path is too long")
-	}
-	if name == "resolve_child_workflow" {
-		if err := validResolutionArguments(values); err != nil {
-			return nil, err
-		}
-	}
-	if name == "start_helper" {
-		if err := helperFromArguments(values).Validate(); err != nil {
-			return nil, err
-		}
 	}
 	return values, nil
 }
