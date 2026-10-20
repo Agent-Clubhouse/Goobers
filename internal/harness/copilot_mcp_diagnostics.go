@@ -24,6 +24,9 @@ const MCPDiagnosticTimeout = 60 * time.Second
 // The caller must not treat these local-process facts as worker attestation.
 func (c *CopilotAdapter) ProbeMCPReadiness(ctx context.Context, req RunRequest) []MCPDiagnostic {
 	reports := ConfiguredMCPDiagnostics(req.MCPServers, req.Tools)
+	if refuseChildConfigProbe(ctx) != nil {
+		return failedMCPDiagnostics(reports, "authentication_failure")
+	}
 	// An external declaration cannot replace the adapter-owned safe probe.
 	if slices.ContainsFunc(req.MCPServers, func(server apiv1.MCPServer) bool { return server.Name == goobersIOServerName }) {
 		return failedMCPDiagnostics(reports, "server_identity_mismatch")

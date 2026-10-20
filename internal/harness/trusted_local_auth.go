@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,16 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/platform/secfile"
 )
+
+// Child invocations receive configuration resolved by the host admission path.
+// Config-time probes have no RunRequest and therefore no delegated resolver;
+// they must never consult ambient credentials or an adapter-wide resolver.
+func refuseChildConfigProbe(ctx context.Context) error {
+	if _, child := credentials.ChildCeilingFromContext(ctx); child {
+		return fmt.Errorf("child harness configuration must be resolved before invocation: %w", credentials.ErrChildAuthenticationIsolation)
+	}
+	return nil
+}
 
 func trustedLocalCodexEnvironment(ctx context.Context, env []string, options codexConfig) ([]string, error) {
 	auth, ok := credentials.TrustedLocalAuthenticationFor(ctx, "codex")

@@ -87,6 +87,9 @@ func (c *CopilotAdapter) usageOutputDisabled() bool {
 }
 
 func (c *CopilotAdapter) verifyLauncherUsageOutput(ctx context.Context, version string, versionArgs []string) {
+	if refuseChildConfigProbe(ctx) != nil {
+		return
+	}
 	if !c.DisableUsageOutput || !copilotSupportsUsageOutput(version) {
 		return
 	}
