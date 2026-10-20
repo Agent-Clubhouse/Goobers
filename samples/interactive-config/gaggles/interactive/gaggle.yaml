@@ -34,7 +34,7 @@ spec:
           enabled: true
           commandCapabilities: [node-test, node-check]
       - name: workbench
-        displayName: Cloud Workbench
+        displayName: Workbench
         description: Investigate, edit, test and review an isolated repository workspace.
         mode: workbench
         gooberRef: workbench

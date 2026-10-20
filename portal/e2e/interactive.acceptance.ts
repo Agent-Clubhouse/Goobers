@@ -456,6 +456,25 @@ test("chat stays pinned, preserves reading position, and docks its composer on n
   await page.getByRole("button", {name: "Jump to latest"}).click();
   await expect.poll(gap).toBeLessThan(3);
   await capture(page, "ux-follow-and-jump-desktop");
+  // Check the label text itself, not just a partially visible button box.
+  for (const width of [1280, 1440]) {
+    await page.setViewportSize({width, height: 800});
+    const tabs = page.getByRole("tablist", {name: "Session details"});
+    await expect(tabs.getByRole("tab")).toHaveCount(5);
+    for (const tab of await tabs.getByRole("tab").all()) {
+      await expect(tab).toBeInViewport({ratio: 1});
+      expect(await tab.evaluate(element => {
+        const list = element.parentElement!.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const text = range.getBoundingClientRect();
+        return text.left >= list.left && text.right <= list.right && element.scrollWidth <= element.clientWidth;
+      }), `full inspector label at ${width}px: ${await tab.innerText()}`).toBe(true);
+    }
+    await page.getByRole("tab", {name: /^Changes/}).click();
+    await capture(page, `ux-inspector-labels-${width}`);
+  }
+
 
   await page.setViewportSize({width: 390, height: 844});
   const composer = page.getByRole("textbox", {name: "Message", exact: true});
@@ -467,7 +486,7 @@ test("chat stays pinned, preserves reading position, and docks its composer on n
   await expect(page.getByLabel("Diff for invoice.mjs", {exact: true})).toContainText("Math.max");
   await expect(page.locator(".ix-diff-card .ix-added")).toHaveText(/^\+[1-9]/);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
-  await page.locator(".ix-diff-card").scrollIntoViewIfNeeded();
+  await page.locator(".ix-diff-card summary").scrollIntoViewIfNeeded();
   await capture(page, "ux-file-diff-mobile");
   await page.getByRole("button", {name: "Close session details"}).click();
   await sendMessage(page, "wait");
@@ -477,6 +496,7 @@ test("chat stays pinned, preserves reading position, and docks its composer on n
   const bubble = page.locator(".ix-command-message").filter({hasText: "Keep the invoice API"});
   await expect(bubble).toBeVisible();
   await expect(bubble).toContainText("Delivered");
+  await expect(bubble).toBeInViewport({ratio: 1});
   await capture(page, "ux-steering-delivered-mobile");
   await page.reload();
   await expect(bubble).toContainText("Delivered");
