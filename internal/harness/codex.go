@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -354,6 +353,17 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		return Outcome{}, fmt.Errorf("harness: codex: start agent telemetry: %w", err)
 	}
 	defer agentTelemetry.finish(&out, &runErr)
+	transcript := newCodexTranscript(req.MaxTranscriptBytes, req.Model)
+	defer func() {
+		native, err := transcript.finish(out.Metrics, out.TranscriptDroppedBytes)
+		if err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("harness: codex: finalize transcript: %w", err))
+			return
+		}
+		out.Transcript, out.TranscriptSchema = native.data, telemetry.GenAIEventSchema
+		out.TranscriptTruncated, out.TranscriptDroppedBytes = native.truncated, native.droppedBytes
+		runErr = errors.Join(runErr, agentTelemetry.emit(projectAgentEvents(native.data, req)...))
+	}()
 	defer func() {
 		receipts, collected, err := collectGoobersIOReceipts(req, c.SelfBin)
 		out.InputInspectionReceipts = receipts
@@ -366,7 +376,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 	runner := withUnobservableMCPSource(c.runner(), req, codexMCPReadinessSource)
 	started := time.Now()
 	result, parsed, processErr := runCodexInvocation(
-		ctx, runner, req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(),
+		ctx, runner, req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(), transcript,
 	)
 	out = Outcome{
 		Transcript:             result.Transcript,
@@ -374,11 +384,12 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
 	}
+	out.Metrics = parsed.metrics
+	out.RenderedPrompt = []byte(prompt)
 	if processErr != nil {
 		runErr = errors.Join(runErr, processErr)
 		return out, runErr
 	}
-	out.Metrics = parsed.metrics
 
 	payload, completionErr := readCompletion(req.Workspace, req.CompletionPath)
 	completionErr = validateCompletion(req, payload, completionErr)
@@ -405,7 +416,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 		recoveryArgv := buildCodexResumeArgv(argv, prepared.execIndex, parsed.threadID)
 		recovery, recoveryParsed, recoveryErr := runCodexInvocation(
-			ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
+			ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(), transcript,
 		)
 		mergeCodexMetrics(parsed.metrics, recoveryParsed.metrics)
 		out.Metrics = parsed.metrics
@@ -580,8 +591,13 @@ func runCodexInvocation(
 	timeout time.Duration,
 	checkpoint int,
 	activity ActivityObserver,
+	transcript *codexTranscript,
 ) (ProcessResult, codexParseResult, error) {
-	stdout := newCodexJSONLCapture(req.MaxTranscriptBytes)
+	// A small retained-output budget must not reject an otherwise valid tool
+	// event before its terminal usage snapshot can be observed.
+	stdout := newCodexJSONLCapture(max(req.MaxTranscriptBytes, DefaultMaxTranscriptBytes))
+	stdout.transcript = transcript
+	transcript.beginTurn(prompt)
 	result, err := runner.Run(ctx, ProcessRequest{
 		Command:                      argv,
 		Stdin:                        []byte(prompt),
@@ -597,15 +613,12 @@ func runCodexInvocation(
 	if checkpoint == codexInitialCheckpoint {
 		err = observeCodexRequiredMCPStartup(req, result, codexSessionStarted(stdout, result.Transcript), err)
 	}
-	if err != nil {
-		return result, codexParseResult{}, err
-	}
-	parsed, err := stdout.result()
 	if !stdout.hasData() {
-		parsed, err = parseCodexJSONL(result.Transcript)
+		_, _ = stdout.Write(result.Transcript)
 	}
-	if err != nil {
-		return result, codexParseResult{}, err
+	parsed, parseErr := stdout.result()
+	if err = errors.Join(err, parseErr); err != nil {
+		return result, parsed, err
 	}
 	if parsed.failed != "" {
 		return result, parsed, fmt.Errorf("harness: codex: turn failed: %s", parsed.failed)
@@ -733,12 +746,13 @@ var codexShellCoreEnvironment = map[string]bool{
 }
 
 type codexJSONLCapture struct {
-	mu      sync.Mutex
-	pending []byte
-	maxLine int
-	parsed  codexParseResult
-	err     error
-	wrote   bool
+	transcript *codexTranscript
+	mu         sync.Mutex
+	pending    []byte
+	maxLine    int
+	parsed     codexParseResult
+	err        error
+	wrote      bool
 }
 
 func newCodexJSONLCapture(limit int64) *codexJSONLCapture {
@@ -772,7 +786,7 @@ func (c *codexJSONLCapture) Write(data []byte) (int, error) {
 		raw := bytes.TrimSpace(c.pending[:newline])
 		c.pending = c.pending[newline+1:]
 		if len(raw) > 0 {
-			c.err = parseCodexEvent(raw, &c.parsed)
+			c.err = c.parseEvent(raw)
 			if c.err != nil {
 				break
 			}
@@ -800,36 +814,15 @@ func (c *codexJSONLCapture) result() (codexParseResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.err != nil {
-		return codexParseResult{}, c.err
+		return c.parsed, c.err
 	}
 	if raw := bytes.TrimSpace(c.pending); len(raw) > 0 {
-		if err := parseCodexEvent(raw, &c.parsed); err != nil {
-			return codexParseResult{}, err
+		if err := c.parseEvent(raw); err != nil {
+			return c.parsed, err
 		}
 		c.pending = nil
 	}
 	return c.parsed, nil
-}
-
-func parseCodexJSONL(data []byte) (codexParseResult, error) {
-	result := codexParseResult{metrics: map[string]float64{}}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 64*1024), int(DefaultMaxTranscriptBytes))
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := bytes.TrimSpace(scanner.Bytes())
-		if len(raw) == 0 {
-			continue
-		}
-		if err := parseCodexEvent(raw, &result); err != nil {
-			return codexParseResult{}, fmt.Errorf("harness: codex: parse JSONL event %d: %w", line, err)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return codexParseResult{}, fmt.Errorf("harness: codex: read JSONL events: %w", err)
-	}
-	return result, nil
 }
 
 func parseCodexEvent(raw []byte, result *codexParseResult) error {
@@ -840,10 +833,7 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		Error    struct {
 			Message string `json:"message"`
 		} `json:"error"`
-		Usage struct {
-			InputTokens  float64 `json:"input_tokens"`
-			OutputTokens float64 `json:"output_tokens"`
-		} `json:"usage"`
+		Usage codexUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return err
@@ -856,14 +846,18 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		result.started = true
 	case "turn.completed":
 		result.completed = true
-		mergeCodexMetrics(result.metrics, map[string]float64{
-			telemetry.AttrGenAIUsageInputTokens:  event.Usage.InputTokens,
-			telemetry.AttrGenAIUsageOutputTokens: event.Usage.OutputTokens,
-		})
+		mergeCodexMetrics(result.metrics, event.Usage.metrics())
 	case "turn.failed":
 		result.failed = event.Error.Message
 	case "error":
 		result.failed = event.Message
 	}
 	return nil
+}
+
+func (c *codexJSONLCapture) parseEvent(raw []byte) error {
+	if c.transcript != nil {
+		c.transcript.observe(raw)
+	}
+	return parseCodexEvent(raw, &c.parsed)
 }
