@@ -651,3 +651,28 @@ deliberately leaves to implementation:
 10. Windows `network:none` escape hatch (#2034's host-global env override) versus
     per-runner restriction declarations — reconciled in the restrictions companion doc;
     the DSL surface here is unaffected.
+
+### 10.1 Graduation review status (v0.6.0 preparation)
+
+The graduation process and scope are recorded in
+[DSL lifecycle §3.3.2](./dsl-version-lifecycle.md#332-graduation-from-preview-to-supported).
+The provider access layer (#5749–#5754, milestone #38) is **DSL 3.x** roadmap work,
+not part of this 3.0 freeze. This status records source evidence, not a claim that
+all §9 smoke acceptance criteria have passed.
+
+| Open point | Resolution or outstanding evidence |
+|---|---|
+| 1 — package layout | Version-literal packages: `internal/workflow/v_2_0` and `v_3_0`. Isolation of the 3.1 continuation is required before freezing 3.0 (#4894). |
+| 2 — gaggle activation | Workflow pins govern compilation: a 2.0 workflow refuses a gaggle `runsOn` floor (`refusePreV30Surface`); 3.0 merges that floor into stage placement (`WithGaggleRunsOn`). Mixed pins must satisfy every pin. Workflow-less compatibility resolution must be fixed and tested before graduation; `NewestSupported()` must not silently invalidate legacy `requiredCapabilities`. |
+| 3 — providerstage version linkage | Per-entry version bounds, resolved into a version-specific manifest (`internal/providerstage/manifest.go`); input descriptors also carry `SinceDSL`/`UntilDSL` (`inputs.go`). Separate provider access layer work remains on the 3.x roadmap. |
+| 4 — instance schema | Explicit `schemaVersion: 2` gates runner inventory (`internal/instance/config.go`). Verify rollout migration and §9.5 evidence before lock; no deployment is implied by graduation. |
+| 5 — migrator inference | Closed by delivery decisions 001/002; §9.10 remains a mandatory regression gate. |
+| 6 — quantities | `v_3_0/runson.go` uses `k8s.io/apimachinery/pkg/api/resource`; diagnostics and digests retain author spelling, so `2000m` and `2` are not canonicalized. |
+| 7 — CEL limits | Stage and gaggle markers set capabilities `maxItems: 32` and restrictions `maxItems: 8` (`api/v1alpha1/{workflow,gaggle}_types.go`). Attach envtest install evidence before lock. |
+| 8 — solver and source trees | Shared `internal/runnersolve`; `goobers validate --source-tree` uses the example inventory as advisory unless `--instance` supplies the real inventory (`cmd/goobers/validatereality.go`). |
+| 9 — Linux preference wait | Outstanding graduation evidence: verify the runtime bounded-wait default and expiry diagnostic against D3 and §9.6; do not infer runtime behavior from solver unit tests. |
+| 10 — Windows restrictions | Outstanding graduation evidence: reconcile the host override and per-runner declaration with the restrictions companion design and attach the Windows smoke result. |
+
+The lock reviewer must link evidence for all ten §9 criteria and resolve the
+outstanding entries above. Existing local-runner gate `runsOn` validation is also
+under review before freezing; the freeze must include the agreed implementation.
