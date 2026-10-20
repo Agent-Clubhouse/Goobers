@@ -43,6 +43,9 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
+	CapacityRejection     string
+	CandidateConfigDigest string
+
 	SourceStarts        *startintent.Sources
 	ExecutionGeneration string
 	OrdinaryRuntime     ordinaryRuntimeBuilder
@@ -144,8 +147,10 @@ type schedulerSetup struct {
 	// owns the close; the other observes the same result — including a
 	// memoized deadline error, which a later caller sees even if the step that
 	// blew the grace period finished afterwards.
-	shutdownOnce sync.Once
-	shutdownErr  error
+	shutdownOnce      sync.Once
+	shutdownErr       error
+	telemetryWorkOnce sync.Once
+	telemetryWork     *schedulerTelemetryWork
 }
 
 func newTelemetryExporterHealth(cfg *instance.Config) *telemetry.ExporterHealth {
@@ -248,19 +253,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, err
 	}
-	configLoader := loadConfigDirectory
-	if allowInvalidConfig {
-		configLoader = instance.LoadConfigDirForComparison
-	}
-	set, report, err := configLoader(l.ConfigDir())
+	set, report, err := loadSchedulerConfig(l, allowInvalidConfig)
 	if err != nil {
-		if !allowInvalidConfig || !errors.Is(err, instance.ErrInvalidConfig) || set == nil {
-			return nil, &configReportError{
-				report: report,
-				err:    fmt.Errorf("config directory invalid: %w", err),
-			}
-		}
-		err = nil
+		return nil, err
 	}
 	reportStartupProgress(options.startupProgress, fmt.Sprintf(
 		"loaded configuration (%d gaggle(s), %d workflow(s))",
@@ -340,7 +335,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
 	runtime, err := openSchedulerRuntime(schedulerDefinitionsInput{
-		Layout: l, Config: cfg, Definitions: set, Validation: report,
+		RecoverAtCapacity:  options.recoverGenerationCapacity,
+		RecoveryGeneration: options.recoverConfigGeneration,
+		Layout:             l, Config: cfg, Definitions: set, Validation: report,
 		WaitGroup: wg, Telemetry: observation.tel, RollupDB: observation.rollupDB,
 		Watermarks: observation.watermarks, InstanceLog: observation.instanceLog,
 		SharedRegistry: sharedReg, TerminalNotifier: terminalNotifier,
@@ -355,15 +352,23 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 	}()
 	definitions := runtime.definitions
-	stableDigest, err := configDirectoryDigest(l.ConfigDir())
-	if err != nil || stableDigest != configDigest {
-		if err != nil {
+	if err := verifyStartupConfigUnchanged(l, configDigest); err != nil {
+		return nil, err
+	}
+
+	candidateDigest := configDigest
+	if runtime.recoveredConfigDigest != "" {
+		configDigest = runtime.recoveredConfigDigest
+	}
+	if options.recoverGenerationCapacity {
+		if err := journalStartupGeneration(observation.instanceLog, definitions.ExecutionGeneration, configDigest); err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("config directory changed during daemon setup; retry startup")
 	}
 
 	return &schedulerSetup{
+		CapacityRejection:        runtime.capacityRejection,
+		CandidateConfigDigest:    candidateDigest,
 		observation:              observation,
 		runtime:                  runtime,
 		ChildRuntime:             definitions.ChildRuntime,
@@ -1505,19 +1510,19 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	}
 	if s.Telemetry != nil {
 		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))
-		if s.RollupDB != nil && s.InstanceLog != nil {
-			opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
-				telemetryingest.SchedulerTelemetry(ctx, s.Telemetry, s.RollupDB, s.InstanceLog.Dir(), s.InstanceLog)
-			}))
-		}
 	}
 	if s.Telemetry != nil && s.RollupDB != nil {
-		opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
-			if err := s.Telemetry.Flush(ctx); err != nil {
-				telemetryingest.LogFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
-			}
-			_ = s.ingestSchedulerLog(context.Background())
-		}))
+		s.telemetryWorkOnce.Do(func() {
+			s.telemetryWork = newSchedulerTelemetryWork(schedulerTelemetryTimeout, func(ctx context.Context) {
+				if err := s.Telemetry.Flush(ctx); err != nil {
+					telemetryingest.LogFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
+				}
+				if ctx.Err() == nil {
+					_ = s.ingestSchedulerLog(ctx)
+				}
+			})
+		})
+		opts = append(opts, localscheduler.WithAfterTick(s.telemetryWork.Notify))
 	}
 	return opts
 }
@@ -1564,6 +1569,14 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) error {
 		defer cancel()
 	}
 	s.shutdownOnce.Do(func() {
+		// Stop the asynchronous tick observer before closing its exporters or
+		// stores. A sink that ignores cancellation must not race their close.
+		if s.telemetryWork != nil {
+			if err := s.telemetryWork.Stop(ctx); err != nil {
+				s.shutdownErr = err
+				return
+			}
+		}
 		s.shutdownErr = runShutdownSteps(ctx, s.shutdownSteps(ctx))
 	})
 	return s.shutdownErr
@@ -2103,6 +2116,9 @@ func warnUnresolvableResume(log *journal.InstanceLog, id journal.RunIdentity, mi
 
 // schedulerDefinitionsInput names the dependencies for this construction boundary.
 type schedulerDefinitionsInput struct {
+	RecoverAtCapacity  bool
+	RecoveryGeneration string
+
 	Layout           instance.Layout
 	Config           *instance.Config
 	Definitions      *instance.ConfigSet
@@ -2171,4 +2187,27 @@ type runtimeRunnerInput struct {
 	OwnershipAssigneesDefault    string
 	OwnershipUnassignedDefault   string
 	Generations                  []string
+}
+
+func loadSchedulerConfig(l instance.Layout, allowInvalid bool) (*instance.ConfigSet, *validate.Report, error) {
+	loader := loadConfigDirectory
+	if allowInvalid {
+		loader = instance.LoadConfigDirForComparison
+	}
+	set, report, err := loader(l.ConfigDir())
+	if err != nil && (!allowInvalid || !errors.Is(err, instance.ErrInvalidConfig) || set == nil) {
+		return nil, report, &configReportError{report: report, err: fmt.Errorf("config directory invalid: %w", err)}
+	}
+	return set, report, nil
+}
+
+func verifyStartupConfigUnchanged(l instance.Layout, expected string) error {
+	digest, err := configDirectoryDigest(l.ConfigDir())
+	if err != nil {
+		return err
+	}
+	if digest != expected {
+		return fmt.Errorf("config directory changed during daemon setup; retry startup")
+	}
+	return nil
 }

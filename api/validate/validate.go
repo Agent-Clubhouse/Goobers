@@ -2670,7 +2670,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// The gate-only runsOn rules (WF023, decision 001): runsOn on a
-	// non-agentic gate, or an agentic gate runsOn without cpu and memory.
+	// non-agentic gate, or an agentic gate runsOn without a reviewer.
 	for _, msg := range wf.CheckGateRunsOn(def) {
 		r.add(errorGateRunsOn, Error, file, "Workflow", w.Name, "%s", msg)
 	}

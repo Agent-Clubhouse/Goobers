@@ -31,7 +31,6 @@ var dependencyAcquisitionDecisions = map[string]dependencyAcquisition{
 	"git":            {reason: "integration fixtures operate on locally seeded repositories"},
 	"go":             {kind: "go-modules", reason: "integration fixtures build local executables using the pinned Go toolchain and module graph"},
 	"head":           {reason: "local coreutils operation"},
-	"grep":           {reason: "local text filtering operation"},
 	"java":           {reason: "preinstalled JVM; Maven resolves fixture dependencies"},
 	"mkdir":          {reason: "local coreutils operation"},
 	"mktemp":         {reason: "local coreutils operation"},

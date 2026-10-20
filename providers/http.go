@@ -251,6 +251,20 @@ func MergeRefusalReason(err error) (string, bool) {
 	return "provider rejected the merge request", true
 }
 
+// IsConfirmedMergeRefusal identifies an explicit provider rejection, rather
+// than a transport failure that may hide an accepted mutation.
+func IsConfirmedMergeRefusal(err error) bool {
+	var moved PullRequestHeadMovedError
+	var policy PullRequestPolicyNotMetError
+	if errors.As(err, &moved) || errors.As(err, &policy) || errors.Is(err, ErrMergeConflict) {
+		return true
+	}
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) &&
+		(responseErr.method == http.MethodPut || responseErr.method == http.MethodPost || responseErr.method == http.MethodPatch) &&
+		(responseErr.statusCode == http.StatusMethodNotAllowed || responseErr.statusCode == http.StatusConflict)
+}
+
 // mentionsMergeConflict reports whether a provider response body names a
 // merge-conflict refusal. GitHub's merge endpoint phrases this as
 // "Pull Request is not mergeable"; the explicit "merge conflict" wording is

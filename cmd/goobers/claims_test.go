@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -383,5 +384,46 @@ func TestClaimsCommandsDelegateToLiveDaemon(t *testing.T) {
 	}
 	if !reclaimed || holder != "run-next-tick" {
 		t.Fatalf("next workflow claim after live release: reclaimed=%v holder=%q", reclaimed, holder)
+	}
+}
+
+func TestClaimsReleasePublicationRequiresExplicitAuditedOverride(t *testing.T) {
+	root := initDemo(t)
+	key := localscheduler.PublicationLockItemIDPrefix + "github/acme/repo"
+	seedJournaledClaim(t, root, key, strings.Repeat("a", 32), true)
+	code, _, stderr := runArgs(t, "claims", "release", "--force", key, root)
+	if code == 0 || !strings.Contains(stderr, "--publication-custody-reason") {
+		t.Fatalf("generic override: %d %s", code, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := ledger.Lookup(key); !held {
+		t.Fatal("generic override released publication claim")
+	}
+	code, stdout, stderr := runArgs(t, "claims", "release", "--force", "--publication-custody-reason=provider outcome verified by operator", key, root)
+	if code != 0 {
+		t.Fatalf("explicit override: %d %s %s", code, stdout, stderr)
+	}
+	ledger, err = localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := ledger.Lookup(key); held {
+		t.Fatal("explicit override left claim held")
+	}
+	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	audited := false
+	for _, event := range events {
+		if event.Name == key && event.Runner["operation"] == "publication_override_requested" && event.Runner["actor"] == fmt.Sprintf("uid:%d", os.Getuid()) && event.Runner["reason"] == "provider outcome verified by operator" {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Fatalf("missing operator audit: %+v", events)
 	}
 }

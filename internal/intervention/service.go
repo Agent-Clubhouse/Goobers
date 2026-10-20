@@ -64,7 +64,7 @@ type ClaimStore interface {
 	History(runID string, fallbackProvider apiv1.Provider) ([]localscheduler.ClaimEntry, error)
 	// Reclaim re-acquires claims for the run under the claims lock. When it
 	// cannot, holder names the run that now holds them.
-	Reclaim(claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (acquired bool, holder string, err error)
+	Reclaim(ctx context.Context, claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (acquired bool, holder string, err error)
 	// Release releases every claim the run owns.
 	Release(runID string) error
 }
@@ -192,7 +192,7 @@ func (s *Service) AcceptApprove(admission, execution context.Context, input http
 }
 
 func (s *Service) prepareIntervention(
-	execution context.Context,
+	admission context.Context,
 	action hitlAction,
 	replayAction string,
 	input httpapi.InterventionRequest,
@@ -205,7 +205,7 @@ func (s *Service) prepareIntervention(
 	// Engine runs deduplicate inside the workflow; they must never scan the
 	// daemon snapshot for runner-written replay markers.
 	if resolved.engineDriven {
-		result, err := s.deliverHITL(execution, action, resolved, input)
+		result, err := s.deliverHITL(admission, action, resolved, input)
 		return resolved, &result, true, err
 	}
 	if result, replayed, err := replayIntervention(resolved, replayAction, input); replayed || err != nil {
@@ -222,7 +222,7 @@ func finishIntervention(action string, resolved resolvedInterventionRun, err err
 }
 
 func (s *Service) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
-	resolved, result, done, err := s.prepareIntervention(execution, hitlActionApprove, "approve", input)
+	resolved, result, done, err := s.prepareIntervention(admission, hitlActionApprove, "approve", input)
 	if done {
 		return *result, err
 	}
@@ -315,7 +315,7 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 	if decision == "" {
 		decision = "pass"
 	}
-	resolved, result, done, err := s.prepareIntervention(execution, hitlActionOverride, "override", input)
+	resolved, result, done, err := s.prepareIntervention(admission, hitlActionOverride, "override", input)
 	if done {
 		return *result, err
 	}
@@ -370,7 +370,7 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 	if addendum == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("addendum_required", "instruction addendum is required")
 	}
-	resolved, result, done, err := s.prepareIntervention(execution, hitlActionRerun, "rerun", input)
+	resolved, result, done, err := s.prepareIntervention(admission, hitlActionRerun, "rerun", input)
 	if done {
 		return *result, err
 	}
@@ -379,6 +379,18 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 			"run_not_escalated",
 			fmt.Sprintf("run %q is %s; only escalated runs can rerun a stage", input.RunID, resolved.phase),
 		)
+	}
+	if err := resolved.runner.PreflightRerunStage(admission, runner.RerunStageInput{
+		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
+		Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum, ExpectedTerminalSeq: resolved.terminalSeq,
+	}); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return httpapi.InterventionResult{}, err
+		}
+		if errors.Is(err, runner.ErrRerunCustodyUnavailable) {
+			return httpapi.InterventionResult{}, interventionConflict("rerun_custody_unavailable", err.Error())
+		}
+		return httpapi.InterventionResult{}, interventionConflict("rerun_preflight_failed", err.Error())
 	}
 	_, err = s.execute(admission, execution, background, resolved, true, "rerun", input, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.RerunStage(ctx, runner.RerunStageInput{
@@ -450,7 +462,7 @@ func (s *Service) AcceptDenyEscalation(admission, execution context.Context, inp
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionDeny, resolved, input)
+		return s.deliverHITL(admission, hitlActionDeny, resolved, input)
 	}
 	return s.denyEscalation(resolved, input)
 }
@@ -744,7 +756,7 @@ func (s *Service) execute(
 	if background && input.IdempotencyKey == "" {
 		return runner.Result{}, interventionBadRequest("idempotency_key_required", "Idempotency-Key is required")
 	}
-	lease, err := s.beginExecution(resolved, reacquireClaims)
+	lease, err := s.beginExecution(admission, resolved, reacquireClaims && action != "rerun")
 	if err != nil {
 		return runner.Result{}, err
 	}
@@ -754,7 +766,24 @@ func (s *Service) execute(
 			http.StatusServiceUnavailable, "request_budget_exceeded", "the intervention was not accepted within the request budget", err,
 		)
 	}
+	if action == "rerun" {
+		replayed, err := recheckRerunAcceptance(resolved, input)
+		if replayed || err != nil {
+			lease.Close()
+			return runner.Result{}, err
+		}
+		if reacquireClaims {
+			if err := s.reacquireClaims(admission, resolved); err != nil {
+				lease.Close()
+				return runner.Result{}, err
+			}
+			lease.reacquiredClaims = true
+		}
+	}
 	if err := recordInterventionMarker(resolved, action, input); err != nil {
+		if action == "rerun" {
+			err = errors.Join(err, lease.releaseReacquiredClaims())
+		}
 		lease.Close()
 		return runner.Result{}, err
 	}
@@ -806,7 +835,7 @@ func (s *Service) finishExecution(
 	return result, runErr
 }
 
-func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
+func (s *Service) beginExecution(admission context.Context, resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
 	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
 	if !exclusive {
 		return nil, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
@@ -838,7 +867,7 @@ func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClai
 	lease.releaseAdmission = release
 
 	if reacquireClaims {
-		if err := s.reacquireClaims(resolved); err != nil {
+		if err := s.reacquireClaims(admission, resolved); err != nil {
 			lease.Close()
 			return nil, err
 		}
@@ -922,15 +951,24 @@ func (l *interventionExecutionLease) releaseReacquiredClaims() error {
 	return l.service.claims.Release(l.resolved.runID)
 }
 
-func (s *Service) reacquireClaims(resolved resolvedInterventionRun) error {
+func (s *Service) reacquireClaims(ctx context.Context, resolved resolvedInterventionRun) error {
 	claims, err := s.claims.History(resolved.runID, resolved.repoRef.Provider)
 	if err != nil {
 		return httpapi.NewInterventionError(
 			http.StatusInternalServerError, "claim_history_failed", "run claim history could not be read", err,
 		)
 	}
-	acquired, holder, err := s.claims.Reclaim(claims, resolved.gaggle, resolved.runID, resolved.workflow)
+	acquired, holder, err := s.claims.Reclaim(ctx, claims, resolved.gaggle, resolved.runID, resolved.workflow)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return httpapi.NewInterventionError(
+				http.StatusServiceUnavailable, "request_budget_exceeded", "the intervention was not accepted within the request budget", err,
+			)
+		}
+		var interventionErr *httpapi.InterventionError
+		if errors.As(err, &interventionErr) {
+			return err
+		}
 		return httpapi.NewInterventionError(
 			http.StatusInternalServerError, "claim_reacquire_failed", "run claims could not be reacquired", err,
 		)

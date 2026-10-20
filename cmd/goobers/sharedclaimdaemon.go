@@ -31,7 +31,7 @@ func renewCoordinatedLiveClaims(ctx context.Context, layout instance.Layout, led
 	service := &daemonClaimService{layout: layout, shared: resolver}
 	var renewed []localscheduler.ClaimEntry
 	for _, entry := range ledger.Snapshot() {
-		if !live[entry.RunID] {
+		if !live[entry.RunID] || entry.IsPublicationClaim() {
 			continue
 		}
 		var ok bool

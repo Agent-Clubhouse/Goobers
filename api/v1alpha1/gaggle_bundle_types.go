@@ -22,6 +22,7 @@ const (
 // GaggleBundle is a sanitized, portable snapshot of one gaggle's declarative
 // definitions. Structured fields exclude credentials and runtime identity;
 // companion text must pass the bundle's bounded credential and path checks.
+// +kubebuilder:object:generate=false
 type GaggleBundle struct {
 	APIVersion    string                 `json:"apiVersion"`
 	Kind          string                 `json:"kind"`
@@ -130,6 +131,7 @@ type GaggleBundleFile struct {
 
 // GaggleBundleImportRequest asks a destination instance to create a new gaggle
 // from a complete bundle. Name is destination-local; the source is immutable.
+// +kubebuilder:object:generate=false
 type GaggleBundleImportRequest struct {
 	Name   string       `json:"name"`
 	Bundle GaggleBundle `json:"bundle"`
@@ -137,6 +139,7 @@ type GaggleBundleImportRequest struct {
 
 // GaggleBundleImportResult reports the created destination gaggle and retained
 // source provenance.
+// +kubebuilder:object:generate=false
 type GaggleBundleImportResult struct {
 	Name            string             `json:"name"`
 	Source          GaggleBundleSource `json:"source"`

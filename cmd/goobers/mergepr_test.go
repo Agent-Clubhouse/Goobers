@@ -48,6 +48,7 @@ type mergePRServerState struct {
 	deleteStatus     int
 	mergeCalls       int
 	beforeMergeReply func() error
+	beforePolicyRead func() error
 	pullListCalls    int
 	deleteCalls      int
 	baseListCalls    int
@@ -219,6 +220,12 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 	})
 	mux.HandleFunc(prefix+"/rules/branches/"+st.baseBranch, func(w http.ResponseWriter, r *http.Request) {
 		st.rulesCalls++
+		if st.beforePolicyRead != nil {
+			if err := st.beforePolicyRead(); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+		}
 		if st.mergeQueueRules {
 			writeFakeJSON(w, []map[string]interface{}{{"type": "merge_queue"}})
 			return
@@ -348,7 +355,7 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		for _, f := range files {
 			out = append(out, map[string]interface{}{"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch})
 		}
-		writeFakeJSON(w, map[string]interface{}{"merge_base_commit": map[string]interface{}{"sha": "irrelevant-for-this-fixture"}, "files": out})
+		writeFakeJSON(w, map[string]interface{}{"merge_base_commit": map[string]interface{}{"sha": strings.SplitN(key, "...", 2)[0]}, "files": out})
 	})
 	mux.HandleFunc(prefix+"/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
 		st.mergeCalls++

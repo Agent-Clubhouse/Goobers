@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -159,7 +160,7 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 // Scans the FULL run history (not just the current resumed segment, unlike
 // finalizeTerminalBranch's branch-cleanup scan) because a PR opened in an
 // earlier segment must still be labeled if this run ultimately aborts.
-func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate terminalAnnotator, repo providers.RepositoryRef, labelPR prLabelFunc) error {
+func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate terminalAnnotator, repo providers.RepositoryRef, labelPR prLabelFunc, reports ...*terminalreport.Queue) error {
 	if labelPR == nil {
 		return nil
 	}
@@ -190,7 +191,7 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate t
 		// Idempotency is keyed on the label event alone and stays
 		// outside the ownership filter: once we have labeled, a
 		// retried finalize must not re-issue the mutation.
-		if ev.Runner["operation"] == runAbortLabelOperation {
+		if ev.Runner["operation"] == runAbortLabelOperation && ev.Error == nil {
 			alreadyLabeled = true
 			continue
 		}
@@ -208,9 +209,18 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate t
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, labelErr := labelPR(ctx, providers.UpdateWorkItemRequest{
-		Repository: repo, ID: pr.ID, AddLabels: []string{abortedRunLabel},
-	})
+	effect := terminalreport.Effect{Kind: terminalreport.AbortLabel, Repository: repo, ItemID: pr.ID, RunID: runID}
+	apply := func(ctx context.Context, e terminalreport.Effect) error {
+		_, err := labelPR(ctx, providers.UpdateWorkItemRequest{Repository: e.Repository, ID: e.ItemID, AddLabels: []string{abortedRunLabel}})
+		return err
+	}
+	var labelErr error
+	if len(reports) > 0 && reports[0] != nil && repo.Provider != providers.ProviderADO {
+		effect.Gaggle = reports[0].Gaggle
+		labelErr = reports[0].Publish(ctx, effect, apply)
+	} else {
+		labelErr = apply(ctx, effect)
+	}
 	return appendRunAbortLabelResult(annotate, pr, labelErr)
 }
 

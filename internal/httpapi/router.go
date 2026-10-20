@@ -1442,7 +1442,19 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, runs)
 	})
 	router.Handle(apicontract.RouteRunDetail, func(w http.ResponseWriter, request *http.Request) {
-		run, err := reader.GetRun(request.Context(), request.PathValue("run"))
+		var run readservice.RunDetail
+		var err error
+		if after := request.URL.Query().Get("continuationsAfter"); after != "" {
+			if paged, ok := reader.(interface {
+				GetRunWithContinuations(context.Context, string, string) (readservice.RunDetail, error)
+			}); ok {
+				run, err = paged.GetRunWithContinuations(request.Context(), request.PathValue("run"), after)
+			} else {
+				err = fmt.Errorf("%w: continuation pagination unavailable", readservice.ErrInvalidArgument)
+			}
+		} else {
+			run, err = reader.GetRun(request.Context(), request.PathValue("run"))
+		}
 		if err != nil {
 			writeReadError(w, errorLog, "get run", err)
 			return

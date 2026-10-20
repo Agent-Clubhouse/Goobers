@@ -46,8 +46,10 @@ var ErrRunActive = errors.New("journal: run directory is held open by a live wri
 // itself comes from the publication lock, which every path that could take
 // the run-dir lock acquires first.
 //
-// Returns whether stagedDir was actually published. On (true, nil) the caller
-// still owns any further durability sync of finalDir's parent.
+// Returns whether stagedDir was actually published, including when a later
+// durability sync or backup cleanup fails. A true result does not imply that
+// publication is durable when err is non-nil. On (true, nil) the caller still
+// owns any further durability sync of finalDir's parent.
 func ReplaceRun(finalDir, stagedDir string, keep func() (bool, error)) (bool, error) {
 	publicationLock, err := acquireRunPublicationLock(finalDir)
 	if err != nil {
@@ -92,18 +94,24 @@ func ReplaceRun(finalDir, stagedDir string, keep func() (bool, error)) (bool, er
 		_ = os.RemoveAll(filepath.Dir(backupDir))
 		return false, publishErr
 	}
+	return finishRunReplacement(finalDir, backupDir, fsyncDir, os.RemoveAll)
+}
+
+// finishRunReplacement runs only after the replacement rename succeeded.
+// Failure here must never be reported as an unpublished staging directory.
+func finishRunReplacement(finalDir, backupDir string, syncDir func(string) error, removeAll func(string) error) (bool, error) {
 	if backupDir != "" {
 		// Make the published rename durable before the only other copy of the
 		// journal goes away: a crash between the two must not be able to leave
 		// the run directory missing entirely.
-		if err := fsyncDir(filepath.Dir(finalDir)); err != nil {
-			return false, fmt.Errorf(
+		if err := syncDir(filepath.Dir(finalDir)); err != nil {
+			return true, fmt.Errorf(
 				"journal: sync publication of run directory %s: %w; superseded run directory retained at %s",
 				finalDir, err, backupDir,
 			)
 		}
-		if err := os.RemoveAll(filepath.Dir(backupDir)); err != nil {
-			return false, fmt.Errorf("journal: remove superseded run directory backup %s: %w", backupDir, err)
+		if err := removeAll(filepath.Dir(backupDir)); err != nil {
+			return true, fmt.Errorf("journal: remove superseded run directory backup %s: %w", backupDir, err)
 		}
 	}
 	return true, nil

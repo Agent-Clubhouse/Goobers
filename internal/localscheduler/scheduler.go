@@ -1408,7 +1408,7 @@ func (s *Scheduler) WorkflowCount() int {
 // dispatch, while subsequent ticks and triggers resolve the replacement entry.
 // The accepted change is journaled before it becomes active; a journal failure
 // leaves the current configuration untouched.
-func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest string) error {
+func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest string, configGeneration ...string) error {
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
@@ -1464,19 +1464,6 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		}
 	}
 
-	if err := s.appendJournalEvent(journal.Event{
-		Type: journal.EventConfigReloaded,
-		Runner: map[string]any{
-			"oldDigest": oldDigest,
-			"newDigest": newDigest,
-		},
-	}); err != nil {
-		return fmt.Errorf("localscheduler: journal config reload: %w", err)
-	}
-	// Re-record refusals for the accepted configuration: the config.reloaded
-	// event above marks the boundary, so a status reader always sees the
-	// refusals current for the configuration now in force (#2860).
-	s.journalStartupRefusals(entries)
 	evaluations := make(map[WorkflowIdentity]time.Time, len(triggers))
 	for identity, state := range triggers {
 		evaluations[identity] = state.LastEval
@@ -1494,6 +1481,24 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		return err
 	}
 
+	generation := ""
+	if len(configGeneration) > 0 {
+		generation = configGeneration[0]
+	}
+	if err := s.appendJournalEvent(journal.Event{
+		Type: journal.EventConfigReloaded,
+		Runner: map[string]any{
+			"oldDigest":        oldDigest,
+			"newDigest":        newDigest,
+			"configGeneration": generation,
+		},
+	}); err != nil {
+		return fmt.Errorf("localscheduler: journal config reload: %w", err)
+	}
+	// Re-record refusals for the accepted configuration: the config.reloaded
+	// event above marks the boundary, so a status reader always sees the
+	// refusals current for the configuration now in force (#2860).
+	s.journalStartupRefusals(entries)
 	s.conditions.SetOpenPRCounter(openPRs)
 	s.workflows = workflows
 	s.triggers = triggers

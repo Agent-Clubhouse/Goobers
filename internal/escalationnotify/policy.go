@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -110,6 +111,9 @@ type Policy struct {
 	RunsDir            string
 	State              State
 	EngineInterruption func(runID string) (string, error)
+	// Reports durably retains provider projections without replaying charges.
+	Reports *terminalreport.Queue
+	Gaggle  string
 }
 
 // Blocked is runner.Config.Blocked (#544/#545/#552): the instance-level
