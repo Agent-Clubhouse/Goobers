@@ -70,7 +70,8 @@ export function driverSettings(events: InteractiveEvent[]): DriverSettings {
       if (Array.isArray(data.models)) catalog = items(data.models);
       if (typeof data.currentModel === "string") confirmedModel(data.currentModel);
       if (typeof data.currentEffort === "string") result.effort = data.currentEffort;
-      if (level(data.level)) result.level = level(data.level);
+      const currentLevel = level(data.currentLevel) ?? level(data.level);
+      if (currentLevel) result.level = currentLevel;
     } else if (event.type === "mode_changed" && level(data.level)) result.level = level(data.level);
     else if (event.type === "model_changed") {
       const model = typeof data.modelId === "string" ? data.modelId : data.model;

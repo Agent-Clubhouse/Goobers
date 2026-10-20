@@ -17,7 +17,7 @@ test("approval dock preserves accepted requests and applies confirmed driver set
     events.push({sequence, sessionId: session.id, turnId: session.activeTurnId, commandId, type: driverEvent ? "execution.note" : type, time: "2026-01-01T00:00:00Z",
       data: driverEvent ? {chat: {v: 2, agentId: "controlled", sessionId: session.id, turnId: session.activeTurnId, seq: sequence, ts: Date.parse("2026-01-01T00:00:00Z"), fence: session.fence, type, data}} : data});
   }
-  emit("session_info", {capabilities: caps, currentModel: "model-a", currentEffort: "high", level: "ask", models: [{id: "model-a", label: "Model A", efforts: ["low", "high"]}, {id: "model-b", label: "Model B", efforts: ["medium"]}]});
+  emit("session_info", {capabilities: caps, currentModel: "model-a", currentEffort: "high", currentLevel: "ask", models: [{id: "model-a", label: "Model A", efforts: ["low", "high"]}, {id: "model-b", label: "Model B", efforts: ["medium"]}]});
   emit("permission_request", {requestId: "permission-1", title: "Run focused tests", content: [{type: "text", text: "npm test -- invoice"}], options: [{optionId: "allow_once", kind: "allow_once", label: "Allow once"}, {optionId: "reject_once", kind: "reject_once", label: "Deny"}]});
   await page.route("**/api/v1/interactive/**", async route => {
     const url = new URL(route.request().url());
