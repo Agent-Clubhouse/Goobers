@@ -95,7 +95,7 @@ func TestDependenciesAreSorted(t *testing.T) {
 		{Name: "bwrap", InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)"},
 		{Name: "claude", InstallHint: "install and sign in to Claude Code"},
 		{Name: "cmd.exe", InstallHint: "use the Windows command interpreter included with Windows; batch-launcher tests are Windows-only"},
-		{Name: "codex", InstallHint: "install Codex CLI and explicitly opt in to trusted local model login"},
+		{Name: "codex", InstallHint: "install Codex CLI"},
 		{Name: "copilot", InstallHint: "install and sign in to the GitHub Copilot CLI (https://docs.github.com/copilot/using-github-copilot/using-github-copilot-in-the-command-line)"},
 		{Name: "cp", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "dirname", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
