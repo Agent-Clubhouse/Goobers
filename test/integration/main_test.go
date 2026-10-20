@@ -233,7 +233,7 @@ func TestIntegrationTool(t *testing.T) {
 
 func TestValidateInventory(t *testing.T) {
 	if err := validateInventory(map[string]bool{
-		"bash": true, "bwrap": true, "claude": true, "cmd.exe": true, "copilot": true, "cp": true, "dirname": true, "dotnet": true, "find": true, "git": true,
+		"bash": true, "bwrap": true, "claude": true, "cmd.exe": true, "codex": true, "copilot": true, "cp": true, "dirname": true, "dotnet": true, "find": true, "git": true,
 		"go": true, "head": true, "java": true, "mkdir": true, "mktemp": true, "mvn": true, "ps": true, "python3": true, "sh": true, "sleep": true, "yes": true,
 		"xcodebuild": true, "xcrun": true, "powershell.exe": true,
 	}); err != nil {
