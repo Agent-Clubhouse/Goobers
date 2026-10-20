@@ -524,6 +524,7 @@ func pullRequestsForSelection(
 }
 
 type selectionResolver struct {
+	matches       func(providers.PullRequestSummary) (bool, error)
 	target        func(context.Context, string) (providers.PullRequestSummary, error)
 	resolveTarget func(context.Context, *providers.PullRequestSummary) error
 	resolve       func(context.Context, *providers.PullRequestSummary) error
@@ -536,6 +537,10 @@ func pullRequestsForSelectionCommon(
 	req prSelectSourceRequest,
 	resolver selectionResolver,
 ) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	matches := req.identityFilters.MatchesSummary
+	if resolver.matches != nil {
+		matches = resolver.matches
+	}
 	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(req.triggerRef)
 	var targetedPR *providers.PullRequestSummary
 	if targeted {
@@ -543,7 +548,7 @@ func pullRequestsForSelectionCommon(
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
-		matched, err := req.identityFilters.MatchesSummary(pr)
+		matched, err := matches(pr)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -578,7 +583,7 @@ func pullRequestsForSelectionCommon(
 		if req.authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, req.headPrefixes, req.expectedAuthorLogin) {
 			continue
 		}
-		matched, err := req.identityFilters.MatchesSummary(pr)
+		matched, err := matches(pr)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1196,6 +1201,9 @@ func pullRequestsForSelectionADO(
 		expectedAuthorLogin: expectedAuthorLogin,
 	}
 	return pullRequestsForSelectionCommon(ctx, openPRs, req, selectionResolver{
+		matches: func(pr providers.PullRequestSummary) (bool, error) {
+			return adoSelectionMatchesSummary(identityFilters, pr)
+		},
 		target: func(ctx context.Context, pullID string) (providers.PullRequestSummary, error) {
 			return adoSelectionCandidate(ctx, provider, repo, pullID)
 		},
