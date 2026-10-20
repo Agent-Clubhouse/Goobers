@@ -36,7 +36,7 @@ func (f *adoTerminalLabelsFixture) server(t *testing.T, repo providers.Repositor
 		defer f.mu.Unlock()
 		f.headers = append(f.headers, r.Header.Get("Authorization"))
 		if f.reject {
-			http.Error(w, "forbidden "+r.Header.Get("Authorization"), 403)
+			http.Error(w, "forbidden "+r.Header.Get("Authorization"), http.StatusForbidden)
 			return
 		}
 		value := []map[string]string{}
@@ -68,7 +68,7 @@ func (f *adoTerminalLabelsFixture) server(t *testing.T, repo providers.Repositor
 				writeFakeJSON(w, map[string]string{"id": "server-label-id", "name": f.label})
 			default:
 				t.Errorf("unexpected label method %s", r.Method)
-				http.Error(w, "unexpected method", 405)
+				http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
 			}
 		case r.URL.Path == labels+"/server-label-id" && r.Method == http.MethodDelete:
 			f.deleted = append(f.deleted, r.URL.Path)
