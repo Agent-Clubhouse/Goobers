@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/internal/claimrelease"
-	"github.com/goobers/goobers/internal/claimsclient"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/claimrelease"
+	"github.com/goobers/goobers/internal/claimsclient"
 )
 
 func TestNativeVerdictPublicationCustodySerializesFileAndPlane(t *testing.T) {
