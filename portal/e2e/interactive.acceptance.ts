@@ -311,7 +311,7 @@ test("real workspace investigates, edits, tests, reviews a child and safely stop
   expect(disconnected.turns).toHaveLength(4);
   await capture(page, "interactive-disconnected");
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
-  await expect(page.getByText("Live stream", { exact: true })).toBeVisible();
+  await expect(page.locator("#main-content").getByText("Live stream", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Stop session", exact: true }).click();
   await expect.poll(async () => (await snapshot(request, id)).status).toBe("stopped");
   await expect(page.getByText("Session stopped. History and cumulative changes remain available for review.", { exact: true })).toBeVisible();
