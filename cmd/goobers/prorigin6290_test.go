@@ -157,3 +157,90 @@ func TestLiveOriginGuardUsesJournalPlaneWithoutClaim(t *testing.T) {
 		t.Fatalf("plane guard: prs=%v deferred=%v err=%v", prs, deferred, err)
 	}
 }
+
+func TestRemediationDefersUnverifiedOriginFileAndPlane(t *testing.T) {
+	for _, backend := range []string{"file", "plane"} {
+		for _, evidence := range []string{"unreadable", "unverified"} {
+			t.Run(backend+"/"+evidence, func(t *testing.T) {
+				root := initDemo(t)
+				layout := layoutFor(root).ForGaggle("goobers")
+				branch := providers.BranchNameIn("goobers", "implementation", liveOrigin6290)
+				reason := "ambiguous-ownership"
+				run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{RunID: liveOrigin6290, Workflow: "implementation", Gaggle: "goobers"}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if evidence == "unreadable" {
+					if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "branch", ID: branch}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := run.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if evidence == "unreadable" {
+					if err := os.WriteFile(filepath.Join(layout.RunsDir(), liveOrigin6290, "events.jsonl"), []byte("not json\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					reason = "run-journal-unreadable"
+				}
+				response, err := journalclient.NewFileCrossRun(layout).BranchOwnership(t.Context(), journalclient.BranchOwnershipRequest{Gaggle: "goobers", TargetRunID: liveOrigin6290, Workflow: "implementation", Branch: branch})
+				if err != nil || response.Owner != nil || response.Reason != reason {
+					t.Fatalf("fixture: %+v %v", response, err)
+				}
+				t.Setenv(executor.GaggleEnvVar, "goobers")
+				t.Setenv(executor.RunIDEnvVar, "remediation-run")
+				t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+				if backend == "plane" {
+					asking, err := journal.Create(layout.RunsDir(), journal.RunIdentity{RunID: "remediation-run", Workflow: "pr-remediation", Gaggle: "goobers"}, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_ = asking.Close()
+					service := newDaemonRunJournalService(layoutFor(root), nil)
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						var request journalclient.BranchOwnershipRequest
+						if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+							http.Error(w, err.Error(), 400)
+							return
+						}
+						response, err := service.BranchOwnership(r.Context(), request)
+						if err != nil {
+							http.Error(w, err.Error(), 500)
+							return
+						}
+						_ = json.NewEncoder(w).Encode(response)
+					}))
+					defer server.Close()
+					t.Setenv(journalclient.EnvEndpoint, server.URL)
+					t.Setenv(journalclient.EnvToken, "test")
+				}
+				t.Chdir(t.TempDir())
+				resultPath := filepath.Join(t.TempDir(), "result.json")
+				t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultPath)
+				pr := providers.PullRequestSummary{Number: 7, Head: branch}
+				selection := gatherPRContextCandidateSelection{root: root, repo: prClaimTestRepo(), listed: []providers.PullRequestSummary{pr}, eligible: []providers.PullRequestSummary{pr}}
+				for _, pinned := range []bool{false, true} {
+					selection.hasPinnedCandidate = pinned
+					var stdout, stderr bytes.Buffer
+					_, done, code := gatherPRContextRankCandidates(selection, &stdout, &stderr)
+					if !done || code != 0 {
+						t.Fatalf("selection: done=%v code=%d %s %s", done, code, stdout.String(), stderr.String())
+					}
+					var result struct {
+						NoWork bool   `json:"noWork"`
+						Reason string `json:"noWorkReason"`
+					}
+					body, err := os.ReadFile(resultPath)
+					if err != nil || json.Unmarshal(body, &result) != nil || !result.NoWork || !strings.Contains(result.Reason, reason) || !strings.Contains(result.Reason, liveOrigin6290) {
+						t.Fatalf("missing structured refusal: %s %v", body, err)
+					}
+					selected, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{pr}, "remediation-run", "pr-remediation", time.Hour)
+					if err != nil || selected != nil {
+						t.Fatalf("unverified origin admitted: %+v %v", selected, err)
+					}
+				}
+			})
+		}
+	}
+}

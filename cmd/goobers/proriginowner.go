@@ -31,14 +31,21 @@ func filterLiveOriginPullRequests(ctx context.Context, reader journalclient.Cros
 		if err != nil {
 			return nil, nil, fmt.Errorf("inspect PR #%d origin ownership: %w", pr.Number, err)
 		}
-		if response.Owner != nil && !journal.RunPhase(response.Owner.Phase).IsTerminal() {
+		if response.Owner == nil {
+			reason := response.Reason
+			if reason == "" {
+				reason = "unknown-ownership"
+			}
+			deferred = append(deferred, fmt.Sprintf("PR #%d deferred: origin ownership for branch %s (run %s, workflow %s) is unverified: %s", pr.Number, pr.Head, origin, parts[len(parts)-2], reason))
+			continue
+		}
+		if !journal.RunPhase(response.Owner.Phase).IsTerminal() {
 			deferred = append(deferred, fmt.Sprintf("PR #%d deferred: branch %s belongs to live origin run %s (workflow %s)",
 				pr.Number, pr.Head, response.Owner.RunID, response.Owner.Workflow))
 			continue
 		}
-		// No verified local origin is not evidence of a live owner. Preserve
-		// the existing claim and hard worktree-ownership checks for unknown,
-		// external, or ambiguous branches.
+		// Only verified terminal ownership permits a sibling to take this
+		// run-scoped branch. Missing or unreadable evidence is a deferral.
 		available = append(available, pr)
 	}
 	return available, deferred, nil
