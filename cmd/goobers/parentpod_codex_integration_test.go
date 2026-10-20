@@ -58,7 +58,7 @@ func installQualificationParentProbe(t *testing.T, bin string) {
 	if command == "copilot" {
 		// Copilot's native authentication check is a fixed prompt. The fixture
 		// answers only that exact preflight; arbitrary host inference fails.
-		probe = "#!/bin/sh\ncase \"$*\" in\n --version) echo 'GitHub Copilot CLI 1.0.98 (qualification preflight)' ;;\n '-p Reply with exactly: ok --allow-all-tools --available-tools= --no-remote-export') echo ok ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
+		probe = "#!/bin/sh\ncase \"$*\" in\n --version) echo 'GitHub Copilot CLI 1.0.98 (qualification preflight)' ;;\n --help) echo 'Usage: copilot [OPTIONS] [COMMAND]\nOptions:\n      --allow-all-tools\n      --log-level <level>\n      --log-dir <directory>\n      --session-id <id>\n      --no-remote-export' ;;\n '-p Reply with exactly: ok --allow-all-tools --available-tools= --no-remote-export') echo ok ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, command), []byte(probe), 0700); err != nil {
 		t.Fatal(err)

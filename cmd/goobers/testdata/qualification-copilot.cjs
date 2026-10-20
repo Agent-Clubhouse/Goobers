@@ -12,6 +12,11 @@ if (args.includes('--version')) {
   process.stdout.write('GitHub Copilot CLI 1.0.98 (qualification fixture)\n');
   process.exit(0);
 }
+if (args.length === 1 && args[0] === '--help') {
+  // Public option definitions only. --headless is deliberately not advertised.
+  process.stdout.write('Usage: copilot [OPTIONS] [COMMAND]\nOptions:\n      --allow-all-tools\n      --log-level <level>\n      --log-dir <directory>\n      --session-id <id>\n      --no-remote-export\n');
+  process.exit(0);
+}
 if (!args.includes('--headless') || args.includes('--usage-output-file')) throw new Error('expected SDK headless invocation');
 if (process.env.COPILOT_GITHUB_TOKEN !== 'qualification-copilot-model-token' ||
     ['GH_TOKEN','GITHUB_TOKEN','ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','CODEX_API_KEY'].some(key => process.env[key])) throw new Error('Copilot model credential differs');

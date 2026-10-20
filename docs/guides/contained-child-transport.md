@@ -389,7 +389,7 @@ The corresponding contained-pod journeys reuse the Codex qualification harness.
 Install `qualification-copilot.cjs` as executable `/usr/local/bin/copilot` in the
 worker image, with `qualification-claude.cjs` beside it under that exact filename
 (the Copilot fixture imports the shared journey). The host fixture permits only
-version and the exact native authentication preflight; inference must reach the
+version, public help and the exact native authentication preflight; inference must reach the
 worker. With the disposable cluster/image/Temporal settings described above:
 
 ```sh

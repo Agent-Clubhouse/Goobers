@@ -74,6 +74,9 @@ func TestIntegrationCopilotParentSDKAuthoringJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := &CopilotAdapter{Command: []string{command}, SelfBin: self, EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"}}
+	if _, err := adapter.Preflight(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	req := RunRequest{
 		Envelope: testEnvelope(workspace, "agent:model"), Workspace: workspace,
 		Credentials:           mcpTestCredentials(t, "agent:model", "qualification-copilot-model-token"),
