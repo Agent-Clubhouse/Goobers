@@ -92,7 +92,10 @@ Goobers; they do not make a shared OS account inaccessible to malicious host cod
 ## Custody and parity
 
 Both normal return and cancellation stop and join the entire owned process
-tree: process groups on macOS/Linux and Job Objects on Windows. Use
+tree using process ownership on macOS/Linux. Windows Job Objects observe only
+Job membership: WMI (`Win32_Process.Create`), WSL brokers, COM and service
+launches can escape that membership. An empty Job must return a distinct
+membership-only result, which strict workspace custody refuses. Use
 `internal/invoke` workspace-writer registration and quiescence proof. A returned
 result, cancelled context or dead direct process is insufficient evidence.
 Persist the existing writer acknowledgement before capturing a snapshot,
@@ -125,7 +128,10 @@ Crash tests must prove unresolved writers retain custody and cannot be retried.
 
 Run targeted race tests on macOS and Linux, `make build`, and a cross-GOOS
 Windows build. A Windows cross-build checks portability, not Job Object runtime
-behavior. Windows trusted-local execution remains unqualified preview until a
-Windows runtime custody test passes. Jobs must prohibit breakaway before root
-execution; missing custody or unobservable accounting fails closed. No live model, cloud resource,
-Temporal server or cluster is required for the local qualification.
+behavior. Windows trusted-local execution remains unqualified preview and strict
+workspace custody stays refused even after Job membership tests pass. Jobs must
+prohibit breakaway before root execution; missing custody or unobservable
+accounting fails closed. No preview override is introduced here. Any future
+unqualified-preview opt-in must explicitly accept the brokered-launch escapes;
+automatic local-mode selection cannot authorize it. No live model, cloud
+resource, Temporal server or cluster is required for local qualification.
