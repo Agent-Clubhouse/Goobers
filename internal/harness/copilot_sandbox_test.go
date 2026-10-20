@@ -82,11 +82,12 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 	if command[2] != resolveStdioHarnessCommand([]string{"copilot"})[0] {
 		t.Fatalf("wrapped argv target = %q, want the original copilot invocation: %v", command[2], command)
 	}
-	logDir := filepath.Join(workspace, ".goobers", "sandbox", "logs")
 	logFlag := slices.Index(command, "--log-dir")
-	if logFlag < 0 || logFlag+1 >= len(command) || command[logFlag+1] != logDir {
-		t.Fatalf("wrapped argv missing --log-dir %s: %v", logDir, command)
+	if logFlag < 0 || logFlag+1 >= len(command) {
+		t.Fatalf("wrapped argv missing --log-dir: %v", command)
 	}
+	logDir := command[logFlag+1]
+	assertCopilotLogOutsideWorkspace(t, workspace, logDir)
 
 	if len(sb.policies) != 1 {
 		t.Fatalf("Wrap called %d times, want 1", len(sb.policies))
@@ -94,8 +95,8 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 	if sb.policies[0].Workspace != workspace {
 		t.Fatalf("policy workspace = %q, want %q", sb.policies[0].Workspace, workspace)
 	}
-	if len(sb.policies[0].WritableRoots) != 0 {
-		t.Fatalf("policy writable roots = %v, want none for a git-less workspace", sb.policies[0].WritableRoots)
+	if !slices.Equal(sb.policies[0].WritableRoots, []string{logDir}) {
+		t.Fatalf("policy writable roots = %v, want only the private log directory", sb.policies[0].WritableRoots)
 	}
 
 	copilotHome := filepath.Join(workspace, ".goobers", "sandbox", "copilot-home")
@@ -112,18 +113,21 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 			t.Fatalf("subprocess env %s = %q (found=%v), want %q", name, got, found, want)
 		}
 	}
-	for _, dir := range []string{copilotHome, tempDir, logDir} {
+	for _, dir := range []string{copilotHome, tempDir} {
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
 			t.Fatalf("sandbox runtime directory %s missing: %v", dir, err)
 		}
 	}
+	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
+		t.Fatalf("private log directory survived invocation: %v", err)
+	}
 }
 
 // TestCopilotAdapterWithoutSandboxKeepsLaunchUnchanged pins the opt-in
-// default: a nil RunRequest.Sandbox must produce the exact pre-sandbox argv —
-// no wrapper prefix, no --log-dir, no COPILOT_HOME/TMPDIR overrides pointed
-// into the workspace.
+// sandbox default: a nil RunRequest.Sandbox has no wrapper prefix or
+// COPILOT_HOME/TMPDIR overrides pointed into the workspace. Raw debug logs
+// still go to the invocation-private external directory.
 func TestCopilotAdapterWithoutSandboxKeepsLaunchUnchanged(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
@@ -145,9 +149,11 @@ func TestCopilotAdapterWithoutSandboxKeepsLaunchUnchanged(t *testing.T) {
 	if command[0] != resolveStdioHarnessCommand([]string{"copilot"})[0] {
 		t.Fatalf("argv[0] = %q, want the unwrapped copilot invocation: %v", command[0], command)
 	}
-	if slices.Contains(command, "--log-dir") {
-		t.Fatalf("unsandboxed argv unexpectedly carries --log-dir: %v", command)
+	logFlag := slices.Index(command, "--log-dir")
+	if logFlag < 0 || logFlag+1 >= len(command) {
+		t.Fatalf("unsandboxed argv missing private --log-dir: %v", command)
 	}
+	assertCopilotLogOutsideWorkspace(t, workspace, command[logFlag+1])
 	for _, entry := range runner.lastReq.Env {
 		if strings.HasPrefix(entry, "COPILOT_HOME=") {
 			t.Fatalf("unsandboxed env unexpectedly carries a COPILOT_HOME override: %v", entry)

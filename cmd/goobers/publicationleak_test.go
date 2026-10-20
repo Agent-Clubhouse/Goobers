@@ -257,7 +257,7 @@ func TestPodPublicationCommandsScreenBeforeProviderWrite(t *testing.T) {
 					wantPayload = `"kind":"pull-request"`
 					observePublicationWrite(t, publishPath, &sequence, &publishedAt)
 					t.Chdir(t.TempDir())
-					if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+					if code, stdout, stderr := runOpenPRArgs(t, root); code != 0 {
 						t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 					}
 				case "file-issues":

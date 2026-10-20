@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/daemonclient"
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 // BlobPathPrefix is the blob endpoint's digest route root: one blob is
@@ -165,11 +166,11 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 	if deadline <= 0 {
 		deadline = defaultBlobRetryDeadline
 	}
-	return withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
+	return retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		err := c.PutOnce(ctx, digest, data)
 		var status *BlobStatusError
 		if errors.As(err, &status) {
-			return retryableStatus(status.StatusCode), err
+			return retryutil.RetryableStatus(status.StatusCode), err
 		}
 		var transport *BlobTransportError
 		return errors.As(err, &transport), err

@@ -362,11 +362,9 @@ func TestEngineCancelHistoryFoldsOnlyNewJournalPerSweep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i := 0; i < 1000; i++ {
-		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "w", Reason: "conditions: max-parallel"}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	appendInstanceJournalFixture(t, log, 1000, journal.Event{
+		Type: journal.EventTickSkipped, Workflow: "w", Reason: "conditions: max-parallel", Time: now,
+	})
 	start := now
 	cancel("run-1")
 	first := &engineCancelHistory{log: log}

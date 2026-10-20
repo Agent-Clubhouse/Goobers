@@ -5,8 +5,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gitexclude"
-	"github.com/goobers/goobers/internal/gooberassets"
-	"github.com/goobers/goobers/internal/mutationsidecar"
+	"github.com/goobers/goobers/internal/publicationpaths"
 )
 
 // effectiveResultFile resolves the result file this stage will write: the
@@ -56,18 +55,9 @@ func ExcludeStageArtifacts(ctx context.Context, workspace, resultFile string) {
 	if workspace == "" {
 		return
 	}
-	// The pod's checkout is materialized outside worktree.Manager, so it never
-	// received the harness scratch and asset excludes that managed checkouts
-	// carry (worktree.harnessExcludePatterns). Without them the harness's own
-	// <workspace>/.goobers/ (MCP config, prompt, result) made a stage that
-	// changed nothing look dirty, so a deliberate blocked outcome went through
-	// recovery custody and uploaded a full-workspace archive. Keep these lines
-	// identical to worktree's.
-	patterns := []gitexclude.Pattern{
-		{Line: ".goobers/", Aliases: []string{".goobers"}},
-		{Line: "/" + gooberassets.WorkspaceDir + "/"},
-		{Line: "/" + mutationsidecar.FileName},
-	}
+	// Apply the same policy as checkout provisioning, including callers whose
+	// workspace was supplied outside the managed checkout path.
+	patterns := publicationpaths.ExcludePatterns()
 	if pattern, ok := gitexclude.Anchored(resultFile); ok {
 		patterns = append(patterns, pattern)
 	}

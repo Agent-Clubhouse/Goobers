@@ -19,11 +19,9 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 )
 
 // Activity names. The workflow refers to activities by these names so it is
@@ -291,25 +289,9 @@ type stageActivityResult = DispatchStageResult
 // EXPORTED alongside DispatchStageResult, and for the same reason: the point
 // of this contract is that a caller outside internal/engine can NAME what it
 // decodes into, and a result whose element type is unnameable defeats that for
-// the one field the runner must journal. mutationFact stays as an alias, so no
+// the one field the runner must journal. It aliases mutationsidecar.Fact, so no
 // second type exists and the recorded JSON is untouched.
-type MutationFact struct {
-	ReceiptID         string                       `json:"receiptId,omitempty"`
-	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
-	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
-	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
-	Provider          string                       `json:"provider"`
-	Kind              string                       `json:"kind"`
-	ID                string                       `json:"id"`
-	URL               string                       `json:"url,omitempty"`
-	Operation         string                       `json:"operation,omitempty"`
-	RunID             string                       `json:"runId,omitempty"`
-	Outcome           string                       `json:"outcome,omitempty"`
-	ErrorCode         string                       `json:"errorCode,omitempty"`
-	ProviderRunID     string                       `json:"providerRunId,omitempty"`
-
-	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
-}
+type MutationFact = mutationsidecar.Fact
 
 // mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
 // same reason stageActivityResult is one.

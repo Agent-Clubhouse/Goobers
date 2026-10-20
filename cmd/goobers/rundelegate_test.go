@@ -2145,15 +2145,22 @@ func TestSweepCapsEntriesExaminedPerCycle(t *testing.T) {
 		t.Fatalf("remaining requests = %d, want %d left for the next cycle", len(remaining), total-maxTriggerSweepEntriesPerCycle)
 	}
 
-	// Draining fully takes ceil(total/cap) cycles; run the rest to prove the
-	// backlog does converge to zero rather than getting stuck.
+	// Keep the incident-sized backlog, but use the production cap for the
+	// convergence check. Re-scanning 1,200 entries in batches of ten costs
+	// roughly 90 seconds per stress repetition without exercising another
+	// boundary (#3167). The first pass above proves the smaller bound.
+	maxTriggerSweepEntriesPerCycle = oldCap
 	for len(remaining) > 0 {
+		before := len(remaining)
 		if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, time.Now); err != nil {
 			t.Fatalf("drain sweepPendingTriggers: %v", err)
 		}
 		remaining, err = filepathGlobRequests(schedulerDir)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if removed := before - len(remaining); removed != min(before, oldCap) {
+			t.Fatalf("drain removed %d requests, want %d within the production cap", removed, min(before, oldCap))
 		}
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 // HTTPEmitter emits journal batches to the daemon write API's journal plane
@@ -98,7 +100,7 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 		deadline = defaultEmitRetryDeadline
 	}
 	var out EmitResponse
-	err = withRetryPolicy(ctx, deadline, e.RetryPolicy, func(ctx context.Context) (bool, error) {
+	err = retryutil.Until(ctx, deadline, e.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return false, fmt.Errorf("livejournal: build emit request: %w", err)
@@ -129,7 +131,7 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 			return true, fmt.Errorf("livejournal: read emit response: %w", err)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			retryable := retryableStatus(resp.StatusCode)
+			retryable := retryutil.RetryableStatus(resp.StatusCode)
 			var envelope errorEnvelope
 			if json.Unmarshal(payload, &envelope) == nil && envelope.Error.Code != "" {
 				return retryable, fmt.Errorf("livejournal: emit refused (%d %s): %s", resp.StatusCode, envelope.Error.Code, envelope.Error.Message)

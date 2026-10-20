@@ -1189,9 +1189,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return Outcome{}, err
 	}
 	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
-	// into the workspace so the sandbox policy needs no writable root beyond
-	// the worktree (plus its narrowed linked git directories) — the exact recipe the
-	// sandbox package's live Copilot probe codified (ADR-0001). The overrides
+	// into the workspace, with the exception of raw debug logs, which get an
+	// invocation-private external directory and a narrow writable grant below.
+	// The remaining runtime state follows ADR-0001. The overrides
 	// happen before the session-id block below so the native transcript path
 	// derives from the confined COPILOT_HOME.
 	var confinement *copilotConfinement

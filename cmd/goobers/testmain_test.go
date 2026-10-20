@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -113,6 +114,7 @@ func TestMain(m *testing.M) {
 		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 	}
 	if baseURL := os.Getenv("GOOBERS_TEST_GITHUB_API_URL"); baseURL != "" {
+		http.DefaultTransport = publicationFixtureTransport{next: http.DefaultTransport}
 		newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
 			return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
 				provider.BaseURL = baseURL

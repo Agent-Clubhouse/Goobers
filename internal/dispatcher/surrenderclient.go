@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/daemonclient"
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 // surrenderclient.go is the pod-side half of the surrender plane's network
@@ -85,7 +86,7 @@ func (c *SurrenderPutClient) Put(ctx context.Context, runID, stage string, attem
 	if deadline <= 0 {
 		deadline = defaultSurrenderRetryDeadline
 	}
-	return withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
+	return retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 		if err != nil {
 			return false, fmt.Errorf("dispatcher: build surrender request: %w", err)
@@ -104,7 +105,7 @@ func (c *SurrenderPutClient) Put(ctx context.Context, runID, stage string, attem
 			return true, fmt.Errorf("dispatcher: read surrender response: %w", err)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			retryable := retryableStatus(resp.StatusCode)
+			retryable := retryutil.RetryableStatus(resp.StatusCode)
 			var envelope errorEnvelope
 			if json.Unmarshal(payload, &envelope) == nil && envelope.Error.Code != "" {
 				return retryable, fmt.Errorf("dispatcher: surrender refused (%d %s): %s", resp.StatusCode, envelope.Error.Code, envelope.Error.Message)

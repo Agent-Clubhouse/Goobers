@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestChildPodEnvironmentDropsInheritedAuthentication(t *testing.T) {
@@ -47,7 +48,11 @@ func TestChildPodEnvironmentDropsInheritedAuthentication(t *testing.T) {
 func TestChildPodCheckoutRequiresTrustedMaterializedContext(t *testing.T) {
 	ctx := context.WithValue(t.Context(), isolatedChildKey{}, true)
 	t.Setenv(dispatcher.EnvStageWorkspace, "repo")
-	if err := checkoutRepoWorkspace(ctx, t.TempDir(), io.Discard, nil, ""); err != nil {
+	workspace := t.TempDir()
+	if out, err := testgit.Command("init", "--quiet", workspace).CombinedOutput(); err != nil {
+		t.Fatalf("materialize child repository: %v: %s", err, out)
+	}
+	if err := checkoutRepoWorkspace(ctx, workspace, io.Discard, nil, ""); err != nil {
 		t.Fatal("materialized child attempted remote clone", err)
 	}
 	if credentials, _, err := podCheckoutCredentials(ctx, nil, ""); err != nil || len(credentials) != 0 {
