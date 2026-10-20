@@ -2932,6 +2932,7 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	}
 	adapter := &CopilotAdapter{
 		Command:                     []string{program, "forwarding-launcher"},
+		ModelCredential:             func(context.Context) (string, error) { return "fixture-model-token", nil },
 		AuthCheckArgs:               []string{"auth", "status"},
 		ExtraEnvAllowlist:           []string{"COPILOT_HOME"},
 		VerifyAdapterManagedSession: true,
