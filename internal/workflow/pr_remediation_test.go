@@ -91,7 +91,7 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	}
 
 	m, err := compileAcknowledged(
-		Definition{Name: w.Name, Version: 1, Spec: w.Spec},
+		Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec},
 		WithGoobers(goobers),
 		WithKnownChecks([]string{"failure-class", "output-equals", "status-equals"}))
 

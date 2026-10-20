@@ -4,7 +4,7 @@
 # changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "2.0"
+dslVersion: "3.0"
 metadata:
   name: implementation
   annotations:
@@ -63,7 +63,6 @@ spec:
       capabilities:
         - repo:push
       next: query-backlog
-
     # Built-in backlog-query stage kind (WF-055/SCH-041): claims exactly one
     # item carrying both the trust label (SEC-047) and the curator's
     # goobers:ready output marker (#25). Narrowed to a single item (unlike
@@ -102,7 +101,6 @@ spec:
       expectedOutputs:
         - claimed-item
       next: recovery-resume
-
     # Reclaims first adopt any compatible retained implementation from a
     # prior terminal run. No matching checkpoint is the normal fresh path;
     # stale, divergent, or conflicting state fails closed for inspection.
@@ -124,7 +122,6 @@ spec:
         maxAttempts: 2
         backoffSeconds: 15
       next: gather-implement-context
-
     # Workflow enrichment (#1299): produce one bounded journal artifact with
     # the shipped merge-review verdict taxonomy and a hot-file map from current
     # sibling PRs plus exact conflict files in recent run journals. The reviewer
@@ -142,7 +139,6 @@ spec:
         - github:pr:write
         - journal:read
       next: warm-module-cache
-
     # #4179: a stalled Go module download inside the agentic implement session
     # is indistinguishable, from the run's own journal, from a looping agent —
     # both present as one lifecycle event and a 90-minute silence, and both
@@ -167,7 +163,6 @@ spec:
       retry:
         maxAttempts: 1
       next: warm-module-cache-gate
-
     # Agentic implementation in a fresh, isolated worktree (§16/#19). Scoped
     # to repo:push only — this stage never talks to the issues or PR API.
     # Review and local-CI repasses re-enter here. Provider-authored CI check
@@ -186,29 +181,7 @@ spec:
         - review
         - local-ci
       goal: >-
-        Implement the code change for the claimed issue: read the issue and its
-        acceptance criteria, plan, implement, verify with fast, targeted
-        tests for what you changed, and commit to the run's branch (push is a
-        separate deterministic stage — see push-branch below). Do NOT run the
-        full `make ci` / `go test -race ./...` suite in-session — the
-        deterministic local-ci stage below owns that authoritatively; running
-        it here only burns the session's wall-clock budget on test execution
-        that is about to run again anyway (#724). On a repass, first read the
-        reviewer rationale or local-CI failure evidence attached as context and
-        address it before making further changes. Normal lifecycle actions
-        belong to later deterministic stages: push-branch publishes the run
-        branch; open-pr creates or updates the PR and links the claimed issue;
-        close-out posts the standard completion comment, marks the issue
-        in-review, and releases its claim. Leave those actions pending for their
-        named stages; do not attempt them or claim they already happened. Their
-        pending state is not an implement-stage failure: return success once
-        your code deliverable is complete. This handoff covers only those named
-        lifecycle actions, not an arbitrary requested comment, report, release,
-        merge, or external update. Treat any other provider-side acceptance
-        step as satisfied only when attached context proves it was already
-        completed. Otherwise fail
-        explicitly with PROVIDER_ACTION_REQUIRED rather than attempting the
-        mutation or reporting MISSING_CAPABILITY.
+        Implement the code change for the claimed issue: read the issue and its acceptance criteria, plan, implement, verify with fast, targeted tests for what you changed, and commit to the run's branch (push is a separate deterministic stage — see push-branch below). Do NOT run the full `make ci` / `go test -race ./...` suite in-session — the deterministic local-ci stage below owns that authoritatively; running it here only burns the session's wall-clock budget on test execution that is about to run again anyway (#724). On a repass, first read the reviewer rationale or local-CI failure evidence attached as context and address it before making further changes. Normal lifecycle actions belong to later deterministic stages: push-branch publishes the run branch; open-pr creates or updates the PR and links the claimed issue; close-out posts the standard completion comment, marks the issue in-review, and releases its claim. Leave those actions pending for their named stages; do not attempt them or claim they already happened. Their pending state is not an implement-stage failure: return success once your code deliverable is complete. This handoff covers only those named lifecycle actions, not an arbitrary requested comment, report, release, merge, or external update. Treat any other provider-side acceptance step as satisfied only when attached context proves it was already completed. Otherwise fail explicitly with PROVIDER_ACTION_REQUIRED rather than attempting the mutation or reporting MISSING_CAPABILITY.
       capabilities:
         - repo:push
         - agent:model
@@ -233,7 +206,7 @@ spec:
       # A recognized non-retryable failure bypasses review evaluation but uses
       # review's escalate control branch below to park the issue first.
       next: review
-
+      repoFrom: remediate-ci
     # CI check details are provider-authored and therefore remain unapproved.
     # Route them to a distinct remediation consumer that explicitly accepts
     # that grade rather than weakening the maintainer-only implementation task.
@@ -249,10 +222,7 @@ spec:
         - local-ci
         - ci-poll
       goal: >-
-        Remediate the failed CI checks using the attached provider evidence,
-        run fast targeted tests for the change, and commit the fix to the run's
-        branch. Do not run the full `make ci` / `go test -race ./...` suite;
-        local-ci runs it authoritatively after review.
+        Remediate the failed CI checks using the attached provider evidence, run fast targeted tests for the change, and commit the fix to the run's branch. Do not run the full `make ci` / `go test -race ./...` suite; local-ci runs it authoritatively after review.
       capabilities:
         - repo:push
         - agent:model
@@ -263,7 +233,7 @@ spec:
         backoffSeconds: 15
       onTimeout: salvage
       next: review
-
+      repoFrom: implement
     # The merge tier and required declared-dependency integration gate from
     # CONTRIBUTING.md's "Validation tier contract", run on the implementation
     # branch after review has published a durable checkpoint and after syncing
@@ -315,7 +285,7 @@ spec:
       retry:
         maxAttempts: 1
       next: local-gate
-
+      repoFrom: [implement, remediate-ci]
     # Deterministic branch checkpoint (#237/#3272): the implementer commits but
     # never pushes (no configured auth/identity for an agentic session to do so
     # reliably) — this stage publishes the reviewed run branch to origin
@@ -333,7 +303,7 @@ spec:
       policyActions:
         - push-repository-branch
       next: local-ci
-
+      repoFrom: [implement, remediate-ci]
     - name: open-pr
       type: deterministic
       goal: Open (or update, on repass) the PR for the run's branch.
@@ -362,7 +332,7 @@ spec:
         # PR it deliberately did not open.
         - opened
       next: open-pr-gate
-
+      repoFrom: [implement, remediate-ci]
     - name: ci-poll
       type: deterministic
       goal: Poll the PR's CI checks and review state until they conclude.
@@ -408,16 +378,11 @@ spec:
         # Passed through by the built-in so timeout can re-enter this task.
         - prNumber
       next: ci-gate
-
+      repoFrom: [implement, remediate-ci]
     - name: close-out
       type: deterministic
       goal: >-
-        Comment on the originating issue linking the open PR and mark it
-        in-review — issue #361/#355: the work isn't done until the PR
-        merges, so this no longer closes the issue outright. The actual
-        close happens at the merge event (`goobers post-merge`, run by the
-        separate opt-in merge-review workflow after its verdict + CI +
-        SHA-pin conjuncts all hold, issue #360).
+        Comment on the originating issue linking the open PR and mark it in-review — issue #361/#355: the work isn't done until the PR merges, so this no longer closes the issue outright. The actual close happens at the merge event (`goobers post-merge`, run by the separate opt-in merge-review workflow after its verdict + CI + SHA-pin conjuncts all hold, issue #360).
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
@@ -432,6 +397,7 @@ spec:
       # merge stage anywhere in this workflow: merge-review owns that
       # separate, explicitly capability-gated path.
 
+      repoFrom: [implement, remediate-ci]
     - name: park-escalated
       type: deterministic
       goal: Park an escalated issue with the terminal escalation reason.
@@ -460,13 +426,11 @@ spec:
       # indistinguishable from an ordinary failure — and would regress #415,
       # which exists precisely so these terminate escalated.
       next: "@escalate"
-
+      repoFrom: [implement, remediate-ci]
     - name: park-needs-human
       type: deterministic
       goal: >-
-        Park an issue only when implementation surfaced a policy or product
-        decision a human must make, stating the exact question in the terminal
-        review reason.
+        Park an issue only when implementation surfaced a policy or product decision a human must make, stating the exact question in the terminal review reason.
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
@@ -477,7 +441,7 @@ spec:
       policyActions:
         - update-issue
       next: "@abort"
-
+      repoFrom: [implement, remediate-ci]
   gates:
     # #4179: same failure-class evaluator local-gate below already uses, same
     # infra-retries-itself convention (the retry is bounded by the runner's own
@@ -496,7 +460,6 @@ spec:
         fail: implement
         infra: warm-module-cache
         escalate: park-escalated
-
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
     # "Agentic" evaluator kind) — there is no separate preceding review task.
     # Before invoking the reviewer, the runner computes a deterministic diff of
@@ -530,7 +493,6 @@ spec:
         needs-changes: implement
         fail: park-needs-human
         escalate: park-escalated
-
     # failure-class distinguishes retryable executor/infrastructure failures
     # from a genuine local-CI failure. Only the latter is actionable by the
     # implementer. Infrastructure failures retry local-ci against the exact
@@ -545,7 +507,6 @@ spec:
         fail: implement
         infra: local-ci
         escalate: park-escalated
-
     # #947: open-pr re-checks the claimed issue's state immediately before
     # opening (the claim was validated once, at query-backlog, but implement +
     # review + local-ci can take 30+ minutes). When the issue closed or was
@@ -564,7 +525,6 @@ spec:
       branches:
         pass: ci-poll
         fail: "@abort"
-
     # ci-poll sets Outputs[ciStatus] to the normalized providers.CheckState
     # value ("passing"/"failing"/"pending" — providers/model.go); the
     # ci-status check reads that well-known key.

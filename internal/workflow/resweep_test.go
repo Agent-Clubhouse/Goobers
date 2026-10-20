@@ -23,7 +23,7 @@ func TestScheduledResweepWorkflowsCompileWithIndependentBudgets(t *testing.T) {
 			readResweepFixture(t, filepath.Join(root, "workflows", "curate-resweep.yaml"), &w)
 			var g apiv1.Goober
 			readResweepFixture(t, filepath.Join(root, "goobers", tc.goober, "goober.yaml"), &g)
-			def := Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+			def := Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 			m, err := compileAcknowledged(def, WithGoobers(map[string]apiv1.GooberSpec{g.Name: g.Spec}))
 			if err != nil {
 				t.Fatal(err)

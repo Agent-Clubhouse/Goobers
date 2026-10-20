@@ -15,7 +15,7 @@
 # a production quality-tracking framework.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "2.0"
+dslVersion: "3.0"
 metadata:
   name: quality-sprint
   annotations:
@@ -48,13 +48,12 @@ spec:
         since: "14 days ago"
         resultFile: "churn-report.json"
       capabilities: []
-      requiredCapabilities:
-        - os=linux
       expectedOutputs:
         - churnedFileCount
         - churnSummary
       next: focus-areas
-
+      runsOn:
+        os: linux
     - name: review-security
       type: agentic
       goober: quality-researcher
@@ -67,7 +66,6 @@ spec:
       expectedOutputs:
         - findingsRef
       next: "@join"
-
     - name: review-performance
       type: agentic
       goober: quality-researcher
@@ -80,7 +78,6 @@ spec:
       expectedOutputs:
         - findingsRef
       next: "@join"
-
     - name: review-maintainability
       type: agentic
       goober: quality-researcher
@@ -93,7 +90,6 @@ spec:
       expectedOutputs:
         - findingsRef
       next: "@join"
-
     - name: review-test-coverage
       type: agentic
       goober: quality-researcher
@@ -106,7 +102,6 @@ spec:
       expectedOutputs:
         - findingsRef
       next: "@join"
-
     - name: review-dependencies
       type: agentic
       goober: quality-researcher
@@ -119,7 +114,6 @@ spec:
       expectedOutputs:
         - findingsRef
       next: "@join"
-
     - name: review-latent-bugs
       type: agentic
       goober: quality-researcher
@@ -132,7 +126,6 @@ spec:
       expectedOutputs:
         - findingsRef
       next: "@join"
-
     - name: collate
       type: agentic
       goober: quality-lead
@@ -152,7 +145,6 @@ spec:
       expectedOutputs:
         - collatedFindingsRef
       next: nominate
-
     - name: nominate
       type: agentic
       goober: nominator
@@ -170,7 +162,6 @@ spec:
       # label) — a maintainer approves before curation can touch them
       # (SEC-047: this is a public repo), exactly like work-nomination's own
       # terminal `nominate` stage.
-
   parallels:
     - name: focus-areas
       failurePolicy: continue_on_error # one dead lens must not discard the other five
@@ -181,9 +172,9 @@ spec:
       # for continue_on_error, where collate itself owns the decision via
       # the branch completeness record it receives.
       branches:
-        - { name: security, start: review-security }
-        - { name: performance, start: review-performance }
-        - { name: maintainability, start: review-maintainability }
-        - { name: testCoverage, start: review-test-coverage }
-        - { name: dependencies, start: review-dependencies }
-        - { name: latentBugs, start: review-latent-bugs }
+        - {name: security, start: review-security}
+        - {name: performance, start: review-performance}
+        - {name: maintainability, start: review-maintainability}
+        - {name: testCoverage, start: review-test-coverage}
+        - {name: dependencies, start: review-dependencies}
+        - {name: latentBugs, start: review-latent-bugs}

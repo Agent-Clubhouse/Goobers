@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "2.0"
+dslVersion: "3.0"
 metadata:
   name: curate-resweep
   annotations:
@@ -65,11 +65,7 @@ spec:
       type: agentic
       goober: curator
       goal: >-
-        Recheck the selected ready and dependency-recheck items for drift using
-        the deterministic staleness signals and duplicate evidence.
-        Treat in-flight re-sweep items and unclaimed candidates as read-only,
-        except for narrowly scoped roadmap maintenance on directly linked tracking parents.
-        Preserve unchanged items. Explain every mutation in an issue comment.
+        Recheck the selected ready and dependency-recheck items for drift using the deterministic staleness signals and duplicate evidence. Treat in-flight re-sweep items and unclaimed candidates as read-only, except for narrowly scoped roadmap maintenance on directly linked tracking parents. Preserve unchanged items. Explain every mutation in an issue comment.
       capabilities:
         - github:issues:write
         - github:milestones:write
@@ -91,3 +87,4 @@ spec:
         - github:issues:write
       policyActions:
         - release-backlog-claim
+      repoFrom: curate

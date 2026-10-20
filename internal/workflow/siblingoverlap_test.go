@@ -247,7 +247,7 @@ func TestShippedWorkflowsSequenceSiblingOverlap(t *testing.T) {
 		if err := yaml.Unmarshal(raw, &w); err != nil {
 			t.Fatalf("unmarshal %s: %v", path, err)
 		}
-		if problems := CheckSiblingOverlapSequencing(Definition{Name: w.Name, Version: 1, Spec: w.Spec}); len(problems) != 0 {
+		if problems := CheckSiblingOverlapSequencing(Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}); len(problems) != 0 {
 			t.Errorf("%s: problems = %v, want none", path, problems)
 		}
 	}
