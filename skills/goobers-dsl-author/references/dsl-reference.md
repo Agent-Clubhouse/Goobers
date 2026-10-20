@@ -260,8 +260,9 @@ For external `goober.spec.mcpServers`, DSL 3.1 supports a per-server
 handshake failure stops the stage before its model turn. Emit
 `required: false` only when the requested stage can complete without that
 server; its startup failure is then a journal warning and the turn proceeds
-without it. DSL 2.0 and 3.0 do not accept this field. `goobers-io` is
-harness-owned and always required.
+without it. Set `dslVersion: "3.1"` to get these uniform semantics. DSL 2.0 and
+3.0 do not accept this field and retain their historical harness-specific
+omitted-field behavior. `goobers-io` is harness-owned and always required.
 
 A gate has `name`, exactly one evaluator configuration, and `branches`.
 Automated checks currently include `status-equals`, `failure-class`,

@@ -109,7 +109,9 @@ fails the stage before the model turn. Set `required: false` only when the stage
 can satisfy its contract without that server. An optional startup failure is
 recorded as a journal warning and the turn continues without that server.
 Harness-owned `goobers-io` is always required and cannot be made optional.
-DSL 2.0 and 3.0 definitions cannot declare this field.
+DSL 2.0 and 3.0 definitions cannot declare this field and retain their
+historical harness-specific behavior when it is omitted. Set the workflow's
+`dslVersion` to `3.1` to opt into uniform requiredness.
 
 Copilot, Claude Code, and Codex all support declared MCP servers. Because local
 stdio servers inherit one process environment, a local server must explicitly

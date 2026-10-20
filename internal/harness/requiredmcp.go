@@ -36,14 +36,17 @@ const ErrorCodeRequiredMCPEnterpriseBlocked = "HARNESS_REQUIRED_MCP_ENTERPRISE_B
 
 var errRequiredMCPUnavailable = errors.New("required MCP server unavailable")
 
-func declaredMCPServerRequired(server apiv1.MCPServer) bool {
-	return server.Required == nil || *server.Required
+func declaredMCPServerRequired(req RunRequest, server apiv1.MCPServer) bool {
+	if server.Required != nil {
+		return *server.Required
+	}
+	return req.Envelope.DSLVersion == "3.1"
 }
 
 func requiredDeclaredMCPServerNames(req RunRequest) []string {
 	names := make([]string, 0, len(req.MCPServers))
 	for _, server := range req.MCPServers {
-		if server.Name != "" && declaredMCPServerRequired(server) {
+		if server.Name != "" && declaredMCPServerRequired(req, server) {
 			names = append(names, server.Name)
 		}
 	}
@@ -56,7 +59,7 @@ func requiredMCPServer(req RunRequest, name string) bool {
 	}
 	for _, server := range req.MCPServers {
 		if server.Name == name {
-			return declaredMCPServerRequired(server)
+			return declaredMCPServerRequired(req, server)
 		}
 	}
 	return false

@@ -57,9 +57,15 @@ func materializeDeclaredMCP(ctx context.Context, adapter string, req RunRequest,
 	servers := make([]materializedMCPServer, 0, len(req.MCPServers))
 	var assignments []envAssignment
 	for serverIndex, server := range req.MCPServers {
+		required := declaredMCPServerRequired(req, server)
+		if opts.harness == apiv1.HarnessCodex && server.Required == nil && req.Envelope.DSLVersion != "3.1" {
+			// Preserve Codex's pre-3.1 behavior: every declared server was
+			// registered with the CLI's native required flag.
+			required = true
+		}
 		materialized := materializedMCPServer{
 			Name:     server.Name,
-			Required: declaredMCPServerRequired(server),
+			Required: required,
 			Command:  server.Command,
 			Args:     append([]string(nil), server.Args...),
 			URL:      server.URL,

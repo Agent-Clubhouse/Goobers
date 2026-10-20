@@ -98,24 +98,30 @@ func TestConformanceMCPServerRequiredness(t *testing.T) {
 			for _, tc := range []struct {
 				name        string
 				required    *bool
+				dslVersion  string
+				legacy      bool
 				wantFailure bool
 				wantWarning bool
 			}{
-				{name: "required-fail", required: mcpRequiredFlag(true), wantFailure: true},
-				{name: "optional-fail", required: mcpRequiredFlag(false), wantWarning: true},
-				{name: "default-omitted-is-required", wantFailure: true},
+				{name: "required-fail", required: mcpRequiredFlag(true), dslVersion: "3.1", wantFailure: true},
+				{name: "optional-fail", required: mcpRequiredFlag(false), dslVersion: "3.1", wantWarning: true},
+				{name: "default-omitted-is-required", dslVersion: "3.1", wantFailure: true},
+				{name: "older-pin-keeps-adapter-semantics", dslVersion: "3.0", legacy: true, wantWarning: true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					workspace := t.TempDir()
-					runner := &mcpRequirednessRunner{adapter: ca.name, failStartup: tc.wantFailure}
+					wantFailure := tc.wantFailure || tc.legacy && ca.name == "codex"
+					runner := &mcpRequirednessRunner{adapter: ca.name, failStartup: wantFailure}
 					adapter := ca.build(runner, "")
 					if copilot, ok := adapter.(*CopilotAdapter); ok {
 						copilot.mcpSessionFactory = func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
 							return &mcpRequirednessCopilotSession{runner: runner}, nil
 						}
 					}
+					envelope := testEnvelope(workspace, "agent:model")
+					envelope.DSLVersion = tc.dslVersion
 					out, err := adapter.Run(context.Background(), RunRequest{
-						Envelope:       testEnvelope(workspace, "agent:model"),
+						Envelope:       envelope,
 						Workspace:      workspace,
 						CompletionPath: DefaultResultPath,
 						Credentials:    mcpTestCredentials(t, "agent:model", "model-token"),
@@ -125,8 +131,12 @@ func TestConformanceMCPServerRequiredness(t *testing.T) {
 							Command:  "context-server",
 						}},
 					})
-					if tc.wantFailure {
-						if !errors.Is(err, errRequiredMCPUnavailable) {
+					if wantFailure {
+						wantClass := errRequiredMCPUnavailable
+						if tc.legacy && ca.name == "codex" {
+							wantClass = errRequiredMCPDeclaredStartupFailed
+						}
+						if !errors.Is(err, wantClass) {
 							t.Fatalf("Run error = %v, want required-MCP startup failure", err)
 						}
 						if runner.modelTurns != 0 {
@@ -140,7 +150,7 @@ func TestConformanceMCPServerRequiredness(t *testing.T) {
 					if runner.modelTurns != 1 {
 						t.Fatalf("model turns = %d, want one for optional-server failure", runner.modelTurns)
 					}
-					if tc.wantWarning &&
+					if tc.wantWarning && !wantFailure &&
 						(len(out.MCPServerFailures) != 1 || out.MCPServerFailures[0].Server != "context") {
 						t.Fatalf("MCP failures = %+v, want optional-server warning evidence", out.MCPServerFailures)
 					}
