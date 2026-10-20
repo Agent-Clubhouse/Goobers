@@ -117,7 +117,7 @@ func (w issueLabelCommentWatch) route(ctx context.Context, pr providers.PullRequ
 // disarm is a no-op here: GitHub's merge queue is the only landing Goobers
 // arms, and dequeuing takes the merge authority this stage does not hold.
 // queue-watch, which holds it while the PR is queued, dequeues a PR that
-// gains goobers:needs-remediation (the route below).
+// gains goobers:needs-remediation or an explicit human-hold label.
 func (issueLabelCommentWatch) disarm(context.Context, providers.PullRequestSummary) (bool, error) {
 	return false, nil
 }
