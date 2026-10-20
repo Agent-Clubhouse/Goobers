@@ -2,6 +2,7 @@ package copilotsdk
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestDeferredPreviousIdleCannotSettleNewTurnAbort(t *testing.T) {
 	if _, err := s.Send(t.Context(), chat.Text("queued"), chat.SendOptions{Delivery: chat.Queued}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Send(t.Context(), chat.Text("third"), chat.SendOptions{}); err != chat.ErrBusy {
+	if _, err := s.Send(t.Context(), chat.Text("third"), chat.SendOptions{}); !errors.Is(err, chat.ErrBusy) {
 		t.Fatalf("previous idle settled the next turn's abort before its root idle: %v", err)
 	}
 }
