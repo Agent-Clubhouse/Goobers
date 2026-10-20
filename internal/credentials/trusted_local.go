@@ -22,8 +22,9 @@ type TrustedLocalAuthentication struct {
 }
 
 type trustedLocalProcess struct {
-	home string
-	auth TrustedLocalAuthentication
+	home     string
+	auth     TrustedLocalAuthentication
+	modelRef string
 }
 
 // WithTrustedLocalProcess authorizes an admitted host-process invocation. The
@@ -58,6 +59,27 @@ func WithTrustedLocalProcess(ctx context.Context, home string, authentication ..
 		return nil, err
 	}
 	return context.WithValue(ctx, trustedLocalProcessKey{}, trustedLocalProcess{home: home, auth: auth}), nil
+}
+
+// WithTrustedLocalModelCredential binds explicit authentication to the parent's
+// selected grant reference. The capability name alone cannot authorize another
+// stored model secret. Future profile delegation must extend this host binding,
+// not reinterpret arbitrary child Goober configuration as credential authority.
+func WithTrustedLocalModelCredential(ctx context.Context, ref string) (context.Context, error) {
+	process, ok := ctx.Value(trustedLocalProcessKey{}).(trustedLocalProcess)
+	if !ok || ref == "" || process.auth.Harness != "" {
+		return nil, ErrChildAuthenticationIsolation
+	}
+	process.modelRef = ref
+	return context.WithValue(ctx, trustedLocalProcessKey{}, process), nil
+}
+
+func checkTrustedLocalCredential(ctx context.Context, key, ref string) error {
+	process, ok := ctx.Value(trustedLocalProcessKey{}).(trustedLocalProcess)
+	if ok && (key != "agent:model" || process.modelRef == "" || process.modelRef != ref) {
+		return ErrChildAuthenticationIsolation
+	}
+	return nil
 }
 
 // TrustedLocalProcess reports host-owned launch authority, never DSL policy.

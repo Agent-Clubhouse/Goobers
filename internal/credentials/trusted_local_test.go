@@ -77,3 +77,45 @@ func TestTrustedLocalProcessWithholdsPublicationCredentials(t *testing.T) {
 		t.Fatalf("authored process inherited publication: %+v", ceiling)
 	}
 }
+
+func TestTrustedLocalCredentialReferenceCannotWidenParentGrant(t *testing.T) {
+	ctx, err := WithChildCeiling(t.Context(), NewChildCeiling(false, []string{"agent:model"}, []string{"agent:model"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = WithTrustedLocalProcess(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, registrar := newTestInjector(t, []Grant{{Capability: "agent:model", Ref: "github-issues"}})
+	if _, err := injector.Materialize(ctx, []string{"agent:model"}); !errors.Is(err, ErrChildAuthenticationIsolation) {
+		t.Fatalf("unbound credential resolved: %v", err)
+	}
+	bound, err := WithTrustedLocalModelCredential(ctx, "repo-push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := injector.Materialize(bound, []string{"agent:model"}); !errors.Is(err, ErrChildAuthenticationIsolation) {
+		t.Fatalf("different stored ref resolved: %v", err)
+	}
+	if len(registrar.registered) != 0 {
+		t.Fatal("undelegated secret materialized before refusal")
+	}
+	bound, err = WithTrustedLocalModelCredential(ctx, "github-issues")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := injector.Materialize(bound, []string{"agent:model"}); err != nil {
+		t.Fatalf("parent's exact ref refused: %v", err)
+	}
+	ambient, err := WithTrustedLocalProcess(ctx, t.TempDir(), TrustedLocalAuthentication{Harness: "copilot", Home: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WithTrustedLocalModelCredential(ambient, "github-issues"); !errors.Is(err, ErrChildAuthenticationIsolation) {
+		t.Fatal("ambient parent widened to explicit stored key")
+	}
+	if _, err := injector.Materialize(ambient, []string{"agent:model"}); !errors.Is(err, ErrChildAuthenticationIsolation) {
+		t.Fatal("ambient child resolved explicit stored key")
+	}
+}
