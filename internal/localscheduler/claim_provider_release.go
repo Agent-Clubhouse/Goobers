@@ -23,6 +23,10 @@ func claimEntryStorageKey(entry ClaimEntry) (string, error) {
 // A crashed attempt leaves custody in claims.json; the next lock holder retries
 // cleanup before admitting another owner, even if the execution lease expired.
 func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
+	return l.beginProviderRelease(expected, false)
+}
+
+func (l *ClaimLedger) beginProviderRelease(expected ClaimEntry, shared bool) (bool, error) {
 	if expected.IsPublicationClaim() {
 		return false, errors.New("publication custody cannot use provider cleanup")
 	}
@@ -33,10 +37,10 @@ func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	current, held := l.entries[key]
-	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) {
+	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || current.SharedOwner != expected.SharedOwner {
 		return false, nil
 	}
-	if !current.SharedDeadline.IsZero() {
+	if !current.SharedDeadline.IsZero() != shared {
 		return false, errors.New("shared claims require coordinated release")
 	}
 	if current.ReleasePending {
@@ -44,6 +48,7 @@ func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
 	}
 	updated := current
 	updated.ReleasePending = true
+	updated.SharedAdmissionPending = false
 	previous, hadHistory := l.historyEntry(current.RunID, key)
 	l.entries[key] = updated
 	l.recordHistory(key, updated)
