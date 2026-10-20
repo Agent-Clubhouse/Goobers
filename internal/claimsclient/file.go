@@ -105,7 +105,7 @@ func (f *File) Locked(_ context.Context, operation string, fn func(Ledger) error
 
 // ClaimScoped implements Ledger under a default-labelled critical section.
 func (f *File) ClaimScoped(ctx context.Context, key Key, runID, workflow string, lease time.Duration) (ok bool, holder string, err error) {
-	if f.cfg.Shared != nil {
+	if f.cfg.Shared != nil && !localscheduler.IsPublicationClaimKey(key.ExternalID) {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if f.cfg.Lock == nil {
@@ -158,6 +158,9 @@ func (f *File) ReleaseAllForRun(ctx context.Context, runID string, reason claimr
 		return nil, err
 	}
 	for _, entry := range entries {
+		if entry.IsPublicationClaim() {
+			continue
+		}
 		if err = f.ReleaseExpected(ctx, entry, reason); err != nil {
 			return released, err
 		}
@@ -333,6 +336,9 @@ func matchingEntry(ledger FileLedger, expected Entry) (Entry, bool) {
 // RenewExpected renews only the snapshot's current incarnation. Shared renewal
 // additionally requires unexpired execution authority before the remote write.
 func (f *File) RenewExpected(ctx context.Context, expected Entry, ttl time.Duration) (ok bool, err error) {
+	if expected.IsPublicationClaim() {
+		return false, nil
+	}
 	if !expected.SharedDeadline.IsZero() {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()

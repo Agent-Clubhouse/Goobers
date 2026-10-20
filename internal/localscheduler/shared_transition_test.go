@@ -96,3 +96,20 @@ func TestSharedReservationRevocationWinsOverRemoteAcknowledgment(t *testing.T) {
 		t.Fatal("revoked history allowed readmission")
 	}
 }
+
+func TestSharedAdmissionCannotReservePublicationCustody(t *testing.T) {
+	ledger, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"publication-lock/github/owner/repo/42", "merge-lock/publication/github/owner/repo"} {
+		key := ClaimKey{Gaggle: "g", Provider: "github", ExternalID: id}
+		owner := sharedclaim.Owner{Instance: "instance", Run: "run", Token: "token"}
+		if _, ok, _, err := ledger.BeginSharedAdmission(key, owner, "publish"); err == nil || ok {
+			t.Fatal("shared admission reserved publication custody")
+		}
+		if _, held := ledger.LookupScoped(key); held {
+			t.Fatal("rejected admission persisted custody")
+		}
+	}
+}

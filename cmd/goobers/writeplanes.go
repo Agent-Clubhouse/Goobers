@@ -214,6 +214,9 @@ func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpa
 		return httpapi.ClaimResponse{}, err
 	}
 	for _, entry := range entries {
+		if entry.IsPublicationClaim() {
+			continue
+		}
 		if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
 			continue
 		}

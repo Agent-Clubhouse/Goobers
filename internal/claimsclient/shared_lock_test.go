@@ -162,3 +162,33 @@ func TestAdminRevokesPendingSharedAdmissionBeforeWaitingForCleanup(t *testing.T)
 		t.Fatal("revoked run was readmitted")
 	}
 }
+
+func TestSharedClientExcludesPublicationCustody(t *testing.T) {
+	store := &sharedClientStore{}
+	resolver := &sharedClientResolver{binding: SharedClaimBinding{Store: store}, admissionErr: fmt.Errorf("publication must not resolve shared admission")}
+	file, err := NewFile(sharedTestFileConfig(filepath.Join(t.TempDir(), "claims.json"), resolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"publication-lock/github/owner/repo/42", "merge-lock/publication/github/owner/repo"} {
+		key := Key{Gaggle: "g", Provider: "github", ExternalID: id}
+		if ok, _, err := file.ClaimScoped(t.Context(), key, "run", "publish", time.Minute); err != nil || !ok {
+			t.Fatalf("local publication: %v %v", ok, err)
+		}
+	}
+	if released, err := file.ReleaseAllForRun(t.Context(), "run", claimrelease.Completed.Reason()); err != nil || len(released) != 0 {
+		t.Fatalf("bulk publication release: %+v %v", released, err)
+	}
+	entries, err := file.ForRunAll(t.Context(), "run")
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("lost custody: %+v %v", entries, err)
+	}
+	for _, entry := range entries {
+		if ok, err := file.RenewExpected(t.Context(), entry, time.Hour); err != nil || ok {
+			t.Fatalf("renewed fixed publication custody: %v %v", ok, err)
+		}
+	}
+	if store.writes != 0 {
+		t.Fatal("publication reached shared provider")
+	}
+}

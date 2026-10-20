@@ -15,6 +15,9 @@ func (e ClaimEntry) transitionPending() bool { return e.ReleasePending || e.Shar
 // and the claims lock only for each ledger operation. An uncertain admission
 // survives restart as an expired reservation, never execution authority.
 func (l *ClaimLedger) BeginSharedAdmission(key ClaimKey, owner sharedclaim.Owner, workflow string) (ClaimEntry, bool, string, error) {
+	if IsPublicationClaimKey(key.ExternalID) {
+		return ClaimEntry{}, false, "", errors.New("publication custody cannot use shared admission")
+	}
 	storageKey, err := key.storageKey()
 	if err != nil {
 		return ClaimEntry{}, false, "", err
