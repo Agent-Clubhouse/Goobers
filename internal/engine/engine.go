@@ -1014,8 +1014,13 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
+			attemptGrade, admissionErr := rec.admitChildAttempt(ctx, t, attemptEnv, produced)
+			if admissionErr != nil {
+				return stageActivityResult{}, admissionErr
+			}
+
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
-			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+			result.Integrity = runner.StageResultIntegrity(result.Integrity, attemptGrade)
 			return result, err
 		}, deltaOut)
 	}
@@ -1041,8 +1046,13 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
+		attemptGrade, admissionErr := rec.admitChildAttempt(ctx, t, attemptEnv, produced)
+		if admissionErr != nil {
+			return stageActivityResult{}, admissionErr
+		}
+
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
-		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, attemptGrade)
 		return result, err
 	}, deltaOut)
 }

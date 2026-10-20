@@ -30,6 +30,7 @@ import (
 // ecwFixture is a fault-injectable custody state machine, not an HA backend.
 // Its single permit demonstrates ordering across actual parent/child Run walks.
 type ecwFixture struct {
+	parentIntegrity apiv1.Integrity
 	usage           *AttemptUsage
 	forgeOrigin     bool
 	now             func() time.Time
@@ -72,7 +73,7 @@ func (f *ecwFixture) Invoke(_ context.Context, env apiv1.InvocationEnvelope, _ s
 	f.envelopes = append(f.envelopes, env)
 	f.calls = append(f.calls, "parent")
 	if len(f.envelopes) > f.waits {
-		return DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}, nil
+		return DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Integrity: f.parentIntegrity}}, nil
 	}
 	if env.ChildWorkflowOrigin == nil {
 		return DispatchStageResult{}, errors.New("missing committed origin")

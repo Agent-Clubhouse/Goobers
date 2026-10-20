@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 
 	"go.temporal.io/sdk/workflow"
 
@@ -129,4 +130,22 @@ func dispatchWithChildWait(ctx workflow.Context, in RunInput, t apiv1.Task, rec 
 			return stageActivityResult{}, childWaitError{errors.Join(err, cleanup)}
 		}
 	}
+}
+
+// admitChildAttempt runs after taskAttemptEnvelope has added all retained child
+// continuations and before either local or pod dispatch. Initial inputsFrom
+// grades are immutable during the wait; retain their grade while recomputing
+// provenance from the full effective context, just as the runner does on resume.
+func (r *runJournal) admitChildAttempt(ctx workflow.Context, t apiv1.Task, env apiv1.InvocationEnvelope, produced apiv1.Integrity) (apiv1.Integrity, error) {
+	if ctx.Value(childProtocolContextKey{}) != true || env.ChildWorkflowOrigin == nil || len(r.childContinuations[env.ChildWorkflowOrigin.StageOccurrence]) == 0 {
+		return produced, nil
+	}
+	if err := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity); err != nil {
+		var admission *apiv1.IntegrityAdmissionError
+		if errors.As(err, &admission) {
+			r.integrityRefused(ctx, t.Name, admission)
+		}
+		return "", childWaitError{fmt.Errorf("engine: refuse resumed stage %q: %w", t.Name, err)}
+	}
+	return apiv1.WeakestIntegrity(produced, engineProducedIntegrity(t, env, nil)), nil
 }
