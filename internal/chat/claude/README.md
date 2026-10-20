@@ -45,3 +45,9 @@ permission/setting frames. Additional tests exercise conformance, host environme
 stripping, ceiling clamping, timeout cleanup, queue/steer priorities, cancellation,
 overflow shutdown, and termination of a real descendant writer. No live Claude
 calls are part of these tests.
+
+An unsolicited permission mode above the ceiling stops the session. A root exit
+or clean stdout EOF before host-owned shutdown is deliberately conservative:
+remaining process groups are stopped, but custody stays pending because escaped
+descendants can no longer be reconstructed from the original parent. A process
+exit or cancellation alone must never become proof of workspace safety.

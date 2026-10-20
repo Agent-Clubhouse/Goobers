@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/chat"
 	claudechat "github.com/goobers/goobers/internal/chat/claude"
 )
@@ -87,4 +88,13 @@ func TestClaudeChatCredentialGuard(t *testing.T) {
 		}
 	}()
 	_, _ = adapter.ChatDriver(req).Prepare(context.Background(), chat.StartOptions{}, claudechat.Args(chat.StartOptions{}))
+}
+
+func TestClaudeChatRejectsNestedBypass(t *testing.T) {
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, KeychainReader: absentClaudeKeychain}
+	req := RunRequest{Workspace: t.TempDir(), ExecutionPolicy: &apiv1.ChildExecutionPolicy{}}
+	_, err := adapter.ChatDriver(req).Prepare(context.Background(), chat.StartOptions{}, nil)
+	if err == nil {
+		t.Fatal("nested policy bypass accepted")
+	}
 }

@@ -77,6 +77,8 @@ func TestClaudeFakeCLI(t *testing.T) {
 			}
 			if m["type"] == "user" {
 				switch textContent(obj(m["message"])["content"]) {
+				case "die":
+					os.Exit(1)
 				case "child":
 					child := exec.Command(os.Args[0], "-test.run=^TestClaudeFakeCLI$", "--", "--claude-fake", "child-writer", reportPath+".writer")
 					child.Env = []string{}
@@ -468,5 +470,56 @@ func TestQueuedTurnLifecycle(t *testing.T) {
 	}
 	if starts != 2 {
 		t.Fatalf("%d turn starts for two queued results", starts)
+	}
+}
+
+func TestPermissionModeDriftFailsClosed(t *testing.T) {
+	d, _ := fakeDriver(t, "controls")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := d.Start(ctx, chat.StartOptions{Ceiling: chat.NewCeiling(chat.Ask, chat.Ask, chat.Ask)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	s := session.(*Session)
+	s.frame(object{"type": "system", "subtype": "status", "permissionMode": "bypassPermissions"})
+	select {
+	case <-s.done:
+	case <-ctx.Done():
+		t.Fatal("mode escalation did not stop writer")
+	}
+	if _, err := s.Send(ctx, chat.Text("late"), chat.SendOptions{}); !errors.Is(err, chat.ErrClosed) {
+		t.Fatal(err)
+	}
+}
+func TestAutoModelUsesNativeDefault(t *testing.T) {
+	if slices.Contains(Args(chat.StartOptions{Model: "auto"}), "--model") {
+		t.Fatal("neutral auto sentinel sent as Claude model")
+	}
+}
+
+func TestUnexpectedExitRetainsCustody(t *testing.T) {
+	d, _ := fakeDriver(t, "controls")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := d.Start(ctx, chat.StartOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, _ = s.Send(ctx, chat.Text("die"), chat.SendOptions{})
+	select {
+	case <-s.(*Session).done:
+	case <-ctx.Done():
+		t.Fatal("process exit not observed")
+	}
+	if err := s.Close(); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+		t.Fatalf("uncontrolled exit falsely released custody: %v", err)
+	}
+	for e := range s.Events() {
+		if e.Type == "custody.released" {
+			t.Fatal("released uncontrolled process tree")
+		}
 	}
 }

@@ -22,6 +22,9 @@ func (c *ClaudeAdapter) ChatDriver(req RunRequest) *claudechat.Driver {
 	}
 }
 func (c *ClaudeAdapter) prepareClaudeChat(ctx context.Context, req RunRequest, o chat.StartOptions, args []string) (launch claudechat.Launch, err error) {
+	if err := validateStandardExecution(req); err != nil {
+		return launch, err
+	}
 	if len(c.Command) == 0 || req.Workspace == "" {
 		return launch, errors.New("claude chat: command and workspace required")
 	}
@@ -75,7 +78,7 @@ func (c *ClaudeAdapter) prepareClaudeChat(ctx context.Context, req RunRequest, o
 	if len(req.Tools) > 0 {
 		argv = append(argv, "--tools", strings.Join(claudeAvailableTools(req.Tools), ","))
 	}
-	if o.Model == "" && req.Model != "" {
+	if o.Model == "" && req.Model != "" && req.Model != "auto" {
 		argv = append(argv, "--model", req.Model)
 	}
 	if options["effort"] != "" {

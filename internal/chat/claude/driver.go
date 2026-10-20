@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -59,6 +58,22 @@ func permissionMode(level chat.Level) string {
 	return "plan"
 }
 
+func levelFromMode(mode string) (chat.Level, bool) {
+	switch mode {
+	case "plan":
+		return chat.Plan, true
+	case "default", "dontAsk":
+		return chat.Ask, true
+	case "acceptEdits":
+		return chat.AutoEdit, true
+	case "auto":
+		return chat.Auto, true
+	case "bypassPermissions":
+		return chat.FullAccess, true
+	}
+	return "", false
+}
+
 // Args contains protocol metadata only. Even the system prompt travels through
 // initialize, rather than an argv flag visible to other host processes.
 func Args(o chat.StartOptions) []string {
@@ -67,7 +82,7 @@ func Args(o chat.StartOptions) []string {
 	if o.Ceiling.Clamp(chat.FullAccess) == chat.FullAccess {
 		args = append(args, "--allow-dangerously-skip-permissions")
 	}
-	if o.Model != "" {
+	if o.Model != "" && o.Model != "auto" {
 		args = append(args, "--model", o.Model)
 	}
 	if o.ResumeNativeID != "" {
@@ -124,7 +139,8 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 		return nil, errors.New("claude: empty command")
 	}
 	cmd := exec.Command(launch.Command[0], launch.Command[1:]...)
-	cmd.Dir, cmd.Env, cmd.Stderr = launch.Dir, stripHostSession(launch.Env), io.Discard
+	cmd.Dir, cmd.Env = launch.Dir, stripHostSession(launch.Env)
+	// A nil stderr is an OS null handle, not a copy goroutine descendants can hold open.
 	// Explicit pipes allow Wait to reap promptly, even if a descendant retains stdout.
 	inR, inW, err := os.Pipe()
 	if err != nil {
@@ -156,7 +172,17 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 	if s.timeout <= 0 {
 		s.timeout = 30 * time.Second
 	}
-	go func() { _ = cmd.Wait(); close(s.exited) }()
+	go func() {
+		_ = cmd.Wait()
+		s.mu.Lock()
+		if !s.closed {
+			s.uncontrolledExit = true
+			s.failed.Store(true)
+		}
+		s.mu.Unlock()
+		close(s.exited)
+		go func() { _ = s.Close() }()
+	}()
 	go s.writer()
 	go s.read()
 	go func() {
@@ -192,6 +218,7 @@ type writeRequest struct {
 // Session owns a long-lived process tree. Native results never release custody.
 type Session struct {
 	queued                 int
+	uncontrolledExit       bool
 	failed                 atomic.Bool
 	mu                     sync.Mutex
 	settingsMu             sync.Mutex
@@ -224,8 +251,9 @@ func (s *Session) Capabilities() chat.Capabilities { return capabilities() }
 func (s *Session) Events() <-chan chat.Event       { return s.stream.Events() }
 func (s *Session) emit(kind string, data object, command string) {
 	if !s.stream.Emit(kind, data, command) {
-		s.failed.Store(true)
-		go func() { _ = s.Close() }()
+		if s.failed.CompareAndSwap(false, true) {
+			go func() { _ = s.Close() }()
+		}
 	}
 }
 func (s *Session) writer() {
@@ -237,6 +265,14 @@ func (s *Session) writer() {
 			data, err := json.Marshal(req.frame)
 			if err == nil {
 				_, err = s.stdin.Write(append(data, '\n'))
+				if err != nil {
+					s.mu.Lock()
+					if !s.closed {
+						s.uncontrolledExit = true
+						s.failed.Store(true)
+					}
+					s.mu.Unlock()
+				}
 			}
 			req.done <- err
 		}
@@ -310,6 +346,9 @@ func (s *Session) read() {
 	s.mu.Lock()
 	if !s.closed {
 		s.failed.Store(true)
+		if scan.Err() == nil {
+			s.uncontrolledExit = true
+		}
 	}
 	s.mu.Unlock()
 	go func() { _ = s.Close() }()
@@ -369,6 +408,20 @@ func (s *Session) frame(m object) {
 		}
 	default:
 		s.mu.Lock()
+		if m["type"] == "system" && m["permissionMode"] != nil {
+			actual, known := levelFromMode(str(m["permissionMode"]))
+			if !known || s.options.Ceiling.Clamp(actual) != actual {
+				s.failed.Store(true)
+				s.mu.Unlock()
+				s.emit("notice", object{"code": "permission_ceiling_violation"}, "")
+				go func() { _ = s.Close() }()
+				return
+			}
+			if s.level != actual {
+				s.level = actual
+				s.emit("mode_changed", object{"level": actual}, "")
+			}
+		}
 		if !s.active && s.queued > 0 && (m["type"] == "assistant" || m["type"] == "stream_event" || m["type"] == "result") {
 			s.active = true
 			s.queued--
@@ -472,7 +525,11 @@ func (s *Session) SetLevel(ctx context.Context, level chat.Level) (chat.Level, e
 func (s *Session) SetModel(ctx context.Context, model string) error {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
-	_, err := s.control(ctx, object{"subtype": "set_model", "model": model})
+	request := object{"subtype": "set_model"}
+	if model != "" && model != "auto" {
+		request["model"] = model
+	}
+	_, err := s.control(ctx, request)
 	if err == nil {
 		s.emit("model_changed", object{"model": model}, "")
 	}
@@ -574,6 +631,12 @@ func (s *Session) Close() error {
 		cancel()
 		if err != nil {
 			err = errors.Join(err, s.tree.Kill())
+		}
+		s.mu.Lock()
+		uncontrolled := s.uncontrolledExit
+		s.mu.Unlock()
+		if uncontrolled {
+			err = errors.Join(err, errors.New("claude: root exited before descendant custody was captured"))
 		}
 		_ = s.stdin.Close()
 		_ = s.stdout.Close()
