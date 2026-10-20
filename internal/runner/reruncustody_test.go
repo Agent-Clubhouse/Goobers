@@ -1,10 +1,11 @@
 package runner
 
 import (
+	"testing"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
-	"testing"
 )
 
 func TestRerunWritableHistoryExcludesNonAgenticGates(t *testing.T) {
@@ -29,5 +30,14 @@ func TestRerunWritableHistoryExcludesNonAgenticGates(t *testing.T) {
 				t.Fatalf("writable history=%v for %s", got, evaluator)
 			}
 		})
+	}
+}
+
+func TestRerunCustodyKeepsRestoredChildBranch(t *testing.T) {
+	r := &Runner{}
+	in := StartInput{RunID: "child-run", Machine: rerunTaskMachine(t), Child: &journal.ChildLineage{}, WorkspaceBranch: "goobers/child/admitted"}
+	branch, err := r.rerunWorkspaceBranch(t.Context(), in, nil, "implement")
+	if err != nil || branch != in.WorkspaceBranch {
+		t.Fatalf("restored child branch=%q err=%v", branch, err)
 	}
 }

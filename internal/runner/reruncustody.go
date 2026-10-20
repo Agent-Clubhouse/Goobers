@@ -69,7 +69,7 @@ func (r *Runner) PreflightRerunStage(ctx context.Context, in RerunStageInput) er
 	// Child custody has its own immutable admission and authorization checks.
 	start, err = r.restoreExecutionWorkspace(ctx, rd, id, start, events, parallel, parallelStart, branch)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRerunCustodyUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrRerunCustodyUnavailable, err)
 	}
 	_, err = r.rerunWorkspaceBranch(ctx, start, events, in.Stage)
 	return err
@@ -98,7 +98,10 @@ func rerunRequiresWritableWorkspace(machine *workflow.Machine, events []journal.
 
 func (r *Runner) rerunWorkspaceBranch(ctx context.Context, in StartInput, events []journal.Event, stage string) (string, error) {
 	branch := lastWorkspaceBranch(events, in.Machine, r.branchNamespaceFor(in.Gaggle))
-	if in.Child != nil || !rerunRequiresWritableWorkspace(in.Machine, events, stage) {
+	if in.Child != nil {
+		return in.WorkspaceBranch, nil
+	}
+	if !rerunRequiresWritableWorkspace(in.Machine, events, stage) {
 		return branch, nil
 	}
 	if branch == "" {
@@ -112,7 +115,7 @@ func (r *Runner) rerunWorkspaceBranch(ctx context.Context, in StartInput, events
 		err = r.cfg.Worktrees.VerifyRunBranch(ctx, url, branch, r.cfg.PinnedWorkspace)
 	}
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrRerunCustodyUnavailable, err)
+		return "", fmt.Errorf("%w: %w", ErrRerunCustodyUnavailable, err)
 	}
 	return branch, nil
 }

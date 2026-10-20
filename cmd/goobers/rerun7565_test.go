@@ -41,8 +41,11 @@ func (a *rerunRequestAgent) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	a.calls.Add(1)
 	if a.preserved {
 		data, err := os.ReadFile(filepath.Join(env.Workspace, "reviewed.txt"))
-		if err != nil || string(data) != "reviewed implementation\n" {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("preserved implementation missing: %s: %v", data, err)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("preserved implementation missing: %w", err)
+		}
+		if string(data) != "reviewed implementation\n" {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("preserved implementation changed: %q", data)
 		}
 	}
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
@@ -169,7 +172,7 @@ func TestRerunHTTPAfterLocalCI(t *testing.T) {
 					t.Fatalf("rerun transport: %v", err)
 				}
 				body, err := io.ReadAll(response.Body)
-				response.Body.Close()
+				_ = response.Body.Close()
 				if err != nil {
 					t.Fatal(err)
 				}

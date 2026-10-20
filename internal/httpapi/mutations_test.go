@@ -533,7 +533,7 @@ func TestRerunPanicReturnsStructuredHTTPError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rerun dropped HTTP connection: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var body map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)

@@ -384,6 +384,9 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 		Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum, ExpectedTerminalSeq: resolved.terminalSeq,
 	}); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return httpapi.InterventionResult{}, err
+		}
 		if errors.Is(err, runner.ErrRerunCustodyUnavailable) {
 			return httpapi.InterventionResult{}, interventionConflict("rerun_custody_unavailable", err.Error())
 		}
