@@ -223,6 +223,7 @@ type controlReply struct {
 	err   error
 }
 type writeRequest struct {
+	epoch *uint64
 	frame object
 	done  chan error
 }
@@ -245,6 +246,7 @@ type Session struct {
 	pending                map[string]chan controlReply
 	permissions            map[string]object
 	counter                uint64
+	requestEpoch           uint64
 	active, closed         bool
 	timeout                time.Duration
 	writeQ                 chan writeRequest
@@ -279,6 +281,15 @@ func (s *Session) writer() {
 		case <-s.done:
 			return
 		case req := <-s.writeQ:
+			if req.epoch != nil {
+				s.mu.Lock()
+				stale := *req.epoch != s.requestEpoch || s.closed
+				s.mu.Unlock()
+				if stale {
+					req.done <- chat.ErrUnknownRequest
+					continue
+				}
+			}
 			data, err := json.Marshal(req.frame)
 			if err == nil {
 				_, err = s.stdin.Write(append(data, '\n'))
@@ -296,13 +307,16 @@ func (s *Session) writer() {
 	}
 }
 func (s *Session) write(ctx context.Context, frame object) error {
+	return s.writeEpoch(ctx, frame, nil)
+}
+func (s *Session) writeEpoch(ctx context.Context, frame object, epoch *uint64) error {
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
 		return chat.ErrClosed
 	}
-	req := writeRequest{frame: frame, done: make(chan error, 1)}
+	req := writeRequest{frame: frame, epoch: epoch, done: make(chan error, 1)}
 	select {
 	case s.writeQ <- req:
 	case <-ctx.Done():
@@ -422,6 +436,7 @@ func (s *Session) frame(m object) {
 		}
 		events := s.norm.mapFrame(m)
 		if m["type"] == "result" {
+			s.cancelPermissionsLocked()
 			s.active = false
 			if remaining, ok := m["queued_turn_count"].(float64); ok {
 				s.queued = max(0, int(remaining))
@@ -504,7 +519,16 @@ func (s *Session) Send(ctx context.Context, blocks []chat.ContentBlock, o chat.S
 // Interrupt requests cancellation without claiming writer quiescence.
 func (s *Session) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
-	s.norm.interrupting = true
+	if s.closed {
+		s.mu.Unlock()
+		return chat.ErrClosed
+	}
+	if !s.active && s.queued == 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	s.norm.interrupting = s.active
+	s.cancelPermissionsLocked()
 	s.mu.Unlock()
 	_, err := s.control(ctx, object{"subtype": "interrupt"})
 	return err
@@ -577,13 +601,17 @@ func (s *Session) respond(ctx context.Context, id string, response object, quest
 		s.mu.Unlock()
 		return chat.ErrUnknownRequest
 	}
+	epoch := s.requestEpoch
 	delete(s.permissions, id)
 	s.mu.Unlock()
 	if response["behavior"] == "allow" && response["updatedInput"] == nil {
 		response["updatedInput"] = obj(r["input"])
 	}
-	err := s.write(ctx, object{"type": "control_response", "response": object{"subtype": "success", "request_id": id, "response": response}})
+	err := s.writeEpoch(ctx, object{"type": "control_response", "response": object{"subtype": "success", "request_id": id, "response": response}}, &epoch)
 	if err != nil {
+		if errors.Is(err, chat.ErrUnknownRequest) {
+			return err
+		}
 		_ = s.Close()
 		return err
 	}
@@ -637,6 +665,7 @@ func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		s.requestEpoch++
 		s.mu.Unlock()
 		// Capture and stop descendants BEFORE closing stdin can orphan them.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -705,6 +734,12 @@ func (s *Session) permissionFrame(m object) {
 		return
 	}
 	s.mu.Lock()
+	if s.closed || s.norm.interrupting {
+		s.mu.Unlock()
+		s.respondAsync(id, object{"subtype": "success", "response": object{"behavior": "deny", "message": "Turn cancelled"}})
+		s.resolve(id, r, "cancelled")
+		return
+	}
 	_, duplicate := s.permissions[id]
 	if !duplicate {
 		s.permissions[id] = r
@@ -722,4 +757,16 @@ func (s *Session) permissionFrame(m object) {
 		data["questions"] = questions(obj(r["input"]))
 	}
 	s.emit(kind, data, "")
+}
+
+// Called with mu held at a turn boundary. A queued approval carries the epoch
+// to the writer, so it cannot become a grant after cancellation overtakes it.
+func (s *Session) cancelPermissionsLocked() {
+	s.requestEpoch++
+	pending := s.permissions
+	s.permissions = map[string]object{}
+	for id, request := range pending {
+		s.respondAsync(id, object{"subtype": "success", "response": object{"behavior": "deny", "message": "Turn ended or cancelled"}})
+		s.resolve(id, request, "cancelled")
+	}
 }
