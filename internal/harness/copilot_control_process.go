@@ -73,7 +73,7 @@ func startCopilotControlServer(ctx context.Context, runner ProcessRunner, req Pr
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	// Prompt/RPC calls retain the caller's cancellation. The owned server gets
 	// only a bounded accounting grace period so abort + usage can run before
