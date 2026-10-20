@@ -1469,6 +1469,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/codexprotocol",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Generated native JSON bindings have no Windows-specific seam; encoding tests run in Linux unit shards and Windows builds/vet compile them."
     }
   ]
 }
