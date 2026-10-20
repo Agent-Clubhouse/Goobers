@@ -95,7 +95,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !reconcile.ContinueOnError {
 				t.Error("reconcile-post-merge must not block the primary review path when its bounded sweep fails")
 			}
-			wantReconcileCapabilities := []string{"github:pr:write", "github:issues:write", "github:branch:delete"}
+			wantReconcileCapabilities := []string{"github:pr:review", "github:pr:write", "github:issues:write", "github:branch:delete"}
 			if !reflect.DeepEqual(reconcile.Capabilities, wantReconcileCapabilities) {
 				t.Errorf("reconcile-post-merge capabilities = %v, want %v", reconcile.Capabilities, wantReconcileCapabilities)
 			}
@@ -478,7 +478,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if postMerge.Inputs["resultFile"] != "post-merge-result.json" {
 				t.Errorf("post-merge resultFile = %q, want post-merge-result.json", postMerge.Inputs["resultFile"])
 			}
-			wantPostMergeCapabilities := []string{"github:pr:write", "github:issues:write"}
+			wantPostMergeCapabilities := []string{"github:pr:review", "github:pr:write", "github:issues:write"}
 			if !reflect.DeepEqual(postMerge.Capabilities, wantPostMergeCapabilities) {
 				t.Errorf("post-merge capabilities = %v, want %v", postMerge.Capabilities, wantPostMergeCapabilities)
 			}

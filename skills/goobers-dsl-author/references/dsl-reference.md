@@ -35,6 +35,50 @@ a lowercase letter or digit and otherwise uses lowercase letters, digits, and
 hyphens. Workflows should explicitly select a DSL version listed by the
 toolkit's `release.json` or `goobers versions --json`.
 
+### Select and author DSL 3.x
+
+Use the selected release's `goobers versions --json` and
+`goobers features --json --dsl-version 3.0` to choose the pin. For new workflows,
+prefer 3.0 once that release lists it as supported. Preserve existing pins unless
+the user requests migration. If 3.0 is still preview in the selected release,
+require preview intent and the Workflow's own
+`metadata.annotations["goobers.dev/allow-preview-features"]: "true"`; otherwise
+use the supported version. A Manifest/Gaggle acknowledgement is insufficient.
+Choose 3.1 only when its features are needed and acknowledge its preview status
+when the selected release requires it. Do not assume either lifecycle from the
+version number or from an example's older pin.
+
+For 3.x authoring:
+
+- Use task `runsOn.capabilities` and Gaggle `spec.runsOn.capabilities` for runner
+  requirements. Lift OS requirements into `runsOn.os` (`linux`, `windows`, or
+  `macOS`), not `os=*` tags. Action-authorizing task/Goober `capabilities` remain
+  separate and retain their canonical capability names.
+- Use `runsOn.restrictions: [network:none]` for a no-network requirement rather
+  than the removed `run.network`. Preserve declared isolation; a local runner
+  must not be assumed to enforce a restriction it does not provide.
+- Declare `repoFrom` when a stage consumes repository state produced earlier in
+  the graph. Account for gate routes, retries, and multiple possible producers;
+  use the compiler's diagnostics rather than guessing a single predecessor.
+- For a simple local instance with implicit self, omit placement declarations
+  unless required by the user's task. A 3.x pin alone does not require resource
+  quantities, toolchain tags, an inventory block, or runner flags. An agentic
+  gate without `runsOn` remains a control-plane review. For distributed
+  placement, declare the needed capabilities/resources and validate against
+  the actual instance inventory.
+- In 3.1, `expectedOutputs` can be enforced at runtime. Confirm the producer
+  actually emits every declared key; do not invent output keys to appease a
+  downstream consumer. Named artifact slots and bindings are explicit opt-ins,
+  not inferred from output names.
+
+For an explicitly requested migration, preview `goobers fix --to 3.0 ROOT`,
+review the diff, then use `--write` and validate. ROOT is an instance containing
+`instance.yaml` and `config/`; a checked-in source tree must be copied into that
+layout for `fix`. Upgrade one registered hop at a time, including 3.0 before
+3.1. Check shared Gaggle placement fields as well as Workflow files and resolve
+remaining validation errors. Do not add preview consent silently or claim that
+a successful `fix` exit proves the resulting config validates.
+
 ### Manifest and local instance
 
 `manifest.yaml` owns every named connection referenced by a gaggle. A minimal

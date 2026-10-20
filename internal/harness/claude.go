@@ -199,8 +199,8 @@ func claudeAvailableTools(tools []string) []string {
 // today's unrestricted-bypass behavior byte-for-byte. With a non-empty
 // allowlist it uses --tools to define which built-in tools exist at all (the
 // analog of Copilot's --available-tools) plus --allowedTools to pre-approve
-// exactly that same set, so the session runs non-interactively without
-// needing the blanket --permission-mode bypassPermissions escape hatch.
+// exactly that same set. buildClaudeArgv supplies dontAsk when no explicit
+// permission mode is present, denying calls that still require approval.
 func claudeExtraArgs(tools []string) []string {
 	if len(tools) == 0 {
 		return append([]string(nil), defaultClaudeExtraArgs...)
@@ -375,6 +375,23 @@ func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID strin
 	argv = append(argv, baseCommand...)
 	argv = append(argv, "-p")
 	argv = append(argv, extra...)
+	// Print mode can default to auto depending on CLI settings and feature
+	// gates. Pin unattended calls to dontAsk: allowed tools still run, while
+	// calls requiring approval are denied. Preserve explicitly selected modes
+	// and the legacy skip-permissions flag, including in custom commands.
+	hasPermissionMode := false
+	permissionMode := "dontAsk"
+	for _, arg := range argv {
+		if arg == "--permission-mode" || strings.HasPrefix(arg, "--permission-mode=") {
+			hasPermissionMode = true
+		}
+		if arg == "--dangerously-skip-permissions" {
+			permissionMode = "bypassPermissions"
+		}
+	}
+	if !hasPermissionMode {
+		argv = append(argv, "--permission-mode", permissionMode)
+	}
 	// Added here, not in claudeExtraArgs, so no ExtraArgs override and no
 	// tool-allowlist shape can produce an argv without it. The completion
 	// repair resumes from a copy of this argv and keeps it too.

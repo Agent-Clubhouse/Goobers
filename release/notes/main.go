@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
 
 var (
@@ -87,11 +90,26 @@ func run(
 	tag := fs.String("tag", "", "release tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease)")
 	featureNotes := fs.String("feature-notes", "", "generated feature-policy notes to append")
 	output := fs.String("output", "", "write notes to this file instead of stdout")
+	printBaseline := fs.Bool("print-baseline", false, "print the previous stable tag for notes and snapshot downloads, then exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if *printBaseline {
+		if *featureNotes != "" || *output != "" {
+			return fmt.Errorf("-print-baseline cannot be combined with -feature-notes or -output")
+		}
+		if err := validateTag(*tag, git); err != nil {
+			return err
+		}
+		previous, err := releaseBaseline(*tag, git, readFile)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, previous)
+		return err
 	}
 
 	notes, err := generate(*tag, git, readFile)
@@ -284,12 +302,19 @@ func combineFeatureNotes(changelog, generated string) (string, error) {
 		strings.TrimSpace(generated[start:]) + "\n", nil
 }
 
-func generate(tag string, git gitClient, readFile func(string) ([]byte, error)) (string, error) {
+func validateTag(tag string, git gitClient) error {
 	if !tagPattern.MatchString(tag) {
-		return "", fmt.Errorf("tag %q is not a valid release tag (want vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease)", tag)
+		return fmt.Errorf("tag %q is not a valid release tag (want vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease)", tag)
 	}
 	if _, err := git.output("rev-parse", "--verify", "refs/tags/"+tag+"^{commit}"); err != nil {
-		return "", fmt.Errorf("resolve release tag %s: %w", tag, err)
+		return fmt.Errorf("resolve release tag %s: %w", tag, err)
+	}
+	return nil
+}
+
+func generate(tag string, git gitClient, readFile func(string) ([]byte, error)) (string, error) {
+	if err := validateTag(tag, git); err != nil {
+		return "", err
 	}
 
 	curated, err := curatedNote(tag, git, readFile)
@@ -299,7 +324,7 @@ func generate(tag string, git gitClient, readFile func(string) ([]byte, error)) 
 	if err := validateCuratedCounts(curated, tag, git); err != nil {
 		return "", err
 	}
-	previous, err := previousTag(tag, git)
+	previous, err := releaseBaseline(tag, git, readFile)
 	if err != nil {
 		return "", err
 	}
@@ -428,6 +453,38 @@ func curatedNote(tag string, git gitClient, readFile func(string) ([]byte, error
 		"curated release note is required: add non-empty %s or use an annotated tag with a non-empty message",
 		path,
 	)
+}
+
+// releaseBaseline shares the changelog anchor with the workflow's snapshot
+// downloads. Release branches need not be ancestors of the next development
+// release: an explicit stable-version key also applies to its prereleases.
+func releaseBaseline(tag string, git gitClient, readFile func(string) ([]byte, error)) (string, error) {
+	path := filepath.Join(".github", "release-baselines.json")
+	data, err := readFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("read release baselines: %w", err)
+	}
+	if err == nil {
+		var baselines map[string]string
+		if err := json.Unmarshal(data, &baselines); err != nil {
+			return "", fmt.Errorf("decode release baselines: %w", err)
+		}
+		version, _, _ := strings.Cut(tag, "-")
+		if baseline, ok := baselines[version]; ok {
+			if !stableTagPattern.MatchString(baseline) || semver.Compare(baseline, version) >= 0 {
+				return "", fmt.Errorf("baseline for %s must be an earlier stable release, got %q", version, baseline)
+			}
+			ref := "refs/tags/" + baseline
+			if _, err := git.output("rev-parse", "--verify", ref+"^{commit}"); err != nil {
+				return "", fmt.Errorf("resolve configured baseline %s: %w", baseline, err)
+			}
+			if _, err := git.output("merge-base", ref, "refs/tags/"+tag); err != nil {
+				return "", fmt.Errorf("configured baseline %s must share release history with %s: %w", baseline, tag, err)
+			}
+			return baseline, nil
+		}
+	}
+	return previousTag(tag, git)
 }
 
 func previousTag(tag string, git gitClient) (string, error) {

@@ -1,5 +1,12 @@
 # Contained child worker transport
 
+This guide covers the distributed provider. The proposed
+[trusted-local provider](../design/trusted-local-child-workflows.md) executes
+children on a self-only daemon host without Temporal or pods, under the same
+result and custody contract and the local OS account's trust boundary. It is
+selected from instance configuration, never as a fallback for failed distributed
+placement. Implementation and local qualification are pending.
+
 ## Availability
 
 This is the worker transport foundation for generated child workflows. The daemon

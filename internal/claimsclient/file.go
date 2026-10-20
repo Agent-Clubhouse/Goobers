@@ -171,7 +171,7 @@ func (s *fileSession) Locked(_ context.Context, _ string, fn func(Ledger) error)
 }
 
 func (s *fileSession) ClaimScoped(ctx context.Context, key Key, runID, workflow string, lease time.Duration) (bool, string, error) {
-	if s.file.cfg.Shared != nil {
+	if s.file.cfg.Shared != nil && !localscheduler.IsPublicationClaimKey(key.ExternalID) {
 		binding, err := s.file.cfg.Shared.Admission(ctx, key, runID, workflow)
 		if err != nil {
 			return false, "", err
@@ -202,6 +202,9 @@ func (s *fileSession) ReleaseAllForRun(ctx context.Context, runID string, reason
 	entries := s.ledger.ForRunAll(runID)
 	released := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
+		if entry.IsPublicationClaim() {
+			continue
+		}
 		if err := s.releaseEntry(ctx, entry, runID, reason); err != nil {
 			return released, fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
 		}

@@ -375,6 +375,37 @@ func (claimLockTestRecorder) RecordArtifactWithIntegrity(name string, data []byt
 	}, nil
 }
 
+func TestClaimLockWaitStopsWhenContextIsCanceled(t *testing.T) {
+	schedulerDir := filepath.Join(t.TempDir(), "scheduler")
+	lockPath := filepath.Join(schedulerDir, claimLockFileName)
+	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := lock.TryAcquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Release() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	called := false
+	started := time.Now()
+	err = withClaimLockForRunContext(ctx, lockPath, claimLockOperationIntervention, "example", "run-canceled", func() error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("canceled waiter ran the protected callback")
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("canceled lock wait took %s, want prompt return", elapsed)
+	}
+}
+
 func readSingleSlowClaimLockEvent(t *testing.T, schedulerDir, operation string) journal.Event {
 	t.Helper()
 	events, err := journal.ReadInstanceLog(schedulerDir)

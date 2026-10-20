@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/interactive"
 	"github.com/goobers/goobers/internal/interactiveops"
+	"github.com/goobers/goobers/internal/platform/safeopen"
 	"github.com/goobers/goobers/internal/secretpattern"
 )
 
@@ -185,15 +188,27 @@ func configLayoutDigest(configDir string) (string, error) {
 func configDigest(source string) (string, error) { return walkConfig(source, nil) }
 
 func walkConfig(source string, write func(string, []byte) error) (string, error) {
+	sourceInfo, err := os.Lstat(source)
+	if err != nil {
+		return "", err
+	}
+	if !sourceInfo.IsDir() || sourceInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("DSL snapshot requires an ordinary source directory")
+	}
+	root, err := os.OpenRoot(source)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	openedRoot, err := root.Stat(".")
+	if err != nil || !os.SameFile(sourceInfo, openedRoot) {
+		return "", fmt.Errorf("DSL snapshot source changed during inspection")
+	}
 	hash := sha256.New()
 	var total int64
-	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(relative string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
 		}
 		if strings.HasPrefix(entry.Name(), ".") && relative != "." {
 			if entry.IsDir() {
@@ -210,20 +225,38 @@ func walkConfig(source string, write func(string, []byte) error) (string, error)
 		// This prototype materializes definitions and instruction documents.
 		// Arbitrary static assets need the production asset materializer before
 		// they can be enabled, rather than being silently inherited.
-		if !slices.Contains([]string{".yaml", ".yml", ".md"}, strings.ToLower(filepath.Ext(path))) {
+		if !slices.Contains([]string{".yaml", ".yml", ".md"}, strings.ToLower(filepath.Ext(relative))) {
 			return fmt.Errorf("interactive DSL snapshot does not support asset %s", relative)
 		}
-		info, err := entry.Info()
+		info, err := root.Lstat(relative)
 		if err != nil {
 			return err
 		}
-		total += info.Size()
-		if info.Size() > 1<<20 || total > 16<<20 {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("DSL snapshot refuses replaced non-regular file %s", relative)
+		}
+		if info.Size() > 1<<20 || total+info.Size() > 16<<20 {
 			return fmt.Errorf("interactive DSL snapshot exceeds bounded size")
 		}
-		data, err := os.ReadFile(path)
+		// WalkDir's cached entry is not authority to open a mutable path.
+		// Root confines resolution even if a directory or file is replaced by
+		// a symlink; the descriptor must still identify the inspected file.
+		file, err := safeopen.OpenRegularInRoot(root, relative)
 		if err != nil {
 			return err
+		}
+		opened, err := file.Stat()
+		if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+			_ = file.Close()
+			return fmt.Errorf("DSL snapshot file changed during inspection: %s", relative)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+		if err := errors.Join(readErr, file.Close()); err != nil {
+			return err
+		}
+		total += int64(len(data))
+		if len(data) > 1<<20 || total > 16<<20 {
+			return fmt.Errorf("interactive DSL snapshot exceeds bounded size")
 		}
 		if !bytes.Equal(secretpattern.NewScrubber().Scrub(data), data) {
 			return fmt.Errorf("DSL file %s contains credential-like content; use external broker custody", relative)

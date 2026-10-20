@@ -101,6 +101,11 @@ generate:
 	$(CONTROLLER_GEN) object paths=./api/v1alpha1/...
 	$(GO) generate ./internal/apicontract
 
+## generate-check: Fail if committed DeepCopy methods or portal contracts drift.
+.PHONY: generate-check
+generate-check: generate
+	git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go portal/src/api/contract.generated.ts portal/src/api/wire.generated.ts
+
 ## manifests: Regenerate CRD YAML manifests from the CRD types.
 .PHONY: manifests
 manifests:

@@ -1,7 +1,5 @@
 name: ADO Live Write
 
-# workflow-inventory: dormant-until-provisioned
-#
 # ADO-N16 (#5727, docs/design/ado-parity-dsl-2-0.md §8.2): the live WRITE leg
 # for the Azure DevOps provider. It runs providers/ado_live_write_test.go
 # (-tags=liveadowrite) against a dedicated scratch repository, complementing
@@ -10,18 +8,18 @@ name: ADO Live Write
 # re-run of the same workflow run converges, and cleaned up by the leg itself;
 # nothing shared is ever deleted.
 #
-# Dormant until provisioned. It needs vars.ADO_ORG_URL, vars.ADO_PROJECT,
-# vars.ADO_WRITE_REPOSITORY (the scratch repository, never the testbed repo)
+# Active: the scheduled live write leg is provisioned. It needs
+# vars.ADO_ORG_URL, vars.ADO_PROJECT, vars.ADO_WRITE_REPOSITORY
+# (the scratch repository, never the testbed repo)
 # and secrets.ADO_PAT. When any is absent the provisioning check records
 # provisioned=false and emits a notice instead of failing, so the run ends
-# green and the scheduled-failure alarm never files a streak for a leg nobody
-# has provisioned yet. An ADO_WRITE_REPOSITORY equal to the testbed repository
-# (vars.ADO_REPOSITORY, else the project name) fails the check outright, so a
+# green when credentials or fixtures are unavailable. An ADO_WRITE_REPOSITORY
+# equal to the testbed repository (vars.ADO_REPOSITORY, else the project name)
+# fails the check outright, so a
 # mis-set variable can never point the mutating leg at the testbed. Provision
 # the scratch repository's policies once with
 # `go run ./test/adolive provision -apply` (see
-# docs/guides/provider-fixture-drift.md), set the variables, and delete the
-# marker line above once the first run is green.
+# docs/guides/provider-fixture-drift.md) and set the variables.
 #
 # The CI failure evidence scenario (#5652) additionally needs
 # vars.ADO_LIVE_CI_FAILURE_PIPELINE, the build definition
@@ -77,7 +75,7 @@ jobs:
           [ -n "$ADO_WRITE_REPOSITORY" ] || missing="$missing ADO_WRITE_REPOSITORY"
           [ -n "$ADO_PAT" ] || missing="$missing ADO_PAT"
           if [ -n "$missing" ]; then
-            echo "::notice title=ADO live write leg skipped (not provisioned)::Missing:$missing. The leg stays dormant until the scratch repository is provisioned (#5727)."
+            echo "::notice title=ADO live write leg skipped (not provisioned)::Missing:$missing. Configure the required variables and secret to run against the scratch repository."
             echo "provisioned=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

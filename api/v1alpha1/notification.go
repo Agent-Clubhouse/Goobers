@@ -42,6 +42,7 @@ type NotificationEvidenceRef struct {
 }
 
 // NotificationRequest is exact, pre-rendered content for one or more sinks.
+// +kubebuilder:object:generate=false
 type NotificationRequest struct {
 	Schema         string                    `json:"schema"`
 	NotificationID string                    `json:"notificationId"`
@@ -78,6 +79,7 @@ type NotificationSinkRef struct {
 }
 
 // NotificationReceipt durably records one sink attempt or suppression.
+// +kubebuilder:object:generate=false
 type NotificationReceipt struct {
 	Schema            string                     `json:"schema"`
 	NotificationID    string                     `json:"notificationId"`

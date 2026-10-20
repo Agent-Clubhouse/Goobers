@@ -77,6 +77,9 @@ func (m notificationMode) includes(phase journal.RunPhase) bool {
 }
 
 type schedulerSetupOptions struct {
+	recoverGenerationCapacity bool
+	recoverConfigGeneration   string
+
 	desktopNotifications bool
 	notifyOverride       notifyFlag
 	notificationWarnings io.Writer

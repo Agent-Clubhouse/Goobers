@@ -208,6 +208,9 @@ func adoLabelNames(labels []adoLabel) []string {
 // reviewers) so a gate can drive the CI-poll/repass loop against ADO's own
 // policy engine — the source of truth for whether a PR is correct (#772).
 func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
+	if err := p.validatePollScope(req); err != nil {
+		return PullRequestPollResult{}, err
+	}
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestPollResult{}, err
 	}
@@ -222,7 +225,11 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
 		return PullRequestPollResult{}, err
 	}
+	if err := p.validatePolledIdentity(req, pr); err != nil {
+		return PullRequestPollResult{}, err
+	}
 	result := PullRequestPollResult{
+		Mergeable:          adoMergeable(pr.MergeStatus),
 		Number:             pr.PullRequestID,
 		Title:              pr.Title,
 		Author:             adoIdentityName(pr.CreatedBy),
@@ -238,6 +245,9 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
 		URL:                p.pullRequestWebURL(pr.adoPullRequest),
 		Integrity:          apiintegrity.Unapproved,
+	}
+	if pr.Labels != nil {
+		result.Labels = adoLabelNames(pr.Labels)
 	}
 	projectName := pr.Repository.Project.Name
 	if projectName == "" {
@@ -520,7 +530,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		}
 		author := adoIdentityName(pr.CreatedBy)
 		requestedReviewers := adoRequestedReviewerNames(pr.Reviewers)
-		if !req.MatchesIdentityFields(author, nil, requestedReviewers) {
+		if !adoMatchesPullRequestIdentities(req, author, requestedReviewers) {
 			continue
 		}
 		titleMatched, err := req.MatchesTitle(pr.Title)
@@ -543,6 +553,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			}
 		}
 		out = append(out, PullRequestSummary{
+			Mergeable:          adoMergeable(pr.MergeStatus),
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
 			URL:                p.pullRequestWebURL(pr),
@@ -556,8 +567,9 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			Draft:              pr.IsDraft,
 			Labels:             labels,
 			CheckState:         checkState,
-			UpdatedAt:          pr.CreationDate,
-			Integrity:          apiintegrity.Unapproved,
+			// ADO exposes creationDate but no last-update timestamp in its
+			// list response. Leave UpdatedAt unknown instead of inventing one.
+			Integrity: apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -637,6 +649,7 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 }
 
 type adoPullRequest struct {
+	MergeStatus           string        `json:"mergeStatus,omitempty"`
 	PullRequestID         int           `json:"pullRequestId"`
 	URL                   string        `json:"url"`
 	Status                string        `json:"status"`
@@ -673,7 +686,6 @@ type adoPullRequestDetail struct {
 	// "notSet"), LastMergeCommit is the landed commit once MergeStatus is
 	// "succeeded", and AutoCompleteSetBy is present iff auto-complete is
 	// currently armed (nil once ADO clears it — completion or eviction).
-	MergeStatus       string                `json:"mergeStatus,omitempty"`
 	MergeID           string                `json:"mergeId,omitempty"`
 	LastMergeCommit   adoCommitRef          `json:"lastMergeCommit"`
 	CompletionOptions *adoCompletionOptions `json:"completionOptions,omitempty"`
@@ -893,5 +905,20 @@ func adoChangedFileStatus(changeType string) string {
 		return "renamed"
 	default:
 		return "modified"
+	}
+}
+
+// adoMergeable distinguishes a confirmed merge conflict from pending computation
+// and policy/infrastructure failures, which do not prove a textual conflict.
+func adoMergeable(status string) *bool {
+	switch status {
+	case "conflicts":
+		value := false
+		return &value
+	case "succeeded":
+		value := true
+		return &value
+	default:
+		return nil
 	}
 }

@@ -94,6 +94,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"GaggleSpec.Enabled":      {"gaggle.spec.enabled"},
 		"GaggleSpec.Cost":         {"gaggle.spec.cost.enabled"},
 		"GaggleSpec.Health":       {"gaggle.spec.health"},
+		"GaggleSpec.Interactive":  {workflow.FeatureInteractive},
 		"GaggleSpec.Backprop":     {"gaggle.spec.backprop.mode"},
 		"GaggleSpec.SelfIdentity": {"gaggle.spec.selfIdentity"},
 		"GaggleSpec.Project": {

@@ -15,6 +15,7 @@ import type {
   WorkflowGraph,
 } from "../api/types";
 import { newestFirst } from "../chronology";
+import { ContinuationLineagePanel } from "../components/ContinuationLineagePanel";
 import { ChildHistoryPanel } from "../components/ChildHistoryPanel";
 import { ChildActivityPanel } from "../components/ChildActivityPanel";
 import { EscalationPanel } from "../components/EscalationPanel";
@@ -571,48 +572,7 @@ function RunDetailWorkspace({
 
       <ChildActivityPanel activity={run.childActivity} navigate={navigate} />
       <ChildHistoryPanel key={run.id} client={client} runId={run.id} gaggle={run.gaggle} navigate={navigate} />
-      {run.lineage && (
-        <section aria-labelledby="run-lineage-heading" className="run-lineage">
-          <h2 id="run-lineage-heading">Continuation lineage</h2>
-          {run.lineage.source && (
-            <p>
-              Continued from{" "}
-              <button
-                onClick={() => navigate({ page: "run", id: run.lineage!.source!.id })}
-                type="button"
-              >
-                {shortenIdentifier(run.lineage.source.id)}
-              </button>{" "}
-              ({run.lineage.source.phase ?? "status unavailable"}) at{" "}
-              <strong>{run.lineage.resumeTarget}</strong>
-              {run.lineage.workspaceBranch ? ` on ${run.lineage.workspaceBranch}` : ""}. Historical
-              repasses: {run.lineage.historicalRepassCount}.
-            </p>
-          )}
-          {(run.lineage.injectedInputs?.length ?? 0) > 0 && (
-            <p>
-              Injected input: {run.lineage.injectedInputs!.map((input) => input.name).join(", ")}
-            </p>
-          )}
-          {(run.lineage.continuations?.length ?? 0) > 0 && (
-            <p>
-              Continued by{" "}
-              {run.lineage.continuations!.map((continuation, index) => (
-                <span key={continuation.id}>
-                  {index > 0 ? ", " : ""}
-                  <button
-                    onClick={() => navigate({ page: "run", id: continuation.id })}
-                    type="button"
-                  >
-                    {shortenIdentifier(continuation.id)}
-                  </button>{" "}
-                  ({continuation.phase ?? "status unavailable"})
-                </span>
-              ))}
-            </p>
-          )}
-        </section>
-      )}
+      {run.lineage && <ContinuationLineagePanel key={run.id} client={client} runId={run.id} lineage={run.lineage} navigate={navigate} />}
 
       {run.stale && (
         <div className="run-stale-state run-stale-run" role="status">

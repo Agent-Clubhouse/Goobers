@@ -272,9 +272,9 @@ func TestRunTelemetryNilDBIsNoOp(t *testing.T) {
 	ingest.RunTelemetry(nil, nil, nil, instance.NewLayout(t.TempDir()), "run-no-db", nil)
 }
 
-// TestSchedulerTelemetryLogsForcedFailure asserts the scheduler-side refresh
+// TestSchedulerLogLogsForcedFailure asserts the scheduler-side refresh
 // keeps the same best-effort-but-never-silent contract as the run-side ingest.
-func TestSchedulerTelemetryLogsForcedFailure(t *testing.T) {
+func TestSchedulerLogLogsForcedFailure(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
 
@@ -292,7 +292,7 @@ func TestSchedulerTelemetryLogsForcedFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = log.Close() })
 
-	ingest.SchedulerTelemetry(context.Background(), nil, db, l.SchedulerDir(), log)
+	ingest.SchedulerLog(db, l.SchedulerDir(), log, "")
 
 	events, err := journal.ReadInstanceLog(l.SchedulerDir())
 	if err != nil {
@@ -308,10 +308,6 @@ func TestSchedulerTelemetryLogsForcedFailure(t *testing.T) {
 	if !found {
 		t.Fatalf("expected a telemetry_ingest_scheduler_log_failed event, got: %+v", events)
 	}
-}
-
-func TestSchedulerTelemetryNilDBIsNoOp(t *testing.T) {
-	ingest.SchedulerTelemetry(context.Background(), nil, nil, t.TempDir(), nil)
 }
 
 func TestCoalescedIntakeFailureRemainsVisibleAndRepairable(t *testing.T) {

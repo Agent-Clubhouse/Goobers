@@ -37,6 +37,7 @@ func copilotSessionPermissions(req RunRequest, permissionRoots []string) copilot
 }
 
 type copilotPermissionDetail struct {
+	FullCommandText      string            `json:"fullCommandText"`
 	Path                 string            `json:"path"`
 	FileName             string            `json:"fileName"`
 	ServerName           string            `json:"serverName"`
@@ -61,6 +62,9 @@ func copilotPermissionAllowed(kind rpc.PermissionRequestKind, detail copilotPerm
 	case rpc.PermissionRequestKindWrite:
 		return hasAnyCopilotTool(available, "create", "edit", "str_replace_editor", "apply_patch") && copilotPermissionPathInRoots(workspace, detail.FileName, permissionRoots)
 	case rpc.PermissionRequestKindShell:
+		if strings.TrimSpace(detail.FullCommandText) == "" || copilotUnsafeShellCommand(detail.FullCommandText) {
+			return false
+		}
 		if !hasAnyCopilotTool(available, "bash", "powershell") || len(detail.PossibleURLs) > 0 {
 			return false
 		}

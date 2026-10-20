@@ -117,15 +117,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          previous_tag=""
-          release_commit="$(git rev-list --parents -n 1 "$TAG")"
-          if [[ "$release_commit" == *" "* ]]; then
-            previous_tag="$(
-              git tag --merged "$TAG^" --sort=-version:refname --list "v*" |
-                grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' |
-                head -n 1 || true
-            )"
-          fi
+          previous_tag="$(go run ./release/notes -tag "$TAG" -print-baseline)"
 
           if [[ -z "$previous_tag" ]]; then
             echo "first=true" >> "$GITHUB_OUTPUT"

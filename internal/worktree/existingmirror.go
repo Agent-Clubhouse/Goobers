@@ -20,7 +20,9 @@ func (m *Manager) WithExistingMirror(ctx context.Context, repoURL string, visit 
 	}
 	key := repoKey(repoURL)
 	lock := m.lockFor(key)
-	lock.Lock()
+	if err := lockWithContext(ctx, lock); err != nil {
+		return false, err
+	}
 	defer lock.Unlock()
 	return m.withExistingMirrorLocked(ctx, key, visit)
 }

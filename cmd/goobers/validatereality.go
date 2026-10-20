@@ -330,7 +330,7 @@ func appendPlacementFindings(
 	}
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
-		if !inventoryDeclared && wf.DSLVersion != supportmatrix.V3DSLVersion {
+		if !inventoryDeclared && wf.DSLVersion != supportmatrix.V3DSLVersion && wf.DSLVersion != supportmatrix.V31DSLVersion {
 			continue
 		}
 		requirements, err := workflow.IsolationStagePlacements(workflow.Definition{

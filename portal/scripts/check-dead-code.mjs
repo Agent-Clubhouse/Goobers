@@ -57,7 +57,13 @@ const exemptions = [
     symbol: "e2e/real-daemon.mjs",
     reason: "Playwright real-dashboard web-server entry point invoked from playwright.config.ts.",
   },
-  ...["interactive-server.mjs", "interactive.acceptance.ts", "interactive.config.ts", "interactive-auth.ts"].map(name => ({
+  {
+    type: "files",
+    file: "e2e/interactive-auth.ts",
+    symbol: "e2e/interactive-auth.ts",
+    reason: "Human-auth fixture helper imported by the standalone interactive.config.ts and interactive.acceptance.ts qualification suite.",
+  },
+  ...["interactive-server.mjs", "interactive.acceptance.ts", "interactive.config.ts"].map(name => ({
     type: "files",
     file: `e2e/${name}`,
     symbol: `e2e/${name}`,

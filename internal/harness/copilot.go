@@ -678,6 +678,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			// export opt-out as a stage. A v2 launcher's declared probe starts no
 			// agent session and receives its arguments exactly as declared.
 			authCommand = withCopilotNoRemoteExport(authCommand)
+			authCommand = withCopilotHostSafety(authCommand)
 		}
 		sessionTranscript := ""
 		sessionCleanup := func() {}
@@ -1160,6 +1161,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	argv = append(argv, extra...)
 	argv = withCopilotNoRemoteExport(argv)
+	argv = withCopilotHostSafety(argv)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
 			argv = append(argv, copilotGitHubMCPRegistrationArg(req.Envelope.Capabilities))

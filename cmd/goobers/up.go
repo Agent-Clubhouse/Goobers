@@ -290,7 +290,7 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
-const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--recover-config-generation digest] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
 	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
 	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
 	"listener (default path \".\"). Blocks\n" +
@@ -309,7 +309,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"startup after reporting each candidate.\n\n" +
 	"Startup validates the resolved instance config and refuses to run on\n" +
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
-	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
+	"--recover-config-generation selects and restores a retained applied catalog\n" +
+	"by digest after strict verification. The live candidate stays rejected;\n" +
+	"this does not overwrite source files or bypass retained permission checks.\n" +
+	"--skip-preflight does not skip the harness admission preflight: a workflow whose agentic\n" +
 	"stage needs a harness that fails its startup check is still refused, while\n" +
 	"other workflows keep running. A check that failed only because the model\n" +
 	"provider was rate limiting or unreachable is re-run with backoff, and the\n" +
@@ -400,15 +403,16 @@ type upSession struct {
 }
 
 type upOptions struct {
-	cleanupSpansOnlyRuns  *bool
-	diagnostics           *bool
-	disableReadModelReads *bool
-	drainTimeout          *time.Duration
-	notifications         notifyFlag
-	quiet                 *bool
-	root                  string
-	skipPreflight         *bool
-	watchConfig           *bool
+	cleanupSpansOnlyRuns    *bool
+	diagnostics             *bool
+	disableReadModelReads   *bool
+	drainTimeout            *time.Duration
+	notifications           notifyFlag
+	quiet                   *bool
+	root                    string
+	skipPreflight           *bool
+	recoverConfigGeneration *string
+	watchConfig             *bool
 }
 
 // upReadiness exposes named startup milestones on /readyz (#3806). The phases
@@ -538,6 +542,7 @@ type upWorkers struct {
 	templateChecksDone                 <-chan struct{}
 	templateNotices                    <-chan updateCheckResult
 	terminalCleanupRetryDone           <-chan struct{}
+	terminalReportRetryDone            <-chan struct{}
 	updateCheckDone                    <-chan struct{}
 	updateNotices                      <-chan updateCheckResult
 	worktreeRetentionTickerDone        chan struct{}
@@ -596,6 +601,7 @@ func (u *upSession) configure() int {
 
 	fs.Var(&u.notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	u.skipPreflight = fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
+	u.recoverConfigGeneration = fs.String("recover-config-generation", "", "restore a verified retained applied catalog by digest; leave live candidate rejected")
 	u.cleanupSpansOnlyRuns = fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
 	u.disableReadModelReads = fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force authoritative journal scans for this run")
 	if err := fs.Parse(u.args); err != nil {
@@ -756,6 +762,10 @@ func (u *upSession) prepare() int {
 	u.claimRecoveryGate = localscheduler.NewRecoveryGate()
 	var setupOptions []schedulerSetupOption
 	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate, u.tracker)
+	setupOptions = append(setupOptions, func(options *schedulerSetupOptions) {
+		options.recoverGenerationCapacity = true
+		options.recoverConfigGeneration = *u.recoverConfigGeneration
+	})
 	buildSetup := buildSchedulerSetup
 	if *u.skipPreflight {
 		buildSetup = buildSchedulerSetupAllowingInvalidConfig
@@ -771,6 +781,9 @@ func (u *upSession) prepare() int {
 		})
 	}
 	pf(u.stdout, "startup: scheduler initialized\n")
+	if u.setup.CapacityRejection != "" {
+		pf(u.stderr, "warning: %s; serving verified retained generation %s\n", u.setup.CapacityRejection, u.setup.ExecutionGeneration)
+	}
 	// #4070: say, every start, whether one stage's memory is bounded. Stage
 	// subprocesses share this daemon's memory cgroup, so an unbounded stage
 	// can OOM-kill the control plane and take every in-flight run with it —
@@ -1626,6 +1639,14 @@ func (u *upSession) startScheduler() int {
 		digests:        u.configDigests,
 		gaggleHealth:   u.gaggleHealth,
 	}
+	if u.setup.CapacityRejection != "" {
+		u.reloader.retentionRejected = true
+		u.reloader.observedDigest = u.setup.CandidateConfigDigest
+		if err := u.reloader.reject(u.setup.CandidateConfigDigest, errors.New(u.setup.CapacityRejection)); err != nil {
+			pf(u.stderr, "error: record rejected startup candidate: %v\n", err)
+			return 1
+		}
+	}
 	// The workflow mutation service was built above so the HTTP handler could
 	// register the surface before the reloader existed. Now that it does,
 	// attach it so subsequent SetWorkflowEnabled calls can drive on-demand
@@ -2059,6 +2080,7 @@ func (u *upSession) readyForWork() int {
 	terminalCleanupRetryCtx, u.stopTerminalCleanupRetry = context.WithCancel(context.Background())
 	defer u.stopTerminalCleanupRetry()
 	u.terminalCleanupRetryDone = startTerminalCleanupRetry(terminalCleanupRetryCtx, u.cleanupRetries, u.terminalCleanupRetryErrors, u.readyNow)
+	u.terminalReportRetryDone = startTerminalReportRetry(u.ctx, u.l, u.setup.SharedRegistry, u.setup.SecretStores, u.setup.InstanceLog, u.readyNow)
 	u.startupTerminalFinalize = startStartupTerminalFinalize(u.ctx, u.setup, u.resumeResult.Terminal)
 	u.startupMergedPRCostSweepDone = u.mergedPRCostSweeps.startDeferred(u.ctx, u.readyNow)
 	pf(u.stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", u.root, len(u.setup.Entries), u.apiServer.Scheme(), u.apiServer.Address(), httpapi.Prefix)
@@ -2225,6 +2247,9 @@ func (u *upSession) finish() int {
 	u.stopTerminalCleanupRetry()
 	u.startupTerminalFinalize.finishAfterDrain()
 	<-u.terminalCleanupRetryDone
+	if u.terminalReportRetryDone != nil {
+		<-u.terminalReportRetryDone
+	}
 	runTerminalCleanupRetryFinal(u.cleanupRetries, u.terminalCleanupRetryErrors, u.readyNow)
 	if !drainResult.forced {
 		pln(u.stdout, "shutdown complete: all runs drained")
@@ -2506,12 +2531,16 @@ func daemonMemoryGate(rc instance.RunConditions) localscheduler.MemoryGate {
 	return localscheduler.NewCgroupMemoryGate(highWater)
 }
 
-// newDaemonStorageGate builds tiered low-disk protection's gate for the
+// newDaemonStorageGate is a construction seam so daemon tests can disable
+// disk admission without changing production configuration or defaults.
+var newDaemonStorageGate = buildDaemonStorageGate
+
+// buildDaemonStorageGate builds tiered low-disk protection's gate for the
 // filesystem containing root (#4873), resolving thresholds the same way
 // `goobers status` and the Instance API report them — see
 // instance.RunConditions.ResolveStorageThresholds — so every consumer agrees
 // on the effective floors without re-deriving the defaulting rule.
-func newDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.StorageGate, instance.StorageThresholds) {
+func buildDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.StorageGate, instance.StorageThresholds) {
 	thresholds := cfg.RunConditions.ResolveStorageThresholds(cfg.Retention.RecoveryEffective())
 	gate := localscheduler.NewStorageGate(root,
 		thresholds.WarningFloorBytes, thresholds.WarningFloorPercent,
