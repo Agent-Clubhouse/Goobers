@@ -655,7 +655,7 @@ deliberately leaves to implementation:
 ### 10.1 Graduation review status (v0.6.0 preparation)
 
 The graduation process and scope are recorded in
-[DSL lifecycle §3.3.2](./dsl-version-lifecycle.md#3332-graduation-from-preview-to-supported).
+[DSL lifecycle §3.3.2](./dsl-version-lifecycle.md#332-graduation-from-preview-to-supported).
 The provider access layer (#5749–#5754, milestone #38) is **DSL 3.x** roadmap work,
 not part of this 3.0 freeze. This status records source evidence, not a claim that
 all §9 smoke acceptance criteria have passed.
