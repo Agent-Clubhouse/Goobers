@@ -682,6 +682,22 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			windowsBatch: true,
 			group:        groupChecks,
 		},
+		// Match make generate's pinned object generator, then fail on drift.
+		check{
+			label:   "deepcopy-generate",
+			command: tools.goCommand,
+			args: []string{
+				"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+				"object", "paths=./api/v1alpha1/...",
+			},
+			group: groupChecks,
+		},
+		check{
+			label:   "deepcopy-diff",
+			command: tools.gitCommand,
+			args:    []string{"diff", "--exit-code", "--", "api/v1alpha1/zz_generated.deepcopy.go"},
+			group:   groupChecks,
+		},
 		// The CRD manifests are a published contract — a field present in the
 		// Go API types but absent from config/crd/bases is a contract that
 		// silently lies about the DSL, and the manifests have drifted before

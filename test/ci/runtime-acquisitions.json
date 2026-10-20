@@ -139,6 +139,7 @@
       "build-operator:go-modules",
       "build-scheduler:go-modules",
       "complexity:go-modules",
+      "deepcopy-generate:go-modules",
       "design-doc-status:go-modules",
       "flake-policy:go-modules",
       "go-toolchain:go-modules",
