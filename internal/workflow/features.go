@@ -182,14 +182,15 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 // the set of pins their workflows declare, and a scoped feature must be
 // supported at every pin present (docs/design/dsl-version-lifecycle.md §8.4).
 //
-// An empty input — a gaggle or goober with no workflows — resolves at the
-// newest LevelSupported version from the support matrix, never as an unpinned
-// Definition{}. The version router rewrites an unpinned probe to
-// V1DSLVersion, which is deprecated; the moment it turns unsupported,
-// every workflow-less object would fail validation with a migrate-your-pin
-// error its author cannot act on, because those specs deliberately have no
-// dslVersion field to edit (#3297).
+// An empty input uses the oldest still-supported DSL as a compatibility
+// baseline. Graduating a new major must not invalidate legacy gaggle fields
+// on objects whose authors have no workflow pin to migrate. Once the baseline
+// leaves supported, these objects need its successor's vocabulary (§8.4).
 func FeatureDefinitionsByDSLVersion(definitions []Definition) []Definition {
+	return featureDefinitionsByDSLVersion(definitions, supportmatrix.GetDSL())
+}
+
+func featureDefinitionsByDSLVersion(definitions []Definition, matrix supportmatrix.SupportMatrix) []Definition {
 	byVersion := map[string]Definition{}
 	for _, definition := range definitions {
 		byVersion[definition.DSLVersion] = Definition{
@@ -197,7 +198,7 @@ func FeatureDefinitionsByDSLVersion(definitions []Definition) []Definition {
 		}
 	}
 	if len(byVersion) == 0 {
-		version, ok := supportmatrix.GetDSL().NewestSupported()
+		version, ok := matrix.OldestSupported()
 		if !ok {
 			// No supported version declared at all — a matrix state the support
 			// policy rejects. Fall back to the transitional default rather than

@@ -77,6 +77,7 @@ type ProjectOption func(*projectConfig)
 
 type projectConfig struct {
 	spanSource SpanSource
+	replaceRun func(string, string, func() (bool, error)) (bool, error)
 }
 
 // WithSpanSource configures ProjectRun to adopt recorded spans (harness
@@ -120,7 +121,8 @@ func (c *projectionClock) now() time.Time {
 // the local runner uses — layout, digests, scrubbing, and durability come
 // from internal/journal, so there is no engine-specific journal dialect.
 // It fails closed (ErrUnprojectable) on anything it does not recognize.
-// Returns the run directory.
+// Returns the run directory, including when publication succeeded but a later
+// durability or cleanup step failed. Callers must still handle the error.
 //
 // opts is additive: WithSpanSource lets a caller that has a fleet-wide blob
 // store adopt recorded spans (harness transcripts) by digest. Without it, a
@@ -132,7 +134,7 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 	if err := validateProjection(proj); err != nil {
 		return "", err
 	}
-	cfg := &projectConfig{}
+	cfg := &projectConfig{replaceRun: journal.ReplaceRun}
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -176,7 +178,7 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 	// acknowledged emits in unlinked inodes), and the completeness recheck
 	// happens under those locks, so a journal another owner finished while we
 	// staged is kept, never clobbered.
-	replaced, err := journal.ReplaceRun(finalDir, projectedDir, func() (bool, error) {
+	replaced, err := cfg.replaceRun(finalDir, projectedDir, func() (bool, error) {
 		if !journal.Recorded(finalDir) {
 			return false, nil
 		}
@@ -187,6 +189,9 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 		return complete, nil
 	})
 	if err != nil {
+		if replaced {
+			return finalDir, fmt.Errorf("engine: projected journal for run %q was published at %s but finalization failed: %w", proj.Identity.RunID, finalDir, err)
+		}
 		return "", fmt.Errorf("engine: publish projected journal for run %q: %w", proj.Identity.RunID, err)
 	}
 	if !replaced {
@@ -196,7 +201,7 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 		return finalDir, nil
 	}
 	if err := durability.SyncDir(runsDir); err != nil {
-		return "", fmt.Errorf("engine: sync projected runs directory: %w", err)
+		return finalDir, fmt.Errorf("engine: sync published projected runs directory %s: %w", runsDir, err)
 	}
 	return finalDir, nil
 }

@@ -491,7 +491,11 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 	"unchanged head turns pending; exit 0 (this\n" +
 	"cycle's work is simply moot, not an error — merge-review re-reviews\n" +
 	"next tick). Requires selectedNumber, selectedHeadSha, and\n" +
-	"selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or\n" +
+	"selectedBaseSha from Task.InputsFrom. Every published verdict carries\n" +
+	"standingFindings: the findings earlier reviews raised on the same head\n" +
+	"that no verdict answered in its dispositions (resolved with evidence,\n" +
+	"or rejected with a reason). A pass that leaves one standing is\n" +
+	"published as needs-changes (#5890). Exit codes: 0 = applied (or\n" +
 	"voided), 1 = business error, 2 = usage/IO error.\n"
 
 // runApplyVerdict implements `goobers apply-verdict` (issue #359): reads the
@@ -589,6 +593,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	var publication verdictPublication
+	// A local-only advisory never commits a verdict. Keep it independent of
+	// ledger availability; publishing paths still capture before live checks.
+	if !selectedPR.Advisory || publishAdvisory {
+		publication, err = beginVerdictPublication(root, repo, selectedNumber)
+		if err != nil {
+			return failProviderStage(stderr, "capture verdict predecessor", err, resultFile)
+		}
+	}
 	if selectedPR.Advisory {
 		if !providerRouted {
 			pf(stderr, "error: apply-verdict advisory mode is not supported for repository provider %q\n", repo.Provider)
@@ -596,7 +609,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 		return applyAdvisoryVerdict(
 			ctx, root, prProvider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
-			*verdict, runID, resultFile, publishAdvisory, stdout, stderr,
+			*verdict, publication, runID, resultFile, publishAdvisory, stdout, stderr,
 		)
 	}
 
@@ -698,7 +711,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			// *issue* comments and submit a native review, neither of which exists
 			// on ADO, so the ADO path returns here.
 			if adoProvider, ok := provider.(*providers.ADOProvider); ok {
-				return publishADONonPassVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+				return publishADOReviewedVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, publication, resultFile, stdout, stderr)
 			}
 			pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 			return 1
@@ -730,7 +743,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// bridge (they return before reaching here); this gate is reached on ADO
 		// only for a PASS.
 		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
-			return publishADOPassVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+			return publishADOReviewedVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, publication, resultFile, stdout, stderr)
 		}
 		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 		return 1
@@ -828,34 +841,23 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	priorHistory, err := findingSetHistoryFromComments(statusComments, verdictAuthor)
 	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("read finding-set history for PR #%d", selectedNumber), err, resultFile)
+		return failProviderStage(stderr, "read finding-set history", err, resultFile)
 	}
-	history, findingHash, revisited, err := advanceFindingSetHistory(priorHistory, posted.Findings)
+	legacy, err := verdictRecordsForPR("", repo, selectedNumber, statusComments, verdictAuthor)
 	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("hash finding set for PR #%d", selectedNumber), err, resultFile)
+		return failProviderStage(stderr, "read legacy verdicts", err, resultFile)
 	}
-	oscillated := revisited &&
-		posted.Decision == apiv1.VerdictNeedsChanges &&
-		verdictLabel(posted.Decision, effective.Findings) == needsRemediationLabel
-	if oscillated {
-		reason := fmt.Sprintf(
-			"Finding-set oscillation detected: `%s` matches an earlier merge-review state. Remediation returned to a prior unresolved finding set, so this PR is escalated instead of spending the remaining repass budget.",
-			findingHash,
-		)
-		posted.Decision = apiv1.VerdictEscalate
-		posted.ReasonCode = apiv1.VerdictReasonFindingOscillation
-		posted.Elected = false
-		if posted.Rationale == "" {
-			posted.Rationale = reason
-		} else {
-			posted.Rationale += "\n\n" + reason
-		}
-	}
-
-	comment, err := prepareVerdictComment(root, repo, selectedNumber, posted, providerInput("scopeGateParked", "") == "true")
+	var history findingSetHistory
+	posted, err = publication.commit(posted, legacy, func(folded apiv1.Verdict) (apiv1.Verdict, error) {
+		var finalizeErr error
+		folded, history, finalizeErr = finalizeFindingHistory(priorHistory, folded)
+		return folded, finalizeErr
+	}, stdout)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("prepare verdict for PR #%d", selectedNumber), err, resultFile)
 	}
+	effective = posted
+	comment := renderScopeGateStateComment(renderVerdictComment(posted), providerInput("scopeGateParked", "") == "true")
 	historyPayload, err := findingSetHistoryComment(history)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("render finding-set history for PR #%d", selectedNumber), err, resultFile)
@@ -1031,6 +1033,7 @@ func applyAdvisoryVerdict(
 	selectedNumber int,
 	selectedNumberStr, selectedHeadSHA, selectedBaseSHA string,
 	verdict apiv1.Verdict,
+	publication verdictPublication,
 	runID, resultFile string, publishAdvisory bool,
 	stdout, stderr io.Writer,
 ) int {
@@ -1070,21 +1073,26 @@ func applyAdvisoryVerdict(
 	if verdict.SourceRunID == "" {
 		verdict.SourceRunID = runID
 	}
-	// Authoritative KV write BEFORE the sticky status comment (Goobers#3025/
-	// #5030) — see publishADOPassVerdict's identical ordering rationale.
-	if root != "" {
-		if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
-		}
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
+	}
+	comments, err := provider.ListComments(ctx, repo, selectedNumberStr)
+	if err != nil {
+		return failProviderStage(stderr, "read earlier advisory verdicts", err, resultFile)
+	}
+	legacy, err := verdictRecordsForPR("", repo, selectedNumber, comments, verdictAuthor)
+	if err != nil {
+		return failProviderStage(stderr, "read legacy verdicts", err, resultFile)
+	}
+	verdict, err = publication.commit(verdict, legacy, nil, stdout)
+	if err != nil {
+		return failProviderStage(stderr, "commit advisory verdict", err, resultFile)
 	}
 	comment := renderScopeGateStateComment(
 		renderVerdictComment(verdict),
 		providerInput("scopeGateParked", "") == "true",
 	)
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
-	}
 	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post advisory verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
@@ -1130,8 +1138,13 @@ func markMergeReviewVerdictStale(ctx context.Context, provider remediationProvid
 	body := fmt.Sprintf(
 		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer stands: %s.\n\n"+
 			"No current review stands. merge-review will re-review this PR on its next cycle; "+
-			"findings from the superseded review may already be resolved and should not be acted on.",
+			"unresolved findings remain evidence on their recorded head until explicitly resolved or rejected.",
 		mergeReviewStatusMarker, reason)
+	// With no migrated state, this payload may be the only evidence of a
+	// same-head finding. Staling review authority cannot dispose of findings.
+	if payload := verdictJSONPattern.FindString(marked[0].Body); payload != "" {
+		body += "\n\n" + payload
+	}
 	if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
 		return fmt.Errorf("update merge-review status comment: %w", err)
 	}
@@ -1759,17 +1772,8 @@ func publishADOPassVerdict(
 	// SHA-pin the published verdict to the reviewed state so merge-pr only
 	// trusts it while the PR is still at that exact head/base, mirroring the
 	// non-pass path and the GitHub sticky comment's pin.
-	verdict.Decision = apiv1.VerdictPass
 	verdict.HeadSHA = current.HeadSHA
 	verdict.BaseSHA = current.BaseSHA
-	// Authoritative KV write BEFORE the PR-thread comment (Goobers#3025/#5030):
-	// the comment is a best-effort projection ADO cannot edit in place, so it
-	// must never be the value gather-pr-context's read depends on.
-	if root != "" {
-		if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
-		}
-	}
 	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderADOVerdictThreadComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
@@ -1892,13 +1896,6 @@ func publishADONonPassVerdict(
 	// back from the thread, mirroring the GitHub path's posted.HeadSHA/BaseSHA.
 	verdict.HeadSHA = current.HeadSHA
 	verdict.BaseSHA = current.BaseSHA
-	// Authoritative KV write BEFORE the PR-thread comment (Goobers#3025/#5030) —
-	// see publishADOPassVerdict's identical ordering rationale.
-	if root != "" {
-		if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
-		}
-	}
 	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderADOVerdictThreadComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
@@ -2025,6 +2022,7 @@ func renderVerdictComment(v apiv1.Verdict) string {
 		}
 		s += line
 	}
+	s += renderFindingDispositions(v)
 	if payload, err := verdictJSONComment(v); err == nil {
 		s += "\n\n" + payload
 	}

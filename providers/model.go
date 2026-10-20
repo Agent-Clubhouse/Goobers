@@ -1326,6 +1326,8 @@ func (r ListPullRequestsRequest) MatchesSummary(pr PullRequestSummary) (bool, er
 // per candidate. ListPullRequests returns open PRs; bounded terminal-PR queries
 // also populate State and Merged for consumers that need current sibling state.
 type PullRequestSummary struct {
+	// Mergeable is nil while the forge has not computed mergeability.
+	Mergeable          *bool    `json:"mergeable,omitempty"`
 	ID                 string   `json:"id"`
 	Number             int      `json:"number"`
 	URL                string   `json:"url"`

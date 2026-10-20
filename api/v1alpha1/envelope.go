@@ -1,6 +1,9 @@
 package v1alpha1
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // This file defines the V0 stage contract: the three canonical wire envelopes
 // every stage executor and the runner exchange at runtime. They are plain Go
@@ -623,6 +626,69 @@ type Verdict struct {
 	// refuses to land it, so GitHub's native merge queue can never crown a
 	// cluster member on its own.
 	Elected bool `json:"elected,omitempty"`
+	// Dispositions answer findings an earlier verdict raised on the same PR
+	// head (#5890). PR-altitude only. A finding an earlier non-pass verdict
+	// raised on a head stays outstanding until a later verdict dispositions
+	// it here; a later verdict that is silent about it does not clear it.
+	// apply-verdict carries the dispositions of earlier verdicts on the same
+	// head forward, so the newest published record holds them all.
+	Dispositions []FindingDisposition `json:"dispositions,omitempty"`
+	// LedgerGeneration is allocated by the authoritative publication transaction.
+	// Reviewer input cannot choose it; zero identifies a legacy record.
+	LedgerGeneration uint64 `json:"ledgerGeneration,omitempty"`
+	// StandingFindings is the ledger apply-verdict writes on every published
+	// record (#5890): the findings earlier verdicts raised on this head that
+	// no verdict has dispositioned, apart from the ones this verdict raises
+	// itself. Runner-owned: a reviewer's value is replaced. It is kept apart
+	// from Findings so that every decision, a terminal fail or a
+	// runner-synthesized verdict included, can carry it without changing
+	// what that decision means.
+	StandingFindings []Finding `json:"standingFindings,omitempty"`
+}
+
+// FindingDispositionOutcome is how a later review answers an earlier
+// finding on the same head and base (#5890).
+type FindingDispositionOutcome string
+
+const (
+	// FindingResolved means the reviewed diff already addresses the finding.
+	// Evidence names where.
+	FindingResolved FindingDispositionOutcome = "resolved"
+	// FindingRejected means the finding does not hold. Reason says why.
+	FindingRejected FindingDispositionOutcome = "rejected"
+)
+
+// FindingDisposition is one explicit answer to an earlier finding (#5890).
+// A resolution needs evidence and a rejection needs a reason; a disposition
+// without them answers nothing and is ignored.
+type FindingDisposition struct {
+	// FindingID is the id of the finding being answered, copied verbatim.
+	FindingID string `json:"findingId"`
+	// FindingGeneration names the exact instance being answered. Copy the
+	// standing finding's ledgerGeneration; zero answers only legacy findings.
+	FindingGeneration uint64 `json:"findingGeneration,omitempty"`
+	// Outcome is resolved or rejected.
+	Outcome FindingDispositionOutcome `json:"outcome"`
+	// Evidence locates where the reviewed diff addresses the finding.
+	// Required for resolved.
+	Evidence string `json:"evidence,omitempty"`
+	// Reason explains why the finding does not hold. Required for rejected.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Answers reports whether d is a complete disposition: a known outcome
+// with the evidence or reason that outcome requires.
+func (d FindingDisposition) Answers() bool {
+	if strings.TrimSpace(d.FindingID) == "" {
+		return false
+	}
+	switch d.Outcome {
+	case FindingResolved:
+		return strings.TrimSpace(d.Evidence) != ""
+	case FindingRejected:
+		return strings.TrimSpace(d.Reason) != ""
+	}
+	return false
 }
 
 // Finding is a single issue raised by an evaluator.
@@ -631,6 +697,9 @@ type Finding struct {
 	// copy it from an injected learning episode when the same finding remains
 	// unresolved; the runner assigns one on the first occurrence.
 	ID string `json:"id,omitempty"`
+	// LedgerGeneration identifies this finding instance. The runner assigns it
+	// on publication and preserves it while an unchanged finding stays open.
+	LedgerGeneration uint64 `json:"ledgerGeneration,omitempty"`
 	// LearningSignature is the normalized cross-run clustering key. The
 	// runner derives one when absent.
 	LearningSignature string `json:"learningSignature,omitempty"`

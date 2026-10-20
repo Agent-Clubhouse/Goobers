@@ -147,6 +147,7 @@ func (c commentClassifier) origin(comment providers.Comment) commentOrigin {
 // remediation and merge-demotion state, sibling and escalation records, the
 // issue-spec pin and the post-merge handoff.
 var goobersBookkeepingPayloads = []string{
+	prSelectConflictMarker,
 	"<!-- verdict-json: ",
 	"<!-- finding-set-history: ",
 	"<!-- remediation-state: ",

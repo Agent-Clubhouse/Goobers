@@ -1,10 +1,58 @@
 package journal
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestPublishedReplacementSurvivesFinalizationErrors(t *testing.T) {
+	for _, step := range []string{"sync", "cleanup"} {
+		t.Run(step, func(t *testing.T) {
+			runsDir := t.TempDir()
+			finalDir := recordedRun(t, runsDir, testIdentity(), "original journal")
+			backupDir, err := stashSupersededRun(finalDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stagedDir := recordedRun(t, t.TempDir(), testIdentity(), "replacement journal")
+			if err := os.Rename(stagedDir, finalDir); err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("injected " + step + " failure")
+			syncDir := func(path string) error {
+				if path != runsDir {
+					t.Fatalf("synced %q, want %q", path, runsDir)
+				}
+				if step == "sync" {
+					return failure
+				}
+				return nil
+			}
+			removeAll := func(path string) error {
+				if step == "sync" {
+					t.Fatal("removed backup before publication durability was confirmed")
+				}
+				if path != filepath.Dir(backupDir) {
+					t.Fatalf("removed %q, want backup container", path)
+				}
+				return failure
+			}
+			published, err := finishRunReplacement(finalDir, backupDir, syncDir, removeAll)
+			if !published || !errors.Is(err, failure) || !strings.Contains(err.Error(), backupDir) {
+				t.Fatalf("publication finalization = %v, %v", published, err)
+			}
+			if got := readRunInput(t, finalDir); got != "replacement journal" {
+				t.Fatalf("published directory = %q", got)
+			}
+			if got := readRunInput(t, backupDir); got != "original journal" {
+				t.Fatalf("retained backup = %q", got)
+			}
+		})
+	}
+}
 
 // recordedRun creates and closes a run journal under a fresh runs directory,
 // returning the published run directory.

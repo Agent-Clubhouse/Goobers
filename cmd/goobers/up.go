@@ -2506,12 +2506,16 @@ func daemonMemoryGate(rc instance.RunConditions) localscheduler.MemoryGate {
 	return localscheduler.NewCgroupMemoryGate(highWater)
 }
 
-// newDaemonStorageGate builds tiered low-disk protection's gate for the
+// newDaemonStorageGate is a construction seam so daemon tests can disable
+// disk admission without changing production configuration or defaults.
+var newDaemonStorageGate = buildDaemonStorageGate
+
+// buildDaemonStorageGate builds tiered low-disk protection's gate for the
 // filesystem containing root (#4873), resolving thresholds the same way
 // `goobers status` and the Instance API report them — see
 // instance.RunConditions.ResolveStorageThresholds — so every consumer agrees
 // on the effective floors without re-deriving the defaulting rule.
-func newDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.StorageGate, instance.StorageThresholds) {
+func buildDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.StorageGate, instance.StorageThresholds) {
 	thresholds := cfg.RunConditions.ResolveStorageThresholds(cfg.Retention.RecoveryEffective())
 	gate := localscheduler.NewStorageGate(root,
 		thresholds.WarningFloorBytes, thresholds.WarningFloorPercent,

@@ -1,5 +1,11 @@
 # Child workflow admission internals (preview)
 
+The proposed [trusted-local extension](../design/trusted-local-child-workflows.md)
+adds an explicitly selected host-process backend for self-only instances. Its
+credential ceiling and workspace custody contract match contained execution;
+its trust boundary is the daemon user's OS account. Local implementation and
+qualification are pending; the historical slices below describe delivered work.
+
 Child execution is not enabled by this slice. Public runner and engine entry
 points still refuse workflows containing opted-in child stages. Offline
 `goobers workflow validate-child` remains the usable authoring preview.
@@ -139,8 +145,10 @@ The tool and local disposition do not implement delegated PR publication.
 Daemon startup connects the retained child launcher to the existing Temporal
 worker transport when a shared pod signing key, Temporal client, surrender store
 and live journal writer are available. Missing dependencies leave accepted work
-queued. The backend requires pinned Linux image runner placement; it never
-substitutes an executor on the daemon host. Public opt-in remains gated pending
+queued. The contained backend requires pinned Linux image runner placement and
+does not fall back to host execution. The proposed trusted-local provider is
+selected separately by self-only instance configuration, without extra flags.
+Public opt-in remains gated pending
 the complete supported parent/child journey below.
 
 Each physical attempt receives a separately signed generated-child identity

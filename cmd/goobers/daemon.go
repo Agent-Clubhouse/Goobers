@@ -144,8 +144,10 @@ type schedulerSetup struct {
 	// owns the close; the other observes the same result — including a
 	// memoized deadline error, which a later caller sees even if the step that
 	// blew the grace period finished afterwards.
-	shutdownOnce sync.Once
-	shutdownErr  error
+	shutdownOnce      sync.Once
+	shutdownErr       error
+	telemetryWorkOnce sync.Once
+	telemetryWork     *schedulerTelemetryWork
 }
 
 func newTelemetryExporterHealth(cfg *instance.Config) *telemetry.ExporterHealth {
@@ -1505,19 +1507,19 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	}
 	if s.Telemetry != nil {
 		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))
-		if s.RollupDB != nil && s.InstanceLog != nil {
-			opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
-				telemetryingest.SchedulerTelemetry(ctx, s.Telemetry, s.RollupDB, s.InstanceLog.Dir(), s.InstanceLog)
-			}))
-		}
 	}
 	if s.Telemetry != nil && s.RollupDB != nil {
-		opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
-			if err := s.Telemetry.Flush(ctx); err != nil {
-				telemetryingest.LogFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
-			}
-			_ = s.ingestSchedulerLog(context.Background())
-		}))
+		s.telemetryWorkOnce.Do(func() {
+			s.telemetryWork = newSchedulerTelemetryWork(schedulerTelemetryTimeout, func(ctx context.Context) {
+				if err := s.Telemetry.Flush(ctx); err != nil {
+					telemetryingest.LogFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
+				}
+				if ctx.Err() == nil {
+					_ = s.ingestSchedulerLog(ctx)
+				}
+			})
+		})
+		opts = append(opts, localscheduler.WithAfterTick(s.telemetryWork.Notify))
 	}
 	return opts
 }
@@ -1564,6 +1566,14 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) error {
 		defer cancel()
 	}
 	s.shutdownOnce.Do(func() {
+		// Stop the asynchronous tick observer before closing its exporters or
+		// stores. A sink that ignores cancellation must not race their close.
+		if s.telemetryWork != nil {
+			if err := s.telemetryWork.Stop(ctx); err != nil {
+				s.shutdownErr = err
+				return
+			}
+		}
 		s.shutdownErr = runShutdownSteps(ctx, s.shutdownSteps(ctx))
 	})
 	return s.shutdownErr

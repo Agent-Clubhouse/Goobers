@@ -30,7 +30,7 @@ import (
 
 const (
 	secretFixtureValue          = "FIXTURE_SECRET_MUST_NOT_APPEAR"
-	recordedAuthoringPathSHA256 = "5cac9e09588ff99e91292d918818d8ef5de9cb896139446403f53bc7ea5d107c"
+	recordedAuthoringPathSHA256 = "268c69f4f0167d030fb4ded1473fe0882c75a7338076963fc93083988924911b"
 	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
 
@@ -437,8 +437,11 @@ func evaluateAuthoringResult(
 		t.Fatalf("workspace diff paths = %v, captured output paths = %v", changed, capturedPaths)
 	}
 	if report.Status == "unresolved" {
+		// An author may accurately report validation as not-run when no safe
+		// configuration could be generated. Still require diagnostics and no writes.
+		validationUnresolved := report.Validation.Status == "unresolved" || report.Validation.Status == "not-run"
 		if len(changed) != 0 || report.Diff != "" || len(report.Unresolved) == 0 ||
-			report.Validation.Status != "unresolved" || len(capture.Files) != 0 {
+			!validationUnresolved || len(capture.Files) != 0 {
 			t.Fatalf("unresolved capture wrote config or omitted diagnostics: %+v", report)
 		}
 		return
@@ -492,7 +495,12 @@ func evaluateAuthoringResult(
 
 func assertCaptureProvenance(t *testing.T, capture invocationCapture, skillDigest string) {
 	t.Helper()
-	assertCaptureProvenanceVersion(t, capture, skillDigest, "GitHub Copilot CLI 1.0.83")
+	// The installed CLI updated between native sessions in this capture batch.
+	// Keep both observed versions pinned; session.start must still match exactly.
+	if capture.CapturedWith != "GitHub Copilot CLI 1.0.98" && capture.CapturedWith != "GitHub Copilot CLI 1.0.100" {
+		t.Fatalf("unreviewed capture CLI version %q", capture.CapturedWith)
+	}
+	assertCaptureProvenanceVersion(t, capture, skillDigest, capture.CapturedWith)
 }
 
 func assertCaptureProvenanceVersion(t *testing.T, capture invocationCapture, skillDigest, version string) {
@@ -608,12 +616,14 @@ func assertCaptureProvenanceVersion(t *testing.T, capture invocationCapture, ski
 	}
 }
 
-// A proposal may call its state graph a "graph". Require each concept without
-// imposing one particular wording on a genuine native authoring invocation.
+// A proposal may cite source lines without saying "evidence", or call its state
+// graph a "graph". Require each concept without imposing one wording.
 func missingPreWriteConcept(explanation string) string {
 	text := strings.ToLower(explanation)
+	hasSourceCitation := regexp.MustCompile(`\b(?:[a-z0-9_./-]+\.(?:md|ya?ml|json|mod|toml)|makefile):[0-9]+`).MatchString(text)
 	for _, concept := range []string{"evidence", "state", "capabilit"} {
-		if strings.Contains(text, concept) || (concept == "state" && strings.Contains(text, "graph")) {
+		if strings.Contains(text, concept) || (concept == "state" && strings.Contains(text, "graph")) ||
+			(concept == "evidence" && hasSourceCitation) {
 			continue
 		}
 		return concept
@@ -625,6 +635,9 @@ func TestPreWriteConceptsRequireEvidenceGraphAndCapabilities(t *testing.T) {
 	for _, tc := range []struct{ explanation, missing string }{
 		{"Evidence: Makefile. State graph: manual -> test -> done. Capabilities: make.", ""},
 		{"EVIDENCE: Makefile. Graph: manual -> test -> done. Capabilities: make.", ""},
+		{"The gate is make ci (README.md:3), using go 1.26.5 (go.mod:3). Graph: manual -> test. Capability: go@1.26.5.", ""},
+		{"Makefile:1-3 runs the tests. State: manual -> test. Capabilities: make.", ""},
+		{"Read README.md. Graph: manual -> test. Capabilities: make.", "evidence"},
 		{"Evidence: Makefile. Capabilities: make.", "state"},
 		{"Graph: manual -> test -> done. Capabilities: make.", "evidence"},
 		{"Evidence: Makefile. Graph: manual -> test -> done.", "capabilit"},
@@ -752,12 +765,30 @@ func findWorkflowForCommand(t *testing.T, set *instance.ConfigSet, command []str
 
 func configCapabilities(set *instance.ConfigSet, workflow apiv1.Workflow) []string {
 	unique := map[string]bool{}
+	for _, gaggle := range set.Gaggles {
+		if gaggle.Name != workflow.Spec.Gaggle {
+			continue
+		}
+		for _, capability := range gaggle.Spec.RequiredCapabilities {
+			unique[capability] = true
+		}
+		if gaggle.Spec.RunsOn != nil {
+			for _, capability := range gaggle.Spec.RunsOn.Capabilities {
+				unique[capability] = true
+			}
+		}
+	}
 	for _, task := range workflow.Spec.Tasks {
 		for _, capability := range task.Capabilities {
 			unique[capability] = true
 		}
 		for _, capability := range task.RequiredCapabilities {
 			unique[capability] = true
+		}
+		if task.RunsOn != nil {
+			for _, capability := range task.RunsOn.Capabilities {
+				unique[capability] = true
+			}
 		}
 	}
 	for _, goober := range set.Goobers {
@@ -768,6 +799,28 @@ func configCapabilities(set *instance.ConfigSet, workflow apiv1.Workflow) []stri
 		}
 	}
 	return sortedKeys(unique)
+}
+
+func TestConfigCapabilitiesIncludesSharedAndDSL3Requirements(t *testing.T) {
+	workflow := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle: "service",
+		Tasks: []apiv1.Task{{
+			Capabilities: []string{"repo:read"},
+			RunsOn:       &apiv1.RunsOn{Capabilities: []string{"node@22"}},
+		}},
+	}}
+	shared := apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+		RequiredCapabilities: []string{"go@1.26.5"},
+		RunsOn:               &apiv1.GaggleRunsOn{Capabilities: []string{"node@22", "docker"}},
+	}}
+	shared.Name = "service"
+	unrelated := apiv1.Gaggle{Spec: apiv1.GaggleSpec{RequiredCapabilities: []string{"unrelated"}}}
+	unrelated.Name = "other"
+	got := configCapabilities(&instance.ConfigSet{Gaggles: []apiv1.Gaggle{shared, unrelated}}, workflow)
+	want := []string{"docker", "go@1.26.5", "node@22", "repo:read"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("effective capabilities = %v, want %v", got, want)
+	}
 }
 
 func grantNames(grants []capabilityGrant) []string {

@@ -195,7 +195,7 @@ type noClaims struct{}
 
 func (noClaims) History(string, apiv1.Provider) ([]localscheduler.ClaimEntry, error) { return nil, nil }
 
-func (noClaims) Reclaim([]localscheduler.ClaimEntry, string, string, string) (bool, string, error) {
+func (noClaims) Reclaim(context.Context, []localscheduler.ClaimEntry, string, string, string) (bool, string, error) {
 	return true, "", nil
 }
 

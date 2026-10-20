@@ -132,10 +132,40 @@ project) are not loaded. A `.rules` deny for `pkill` would have no effect.
 
 ## copilot
 
-Goobers does not add a deny for Copilot CLI stages. The Copilot CLI's own
-system prompt tells the model not to use `pkill`, `killall` or other
-name-based kills. That is an instruction, not something the CLI enforces. A
-`runner.harnessCommand` other than plain `copilot` must satisfy the
-[launcher contract](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/harness-launcher-contract.md), so you cannot add flags
-there the way you can for claude-code. Run Copilot stages that need host
-isolation under the Linux sandbox. [#7394](https://github.com/Agent-Clubhouse/Goobers/issues/7394) tracks an enforced Copilot deny.
+Every Copilot stage carries `--deny-tool` rules for `shell(pkill)` and
+`shell(killall)`, their `/usr/bin` and `/bin` forms, and `/usr/bin/env` wrappers.
+The adapter adds them after configured arguments, including custom launchers,
+tool allowlists, completion repairs, and fallback authentication prompts.
+[Copilot's permission rules](https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/allowing-tools)
+keep denies authoritative alongside `--allow-all-tools`. The invocation
+record includes the effective denies.
+
+This is the enforced CLI and control-session mitigation for
+[#7394](https://github.com/Agent-Clubhouse/Goobers/issues/7394). The CLI deny
+arguments and host permission callback apply independently of the model's
+system-prompt instructions.
+
+Controlled SDK sessions also inspect `fullCommandText` before approving a
+shell permission. They refuse a missing command, `pkill` or `killall` anywhere
+in the text, and commands combining `pgrep` with `kill`. That covers literal
+`bash -c`, `eval`, `find -exec`, and `xargs` wrappers. This conservative text
+check may also refuse quoted documentation containing those command names.
+
+An opt-in integration probe executes harmless PATH stubs through the actual
+CLI's tool-authorization RPC without a model turn. It requires a successful
+control command, a native refusal record, and absent forbidden-stub markers:
+
+```sh
+GOOBERS_COPILOT_HOSTSAFETY=1 go test -race -timeout 30m -tags integration \
+  ./internal/harness -run '^TestIntegrationCopilotDeniesNameBasedKill$' -v
+```
+
+Copilot CLI 1.0.98 also refuses bare name-kills inside its shell tool, reporting
+`kill_command_blocked`. Goobers retains its own policy for older versions and
+wrapped commands.
+
+These checks are defense in depth. Non-controlled CLI sessions rely on the
+CLI's permission matcher. Script files, constructed command names, direct
+process-signaling APIs, Windows process commands, and arbitrary PID kills are
+not comprehensively covered. Use OS sandbox confinement for host isolation;
+runner cleanup must target only process groups it owns.

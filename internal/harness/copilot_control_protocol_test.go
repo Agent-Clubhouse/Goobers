@@ -29,6 +29,12 @@ func TestCopilotControlledProtocolCapturesFinalResponse(t *testing.T) {
 }
 
 func testCopilotControlledProtocol(t *testing.T, probeResult string) {
+	// Sanitized shape captured from CLI 1.0.98 with Go SDK 1.0.16 after a
+	// single tool-free turn. Usage must survive without a shutdown event/file.
+	var usageFixture any
+	if err := json.Unmarshal(readTestData(t, "copilot-sdk-usage-1.0.98.json"), &usageFixture); err != nil {
+		t.Fatal(err)
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +49,7 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		done <- serveCopilotReadinessFixture(conn, &sends, probeResult)
+		done <- serveCopilotReadinessFixture(conn, &sends, probeResult, usageFixture)
 	}()
 	process := &fakeProcessRunner{act: func(req ProcessRequest) error {
 		if !strings.Contains(strings.Join(req.Command, " "), "--headless") || strings.Contains(strings.Join(req.Command, " "), "private model prompt") {
@@ -82,8 +88,11 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finishErr != nil || out.Metrics[telemetry.AttrGenAIUsageInputTokens] != 42 || out.Metrics[telemetry.AttrUsageNanoAIU] != 1e9 || len(out.ModelUsage) != 1 || out.ModelUsage[0].CostBasis != telemetry.CostBasisVendorReported {
+	if finishErr != nil || out.Metrics[telemetry.AttrGenAIUsageInputTokens] != 3901 || out.Metrics[telemetry.AttrGenAIUsageOutputTokens] != 5 || out.Metrics[telemetry.AttrUsageNanoAIU] != 49005000 || len(out.ModelUsage) != 1 || out.ModelUsage[0].CostBasis != telemetry.CostBasisVendorReported {
 		t.Fatalf("finalization=%v metrics=%v models=%+v", finishErr, out.Metrics, out.ModelUsage)
+	}
+	if !copilotUsageObserved(out) {
+		t.Fatal("current SDK usage was diagnosed as missing")
 	}
 	if sends.Load() != 1 || string(capture.Bytes()) != "final answer" || !strings.Contains(string(result.Transcript), "assistant.message") || runner.readiness.Category != "ready" {
 		t.Fatalf("sends=%d capture=%q transcript=%q readiness=%+v", sends.Load(), capture.Bytes(), result.Transcript, runner.readiness)
@@ -125,7 +134,7 @@ func (p *readinessProtocolProcess) Run(ctx context.Context, req ProcessRequest) 
 	return result, ctx.Err()
 }
 
-func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResult string) error {
+func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResult string, usageResponse ...any) error {
 	reader := bufio.NewReader(conn)
 	probed := false
 	for {
@@ -174,6 +183,9 @@ func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResul
 		case "session.usage.getMetrics":
 			model := map[string]any{"requests": map[string]any{"count": 1, "cost": 1}, "usage": map[string]any{"inputTokens": 42, "outputTokens": 2}, "totalNanoAiu": 1e9}
 			result = map[string]any{"sessionStartTime": time.Now().UTC().Format(time.RFC3339Nano), "totalNanoAiu": 1e9, "modelMetrics": map[string]any{"fixture-model": model}, "agentMetrics": map[string]any{"main": map[string]any{"totalNanoAiu": 1e9, "modelMetrics": map[string]any{"fixture-model": model}}}}
+			if len(usageResponse) > 0 {
+				result = usageResponse[0]
+			}
 		case "session.shutdown":
 			if sends.Load() != 1 {
 				return fmt.Errorf("shutdown before model turn settled")

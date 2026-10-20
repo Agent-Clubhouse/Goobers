@@ -338,8 +338,8 @@ func TestCodexAdapterRejectsDeclaredGoobersIOCollision(t *testing.T) {
 func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &codexSequenceRunner{results: []ProcessResult{
-		{ExitCode: 0, Transcript: []byte(`{"type":"thread.started","thread_id":"thread-recovery"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":90,"output_tokens":5}}` + "\n")},
-		{ExitCode: 0, Transcript: []byte(`{"type":"turn.completed","usage":{"input_tokens":30,"output_tokens":7}}` + "\n")},
+		{ExitCode: 0, Transcript: readTestData(t, "codex-usage-initial.jsonl")},
+		{ExitCode: 0, Transcript: readTestData(t, "codex-usage-resumed.jsonl")},
 	}}
 	adapter := &CodexAdapter{
 		Command: []string{"codex"},
@@ -366,6 +366,34 @@ func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	if got := runner.requests[1].Command; !slices.Contains(got, "resume") ||
 		!slices.Contains(got, "thread-recovery") {
 		t.Fatalf("recovery command = %v, want resumed original thread", got)
+	}
+}
+
+func TestCodexUsageCountsCumulativeSnapshotsOnce(t *testing.T) {
+	initial := readTestData(t, "codex-usage-initial.jsonl")
+	resumed := readTestData(t, "codex-usage-resumed.jsonl")
+	combined := append(append(append([]byte(nil), initial...), resumed...), resumed...)
+	parsed, err := parseCodexJSONL(combined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.metrics[telemetry.AttrGenAIUsageInputTokens] != 120 ||
+		parsed.metrics[telemetry.AttrGenAIUsageOutputTokens] != 12 {
+		t.Fatalf("repeated snapshots double counted: %v", parsed.metrics)
+	}
+	for _, repair := range []string{
+		`{"type":"turn.failed","error":{"message":"failed"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0}}`,
+	} {
+		after, err := parseCodexJSONL([]byte(repair))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mergeCodexMetrics(parsed.metrics, after.metrics)
+		if parsed.metrics[telemetry.AttrGenAIUsageInputTokens] != 120 ||
+			parsed.metrics[telemetry.AttrGenAIUsageOutputTokens] != 12 {
+			t.Fatalf("failed repair lost prior usage: %v", parsed.metrics)
+		}
 	}
 }
 

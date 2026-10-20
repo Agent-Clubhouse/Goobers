@@ -100,7 +100,10 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"cannot be read refuses as human-feedback-unverifiable. Comments are\n" +
 	"classified as pr-comment-watch classifies them, under the same\n" +
 	"identityMode and excludeAuthors inputs. Set false to merge over\n" +
-	"comments), resultFile (default merge-result.json). Successful merges\n" +
+	"comments), resultFile (default merge-result.json). It also refuses\n" +
+	"while a finding an earlier review raised on the live head stands\n" +
+	"unanswered: a later pass clears none without a resolved or rejected\n" +
+	"disposition (#5890). Successful merges\n" +
 	"also report headBranch and branchCleanup (deleted, skipped-stacked,\n" +
 	"skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated\n" +
 	"(merged or not — see the result file's \"merged\" field), 1 = business\n" +
@@ -360,19 +363,18 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 			optedOutReason = mergeReviewOptOutReason
 			return nil
 		}
-		// #2238: independently refuse a PR whose originating implementation
-		// run was cancelled, even if pr-select's own exclusion of this same
-		// label was somehow bypassed — the final merge primitive must not
-		// rely solely on selection-time filtering.
+		// #2238: independently refuse a PR whose originating implementation run
+		// was cancelled, even if pr-select's exclusion of this label was somehow
+		// bypassed — the merge primitive must not rely on selection alone.
 		if hasAnyLabel(poll.Labels, []string{abortedRunLabel}) {
 			optedOutReason = runAbortedOptOutReason
 			return nil
 		}
-
 		reasons = append(reasons, liveConjunctReasons(ctx, dispatcher, repo, pullNumber, verdict, expectedHeadSHA, expectedBaseSHA, poll)...)
 		// #6134: never land over open human review feedback Goobers has not
 		// answered, whether or not the forge enforces conversation resolution.
 		reasons = feedbackGate.refuse(ctx, pullNumber, reasons)
+		reasons = append(reasons, outstandingFindingMergeRefusals(ctx, root, stageProvider, repo, pullNumber, verdictAuthor, poll)...)
 		// Tutor-change classification is GitHub-only: classifyRemoteTutorChanges
 		// takes the concrete *GitHubProvider and the tutor lane does not run on
 		// ADO, so gate the whole block to GitHub (no-op; ADO tutor parity is
@@ -451,7 +453,6 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		if checkErr != nil {
 			return nil
 		}
-		// #6134: a reviewer may comment while the check runs; re-read feedback.
 		if reasons = feedbackGate.afterPreMergeCheck(ctx, pullNumber, checkReason); len(reasons) > 0 {
 			return nil
 		}
@@ -476,13 +477,15 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 			return nil
 		}
 
-		mergeAttempted = true
-		landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
-			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
-			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
-			DeleteSourceBranch: adoCompletionDeletesSourceBranch(ctx, stageProvider, repo, poll.HeadBranch, isADO, &adoCleanup),
+		return withFindingCheckedLanding(ctx, root, stageProvider, repo, pullNumber, verdictAuthor, poll, &reasons, func(ctx context.Context) error {
+			mergeAttempted = true
+			landResult, mergeErr = landWithPublicationCustody(ctx, lander, dispatcher, mergepolicy.Request{
+				Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
+				CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
+				DeleteSourceBranch: adoCompletionDeletesSourceBranch(ctx, stageProvider, repo, poll.HeadBranch, isADO, &adoCleanup),
+			})
+			return nil
 		})
-		return nil
 	})
 	if lockErr != nil {
 		pf(stderr, "error: acquire merge lock: %v\n", lockErr)

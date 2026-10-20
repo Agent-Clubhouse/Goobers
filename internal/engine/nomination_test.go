@@ -238,11 +238,12 @@ func creditFindingNode(subject string) string {
 }
 
 type nominationConnector struct {
-	rec       localrunner.ArtifactRecorder
-	validator *validate.Validator
-	artifact  []byte
-	quiet     bool
-	stages    []string
+	rec               localrunner.ArtifactRecorder
+	validator         *validate.Validator
+	artifact          []byte
+	quiet             bool
+	stages            []string
+	unavailableAlerts bool
 }
 
 // Run serves the shipped work-nomination workflow's three deterministic
@@ -292,6 +293,9 @@ func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelop
 // runSecurityAlerts checks the bounds the shipped example declares for each
 // alert feed and records a schema-valid, explicitly untrusted artifact.
 func (c *nominationConnector) runSecurityAlerts(env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	if c.unavailableAlerts {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "security alert source unavailable: HTTP 403"}, nil
+	}
 	wants := map[string]struct {
 		command    []string
 		resultFile string
@@ -483,7 +487,7 @@ func nominationMachine(t *testing.T, spec apiv1.WorkflowSpec) *workflow.Machine 
 	return machine
 }
 
-func runNominationFixture(t *testing.T, runID string, existing map[string]bool, quiet bool) (*fixtureNominator, *nominationConnector, localrunner.Result) {
+func runNominationFixture(t *testing.T, runID string, existing map[string]bool, quiet bool, configure ...func(*nominationConnector)) (*fixtureNominator, *nominationConnector, localrunner.Result) {
 	t.Helper()
 	validator, err := validate.New()
 	if err != nil {
@@ -502,6 +506,9 @@ func runNominationFixture(t *testing.T, runID string, existing map[string]bool, 
 	r, err := localrunner.New(localrunner.Config{
 		NewDeterministic: func(rec localrunner.ArtifactRecorder, _ localrunner.SecretRegistrar) (invoke.Deterministic, error) {
 			connector = &nominationConnector{rec: rec, validator: validator, artifact: artifact, quiet: quiet}
+			for _, apply := range configure {
+				apply(connector)
+			}
 			return connector, nil
 		},
 		NewAgentic: func(name string, _ localrunner.ArtifactRecorder, _ localrunner.SecretRegistrar) (invoke.Goober, error) {
@@ -663,6 +670,22 @@ func TestWorkNominationQuietSourcesReachRepositoryInspection(t *testing.T) {
 	}
 	if len(nominator.gotContext) != 0 {
 		t.Fatalf("quiet sources delivered unexpected context: %v", nominator.gotContext)
+	}
+}
+
+func TestWorkNominationUnavailableAlertsDoNotBlockOtherEvidence(t *testing.T) {
+	nominator, _, _ := runNominationFixture(t, "run-nomination-unavailable", nil, false, func(c *nominationConnector) {
+		c.unavailableAlerts = true
+	})
+	if nominator.gotFiled != 4 || !nominator.gotRepository {
+		t.Fatalf("other evidence did not reach nomination: filed=%d repository=%v", nominator.gotFiled, nominator.gotRepository)
+	}
+	// The fixture tests routing; the model must also receive an explicit
+	// instruction to treat the failed optional feeds as unavailable evidence.
+	for _, instruction := range []string{"record that source as unavailable", "continue with the other evidence", "Do not block or escalate", "do not treat unavailable evidence as zero alerts"} {
+		if !strings.Contains(strings.Join(strings.Fields(nominator.gotGoal), " "), instruction) {
+			t.Errorf("nomination goal lacks optional-source guidance %q", instruction)
+		}
 	}
 }
 

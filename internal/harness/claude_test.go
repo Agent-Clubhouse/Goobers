@@ -348,6 +348,47 @@ func TestBuildClaudeArgvShiftUnderSandboxWrapping(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeArgvPinsUnattendedPermissionMode(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		base, extra []string
+		want        string
+	}{
+		{name: "default unrestricted", extra: claudeExtraArgs(nil), want: "bypassPermissions"},
+		{name: "tool allowlist", extra: claudeExtraArgs([]string{"Read"}), want: "dontAsk"},
+		{name: "empty override", extra: []string{}, want: "dontAsk"},
+		{name: "custom arguments", extra: []string{"--tools", "Read", "--allowedTools", "Read"}, want: "dontAsk"},
+		{name: "explicit extra mode", extra: []string{"--permission-mode", "default"}, want: "default"},
+		{name: "explicit command mode", base: []string{"claude", "--permission-mode", "plan"}, want: "plan"},
+		{name: "equals mode", extra: []string{"--permission-mode=acceptEdits"}, want: "acceptEdits"},
+		{name: "legacy skip", base: []string{"claude", "--dangerously-skip-permissions"}, want: "bypassPermissions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := tc.base
+			if base == nil {
+				base = []string{"claude"}
+			}
+			argv, selector := buildClaudeArgv(base, tc.extra, "", "", "session-1")
+			for _, resume := range []bool{false, true} {
+				if resume {
+					argv[selector] = "--resume"
+				}
+				var modes []string
+				for i, arg := range argv {
+					if arg == "--permission-mode" && i+1 < len(argv) {
+						modes = append(modes, argv[i+1])
+					} else if value, ok := strings.CutPrefix(arg, "--permission-mode="); ok {
+						modes = append(modes, value)
+					}
+				}
+				if !slices.Equal(modes, []string{tc.want}) {
+					t.Fatalf("resume=%v: modes=%v, want %q; argv=%v", resume, modes, tc.want, argv)
+				}
+			}
+		})
+	}
+}
+
 type claudeSequenceRunner struct {
 	reqs       []ProcessRequest
 	results    []ProcessResult

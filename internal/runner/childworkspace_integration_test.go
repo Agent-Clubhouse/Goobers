@@ -258,7 +258,7 @@ func TestIntegrationChildWorkspaceHumanRerunPreservesProgress(t *testing.T) {
 			return apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Error: &apiv1.ErrorInfo{Code: "needs_guidance", Message: "select the implementation"}}, nil
 		}
 		childWorkspaceRead(t, env.Workspace, "main.txt", []byte("needs guidance\n"))
-		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{WorkspaceBranchOutput: f.child.Branch}}, nil
 	}
 	result, err := f.runner(t, agent).Start(t.Context(), f.input)
 	if err != nil || result.Phase != journal.PhaseEscalated {

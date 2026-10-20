@@ -302,10 +302,7 @@ func boundedFailedArtifact(
 
 	artifact.Connector.Name = ""
 	artifact.Query = QueryProvenance{Digest: provenance.Digest}
-	if artifactFits(artifact, limits.MaxBytes) {
-		return artifact
-	}
-	panic("external telemetry minimum maxBytes cannot hold a failed result artifact")
+	return artifact
 }
 
 func compactArtifactString(value string) string {

@@ -208,7 +208,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 list) flags+=" --json --stale --gaggle --provider" ;;
                 active) flags+=" --json --gaggle --provider" ;;
-                release) flags+=" --gaggle --provider --force" ;;
+                release) flags+=" --gaggle --provider --force --publication-custody-reason" ;;
             esac
             ;;
         trace)

@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -248,6 +249,95 @@ func newInterventionWiringFixture(
 	}
 }
 
+func TestRunInterventionClaimLockContentionReturnsTypedErrorBeforeBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		run   func(context.Context, *intervention.Service, httpapi.InterventionRequest) (httpapi.InterventionResult, error)
+		input httpapi.InterventionRequest
+	}{
+		{
+			name: "approve",
+			run: func(ctx context.Context, service *intervention.Service, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+				return service.AcceptApprove(ctx, context.Background(), input)
+			},
+			input: httpapi.InterventionRequest{Stage: "review", Actor: "operator", Decision: "pass"},
+		},
+		{
+			name: "rerun-stage",
+			run: func(ctx context.Context, service *intervention.Service, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+				return service.AcceptRerunStage(ctx, context.Background(), input)
+			},
+			input: httpapi.InterventionRequest{Stage: "review", Actor: "operator", InstructionAddendum: "preserve the commit"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runID := "run-lock-budget-" + tc.name
+			// Keep the request valid through custody preflight so this test
+			// isolates the claim-lock budget rather than missing workspace.
+			definition := interventionTestMachine(t, apiv1.EvaluatorAgentic).Def
+			definition.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+			machine, err := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture := newInterventionWiringFixture(t, machine, runID, []journal.Event{
+				{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+				{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+				{Type: journal.EventGateStarted, Gate: "review"},
+				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+				{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+			}, interventionDeterministic{}, nil)
+
+			lockPath := filepath.Join(fixture.layout.SchedulerDir(), claimLockFileName)
+			holder, err := lock.TryAcquire(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = holder.Release() }()
+			if err := holder.Announce(claimLockOperationRecovery); err != nil {
+				t.Fatal(err)
+			}
+
+			input := tc.input
+			input.RunID = runID
+			input.IdempotencyKey = "same-request"
+			admission, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			_, err = tc.run(admission, fixture.service, input)
+			elapsed := time.Since(started)
+
+			var interventionErr *httpapi.InterventionError
+			if !errors.As(err, &interventionErr) {
+				t.Fatalf("error = %v, want InterventionError", err)
+			}
+			if interventionErr.Status != http.StatusServiceUnavailable || interventionErr.Code != claimsLockTimeoutCode {
+				t.Fatalf("error = %+v, want 503 %s", interventionErr, claimsLockTimeoutCode)
+			}
+			if admission.Err() != nil {
+				t.Fatalf("admission expired before typed response after %s: %v", elapsed, admission.Err())
+			}
+			if elapsed >= 500*time.Millisecond {
+				t.Fatalf("typed response took %s, want before request budget", elapsed)
+			}
+
+			reader, err := journal.OpenRead(fixture.runDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == "intervention.idempotency" {
+					t.Fatalf("intervention marker recorded despite failed admission: %+v", event)
+				}
+			}
+		})
+	}
+}
+
 type blockingInterventionDeterministic struct {
 	started chan struct{}
 }
@@ -394,8 +484,8 @@ type afterReclaimClaims struct {
 	probe func()
 }
 
-func (c afterReclaimClaims) Reclaim(claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (bool, string, error) {
-	acquired, holder, err := c.ClaimStore.Reclaim(claims, gaggle, runID, workflowName)
+func (c afterReclaimClaims) Reclaim(ctx context.Context, claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (bool, string, error) {
+	acquired, holder, err := c.ClaimStore.Reclaim(ctx, claims, gaggle, runID, workflowName)
 	if err == nil && acquired {
 		c.probe()
 	}
