@@ -70,7 +70,7 @@ func excludePRSelectConflict(ctx context.Context, source prSelectSource, repo pr
 	if fresh.HeadSHA != pr.HeadSHA || fresh.HeadSHA == "" {
 		return true, fmt.Errorf("PR #%s head changed or is unknown; retry conflict handoff", id)
 	}
-	eligible, err := prSelectFreshConflictEligible(pr, fresh, policy)
+	eligible, err := prSelectFreshConflictEligible(repo.Provider, pr, fresh, policy)
 	if err != nil || !eligible {
 		return true, err
 	}
@@ -79,7 +79,7 @@ func excludePRSelectConflict(ctx context.Context, source prSelectSource, repo pr
 
 // Reapply the workflow's policy to the live snapshot, not just built-in holds.
 // The branch/base must also remain the candidate selected by this workflow.
-func prSelectFreshConflictEligible(original, fresh providers.PullRequestSummary, policy prSelectSourceRequest) (bool, error) {
+func prSelectFreshConflictEligible(kind providers.ProviderKind, original, fresh providers.PullRequestSummary, policy prSelectSourceRequest) (bool, error) {
 	if fresh.State != "open" || fresh.Draft || fresh.Mergeable == nil || *fresh.Mergeable {
 		return false, nil
 	}
@@ -94,6 +94,9 @@ func prSelectFreshConflictEligible(original, fresh providers.PullRequestSummary,
 	}
 	if !eligibleByMergeReviewPolicy(fresh, policy.requiredOptInLabel, policy.respectAssignee, policy.selfIdentity) {
 		return false, nil
+	}
+	if kind == providers.ProviderADO {
+		return adoSelectionMatchesSummary(policy.identityFilters, fresh)
 	}
 	return policy.identityFilters.MatchesSummary(fresh)
 }
