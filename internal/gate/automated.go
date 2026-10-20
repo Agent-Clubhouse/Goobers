@@ -209,23 +209,7 @@ func DefaultChecks() map[string]CheckFunc {
 		// a generic command failure carrying a known host-contention,
 		// filesystem-errno, dependency-transport or unresolvable-git-revision
 		// signature, and fail for every other status. No params.
-		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
-			status := stringField(inputs, InputKeyStatus)
-			if status == string(apiv1.ResultSuccess) {
-				return OutcomePass, nil
-			}
-			// A conflict is retryable by changing the branch on a policy repass.
-			// Repeating preparation cannot repair it, so it must take the
-			// workflow's fail/remediation lane rather than its infra budget.
-			if status == string(apiv1.ResultFailure) && stringField(inputs, InputKeyErrorCode) == "base_sync_conflict" {
-				return OutcomeFail, nil
-			}
-			retryable, _ := inputs[InputKeyErrorRetryable].(bool)
-			if status == string(apiv1.ResultFailure) && (retryable || isRecognizedInfrastructureFailure(inputs)) {
-				return OutcomeInfra, nil
-			}
-			return OutcomeFail, nil
-		},
+		"failure-class": failureClassCheck,
 		// "output-equals": pass iff Inputs[Params["key"]] stringifies to
 		// Params["equals"]. Both params required.
 		"output-equals": func(inputs map[string]interface{}, params map[string]string) (string, error) {
@@ -546,4 +530,22 @@ func (e *AutomatedEvaluator) EvaluateVerdict(ctx context.Context, gate apiv1.Aut
 		Decision: decision,
 		Summary:  fmt.Sprintf("automated check %q: %s", gate.Check, outcome),
 	}, nil
+}
+
+func failureClassCheck(inputs map[string]interface{}, _ map[string]string) (string, error) {
+	status := stringField(inputs, InputKeyStatus)
+	if status == string(apiv1.ResultSuccess) {
+		return OutcomePass, nil
+	}
+	// A conflict is retryable by changing the branch on a policy repass.
+	// Repeating preparation cannot repair it, so it must take the
+	// workflow's fail/remediation lane rather than its infra budget.
+	if status == string(apiv1.ResultFailure) && stringField(inputs, InputKeyErrorCode) == "base_sync_conflict" {
+		return OutcomeFail, nil
+	}
+	retryable, _ := inputs[InputKeyErrorRetryable].(bool)
+	if status == string(apiv1.ResultFailure) && (retryable || isRecognizedInfrastructureFailure(inputs)) {
+		return OutcomeInfra, nil
+	}
+	return OutcomeFail, nil
 }

@@ -53,8 +53,12 @@ from failures in the work.
 
 **Parameters:** none.
 
-**Outcomes:** `pass` for success, `infra` for retryable or recognized
-infrastructure failure, and `fail` otherwise.
+**Outcomes:** `pass` for success, `fail` for `base_sync_conflict`, `infra` for
+other retryable or recognized infrastructure failures, and `fail` otherwise.
+
+A base-sync merge conflict needs a policy repass to resolve the conflicting
+changes, even when reported as retryable during stage preparation. Repeating
+preparation cannot repair it, so it follows the workflow's `fail` branch.
 
 A git command that exits 128 because a revision it was given does not exist
 in the checkout (`fatal: ambiguous argument '...': unknown revision or path not
