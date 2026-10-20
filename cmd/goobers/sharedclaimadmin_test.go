@@ -5,12 +5,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
 func TestAdministrativeSharedReleaseRevokesEvenWithoutCredentials(t *testing.T) {
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+	layout := instance.NewLayout(t.TempDir())
+	path := filepath.Join(layout.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,8 +23,12 @@ func TestAdministrativeSharedReleaseRevokesEvenWithoutCredentials(t *testing.T) 
 		t.Fatalf("claim: %v %v", ok, err)
 	}
 	entry, _ := ledger.LookupScoped(key)
-	if err := forceReleaseClaim(t.Context(), ledger, nil, entry, "cli"); err == nil {
+	if err := forceReleaseClaim(t.Context(), layout, nil, nil, entry, "cli"); err == nil {
 		t.Fatal("missing provider cleanup was reported as successful release")
+	}
+	ledger, err = localscheduler.OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
 	}
 	current, held := ledger.LookupScoped(key)
 	if !held || !current.SharedRevoked || current.SharedDeadline.After(time.Now()) || current.SharedOwner != owner {

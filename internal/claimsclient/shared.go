@@ -119,6 +119,8 @@ func (f *File) claimShared(ctx context.Context, key Key, runID, workflow string,
 }
 
 func (f *File) releaseShared(ctx context.Context, entry Entry, reason claimrelease.Reason) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	if f.cfg.Shared == nil {
 		return fmt.Errorf("claimsclient: shared release requires its provider resolver")
 	}

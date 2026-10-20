@@ -71,7 +71,7 @@ func (l *ClaimLedger) FinishProviderRelease(expected ClaimEntry, reason claimrel
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	current, held := l.entries[key]
-	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || !current.ReleasePending {
+	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || current.SharedOwner != expected.SharedOwner || !current.ReleasePending {
 		return false, nil
 	}
 	if current.IsPublicationClaim() {
@@ -88,6 +88,12 @@ func (l *ClaimLedger) FinishProviderRelease(expected ClaimEntry, reason claimrel
 		l.restoreHistory(current.RunID, key, previous, hadHistory)
 		return false, err
 	}
-	l.journalRelease(journal.EventClaimReleased, released, reason, nil)
+	event := journal.EventClaimReleased
+	var details map[string]any
+	if reason.Disposition == claimrelease.ForceReleased {
+		event = journal.EventClaimForceReleased
+		details = map[string]any{"actor": reason.Actor}
+	}
+	l.journalRelease(event, released, reason, details)
 	return true, nil
 }
