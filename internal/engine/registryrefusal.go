@@ -16,7 +16,10 @@ var (
 	ErrMapsUnsupported              = engineadmission.ErrMapsUnsupported
 )
 
+// UnsupportedFeatureError names a refused declaration and wraps its sentinel.
 type UnsupportedFeatureError = engineadmission.UnsupportedFeatureError
+
+// UnsupportedFeaturesError groups a workflow's refused declarations.
 type UnsupportedFeaturesError = engineadmission.UnsupportedFeaturesError
 
 func refuseUnsupportedEngineFeatures(name string, spec apiv1.WorkflowSpec) error {

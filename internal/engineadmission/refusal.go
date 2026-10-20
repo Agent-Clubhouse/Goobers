@@ -221,6 +221,8 @@ func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []d
 	return RefuseRemoteUsage(name, spec, placements)
 }
 
+// RefuseRemoteUsage rejects token or cost limits on agentic tasks pinned to
+// remote executors, whose surrender protocol does not carry trusted usage.
 func RefuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
 	var refusals []*UnsupportedFeatureError
 	for _, t := range spec.Tasks {
