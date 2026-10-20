@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -170,6 +171,59 @@ func TestCodexTranscriptMissingUsageStaysUnknown(t *testing.T) {
 			if event.Usage != nil {
 				t.Fatalf("unknown usage became zero: %+v", event.Usage)
 			}
+		}
+	}
+}
+
+// Codex thread_history emits placeholder web-search arguments on start and
+// fills query/action at completion. Never freeze the placeholder as the call.
+func TestCodexWebSearchArgumentsArriveAtCompletion(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		c := newCodexTranscript(8192, "")
+		c.beginTurn("fixture")
+		start := []byte(`{"type":"item.started","item":{"id":"item_1","type":"web_search","query":"","action":{"type":"other"}}}`)
+		c.observe(start)
+		c.observe([]byte(`{"type":"item.updated","item":{"id":"item_1","type":"web_search","query":"","action":{"type":"other"}}}`))
+		if completed {
+			terminal := []byte(`{"type":"item.completed","item":{"id":"item_1","type":"web_search","query":"actual query","action":{"type":"search","query":"actual query"},"results":[]}}`)
+			c.observe(terminal)
+			c.observe(terminal)
+		}
+		out, err := c.finish(nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls, results := 0, 0
+		for _, event := range decodeTranscriptEvents(t, out.data) {
+			if event.ToolCall == nil {
+				continue
+			}
+			if event.Role == "assistant" {
+				calls++
+				var args struct {
+					Query  string
+					Action struct{ Type, Query string }
+				}
+				if err := json.Unmarshal(event.ToolCall.Arguments, &args); err != nil {
+					t.Fatal(err)
+				}
+				if args.Query != "actual query" || args.Action.Type != "search" || args.Action.Query != "actual query" {
+					t.Fatalf("lost final search arguments: %s", event.ToolCall.Arguments)
+				}
+			}
+			if event.Role == "tool" {
+				results++
+			}
+		}
+		want := 0
+		if completed {
+			want = 1
+		}
+		if calls != want || results != want {
+			t.Fatalf("completed=%v calls=%d results=%d", completed, calls, results)
+		}
+		if !strings.Contains(string(out.data), "item.started") {
+			t.Fatal("start evidence lost")
 		}
 	}
 }

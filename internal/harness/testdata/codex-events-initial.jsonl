@@ -7,7 +7,7 @@
 {"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"fixture","tool":"lookup","arguments":{"key":"one"},"result":null,"error":null,"status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"fixture","tool":"lookup","arguments":{"key":"one"},"result":null,"error":{"message":"lookup unavailable"},"status":"failed"}}
 {"type":"item.completed","item":{"id":"item_3","type":"file_change","changes":[{"path":"file.go","kind":"update"}],"status":"completed"}}
-{"type":"item.started","item":{"id":"item_4","type":"web_search","query":"fixture query","action":{"type":"search","query":"fixture query"}}}
+{"type":"item.started","item":{"id":"item_4","type":"web_search","query":"","action":{"type":"other"}}}
 {"type":"item.completed","item":{"id":"item_4","type":"web_search","query":"fixture query","action":{"type":"search","query":"fixture query"},"results":[]}}
 {"type":"future.event","payload":{"new_field":"preserve-this-evidence"}}
 {"type":"item.completed","item":{"id":"item_5","type":"agent_message","text":"Initial response without completion envelope."}}

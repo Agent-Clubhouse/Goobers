@@ -144,6 +144,13 @@ func (c *codexTranscript) observeItem(kind string, item codexTranscriptItem) boo
 		}
 		return true
 	}
+	// Native web searches start with an empty query and action=other. Only
+	// completion carries authoritative arguments. Retain starts/updates as
+	// native evidence (including interrupted searches), then emit one canonical
+	// call/result pair from the completed item instead of freezing placeholders.
+	if item.Type == "web_search" && kind != "item.completed" {
+		return false
+	}
 	name, args, content, success, ok := codexTranscriptTool(item)
 	if !ok {
 		return false
