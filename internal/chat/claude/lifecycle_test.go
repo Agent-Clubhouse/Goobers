@@ -3,9 +3,10 @@ package claude
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/internal/chat"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/chat"
 )
 
 func TestIdleInterruptDoesNotCancelFutureTurn(t *testing.T) {
