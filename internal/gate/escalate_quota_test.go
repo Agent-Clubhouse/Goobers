@@ -33,13 +33,13 @@ func TestUpsertFailureCommentQuotaDoesNotCreateDuplicate(t *testing.T) {
 }
 
 func TestUpsertFailureCommentReplayFindsAlreadyPublishedADOVersion(t *testing.T) {
-	body := failureStreakBody(2, "ci-poll", "run-2", "", failurePark{})
+	body := failureStreakBody(2, "ci-poll", "run-2", "", failurePark{}) + "\n" + failureIntentMarker(providers.RepositoryRef{Provider: providers.ProviderADO}, "42", "work", "run-2", "ci-poll", 2, false)
 	stamped, err := providers.StampAttribution(body, providers.Attribution{Schema: 1, Goobers: true, Gaggle: "example", Goober: "runner", Workflow: "implementation", Task: "ci-poll", Run: "run-2"}, "comment")
 	if err != nil {
 		t.Fatal(err)
 	}
 	poster := &fakeCommenter{updateErr: errors.New("editing unsupported"), comments: []providers.Comment{
-		{ID: "old", Body: failureStreakBody(1, "ci-poll", "run-1", "", failurePark{})}, {ID: "committed", Body: stamped},
+		{ID: "old", Body: failureStreakBody(1, "ci-poll", "run-1", "", failurePark{})}, {ID: "committed", Body: stamped, AuthorID: "report-bot-id"},
 	}}
 	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Provider: providers.ProviderADO}, "42", 2, "ci-poll", "run-2", "", nil); err != nil {
 		t.Fatal(err)
