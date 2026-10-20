@@ -1,8 +1,9 @@
 package main
 
 import (
-	"github.com/goobers/goobers/internal/instance"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 func TestTrustedLocalChildrenUsesResolvedInstanceInventory(t *testing.T) {

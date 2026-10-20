@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/goobers/goobers/internal/credentials"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goobers/goobers/internal/credentials"
 )
 
 const launcherContractFlag = "--goobers-launcher-contract"

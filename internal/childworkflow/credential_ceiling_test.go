@@ -1,10 +1,11 @@
 package childworkflow
 
 import (
-	"github.com/goobers/goobers/internal/instance"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 func TestProposalOwnsTrustedCredentialCeiling(t *testing.T) {
