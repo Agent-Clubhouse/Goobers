@@ -81,6 +81,10 @@ func TestCodexChatHelper(t *testing.T) {
 			var p map[string]any
 			_ = json.Unmarshal(m.Params, &p)
 			id := fmt.Sprintf("turn-%d", turn)
+			if os.Getenv("GOOBERS_CHAT_REJECT_STEER") == "1" {
+				send(map[string]any{"id": m.ID, "error": map[string]any{"code": -32000, "message": "steer rejected"}})
+				continue
+			}
 			if p["expectedTurnId"] != id {
 				os.Exit(8)
 			}
@@ -215,5 +219,64 @@ func TestCodexChatInstalledSmoke(t *testing.T) {
 	}
 	if err = s.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCodexChatRejectedSteerDoesNotStartAnotherTurn(t *testing.T) {
+	cfg := codexChatFixture(t)
+	t.Setenv("GOOBERS_CHAT_REJECT_STEER", "1")
+	cfg.Adapter.ExtraEnvAllowlist = append(cfg.Adapter.ExtraEnvAllowlist, "GOOBERS_CHAT_REJECT_STEER")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := NewCodexChatDriver(cfg).Start(ctx, chat.StartOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	if _, err = session.Send(ctx, chat.Text("first"), chat.SendOptions{Delivery: chat.Prompt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = session.Send(ctx, chat.Text("steer"), chat.SendOptions{Delivery: chat.Steer}); err == nil {
+		t.Fatal("rejected steer delivered")
+	}
+	s := session.(*codexChatSession)
+	s.mu.Lock()
+	active := s.active
+	s.mu.Unlock()
+	if active != "turn-1" {
+		t.Fatalf("unexpected turn after steer rejection: %s", active)
+	}
+}
+func TestCodexChatOverflowStopsWriterWithoutSubscriber(t *testing.T) {
+	cfg := codexChatFixture(t)
+	session, err := NewCodexChatDriver(cfg).Start(context.Background(), chat.StartOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := session.(*codexChatSession)
+	for range 1025 {
+		s.emit("notice", map[string]any{"message": "overflow"}, "")
+	}
+	select {
+	case <-s.waitDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("writer survived event overflow")
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestCodexChatStdioConfigUsesArraysAndCredentialNames(t *testing.T) {
+	cfg := codexChatStdioServer("tool", nil, nil, nil)
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "null") {
+		t.Fatalf("null lists are not valid Codex config: %s", b)
+	}
+	cfg = codexChatStdioServer("tool", []string{"arg"}, []string{"MCP_TOKEN"}, nil)
+	if cfg["required"] != true || cfg["env_vars"].([]string)[0] != "MCP_TOKEN" {
+		t.Fatal(cfg)
 	}
 }
