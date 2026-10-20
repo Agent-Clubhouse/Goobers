@@ -960,6 +960,12 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 
 	sched.Tick(ctx, tickAt)
 
+	drain, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := setup.telemetryWork.Wait(drain); err != nil {
+		t.Fatal(err)
+	}
+
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		t.Fatal(err)
