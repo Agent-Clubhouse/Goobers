@@ -386,10 +386,18 @@ interpreter *stayed* frozen.
   declare. Feature-support checks fan out one probe per distinct pin
   (`workflow.FeatureDefinitionsByDSLVersion` — shared by `api/validate` and
   `goobers features --used`), so a gaggle-scoped feature must be supported at *every* pin present.
-  An object with no workflows at all resolves at the newest `supported` version from the
-  `SupportMatrix` — deliberately not the transitional default, which is deprecated and would strand
-  the author with an unactionable migration error (no field to edit) the moment it turns
-  unsupported.
+  An object with no workflows resolves at the **oldest still-supported** version
+  from the `SupportMatrix`. This compatibility baseline preserves legacy gaggle
+  `requiredCapabilities` when 3.0 graduates; graduation cannot silently migrate an
+  object that has no pin to edit. Preview, deprecated and unsupported versions are
+  excluded. When 2.0 leaves `supported`, the baseline advances to the next supported
+  version: release/migration guidance must tell workflow-less gaggle owners to migrate
+  `requiredCapabilities` to `runsOn` before that transition. Existing workflow pins
+  still govern their objects, including deprecated pins during their support window.
+  A gaggle floor must satisfy every workflow pin: `runsOn` is rejected alongside a
+  2.0 workflow, and legacy `requiredCapabilities` is rejected alongside a 3.0 workflow.
+  New authoring remains separate: the authoring stamp follows `NewestSupported()`
+  (3.0 after graduation), and newly authored workflows carry explicit DSL pins.
 - **8.5 Interaction with run-pinning (WF-016).** A run already pins a compiled machine + digest for
   life. Confirm the version router sits *before* that pin (compile-time), so an in-flight run is
   wholly unaffected by a support-level change mid-flight.
