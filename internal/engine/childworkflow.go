@@ -72,7 +72,7 @@ type ChildCompletionInput struct {
 	Result  childresult.TerminalReturn `json:"result"`
 }
 
-// EngineChildService is an activity-side custody boundary. Implementations MUST
+// ChildService is an activity-side custody boundary. Implementations MUST
 // use durable, tenant-scoped compare-and-swap receipts; process-local locks are
 // insufficient. Every method is idempotent after lost acknowledgement.
 //
@@ -88,7 +88,7 @@ type ChildCompletionInput struct {
 // publish a usable snapshot on uncertain termination. Service reconciliation
 // owns incomplete operations after these bounded activity retries expire.
 // No production implementation is wired by this slice.
-type EngineChildService interface {
+type ChildService interface {
 	Admit(context.Context, ChildAdmissionInput) (ChildRunBinding, error)
 	Park(context.Context, ChildRunBinding) error
 	Load(context.Context, ChildRunBinding) ([]byte, error)
