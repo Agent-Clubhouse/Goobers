@@ -2,9 +2,10 @@ package chattest
 
 import (
 	"context"
-	"github.com/goobers/goobers/internal/chat"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/chat"
 )
 
 // Conformance runs common lifecycle and ceiling assertions. Factories must use
@@ -26,7 +27,7 @@ func Conformance(t *testing.T, factory func() chat.Driver) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	level, err := s.SetLevel(ctx, chat.FullAccess)
 	if err == nil && level != chat.Ask {
 		t.Fatalf("ceiling escaped: %s", level)
