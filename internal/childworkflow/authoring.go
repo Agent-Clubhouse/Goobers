@@ -122,7 +122,7 @@ func AttachParentAuthoringSkill(kit *agentickit.Kit, authority Authority) error 
 		return ErrAuthorityUnavailable
 	}
 	spec, ok := kit.Goobers[kit.Envelope.Goober]
-	if !ok || (spec.Harness != apiv1.HarnessClaudeCode && spec.Harness != apiv1.HarnessCodex) {
+	if !ok || (spec.Harness != apiv1.HarnessClaudeCode && spec.Harness != apiv1.HarnessCodex && spec.Harness != apiv1.HarnessCopilot) {
 		return ErrAuthorityUnavailable
 	}
 	if _, exists := kit.SkillPackages[ParentAuthoringSkillName]; exists || slices.Contains(spec.Skills, ParentAuthoringSkillName) {
@@ -147,6 +147,8 @@ func AttachParentAuthoringSkill(kit *agentickit.Kit, authority Authority) error 
 	directory := ".claude/skills/"
 	if spec.Harness == apiv1.HarnessCodex {
 		directory = ".agents/skills/"
+	} else if spec.Harness == apiv1.HarnessCopilot {
+		directory = ".github/skills/"
 	}
 	instructions[kit.Envelope.Goober] += "\n\nBefore composing a child workflow, read " + directory + ParentAuthoringSkillName + "/SKILL.md and its catalog.json. The catalog is advisory; the child tools enforce current authority.\n"
 	kit.SkillPackages, kit.Goobers, kit.Instructions = packages, goobers, instructions

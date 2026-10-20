@@ -137,3 +137,28 @@ func TestParentAuthoringRefusesWrongScopeCollisionAndOversizeWithoutMutation(t *
 		})
 	}
 }
+
+func TestParentAuthoringHarnessDirectories(t *testing.T) {
+	for selected, directory := range map[apiv1.Harness]string{apiv1.HarnessClaudeCode: ".claude/skills/", apiv1.HarnessCodex: ".agents/skills/", apiv1.HarnessCopilot: ".github/skills/"} {
+		t.Run(string(selected), func(t *testing.T) {
+			a, kit := authoringFixture()
+			spec := kit.Goobers["coder"]
+			spec.Harness = selected
+			kit.Goobers["coder"] = spec
+			if err := AttachParentAuthoringSkill(kit, a); err != nil {
+				t.Fatal(err)
+			}
+			catalogFromKit(t, kit)
+			if !slices.Contains(kit.Goobers["coder"].Skills, ParentAuthoringSkillName) || !strings.Contains(kit.Instructions["coder"], directory+ParentAuthoringSkillName+"/SKILL.md") {
+				t.Fatal("authoring skill not delivered at harness directory")
+			}
+		})
+	}
+	a, kit := authoringFixture()
+	spec := kit.Goobers["coder"]
+	spec.Harness = "unsupported"
+	kit.Goobers["coder"] = spec
+	if err := AttachParentAuthoringSkill(kit, a); err == nil {
+		t.Fatal("unsupported authoring harness accepted")
+	}
+}

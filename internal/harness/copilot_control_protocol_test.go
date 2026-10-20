@@ -16,6 +16,7 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -28,12 +29,20 @@ func TestCopilotControlledProtocolCapturesFinalResponse(t *testing.T) {
 	}
 }
 
-func testCopilotControlledProtocol(t *testing.T, probeResult string) {
+func TestCopilotParentControlledProtocol(t *testing.T) {
+	testCopilotControlledProtocol(t, "success", true)
+}
+
+func testCopilotControlledProtocol(t *testing.T, probeResult string, parent ...bool) {
 	// Sanitized shape captured from CLI 1.0.98 with Go SDK 1.0.16 after a
 	// single tool-free turn. Usage must survive without a shutdown event/file.
 	var usageFixture any
 	if err := json.Unmarshal(readTestData(t, "copilot-sdk-usage-1.0.98.json"), &usageFixture); err != nil {
 		t.Fatal(err)
+	}
+	endpoint := ""
+	if len(parent) > 0 && parent[0] {
+		endpoint = copilotParentDaemonFixture(t)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -49,7 +58,9 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		done <- serveCopilotReadinessFixture(conn, &sends, probeResult, usageFixture)
+		done <- serveCopilotReadinessFixtureWithOptions(conn, &sends, probeResult, copilotReadinessFixtureOptions{
+			parent: len(parent) > 0 && parent[0],
+		}, usageFixture)
 	}()
 	process := &fakeProcessRunner{act: func(req ProcessRequest) error {
 		if !strings.Contains(strings.Join(req.Command, " "), "--headless") || strings.Contains(strings.Join(req.Command, " "), "private model prompt") {
@@ -62,6 +73,10 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 	base := copilotHeadlessArgvGuard{next: &readinessProtocolProcess{process: process}}
 	req := RunRequest{Workspace: t.TempDir(), Tools: goobersIOAvailableToolNames(), GoobersIORegistered: true}
 	req.Envelope = testEnvelope(req.Workspace)
+	if len(parent) > 0 && parent[0] {
+		req.ChildWorkflows = &mcpio.ChildWorkflowAccess{Endpoint: endpoint, BearerToken: "goobers-child.parent-test"}
+		req = withAutoGoobersIO(req, "/test/goobers")
+	}
 	config, err := goobersIOAdditionalMCPConfigArg(req, "/test/goobers")
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +109,15 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 	if !copilotUsageObserved(out) {
 		t.Fatal("current SDK usage was diagnosed as missing")
 	}
-	if sends.Load() != 1 || string(capture.Bytes()) != "final answer" || !strings.Contains(string(result.Transcript), "assistant.message") || runner.readiness.Category != "ready" {
+	want := "final answer"
+	if len(parent) > 0 && parent[0] {
+		want = `{"status":"success","outputs":{"summary":"Child disposition acknowledged"}}`
+		payload, err := readCopilotCompletion(req, capture, true)
+		if err != nil || string(payload) != want {
+			t.Fatalf("parent response completion: %q %v", payload, err)
+		}
+	}
+	if sends.Load() != 1 || string(capture.Bytes()) != want || !strings.Contains(string(result.Transcript), "assistant.message") || runner.readiness.Category != "ready" {
 		t.Fatalf("sends=%d capture=%q transcript=%q readiness=%+v", sends.Load(), capture.Bytes(), result.Transcript, runner.readiness)
 	}
 	if err := <-done; err != nil {
@@ -138,6 +161,7 @@ type copilotReadinessFixtureOptions struct {
 	onRPC       func(string)
 	afterSend   func()
 	beforeUsage func() error
+	parent      bool
 }
 
 func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResult string, usageResponse ...any) error {
@@ -147,6 +171,8 @@ func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResul
 func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32, probeResult string, options copilotReadinessFixtureOptions, usageResponse ...any) error {
 	reader := bufio.NewReader(conn)
 	probed := false
+	isParent := options.parent
+	parentConfig := ""
 	for {
 		data, err := readReadinessFrame(reader)
 		if errors.Is(err, io.EOF) {
@@ -174,6 +200,13 @@ func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32,
 			if req.Params["sessionId"] != "owned-test-session" {
 				return fmt.Errorf("session identity lost: %v", req.Params["sessionId"])
 			}
+			if isParent {
+				var err error
+				parentConfig, err = copilotParentSessionConfig(req.Params)
+				if err != nil {
+					return err
+				}
+			}
 			result = map[string]any{"sessionId": "owned-test-session"}
 		case "session.tools.initializeAndValidate":
 		case "session.mcp.list":
@@ -190,6 +223,13 @@ func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32,
 			}
 			if err := authorizeReadinessFixture(conn, reader); err != nil {
 				return err
+			}
+			if isParent {
+				for _, tool := range []string{"validate_child_workflow", "start_child_workflow", "get_child_workflow", "resolve_child_workflow"} {
+					if err := authorizeReadinessFixture(conn, reader, tool); err != nil {
+						return err
+					}
+				}
 			}
 			probed = true
 			result = map[string]any{"resultType": probeResult, "textResultForLlm": "{}"}
@@ -214,6 +254,11 @@ func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32,
 			if !probed || req.Params["sessionId"] != "owned-test-session" {
 				return fmt.Errorf("model preceded same-session authorization")
 			}
+			if isParent {
+				if err := exerciseCopilotParentMCP(parentConfig); err != nil {
+					return err
+				}
+			}
 			sends.Add(1)
 			result = map[string]any{"messageId": "message"}
 		default:
@@ -227,7 +272,11 @@ func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32,
 				options.afterSend()
 				continue
 			}
-			for _, event := range []map[string]any{{"type": "assistant.message", "data": map[string]any{"messageId": "message", "content": "final answer"}}, {"type": "session.idle", "data": map[string]any{}}} {
+			answer := "final answer"
+			if isParent {
+				answer = `{"status":"success","outputs":{"summary":"Child disposition acknowledged"}}`
+			}
+			for _, event := range []map[string]any{{"type": "assistant.message", "data": map[string]any{"messageId": "message", "content": answer}}, {"type": "session.idle", "data": map[string]any{}}} {
 				event["id"] = "fixture-event"
 				event["timestamp"] = time.Now().UTC().Format(time.RFC3339Nano)
 				if err := writeReadinessFrame(conn, map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": "owned-test-session", "event": event}}); err != nil {
@@ -273,8 +322,12 @@ func writeReadinessFrame(writer io.Writer, value any) error {
 // A real permission.requested event exercises SDK event decoding, the configured
 // production permission handler, and the native decision RPC before the probe
 // is allowed to complete. No model dispatch is possible while it is pending.
-func authorizeReadinessFixture(conn net.Conn, reader *bufio.Reader) error {
-	event := map[string]any{"id": "permission-event", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "type": "permission.requested", "data": map[string]any{"requestId": "probe-permission", "permissionRequest": map[string]any{"kind": "mcp", "serverName": goobersIOServerName, "toolName": "get_run_info", "toolTitle": "read identity", "readOnly": true}}}
+func authorizeReadinessFixture(conn net.Conn, reader *bufio.Reader, tools ...string) error {
+	tool := "get_run_info"
+	if len(tools) > 0 {
+		tool = tools[0]
+	}
+	event := map[string]any{"id": "permission-event", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "type": "permission.requested", "data": map[string]any{"requestId": "probe-permission", "permissionRequest": map[string]any{"kind": "mcp", "serverName": goobersIOServerName, "toolName": tool, "toolTitle": "read identity", "readOnly": true}}}
 	if err := writeReadinessFrame(conn, map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": "owned-test-session", "event": event}}); err != nil {
 		return err
 	}

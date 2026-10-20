@@ -45,8 +45,8 @@ func containedParentShape(cfg *instance.Config, goobers map[string]apiv1.GooberS
 			return refuse("contained parent repoFrom must name its repository producers")
 		}
 		goober, ok := goobers[task.Goober]
-		if !ok || (goober.Harness != apiv1.HarnessClaudeCode && goober.Harness != apiv1.HarnessCodex) || len(goober.MCPServers) != 0 {
-			return refuse("contained parent requires an API-authenticated Claude or Codex profile without BYO MCP")
+		if !ok || (goober.Harness != apiv1.HarnessClaudeCode && goober.Harness != apiv1.HarnessCodex && goober.Harness != apiv1.HarnessCopilot) || len(goober.MCPServers) != 0 {
+			return refuse("contained parent requires an API-authenticated Claude, Codex or Copilot profile without BYO MCP")
 		}
 		if goober.Harness == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(goober.HarnessOptions) {
 			return refuse("contained parent cannot inherit ambient ChatGPT authentication")
