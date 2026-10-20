@@ -39,6 +39,7 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	cfg.childBorrowJournal = factories.BorrowJournal
 	cfg.childTerminalCustody = factories.VerifyTerminalCustody
 	cfg.NewDeterministic, cfg.NewAgentic = factories.NewDeterministic, factories.NewAgentic
+	cfg.NewAgenticWithMCPServers = nil
 	cfg.Escalation, cfg.ClaimedItems = nil, nil
 	cfg.Blocked, cfg.Failed, cfg.ExistingFix = nil, nil, nil
 	cfg.PrepareTerminal, cfg.FinalizeTerminal, cfg.NotifyTerminal = nil, nil, nil
