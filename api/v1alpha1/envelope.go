@@ -84,9 +84,6 @@ type InvocationEnvelope struct {
 	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
-	// DSLVersion identifies the workflow language semantics pinned for this run.
-	// Empty preserves legacy behavior for envelopes created before this field.
-	DSLVersion string `json:"dslVersion,omitempty"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
 	RunID string `json:"runId"`
 	// InstanceID is the originating instance's durable identity, pinned at

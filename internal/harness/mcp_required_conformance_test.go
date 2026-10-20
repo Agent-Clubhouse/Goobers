@@ -9,6 +9,7 @@ import (
 	"github.com/github/copilot-sdk/go/rpc"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 type mcpRequirednessRunner struct {
@@ -118,18 +119,24 @@ func TestConformanceMCPServerRequiredness(t *testing.T) {
 							return &mcpRequirednessCopilotSession{runner: runner}, nil
 						}
 					}
-					envelope := testEnvelope(workspace, "agent:model")
-					envelope.DSLVersion = tc.dslVersion
+					server := apiv1.MCPServer{
+						Name:     "context",
+						Required: tc.required,
+						Command:  "context-server",
+					}
+					if tc.dslVersion == "3.1" {
+						spec := workflow.MaterializeGooberForDefinition(
+							workflow.Definition{DSLVersion: "3.1"},
+							apiv1.GooberSpec{MCPServers: []apiv1.MCPServer{server}},
+						)
+						server = spec.MCPServers[0]
+					}
 					out, err := adapter.Run(context.Background(), RunRequest{
-						Envelope:       envelope,
+						Envelope:       testEnvelope(workspace, "agent:model"),
 						Workspace:      workspace,
 						CompletionPath: DefaultResultPath,
 						Credentials:    mcpTestCredentials(t, "agent:model", "model-token"),
-						MCPServers: []apiv1.MCPServer{{
-							Name:     "context",
-							Required: tc.required,
-							Command:  "context-server",
-						}},
+						MCPServers:     []apiv1.MCPServer{server},
 					})
 					if wantFailure {
 						wantClass := errRequiredMCPUnavailable

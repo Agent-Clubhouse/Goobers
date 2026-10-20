@@ -282,7 +282,6 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// error file never falls back to the OS default temp directory — which a
 	// read-only-root deployment may not have mounted anything writable at.
 	deterministicScratchDir := filepath.Join(l.WorkcopiesDir(), "scratch")
-
 	// #2971: compare a failing local-ci stage against the target branch's own
 	// health before attributing it to the run. nil unless the instance opted in.
 	baselineHealth, err := buildBaselineHealth(l, cfg, wtMgr)
@@ -308,7 +307,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			}
 			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
 		},
-		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
+		NewAgenticWithMCPServers: func(gooberName string, servers []apiv1.MCPServer, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			ordinary := func() (invoke.Goober, error) {
 				return buildAgenticExecutor(agenticExecutorInput{
 					GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
@@ -317,6 +316,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 					SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 					GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
 					ChildWorkflows: childWorkflowAccessFor(instanceRoot, reg),
+					MCPServers:     servers, MCPServersSet: servers != nil,
 				})
 			}
 			return bindParentRouting(instanceRoot, gooberName, rec, ordinary, assetsByGoober[gooberName] != nil, executionFence)
@@ -389,7 +389,18 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// protected too — see its own doc comment for why replace-semantics
 	// (SetPathLengthLimits's own shape) is the wrong model here.
 	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
-	return rc, wtMgr, nil
+	return withLegacyAgenticFactory(rc), wtMgr, nil
+}
+
+func withLegacyAgenticFactory(config runner.Config) runner.Config {
+	config.NewAgentic = legacyAgenticFactory(config.NewAgenticWithMCPServers)
+	return config
+}
+
+func legacyAgenticFactory(next runner.NewAgenticWithMCPServersFunc) runner.NewAgenticFunc {
+	return func(name string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
+		return next(name, nil, rec, reg)
+	}
 }
 
 func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInput, tel *telemetry.Client) {

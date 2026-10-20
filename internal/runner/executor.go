@@ -66,6 +66,10 @@ type NewDeterministicFunc func(rec ArtifactRecorder, reg SecretRegistrar) (invok
 // Review — one instance, two methods.
 type NewAgenticFunc func(gooberName string, rec ArtifactRecorder, reg SecretRegistrar) (invoke.Goober, error)
 
+// NewAgenticWithMCPServersFunc receives the compiler-materialized MCP
+// declarations for this run's pinned workflow definition.
+type NewAgenticWithMCPServersFunc func(gooberName string, servers []apiv1.MCPServer, rec ArtifactRecorder, reg SecretRegistrar) (invoke.Goober, error)
+
 type assetBundleGoober interface {
 	HasAssetBundle() bool
 }

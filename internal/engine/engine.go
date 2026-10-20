@@ -1269,7 +1269,6 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		TaskID:           in.RunID + ":" + stateName,
 		InstanceID:       in.InstanceID,
 		WorkflowID:       in.WorkflowName,
-		DSLVersion:       in.DSLVersion,
 		RunID:            in.RunID,
 		TriggerRef:       in.TriggerRef,
 		Gaggle:           in.Gaggle,

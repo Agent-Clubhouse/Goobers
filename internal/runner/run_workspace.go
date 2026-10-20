@@ -189,7 +189,6 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		TaskID:               in.RunID + ":" + stageName,
 		InstanceID:           in.instanceID,
 		WorkflowID:           in.Machine.Def.Name,
-		DSLVersion:           in.Machine.Def.DSLVersion,
 		RunID:                in.RunID,
 		TriggerRef:           in.Trigger.Ref,
 		Gaggle:               in.Gaggle,
