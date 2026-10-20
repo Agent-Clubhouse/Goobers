@@ -7,6 +7,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// ErrClaimReleasePending prevents ordinary release from discarding cleanup custody.
 var ErrClaimReleasePending = errors.New("claim provider release is pending; retry provider cleanup")
 
 func claimEntryStorageKey(entry ClaimEntry) (string, error) {

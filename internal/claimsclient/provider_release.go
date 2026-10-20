@@ -8,14 +8,15 @@ import (
 	"github.com/goobers/goobers/internal/claimrelease"
 )
 
-// ProviderReleaser retains durable cleanup custody across provider I/O. The
-// file backend invokes cleanup outside the claims lock; the HTTP backend asks
-// the daemon to perform the whole operation using its trusted provider binding.
+// Operation names identify the two short claims-lock sections in diagnostics.
 const (
 	ProviderReleaseReserveOperation  = "backlog-query.release.reserve"
 	ProviderReleaseFinalizeOperation = "backlog-query.release.finalize"
 )
 
+// ProviderReleaser retains durable cleanup custody across provider I/O. The
+// file backend invokes cleanup outside the claims lock; the HTTP backend asks
+// the daemon to perform the whole operation using its trusted provider binding.
 type ProviderReleaser interface {
 	ReleaseWithProvider(context.Context, Entry, claimrelease.Reason, func(context.Context) error) (bool, error)
 }
