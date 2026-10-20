@@ -161,7 +161,11 @@ func TestNativeHelperUsesPinnedModelAndScopedRealMCPWithoutCannedInterception(t 
 		if err != nil {
 			return harness.Outcome{}, err
 		}
-		defer client.conn.Close()
+		defer func() {
+			if err := client.conn.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		list, err := client.request(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 		if err != nil {
 			return harness.Outcome{}, err
@@ -342,7 +346,11 @@ func TestNativeStopClosesBridgeAndWaitsForToolCallbacks(t *testing.T) {
 		if err != nil {
 			return harness.Outcome{}, err
 		}
-		defer client.conn.Close()
+		defer func() {
+			if err := client.conn.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		_, _ = io.WriteString(client.conn, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ado_work_item","arguments":{"key":"stop","workItemId":427}}}`+"\n")
 		<-ctx.Done()
 		return harness.Outcome{}, harness.ErrCanceled
@@ -401,7 +409,11 @@ func TestNativeUnstoppedHostToolPreventsSteeringAcknowledgmentAndRestart(t *test
 		if err != nil {
 			return harness.Outcome{}, err
 		}
-		defer client.conn.Close()
+		defer func() {
+			if err := client.conn.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		_, _ = io.WriteString(client.conn, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ado_work_item","arguments":{"key":"pending","workItemId":427}}}`+"\n")
 		<-ctx.Done()
 		return harness.Outcome{}, harness.ErrCanceled

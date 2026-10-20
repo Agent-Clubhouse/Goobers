@@ -437,7 +437,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/config/reload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		revision, err := catalogs.reload(*configDir, *stateDir, service)
@@ -449,7 +449,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		owner, _ := principal(r)
@@ -471,7 +471,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/identity/select", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var request struct {
@@ -490,7 +490,7 @@ func serve() (serveErr error) {
 	})
 	mux.HandleFunc(api+"/connections/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		owner, _ := principal(r)
@@ -545,20 +545,20 @@ func serve() (serveErr error) {
 	mux.Handle("/", http.FileServer(http.Dir(*assets)))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, requestPort, err := net.SplitHostPort(r.Host)
-		if err != nil || requestPort != port || !(host == address || host == "localhost") {
-			http.Error(w, "unexpected host", 403)
+		if err != nil || requestPort != port || (host != address && host != "localhost") {
+			http.Error(w, "unexpected host", http.StatusForbidden)
 			return
 		}
 		if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {
-			http.Error(w, "cross-origin request refused", 403)
+			http.Error(w, "cross-origin request refused", http.StatusForbidden)
 			return
 		}
 		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			http.Error(w, "cross-site request refused", 403)
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
 			return
 		}
 		if r.Method != "GET" && r.Method != "HEAD" && strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-			http.Error(w, "application/json is required", 415)
+			http.Error(w, "application/json is required", http.StatusUnsupportedMediaType)
 			return
 		}
 		owner := actors[0]

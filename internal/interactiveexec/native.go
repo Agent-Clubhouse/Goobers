@@ -11,12 +11,13 @@ import (
 	"sync"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/interactive"
 	"github.com/goobers/goobers/internal/interactiveagent"
 	"github.com/goobers/goobers/internal/invoke"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // native uses the production adapter's workspace-write CLI configuration,

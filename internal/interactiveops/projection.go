@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"sigs.k8s.io/yaml"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // projectConfig derives an execution-only native config snapshot. Registration
