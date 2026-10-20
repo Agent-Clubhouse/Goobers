@@ -177,3 +177,9 @@ do not accept a publication fencing token, so an already accepted HTTP request
 that completes remotely after cancellation cannot be rolled back by this
 protocol. The bounded request, retained lease and visible uncertainty contain
 that failure; they cannot make a provider transaction atomic with local state.
+
+Publication custody uses the reserved `publication-lock/` claim namespace.
+Generic run completion, terminal recovery, live-run renewal and continuation
+reclaim do not release, extend or transfer it. An explicit verified release
+ends a completed action's custody; otherwise its fixed expiry is the backstop,
+even if the workflow remains live or has already become terminal.

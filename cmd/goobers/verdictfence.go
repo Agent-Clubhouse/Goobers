@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -27,7 +28,7 @@ func withVerdictPublicationCustody(ctx context.Context, root string, repo provid
 		return fmt.Errorf("open verdict publication custody: %w", err)
 	}
 	key := claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name)
-	key.ExternalID = claimsclient.MergeLockItemPrefix + "publication/" + string(repo.Provider) + "/" + repo.Owner + "/" + repo.Name
+	key.ExternalID = localscheduler.PublicationLockItemIDPrefix + string(repo.Provider) + "/" + repo.Owner + "/" + repo.Name
 	// Older local invocations have no gaggle. Preserve their unscoped ledger
 	// namespace; provider/repository identity remains in the synthetic item.
 	if key.Gaggle == "" && !claimsPlaneSelected() {
@@ -94,7 +95,7 @@ func withPublicationClaim(ctx context.Context, ledger claimsclient.Ledger, lock 
 	if verifyErr != nil || !held || !time.Now().Before(started.Add(lease)) {
 		return errors.Join(err, fmt.Errorf("verdict publication custody lost or unverifiable after action; publication/landing outcome uncertain (held=%t): %w", held, errors.Join(verifyErr, errors.New("custody verification failed"))))
 	}
-	releaseErr := ledger.ReleaseScoped(verifyCtx, lock.Key, lock.RunID, claimrelease.Completed.Because("verdict_publication_closed", ""))
+	releaseErr := ledger.ReleaseScoped(verifyCtx, lock.Key, lock.RunID, claimrelease.Completed.Because(localscheduler.PublicationLockReleaseCode, ""))
 	return errors.Join(err, releaseErr)
 }
 

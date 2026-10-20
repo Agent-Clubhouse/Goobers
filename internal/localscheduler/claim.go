@@ -367,6 +367,9 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	planned := make([]plannedClaim, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
+		if entry.IsPublicationClaim() {
+			continue
+		}
 		if !entry.SharedDeadline.IsZero() {
 			return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before reclaim")
 		}
@@ -495,7 +498,7 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 			return false, existing.RunID, nil
 		}
 	}
-	if existing, held := l.entries[storageKey]; held && !existing.expired(now) && existing.RunID != runID {
+	if existing, held := l.entries[storageKey]; held && !existing.expired(now) && (existing.RunID != runID || existing.IsPublicationClaim()) {
 		return false, existing.RunID, nil
 	}
 
@@ -611,6 +614,9 @@ func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string, reason claimr
 // a renewal racing a legitimate ownership change is stale work for the
 // caller to stop retrying, not a failure.
 func (l *ClaimLedger) RenewEntry(entry ClaimEntry, leaseDuration time.Duration) (ok bool, err error) {
+	if entry.IsPublicationClaim() {
+		return false, nil
+	}
 	if entry.Gaggle == "" || entry.Provider == "" {
 		ok, _, err = l.Claim(entry.ItemID, entry.RunID, entry.Workflow, leaseDuration)
 		return ok, err
@@ -636,6 +642,9 @@ func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner,
 	}
 	if entry.RunID != runID {
 		return nil
+	}
+	if entry.IsPublicationClaim() && reason.Code != PublicationLockReleaseCode {
+		return errors.New("publication custody requires verified release or bounded expiry")
 	}
 	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
 		return errors.New("localscheduler: shared release requires acknowledged owner-scoped handoff")

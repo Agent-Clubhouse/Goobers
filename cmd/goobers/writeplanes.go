@@ -215,6 +215,9 @@ func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpa
 			return err
 		}
 		for _, entry := range ledger.ForRunAll(request.RunID) {
+			if entry.IsPublicationClaim() {
+				continue
+			}
 			if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
 				continue
 			}

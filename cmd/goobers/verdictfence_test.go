@@ -92,7 +92,7 @@ func TestVerdictPublicationCustodyDetectsLossAfterAction(t *testing.T) {
 	}
 	lock := claimsclient.MergeLock{Key: claimsclient.MergeLockKey("test", "github", "publication/github/acme", "repo"), RunID: "first", Workflow: "merge-review"}
 	err = withPublicationClaim(t.Context(), ledger, lock, time.Second, time.Second, 5*time.Second, func(ctx context.Context) error {
-		_, e := ledger.ReleaseAllForRun(ctx, lock.RunID, claimrelease.Completed.Because("test", ""))
+		e := ledger.ReleaseScoped(ctx, lock.Key, lock.RunID, claimrelease.Completed.Because("verdict_publication_closed", ""))
 		return e
 	})
 	if err == nil || !strings.Contains(err.Error(), "custody lost") {
