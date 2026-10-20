@@ -99,6 +99,11 @@ The configured goobers-interactive MCP tools are your native management interfac
 			}
 			options.Tools = retained
 			if len(options.Tools) > 0 {
+				options.RuntimeDir, err = e.bridgeRuntimeDir()
+				if err != nil {
+					cancel()
+					return "", err
+				}
 				bridge, err = interactiveagent.Start(runCtx, options)
 				if err != nil {
 					cancel()
@@ -122,11 +127,19 @@ The configured goobers-interactive MCP tools are your native management interfac
 		if len(toolNames) > 0 {
 			invocationInstruction += "\nAvailable host MCP tools: " + strings.Join(toolNames, ", ") + ". This list limits the host bridge; it is not a restriction on the native coding harness's built-in tools."
 		}
+		bridgeDirectory := ""
+		if bridge != nil {
+			bridgeDirectory = filepath.Dir(bridge.SocketPath)
+		}
+		invocationSandbox, err := e.sessionSandbox(boundary, workspace, bridgeDirectory)
+		if err != nil {
+			return "", errors.Join(err, stopInvocation())
+		}
 		gaggle := req.Gaggle
 		if gaggle == "" {
 			gaggle = "interactive-local"
 		}
-		runReq := harness.RunRequest{Sandbox: boundary, IsolateHome: true, Mode: harness.ModeInvoke, Model: model, MCPServers: mcpServers, Workspace: workspace, CompletionPath: ".goobers/result.json", Instructions: invocationInstruction, Timeout: 10 * time.Minute, Attempt: req.Attempt,
+		runReq := harness.RunRequest{Sandbox: invocationSandbox, IsolateHome: true, Mode: harness.ModeInvoke, Model: model, MCPServers: mcpServers, Workspace: workspace, CompletionPath: ".goobers/result.json", Instructions: invocationInstruction, Timeout: 10 * time.Minute, Attempt: req.Attempt,
 			Envelope:           apiv1.InvocationEnvelope{TaskID: req.TurnID, RunID: req.SessionID, WorkflowID: "experimental-interactive", Gaggle: gaggle, Goober: req.Goober, Goal: goal, Workspace: workspace, OwnershipBoundary: "Private session snapshot only; no remote effects"},
 			HarnessOptions:     map[string]apiextensionsv1.JSON{"auth": {Raw: []byte(`"ambient-chatgpt"`)}, "allowFileBackedCredentials": {Raw: []byte(`true`)}},
 			MaxTranscriptBytes: 1 << 20, TranscriptCheckpointInterval: 150 * time.Millisecond,

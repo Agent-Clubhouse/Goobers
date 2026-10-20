@@ -63,6 +63,20 @@ func (s nativeSandbox) Wrap(command *exec.Cmd, policy Policy) error {
 	for _, root := range validated.writableRoots {
 		args = append(args, "--bind", root, root)
 	}
+	// Mask shared roots before restoring only this session's private paths.
+	// Bind sources refer to the host namespace, not the masked destination.
+	for _, boundary := range validated.readBoundaries {
+		args = append(args, "--tmpfs", boundary.Root)
+		for _, allowed := range boundary.Allow {
+			args = append(args, "--ro-bind", allowed, allowed)
+		}
+		for _, writable := range append([]string{validated.workspace}, validated.writableRoots...) {
+			if pathContains(boundary.Root, writable) {
+				args = append(args, "--bind", writable, writable)
+			}
+		}
+		args = append(args, "--remount-ro", boundary.Root)
+	}
 	// Apply masks AFTER writable binds so a broad grant cannot uncover a key.
 	for _, denied := range validated.readDenied {
 		if denied.directory {
