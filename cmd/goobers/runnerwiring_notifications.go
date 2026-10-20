@@ -279,6 +279,8 @@ func newEscalationPolicy(l instance.Layout, cfg *instance.Config, resolver crede
 			needsHumanAssignee: cfg.NeedsHumanAssignee,
 		},
 		RunsDir: l.RunsDir(),
+		Reports: newTerminalReportQueue(l),
+		Gaggle:  l.Gaggle(),
 		State:   escalationNotifyState{layout: l, cfg: cfg},
 		EngineInterruption: func(runID string) (string, error) {
 			return engineWatchdogInterruption(l.SchedulerDir(), runID)

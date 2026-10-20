@@ -151,7 +151,7 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, projec
 	}
 	return func(runID string, phase journal.RunPhase, annotate terminalAnnotator) error {
 		branchErr := finalizeTerminalBranch(l.RunsDir(), runID, annotate, repo, deleteBranch)
-		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, annotate, repo, labelAbortedPR)
+		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, annotate, repo, labelAbortedPR, newTerminalReportQueue(l))
 		return errors.Join(branchErr, labelErr)
 	}, nil
 }
@@ -259,6 +259,14 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 func scrubTerminalError(scrubber journal.Scrubber, err error) error {
 	if err == nil {
 		return nil
+	}
+	if limit, ok := providers.AsRateLimitError(err); ok {
+		safe := *limit
+		safe.Endpoint = string(scrubber.Scrub([]byte(safe.Endpoint)))
+		safe.RetryAfterRaw = string(scrubber.Scrub([]byte(safe.RetryAfterRaw)))
+		safe.RemainingRaw = string(scrubber.Scrub([]byte(safe.RemainingRaw)))
+		safe.ResetRaw = string(scrubber.Scrub([]byte(safe.ResetRaw)))
+		return &safe
 	}
 	return errors.New(string(scrubber.Scrub([]byte(err.Error()))))
 }

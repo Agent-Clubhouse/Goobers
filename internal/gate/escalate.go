@@ -314,12 +314,22 @@ func upsertMarkerComment(ctx context.Context, poster Commenter, repository provi
 	if err != nil {
 		return fmt.Errorf("list comments: %w", err)
 	}
+	// An acknowledged-lost write or a crash before outbox acknowledgement
+	// can replay an already published projection. Search every comment: ADO
+	// preserves older marker versions because editing is unsupported.
+	for _, c := range comments {
+		if strings.Contains(c.Body, marker) && providers.StripAttribution(c.Body) == strings.TrimSpace(body) {
+			return nil
+		}
+	}
 	found := false
 	for _, c := range comments {
 		if strings.Contains(c.Body, marker) {
 			found = true
 			if err := poster.UpdateComment(ctx, repository, c.ID, body); err == nil {
 				return nil
+			} else if _, limited := providers.AsRateLimitError(err); limited {
+				return fmt.Errorf("update comment: %w", err)
 			}
 			break
 		}
