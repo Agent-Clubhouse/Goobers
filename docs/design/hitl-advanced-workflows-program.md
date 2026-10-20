@@ -45,12 +45,17 @@ those documents enter the stack. Each document owns its acceptance criteria and
 unresolved implementation choices. Agreed user decisions below are constraints,
 not questions to reopen during implementation.
 
-Authentication prerequisite within HITL:
-[fleet service authentication and delegated human access](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/design/fleet-delegated-authentication.md)
-(`HAW-AUTH-*`). Fleet mode lets an external service own sign-in and per-user gaggle
-permissions within locally enforced action and credential limits. Direct portal
-sign-in remains a separate delivery requirement. Neither is claimed complete by
-the local implementation snapshot or by design approval.
+Fleet transport follow-up within HITL:
+[fleet service authentication and delegated human access](fleet-delegated-authentication.md)
+(`HAW-AUTH-*`, draft #6865) applies the 2026-10-14 authority decision in
+[HITL section 4.1](https://github.com/Agent-Clubhouse/Goobers/blob/d0045f1ac196410bea852b2c2b0998031104d963/docs/design/interactive-factory-operations.md#41-deployment-authority-model).
+Fleet owns human identity; the Goobers admin surface preserves Fleet-asserted
+principal/consent facts and enforces local action/target and provider limits.
+Server-owned provider credential selection is separate from human sign-in.
+Optional standalone browser login, headless Fleet workload identity and a per-user
+provider OBO profile are later tracks, not prerequisites for default trusted-local
+HITL. The new forwarded HITL surface still needs its protected provenance adapter;
+neither that adapter nor the #6807 snapshot is claimed delivered by design approval.
 
 ## Agreed constraints
 
