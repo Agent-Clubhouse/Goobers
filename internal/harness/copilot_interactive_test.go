@@ -3,9 +3,10 @@ package harness
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/internal/invoke"
 	"slices"
 	"testing"
+
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 type interactiveCaptureRunner struct {

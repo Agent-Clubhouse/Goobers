@@ -10,6 +10,7 @@ import (
 
 	sdk "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
+
 	"github.com/goobers/goobers/internal/chat"
 )
 
@@ -37,10 +38,18 @@ type session struct {
 func newSession(ctx context.Context, cancel context.CancelFunc, o chat.StartOptions) *session {
 	return &session{ctx: ctx, cancel: cancel, stream: chat.NewStream(o), ceiling: o.Ceiling, level: o.Ceiling.Clamp(o.Level), permissions: map[string]chan chat.PermissionResponse{}, questions: map[string]chan chat.QuestionAnswers{}}
 }
-func (s *session) NativeID() string                    { return s.id }
-func (s *session) Capabilities() chat.Capabilities     { return capabilities() }
+
+// NativeID returns the native conversation identity.
+func (s *session) NativeID() string { return s.id }
+
+// Capabilities advertises the operations implemented by a transport.
+func (s *session) Capabilities() chat.Capabilities { return capabilities() }
+
+// ResumeFallback identifies why a fresh session replaced a requested resume.
 func (s *session) ResumeFallback() chat.ResumeFallback { return s.fallback }
-func (s *session) Events() <-chan chat.Event           { return s.stream.Events() }
+
+// Events returns the ordered event channel.
+func (s *session) Events() <-chan chat.Event { return s.stream.Events() }
 func (s *session) emit(t string, data map[string]any, id string) {
 	if !s.stream.Emit(t, data, id) {
 		s.cancel()
@@ -51,6 +60,8 @@ func (s *session) callContext(ctx context.Context) (context.Context, func()) {
 	stop := context.AfterFunc(s.ctx, cancel)
 	return c, func() { stop(); cancel() }
 }
+
+// Send accepts content and reports its actual delivery kind.
 func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.SendOptions) (chat.Delivery, error) {
 	text, err := chat.PlainText(content)
 	if err != nil {
@@ -100,6 +111,8 @@ func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.
 	s.emit("command.delivered", map[string]any{"delivery": actual}, o.CommandID)
 	return actual, nil
 }
+
+// Interrupt stops the current turn without granting new authority.
 func (s *session) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
@@ -112,6 +125,8 @@ func (s *session) Interrupt(ctx context.Context) error {
 	defer stop()
 	return s.native.Abort(call)
 }
+
+// SetLevel requests a permission level bounded by host authority.
 func (s *session) SetLevel(_ context.Context, l chat.Level) (chat.Level, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -122,6 +137,8 @@ func (s *session) SetLevel(_ context.Context, l chat.Level) (chat.Level, error) 
 	s.emit("mode_changed", map[string]any{"level": s.level}, "")
 	return s.level, nil
 }
+
+// SetModel requests a model change when the transport supports it.
 func (s *session) SetModel(ctx context.Context, m string) error {
 	s.mu.Lock()
 	closed := s.closed
@@ -137,6 +154,8 @@ func (s *session) SetModel(ctx context.Context, m string) error {
 	s.emit("model_changed", map[string]any{"modelId": m}, "")
 	return nil
 }
+
+// Close closes the session or stream after releasing its owned resources.
 func (s *session) Close() error {
 	s.once.Do(func() {
 		s.mu.Lock()
@@ -162,6 +181,8 @@ func (s *session) Close() error {
 	})
 	return s.closeErr
 }
+
+// RespondPermission answers a pending permission request by identity.
 func (s *session) RespondPermission(_ context.Context, id string, r chat.PermissionResponse) error {
 	s.mu.Lock()
 	ch, ok := s.permissions[id]
@@ -175,6 +196,8 @@ func (s *session) RespondPermission(_ context.Context, id string, r chat.Permiss
 	ch <- r
 	return nil
 }
+
+// AnswerQuestion answers a pending structured question by identity.
 func (s *session) AnswerQuestion(_ context.Context, id string, a chat.QuestionAnswers) error {
 	s.mu.Lock()
 	ch, ok := s.questions[id]
