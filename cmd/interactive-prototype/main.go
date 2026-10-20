@@ -14,7 +14,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -151,6 +150,10 @@ func serve() (serveErr error) {
 		}
 	}
 	actors = slices.Compact(actors)
+	human, err := newHumanAuth(actors)
+	if err != nil {
+		return err
+	}
 	var service *interactive.Service
 	broker, err := auth.Open(auth.Config{Path: filepath.Join(*stateDir, "broker.json"), CheckExecution: func(ctx context.Context, identity auth.Identity, request auth.OperationRequest) error {
 		if service == nil {
@@ -350,13 +353,7 @@ func serve() (serveErr error) {
 		}
 		pool.byOwner[actor] = executor
 	}
-	principal := func(r *http.Request) (string, error) {
-		owner, ok := r.Context().Value(actorKey{}).(string)
-		if !ok {
-			return "", fmt.Errorf("local actor unavailable")
-		}
-		return owner, nil
-	}
+	principal := human.authorize
 	service, err = interactive.Open(interactive.Options{StateDir: filepath.Join(*stateDir, "sessions"), Surfaces: catalog.Surfaces, AvailableExecutionModes: availableModes, DefaultExecutionMode: "codex-local", Executor: pool, Principal: principal, WorkerID: "local-worker", LeaseDuration: 30 * time.Second, MaxActive: 4, MaxActivePerOwner: 2, MaxTurnDuration: 10 * time.Minute,
 		OnStop: func(ctx context.Context, owner, sessionID string) error {
 			if err := pool.byOwner[owner].Stop(ctx, owner, sessionID); err != nil {
@@ -481,11 +478,10 @@ func serve() (serveErr error) {
 			fail(w, 400, err)
 			return
 		}
-		if !slices.Contains(actors, request.Name) {
-			fail(w, 403, fmt.Errorf("unknown controlled local actor"))
+		if err := human.selectActor(w, r, request.Name); err != nil {
+			fail(w, 403, err)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "goobers-local-actor", Value: url.QueryEscape(request.Name), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		writeJSON(w, map[string]string{"actor": request.Name, "mode": "controlled-local"})
 	})
 	mux.HandleFunc(api+"/connections/", func(w http.ResponseWriter, r *http.Request) {
@@ -543,38 +539,7 @@ func serve() (serveErr error) {
 		fail(w, 404, fmt.Errorf("this experimental server exposes interactive APIs; ordinary daemon endpoints remain on the ordinary daemon"))
 	})
 	mux.Handle("/", http.FileServer(http.Dir(*assets)))
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, requestPort, err := net.SplitHostPort(r.Host)
-		if err != nil || requestPort != port || !(host == address || host == "localhost") {
-			http.Error(w, "unexpected host", 403)
-			return
-		}
-		if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {
-			http.Error(w, "cross-origin request refused", 403)
-			return
-		}
-		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			http.Error(w, "cross-site request refused", 403)
-			return
-		}
-		if r.Method != "GET" && r.Method != "HEAD" && strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-			http.Error(w, "application/json is required", 415)
-			return
-		}
-		owner := actors[0]
-		if cookie, err := r.Cookie("goobers-local-actor"); err == nil {
-			decoded, err := url.QueryUnescape(cookie.Value)
-			if err == nil && slices.Contains(actors, decoded) {
-				owner = decoded
-			}
-		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Cache-Control", "no-store")
-		ctx := context.WithValue(r.Context(), actorKey{}, owner)
-		ctx = context.WithValue(ctx, methodKey{}, r.Method)
-		mux.ServeHTTP(w, r.WithContext(ctx))
-	})
+	handler := authenticatedPrototypeHandler(mux, address, port, human)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -590,6 +555,12 @@ func serve() (serveErr error) {
 		case <-stopped:
 		}
 	}()
+	link, err := human.writeBootstrapLink(*stateDir, *listen)
+	if err != nil {
+		return fmt.Errorf("write private human authentication link: %w", err)
+	}
+	defer human.removeBootstrapLink()
+	log.Printf("Human-only authentication link file (open privately; do not share with agents): %s", link)
 	log.Printf("Experimental interactive prototype: http://%s/#/interactive (DSL=%s; per-session adapters; providers=controlled-local; identities=controlled-local)", *listen, catalog.Revision)
 	err = server.ListenAndServe()
 	close(stopped)

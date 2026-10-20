@@ -50,11 +50,32 @@ There is no separate surfaces JSON file or executor, lease or admission-limit CL
 configuration; those product settings come from the DSL and remain subject to
 host ceilings.
 
-The local persona selector defaults to Mason and Alex for isolation exercises.
-These are selectable test identities, not verified Entra users. Host/Origin and
-cross-site checks protect the loopback HTTP boundary. Owner identity comes from
-the configured principal adapter, not a command's request body. This is not a
-remote authentication or hostile same-OS-user isolation boundary.
+The server writes a one-use URL to `human-auth.url` inside its private state
+directory and prints only the file path. Open that link in the human's browser
+before using the portal. The file is removed after exchange or clean shutdown. The token is carried in the URL fragment,
+removed from browser history before exchange, and consumed once. Restart the
+server to revoke browser sessions or obtain a new bootstrap URL. Do not give
+this URL or the browser's cookies to an agent, and keep console capture outside
+agent-readable roots.
+
+Every interactive API read and event stream requires the authenticated browser
+cookie. Mutations additionally require its separate CSRF header; the portal
+sends this automatically. Host/Origin and cross-site checks still apply. The
+session cookie is HttpOnly and SameSite=Strict. Session and CSRF secrets are held in server
+memory and never added to harness environment, requests or workspace files.
+
+The local persona selector is a controlled demonstration, not Entra sign-in.
+Only the authenticated human may select a configured persona. Each browser
+context receives an opaque server-bound persona cookie; a raw actor-name
+cookie cannot choose an owner. Independent contexts can demonstrate owner
+isolation. This does not provide multi-user remote authentication.
+
+The authentication boundary depends on OS confinement: agents must not read
+server state/logs, browser cookie stores or host process memory. Writable agent
+workspaces belong outside denied host state. A sandboxed subprocess fixture
+verifies denied secret reads and rejects unauthenticated approve/apply requests
+even when the loopback service is reachable. Network access alone is not human
+authority; residual host IPC/browser access requires separate confinement.
 
 ## Configure the experiences in DSL 3.0
 

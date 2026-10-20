@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, cpSync, chmodSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -21,7 +21,8 @@ await new Promise((resolveProbe, reject) => {
   socket.once("error", error => { socket.destroy(); if (error.code === "ECONNREFUSED") resolveProbe(); else reject(error); });
   socket.setTimeout(2000, () => { socket.destroy(); reject(new Error("Local listener probe timed out")); });
 });
-mkdirSync(evidence, { recursive: true });
+mkdirSync(evidence, { recursive: true, mode: 0o700 });
+chmodSync(evidence, 0o700);
 cpSync(configSource, config, { recursive: true, errorOnExist: true });
 const startedAt = new Date().toISOString();
 const start = performance.now();
@@ -33,9 +34,25 @@ const args = ["--listen", `127.0.0.1:${port}`, "--state-dir", state,
 const server = spawn(resolve(repository, ".tools/interactive-prototype"), args, { cwd: repository });
 let exited = false;
 let stopping = false;
+let bootstrapToken;
 for (const [stream, output] of [[server.stdout, process.stdout], [server.stderr, process.stderr]]) {
-  stream.on("data", chunk => { appendFileSync(`${evidence}/server.log`, chunk); output.write(chunk); });
+  let buffered = "";
+  stream.setEncoding("utf8");
+  stream.on("data", chunk => {
+    buffered += chunk;
+    while (buffered.includes("\n")) {
+      const at = buffered.indexOf("\n");
+      const line = buffered.slice(0, at + 1);
+      buffered = buffered.slice(at + 1);
+      const match = line.match(/\/auth#([A-Za-z0-9_-]{43})/);
+      if (match) bootstrapToken = match[1];
+      const safe = line.replace(/(\/auth#)[A-Za-z0-9_-]{43}/g, "$1[redacted]");
+      appendFileSync(`${evidence}/server.log`, safe, { mode: 0o600 });
+      output.write(safe);
+    }
+  });
 }
+
 server.on("error", error => { console.error(error); process.exitCode = 1; });
 server.on("exit", (code, signal) => {
   exited = true;
@@ -43,9 +60,32 @@ server.on("exit", (code, signal) => {
 });
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; server.kill(signal); });
 let runtime;
+let humanCookies;
 while (performance.now() - start < 30_000 && !exited) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/v1/interactive/status`);
+    const origin = `http://127.0.0.1:${port}`;
+    if (!humanCookies && !bootstrapToken && existsSync(`${state}/human-auth.url`)) {
+      const link = new URL(readFileSync(`${state}/human-auth.url`, "utf8").trim());
+      if (link.origin !== origin || link.pathname !== "/auth") throw new Error("Unexpected human bootstrap destination");
+      bootstrapToken = link.hash.slice(1);
+    }
+    if (!humanCookies && bootstrapToken) {
+      const exchange = await fetch(`${origin}/auth/exchange`, {
+        method: "POST", headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify({ token: bootstrapToken }),
+      });
+      if (!exchange.ok) throw new Error("Human fixture bootstrap failed");
+      humanCookies = exchange.headers.getSetCookie().map(value => {
+        const [pair] = value.split(";");
+        const at = pair.indexOf("=");
+        const name = pair.slice(0, at);
+        return { name, value: pair.slice(at + 1), domain: "127.0.0.1", path: name === "goobers-human-csrf" ? "/" : "/api/v1/interactive", expires: -1, httpOnly: name !== "goobers-human-csrf", secure: false, sameSite: "Strict" };
+      });
+      bootstrapToken = undefined;
+      writeFileSync(`${evidence}/human-browser-state.json`, JSON.stringify({ cookies: humanCookies, origins: [] }), { mode: 0o600 });
+    }
+    if (!humanCookies) throw new Error("Waiting for human bootstrap");
+    const response = await fetch(`${origin}/api/v1/interactive/status`, { headers: { Cookie: humanCookies.map(c => `${c.name}=${c.value}`).join("; ") } });
     if (response.ok) { runtime = await response.json(); break; }
   } catch { /* Server is not listening yet. */ }
   await new Promise(resolve => setTimeout(resolve, 50));

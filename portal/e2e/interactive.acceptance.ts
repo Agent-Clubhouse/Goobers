@@ -1,3 +1,4 @@
+import { humanBrowserOptions } from "./interactive-auth";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -187,7 +188,7 @@ test("both surfaces render a new session and retain it after a narrow-screen rec
 });
 
 test("controlled local identities cannot read each other's sessions and execute in separate workspaces", async ({ browser, baseURL }) => {
-  const contexts = await Promise.all([browser.newContext({ baseURL }), browser.newContext({ baseURL })]);
+  const contexts = await Promise.all([browser.newContext({ baseURL, ...humanBrowserOptions() }), browser.newContext({ baseURL, ...humanBrowserOptions() })]);
   try {
     const requests = contexts.map(context => context.request);
     for (const [index, name] of ["Mason", "Alex"].entries()) {
@@ -512,7 +513,7 @@ test("DSL reload rejects invalid policy and fences existing work before new sess
       expect(state.actions).toEqual(expect.arrayContaining([expect.objectContaining({ id: helperAction.id })]));
       retainedReceipts.push({ phase, receipt });
     }
-    const foreignContext = await browser.newContext({ baseURL });
+    const foreignContext = await browser.newContext({ baseURL, ...humanBrowserOptions() });
     try {
       expect((await foreignContext.request.post(`${api}/identity/select`, { data: { name: "Alex" } })).ok()).toBeTruthy();
       for (const url of [receiptURL, stateURL]) {

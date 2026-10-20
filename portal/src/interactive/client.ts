@@ -1,3 +1,5 @@
+import { humanControlHeaders } from "./humanAuth";
+
 export type ExecutionModeId = "codex-local" | "local-tools";
 export interface ExecutionModeOption { id: ExecutionModeId; label: string; available: boolean; reason?: string; liveQualified: boolean }
 export interface CreateSessionRequest { commandId: string; surfaceId: string; title?: string; executionMode: ExecutionModeId }
@@ -74,7 +76,7 @@ export class HttpInteractiveClient implements InteractiveClient {
       response = await this.fetcher(this.base + path, {
         method: body === undefined ? "GET" : "POST", credentials: "same-origin",
         signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(30000) : undefined,
-        headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+        headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json", ...humanControlHeaders() }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch { throw new InteractiveError("The server response was lost. The outcome is unknown; refresh before retrying the same command.", "network", 0); }
