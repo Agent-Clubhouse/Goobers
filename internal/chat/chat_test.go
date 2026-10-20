@@ -64,3 +64,34 @@ func TestFixtureRemapAndMismatch(t *testing.T) {
 		t.Fatal("missing or unsafe mismatch")
 	}
 }
+
+func TestFixtureRequestIDNamespacesAndNullMatch(t *testing.T) {
+	fixture := `{"kind":"header","format":"clubhouse-chat-fixture","version":1,"protocol":"copilot-sdk"}
+{"from":"client","msg":{"id":1,"method":"create"},"match":{"params":{"parent":null}}}
+{"from":"cli","msg":{"id":1,"method":"permission"}}
+{"from":"client","msg":{"id":1,"result":{}}}
+{"from":"cli","msg":{"id":1,"result":{}}}
+`
+	f, err := chattest.ReadFixture(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := []map[string]any{{"id": 42, "method": "create", "params": map[string]any{"parent": nil}}, {"id": 1, "result": map[string]any{}}}
+	reads, writes := 0, 0
+	err = f.Replay(func() (map[string]any, error) { r := requests[reads]; reads++; return r, nil }, func(e chattest.Entry) error {
+		writes++
+		if writes == 2 && e.Msg["id"] != 42 {
+			t.Fatal("server response overwrote client request identity")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.Replay(func() (map[string]any, error) {
+		return map[string]any{"method": "create", "params": map[string]any{}}, nil
+	}, func(chattest.Entry) error { return nil })
+	if err == nil {
+		t.Fatal("missing field matched explicit null")
+	}
+}

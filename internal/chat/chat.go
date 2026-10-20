@@ -200,3 +200,9 @@ type Attempt struct {
 	CheckMS        int64       `json:"checkMs"`
 	SessionStartMS int64       `json:"sessionStartMs,omitempty"`
 }
+
+// EffortSetter is optional; Session stays stable for drivers without an effort
+// control. Empty effort requests the provider default when supported.
+type EffortSetter interface {
+	SetEffort(context.Context, string) error
+}

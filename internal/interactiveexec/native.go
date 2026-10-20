@@ -24,17 +24,12 @@ import (
 // Interactive completion explicitly preserves dirty changes: it is not an
 // ordinary declarative workflow's committed-stage completion contract.
 func (e *Executor) native(ctx context.Context, req interactive.ExecutionRequest, workspace, providerContext string, emit func(string, map[string]any) error) (string, error) {
-	if req.Harness != "" && req.Harness != "codex" {
+	if req.Harness != "" && req.Harness != "codex" && req.Harness != "copilot" && req.Harness != "claude" {
 		return "", fmt.Errorf("configured harness is unsupported; no fallback is permitted")
 	}
 	model := req.Model
 	if model == "" {
 		model = e.config.Model
-	}
-	adapter := &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(workspace, ".tmp")}
-	runAdapter := adapter.Run
-	if e.runNative != nil {
-		runAdapter = e.runNative
 	}
 	if err := os.MkdirAll(filepath.Join(workspace, ".tmp"), 0700); err != nil {
 		return "", err
@@ -55,6 +50,12 @@ The configured goobers-interactive MCP tools are your native management interfac
 			goal += "- " + turn.Text + "\n"
 		}
 	}
+	var pendingSteer *interactive.Steering
+	defer func() {
+		if pendingSteer != nil {
+			acknowledge(*pendingSteer, "", fmt.Errorf("replacement prompt was not delivered"))
+		}
+	}()
 	for invocation := 1; invocation <= 8; invocation++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -63,7 +64,6 @@ The configured goobers-interactive MCP tools are your native management interfac
 			return "", err
 		}
 		runCtx, cancel := context.WithCancel(ctx)
-		runCtx, proof := invoke.WithWorkspaceQuiescence(runCtx)
 		var bridge *interactiveagent.Bridge
 		var toolNames []string
 		var mcpServers []apiv1.MCPServer
@@ -135,69 +135,31 @@ The configured goobers-interactive MCP tools are your native management interfac
 				return nil
 			},
 		}
-		type nativeResult struct {
-			out harness.Outcome
-			err error
-		}
-		finished := make(chan nativeResult, 1)
-		if err := emit("tool.started", map[string]any{"name": "codex.harness", "executionMode": "codex-local", "invocation": invocation, "detail": "Actual Codex model using the Goobers adapter; trusted local login; workspace-write sandbox"}); err != nil {
-			return "", errors.Join(err, stopInvocation())
-		}
-		go func() {
-			out, err := runAdapter(runCtx, runReq)
-			finished <- nativeResult{out, verifyWriters(proof, err)}
-		}()
-		select {
-		case <-ctx.Done():
-			bridgeErr := stopInvocation()
-			result := <-finished
-			return "", errors.Join(ctx.Err(), result.err, bridgeErr)
-		case steer, ok := <-req.Steering:
-			bridgeErr := stopInvocation()
-			result := <-finished
-			result.err = errors.Join(result.err, bridgeErr)
-			if errors.Is(result.err, invoke.ErrWorkspaceNotQuiescent) {
-				if steer.Ack != nil {
-					steer.Ack(result.err)
-				}
-				return "", result.err
+		out, steer, driveErr := e.driveChat(ctx, runCtx, req, runReq, pendingSteer, emit)
+		pendingSteer = nil
+		driveErr = errors.Join(driveErr, stopInvocation())
+		if steer != nil {
+			if driveErr != nil || ctx.Err() != nil {
+				acknowledge(*steer, "", errors.Join(driveErr, ctx.Err()))
+				return "", errors.Join(driveErr, ctx.Err())
 			}
-			if !ok {
-				return "", fmt.Errorf("steering channel closed")
-			}
-			if ctx.Err() != nil {
-				if steer.Ack != nil {
-					steer.Ack(ctx.Err())
-				}
-				return "", errors.Join(ctx.Err(), result.err)
-			}
-			// The adapter has returned after stopping its process tree. There is no
-			// claim that the original native turn consumed an injected message.
-			if steer.Ack != nil {
-				steer.Ack(nil)
-			}
-			if err := emit("assistant.message", map[string]any{"text": "The native turn was interrupted and its writer stopped. Continuing from preserved files with your steering: " + steer.Text, "steeringMode": "interrupt-and-continue"}); err != nil {
-				return "", err
-			}
+			// The old session and bridge have both joined. The acknowledgement
+			// happens only after the replacement prompt is accepted below.
 			goal += "\nNew authenticated steering after confirmed interruption:\n" + steer.Text + "\nInspect the preserved workspace before continuing; do not blindly repeat effects."
-		case result := <-finished:
-			result.err = errors.Join(result.err, stopInvocation())
-			if result.err != nil {
-				_ = emit("tool.completed", map[string]any{"name": "codex.harness", "status": "failed", "detail": result.err.Error()})
-				return "", result.err
-			}
-			var completion apiv1.ResultEnvelope
-			if err := json.Unmarshal(result.out.Payload, &completion); err != nil {
-				return "", err
-			}
-			if err := emit("tool.completed", map[string]any{"name": "codex.harness", "status": string(completion.Status), "metrics": result.out.Metrics}); err != nil {
-				return "", err
-			}
-			if completion.Status != "success" {
-				return completion.Summary, fmt.Errorf("native harness returned %s", completion.Status)
-			}
-			return completion.Summary, nil
+			pendingSteer = steer
+			continue
 		}
+		if driveErr != nil {
+			return "", driveErr
+		}
+		var completion apiv1.ResultEnvelope
+		if err := json.Unmarshal(out.Payload, &completion); err != nil {
+			return "", err
+		}
+		if completion.Status != "success" {
+			return completion.Summary, fmt.Errorf("native harness returned %s", completion.Status)
+		}
+		return completion.Summary, nil
 	}
 	return "", fmt.Errorf("steering restart limit reached; preserved workspace requires a new turn")
 }
@@ -234,6 +196,9 @@ func (s *nativeStream) write(data []byte) error {
 			} `json:"item"`
 		}
 		if json.Unmarshal([]byte(line), &event) != nil {
+			if err := s.emit("protocol_unknown", map[string]any{"driver": "execshim", "kind": "field", "name": "malformed_json", "text": "Unrecognized harness record"}); err != nil {
+				return err
+			}
 			continue
 		}
 		// Never project model reasoning, raw prompts, auth diagnostics, or arbitrary
@@ -255,6 +220,16 @@ func (s *nativeStream) write(data []byte) error {
 			}
 		case "file_change":
 			if err := s.emit("tool.completed", map[string]any{"name": "codex.file_change", "status": event.Item.Status}); err != nil {
+				return err
+			}
+		case "reasoning":
+			// Deliberately excluded from the durable conversation.
+		default:
+			name := event.Item.Type
+			if name == "" {
+				name = event.Type
+			}
+			if err := s.emit("protocol_unknown", map[string]any{"driver": "execshim", "kind": "field", "name": bounded(name, 128), "text": "Unrecognized harness event"}); err != nil {
 				return err
 			}
 		}

@@ -1,0 +1,214 @@
+package interactiveexec
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/goobers/goobers/internal/chat"
+	"github.com/goobers/goobers/internal/chat/copilotsdk"
+	"github.com/goobers/goobers/internal/chat/execshim"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/interactive"
+	"github.com/goobers/goobers/internal/interactiveagent"
+)
+
+func acknowledge(s interactive.Steering, delivery chat.Delivery, err error) {
+	if s.AckDelivery != nil {
+		s.AckDelivery(string(delivery), err)
+	} else if s.Ack != nil {
+		s.Ack(err)
+	}
+}
+
+// driverRegistry is built from the pinned harness, never a cross-provider
+// fallback. The legacy codex-local mode is the trusted local model host gate;
+// the pinned harness now selects the transport independently of that name.
+func (e *Executor) driverRegistry(provider string, request harness.RunRequest) *chat.Registry {
+	if e.chatRegistry != nil {
+		return e.chatRegistry(provider, request)
+	}
+	registry := chat.NewRegistry()
+	var adapter harness.Adapter
+	switch provider {
+	case "copilot":
+		c := &harness.CopilotAdapter{Command: []string{"copilot"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp"), DeferDiscovery: true}
+		request.HarnessOptions = nil
+
+		// Built-in shell expands to filesystem/test tools; host bridge tools remain
+		// separately named and pass the same outer adapter permission policy.
+		if e.runNative == nil {
+			_ = registry.Register(provider, &copilotsdk.Driver{Adapter: c, Request: request})
+		}
+		adapter = c
+	case "claude":
+		request.HarnessOptions = nil
+		adapter = &harness.ClaudeAdapter{Command: []string{"claude"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp")}
+	case "codex":
+		adapter = &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp")}
+	}
+	if adapter == nil {
+		return registry
+	}
+	_ = registry.Register(provider, &execshim.Driver{Adapter: adapter, Request: request, Run: e.runNative})
+	return registry
+}
+
+func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.ExecutionRequest, request harness.RunRequest, pending *interactive.Steering, emit func(string, map[string]any) error) (out harness.Outcome, restart *interactive.Steering, err error) {
+	pendingAck := false
+	defer func() {
+		if pending != nil && !pendingAck {
+			acknowledge(*pending, "", fmt.Errorf("replacement prompt was not delivered"))
+		}
+	}()
+	provider := req.Harness
+	if provider == "" {
+		provider = "codex"
+	}
+	if provider == "copilot" {
+		request.Tools = append([]string{"shell"}, req.Tools...)
+		if req.ReadOnly {
+			request.Tools = []string{"view", "grep", "glob"}
+		}
+	}
+	registry := e.driverRegistry(provider, request)
+	level := chat.Auto
+	if req.ReadOnly {
+		level = chat.Plan
+	}
+	resumePath := e.metadata(request.Workspace, "chat-"+provider+"-session")
+	resumeID, _ := os.ReadFile(resumePath)
+	s, attempts, err := registry.Start(runCtx, provider, chat.StartOptions{ResumeNativeID: string(resumeID), AgentID: req.Goober, SessionID: req.SessionID, TurnID: req.TurnID, Fence: req.Fence, Workspace: request.Workspace, Model: request.Model, SystemPrompt: request.Instructions, Level: level, Ceiling: chat.NewCeiling(level, level, level)})
+	if err != nil {
+		return out, nil, err
+	}
+	if id := s.NativeID(); id != "" {
+		if saveErr := os.WriteFile(resumePath, []byte(id), 0600); saveErr != nil {
+			return out, nil, errors.Join(saveErr, s.Close())
+		}
+	}
+	project := func(event chat.Event) error {
+		if projected, ok := interactiveagent.ProjectChatEvent(event); ok {
+			return emit(projected.Type, projected.Data)
+		}
+		return nil
+	}
+	defer func() {
+		err = errors.Join(err, s.Close())
+		for event := range s.Events() {
+			if emitErr := project(event); emitErr != nil {
+				err = errors.Join(err, emitErr)
+				break
+			}
+		}
+	}()
+	if err := emit("execution.note", map[string]any{"driverAttempts": attempts}); err != nil {
+		return out, nil, err
+	}
+	commandID := ""
+	if pending != nil {
+		commandID = pending.CommandID
+	}
+	delivered, err := s.Send(runCtx, chat.Text(request.Envelope.Goal), chat.SendOptions{Delivery: chat.Prompt, CommandID: commandID})
+	if err != nil {
+		return out, nil, err
+	}
+	if pending != nil {
+		acknowledge(*pending, delivered, nil)
+		pendingAck = true
+	}
+	steering := req.Steering
+	for {
+		select {
+		case <-ctx.Done():
+			return out, nil, ctx.Err()
+		case steer, ok := <-steering:
+			if !ok {
+				steering = nil
+				continue
+			}
+			requested := chat.Delivery(steer.Delivery)
+			if requested == "" {
+				requested = chat.Steer
+			}
+			if requested == chat.Queued && s.Capabilities().Queue == "none" {
+				acknowledge(steer, "", chat.ErrUnsupported)
+				continue
+			}
+			if steer.SteeringMode == "interrupt-and-continue" || requested == chat.Steer && !s.Capabilities().Steer {
+				closeErr := s.Close()
+				if closeErr != nil {
+					acknowledge(steer, "", closeErr)
+					return out, nil, closeErr
+				}
+				return out, &steer, nil
+			}
+			delivery, sendErr := s.Send(runCtx, chat.Text(steer.Text), chat.SendOptions{Delivery: requested, CommandID: steer.CommandID})
+			acknowledge(steer, delivery, sendErr)
+			if sendErr != nil && errors.Is(sendErr, chat.ErrClosed) {
+				return out, nil, sendErr
+			}
+		case event, ok := <-s.Events():
+			if !ok {
+				return out, nil, fmt.Errorf("chat session ended before turn completion")
+			}
+			if err := project(event); err != nil {
+				return out, nil, err
+			}
+			switch event.Type {
+			case "completion.accepted":
+				if payload, ok := event.Data["payload"].(json.RawMessage); ok {
+					out.Payload = append([]byte(nil), payload...)
+				}
+			case "error":
+				if fatal, _ := event.Data["fatal"].(bool); fatal {
+					return out, nil, fmt.Errorf("chat driver reported execution failure")
+				}
+			case "turn_ended":
+				if event.Data["reason"] != "end_turn" {
+					return out, nil, fmt.Errorf("chat turn did not complete")
+				}
+				if err := s.Close(); err != nil {
+					return out, nil, err
+				}
+				if len(out.Payload) == 0 {
+					payload, readErr := readChatCompletion(request.Workspace, request.CompletionPath)
+					if readErr != nil {
+						return out, nil, readErr
+					}
+					out.Payload = payload
+				}
+				if request.ValidateCompletion != nil {
+					if err := request.ValidateCompletion(out.Payload); err != nil {
+						return out, nil, err
+					}
+				}
+				return out, nil, nil
+			}
+		}
+	}
+}
+func readChatCompletion(workspace, path string) ([]byte, error) {
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	file, err := root.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("chat completion is missing")
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 1<<20 {
+		return nil, fmt.Errorf("chat completion exceeds limit")
+	}
+	return data, nil
+}

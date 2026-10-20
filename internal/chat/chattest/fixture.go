@@ -90,9 +90,11 @@ func (f Fixture) Replay(receive func() (map[string]any, error), emit func(Entry)
 			if key(live) != key(e.Msg) || !contains(live, e.Match) {
 				return fmt.Errorf("fixture mismatch at entry %d", i+1)
 			}
-			for _, field := range []string{"id", "request_id"} {
-				if id, ok := e.Msg[field]; ok {
-					ids[field+fmt.Sprint(id)] = live[field]
+			if e.Msg["method"] != nil || e.Msg["type"] == "control_request" {
+				for _, field := range []string{"id", "request_id"} {
+					if id, ok := e.Msg[field]; ok {
+						ids[field+fmt.Sprint(id)] = live[field]
+					}
 				}
 			}
 			continue
@@ -138,7 +140,7 @@ func key(m map[string]any) string {
 }
 func contains(actual, want any) bool {
 	if want == nil {
-		return true
+		return actual == nil
 	}
 	if object, ok := want.(map[string]any); ok {
 		have, ok := actual.(map[string]any)
@@ -146,7 +148,8 @@ func contains(actual, want any) bool {
 			return false
 		}
 		for k, v := range object {
-			if !contains(have[k], v) {
+			value, exists := have[k]
+			if !exists || !contains(value, v) {
 				return false
 			}
 		}

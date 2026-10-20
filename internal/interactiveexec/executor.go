@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/interactive"
 	"github.com/goobers/goobers/internal/interactiveagent"
@@ -41,10 +42,11 @@ type Config struct {
 }
 
 type Executor struct {
-	config     Config
-	mu         sync.Mutex
-	runNative  func(context.Context, harness.RunRequest) (harness.Outcome, error)
-	runProcess func(context.Context, string, []string, func(harness.TranscriptDelta) error) (harness.ProcessResult, error)
+	config       Config
+	chatRegistry func(string, harness.RunRequest) *chat.Registry
+	mu           sync.Mutex
+	runNative    func(context.Context, harness.RunRequest) (harness.Outcome, error)
+	runProcess   func(context.Context, string, []string, func(harness.TranscriptDelta) error) (harness.ProcessResult, error)
 }
 
 // PrepareWorkspace returns a complete private snapshot before Helper config
@@ -161,7 +163,7 @@ func (e *Executor) Execute(ctx context.Context, req interactive.ExecutionRequest
 	if executionMode == "codex-local" && !e.config.TrustedLocalModelLogin {
 		return result, fmt.Errorf("model execution unavailable: host trusted-local login opt-in is required; choose the explicitly labeled demo mode separately")
 	}
-	if executionMode == "codex-local" && req.Harness != "" && req.Harness != "codex" {
+	if executionMode == "codex-local" && req.Harness != "" && req.Harness != "codex" && req.Harness != "copilot" && req.Harness != "claude" {
 		return result, fmt.Errorf("configured harness is unsupported for codex-local; no fallback is permitted")
 	}
 	ctx, cancel := context.WithCancel(ctx)

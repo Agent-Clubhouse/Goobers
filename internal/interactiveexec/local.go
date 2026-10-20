@@ -35,9 +35,7 @@ func (e *Executor) local(ctx context.Context, req interactive.ExecutionRequest, 
 					return nil
 				}
 				steers = append(steers, steer.Text)
-				if steer.Ack != nil {
-					steer.Ack(nil)
-				}
+				acknowledge(steer, "steer", nil)
 				if err := emit("assistant.message", map[string]any{"text": "Steering applied at the next tool boundary: " + steer.Text}); err != nil {
 					return err
 				}

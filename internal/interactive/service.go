@@ -621,7 +621,14 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 		var once sync.Once
 		message := Steering{CommandID: cmd.CommandID, Text: text, Delivery: cmd.Delivery, SteeringMode: cmd.SteeringMode}
 		message.Ack = func(err error) {
-			once.Do(func() { s.ackSteering(sessionID, cmd.CommandID, cmd.TurnID, cmd.ExpectedFence, err) })
+			once.Do(func() { s.ackSteering(sessionID, cmd.CommandID, cmd.TurnID, cmd.ExpectedFence, "", "", err) })
+		}
+		message.AckDelivery = func(delivery string, err error) {
+			mode := ""
+			if delivery == "prompt" {
+				mode = "interrupt-and-continue"
+			}
+			once.Do(func() { s.ackSteering(sessionID, cmd.CommandID, cmd.TurnID, cmd.ExpectedFence, delivery, mode, err) })
 		}
 		steerRun.steering <- message
 	}
@@ -712,7 +719,7 @@ func markStopped(rec *sessionRecord) {
 	appendEvent(rec, "session.stopped", "", "", map[string]any{"writersStopped": true})
 }
 
-func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64, deliveryErr error) {
+func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64, delivery, steeringMode string, deliveryErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_ = s.mutate(func(state *diskState) error {
@@ -727,6 +734,14 @@ func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64,
 		kind := "steering.delivered"
 		cmd.Receipt.Status = "delivered"
 		data := map[string]any{}
+		if deliveryErr == nil && delivery != "" {
+			cmd.Receipt.Delivery = delivery
+			cmd.Receipt.SteeringMode = steeringMode
+			data["delivery"] = delivery
+			if steeringMode != "" {
+				data["steeringMode"] = steeringMode
+			}
+		}
 		if deliveryErr != nil {
 			kind = "steering.rejected"
 			cmd.Receipt.Status = "rejected"

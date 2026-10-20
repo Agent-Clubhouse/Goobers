@@ -182,3 +182,20 @@ func TestCrashCustodyCannotBeClaimedByWorkspaceMarker(t *testing.T) {
 		t.Fatal("unknown child writer custody reported recovered")
 	}
 }
+
+func TestNativeStreamReportsSchemaDriftWithoutPayload(t *testing.T) {
+	var data map[string]any
+	stream := &nativeStream{emit: func(kind string, value map[string]any) error {
+		if kind != "protocol_unknown" {
+			t.Fatal(kind)
+		}
+		data = value
+		return nil
+	}}
+	if err := stream.write([]byte("{\"type\":\"future.event\",\"params\":{\"secret\":\"do not log\"}}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if data["name"] != "future.event" || data["params"] != nil || data["secret"] != nil {
+		t.Fatal(data)
+	}
+}

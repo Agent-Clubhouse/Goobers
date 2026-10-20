@@ -101,6 +101,8 @@ type Steering struct {
 	CommandID, Text        string
 	// Ack(nil) means the harness actually accepted this exact steering message.
 	Ack func(error)
+	// AckDelivery reports actual transport delivery, never requested intent.
+	AckDelivery func(delivery string, err error)
 }
 
 type ExecutionEvent struct {
@@ -218,13 +220,15 @@ type Command struct {
 }
 
 type CommandReceipt struct {
-	CommandID string `json:"commandId"`
-	SessionID string `json:"sessionId"`
-	Type      string `json:"type"`
-	Status    string `json:"status"`
-	Sequence  uint64 `json:"sequence"`
-	TurnID    string `json:"turnId,omitempty"`
-	ChildID   string `json:"childId,omitempty"`
+	Delivery     string `json:"delivery,omitempty"`
+	SteeringMode string `json:"steeringMode,omitempty"`
+	CommandID    string `json:"commandId"`
+	SessionID    string `json:"sessionId"`
+	Type         string `json:"type"`
+	Status       string `json:"status"`
+	Sequence     uint64 `json:"sequence"`
+	TurnID       string `json:"turnId,omitempty"`
+	ChildID      string `json:"childId,omitempty"`
 }
 
 type CreateRequest struct {

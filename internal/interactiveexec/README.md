@@ -37,3 +37,22 @@ and stop/steer lifecycle. These tests prove the host/adapter contract, not that 
 model used the tools successfully. The separately tagged native model
 integration test requires independent authorization and is not part of that
 qualification.
+
+Model execution uses the `internal/chat` registry, scoped to the pinned harness.
+Copilot prefers its SDK transport; the existing adapters provide an execshim
+fallback for each provider. The historical `codex-local` execution-mode name
+still denotes the explicit trusted-local-login host boundary; it no longer
+forces a Codex-only transport. There is no fallback across providers or into
+the deterministic demo.
+
+Native steering keeps the live driver session. Unsupported steering closes and
+joins the old writer and bridge, then sends a replacement prompt over preserved
+files. Delivery receipts report `steer`, `queued`, or `prompt` from the driver;
+`prompt` steering additionally records `interrupt-and-continue`. A failed
+replacement is rejected instead of claiming delivery after only a stop.
+
+The host projects v2 events through interactiveagent.ProjectChatEvent. It closes
+and verifies native custody before snapshot capture, storing the native session
+identity in host metadata so a later leased turn can resume it. Copilot's own
+session is long-lived across sends while an execution lease is active; a native
+idle event alone never permits a snapshot while the process is still alive.
