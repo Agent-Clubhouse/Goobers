@@ -593,16 +593,21 @@ func TestRunAbortedLivePollSnapshotPreservesLabelsWhenProviderOmitsThem(t *testi
 		Number:     5447,
 		Labels:     []string{abortedRunLabel},
 		CheckState: providers.CheckStatePassing,
+		Body:       "prefix", BodyIncomplete: true,
 	}
 	poll := providers.PullRequestPollResult{
 		Number:     5447,
 		State:      "open",
 		CheckState: providers.CheckStatePassing,
+		Body:       "full description",
 	}
 
 	refreshed := pullRequestSummaryFromPoll(listed, poll)
 	if !reflect.DeepEqual(refreshed.Labels, listed.Labels) {
 		t.Fatalf("refreshed labels = %v, want listed labels preserved when poll omits labels", refreshed.Labels)
+	}
+	if refreshed.Body != poll.Body || refreshed.BodyIncomplete {
+		t.Fatalf("live body remained incomplete: %+v", refreshed)
 	}
 }
 

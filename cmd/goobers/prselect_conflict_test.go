@@ -364,3 +364,45 @@ func TestPRSelectConflictRechecksConfiguredEligibility(t *testing.T) {
 		}
 	}
 }
+
+func TestPRSelectConflictFreshIdentityUsesProviderSemantics(t *testing.T) {
+	conflict := false
+	original := providers.PullRequestSummary{
+		Number: 42, State: "open", Head: "goobers/implementation/test", Base: "main",
+		HeadSHA: "head", Author: "Author@Example.COM", RequestedReviewers: []string{"Reviewer@Example.COM"},
+		Mergeable: &conflict,
+	}
+	for _, tc := range []struct {
+		name     string
+		provider providers.ProviderKind
+		author   string
+		reviewer string
+		want     int
+	}{
+		{"ADO mixed-case UPNs", providers.ProviderADO, "author@example.com", "reviewer@example.com", 1},
+		{"ADO changed author", providers.ProviderADO, "other@example.com", "reviewer@example.com", 0},
+		{"ADO changed reviewer", providers.ProviderADO, "author@example.com", "other@example.com", 0},
+		{"GitHub retains exact matching", providers.ProviderGitHub, "author@example.com", "reviewer@example.com", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &conflictTestProvider{fresh: original}
+			policy := prSelectSourceRequest{
+				headPrefixes:    []string{"goobers/implementation/"},
+				identityFilters: providers.ListPullRequestsRequest{Author: tc.author, RequestedReviewer: tc.reviewer},
+			}
+			for range 2 {
+				excluded, err := excludePRSelectConflict(t.Context(), conflictTestSource{provider: p},
+					providers.RepositoryRef{Provider: tc.provider}, original, true, policy)
+				if err != nil || !excluded {
+					t.Fatalf("excluded=%v err=%v", excluded, err)
+				}
+			}
+			if len(p.comments) != tc.want || p.labelWrites != tc.want {
+				t.Fatalf("comments=%d label writes=%d; want %d each", len(p.comments), p.labelWrites, tc.want)
+			}
+			if tc.want > 0 && !goobersBookkeepingComment(p.comments[0].Body) {
+				t.Fatal("conflict handoff lost its bookkeeping provenance")
+			}
+		})
+	}
+}
