@@ -104,6 +104,8 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.metadata.name":        "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.dslVersion":           "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
 
+	"goober.spec.mcpServers.required": "DSL 3.1-only surface; registered centrally as goober.spec.mcpServers.required and refused by the 3.0 interpreter",
+
 	// Registered under a FeatureID whose spelling differs from the leaf path.
 	// #3292 ruled: keep the exception rather than align. Released FeatureIDs
 	// are pinned by validateFeatureRegistryEvolution, so the id cannot be

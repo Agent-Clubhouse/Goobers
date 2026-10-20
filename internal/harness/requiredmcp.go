@@ -36,6 +36,32 @@ const ErrorCodeRequiredMCPEnterpriseBlocked = "HARNESS_REQUIRED_MCP_ENTERPRISE_B
 
 var errRequiredMCPUnavailable = errors.New("required MCP server unavailable")
 
+func declaredMCPServerRequired(server apiv1.MCPServer) bool {
+	return server.Required == nil || *server.Required
+}
+
+func requiredDeclaredMCPServerNames(req RunRequest) []string {
+	names := make([]string, 0, len(req.MCPServers))
+	for _, server := range req.MCPServers {
+		if server.Name != "" && declaredMCPServerRequired(server) {
+			names = append(names, server.Name)
+		}
+	}
+	return names
+}
+
+func requiredMCPServer(req RunRequest, name string) bool {
+	if name == goobersIOServerName {
+		return true
+	}
+	for _, server := range req.MCPServers {
+		if server.Name == name {
+			return declaredMCPServerRequired(server)
+		}
+	}
+	return false
+}
+
 // errRequiredMCPEnterpriseBlocked marks a required-MCP run error whose cause
 // the CLI's own log names as an enterprise customization lockdown (#6358).
 var errRequiredMCPEnterpriseBlocked = errors.New("required MCP server blocked by enterprise policy")
@@ -63,10 +89,16 @@ func classifyCopilotEnterpriseBlock(runErr error, logDir string) error {
 	return fmt.Errorf("%w: %s: %w", errRequiredMCPEnterpriseBlocked, requiredMCPEnterpriseBlockedDetail, runErr)
 }
 
-func requiredMCPInfrastructureFailure(failures []MCPServerFailure) error {
+func requiredMCPInfrastructureFailure(req RunRequest, failures []MCPServerFailure) error {
 	for _, failure := range failures {
-		if failure.Server == goobersIOServerName && failure.Status == copilotMCPStatusRemovedAfterConnect {
-			return fmt.Errorf("%w: %s status %q", errRequiredMCPUnavailable, failure.Server, failure.Status)
+		if failure.Server == goobersIOServerName {
+			if failure.Status == copilotMCPStatusRemovedAfterConnect {
+				return fmt.Errorf("%w: server %q failed to start or register (status %q)", errRequiredMCPUnavailable, failure.Server, failure.Status)
+			}
+			continue
+		}
+		if requiredMCPServer(req, failure.Server) {
+			return fmt.Errorf("%w: server %q failed to start or register (status %q)", errRequiredMCPUnavailable, failure.Server, failure.Status)
 		}
 	}
 	return nil

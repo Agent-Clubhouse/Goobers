@@ -56,7 +56,7 @@ const codexInitialCheckpoint = 1
 // server error text is not copied into the error or the annotation.
 func observeCodexRequiredMCPStartup(req RunRequest, result ProcessResult, sessionStarted bool, err error) error {
 	if !req.GoobersIORegistered {
-		return declaredRequiredMCPStartupRefusal(result, sessionStarted, err)
+		return declaredRequiredMCPStartupRefusal(req, result, sessionStarted, err)
 	}
 	if sessionStarted {
 		return readinessReportedError(req, MCPReadiness{
@@ -71,7 +71,7 @@ func observeCodexRequiredMCPStartup(req RunRequest, result ProcessResult, sessio
 		}, err)
 	}
 	if err == nil || !codexRequiredMCPStartupFailed(result.Stderr, goobersIOServerName) {
-		return declaredRequiredMCPStartupRefusal(result, sessionStarted, err)
+		return declaredRequiredMCPStartupRefusal(req, result, sessionStarted, err)
 	}
 	classified := errors.Join(fmt.Errorf(
 		"%w: codex refused to start the session because the required %s MCP server failed to initialize",
@@ -106,11 +106,33 @@ func (e *declaredRequiredMCPStartupError) Unwrap() []error {
 // declaredRequiredMCPStartupRefusal marks err when the invocation never
 // started a session and its stderr carries the CLI's required-server refusal.
 // A goobers-io refusal is classified before this is reached.
-func declaredRequiredMCPStartupRefusal(result ProcessResult, sessionStarted bool, err error) error {
+func declaredRequiredMCPStartupRefusal(req RunRequest, result ProcessResult, sessionStarted bool, err error) error {
 	if err == nil || sessionStarted || !bytes.Contains(result.Stderr, []byte(codexRequiredMCPStartupMarker)) {
 		return err
 	}
+	for _, name := range requiredDeclaredMCPServerNames(req) {
+		if codexRequiredMCPStartupFailed(result.Stderr, name) {
+			classified := errors.Join(fmt.Errorf(
+				"%w: codex refused model dispatch because required MCP server %q failed to start or register",
+				errRequiredMCPUnavailable, name), err)
+			return &declaredRequiredMCPStartupError{err: classified}
+		}
+	}
 	return &declaredRequiredMCPStartupError{err: err}
+}
+
+func codexMCPServerFailures(req RunRequest, stderr []byte) []MCPServerFailure {
+	var failures []MCPServerFailure
+	for _, server := range req.MCPServers {
+		if server.Name == "" {
+			continue
+		}
+		startupMarker := []byte("MCP client for `" + server.Name + "` failed to start")
+		if bytes.Contains(stderr, startupMarker) || codexRequiredMCPStartupFailed(stderr, server.Name) {
+			failures = append(failures, MCPServerFailure{Server: server.Name, Status: "failed"})
+		}
+	}
+	return failures
 }
 
 // codexSessionStarted reports whether a codex invocation got past session

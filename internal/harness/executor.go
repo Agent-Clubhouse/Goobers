@@ -710,7 +710,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, nil, err
 	}
 	out, runErr = publication.settle(postcondition.settle(e.runAdapter(ctx, req, nestedAdapter)))
-	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
+	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(req, out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		if !hasAppender {
@@ -878,8 +878,9 @@ func (e *Executor) journalMCPServerFailures(stage string, failures []MCPServerFa
 		Type:  journal.EventRunnerAnnotation,
 		Stage: stage,
 		Runner: map[string]any{
-			"kind":    "mcp-server-unavailable",
-			"servers": servers,
+			"kind":     "mcp-server-unavailable",
+			"severity": "warning",
+			"servers":  servers,
 			"detail": "registered MCP servers were not connected at invocation; " +
 				"their tools were unavailable to the agent for this whole session — " +
 				"any missing-tool failure this stage reports is caused here",

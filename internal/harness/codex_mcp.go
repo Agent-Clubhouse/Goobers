@@ -62,8 +62,8 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 			return nil, nil, nil, fmt.Errorf("harness: codex: %w", err)
 		}
 		if ok {
-			writeCodexStdioServer(&config, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools))
-			overrides = appendCodexStdioOverrides(overrides, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools))
+			writeCodexStdioServer(&config, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools), true)
+			overrides = appendCodexStdioOverrides(overrides, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools), true)
 		}
 	}
 
@@ -77,12 +77,13 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 		secretEnvNames = append(secretEnvNames, assignment.Name)
 	}
 	for _, server := range servers {
+		required := server.Required
 		if server.Command != "" {
-			writeCodexStdioServer(&config, server.Name, server.Command, server.Args, server.EnvNames, req.Tools)
-			overrides = appendCodexStdioOverrides(overrides, server.Name, server.Command, server.Args, server.EnvNames, req.Tools)
+			writeCodexStdioServer(&config, server.Name, server.Command, server.Args, server.EnvNames, req.Tools, required)
+			overrides = appendCodexStdioOverrides(overrides, server.Name, server.Command, server.Args, server.EnvNames, req.Tools, required)
 		} else {
-			writeCodexHTTPServer(&config, server.Name, server.URL, server.Headers, req.Tools)
-			overrides = appendCodexHTTPOverrides(overrides, server.Name, server.URL, server.Headers, req.Tools)
+			writeCodexHTTPServer(&config, server.Name, server.URL, server.Headers, req.Tools, required)
+			overrides = appendCodexHTTPOverrides(overrides, server.Name, server.URL, server.Headers, req.Tools, required)
 		}
 	}
 	if writeConfig {
@@ -93,9 +94,9 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 	return env, secretEnvNames, overrides, nil
 }
 
-func appendCodexStdioOverrides(overrides []string, name, command string, args, envNames, tools []string) []string {
+func appendCodexStdioOverrides(overrides []string, name, command string, args, envNames, tools []string, required bool) []string {
 	prefix := `mcp_servers.` + codexOverrideServerName(name)
-	overrides = append(overrides, prefix+`.command=`+tomlQuote(command), prefix+`.enabled=true`, prefix+`.required=true`)
+	overrides = append(overrides, prefix+`.command=`+tomlQuote(command), prefix+`.enabled=true`, fmt.Sprintf("%s.required=%t", prefix, required))
 	if len(args) > 0 {
 		overrides = append(overrides, prefix+`.args=`+tomlStringArray(args))
 	}
@@ -119,9 +120,9 @@ func codexOverrideServerName(name string) string {
 	return tomlQuote(name)
 }
 
-func appendCodexHTTPOverrides(overrides []string, name, url string, headers map[string]string, tools []string) []string {
+func appendCodexHTTPOverrides(overrides []string, name, url string, headers map[string]string, tools []string, required bool) []string {
 	prefix := `mcp_servers.` + tomlQuote(name)
-	overrides = append(overrides, prefix+`.url=`+tomlQuote(url), prefix+`.enabled=true`, prefix+`.required=true`)
+	overrides = append(overrides, prefix+`.url=`+tomlQuote(url), prefix+`.enabled=true`, fmt.Sprintf("%s.required=%t", prefix, required))
 	if len(headers) > 0 {
 		overrides = append(overrides, prefix+`.env_http_headers=`+tomlStringMap(headers))
 	}
@@ -144,16 +145,16 @@ func tomlStringArray(values []string) string {
 	return out.String()
 }
 
-func writeCodexStdioServer(config *strings.Builder, name, command string, args, envNames, tools []string) {
+func writeCodexStdioServer(config *strings.Builder, name, command string, args, envNames, tools []string, required bool) {
 	fmt.Fprintf(config, "\n[mcp_servers.%s]\n", tomlQuote(name))
 	fmt.Fprintf(config, "command = %s\n", tomlQuote(command))
 	writeCodexStringArray(config, "args", args)
 	writeCodexStringArray(config, "env_vars", envNames)
-	config.WriteString("enabled = true\nrequired = true\n")
+	fmt.Fprintf(config, "enabled = true\nrequired = %t\n", required)
 	writeCodexStringArray(config, "enabled_tools", tools)
 }
 
-func writeCodexHTTPServer(config *strings.Builder, name, url string, headers map[string]string, tools []string) {
+func writeCodexHTTPServer(config *strings.Builder, name, url string, headers map[string]string, tools []string, required bool) {
 	fmt.Fprintf(config, "\n[mcp_servers.%s]\n", tomlQuote(name))
 	fmt.Fprintf(config, "url = %s\n", tomlQuote(url))
 	if len(headers) > 0 {
@@ -171,7 +172,7 @@ func writeCodexHTTPServer(config *strings.Builder, name, url string, headers map
 		}
 		config.WriteString(" }\n")
 	}
-	config.WriteString("enabled = true\nrequired = true\n")
+	fmt.Fprintf(config, "enabled = true\nrequired = %t\n", required)
 	writeCodexStringArray(config, "enabled_tools", tools)
 }
 

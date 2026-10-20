@@ -354,6 +354,11 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 		rec,
 		journal.NewPatternScrubber(),
 		"",
+		WithMCPServers([]apiv1.MCPServer{{
+			Name:     "acme-tools",
+			Required: mcpRequiredFlag(false),
+			Command:  "acme-tools",
+		}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -377,6 +382,9 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 	}
 	if annotation.Stage != "implement" {
 		t.Fatalf("annotation stage = %q, want %q", annotation.Stage, "implement")
+	}
+	if annotation.Runner["severity"] != "warning" {
+		t.Fatalf("annotation severity = %#v, want warning", annotation.Runner["severity"])
 	}
 	servers, ok := annotation.Runner["servers"].([]map[string]string)
 	if !ok || len(servers) != 1 || servers[0]["server"] != "acme-tools" || servers[0]["status"] != "failed" {

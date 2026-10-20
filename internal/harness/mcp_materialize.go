@@ -20,6 +20,7 @@ type mcpMaterializeOptions struct {
 
 type materializedMCPServer struct {
 	Name     string
+	Required bool
 	Command  string
 	Args     []string
 	URL      string
@@ -57,10 +58,11 @@ func materializeDeclaredMCP(ctx context.Context, adapter string, req RunRequest,
 	var assignments []envAssignment
 	for serverIndex, server := range req.MCPServers {
 		materialized := materializedMCPServer{
-			Name:    server.Name,
-			Command: server.Command,
-			Args:    append([]string(nil), server.Args...),
-			URL:     server.URL,
+			Name:     server.Name,
+			Required: declaredMCPServerRequired(server),
+			Command:  server.Command,
+			Args:     append([]string(nil), server.Args...),
+			URL:      server.URL,
 		}
 		for refIndex, ref := range server.CredentialRefs {
 			key, token, err := resolveMCPCredential(ctx, adapter, req, server.Name, ref)
