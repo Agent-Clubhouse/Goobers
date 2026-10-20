@@ -22,7 +22,7 @@ func TestReviewPublicationQuarantineSurvivesTerminalCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			token := plane.admitRun(t, "test", "first")
-			var ledger claimsclient.Ledger = local
+			ledger := local
 			if mode == "plane" {
 				ledger = plane.client(t, "first", token)
 			}

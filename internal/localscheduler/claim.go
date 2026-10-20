@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -672,14 +673,14 @@ func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner,
 // reserved for operator recovery of stuck claims and journals a distinct event
 // so the override cannot be mistaken for normal run cleanup.
 func (l *ClaimLedger) ForceRelease(itemID string) error {
-	return l.forceRelease(itemID, forceReleaseActorCLI, sharedclaim.Owner{})
+	return l.forceRelease(itemID, forceReleaseActorCLI, sharedclaim.Owner{}, "")
 }
 
 // ForceReleaseEntry force-releases entry without losing its namespace and
 // records actor in the distinct administrative journal event.
 func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if entry.Gaggle == "" || entry.Provider == "" {
-		return l.forceRelease(entry.ItemID, actor, sharedclaim.Owner{})
+		return l.forceRelease(entry.ItemID, actor, sharedclaim.Owner{}, "")
 	}
 	storageKey, err := (ClaimKey{
 		Gaggle:     entry.Gaggle,
@@ -689,10 +690,27 @@ func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if err != nil {
 		return err
 	}
-	return l.forceRelease(storageKey, actor, sharedclaim.Owner{})
+	return l.forceRelease(storageKey, actor, sharedclaim.Owner{}, "")
 }
 
-func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.Owner) error {
+// ForceReleasePublicationEntry is the explicit operator escape hatch. The
+// caller must name the exact publication key and provide an identity and reason.
+func (l *ClaimLedger) ForceReleasePublicationEntry(entry ClaimEntry, actor, reason string) error {
+	if !entry.IsPublicationClaim() || strings.TrimSpace(reason) == "" || strings.TrimSpace(actor) == "" {
+		return errors.New("publication override requires a publication key, operator identity and reason")
+	}
+	key := entry.ItemID
+	if entry.Gaggle != "" && entry.Provider != "" {
+		var err error
+		key, err = (ClaimKey{Gaggle: entry.Gaggle, Provider: entry.Provider, ExternalID: entry.ExternalID}).storageKey()
+		if err != nil {
+			return err
+		}
+	}
+	return l.forceRelease(key, actor, sharedclaim.Owner{}, reason)
+}
+
+func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.Owner, publicationReason string) error {
 	if actor == "" {
 		return errors.New("localscheduler: force-release actor is required")
 	}
@@ -700,7 +718,7 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.O
 	defer l.mu.Unlock()
 
 	entry, held := l.entries[storageKey]
-	if !held {
+	if !held || (entry.IsPublicationClaim() && publicationReason == "") {
 		return nil
 	}
 	if owner != (sharedclaim.Owner{}) && entry.SharedOwner != owner {
@@ -710,6 +728,17 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.O
 		return errors.New("localscheduler: shared force-release requires remote coordination")
 	}
 	reason := claimrelease.ForceReleased.Reason().By(actor).Normalize()
+	if entry.IsPublicationClaim() {
+		reason = claimrelease.ForceReleased.Because("publication_operator_override", publicationReason).By(actor).Normalize()
+		if l.log == nil {
+			return errors.New("publication override requires an audit journal")
+		}
+		// Record intent durably BEFORE removing custody; a journal failure must
+		// leave the quarantine intact. The ordinary release event follows below.
+		if err := l.log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Name: entry.ItemID, Gaggle: entry.Gaggle, RunID: entry.RunID, Workflow: entry.Workflow, ClaimRelease: &reason, Runner: map[string]any{"operation": "publication_override_requested", "actor": actor, "reason": publicationReason}}); err != nil {
+			return err
+		}
+	}
 	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
 	l.recordReleasedHistory(storageKey, entry, l.now(), reason)
 	delete(l.entries, storageKey)

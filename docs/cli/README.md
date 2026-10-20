@@ -829,11 +829,13 @@ $ goobers claims list --stale
 force-release a claim through the live daemon or claims.lock
 
 ~~~text
-Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
+Usage: goobers claims release [--publication-custody-reason=text] [--force] [--gaggle=name --provider=name] <item-id> [path]
 
 Print the claim holder, age, and expiry, then force-release the item.
 --force is required while the holding run is non-terminal. The override
-is recorded as claim.force_released in the instance journal. Default
+is recorded as claim.force_released in the instance journal. Publication
+locks additionally require --publication-custody-reason and audit the OS
+operator identity before release. Default
 path is ".". Scope flags are required when the item id exists in more
 than one namespace. Exit codes: 0 = released, 1 = refused/not found/
 ambiguous, 2 = usage/IO error.

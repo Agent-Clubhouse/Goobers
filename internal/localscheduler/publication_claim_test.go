@@ -1,6 +1,7 @@
 package localscheduler
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -56,5 +57,56 @@ func TestPublicationClaimHasFixedCustodyIndependentOfRunLifecycle(t *testing.T) 
 	}
 	if _, held := ledger.LookupScoped(key); held {
 		t.Fatal("verified custody was not released")
+	}
+}
+
+func TestPublicationClaimGenericForceReleaseCannotEndCustody(t *testing.T) {
+	for _, scoped := range []bool{false, true} {
+		t.Run(fmt.Sprint(scoped), func(t *testing.T) {
+			ledger, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := ClaimKey{ExternalID: PublicationLockItemIDPrefix + "github/acme/repo"}
+			if scoped {
+				key.Gaggle = "test"
+				key.Provider = "github"
+			}
+			var entry ClaimEntry
+			if scoped {
+				if ok, _, err := ledger.ClaimScoped(key, "first", "review", time.Minute); err != nil || !ok {
+					t.Fatalf("claim %v %v", ok, err)
+				}
+				entry, _ = ledger.LookupScoped(key)
+			} else {
+				if ok, _, err := ledger.Claim(key.ExternalID, "first", "review", time.Minute); err != nil || !ok {
+					t.Fatalf("claim %v %v", ok, err)
+				}
+				entry, _ = ledger.Lookup(key.ExternalID)
+			}
+			held := func() bool {
+				if scoped {
+					_, ok := ledger.LookupScoped(key)
+					return ok
+				}
+				_, ok := ledger.Lookup(key.ExternalID)
+				return ok
+			}
+			if err := ledger.ForceRelease(entry.ItemID); err != nil {
+				t.Fatal(err)
+			}
+			if err := ledger.ForceReleaseEntry(entry, "generic-cleanup"); err != nil {
+				t.Fatal(err)
+			}
+			if !held() {
+				t.Fatal("generic force release erased quarantine")
+			}
+			if err := ledger.ForceReleasePublicationEntry(entry, "operator", "verified remotely"); err == nil {
+				t.Fatal("override without audit journal succeeded")
+			}
+			if !held() {
+				t.Fatal("unaudited override erased quarantine")
+			}
+		})
 	}
 }

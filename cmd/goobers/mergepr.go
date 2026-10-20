@@ -479,7 +479,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 
 		return withFindingCheckedLanding(ctx, root, stageProvider, repo, pullNumber, verdictAuthor, poll, &reasons, func(ctx context.Context) error {
 			mergeAttempted = true
-			landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
+			landResult, mergeErr = landWithPublicationCustody(ctx, lander, dispatcher, mergepolicy.Request{
 				Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
 				CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
 				DeleteSourceBranch: adoCompletionDeletesSourceBranch(ctx, stageProvider, repo, poll.HeadBranch, isADO, &adoCleanup),

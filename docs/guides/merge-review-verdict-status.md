@@ -183,3 +183,28 @@ Generic run completion, terminal recovery, live-run renewal and continuation
 reclaim do not release, extend or transfer it. An explicit verified release
 ends a completed action's custody; otherwise its fixed expiry is the backstop,
 even if the workflow remains live or has already become terminal.
+
+An unconfirmed landing error (including a lost transport reply after provider
+acceptance) also retains that fixed lease. One bounded PR read can release it
+if the selected head is confirmed merged; an open or unreadable PR cannot prove
+that the provider rejected the request. Explicit provider refusals such as
+HTTP 405/409 release normally. Existing merge-result and error reporting stays
+unchanged.
+
+Generic force-release and bulk cleanup cannot remove publication custody. After
+checking the actual provider outcome, an operator with local instance access can
+explicitly override **one exact key**:
+
+```sh
+goobers claims release --force \
+  --publication-custody-reason="Verified the provider outcome; safe to release" \
+  --gaggle=review --provider=github \
+  publication-lock/github/example/repository /path/to/instance
+```
+
+Omit both scope flags for an unscoped local claim. This writes an audit intent
+with the invoking OS user ID, key, run and reason before releasing custody, then
+records `claim.force_released`. An unavailable audit journal blocks the override.
+The operator accepts responsibility for any still-running provider request; this
+escape hatch does not cancel a remote merge. Prefer the fixed expiry unless the
+outcome has been verified.

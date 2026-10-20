@@ -17,6 +17,9 @@ import (
 
 var standalonePublicationID atomic.Uint64
 
+type publicationCustodyKey struct{}
+type publicationCustodyState struct{ retain bool }
+
 // withVerdictPublicationCustody serializes authoritative publication with the
 // final ledger read through Land. Unlike the older long merge window, BOTH
 // local stages and plane stages acquire the same durable claim, so mixed
@@ -75,6 +78,8 @@ func withPublicationClaim(ctx context.Context, ledger claimsclient.Ledger, lock 
 	// backend had to wait for a file lock and could not honor cancellation.
 	actionCtx, cancel := context.WithDeadline(ctx, started.Add(action))
 	defer cancel()
+	custody := &publicationCustodyState{}
+	actionCtx = context.WithValue(actionCtx, publicationCustodyKey{}, custody)
 	var err error
 	if actionCtx.Err() == nil {
 		err = fn(actionCtx)
@@ -94,6 +99,9 @@ func withPublicationClaim(ctx context.Context, ledger claimsclient.Ledger, lock 
 	}
 	if verifyErr != nil || !held || !time.Now().Before(started.Add(lease)) {
 		return errors.Join(err, fmt.Errorf("verdict publication custody lost or unverifiable after action; publication/landing outcome uncertain (held=%t): %w", held, errors.Join(verifyErr, errors.New("custody verification failed"))))
+	}
+	if custody.retain {
+		return err // Preserve the caller's original landing-result/error reporting.
 	}
 	releaseErr := ledger.ReleaseScoped(verifyCtx, lock.Key, lock.RunID, claimrelease.Completed.Because(localscheduler.PublicationLockReleaseCode, ""))
 	return errors.Join(err, releaseErr)
