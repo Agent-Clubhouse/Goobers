@@ -54,9 +54,9 @@ func (e *Executor) driverRegistry(provider string, request harness.RunRequest) *
 		}
 		adapter = c
 	case "codex":
-		c := &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Dir(chatStatePath(e.config.StateDir, request.Workspace))}
+		c := &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: chatStatePath(e.config.StateDir, request.Workspace)}
 		if e.runNative == nil {
-			_ = registry.Register(provider, harness.NewCodexChatDriver(harness.CodexChatConfig{Adapter: c, Request: request, StateDir: chatStatePath(e.config.StateDir, request.Workspace)}))
+			_ = registry.Register(provider, harness.NewCodexChatDriver(harness.CodexChatConfig{Adapter: c, Request: request, StateDir: filepath.Join(chatStatePath(e.config.StateDir, request.Workspace), "codex")}))
 		}
 		adapter = c
 	}

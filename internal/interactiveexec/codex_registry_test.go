@@ -5,6 +5,7 @@ package interactiveexec
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,10 +16,19 @@ import (
 
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/sandbox"
 )
 
 func TestRegistrySelectsNativeCodexWithHostProbeState(t *testing.T) {
+	base, err := sandbox.New()
+	if errors.Is(err, sandbox.ErrUnavailable) || errors.Is(err, sandbox.ErrUnsupported) {
+		t.Skip(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	e, _ := bridgeExecutor(t)
+	e.config.Sandbox = base
 	e.runNative = nil
 	e.chatRegistry = nil
 	workspace, _ := e.workspace("codex-registry")
@@ -39,7 +49,15 @@ func TestRegistrySelectsNativeCodexWithHostProbeState(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	request := harness.RunRequest{Workspace: workspace, Model: "fixture-model", Sandbox: e.config.Sandbox, IsolateHome: true,
+	boundary, err := e.nativeSandbox()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundary, err = e.sessionSandbox(boundary, workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := harness.RunRequest{Workspace: workspace, Model: "fixture-model", Sandbox: boundary, IsolateHome: true,
 		HarnessOptions: map[string]apiextensionsv1.JSON{"auth": {Raw: []byte(`"ambient-chatgpt"`)}}}
 	registry := e.driverRegistry("codex", request)
 	session, attempts, err := registry.Start(t.Context(), "codex", chat.StartOptions{Workspace: workspace, Level: chat.Auto, Ceiling: chat.NewCeiling(chat.Auto, chat.Auto, chat.Auto)})
