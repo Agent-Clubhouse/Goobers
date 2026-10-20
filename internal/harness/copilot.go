@@ -351,9 +351,14 @@ func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, option
 	if err := refuseChildConfigProbe(ctx); err != nil {
 		return ConfigResolution{}, err
 	}
-	if _, err := c.launcherSessionContract(ctx); err != nil {
-		return ConfigResolution{}, err
+	// Offline admission must not launch a configured wrapper, even when model
+	// discovery itself is deferred. The actual invocation verifies its contract.
+	if !c.DeferDiscovery {
+		if _, err := c.launcherSessionContract(ctx); err != nil {
+			return ConfigResolution{}, err
+		}
 	}
+
 	effectiveOptions, fallback, err := copilotFallbackOption(options)
 	if err != nil {
 		return ConfigResolution{}, err

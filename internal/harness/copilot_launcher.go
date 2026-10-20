@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/goobers/goobers/internal/credentials"
 	"io"
 	"os"
 	"path/filepath"
@@ -51,7 +52,7 @@ type launcherAuthOp struct {
 
 func (c *CopilotAdapter) prepareLauncherSession(ctx context.Context, workspace string, argv, env []string) ([]string, []string, string, func(), error) {
 	cleanup := func() {}
-	contract, err := c.launcherSessionContract(ctx)
+	contract, err := c.launcherSessionContract(ctx, env)
 	if err != nil {
 		return nil, nil, "", cleanup, err
 	}
@@ -192,7 +193,7 @@ func validateLauncherArgs(name string, args []string) error {
 	return nil
 }
 
-func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherContract, error) {
+func (c *CopilotAdapter) launcherSessionContract(ctx context.Context, delegatedEnv ...[]string) (launcherContract, error) {
 	if len(c.LauncherSessionArgs) > 0 {
 		return validateLauncherContract(launcherContract{
 			Version:     1,
@@ -208,17 +209,22 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherC
 	if c.launcherContract != nil {
 		return *c.launcherContract, nil
 	}
-	// A child can consume a pinned contract but cannot launch a handshake
-	// with the daemon's ambient environment to discover one.
+	probeEnv := baseEnv(nil, nil)
 	if err := refuseChildConfigProbe(ctx); err != nil {
-		return launcherContract{}, err
+		// Runtime session preparation already assembled the delegated credential
+		// environment. Other config/preflight callers have no such authority.
+		if !credentials.TrustedLocalProcess(ctx) || len(delegatedEnv) != 1 || delegatedEnv[0] == nil {
+			return launcherContract{}, err
+		}
+		probeEnv = credentials.TrustedLocalEnvironment(ctx, delegatedEnv[0])
 	}
+
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	command := append(append([]string(nil), resolveHarnessCommand(c.Command)...), launcherContractFlag)
 	stdout := newTranscriptBuffer(16 * 1024)
 	result, err := c.runner().Run(probeCtx, ProcessRequest{
-		Command: command, Env: baseEnv(nil, nil), Timeout: 10 * time.Second,
+		Command: command, Env: probeEnv, Timeout: 10 * time.Second,
 		MaxTranscriptBytes: 16 * 1024,
 		StdoutCapture:      stdout,
 	})

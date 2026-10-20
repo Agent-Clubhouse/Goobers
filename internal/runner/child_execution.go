@@ -51,6 +51,9 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	cfg := r.cfg
 	cfg.childExecution = &id
 	cfg.childTrustedLocal = factories.TrustedLocal
+	if factories.TrustedLocal {
+		cfg.RunnersDeclared = true
+	}
 	cfg.childBorrowJournal = factories.BorrowJournal
 	cfg.childTerminalCustody = factories.VerifyTerminalCustody
 	cfg.NewDeterministic, cfg.NewAgentic = factories.NewDeterministic, factories.NewAgentic

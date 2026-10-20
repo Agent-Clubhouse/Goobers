@@ -30,7 +30,7 @@ func containedParentShape(cfg *instance.Config, goobers map[string]apiv1.GooberS
 	refuse := func(reason string) error {
 		return fmt.Errorf("%w: %s", workflow.ErrChildWorkflowExecutionUnsupported, reason)
 	}
-	if cfg == nil || !cfg.EngineProjectionEnabled() || cfg.API.PodTokenKeyFile == "" {
+	if !trustedLocalChildren(cfg) && (cfg == nil || !cfg.EngineProjectionEnabled() || cfg.API.PodTokenKeyFile == "") {
 		return refuse("contained parent requires authenticated worker transport")
 	}
 	spec := machine.Def.Spec
@@ -48,7 +48,7 @@ func containedParentShape(cfg *instance.Config, goobers map[string]apiv1.GooberS
 		if !ok || (goober.Harness != apiv1.HarnessClaudeCode && goober.Harness != apiv1.HarnessCodex && goober.Harness != apiv1.HarnessCopilot) || len(goober.MCPServers) != 0 {
 			return refuse("contained parent requires an API-authenticated Claude, Codex or Copilot profile without BYO MCP")
 		}
-		if goober.Harness == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(goober.HarnessOptions) {
+		if !trustedLocalChildren(cfg) && goober.Harness == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(goober.HarnessOptions) {
 			return refuse("contained parent cannot inherit ambient ChatGPT authentication")
 		}
 	}
@@ -99,6 +99,13 @@ func containedParentPlacements(cfg *instance.Config, set *instance.ConfigSet, ma
 			continue
 		}
 		i := slices.IndexFunc(pins, func(pin dispatcher.PinnedPlacement) bool { return pin.Stage == task.Name })
+		if trustedLocalChildren(cfg) {
+			if i < 0 || !pins[i].Self {
+				return nil, fmt.Errorf("trusted-local parent stage %q has no self placement", task.Name)
+			}
+			selected = append(selected, pins[i])
+			continue
+		}
 		if i < 0 || pins[i].Self || pins[i].Queue == "" || len(pins[i].Eligible) == 0 {
 			return nil, fmt.Errorf("contained parent stage %q has no worker placement", task.Name)
 		}

@@ -35,6 +35,14 @@ func (s *daemonCredentialService) isolatedChildBuilder(build childRuntimeBuilder
 		if build == nil || s.childExecutors == nil {
 			return preparedChildRuntime{}, &childStartDeferred{Reason: "isolated child stage backend unavailable"}
 		}
+		if s.localParentExecutors != nil {
+			if !trustedLocalChildren(s.config) || start.Proposal == nil {
+				return preparedChildRuntime{}, &childStartDeferred{Reason: "trusted-local source unavailable"}
+			}
+			if _, err := s.localChildAuthentication(ctx, start); err != nil {
+				return preparedChildRuntime{}, err
+			}
+		}
 		return isolatedChildRuntime(build, s.childExecutors)(ctx, start)
 	}
 }

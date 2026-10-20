@@ -77,8 +77,19 @@ func (g *parentRoutedGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 		return ordinary.Invoke(ctx, env)
 	}
 	service, ok := stageGrantMinterFor(g.root).(*daemonCredentialService)
-	if !ok || service.parentExecutors == nil {
+	if !ok || (service.parentExecutors == nil && service.localParentExecutors == nil) {
 		return apiv1.ResultEnvelope{}, childworkflow.ErrAuthorityUnavailable
+	}
+	if service.localParentExecutors != nil {
+		ordinary, err := g.ordinaryExecutor()
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		parent, err := service.localParentExecutors(g.goober, g.rec, ordinary)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		return parent.Invoke(ctx, env)
 	}
 	parent, err := service.parentExecutors(g.goober, g.rec, nil)
 	if err != nil {
