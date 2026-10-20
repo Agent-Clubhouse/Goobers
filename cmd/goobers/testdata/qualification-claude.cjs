@@ -7,20 +7,38 @@ const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const args = process.argv.slice(2);
 const codex = path.basename(process.argv[1]) === 'codex';
-if (args.includes('--version')) {
+if (require.main === module && args.includes('--version')) {
   process.stdout.write('2.1.0 (qualification fixture)\n');
   process.exit(0);
 }
-if (args[0] === 'auth' && args[1] === 'status') {
+if (require.main === module && args[0] === 'auth' && args[1] === 'status') {
   process.stdout.write('{"loggedIn":true,"authMethod":"api_key"}\n');
   process.exit(0);
 }
-const prompt = fs.readFileSync(0, 'utf8');
-const agenticChild = prompt.includes('QUALIFICATION_AGENTIC_CHILD_TASK');
-const registered = codex ? codexRegistration() : claudeRegistration();
-if (!registered) throw new Error('Goobers MCP server missing');
-const mcp = spawn(registered.command, registered.args, { stdio: ['pipe', 'pipe', 'pipe'], ...(codex ? { env: codexMCPEnvironment(registered) } : {}) });
-if (codex) process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: require('node:crypto').randomUUID() }) + '\n');
+let prompt, agenticChild, mcp, copilotIO;
+function startCLI() {
+  prompt = fs.readFileSync(0, 'utf8');
+  agenticChild = prompt.includes('QUALIFICATION_AGENTIC_CHILD_TASK');
+  const registered = codex ? codexRegistration() : claudeRegistration();
+  if (!registered) throw new Error('Goobers MCP server missing');
+  mcp = spawn(registered.command, registered.args, { stdio: ['pipe', 'pipe', 'pipe'], ...(codex ? { env: codexMCPEnvironment(registered) } : {}) });
+  if (codex) process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: require('node:crypto').randomUUID() }) + '\n');
+  readline.createInterface({ input: mcp.stdout }).on('line', line => {
+    const response = JSON.parse(line);
+    const resolve = pending.get(response.id);
+    if (resolve) { pending.delete(response.id); resolve(response); }
+  });
+  mcp.stderr.resume();
+  return main();
+}
+// The Copilot endpoint owns the SDK connection and the same MCP subprocess
+// used for readiness and model turns. Reuse all existing journey assertions.
+exports.runCopilotJourney = async io => {
+  copilotIO = io;
+  prompt = io.prompt;
+  agenticChild = false; // Copilot generated children remain refused.
+  return main();
+};
 // Deliberately do not echo MCP configuration, arguments, stderr or response data.
 const pending = new Map();
 let nextID = 0;
@@ -61,16 +79,8 @@ function codexMCPEnvironment(server) {
   }
   return env;
 }
-readline.createInterface({ input: mcp.stdout }).on('line', line => {
-  const response = JSON.parse(line);
-  const resolve = pending.get(response.id);
-  if (resolve) {
-    pending.delete(response.id);
-    resolve(response);
-  }
-});
-mcp.stderr.resume();
 function request(method, params) {
+  if (copilotIO) return copilotIO.request(method, params);
   const id = ++nextID;
   return new Promise(resolve => {
     pending.set(id, resolve);
@@ -101,7 +111,7 @@ function waitForHost() {
   setInterval(() => {}, 1000);
 }
 function childAuthoringCatalog() {
-  const directory = path.join(path.basename(process.argv[1]) === 'codex' ? '.agents' : '.claude', 'skills', 'goobers-child-workflows');
+  const directory = path.join(copilotIO ? '.github' : codex ? '.agents' : '.claude', 'skills', 'goobers-child-workflows');
   const skill = fs.readFileSync(path.join(directory, 'SKILL.md'), 'utf8');
   const catalog = JSON.parse(fs.readFileSync(path.join(directory, 'catalog.json'), 'utf8'));
   if (!prompt.includes(directory + '/SKILL.md') || !skill.includes('validate_child_workflow') || !skill.includes('resolve_child_workflow')) throw new Error('parent authoring guidance did not reach the model');
@@ -109,10 +119,12 @@ function childAuthoringCatalog() {
   return catalog;
 }
 async function main() {
-  if (!codex && (process.env.ANTHROPIC_API_KEY !== 'sk-ant-qualification-model-only' || process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.CODEX_API_KEY)) throw new Error('Claude model credential differs');
-  const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'qualification-model', version: '1' } });
-  if (init.error) throw new Error('MCP initialization failed');
-  mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  if (!copilotIO && !codex && (process.env.ANTHROPIC_API_KEY !== 'sk-ant-qualification-model-only' || process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.CODEX_API_KEY)) throw new Error('Claude model credential differs');
+  if (!copilotIO) {
+    const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'qualification-model', version: '1' } });
+    if (init.error) throw new Error('MCP initialization failed');
+    mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  }
   if (agenticChild) return agenticChildJourney();
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
@@ -203,6 +215,7 @@ async function agenticChildJourney() {
 }
 function complete() {
   phase('completion-contract');
+  if (copilotIO) return copilotIO.complete({ status: 'success', outputs: { summary: 'Generated child completed and disposition acknowledged' } });
   const match = prompt.match(/write your [^\n]+ as JSON to `([^`]+)`/);
   if (!match || path.isAbsolute(match[1]) || match[1].split('/').includes('..')) throw new Error('completion contract unavailable');
   fs.mkdirSync(path.dirname(match[1]), { recursive: true });
@@ -255,7 +268,7 @@ async function parallelJourney() {
   }
   return complete();
 }
-main().catch(error => {
+if (require.main === module) startCLI().catch(error => {
   const known = ['Claude model credential differs', 'agentic child did not complete', 'child return bytes mismatch', 'agentic child evidence did not return', 'generated agentic child acquired recursive workflow authority', 'generated agentic child received parent instructions', 'child model credential differs', 'child return disposition mismatch', 'parent state disposition mismatch', 'parent fork content lost', 'parent authoring catalog differs', 'parent authoring guidance did not reach the model', 'completion contract unavailable'];
   const code = known.includes(error.message) ? error.message.toLowerCase().replaceAll(' ', '-') : error.code === 'ENOENT' ? 'file-not-found' : 'unclassified';
   process.stderr.write(`qualification failure code: ${code}\n`);

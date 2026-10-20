@@ -35,7 +35,7 @@ func qualificationParentHarness(t *testing.T) string {
 	switch value := os.Getenv("GOOBERS_PARENT_QUALIFICATION_HARNESS"); value {
 	case "", "claude-code":
 		return "claude-code"
-	case "codex":
+	case "codex", "copilot":
 		return value
 	default:
 		t.Fatal("unsupported qualification harness")
@@ -47,11 +47,19 @@ func installQualificationParentProbe(t *testing.T, bin string) {
 	t.Helper()
 	command := "claude"
 	key := "sk-ant-qualification-model-only"
-	if qualificationParentHarness(t) == "codex" {
+	switch qualificationParentHarness(t) {
+	case "codex":
 		command, key = "codex", "sk-qualification-model-only"
+	case "copilot":
+		command, key = "copilot", "qualification-copilot-model-token"
 	}
 	// Only preflight may execute on the host. Inference must reach the pod.
 	probe := "#!/bin/sh\ncase \"$*\" in\n --version) echo '2.1.0 (qualification preflight)' ;;\n 'auth status') echo '{\"loggedIn\":true}' ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
+	if command == "copilot" {
+		// Copilot's native authentication check is a fixed prompt. The fixture
+		// answers only that exact preflight; arbitrary host inference fails.
+		probe = "#!/bin/sh\ncase \"$*\" in\n --version) echo 'GitHub Copilot CLI 1.0.98 (qualification preflight)' ;;\n '-p Reply with exactly: ok --allow-all-tools --available-tools= --no-remote-export') echo ok ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
+	}
 	if err := os.WriteFile(filepath.Join(bin, command), []byte(probe), 0700); err != nil {
 		t.Fatal(err)
 	}

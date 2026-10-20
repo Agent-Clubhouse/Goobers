@@ -87,6 +87,10 @@ var declared = map[string]Dependency{
 		Name:        "mvn",
 		InstallHint: "install Maven (Debian/Ubuntu: apt-get install maven)",
 	},
+	"node": {
+		Name:        "node",
+		InstallHint: "install Node.js 24 (https://nodejs.org/)",
+	},
 	"powershell.exe": {
 		Name:        "powershell.exe",
 		InstallHint: "use Windows PowerShell 5.1, included with Windows Server; native Windows image tests are Windows-only",
