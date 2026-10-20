@@ -171,7 +171,7 @@ describe("interactive workspace", () => {
     const fx = fixture(makeSession({status: "running", activeTurnId: "t1", turns: [turn]}));
     render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
     fireEvent.change(await screen.findByLabelText("Steer this turn"), {target: {value: "Focus on tests"}});
-    fireEvent.click(screen.getByRole("button", {name: "Send steering"}));
+    fireEvent.click(screen.getByRole("button", {name: "Steer"}));
     await waitFor(() => expect(fx.client.command).toHaveBeenCalledWith("s-1", expect.objectContaining({type: "steer", turnId: "t1", expectedFence: 1, text: "Focus on tests"})));
     expect(await screen.findByText("Steering accepted · awaiting delivery")).toBeInTheDocument();
     const command = vi.mocked(fx.client.command).mock.calls[0][1];
@@ -189,7 +189,7 @@ describe("interactive workspace", () => {
     });
     render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
     fireEvent.change(await screen.findByLabelText("Steer this turn"), {target: {value: "Focus on tests"}});
-    fireEvent.click(screen.getByRole("button", {name: "Send steering"}));
+    fireEvent.click(screen.getByRole("button", {name: "Steer"}));
     await waitFor(() => expect(fx.client.command).toHaveBeenCalledTimes(2));
     const [first, second] = vi.mocked(fx.client.command).mock.calls.map(call => call[1]);
     expect(second).toEqual({...first, expectedSequence: 12});
@@ -204,7 +204,7 @@ describe("interactive workspace", () => {
     });
     render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
     fireEvent.change(await screen.findByLabelText("Steer this turn"), {target: {value: "Focus on tests"}});
-    fireEvent.click(screen.getByRole("button", {name: "Send steering"}));
+    fireEvent.click(screen.getByRole("button", {name: "Steer"}));
     expect(await screen.findByText(/Your steering was not sent to another turn/)).toBeInTheDocument();
     expect(fx.client.command).toHaveBeenCalledTimes(1);
   });
@@ -240,6 +240,31 @@ describe("interactive workspace", () => {
     fireEvent.click(screen.getByRole("tab", {name: /Children/}));
     fireEvent.click(screen.getByRole("button", {name: "Run child"}));
     await waitFor(() => expect(fx.client.command).toHaveBeenCalledWith("s-1", expect.objectContaining({type: "child.review", childId: "child-1", decision: "approve"})));
+  });
+  it("resets inspector state when switching from workbench to helper", async () => {
+    const fx = fixture();
+    const view = render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    fireEvent.click(await screen.findByRole("tab", {name: /Changes/}));
+    expect(await screen.findByLabelText("Diff for Changes 1")).toBeInTheDocument();
+    fx.setSession(makeSession({id: "s-2", surfaceId: "helper", mode: "helper"}));
+    view.rerender(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-2" />);
+    expect(await screen.findByText("Session context")).toBeInTheDocument();
+    expect(screen.getByRole("tab", {name: "Context"})).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tab", {name: /Changes/})).not.toBeInTheDocument();
+  });
+  it("sends queue and interrupt intent only for advertised capabilities", async () => {
+    const turn = {id: "t1", text: "Work", status: "running", attempt: 1, fence: 1, startedAt: "2026-10-17T09:00:00Z"};
+    for (const [label, capabilities, fields] of [
+      ["Queue", {steer: false, queue: "native" as const, interrupt: false}, {delivery: "queued"}],
+      ["Stop & send", {steer: false, queue: "none" as const, interrupt: true}, {delivery: "prompt", steeringMode: "interrupt-and-continue"}],
+    ] as const) {
+      const fx = fixture(makeSession({status: "running", activeTurnId: "t1", turns: [turn], capabilities}));
+      const view = render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+      fireEvent.change(await screen.findByLabelText("Steer this turn"), {target: {value: "Next request"}});
+      fireEvent.click(screen.getByRole("button", {name: label}));
+      await waitFor(() => expect(fx.client.command).toHaveBeenCalledWith("s-1", expect.objectContaining({type: "steer", text: "Next request", turnId: "t1", ...fields})));
+      view.unmount();
+    }
   });
   it("keeps stop pending until the server confirms custody release", async () => {
     const fx = fixture(); render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);

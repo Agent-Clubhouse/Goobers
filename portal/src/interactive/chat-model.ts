@@ -1,4 +1,4 @@
-import type { InteractiveEvent } from "./client";
+import type { ChatCapabilities, InteractiveEvent, Session } from "./client";
 // Diff parsing adapted from Agent-Clubhouse/Clubhouse at 3309665c,
 // src/renderer/features/agents/chat/view-model.ts (MIT; see CLUBHOUSE-LICENSE.txt).
 export interface DiffLine {
@@ -81,7 +81,7 @@ export function toolActivities(events: InteractiveEvent[]): ToolActivity[] {
     const identity = String(explicit ?? name);
     let group = open.get(identity);
     if (!group || (event.type === "tool.started" && !explicit)) {
-      group = {id: String(explicit ?? event.sequence), name, events: [], readOnly: /^(repository\.read|read_file|read|glob|grep|search)$/i.test(name), path: typeof event.data.path === "string" ? event.data.path : undefined};
+      group = {id: String(explicit ?? event.sequence), name, events: [], readOnly: event.data.kind === "read" || /^(repository\.read|read_file|read|glob|grep|search)$/i.test(name), path: typeof event.data.path === "string" ? event.data.path : undefined};
       groups.push(group); open.set(identity, group);
     }
     group.events.push(event);
@@ -91,7 +91,7 @@ export function toolActivities(events: InteractiveEvent[]): ToolActivity[] {
   return groups;
 }
 
-export interface MessageDelivery { commandId: string; text: string; turnId?: string; state: string }
+export interface MessageDelivery { commandId: string; text: string; turnId?: string; state: string; delivery?: string }
 export function commandMessages(events: InteractiveEvent[], local: MessageDelivery[]): MessageDelivery[] {
   const messages = new Map(local.map(message => [message.commandId, {...message}]));
   for (const event of events) {
@@ -99,9 +99,33 @@ export function commandMessages(events: InteractiveEvent[], local: MessageDelive
     const current = messages.get(event.commandId);
     if (event.type === "command.accepted" && event.data.commandType !== "message" && typeof event.data.text === "string" && event.data.text) {
       messages.set(event.commandId, {...current, commandId: event.commandId, text: event.data.text, turnId: event.turnId, state: "Accepted"});
+    } else if (event.type === "user_message" && event.data.delivery !== "prompt" && typeof event.data.text === "string") {
+      messages.set(event.commandId, {...current, commandId: event.commandId, text: event.data.text, turnId: event.turnId, state: "Delivered", delivery: String(event.data.delivery)});
     } else if (current && /^(steering|command)\.(delivered|rejected)$/.test(event.type)) {
       current.state = event.type.endsWith("delivered") ? "Delivered" : "Rejected";
+      current.delivery = typeof event.data.delivery === "string" ? event.data.delivery : current.delivery;
     }
   }
   return [...messages.values()];
 }
+
+export type ComposerAction = "message" | "steer" | "interrupt_continue" | "queued";
+// Capability precedence follows Clubhouse view-model.composerModes (MIT).
+// Unsupported actions stay unavailable rather than becoming a silent queue.
+export function composerModes(caps: ChatCapabilities | undefined, running: boolean): { primary?: ComposerAction; secondary?: ComposerAction } {
+  if (!running) return {primary: "message"};
+  const canQueue = caps?.queue === "native" || caps?.queue === "client";
+  if (caps?.steer) return {primary: "steer", secondary: canQueue ? "queued" : undefined};
+  if (caps?.interrupt) return {primary: "interrupt_continue", secondary: canQueue ? "queued" : undefined};
+  return {primary: canQueue ? "queued" : undefined};
+}
+export function sessionCapabilities(session: Session | undefined, events: InteractiveEvent[]): ChatCapabilities | undefined {
+  if (!session) return undefined;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!["session_started", "session_info"].includes(events[i].type)) continue;
+    const caps = events[i].data.capabilities as ChatCapabilities | undefined;
+    if (caps) return caps;
+  }
+  return session.capabilities ?? (session.executionMode === "local-tools" ? {steer: true, queue: "none", interrupt: false} : undefined);
+}
+export const composerLabels: Record<ComposerAction, string> = {message: "Send message", steer: "Steer", interrupt_continue: "Stop & send", queued: "Queue"};

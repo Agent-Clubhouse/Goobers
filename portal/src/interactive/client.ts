@@ -19,7 +19,9 @@ export interface Child {
 }
 export interface Change { path: string; status: string; additions: number; deletions: number }
 export interface Lease { workerId: string; leaseId: string; fence: number; expiresAt: string; status: string }
+export interface ChatCapabilities { steer: boolean; queue: "native" | "client" | "none"; interrupt: boolean }
 export interface Session {
+  capabilities?: ChatCapabilities;
   lease?: Lease; configDigest?: string; configRevision?: string; members?: {principal: string; role: string}[]; custodyPending?: boolean; stopFencePending?: boolean;
   id: string; owner: string; surfaceId: string; mode: "helper" | "workbench";
   executionMode?: ExecutionModeId; title: string; status: string; sequence: number; fence: number; createdAt: string;
@@ -33,11 +35,12 @@ export interface InteractiveEvent {
 export interface Command {
   commandId: string; type: "message" | "steer" | "stop" | "resume" | "child.request" | "child.review";
   expectedSequence: number; expectedFence: number; text?: string; turnId?: string;
+  delivery?: "prompt" | "steer" | "queued"; steeringMode?: "interrupt-and-continue";
   workflowYaml?: string; childId?: string; decision?: "approve" | "accept" | "deny";
 }
 export interface Receipt {
   commandId: string; sessionId: string; type: string; status: string;
-  sequence: number; turnId?: string; childId?: string;
+  sequence: number; turnId?: string; childId?: string; delivery?: string; steeringMode?: string;
 }
 export interface Changes { changes: Change[]; diff: string; workspacePath: string }
 export interface Connection { id: string; provider: string; label: string; status: string; resources: string[]; expiresAt?: string }
@@ -90,7 +93,7 @@ export class HttpInteractiveClient implements InteractiveClient {
   async sessions() { return (await this.request<{sessions: Session[]}>("/sessions")).sessions ?? []; }
   create(input: CreateSessionRequest) { return this.request<Session>("/sessions", input); }
   session(id: string) { return this.request<Session>(`/sessions/${encodeURIComponent(id)}`); }
-  async events(id: string, after: number) { return (await this.request<{events: InteractiveEvent[]}>(`/sessions/${encodeURIComponent(id)}/events?after=${after}`)).events ?? []; }
+  async events(id: string, after: number) { return (await this.request<{events: InteractiveEvent[]}>(`/sessions/${encodeURIComponent(id)}/events?after=${after}`)).events?.map(normalizeEvent) ?? []; }
   changes(id: string) { return this.request<Changes>(`/sessions/${encodeURIComponent(id)}/changes`); }
   command(id: string, input: Command) { return this.request<Receipt>(`/sessions/${encodeURIComponent(id)}/commands`, input); }
   subscribe(id: string, after: number, onEvent: (event: InteractiveEvent) => void, onState: (state: StreamState) => void): StreamSubscription {
@@ -99,11 +102,27 @@ export class HttpInteractiveClient implements InteractiveClient {
     stream.onopen = () => onState("live");
     stream.onerror = () => onState("reconnecting");
     stream.addEventListener("interactive", event => {
-      try { onEvent(JSON.parse((event as MessageEvent<string>).data) as InteractiveEvent); }
+      try { onEvent(normalizeEvent(JSON.parse((event as MessageEvent<string>).data))); }
       catch { onState("reconnecting"); }
     });
     return { close: () => stream.close() };
   }
+}
+// Accept the durable host envelope and standalone v2 envelopes at one boundary.
+// Host sequence wins over the driver's per-attempt sequence when both exist.
+export function normalizeEvent(input: InteractiveEvent | Record<string, unknown>): InteractiveEvent {
+  const value = input as unknown as Record<string, unknown>;
+  const data = (value.data ?? {}) as Record<string, unknown>;
+  const chat = (data.chat ?? (value.v === 2 ? value : undefined)) as Record<string, unknown> | undefined;
+  if (!chat) return input as InteractiveEvent;
+  const payload = (chat.data ?? {}) as Record<string, unknown>;
+  const text = Array.isArray(payload.content) ? payload.content.map(block => block?.type === "text" && typeof block.text === "string" ? block.text : "").join("") : undefined;
+  const type = String(chat.type);
+  const mapped = type === "agent_message_chunk" ? "assistant.delta" : type === "agent_message" ? "assistant.message"
+    : type === "tool_call" || type === "tool_call_update" ? ["completed", "failed", "cancelled"].includes(String(payload.status)) ? "tool.completed" : type === "tool_call" ? "tool.started" : "tool.output" : type;
+  return {sequence: Number(value.sequence ?? chat.seq), sessionId: String(value.sessionId ?? chat.sessionId), turnId: (value.turnId ?? chat.turnId) as string | undefined,
+    commandId: (value.commandId ?? chat.commandId) as string | undefined, time: typeof value.time === "string" ? value.time : new Date(Number(chat.ts)).toISOString(), type: mapped,
+    data: {...payload, ...data, ...(text !== undefined && typeof data.text !== "string" ? {text} : {}), ...(payload.title ? {name: payload.title} : {})}};
 }
 export function commandId(): string { return crypto.randomUUID(); }
 export function mergeEvents(current: InteractiveEvent[], incoming: InteractiveEvent[]): InteractiveEvent[] {

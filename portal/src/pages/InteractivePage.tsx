@@ -8,7 +8,7 @@ import { commandId, describeError, HttpInteractiveClient, InteractiveError, isUn
   type Changes, type Command, type InteractiveClient, type InteractiveEvent, type Receipt,
   type Session, type StreamState, type Surface, type RuntimeStatus, type InteractiveShellStatus, type CreateSessionRequest, type ExecutionModeId } from "../interactive/client";
 import { OperationsPanel } from "../interactive/OperationsPanel";
-import { commandMessages, fileDiffs, plainFailure, toolActivities, type MessageDelivery } from "../interactive/chat-model";
+import { commandMessages, composerModes, composerLabels, sessionCapabilities, fileDiffs, plainFailure, toolActivities, type MessageDelivery } from "../interactive/chat-model";
 import "../interactive/interactive.css";
 
 const defaultClient = new HttpInteractiveClient();
@@ -196,10 +196,12 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
     if (!session || !connected || pending) return;
     void dispatch({ commandId: commandId(), type, expectedSequence: session.sequence, expectedFence: session.fence, ...fields });
   }
-  function submit(event: FormEvent) {
+  const composer = composerModes(sessionCapabilities(session, events), session?.status === "running");
+  function submit(event: FormEvent, action = composer.primary) {
     event.preventDefault();
-    if (!draft.trim() || !session) return;
-    send(session.status === "running" ? "steer" : "message", { text: draft.trim(), ...(session.status === "running" ? { turnId: session.activeTurnId } : {}) });
+    if (!draft.trim() || !session || !action) return;
+    jumpToLatest();
+    send(action === "message" ? "message" : "steer", {text: draft.trim(), ...(action !== "message" ? {turnId: session.activeTurnId, delivery: action === "queued" ? "queued" : action === "interrupt_continue" ? "prompt" : "steer", ...(action === "interrupt_continue" ? {steeringMode: "interrupt-and-continue" as const} : {})} : {})});
   }
   const inspectorTabs: InspectorTab[] = session?.mode === "helper" ? ["context", "actions", "children", "access"] : ["context", "changes", "actions", "children", "access"];
   async function switchIdentity(name: string) {
@@ -266,7 +268,7 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
             {!pinned && <Action className="ix-jump-latest" variant="secondary" onClick={jumpToLatest}>Jump to latest</Action>}
             {receipt && <div className="ix-receipt" role="status"><Icon name="check" size={14} />{receiptLabel(receipt, events)}<span title={receipt.commandId}>#{receipt.sequence}</span></div>}
             {actionError && <div role="alert" className="ix-action-error"><strong>{pending ? "Command outcome unknown" : "Command not completed"}</strong><p>{actionError}</p>{pending && <><p>Retry keeps the original command ID and payload so the server can return the existing receipt.</p><Action disabled={busy || !connected} onClick={() => void dispatch(pending.command, pending.sessionId)}>Retry same command</Action><Action onClick={() => setReload(value => value + 1)}>Refresh outcome</Action></>}</div>}
-            <form onSubmit={submit} className="ix-composer"><label htmlFor="interactive-message">{active ? "Steer this turn" : "Message"}</label><textarea ref={draftRef} id="interactive-message" value={draft} onChange={event => setDraft(event.target.value)} placeholder={active ? "Add direction for the active turn…" : session.status === "stopped" ? "This session is stopped." : demoSession ? "Try investigate, fix, test, review, or wait…" : "Describe the work you want the agent to do…"} disabled={!canWrite} rows={3} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="ix-composer-footer"><span>{active ? "Steering targets this active turn. Delivery is acknowledged separately." : "⌘ / Ctrl + Enter to send · Local edits stay in the session workspace"}</span><Action variant="primary" type="submit" disabled={!canWrite || !draft.trim()}><Icon name="arrow" size={16} />{busy ? "Sending…" : active ? "Send steering" : "Send message"}</Action></div></form>
+            <form onSubmit={submit} className="ix-composer"><label htmlFor="interactive-message">{active ? "Steer this turn" : "Message"}</label><textarea ref={draftRef} id="interactive-message" value={draft} onChange={event => setDraft(event.target.value)} placeholder={active ? "Add direction for the active turn…" : session.status === "stopped" ? "This session is stopped." : demoSession ? "Try investigate, fix, test, review, or wait…" : "Describe the work you want the agent to do…"} disabled={!canWrite || !composer.primary} rows={3} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="ix-composer-footer"><span>{active ? composer.primary === "interrupt_continue" ? "Stops the active turn before sending. Writer shutdown must be confirmed." : composer.primary === "queued" ? "Queued for the driver. Delivery is acknowledged separately." : "Steering targets this active turn. Delivery is acknowledged separately." : "⌘ / Ctrl + Enter to send · Local edits stay in the session workspace"}</span>{composer.secondary && <Action variant="secondary" disabled={!canWrite || !draft.trim()} onClick={event => submit(event, composer.secondary)}>{composerLabels[composer.secondary]}</Action>}<Action variant="primary" type="submit" disabled={!canWrite || !draft.trim() || !composer.primary}><Icon name="arrow" size={16} />{busy ? "Sending…" : composer.primary ? composerLabels[composer.primary] : "Unavailable"}</Action></div></form>
           </div>
         </>}
       </div>
@@ -364,7 +366,7 @@ function eventText(event: InteractiveEvent): string {
   return typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 }
 function CommandBubbles({ messages }: { messages: MessageDelivery[] }) {
-  return <>{messages.map(message => <div className="ix-user-message ix-command-message" key={message.commandId} data-command-id={message.commandId}><div className="ix-message-byline"><span>You</span><span className={`ix-status ix-delivery-${message.state.toLowerCase().replaceAll(" ", "-")}`} role="status">{message.state}</span></div><p>{message.text}</p></div>)}</>;
+  return <>{messages.map(message => <div className="ix-user-message ix-command-message" key={message.commandId} data-command-id={message.commandId}><div className="ix-message-byline"><span>You</span><span className={`ix-status ix-delivery-${message.state.toLowerCase().replaceAll(" ", "-")}`} role="status">{message.state}{message.delivery === "queued" ? " · queued" : ""}</span></div><p>{message.text}</p></div>)}</>;
 }
 function TurnActivity({ events, active, actorLabel }: { events: InteractiveEvent[]; active: boolean; actorLabel: string }) {
   const final = events.filter(event => event.type === "assistant.message");
@@ -374,9 +376,9 @@ function TurnActivity({ events, active, actorLabel }: { events: InteractiveEvent
   const other = tools.filter(tool => !tool.readOnly);
   function toolCard(tool: typeof tools[number]) {
     const last = tool.events[tool.events.length - 1];
-    return <details className="ix-tool" key={tool.id}><summary><Icon name={last.type === "tool.completed" ? "check" : "code"} size={14} /><span>{activityLabel(last)}</span></summary><pre>{tool.events.map(event => eventText(event) || String(event.data.detail ?? "")).filter(Boolean).join("\n") || "No output reported."}</pre></details>;
+    return <details className="ix-tool" key={tool.id}><summary><Icon name={last.type === "tool.completed" ? "check" : "code"} size={14} /><span>{activityLabel({...last, data: {...last.data, name: tool.name}})}</span></summary><pre>{tool.events.map(event => eventText(event) || String(event.data.detail ?? "")).filter(Boolean).join("\n") || "No output reported."}</pre></details>;
   }
-  return <div className="ix-assistant"><div className="ix-message-byline"><span><Icon name="goober" size={16} />{actorLabel}</span>{active && <span className="ix-working"><span className="ix-spinner" />Working</span>}</div>{tools.length > 0 && <div className="ix-activities">{explored.length > 0 && <details className="ix-tool ix-exploration"><summary><Icon name="code" size={14} /><span>Explored {new Set(explored.map(tool => tool.path ?? tool.id)).size} files</span></summary>{explored.map(toolCard)}</details>}{other.map(toolCard)}</div>}{events.filter(event => event.type === "auth.required").map(event => <p className="ix-turn-error" key={event.sequence}>{plainFailure(event.data).text}</p>)}{final.length ? final.map(event => <div className="ix-response" key={event.sequence}>{eventText(event)}</div>) : partial ? <div className="ix-response" aria-live="off">{partial}{active && <span className="ix-caret" />}</div> : active ? <p className="ix-empty-small">Waiting for execution output…</p> : null}</div>;
+  return <div className="ix-assistant"><div className="ix-message-byline"><span><Icon name="goober" size={16} />{actorLabel}</span>{active && <span className="ix-working"><span className="ix-spinner" />Working</span>}</div>{events.filter(event => ["notice", "error", "protocol_unknown", "permission_request", "question"].includes(event.type)).map(event => <p className="ix-turn-error" key={event.sequence}>{event.type === "protocol_unknown" ? "The driver reported an unrecognized protocol event. Some output may be unavailable." : plainFailure(event.data, event.type === "permission_request" ? "The driver is waiting for permission. Review it in the driver interface." : event.type === "question" ? "The driver is waiting for an answer. Review it in the driver interface." : "The driver reported a problem. Review its status before continuing.").text}</p>)}{tools.length > 0 && <div className="ix-activities">{explored.length > 0 && <details className="ix-tool ix-exploration"><summary><Icon name="code" size={14} /><span>Explored {new Set(explored.map(tool => tool.path ?? tool.id)).size} {new Set(explored.map(tool => tool.path ?? tool.id)).size === 1 ? "file" : "files"}</span></summary>{explored.map(toolCard)}</details>}{other.map(toolCard)}</div>}{events.filter(event => event.type === "auth.required").map(event => <p className="ix-turn-error" key={event.sequence}>{plainFailure(event.data).text}</p>)}{final.length ? final.map(event => <div className="ix-response" key={event.sequence}>{eventText(event)}</div>) : partial ? <div className="ix-response" aria-live="off">{partial}{active && <span className="ix-caret" />}</div> : active ? <p className="ix-empty-small">Waiting for execution output…</p> : null}</div>;
 }
 function activityLabel(event: InteractiveEvent): string {
   if (event.type === "steering.delivered") return "Steering delivered to the active turn";
