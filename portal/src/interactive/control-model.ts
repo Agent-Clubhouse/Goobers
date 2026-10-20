@@ -71,7 +71,11 @@ export function driverSettings(events: InteractiveEvent[]): DriverSettings {
       if (typeof data.currentEffort === "string") result.effort = data.currentEffort;
       if (level(data.level)) result.level = level(data.level);
     } else if (event.type === "mode_changed" && level(data.level)) result.level = level(data.level);
-    else if (event.type === "model_changed" && typeof data.model === "string") confirmedModel(data.model);
+    else if (event.type === "model_changed") {
+      const model = typeof data.modelId === "string" ? data.modelId : data.model;
+      if (typeof model === "string") confirmedModel(model);
+      if (typeof data.effort === "string") result.effort = data.effort;
+    }
     else if (event.type === "command.delivered" && typeof data.actual === "string") {
       if (data.commandType === "session.set_model") confirmedModel(data.actual);
       if (data.commandType === "session.set_level" && level(data.actual)) result.level = level(data.actual);

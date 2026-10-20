@@ -27,4 +27,9 @@ describe("control replay", () => {
     expect(driverSettings([info, event(3, "command.delivered", {commandType: "session.set_model", actual: "b"})])).toMatchObject({model: "b", effort: undefined, efforts: ["medium"]});
     expect(driverSettings([info, event(3, "command.delivered", {commandType: "session.set_model", actual: "b"}), event(4, "command.delivered", {commandType: "session.set_effort", actual: ""})])).toMatchObject({model: "b", effort: "", efforts: ["medium"]});
   });
+  it("accepts the Codex/Copilot modelId and Claude model confirmation payloads", () => {
+    expect(driverSettings([event(1, "model_changed", {modelId: "codex", effort: "", effortIsDefault: true})])).toMatchObject({model: "codex", effort: ""});
+    expect(driverSettings([event(1, "model_changed", {modelId: "copilot"})])).toMatchObject({model: "copilot", effort: undefined});
+    expect(driverSettings([event(1, "model_changed", {model: "claude"})])).toMatchObject({model: "claude", effort: undefined});
+  });
 });
