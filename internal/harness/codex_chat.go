@@ -23,11 +23,14 @@ import (
 )
 
 // CodexChatDriver implements the native app-server transport under "codex".
-type CodexChatDriver struct{ config CodexChatConfig }
+type CodexChatDriver struct {
+	config CodexChatConfig
+	start  func(context.Context, CodexChatConfig, chat.StartOptions) (*codexChatSession, error)
+}
 
 // NewCodexChatDriver binds a native app-server driver to host invocation authority.
 func NewCodexChatDriver(config CodexChatConfig) *CodexChatDriver {
-	return &CodexChatDriver{config: config}
+	return &CodexChatDriver{config: config, start: startCodexChat}
 }
 
 // ID identifies this native transport independently of the provider key.
@@ -49,7 +52,7 @@ func (d *CodexChatDriver) Probe(ctx context.Context) (chat.Probe, error) {
 	probe := chat.Probe{Capabilities: codexChatCapabilities(d.config.StateDir != "")}
 	config := d.config
 	config.StateDir = "" // Probing must not lock or modify a resumable session.
-	session, err := startCodexChat(ctx, config, chat.StartOptions{Workspace: config.Request.Workspace})
+	session, err := d.start(ctx, config, chat.StartOptions{Workspace: config.Request.Workspace})
 	if err != nil {
 		probe.Reason = chat.HandshakeFailed
 		var missing *exec.Error
@@ -69,7 +72,7 @@ func (d *CodexChatDriver) Probe(ctx context.Context) (chat.Probe, error) {
 
 // Start acquires process custody and creates or resumes one native thread.
 func (d *CodexChatDriver) Start(ctx context.Context, options chat.StartOptions) (chat.Session, error) {
-	s, err := startCodexChat(ctx, d.config, options)
+	s, err := d.start(ctx, d.config, options)
 	if err != nil {
 		return nil, err
 	}

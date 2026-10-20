@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goobers/goobers/internal/chat"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
@@ -65,6 +66,9 @@ func prepareCodexChat(ctx context.Context, cfg CodexChatConfig, o chat.StartOpti
 			cleanup()
 		}
 	}()
+	if err := validateCodexChatState(root, req.Workspace); err != nil {
+		return p, err
+	}
 	p.home = filepath.Join(root, "home")
 	tmp := filepath.Join(root, "tmp")
 	for _, dir := range []string{p.home, tmp} {
@@ -116,15 +120,8 @@ func prepareCodexChat(ctx context.Context, cfg CodexChatConfig, o chat.StartOpti
 	} {
 		p.argv = append(p.argv, "-c", override)
 	}
-	if req.Sandbox != nil {
-		roots, err := gitWritableRoots(req.Workspace)
-		if err != nil {
-			return p, err
-		}
-		p.argv, _, err = confineArgv(req.Sandbox, p.argv, req.Workspace, append(roots, root))
-		if err != nil {
-			return p, err
-		}
+	if p.argv, err = confineCodexChat(req, p.argv, root); err != nil {
+		return p, err
 	}
 	p.env, p.workspace, p.model, p.effort = env, req.Workspace, req.Model, options.effort
 	p.ambient = options.auth == CodexAuthAmbientChatGPT
@@ -193,4 +190,37 @@ func codexChatStdioServer(command string, args, envNames, tools []string) map[st
 		server["enabled_tools"] = tools
 	}
 	return server
+}
+
+// validateCodexChatState keeps native workspace tools from rewriting the
+// private configuration, including through symlinked parent directories.
+func validateCodexChatState(state, workspace string) error {
+	statePath, err := filepath.EvalSymlinks(state)
+	if err != nil {
+		return err
+	}
+	workspacePath, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(workspacePath, statePath)
+	if err != nil {
+		return err
+	}
+	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("codex chat private state must be outside the invocation workspace")
+	}
+	return nil
+}
+
+func confineCodexChat(req RunRequest, argv []string, state string) ([]string, error) {
+	if req.Sandbox == nil {
+		return argv, nil
+	}
+	roots, err := gitWritableRoots(req.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	confined, _, err := confineArgv(req.Sandbox, argv, req.Workspace, append(roots, state))
+	return confined, err
 }
