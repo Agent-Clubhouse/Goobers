@@ -16,6 +16,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
@@ -29,7 +31,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func trustedLocalJourneyFixture(t *testing.T) pinnedChildFixture {
+func trustedLocalJourneyFixture(t *testing.T, ambient bool) pinnedChildFixture {
 	t.Helper()
 	return newPinnedChildFixture(t, func(root string) {
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      goal:", 1)
@@ -46,7 +48,10 @@ func trustedLocalJourneyFixture(t *testing.T) pinnedChildFixture {
 		delete(doc, "runners")
 		delete(doc, "runner")
 		grants, _ := doc["credentials"].([]any)
-		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": "claude-code", "token": map[string]any{"env": "QUALIFICATION_MODEL_TOKEN"}})
+		if !ambient {
+			grants = append(grants, map[string]any{"capability": "agent:model", "harness": "claude-code", "token": map[string]any{"env": "QUALIFICATION_MODEL_TOKEN"}})
+		}
+		doc["credentials"] = grants
 		doc["cost"] = map[string]any{"enabled": false}
 		data, err := yaml.Marshal(doc)
 		if err != nil {
@@ -60,17 +65,23 @@ func trustedLocalJourneyFixture(t *testing.T) pinnedChildFixture {
 // only the model and the remote Git origin are replaced with local fixtures.
 func TestIntegrationTrustedLocalChildJourney(t *testing.T) {
 	testdep.Require(t, "git", "sh")
-	for _, action := range []string{"merge", "replace", "discard"} {
+	for _, action := range []string{"merge", "replace", "discard", "agentic", "ambient"} {
 		t.Run(action, func(t *testing.T) { qualifyTrustedLocalJourney(t, action) })
 	}
 }
 
-func qualifyTrustedLocalJourney(t *testing.T, action string) {
+func qualifyTrustedLocalJourney(t *testing.T, mode string) {
+	action := mode
+	if mode == "agentic" || mode == "ambient" {
+		action = "merge"
+	}
+	ambient := mode == "ambient"
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	bin := t.TempDir()
 	installQualificationParentProbe(t, bin)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "local-git-fixture-only")
-	f := trustedLocalJourneyFixture(t)
+	f := trustedLocalJourneyFixture(t, ambient)
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	writeFileContent(t, filepath.Join(source, "source.txt"), "base\n")
@@ -99,16 +110,35 @@ func qualifyTrustedLocalJourney(t *testing.T, action string) {
 		t.Fatal(err)
 	}
 	s.installTrustedLocalChildren(childFactoryJournals(t, s))
-	var calls atomic.Int32
+	var calls, childCalls atomic.Int32
+	var paths sync.Map
 	var runID string
 	previous := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(ctx context.Context, req harness.RunRequest) error {
-			n := calls.Add(1)
-			t.Log("parent invocation", n)
-			if !credentials.TrustedLocalProcess(ctx) || req.ChildWorkflows == nil {
-				return fmt.Errorf("parent missing delegated local authority")
+			if !credentials.TrustedLocalProcess(ctx) {
+				return fmt.Errorf("missing delegated local authority")
 			}
+			if _, used := paths.LoadOrStore(req.Workspace, true); used {
+				return fmt.Errorf("attempt checkout reused")
+			}
+			if ambient {
+				if _, ok := credentials.TrustedLocalAuthenticationFor(ctx, "claude-code"); !ok {
+					return fmt.Errorf("selected ambient login lost")
+				}
+			} else if token, err := req.Credentials.Token(ctx, "agent:model"); err != nil || token != "sk-ant-qualification-model-only" {
+				return fmt.Errorf("selected parent model credential lost: %v", err)
+			}
+			if req.ChildWorkflows == nil {
+				childCalls.Add(1)
+				result, err := (harness.ExecProcessRunner{}).Run(ctx, harness.ProcessRequest{Command: []string{"/bin/sh", "-c", "printf 'child\\n' > child.txt"}, Dir: req.Workspace, Env: credentials.TrustedLocalBaseEnvironment(ctx, os.Environ()), Timeout: 5 * time.Second})
+				if err != nil || result.ExitCode != 0 {
+					return fmt.Errorf("child process: %v %+v", err, result)
+				}
+				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			}
+			n := calls.Add(1)
+			parentRunID := req.Envelope.RunID
 			// A real managed process establishes the same quiescence owner as a CLI.
 			result, err := (harness.ExecProcessRunner{}).Run(ctx, harness.ProcessRequest{Command: []string{"/bin/sh", "-c", "printf 'parent\\n' > parent.txt"}, Dir: req.Workspace, Env: credentials.TrustedLocalBaseEnvironment(ctx, os.Environ()), Timeout: 5 * time.Second})
 			if err != nil || result.ExitCode != 0 {
@@ -118,21 +148,26 @@ func qualifyTrustedLocalJourney(t *testing.T, action string) {
 			switch n {
 			case 1:
 				proposal := strings.Replace(childValidationProposal, "      goal:", "      workspace: repo\n      goal:", 1)
-				proposal = strings.Replace(proposal, `run: {command: ["true"]}`, `run: {command: ["sh", "-c", "printf 'child\\n' > child.txt"]}`, 1)
-				if _, err := s.children.HTTPService().StartChildWorkflow(ctx, token, runID, "inspect", []byte(proposal)); err != nil {
+				if mode == "agentic" || mode == "ambient" {
+					proposal = strings.Replace(proposal, "type: deterministic", "type: agentic\n      goober: coder\n      capabilities: [agent:model]", 1)
+					proposal = strings.Replace(proposal, `      run: {command: ["true"]}`, "", 1)
+				} else {
+					proposal = strings.Replace(proposal, `run: {command: ["true"]}`, `run: {command: ["sh", "-c", "printf 'child\\n' > child.txt"]}`, 1)
+				}
+				if _, err := s.children.HTTPService().StartChildWorkflow(ctx, token, parentRunID, "inspect", []byte(proposal)); err != nil {
 					return err
 				}
 				<-ctx.Done()
 				return ctx.Err()
 			case 2:
-				status, err := s.children.HTTPService().ChildWorkflowStatus(ctx, token, runID, "inspect")
+				status, err := s.children.HTTPService().ChildWorkflowStatus(ctx, token, parentRunID, "inspect")
 				if err != nil {
 					return err
 				}
 				if status.ResultRef == "" {
 					return fmt.Errorf("no terminal result: %+v", status)
 				}
-				if _, err := s.children.HTTPService().ResolveChildWorkflow(ctx, token, runID, apicontract.ChildWorkflowResolveRequest{InvocationKey: "inspect", Action: action, ResultRef: status.ResultRef}); err != nil {
+				if _, err := s.children.HTTPService().ResolveChildWorkflow(ctx, token, parentRunID, apicontract.ChildWorkflowResolveRequest{InvocationKey: "inspect", Action: action, ResultRef: status.ResultRef}); err != nil {
 					return err
 				}
 				<-ctx.Done()
@@ -171,7 +206,7 @@ func qualifyTrustedLocalJourney(t *testing.T, action string) {
 	if err := s.installQueuedChildren(setup, triggers, &wg); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	scheduler := localscheduler.New(definitions.Entries, instanceLog, localscheduler.WithInstanceRunConditions(f.cfg.RunConditions.MaxParallelRuns, f.cfg.RunConditions.WorkflowBudgets, f.cfg.RunConditions.WorkflowDailyBudgets))
 	dispatch.AttachScheduler(scheduler)
 	dispatch.AttachDispatchContext(ctx)
@@ -216,6 +251,10 @@ func qualifyTrustedLocalJourney(t *testing.T, action string) {
 				if err != nil || len(children) != 1 || children[0].State != triggerqueue.ChildCompleted {
 					t.Fatalf("children=%+v err=%v", children, err)
 				}
+				verifyTrustedLocalJourneyReceipts(t, s, reader, children[0], source, action)
+				if (mode == "agentic" || mode == "ambient") && childCalls.Load() != 1 {
+					t.Fatalf("child agent calls=%d", childCalls.Load())
+				}
 				if calls.Load() != 3 {
 					t.Fatalf("parent calls=%d", calls.Load())
 				}
@@ -226,6 +265,51 @@ func qualifyTrustedLocalJourney(t *testing.T, action string) {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+func verifyTrustedLocalJourneyReceipts(t *testing.T, s *daemonCredentialService, parent *journal.Reader, child triggerqueue.ChildRecord, repo, action string) {
+	t.Helper()
+	result, err := (&childworkflow.WorkspaceCoordinator{Queue: s.childQueue}).ReadResult(t.Context(), child, repo)
+	if err != nil || result.Input.State != triggerqueue.ChildCompleted || result.Snapshot == nil || result.ResultRef != child.ResultRef {
+		t.Fatalf("terminal result contract=%+v err=%v", result, err)
+	}
+	disposition, err := s.childQueue.ChildDisposition(t.Context(), child.Identity)
+	if err != nil || disposition.Action != action || disposition.AppliedAt.IsZero() {
+		t.Fatalf("disposition=%+v err=%v", disposition, err)
+	}
+	if err := childpod.VerifyParentCustody(t.Context(), parent); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := s.layout.FindRunDir(child.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childReader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, _, err := s.pendingChildPodScopes(t.Context(), childReader)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("child custody=%+v err=%v", pending, err)
+	}
+	for _, reader := range []*journal.Reader{parent, childReader} {
+		events, err := reader.Events()
+		if err != nil {
+			t.Fatal(err)
+		}
+		placements := 0
+		for _, event := range events {
+			if event.Type == journal.EventRunnerPlacement {
+				placements++
+				if placement, ok := journal.PlacementFromEvent(event); !ok || placement.Runner != journal.PlacementRunnerSelf {
+					t.Fatal("local attempt reported remote placement")
+				}
+			}
+		}
+		if placements == 0 {
+			t.Fatal("local journal omitted placement")
 		}
 	}
 }
