@@ -379,6 +379,13 @@ func (s *codexChatSession) Send(ctx context.Context, content []chat.ContentBlock
 	return delivery, nil
 }
 
+// ActiveTurnID identifies outstanding native work for interruption settlement.
+func (s *codexChatSession) ActiveTurnID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active
+}
+
 func (s *codexChatSession) Interrupt(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -230,6 +230,7 @@ type writeRequest struct {
 
 // Session owns a long-lived process tree. Native results never release custody.
 type Session struct {
+	nativeTurn             uint64
 	queued                 int
 	uncontrolledExit       bool
 	failed                 atomic.Bool
@@ -431,6 +432,7 @@ func (s *Session) frame(m object) {
 		}
 		if !s.active && s.queued > 0 && (m["type"] == "assistant" || m["type"] == "stream_event" || m["type"] == "result") {
 			s.active = true
+			s.nativeTurn++
 			s.queued--
 			s.emit("turn_started", object{}, "")
 		}
@@ -445,6 +447,7 @@ func (s *Session) frame(m object) {
 		for _, e := range events {
 			if e.kind == "turn_ended" {
 				e.data["settled"] = s.queued == 0
+				e.data["nativeTurnId"] = strconv.FormatUint(s.nativeTurn, 10)
 			}
 			s.emit(e.kind, e.data, "")
 		}
@@ -463,6 +466,16 @@ func (s *Session) respondAsync(id string, response object) {
 			_ = s.Close()
 		}
 	}()
+}
+
+// ActiveTurnID identifies outstanding native work for interruption settlement.
+func (s *Session) ActiveTurnID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active && s.queued == 0 {
+		return ""
+	}
+	return strconv.FormatUint(s.nativeTurn, 10)
 }
 
 // Send delivers text using a prompt or native next/later priority.
@@ -490,6 +503,7 @@ func (s *Session) Send(ctx context.Context, blocks []chat.ContentBlock, o chat.S
 	if start {
 		delivery = chat.Prompt
 		s.active = true
+		s.nativeTurn++
 	} else if delivery == chat.Queued {
 		s.queued++
 	}

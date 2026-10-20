@@ -51,6 +51,16 @@ func (s *session) NativeID() string { return s.id }
 // Capabilities advertises the operations implemented by a transport.
 func (s *session) Capabilities() chat.Capabilities { return capabilities() }
 
+// ActiveTurnID identifies outstanding native work for interruption settlement.
+func (s *session) ActiveTurnID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.busy && s.queued == 0 {
+		return ""
+	}
+	return fmt.Sprint(s.nativeTurn)
+}
+
 // ResumeFallback identifies why a fresh session replaced a requested resume.
 func (s *session) ResumeFallback() chat.ResumeFallback { return s.fallback }
 
