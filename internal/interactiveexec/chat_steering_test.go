@@ -74,6 +74,8 @@ func (s *interruptSession) Interrupt(context.Context) error {
 	s.driver.Session.Emit("turn_ended", map[string]any{"reason": "cancelled", "settled": true, "nativeTurnId": "active"})
 	return nil
 }
+func (s *interruptSession) TurnGeneration() uint64 { return 1 }
+func (s *interruptSession) EventSequence() uint64  { return 0 }
 func (s *interruptSession) ActiveTurnID() string {
 	if s.driver.active {
 		return "active"
@@ -225,7 +227,9 @@ type failedInterruptSession struct {
 	events            chan chat.Event
 }
 
-func (s *failedInterruptSession) ActiveTurnID() string { return "active" }
+func (s *failedInterruptSession) TurnGeneration() uint64 { return 1 }
+func (s *failedInterruptSession) EventSequence() uint64  { return 0 }
+func (s *failedInterruptSession) ActiveTurnID() string   { return "active" }
 func (s *failedInterruptSession) Capabilities() chat.Capabilities {
 	return chat.Capabilities{Interrupt: s.supported}
 }

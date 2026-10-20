@@ -105,19 +105,20 @@ func (d *CodexChatDriver) Start(ctx context.Context, options chat.StartOptions) 
 }
 
 type codexChatSession struct {
-	rpc         *codexRPC
-	tree        *proc.Tree
-	waitDone    chan struct{}
-	proof       *invoke.WorkspaceQuiescence
-	acknowledge func(error)
-	prepared    preparedCodexChat
-	caps        chat.Capabilities
-	stream      *chat.Stream
-	cliVersion  string
-	closeOnce   sync.Once
-	closeErr    error
-	closing     atomic.Bool
-	sendMu      sync.Mutex
+	turnGeneration uint64
+	rpc            *codexRPC
+	tree           *proc.Tree
+	waitDone       chan struct{}
+	proof          *invoke.WorkspaceQuiescence
+	acknowledge    func(error)
+	prepared       preparedCodexChat
+	caps           chat.Capabilities
+	stream         *chat.Stream
+	cliVersion     string
+	closeOnce      sync.Once
+	closeErr       error
+	closing        atomic.Bool
+	sendMu         sync.Mutex
 	// requestMu orders question replies against lifecycle invalidation. Never
 	// hold it while waiting for a native RPC response (the reader drains turns).
 	requestMu     sync.Mutex
@@ -338,6 +339,11 @@ func (s *codexChatSession) Send(ctx context.Context, content []chat.ContentBlock
 		return "", chat.ErrClosed
 	}
 	s.mu.Lock()
+	if o.ExpectedGeneration != nil && *o.ExpectedGeneration != s.turnGeneration {
+		s.mu.Unlock()
+		return "", chat.ErrBusy
+	}
+
 	id, active, model, effort, level := s.nativeID, s.active, s.model, s.effort, s.level
 	s.mu.Unlock()
 	input := []cp.UserInput{codexRaw(map[string]any{"type": "text", "text": text, "text_elements": []any{}})}
@@ -378,6 +384,16 @@ func (s *codexChatSession) Send(ctx context.Context, content []chat.ContentBlock
 	s.emit("user_message", map[string]any{"content": content, "source": "user", "delivery": delivery}, o.CommandID)
 	return delivery, nil
 }
+
+// TurnGeneration retains evidence of native turns even after they settle.
+func (s *codexChatSession) TurnGeneration() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnGeneration
+}
+
+// EventSequence returns the last published event boundary.
+func (s *codexChatSession) EventSequence() uint64 { return s.stream.Sequence() }
 
 // ActiveTurnID identifies outstanding native work for interruption settlement.
 func (s *codexChatSession) ActiveTurnID() string {

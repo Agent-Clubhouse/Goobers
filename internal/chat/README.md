@@ -34,3 +34,11 @@ settled `turn_ended` carrying that `data.nativeTurnId` and verifies that no nati
 work remains active. A buffered earlier idle is not sufficient. Drivers without
 that identity use custody-proven close/restart; attached management bridges
 always use close/restart until a reviewed per-turn callback drain exists.
+
+The interrupt boundary also carries a monotonic turn generation and published
+event sequence. A different or unidentified turn boundary during cancellation
+forces restart, including a turn that starts and finishes before Abort returns.
+Replacement admission checks the expected generation under the driver lock.
+The host retires the interrupted native turn and its terminal-event sequence
+range before reading replacement events, so buffered terminals cannot finish
+the replacement.

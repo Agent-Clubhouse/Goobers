@@ -114,6 +114,7 @@ func (s *codexChatSession) activateTurn(id string) bool {
 		return false
 	}
 	s.active = id
+	s.turnGeneration++
 	return true
 }
 
