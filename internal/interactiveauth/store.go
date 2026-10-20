@@ -104,7 +104,7 @@ func Open(cfg Config) (*Broker, error) {
 	return b, nil
 }
 
-// Close persists the broker’s current state.
+// Close marks the broker closed and releases store ownership.
 func (b *Broker) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
