@@ -1,6 +1,8 @@
 package copilotsdk
 
 import (
+	"fmt"
+
 	sdk "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
 
@@ -104,7 +106,7 @@ func (s *session) finishTurnLocked(idle idleBoundary) {
 	}
 	s.busy = !settled
 	if idle.active {
-		s.emit("turn_ended", map[string]any{"reason": reason, "settled": settled}, "")
+		s.emit("turn_ended", map[string]any{"reason": reason, "settled": settled, "nativeTurnId": fmt.Sprint(idle.turn)}, "")
 	}
 }
 

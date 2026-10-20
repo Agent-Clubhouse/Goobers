@@ -79,6 +79,8 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 }
 
 type session struct {
+	nativeTurn uint64
+	active     bool
 	mu         sync.Mutex
 	opMu       sync.Mutex
 	ctx        context.Context
@@ -128,6 +130,9 @@ func (s *session) Send(ctx context.Context, c []chat.ContentBlock, o chat.SendOp
 	runCtx, cancel := context.WithCancel(s.ctx)
 	runCtx, proof := invoke.WithWorkspaceQuiescence(runCtx)
 	done := make(chan struct{})
+	s.nativeTurn++
+	s.active = true
+	turnID := fmt.Sprint(s.nativeTurn)
 	s.turnCancel = cancel
 	s.turnDone = done
 	request := s.request
@@ -146,6 +151,7 @@ func (s *session) Send(ctx context.Context, c []chat.ContentBlock, o chat.SendOp
 		}
 		s.mu.Lock()
 		s.custodyErr = errors.Join(s.custodyErr, custody)
+		s.active = false
 		s.mu.Unlock()
 		if custody != nil {
 			s.emit("custody.pending", nil, "")
@@ -156,14 +162,23 @@ func (s *session) Send(ctx context.Context, c []chat.ContentBlock, o chat.SendOp
 				reason = "cancelled"
 			}
 			s.emit("error", map[string]any{"code": "adapter_failed", "message": "Harness invocation failed", "fatal": reason != "cancelled"}, "")
-			s.emit("turn_ended", map[string]any{"reason": reason, "settled": custody == nil}, "")
+			s.emit("turn_ended", map[string]any{"reason": reason, "settled": custody == nil, "nativeTurnId": turnID}, "")
 			return
 		}
 		s.emit("completion.accepted", map[string]any{"payload": json.RawMessage(out.Payload), "metrics": out.Metrics}, "")
-		s.emit("turn_ended", map[string]any{"reason": "end_turn", "settled": true}, "")
+		s.emit("turn_ended", map[string]any{"reason": "end_turn", "settled": true, "nativeTurnId": turnID}, "")
 	}()
 	return chat.Prompt, nil
 }
+func (s *session) ActiveTurnID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active {
+		return ""
+	}
+	return fmt.Sprint(s.nativeTurn)
+}
+
 func (s *session) Interrupt(ctx context.Context) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
