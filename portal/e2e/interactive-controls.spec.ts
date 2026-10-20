@@ -52,6 +52,9 @@ test("approval dock preserves accepted requests and applies confirmed driver set
   await card.getByRole("button", {name: "Deny", exact: true}).click();
   await expect.poll(() => commands.length).toBe(1);
   expect(commands[0]).toMatchObject({type: "permission.respond", requestId: "permission-1", optionId: "reject_once", message: "Run only the focused checks"});
+  // Wait for the HTTP receipt before reloading; seeing the request alone can
+  // interrupt its response and intentionally enter unknown-outcome recovery.
+  await expect(page.locator(".ix-receipt")).toContainText("accepted");
   await page.reload();
   await expect(card).toContainText("Response accepted");
   await expect(card.getByRole("button", {name: "Allow once"})).toBeDisabled();
