@@ -300,3 +300,19 @@
   .interactive-page-active > .ui-page-heading h1 { font-size: 20px; }
   .interactive-page-active > .ui-page-heading .ui-action { font-size: 10px; padding: 6px; }
 }
+
+.ix-approval-dock { min-height: 0; max-height: 40dvh; overflow-y: auto; }
+.ix-approval-card { border: 1px solid var(--line-strong); border-radius: 10px; padding: 12px; font-size: var(--font-meta); }
+.ix-approval-card h3, .ix-approval-card legend { font-size: var(--font-ui); font-weight: 650; margin: 0 0 8px; }
+.ix-approval-card fieldset { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
+.ix-approval-card p { margin: 8px 0; }
+.ix-approval-preview pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); padding: 10px; border-radius: 6px; }
+.ix-approval-options { display: grid; gap: 5px; margin: 10px 0; }
+.ix-approval-options > button { display: flex; align-items: center; gap: 8px; text-align: left; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); padding: 8px; font: inherit; cursor: pointer; }
+.ix-approval-options > button:disabled { opacity: .55; cursor: default; }
+.ix-approval-options > button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.ix-approval-options > button > span:first-child { color: var(--muted); min-width: 16px; }
+.ix-approval-options small { display: block; color: var(--muted); margin-top: 3px; }
+.ix-approval-card label { display: grid; gap: 5px; }
+.ix-approval-card input { min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--panel); font: inherit; }
+.ix-approval-count { color: var(--muted); font-size: var(--font-meta); margin: 0 0 6px; }
