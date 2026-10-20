@@ -378,6 +378,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 }
 
 func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (walkOut RunResult, walkErr error) {
+	defer rec.reportSteps(&walkOut)
 	ctx = workflow.WithValue(ctx, podDispatchActivationKey{}, &podDispatchActivation{})
 	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
@@ -462,16 +463,8 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	}
 
 	for {
-		if frame := rec.branchWalk; frame != nil {
-			if state == wf.TargetJoin {
-				return RunResult{Status: StatusCompleted, Outputs: upstream, Steps: steps}, nil
-			}
-			if state == wf.TerminalComplete {
-				return RunResult{}, fmt.Errorf("engine: branch completed the run instead of routing to %q", wf.TargetJoin)
-			}
-			if err := frame.boundary(ctx); err != nil {
-				return RunResult{}, err
-			}
+		if out, err, stop := rec.branchBoundary(ctx, state, upstream, steps); stop {
+			return out, err
 		}
 		switch state {
 		case wf.TerminalComplete:
@@ -492,8 +485,8 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 		}
 
 		steps++
-		if steps > maxSteps {
-			return RunResult{}, fmt.Errorf("workflow %q exceeded max steps (%d): possible loop", in.WorkflowName, maxSteps)
+		if err := rec.chargeStep(in.WorkflowName, steps); err != nil {
+			return RunResult{}, err
 		}
 
 		if t, ok := m.Task(state); ok {
@@ -716,6 +709,17 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			continue
 		}
 
+		seed := branchWalkFrame{upstream: upstream, evaluatedGates: evaluatedGates, pointers: pointers, completed: completed, lastStage: lastStage, lastResult: lastResult, workspaceBranch: workspaceBranch, continuity: continuity}
+		next, handled, err := rec.staticParallel(ctx, in, m, state, &seed)
+		if handled {
+			if err != nil {
+				return RunResult{}, err
+			}
+			upstream, evaluatedGates, pointers, completed = seed.upstream, seed.evaluatedGates, seed.pointers, seed.completed
+			lastStage, lastResult = seed.lastStage, seed.lastResult
+			state = next
+			continue
+		}
 		return RunResult{}, fmt.Errorf("unknown state %q", state)
 	}
 }
@@ -939,6 +943,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
+	rec.staticJoinInputs(t.Name, env.Inputs)
 	env.Inputs, err = backlogdefaults.ApplyBacklogScopeToInvocation(t, env.Inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q backlog scope: %w", t.Name, err)

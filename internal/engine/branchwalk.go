@@ -36,6 +36,21 @@ type branchWalkFrame struct {
 	noOutput       bool
 }
 
+func (r *runJournal) branchBoundary(ctx workflow.Context, state string, upstream map[string]apiv1.ResultEnvelope, steps int) (RunResult, error, bool) {
+	f := r.branchWalk
+	if f == nil {
+		return RunResult{}, nil, false
+	}
+	if state == wf.TargetJoin {
+		return RunResult{Status: StatusCompleted, Outputs: upstream, Steps: steps}, nil, true
+	}
+	if state == wf.TerminalComplete {
+		return RunResult{}, fmt.Errorf("engine: branch completed the run instead of routing to %q", wf.TargetJoin), true
+	}
+	err := f.boundary(ctx)
+	return RunResult{}, err, err != nil
+}
+
 func (f *branchWalkFrame) boundary(ctx workflow.Context) error {
 	if err := ctx.Err(); err != nil {
 		f.status = journal.BranchCancelled
