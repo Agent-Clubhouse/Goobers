@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +14,9 @@ import (
 func TestAdministrativeSharedReleaseRevokesEvenWithoutCredentials(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	path := filepath.Join(layout.SchedulerDir(), claimLedgerFileName)
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	ledger, err := localscheduler.OpenClaimLedger(path)
 	if err != nil {
 		t.Fatal(err)
