@@ -84,6 +84,7 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
     const saved = sessionId ? readPending<PendingCommand>(`pending.${sessionId}`) : undefined;
     setActionError(saved ? "A previous request did not receive a confirmed response. Refresh or retry the original command to reconcile its outcome." : undefined);
     setReceipt(undefined); setPending(saved); setDraft(saved?.command.text ?? "");
+    if (saved?.command.type === "steer") setMessages([{commandId: saved.command.commandId, text: saved.command.text ?? "", turnId: saved.command.turnId, state: "Outcome unknown"}]);
     setBusy(false); setConnected(true); cursor.current = 0; followRef.current = true;
     if (!sessionId) return;
     let cancelled = false;
@@ -375,7 +376,7 @@ function TurnActivity({ events, active, actorLabel }: { events: InteractiveEvent
   const explored = tools.filter(tool => tool.readOnly);
   const other = tools.filter(tool => !tool.readOnly);
   function toolCard(tool: typeof tools[number]) {
-    const last = tool.events[tool.events.length - 1];
+    const last = [...tool.events].reverse().find(event => event.type === "tool.completed") ?? tool.events[tool.events.length - 1];
     return <details className="ix-tool" key={tool.id}><summary><Icon name={last.type === "tool.completed" ? "check" : "code"} size={14} /><span>{activityLabel({...last, data: {...last.data, name: tool.name}})}</span></summary><pre>{tool.events.map(event => eventText(event) || String(event.data.detail ?? "")).filter(Boolean).join("\n") || "No output reported."}</pre></details>;
   }
   return <div className="ix-assistant"><div className="ix-message-byline"><span><Icon name="goober" size={16} />{actorLabel}</span>{active && <span className="ix-working"><span className="ix-spinner" />Working</span>}</div>{events.filter(event => ["notice", "error", "protocol_unknown", "permission_request", "question"].includes(event.type)).map(event => <p className="ix-turn-error" key={event.sequence}>{event.type === "protocol_unknown" ? "The driver reported an unrecognized protocol event. Some output may be unavailable." : plainFailure(event.data, event.type === "permission_request" ? "The driver is waiting for permission. Review it in the driver interface." : event.type === "question" ? "The driver is waiting for an answer. Review it in the driver interface." : "The driver reported a problem. Review its status before continuing.").text}</p>)}{tools.length > 0 && <div className="ix-activities">{explored.length > 0 && <details className="ix-tool ix-exploration"><summary><Icon name="code" size={14} /><span>Explored {new Set(explored.map(tool => tool.path ?? tool.id)).size} {new Set(explored.map(tool => tool.path ?? tool.id)).size === 1 ? "file" : "files"}</span></summary>{explored.map(toolCard)}</details>}{other.map(toolCard)}</div>}{events.filter(event => event.type === "auth.required").map(event => <p className="ix-turn-error" key={event.sequence}>{plainFailure(event.data).text}</p>)}{final.length ? final.map(event => <div className="ix-response" key={event.sequence}>{eventText(event)}</div>) : partial ? <div className="ix-response" aria-live="off">{partial}{active && <span className="ix-caret" />}</div> : active ? <p className="ix-empty-small">Waiting for execution output…</p> : null}</div>;
@@ -385,13 +386,13 @@ function activityLabel(event: InteractiveEvent): string {
   if (event.type === "steering.rejected") return "Steering rejected — turn changed or ended";
   if (event.type === "auth.required") return "Provider authorization required";
   const name = event.data.name ?? event.data.tool ?? event.data.command;
-  const verb = event.type === "tool.started" ? "Running" : event.type === "tool.output" ? "Output" : event.data.status === "failed" || (typeof event.data.exitCode === "number" && event.data.exitCode !== 0) ? "Failed" : "Completed";
+  const verb = event.data.status === "cancelled" ? "Cancelled" : event.type === "tool.started" ? "Running" : event.type === "tool.output" ? "Output" : event.data.status === "failed" || (typeof event.data.exitCode === "number" && event.data.exitCode !== 0) ? "Failed" : "Completed";
   return `${verb}: ${typeof name === "string" ? name : Array.isArray(name) ? name.join(" ") : "tool activity"}${typeof event.data.exitCode === "number" ? ` · exit ${event.data.exitCode}` : ""}`;
 }
 function receiptLabel(receipt: Receipt, events: InteractiveEvent[]): string {
   if (receipt.type === "steer") {
-    const delivery = events.find(event => event.commandId === receipt.commandId && ["steering.delivered", "steering.rejected"].includes(event.type));
-    return delivery ? delivery.type === "steering.delivered" ? "Steering delivered" : "Steering rejected by executor" : receipt.status === "delivered" ? "Steering delivered" : "Steering accepted · awaiting delivery";
+    const delivery = events.find(event => event.commandId === receipt.commandId && ["steering.delivered", "steering.rejected", "command.delivered", "command.rejected"].includes(event.type));
+    return delivery ? delivery.type.endsWith(".delivered") ? delivery.data.delivery === "queued" ? "Queued by driver" : "Steering delivered" : "Steering rejected by executor" : receipt.status === "delivered" ? "Steering delivered" : "Steering accepted · awaiting delivery";
   }
   if (receipt.type === "stop") return "Stop request accepted · check session state for confirmed stop";
   return `${humanize(receipt.type)} ${receipt.status}`;

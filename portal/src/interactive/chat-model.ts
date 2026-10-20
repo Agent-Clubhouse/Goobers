@@ -12,9 +12,12 @@ export function parseUnifiedDiff(raw: string): DiffLine[] {
   const out: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
+  let inHunk = false;
   for (const line of raw.split('\n')) {
-    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ') || line.startsWith('index ')) continue;
+    if (line.startsWith('diff ')) { inHunk = false; continue; }
+    if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('index '))) continue;
     if (line.startsWith('@@')) {
+      inHunk = true;
       const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       if (m) { oldNo = Number(m[1]); newNo = Number(m[2]); }
       out.push({ type: 'hunk', text: line });
@@ -80,13 +83,12 @@ export function toolActivities(events: InteractiveEvent[]): ToolActivity[] {
     const explicit = event.data.toolCallId ?? event.data.callId;
     const identity = String(explicit ?? name);
     let group = open.get(identity);
-    if (!group || (event.type === "tool.started" && !explicit)) {
+    if (!group || (!explicit && (event.type === "tool.started" || (event.type === "tool.completed" && group.events.at(-1)?.type === "tool.completed")))) {
       group = {id: String(explicit ?? event.sequence), name, events: [], readOnly: event.data.kind === "read" || /^(repository\.read|read_file|read|glob|grep|search)$/i.test(name), path: typeof event.data.path === "string" ? event.data.path : undefined};
       groups.push(group); open.set(identity, group);
     }
     group.events.push(event);
     if (!group.path && typeof event.data.path === "string") group.path = event.data.path;
-    if (event.type === "tool.completed") open.delete(identity);
   }
   return groups;
 }

@@ -429,6 +429,61 @@ test("helper authors and applies a native workflow, tweaks its gaggle and observ
   }, null, 2));
 });
 
+test("chat stays pinned, preserves reading position, and docks its composer on narrow screens", async ({page, request}) => {
+  const {session} = await createSession(request);
+  await page.goto(`/#/interactive/${session.id}`);
+  await expect(page.getByRole("textbox", {name: "Message", exact: true})).toBeVisible();
+  const log = page.getByRole("log", {name: "Conversation"});
+  const gap = () => log.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight);
+  await sendMessage(page, "investigate");
+  await awaitTurn(request, session.id, 1);
+  await expect(log.locator(".ix-turn")).toHaveCount(1);
+  await expect.poll(gap).toBeLessThan(3);
+  await sendMessage(page, "fix");
+  await awaitTurn(request, session.id, 2);
+  await expect(log.locator(".ix-turn")).toHaveCount(2);
+  await expect.poll(gap).toBeLessThan(3);
+  // A user inspecting earlier output must not be pulled away by a new turn.
+  await log.evaluate(node => { node.scrollTop = 0; });
+  await expect(page.getByRole("button", {name: "Jump to latest"})).toBeVisible();
+  const readingTop = await log.evaluate(node => node.scrollTop);
+  const current = await snapshot(request, session.id);
+  const sent = await request.post(`${api}/sessions/${session.id}/commands`, {data: {commandId: crypto.randomUUID(), type: "message", text: "review", expectedSequence: current.sequence, expectedFence: current.fence}});
+  expect(sent.ok()).toBeTruthy();
+  await awaitTurn(request, session.id, 3);
+  await expect(log.locator(".ix-turn")).toHaveCount(3);
+  expect(await log.evaluate(node => node.scrollTop)).toBe(readingTop);
+  await page.getByRole("button", {name: "Jump to latest"}).click();
+  await expect.poll(gap).toBeLessThan(3);
+  await capture(page, "ux-follow-and-jump-desktop");
+
+  await page.setViewportSize({width: 390, height: 844});
+  const composer = page.getByRole("textbox", {name: "Message", exact: true});
+  await expect(composer).toBeInViewport({ratio: 1});
+  await expect(page.getByRole("button", {name: "Send message", exact: true})).toBeInViewport({ratio: 1});
+  await capture(page, "ux-docked-composer-mobile");
+  await page.getByRole("button", {name: "Session details", exact: true}).click();
+  await page.getByRole("tab", {name: /^Changes/}).click();
+  await expect(page.getByLabel("Diff for invoice.mjs", {exact: true})).toContainText("Math.max");
+  await expect(page.locator(".ix-diff-card .ix-added")).toHaveText(/^\+[1-9]/);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  await page.locator(".ix-diff-card").scrollIntoViewIfNeeded();
+  await capture(page, "ux-file-diff-mobile");
+  await page.getByRole("button", {name: "Close session details"}).click();
+  await sendMessage(page, "wait");
+  await expect(page.getByRole("textbox", {name: "Steer this turn", exact: true})).toBeEnabled();
+  await page.getByRole("textbox", {name: "Steer this turn", exact: true}).fill("Keep the invoice API");
+  await page.getByRole("button", {name: "Steer", exact: true}).click();
+  const bubble = page.locator(".ix-command-message").filter({hasText: "Keep the invoice API"});
+  await expect(bubble).toBeVisible();
+  await expect(bubble).toContainText("Delivered");
+  await capture(page, "ux-steering-delivered-mobile");
+  await page.reload();
+  await expect(bubble).toContainText("Delivered");
+  await page.getByRole("button", {name: "Stop session", exact: true}).click();
+  await expect.poll(async () => (await snapshot(request, session.id)).status).toBe("stopped");
+});
+
 test("DSL reload rejects invalid policy and fences existing work before new sessions use changed policy", async ({ page, request, browser, baseURL }) => {
   const startup = JSON.parse(await readFile(`${evidenceDirectory}/startup.json`, "utf8"));
   const fixtureConfig = await realpath(resolve(evidenceDirectory, "config"));
@@ -592,58 +647,4 @@ test("controlled provider expiry blocks work, explicit reauthentication resumes 
   await capture(page, "interactive-revoked-new-session-blocked");
   await page.getByRole("button", { name: "Stop session", exact: true }).click();
   await expect.poll(async () => (await snapshot(request, fresh.id)).status).toBe("stopped");
-});
-
-test("chat stays pinned, preserves reading position, and docks its composer on narrow screens", async ({page, request}) => {
-  const {session} = await createSession(request);
-  await page.goto(`/#/interactive/${session.id}`);
-  await expect(page.getByRole("textbox", {name: "Message", exact: true})).toBeVisible();
-  const log = page.getByRole("log", {name: "Conversation"});
-  const gap = () => log.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight);
-  await sendMessage(page, "investigate");
-  await awaitTurn(request, session.id, 1);
-  await expect(log.locator(".ix-response")).toHaveCount(1);
-  await expect.poll(gap).toBeLessThan(3);
-  await sendMessage(page, "fix");
-  await awaitTurn(request, session.id, 2);
-  await expect(log.locator(".ix-response")).toHaveCount(2);
-  await expect.poll(gap).toBeLessThan(3);
-  // A user inspecting earlier output must not be pulled away by a new turn.
-  await log.evaluate(node => { node.scrollTop = 0; });
-  await expect(page.getByRole("button", {name: "Jump to latest"})).toBeVisible();
-  const readingTop = await log.evaluate(node => node.scrollTop);
-  const current = await snapshot(request, session.id);
-  const sent = await request.post(`${api}/sessions/${session.id}/commands`, {data: {commandId: crypto.randomUUID(), type: "message", text: "review", expectedSequence: current.sequence, expectedFence: current.fence}});
-  expect(sent.ok()).toBeTruthy();
-  await awaitTurn(request, session.id, 3);
-  await expect(log.locator(".ix-response")).toHaveCount(3);
-  expect(await log.evaluate(node => node.scrollTop)).toBe(readingTop);
-  await page.getByRole("button", {name: "Jump to latest"}).click();
-  await expect.poll(gap).toBeLessThan(3);
-  await capture(page, "ux-follow-and-jump-desktop");
-
-  await page.setViewportSize({width: 390, height: 844});
-  const composer = page.getByRole("textbox", {name: "Message", exact: true});
-  await expect(composer).toBeInViewport({ratio: 1});
-  await expect(page.getByRole("button", {name: "Send message", exact: true})).toBeInViewport({ratio: 1});
-  await capture(page, "ux-docked-composer-mobile");
-  await page.getByRole("button", {name: "Session details", exact: true}).click();
-  await page.getByRole("tab", {name: /^Changes/}).click();
-  await expect(page.getByLabel("Diff for invoice.mjs", {exact: true})).toContainText("Math.max");
-  await expect(page.locator(".ix-diff-card .ix-added")).toHaveText(/^\+[1-9]/);
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
-  await capture(page, "ux-file-diff-mobile");
-  await page.getByRole("button", {name: "Close session details"}).click();
-  await sendMessage(page, "wait");
-  await expect(page.getByRole("button", {name: "Steer", exact: true})).toBeEnabled();
-  await page.getByRole("textbox", {name: "Steer this turn", exact: true}).fill("Keep the invoice API");
-  await page.getByRole("button", {name: "Steer", exact: true}).click();
-  const bubble = page.locator(".ix-command-message").filter({hasText: "Keep the invoice API"});
-  await expect(bubble).toBeVisible();
-  await expect(bubble).toContainText("Delivered");
-  await capture(page, "ux-steering-delivered-mobile");
-  await page.reload();
-  await expect(bubble).toContainText("Delivered");
-  await page.getByRole("button", {name: "Stop session", exact: true}).click();
-  await expect.poll(async () => (await snapshot(request, session.id)).status).toBe("stopped");
 });

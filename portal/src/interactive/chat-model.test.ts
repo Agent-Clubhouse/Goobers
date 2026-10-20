@@ -9,6 +9,9 @@ describe("chat presentation", () => {
     const files = fileDiffs("diff --git a/one b/one\n--- a/one\n+++ b/one\n@@ -1 +1,2 @@\n-old\n+new\n+extra\ndiff --git a/two b/two\n--- a/two\n+++ /dev/null\n@@ -1 +0,0 @@\n-removed\n");
     expect(files.map(({path, added, removed}) => ({path, added, removed}))).toEqual([{path: "one", added: 2, removed: 1}, {path: "two", added: 0, removed: 1}]);
   });
+  it("counts changed source lines that resemble file headers", () => {
+    expect(fileDiffs("--- a/file\n+++ b/file\n@@ -1 +1 @@\n--- old divider\n+++ new divider\n")[0]).toMatchObject({added: 1, removed: 1});
+  });
   it("folds lifecycle events by tool ID while preserving repeated legacy calls", () => {
     const tools = toolActivities([event(1, "tool.started", {toolCallId: "a", name: "Read invoice", kind: "read"}), event(2, "tool.started", {toolCallId: "b", name: "Tests"}), event(3, "tool.output", {toolCallId: "a", text: "contents"}), event(4, "tool.completed", {toolCallId: "a"}), event(5, "tool.completed", {toolCallId: "b"}), event(6, "tool.started", {name: "Tests"}), event(7, "tool.completed", {name: "Tests"})]);
     expect(tools.map(tool => tool.events.length)).toEqual([3, 2, 2]);

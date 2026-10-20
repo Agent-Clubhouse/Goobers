@@ -23,7 +23,9 @@ func ProjectChatEvent(event chat.Event) (interactive.ExecutionEvent, bool) {
 	// host's recursive output scrubber visits every string, including content.
 	raw, err := json.Marshal(event)
 	if err != nil {
-		return interactive.ExecutionEvent{Type: "execution.note", Data: map[string]any{"text": "A chat event could not be decoded.", "kind": "protocol_unknown"}}, true
+		event.Type = "protocol_unknown"
+		event.Data = map[string]any{"kind": "payload", "name": "unserializable event"}
+		return ProjectChatEvent(event)
 	}
 	var envelope map[string]any
 	if err := json.Unmarshal(raw, &envelope); err != nil {
