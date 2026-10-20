@@ -190,12 +190,22 @@ Do not enable or claim qualification of this path until that action is approved
 and its actual result is recorded. No live model call is required to validate
 configuration or test the local bridge.
 
-The native adapter uses a trusted local workstation boundary. Its prompt asks
-for bounded behavior, but the mediated-tool allowlist does **not** restrict the
-harness's builtin filesystem or shell tools. The bridge's private Unix socket is
-not protection against a hostile process running as the same OS user. Existing
-local model login is infrastructure authentication, not delegated Microsoft
-identity. There is no application-identity fallback.
+Native drivers and the batch fallback require the stage OS sandbox and an
+isolated home. The interactive profile additionally denies access to human
+server state and masks the shared workspace, chat-state and bridge roots,
+allowing only the current invocation's directories. These root masks also cover
+sibling directories created after launch. Each bridge connection authenticates
+with its invocation's private token before host authority checks; the token file
+is readable only within that invocation's sandbox exception. The agent's own
+shell can exercise its existing scoped bridge authority.
+
+The mediated-tool allowlist does **not** restrict the harness's builtin tools;
+the OS sandbox enforces their filesystem boundary. Model API network access and
+residual host IPC remain available under the stage policy. This is a trusted
+local workstation prototype, not complete isolation from hostile same-user host
+processes or arbitrary credential copies. Existing local model login is
+infrastructure authentication, not delegated Microsoft identity. There is no
+application-identity fallback.
 
 ## Demonstrate the local paths
 
