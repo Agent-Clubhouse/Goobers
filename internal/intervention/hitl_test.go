@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -40,6 +41,16 @@ type recordingDeliverer struct {
 	ack      engine.HITLAck
 	err      error
 	delivers int
+}
+
+type blockingHITLDeliverer struct {
+	started chan context.Context
+}
+
+func (d *blockingHITLDeliverer) Deliver(ctx context.Context, _ engine.HITLIntent) (engine.HITLAck, error) {
+	d.started <- ctx
+	<-ctx.Done()
+	return engine.HITLAck{}, ctx.Err()
 }
 
 func (d *recordingDeliverer) Deliver(_ context.Context, intent engine.HITLIntent) (engine.HITLAck, error) {
@@ -61,6 +72,25 @@ func (d *recordingDeliverer) last(t *testing.T) engine.HITLIntent {
 		t.Fatal("no operator intent was delivered to the engine")
 	}
 	return d.intents[len(d.intents)-1]
+}
+
+func TestEngineHITLApproveUsesAdmissionContext(t *testing.T) {
+	deliverer := &blockingHITLDeliverer{started: make(chan context.Context, 1)}
+	service, _ := engineHITLFixture(t, "engine-hitl-budget", deliverer)
+	admission, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := service.AcceptApprove(admission, context.Background(), httpapi.InterventionRequest{
+		RunID: "engine-hitl-budget", Stage: "review", Actor: "operator",
+		Decision: "pass", IdempotencyKey: "request-budget",
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("AcceptApprove error = %v, want admission deadline", err)
+	}
+	delivered := <-deliverer.started
+	if delivered != admission {
+		t.Fatal("engine HITL delivery did not receive the admission context")
+	}
 }
 
 // refusingDeterministic fails the test if the in-process runner ever dispatches
