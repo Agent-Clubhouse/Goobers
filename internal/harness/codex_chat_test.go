@@ -313,3 +313,27 @@ func TestCodexChatProbePreservesUnprovenWriterCustody(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexChatProbeUsesHostStateParentOutsideWorkspace(t *testing.T) {
+	cfg := codexChatFixture(t)
+	cfg.StateDir = filepath.Join(t.TempDir(), "session")
+	cfg.Adapter.EphemeralTmpRoot = filepath.Join(cfg.Request.Workspace, ".tmp")
+	if err := os.Mkdir(cfg.Adapter.EphemeralTmpRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	originalTmp := cfg.Adapter.EphemeralTmpRoot
+	probe, err := NewCodexChatDriver(cfg).Probe(context.Background())
+	if err != nil || !probe.HandshakeOK {
+		t.Fatalf("native probe rejected batch temp root: %+v %v", probe, err)
+	}
+	if cfg.Adapter.EphemeralTmpRoot != originalTmp {
+		t.Fatal("probe mutated shared adapter")
+	}
+	if _, err := os.Stat(cfg.StateDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("probe touched retained session state: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(cfg.StateDir))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("probe retained disposable state: %v %v", entries, err)
+	}
+}

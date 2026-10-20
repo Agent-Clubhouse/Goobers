@@ -7,10 +7,13 @@ MCP, shell environment and outer sandbox authority as batch Codex invocations.
 The driver owns process setup and verified shutdown. Unsupported rich media,
 native queues, tool allowlists and unknown models/efforts fail explicitly.
 
-`StateDir` is an absolute, host-owned directory unique to one chat session, outside its workspace (including symlink resolution). It
-is locked while active, retained for native thread resume, and cleaned by the
-host when the session is disposed. Without it, the driver uses temporary state
-and advertises no native resume. Failed quiescence retains state and reports
+`StateDir` is an absolute, host-owned directory unique to one chat session,
+outside its workspace (including symlink resolution). It is locked while active,
+retained for native resume, and cleaned by the host on session disposal.
+Probes create disposable state beside the host-owned session directory, rather
+than inheriting a batch adapter temp root inside the workspace. Without a
+StateDir, the configured ephemeral root must itself be outside the workspace;
+state is temporary and native resume is not advertised. Failed quiescence retains state and reports
 `invoke.ErrWorkspaceNotQuiescent`; the host must retain custody. Close does not
 require an event subscriber. Event backpressure stops the writer.
 
