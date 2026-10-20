@@ -36,6 +36,8 @@ type Identity struct {
 	Cloud    string `json:"cloud"`
 }
 
+const controlledLocalIssuer = "goobers:controlled-local"
+
 // Principal is deliberately not wire-deserializable. Only a trusted server adapter
 // may choose its local owner; an HTTP request body cannot manufacture this value.
 type Principal struct {
@@ -49,7 +51,7 @@ func LocalPrincipal(serverOwner string) (Principal, error) {
 	if strings.TrimSpace(serverOwner) == "" || len(serverOwner) > 256 {
 		return Principal{}, fault("unauthenticated", "a server-authenticated local owner is required")
 	}
-	return Principal{Identity{Issuer: "goobers:controlled-local", Subject: serverOwner, TenantID: "demo-tenant", ObjectID: serverOwner, Cloud: ControlledLocal}, true}, nil
+	return Principal{Identity{Issuer: controlledLocalIssuer, Subject: serverOwner, TenantID: "demo-tenant", ObjectID: serverOwner, Cloud: ControlledLocal}, true}, nil
 }
 
 // Identity returns the identity established by the principal adapter.

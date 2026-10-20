@@ -28,6 +28,7 @@ type exception struct {
 }
 
 var exceptions = []exception{
+	{Path: "internal/interactiveauth/types.go", Value: "goobers:controlled-local", Reason: "controlled-local principal issuer URI, not a stage label or workflow name"},
 	// Config scaffolding and command/stage registries define these names rather
 	// than branching stage behavior on them.
 	{Path: "internal/instance/guided.go", Value: "implementation", Reason: "guided-init workflow definition"},
