@@ -205,107 +205,123 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 	}
 	switch req.Kind {
 	case "tweak_gaggle", "tweak_workflow":
-		if req.DisplayName == nil && req.Enabled == nil {
-			return "", "", errors.New("provide displayName or enabled")
-		}
-		if req.DisplayName != nil && (len(*req.DisplayName) > 100 || strings.TrimSpace(*req.DisplayName) == "") {
-			return "", "", errors.New("displayName must contain 1–100 characters")
-		}
-		if req.Kind == "tweak_workflow" {
-			found := false
-			for _, wf := range set.Workflows {
-				found = found || wf.Name == req.Workflow
-			}
-			if !found {
-				return "", "", errors.New("unknown workflow")
-			}
-		}
-		stage, err := s.stageConfig(scope, dir, req)
-		if err != nil {
-			return "", "", err
-		}
-		// Best-effort cleanup; the operation result is reported separately.
-		defer func() { _ = os.RemoveAll(stage) }()
-		b, _ := json.MarshalIndent(map[string]any{"gaggle": req.Gaggle, "workflow": req.Workflow, "displayName": req.DisplayName, "enabled": req.Enabled}, "", "  ")
-		return "Apply scoped " + req.Kind + " to the isolated local fixture", string(b), nil
+		return s.previewTweak(scope, dir, req, set)
 	case "add_workflow":
-		if !policy.AllowAuthoring {
-			return "", "", errors.New("session policy forbids workflow authoring")
-		}
-		repo, err := s.repository(scope, dir)
-		if err != nil {
-			return "", "", err
-		}
-		v := view.validateWorkflow(req.WorkflowYAML, repo)
-		if !v.Valid {
-			return "", "", validationError(v)
-		}
-		for _, existing := range set.Workflows {
-			if existing.Name == v.Name {
-				return "", "", errors.New("workflow already exists; choose a new name")
-			}
-		}
-		stage, err := s.stageConfig(scope, dir, req)
-		if err != nil {
-			return "", "", err
-		}
-		// Best-effort cleanup; the operation result is reported separately.
-		defer func() { _ = os.RemoveAll(stage) }()
-		return "Add validated workflow " + v.Name + " to the local fixture", v.BoundYAML, nil
+		return s.previewAddWorkflow(scope, dir, req, set, view, policy)
 	case "submit_run":
-		if s.opts.Binary == "" {
-			return "", "", errors.New("native Goobers binary unavailable; build cmd/goobers and configure Binary")
-		}
-		for _, g := range set.Gaggles {
-			if g.Name != policy.Gaggle {
-				continue
-			}
-			if g.Spec.OutboxMirrorPath != "" || g.Spec.Workcopies != nil || len(g.Spec.CICommand) > 0 {
-				return "", "", errors.New("gaggle runtime path/command overrides are not authorized in bounded helper execution")
-			}
-			if g.Spec.Enabled != nil && !*g.Spec.Enabled {
-				return "", "", errors.New("gaggle is disabled")
-			}
-		}
-		for _, wf := range set.Workflows {
-			if wf.Name != req.Workflow {
-				continue
-			}
-			if wf.Spec.Enabled != nil && !*wf.Spec.Enabled {
-				return "", "", errors.New("workflow is disabled")
-			}
-			repo, err := s.repository(scope, dir)
-			if err != nil {
-				return "", "", err
-			}
-			b, err := marshalConfig(wf)
-			if err != nil {
-				return "", "", err
-			}
-			v := view.validateWorkflow(string(b), repo)
-			if !v.Valid {
-				return "", "", validationError(v)
-			}
-			return "Submit " + req.Gaggle + "/" + req.Workflow + " through the native Goobers scheduler", "Admission is distinct from completion. Observe the run journal for actual test results. No provider credentials or remote effects are authorized.\n\nReviewed workflow definition:\n" + v.NormalizedYAML, nil
-		}
-		return "", "", errors.New("unknown workflow")
+		return s.previewSubmitRun(scope, dir, req, set, view, policy)
 	case "stop_run":
-		actions, err := allActions(dir)
-		if err != nil {
-			return "", "", err
-		}
-		for _, a := range actions {
-			if a.Kind == "submit_run" && (a.ID == req.RunID || a.RunID == req.RunID) && (a.Status == "running" || a.Status == "admitted") {
-				return "Request stop for owned workflow run", "Cancellation is pending until native execution stops and its terminal journal is observed.", nil
-			}
-		}
-		return "", "", errors.New("owned active run not found")
+		return s.previewStopRun(dir, req)
 	case "steer_run":
 		return "", "", errors.New("steering deterministic workflow processes is unsupported; steer the interactive workspace session instead")
 	default:
 		return "", "", errors.New("unsupported helper operation")
 	}
 }
+func (s *Service) previewTweak(scope Scope, dir string, req Request, set *instance.ConfigSet) (string, string, error) {
+	if req.DisplayName == nil && req.Enabled == nil {
+		return "", "", errors.New("provide displayName or enabled")
+	}
+	if req.DisplayName != nil && (len(*req.DisplayName) > 100 || strings.TrimSpace(*req.DisplayName) == "") {
+		return "", "", errors.New("displayName must contain 1–100 characters")
+	}
+	if req.Kind == "tweak_workflow" {
+		found := false
+		for _, wf := range set.Workflows {
+			found = found || wf.Name == req.Workflow
+		}
+		if !found {
+			return "", "", errors.New("unknown workflow")
+		}
+	}
+	stage, err := s.stageConfig(scope, dir, req)
+	if err != nil {
+		return "", "", err
+	}
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.RemoveAll(stage) }()
+	b, _ := json.MarshalIndent(map[string]any{"gaggle": req.Gaggle, "workflow": req.Workflow, "displayName": req.DisplayName, "enabled": req.Enabled}, "", "  ")
+	return "Apply scoped " + req.Kind + " to the isolated local fixture", string(b), nil
+}
+
+func (s *Service) previewAddWorkflow(scope Scope, dir string, req Request, set *instance.ConfigSet, view *Service, policy Policy) (string, string, error) {
+	if !policy.AllowAuthoring {
+		return "", "", errors.New("session policy forbids workflow authoring")
+	}
+	repo, err := s.repository(scope, dir)
+	if err != nil {
+		return "", "", err
+	}
+	v := view.validateWorkflow(req.WorkflowYAML, repo)
+	if !v.Valid {
+		return "", "", validationError(v)
+	}
+	for _, existing := range set.Workflows {
+		if existing.Name == v.Name {
+			return "", "", errors.New("workflow already exists; choose a new name")
+		}
+	}
+	stage, err := s.stageConfig(scope, dir, req)
+	if err != nil {
+		return "", "", err
+	}
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.RemoveAll(stage) }()
+	return "Add validated workflow " + v.Name + " to the local fixture", v.BoundYAML, nil
+}
+
+func (s *Service) previewSubmitRun(scope Scope, dir string, req Request, set *instance.ConfigSet, view *Service, policy Policy) (string, string, error) {
+	if s.opts.Binary == "" {
+		return "", "", errors.New("native Goobers binary unavailable; build cmd/goobers and configure Binary")
+	}
+	for _, g := range set.Gaggles {
+		if g.Name != policy.Gaggle {
+			continue
+		}
+		if g.Spec.OutboxMirrorPath != "" || g.Spec.Workcopies != nil || len(g.Spec.CICommand) > 0 {
+			return "", "", errors.New("gaggle runtime path/command overrides are not authorized in bounded helper execution")
+		}
+		if g.Spec.Enabled != nil && !*g.Spec.Enabled {
+			return "", "", errors.New("gaggle is disabled")
+		}
+	}
+	for _, wf := range set.Workflows {
+		if wf.Name != req.Workflow {
+			continue
+		}
+		if wf.Spec.Enabled != nil && !*wf.Spec.Enabled {
+			return "", "", errors.New("workflow is disabled")
+		}
+		repo, err := s.repository(scope, dir)
+		if err != nil {
+			return "", "", err
+		}
+		b, err := marshalConfig(wf)
+		if err != nil {
+			return "", "", err
+		}
+		v := view.validateWorkflow(string(b), repo)
+		if !v.Valid {
+			return "", "", validationError(v)
+		}
+		return "Submit " + req.Gaggle + "/" + req.Workflow + " through the native Goobers scheduler", "Admission is distinct from completion. Observe the run journal for actual test results. No provider credentials or remote effects are authorized.\n\nReviewed workflow definition:\n" + v.NormalizedYAML, nil
+	}
+	return "", "", errors.New("unknown workflow")
+}
+
+func (s *Service) previewStopRun(dir string, req Request) (string, string, error) {
+	actions, err := allActions(dir)
+	if err != nil {
+		return "", "", err
+	}
+	for _, a := range actions {
+		if a.Kind == "submit_run" && (a.ID == req.RunID || a.RunID == req.RunID) && (a.Status == "running" || a.Status == "admitted") {
+			return "Request stop for owned workflow run", "Cancellation is pending until native execution stops and its terminal journal is observed.", nil
+		}
+	}
+	return "", "", errors.New("owned active run not found")
+}
+
 func (s *Service) stageConfig(scope Scope, dir string, req Request) (string, error) {
 	view, _, err := s.scoped(scope)
 	if err != nil {
