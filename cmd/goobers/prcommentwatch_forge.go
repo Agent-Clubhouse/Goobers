@@ -18,6 +18,8 @@ type prCommentWatchForge interface {
 	listPullRequests(ctx context.Context, base string) ([]providers.PullRequestSummary, error)
 	listComments(context.Context, providers.PullRequestSummary, commentClassifier) ([]providers.Comment, error)
 	route(ctx context.Context, pr providers.PullRequestSummary, clear []string) error
+	recordRouting(context.Context, providers.PullRequestSummary, string) error
+	park(context.Context, providers.PullRequestSummary, []string) error
 	// disarm cancels a landing armed on pr (goobers:merge-ready) before the
 	// PR is routed for fresh human feedback (#6134). disarmed is true only
 	// when this stage actually cancelled something.
@@ -126,6 +128,7 @@ func (issueLabelCommentWatch) disarm(context.Context, providers.PullRequestSumma
 // never UpdateWorkItem(ID: PR#), which would address the unrelated work item
 // sharing the PR's numeric id.
 type adoPRCommentWatchProvider interface {
+	PostPullRequestThreadComment(context.Context, providers.RepositoryRef, string, string) (providers.Comment, error)
 	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
 	ListPullRequestFeedbackComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
 	AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error)
@@ -189,4 +192,32 @@ func (w adoCommentWatch) route(ctx context.Context, pr providers.PullRequestSumm
 		}
 	}
 	return w.provider.AddPullRequestLabels(ctx, w.repo, pullID, []string{needsRemediationLabel})
+}
+
+func (w issueLabelCommentWatch) recordRouting(ctx context.Context, pr providers.PullRequestSummary, body string) error {
+	_, err := w.provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{Repository: w.repo, ID: strconv.Itoa(pr.Number), Comment: body})
+	return err
+}
+func (w adoCommentWatch) recordRouting(ctx context.Context, pr providers.PullRequestSummary, body string) error {
+	_, err := w.provider.PostPullRequestThreadComment(ctx, w.repo, strconv.Itoa(pr.Number), body)
+	return err
+}
+func (w issueLabelCommentWatch) park(ctx context.Context, pr providers.PullRequestSummary, clear []string) error {
+	_, err := w.provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: w.repo, ID: strconv.Itoa(pr.Number), AddLabels: []string{remediationEscalatedLabel, providers.LabelNeedsHuman}, RemoveLabels: clear,
+	})
+	return err
+}
+func (w adoCommentWatch) park(ctx context.Context, pr providers.PullRequestSummary, clear []string) error {
+	// Establish the human hold before removing labels, so a partial failure
+	// cannot leave the PR eligible for automatic landing or remediation.
+	if err := w.provider.AddPullRequestLabels(ctx, w.repo, strconv.Itoa(pr.Number), []string{remediationEscalatedLabel, providers.LabelNeedsHuman}); err != nil {
+		return err
+	}
+	for _, label := range clear {
+		if err := w.provider.RemovePullRequestLabel(ctx, w.repo, strconv.Itoa(pr.Number), label); err != nil {
+			return err
+		}
+	}
+	return nil
 }
