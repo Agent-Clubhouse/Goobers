@@ -21,8 +21,8 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	// coder goober does NOT reference, proves the goober resolver routes by the
 	// goober's own referenced-workflow version — not by every workflow in the
 	// gaggle. V1DSLVersion (1.4) is dropped (#3507), so the other loadable
-	// version is the supported V3DSLVersion (3.0).
-	writeLegacyV3Workflow(t, filepath.Dir(defaultWorkflowPath(root)))
+	// version is the supported V2DSLVersion (2.0).
+	writeLegacyV2Workflow(t, filepath.Dir(defaultWorkflowPath(root)))
 
 	const nextOnly workflow.FeatureID = "goober.spec.next-only"
 	var versions []string
@@ -32,13 +32,13 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 		workflow.FeaturesForGaggle,
 		func(def workflow.Definition, _ apiv1.GooberSpec) ([]workflow.Feature, error) {
 			versions = append(versions, def.DSLVersion)
-			if def.DSLVersion != supportmatrix.V2DSLVersion {
+			if def.DSLVersion != supportmatrix.V3DSLVersion {
 				return nil, nil
 			}
 			return []workflow.Feature{{
 				ID: nextOnly,
 				DSLVersions: []workflow.DSLFeatureSupport{{
-					Version: supportmatrix.V2DSLVersion,
+					Version: supportmatrix.V3DSLVersion,
 					Level:   workflow.SupportPreview,
 				}},
 			}}, nil
@@ -47,8 +47,8 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("instanceUsedFeaturesWithResolver code = %d", code)
 	}
-	if len(versions) != 1 || versions[0] != supportmatrix.V2DSLVersion {
-		t.Fatalf("resolver versions = %v, want only %q", versions, supportmatrix.V2DSLVersion)
+	if len(versions) != 1 || versions[0] != supportmatrix.V3DSLVersion {
+		t.Fatalf("resolver versions = %v, want only %q", versions, supportmatrix.V3DSLVersion)
 	}
 	if !slices.ContainsFunc(features, func(feature workflow.Feature) bool {
 		return feature.ID == nextOnly
@@ -182,12 +182,11 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := instance.NewLayout(root)
-	// The starter scaffold pins V2DSLVersion (2.0). V1DSLVersion (1.4)
-	// is dropped (#3507) and no longer loads, so the second interpreter row
-	// comes from a V3DSLVersion (3.0) workflow — the other loadable version.
+	// The starter pins stable 3.0. Add an explicit 2.0 workflow to keep
+	// exercising per-pin feature resolution across supported versions.
 	// Keep the workflow WF022-clean with a single scratch-workspace task;
 	// stable 3.0 needs no preview annotation.
-	writeLegacyV3Workflow(t, filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows"))
+	writeLegacyV2Workflow(t, filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows"))
 
 	code, stdout, stderr := runArgs(t, "features", "--used", root)
 	if code != 0 {
@@ -211,16 +210,16 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 	}
 }
 
-// writeLegacyV3Workflow drops a minimal, WF022-clean V3DSLVersion (3.0)
+// writeLegacyV2Workflow drops a minimal, WF022-clean V2DSLVersion (2.0)
 // workflow into workflowsDir — a single scratch-workspace deterministic task,
 // so it needs no goober and declares no repo handoff. It is the "second
 // interpreter version" the mixed-version features tests need now that 1.4 is
-// gone. Stable 3.0 loads without a preview acknowledgement.
-func writeLegacyV3Workflow(t *testing.T, workflowsDir string) {
+// gone. Stable 2.0 loads without a preview acknowledgement.
+func writeLegacyV2Workflow(t *testing.T, workflowsDir string) {
 	t.Helper()
 	legacy := "apiVersion: goobers.dev/v1alpha1\n" +
 		"kind: Workflow\n" +
-		"dslVersion: \"" + supportmatrix.V3DSLVersion + "\"\n" +
+		"dslVersion: \"" + supportmatrix.V2DSLVersion + "\"\n" +
 		"metadata:\n" +
 		"  name: legacy-implement\n" +
 		"spec:\n" +
@@ -231,7 +230,7 @@ func writeLegacyV3Workflow(t *testing.T, workflowsDir string) {
 		"  tasks:\n" +
 		"    - name: noop\n" +
 		"      type: deterministic\n" +
-		"      goal: A no-op task exercising the 3.0 interpreter.\n" +
+		"      goal: A no-op task exercising the 2.0 interpreter.\n" +
 		"      run:\n" +
 		"        command: [\"true\"]\n" +
 		"        workspace: scratch\n"

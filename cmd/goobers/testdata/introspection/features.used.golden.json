@@ -209,6 +209,12 @@
       "used": true
     },
     {
+      "name": "task.repoFrom",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0",
+      "used": true
+    },
+    {
       "name": "trigger.schedule",
       "stability": "ga",
       "sinceVersion": "dev",
