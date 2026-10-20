@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"sort"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"sigs.k8s.io/yaml"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // Policy is the immutable host-derived session authority snapshot. An explicit

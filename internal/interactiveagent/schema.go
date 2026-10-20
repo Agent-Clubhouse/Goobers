@@ -3,6 +3,7 @@ package interactiveagent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -125,7 +126,7 @@ func uniqueJSON(raw []byte) (any, error) {
 	if err != nil {
 		return nil, ErrInvalidMessage
 	}
-	if _, err = d.Token(); err != io.EOF {
+	if _, err = d.Token(); !errors.Is(err, io.EOF) {
 		return nil, ErrInvalidMessage
 	}
 	return v, nil

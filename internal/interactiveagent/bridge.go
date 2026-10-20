@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-// Bridge's socket location is a local transport endpoint, not a credential. Its
+// Bridge exposes a private invocation-bound tool endpoint. Its socket location
+// is a local transport endpoint, not a credential. Its
 // parent directory is private to the current OS user and its lifetime is exactly
 // the host invocation. Host callbacks supply authority; no socket request can.
 type Bridge struct {
@@ -35,6 +36,7 @@ type Bridge struct {
 	callbacks       sync.WaitGroup
 }
 
+// Start starts a private tool bridge for one bound invocation.
 func Start(ctx context.Context, options Options) (*Bridge, error) {
 	if ctx.Err() != nil {
 		return nil, ErrUnavailable
@@ -85,6 +87,7 @@ func Start(ctx context.Context, options Options) (*Bridge, error) {
 	return b, nil
 }
 
+// ToolNames returns the invocation’s allowed tool names.
 func (b *Bridge) ToolNames() []string {
 	names := make([]string, 0, len(b.definitions))
 	for _, tool := range b.definitions {
@@ -200,7 +203,8 @@ func ServeStdio(ctx context.Context, socketPath string, in io.Reader, out io.Wri
 	if err != nil {
 		return ErrUnavailable
 	}
-	defer conn.Close()
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = conn.Close() }()
 	inputDone := make(chan error, 1)
 	outputDone := make(chan error, 1)
 	go func() {

@@ -99,7 +99,7 @@ func TestUnixSocketStdioRoundTripAndPermissions(t *testing.T) {
 	var calls atomic.Int32
 	b := startTest(t, Options{Invoke: func(_ context.Context, call Call) (any, error) {
 		calls.Add(1)
-		return map[string]any{"received": json.RawMessage(call.Arguments)}, nil
+		return map[string]any{"received": call.Arguments}, nil
 	}})
 	if len(b.SocketPath) > 90 || !strings.HasPrefix(b.SocketPath, "/tmp/") {
 		t.Fatal("socket path is not short/private")
@@ -299,7 +299,11 @@ func TestBridgeCancellationStopsInvocationAndRemovesSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() {
+		if err := b.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	c := newClient(t, b)
 	c.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_context","arguments":{"text":"x"}}}`)
 	<-entered
@@ -324,7 +328,11 @@ func TestCancellationDuringCheckCannotDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() {
+		if err := b.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	c := newClient(t, b)
 	c.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_context","arguments":{"text":"x"}}}`)
 	_ = c.conn.SetReadDeadline(time.Now().Add(time.Second))
@@ -378,7 +386,11 @@ func TestStdioCancellationClosesBlockedInput(t *testing.T) {
 	b := startTest(t, Options{})
 	ctx, cancel := context.WithCancel(context.Background())
 	reader, writer := io.Pipe()
-	defer writer.Close()
+	defer func() {
+		if err := writer.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	done := make(chan error, 1)
 	go func() { done <- ServeStdio(ctx, b.SocketPath, reader, io.Discard) }()
 	cancel()

@@ -99,7 +99,8 @@ func loadDSLCatalog(source, stateDir string) (*dslCatalog, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(stage)
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.RemoveAll(stage) }()
 	configDir := filepath.Join(stage, "config")
 	digest, err := snapshotConfigLayout(source, configDir)
 	if err != nil {
@@ -227,7 +228,8 @@ func walkConfig(source string, write func(string, []byte) error) (string, error)
 		if !bytes.Equal(secretpattern.NewScrubber().Scrub(data), data) {
 			return fmt.Errorf("DSL file %s contains credential-like content; use external broker custody", relative)
 		}
-		fmt.Fprintf(hash, "%d:%s:%d:", len(relative), relative, len(data))
+		// Hash writes cannot fail.
+		_, _ = fmt.Fprintf(hash, "%d:%s:%d:", len(relative), relative, len(data))
 		hash.Write(data)
 		if write != nil {
 			return write(relative, data)
@@ -267,11 +269,11 @@ func compileDSLCatalog(set *instance.ConfigSet, configDir, revision string) (*ds
 			}
 			definition, ok := set.GooberSource(goober.Name)
 			if !ok {
-				return nil, fmt.Errorf("Goober source unavailable")
+				return nil, fmt.Errorf("goober source unavailable")
 			}
 			instructionsPath := filepath.Join(filepath.Dir(definition), goober.Spec.Instructions)
 			if !withinPath(configDir, filepath.Join(configDir, instructionsPath)) && !withinPath(filepath.Join(filepath.Dir(configDir), "goobers"), filepath.Join(configDir, instructionsPath)) {
-				return nil, fmt.Errorf("Goober instructions must remain within the snapshotted config or shared-goobers roots")
+				return nil, fmt.Errorf("goober instructions must remain within the snapshotted config or shared-goobers roots")
 			}
 			instructions, err := os.ReadFile(filepath.Join(configDir, instructionsPath))
 			if err != nil {
