@@ -46,6 +46,7 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
+	EngineChildren ChildService
 	// ChildDispatchCompletion commits a stopped worker's final custody report
 	// through its existing Temporal connection before the activity returns.
 	ChildDispatchCompletion ChildDispatchCompletion
@@ -117,6 +118,8 @@ type Activities struct {
 // Placement is additive and omitempty, so a history written before it existed
 // decodes with a nil Placement rather than failing.
 type DispatchStageResult struct {
+	// ChildWait is authored by a trusted stopped-dispatch adapter, never decoded from a stage result.
+	ChildWait *journal.ChildHandoffRequest `json:"childWait,omitempty"`
 	// Usage is trusted adapter accounting, independent of result metrics.
 	Usage *AttemptUsage `json:"usage,omitempty"`
 	// Embed the legacy activity result so its JSON stays flat and histories

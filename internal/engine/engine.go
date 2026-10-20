@@ -63,6 +63,10 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	// Derived only from a verified frozen binding during workflow execution.
+	childLineage *journal.ChildLineage
+	// FrozenChild is internal protocol data; the production Run entry refuses it.
+	FrozenChild *ChildRunBinding `json:"frozenChild,omitempty"`
 	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
 	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
 	InstanceID             string             `json:"instanceId,omitempty"`
@@ -247,11 +251,14 @@ const temporalHumanGateUnsupported = "engine: human gates require occurrence-bou
 // local runner journals its own, so the projected runs/<id>/ record is
 // indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
+	if in.FrozenChild != nil {
+		return RunResult{}, errors.New("engine: generated child execution remains disabled")
+	}
 	return run(ctx, in)
 }
 
 func run(ctx workflow.Context, in RunInput) (RunResult, error) {
-	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil {
+	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil && ctx.Value(childProtocolContextKey{}) != true {
 		return RunResult{}, err
 	}
 	if err := wf.RefuseUnsupportedFanOut(in.Spec); err != nil {
@@ -1007,8 +1014,13 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
+			attemptGrade, admissionErr := rec.admitChildAttempt(ctx, t, attemptEnv, produced)
+			if admissionErr != nil {
+				return stageActivityResult{}, admissionErr
+			}
+
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
-			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+			result.Integrity = runner.StageResultIntegrity(result.Integrity, attemptGrade)
 			return result, err
 		}, deltaOut)
 	}
@@ -1034,8 +1046,13 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
+		attemptGrade, admissionErr := rec.admitChildAttempt(ctx, t, attemptEnv, produced)
+		if admissionErr != nil {
+			return stageActivityResult{}, admissionErr
+		}
+
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
-		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, attemptGrade)
 		return result, err
 	}, deltaOut)
 }

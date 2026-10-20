@@ -358,6 +358,11 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		var result stageActivityResult
 		taskDispatches[t.Name]++
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
+		attemptGrade, admissionErr := rec.admitChildAttempt(ctx, t, attemptEnv, produced)
+		if admissionErr != nil {
+			return stageActivityResult{}, admissionErr
+		}
+
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
@@ -373,7 +378,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		}).Get(ctx, &result)
-		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, attemptGrade)
 		return result, err
 	}, deltaOut)
 }
