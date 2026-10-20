@@ -665,13 +665,13 @@ func TestRunDeclaredStageNoLongerRefusesCIPoll(t *testing.T) {
 
 // --- providers a pod cannot resolve a poller for ---------------------------
 
-// TestCIPollPodRefusesANonGitHubProvider: ADO and Gitea both resolve part of
-// their poller identity from the instance config directory, which a pod does
+// TestCIPollPodRefusesAnUnsupportedProvider: Gitea resolves part of
+// its poller identity from the instance config directory, which a pod does
 // not have. Refused loudly rather than defaulting to GitHub — a silent
 // default would poll a real api.github.com repository that merely shares the
 // routed owner/name, and report ITS check state as this run's.
-func TestCIPollPodRefusesANonGitHubProvider(t *testing.T) {
-	for _, provider := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+func TestCIPollPodRefusesAnUnsupportedProvider(t *testing.T) {
+	for _, provider := range []providers.ProviderKind{providers.ProviderGitea} {
 		t.Run(string(provider), func(t *testing.T) {
 			fixture := defaultCIPollFixture()
 			poller := &recordingPRPoller{result: providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}}

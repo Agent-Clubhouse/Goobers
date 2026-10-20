@@ -160,9 +160,9 @@ func (e *CredentialResolveRefusal) Deterministic() bool {
 // credential request at all.
 //
 // A non-200 answer from the plane is returned as a *CredentialResolveRefusal;
-// every other failure — including a plane that could not be reached — is an
-// untyped error, so errors.As on the refusal type separates the plane's
-// judgement from the transport's.
+// a malformed successful answer is a *CredentialResponseError. Both expose
+// Deterministic so refresh callers can distinguish invalid delivery and
+// terminal refusals from transient transport failures.
 func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage string, capabilities []string) (CredentialResolution, error) {
 	return c.Resolve(ctx, CredentialResolveRequest{RunID: runID, Stage: stage, Capabilities: capabilities})
 }
@@ -279,14 +279,14 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 		PublicationLeakScreen *PublicationLeakScreen `json:"publicationLeakScreen"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return CredentialResolution{}, false, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
+		return CredentialResolution{}, false, &CredentialResponseError{err: fmt.Errorf("dispatcher: decode credential resolve response: %w", err)}
 	}
 	// A granted capability that resolved to an EMPTY value is a fault, not a
 	// silent no-op: the stage would run believing it was credentialed and fail
 	// somewhere far away, against the provider.
 	for _, cred := range decoded.Credentials {
 		if strings.TrimSpace(cred.Value) == "" {
-			return CredentialResolution{}, false, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
+			return CredentialResolution{}, false, &CredentialResponseError{err: fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)}
 		}
 	}
 	return CredentialResolution{
@@ -294,6 +294,20 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 		Grant: decoded.Grant, PublicationLeakScreen: decoded.PublicationLeakScreen,
 	}, false, nil
 }
+
+// CredentialResponseError identifies an invalid successful response from the
+// credential plane. Refresh callers must not treat it as a transient outage
+// and continue using an older credential snapshot.
+type CredentialResponseError struct {
+	err error
+}
+
+func (e *CredentialResponseError) Error() string { return e.err.Error() }
+func (e *CredentialResponseError) Unwrap() error { return e.err }
+
+// Deterministic prevents refresh callers from retaining a cached credential
+// after the plane returned an invalid successful response.
+func (e *CredentialResponseError) Deterministic() bool { return true }
 
 // defaultCredentialRefreshDeadline bounds a mid-stage refresh's retries. It is
 // short: the caller is a live provider request that already has a value to
