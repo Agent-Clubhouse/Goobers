@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
@@ -41,6 +42,7 @@ type wireFixtures struct {
 	Workflows                readservice.WorkflowPage                   `json:"workflows"`
 	WorkflowDetail           readservice.WorkflowDetail                 `json:"workflowDetail"`
 	Runs                     readservice.RunList                        `json:"runs"`
+	RunAttribution           readservice.RunAttributionResult           `json:"runAttribution"`
 	RunDetail                readservice.RunDetail                      `json:"runDetail"`
 	RunChildren              readservice.ChildHistoryPage               `json:"runChildren"`
 	RunEvents                readservice.EventList                      `json:"runEvents"`
@@ -88,6 +90,7 @@ var wireFixtureTypes = []struct {
 	{name: "workflows", scriptType: "WorkflowPage"},
 	{name: "workflowDetail", scriptType: "WorkflowDetail"},
 	{name: "runs", scriptType: "RunList"},
+	{name: "runAttribution", scriptType: "RunAttributionResult"},
 	{name: "runDetail", scriptType: "RunDetail"},
 	{name: "runChildren", scriptType: "ChildHistoryPage"},
 	{name: "runEvents", scriptType: "EventList"},
@@ -593,8 +596,9 @@ func newWireFixtures() wireFixtures {
 			}},
 			NextCursor: "next-run",
 		},
-		RunDetail:   wireRunDetail(runSummary, graph, timestamp),
-		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}}},
+		RunAttribution: runAttributionFixture(timestamp),
+		RunDetail:      wireRunDetail(runSummary, graph, timestamp),
+		RunChildren:    readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}}},
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
 			Events: []readservice.RunEvent{{
@@ -1161,4 +1165,12 @@ func wireRunDetail(runSummary readservice.RunSummary, graph workflow.Graph, time
 		},
 		TransitionsStatus: "projected",
 	}
+}
+
+func runAttributionFixture(at time.Time) readservice.RunAttributionResult {
+	return readservice.RunAttributionResult{Schema: "goobers.dev/backprop/read/v1", RunID: "run-123", Gaggle: "core", ObservedAt: at, Availability: "recorded", RunPhase: journal.PhaseFailed, SourceDigest: "sha256:record", LabelRevision: "sha256:labels", InputBytes: 1024,
+		Record: &creditgraph.RunRecord{Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordComplete, ContractVersion: creditgraph.AttributionSchemaVersion, Mode: apiv1.BackpropModeActive, RunID: "run-123", Gaggle: "core", Workflow: "implementation", WorkflowVersion: 1, WorkflowDigest: "sha256:workflow", EffectiveVersion: "sha256:effective", Workload: "manual", StageComposition: &creditgraph.StageComposition{Checkpoints: 1, ThroughSequence: 8, Error: "tail analyzed"},
+			Attribution: creditgraph.Attribution{Schema: creditgraph.AttributionSchemaVersion, RunID: "run-123", RootID: "run", Outcome: "failed", OutcomeSign: -1, Contributions: []creditgraph.Contribution{{NodeID: "stage", Kind: creditgraph.KindStage, Label: "Implement", Stage: "implement", Attempt: 1, Path: []string{"run", "stage"}, Share: 0.6, Score: -0.6, Confidence: 0.8, Uncertainty: 0.2, Provenance: creditgraph.ProvenanceRecorded}}, Causes: []creditgraph.CauseFinding{{Class: creditgraph.ClassBadToolResult, NodeID: "stage", Stage: "implement", ErrorCode: "tool_failed", Confidence: 0.8, Summary: "tool failed", Assumptions: []string{"recorded"}, Evidence: []string{"sequence 9"}}}, Assumptions: []string{"correlational estimate"}, DroppedClaims: 1},
+			Evidence:    []creditgraph.AttributionEvidenceLink{{RunID: "run-123", NodeID: "stage", Stage: "implement", Source: "contribution", Detail: "recorded", JournalSequence: 9, JournalPath: "events.jsonl"}}},
+		GroundTruth: &creditgraph.GroundTruthLabel{ID: "label-1", RunID: "run-123", Outcome: creditgraph.LabelIncorrect, Source: creditgraph.LabelSourceHuman, LabeledBy: "operator", Reason: "incorrect output", LabeledAt: at, RecordedAt: at}, Evidence: []readservice.AttributionEvidenceCheck{{Index: 0, Kind: "journal", Status: "verified"}}}
 }

@@ -2160,6 +2160,7 @@ export interface DaemonClient {
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  getRunAttribution(runId: string, gaggle: string, options?: RequestOptions): Promise<RunAttributionResult>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
@@ -2294,4 +2295,40 @@ export interface ChildWorkflowResponse {
   disposition?: ChildWorkflowResolutionResponse;
   acceptedAt: string;
   updatedAt: string;
+}
+
+// Recorded single-run attribution. Scores are signed; share is unsigned mass.
+export interface AttributionContribution {
+ nodeId: string; kind: string; label?: string; stage?: string; attempt?: number;
+ path?: readonly string[]; share: number; score: number; confidence: number;
+ uncertainty: number; provenance: string;
+}
+export interface AttributionCause {
+ class: string; nodeId: string; stage?: string; errorCode?: string; confidence: number;
+ summary: string; assumptions?: readonly string[]; evidence?: readonly string[];
+}
+export interface AttributionEvidence {
+ runId?: string; nodeId?: string; stage?: string; detail?: string; source?: string;
+ journalSequence?: number; journalPath?: string; artifactPath?: string;
+ artifactDigest?: string; artifactMediaType?: string;
+}
+export interface RunAttributionResult {
+ schema: "goobers.dev/backprop/read/v1"; runId: string; gaggle: string; observedAt: string;
+ availability: "recorded" | "absent" | "pending" | "unsupported" | "limit-exceeded";
+ runPhase?: string; sourceDigest?: string; labelRevision?: string; inputBytes: number;
+ record?: {
+  schema: string; status: "complete" | "insufficient-evidence" | "failed";
+  contractVersion: string; mode?: string; runId: string; gaggle: string; workflow: string;
+  workflowVersion: number; workflowDigest: string; effectiveVersion: string; workload: string;
+  failure?: string; stageComposition?: {checkpoints: number; throughSequence?: number; error?: string};
+  evidence?: readonly AttributionEvidence[];
+  attribution: {schema: string; runId?: string; rootId: string; outcome?: string; outcomeSign: number;
+   contributions: readonly AttributionContribution[] | null; causes?: readonly AttributionCause[];
+   assumptions?: readonly string[]; claims?: readonly {id: string; status: string; statement?: string}[];
+   unverifiedClaims?: readonly {id: string; status: string; statement?: string; reasons?: readonly string[]}[]; droppedClaims?: number;
+  };
+ };
+ groundTruth?: {id: string; runId: string; outcome: string; source: string; labeledBy: string;
+  labeledAt: string; recordedAt: string; reason?: string};
+ evidence: readonly {index: number; kind: "journal" | "artifact" | "span"; status: "verified" | "unavailable" | "redacted"}[];
 }

@@ -50,6 +50,7 @@ const (
 	WorkflowQueueEligibilityPath = WorkflowDetailPath + "/queue-eligibility"
 	RunsPath                     = V1Prefix + "/runs"
 	RunChildrenPath              = V1Prefix + "/runs/{run}/children"
+	RunAttributionPath           = V1Prefix + "/runs/{run}/attribution"
 	RunDetailPath                = V1Prefix + "/runs/{run}"
 	RunRevealPath                = V1Prefix + "/runs/{run}/reveal"
 	RunEventsPath                = V1Prefix + "/runs/{run}/events"
@@ -308,6 +309,7 @@ const (
 	RouteWorkflowQueueEligibility RouteID = "workflowQueueEligibility"
 	RouteRuns                     RouteID = "runs"
 	RouteRunChildren              RouteID = "runChildren"
+	RouteRunAttribution           RouteID = "runAttribution"
 	RouteRunDetail                RouteID = "runDetail"
 	RouteRunReveal                RouteID = "runReveal"
 	RouteRunEvents                RouteID = "runEvents"
@@ -556,6 +558,7 @@ var v1Routes = []Route{
 	{ID: RouteWorkflowQueueEligibility, Method: http.MethodGet, Path: WorkflowQueueEligibilityPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRunChildren, Method: http.MethodGet, Path: RunChildrenPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
+	{ID: RouteRunAttribution, Method: http.MethodGet, Path: RunAttributionPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunReveal, Method: http.MethodPost, Path: RunRevealPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},

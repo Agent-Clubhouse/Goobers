@@ -157,6 +157,8 @@ func openAPIParameters(route Route) []map[string]any {
 
 func openAPIServiceParameters(id RouteID) []map[string]any {
 	switch id {
+	case RouteRunAttribution:
+		return []map[string]any{{"name": "gaggle", "in": "query", "required": true, "schema": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}}}
 	case RouteWorkItems:
 		return []map[string]any{
 			{"name": "provider", "in": "query", "schema": stringSchema()},

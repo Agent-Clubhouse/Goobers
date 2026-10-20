@@ -198,6 +198,10 @@ func readSchemaInfo(dir string) (SchemaInfo, bool, error) {
 	if err != nil {
 		return SchemaInfo{}, false, fmt.Errorf("journal: read schema.json: %w", err)
 	}
+	return decodeSchemaInfo(data)
+}
+
+func decodeSchemaInfo(data []byte) (SchemaInfo, bool, error) {
 	var manifest struct {
 		Version       *int             `json:"version"`
 		MinimumBinary string           `json:"minimumBinary"`

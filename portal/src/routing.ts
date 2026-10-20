@@ -35,7 +35,7 @@ export type Route =
 // (#2528) — kept as named aliases so call sites read in terms of the view
 // they're for, without three parallel field-by-field type declarations.
 export type RunStatusFilter = "active" | "attention" | "complete" | "all";
-export type RunDetailTab = "overview" | "artifacts" | "diagnostics" | "journal";
+export type RunDetailTab = "overview" | "artifacts" | "diagnostics" | "journal" | "backprop";
 export type InstanceDetailKind = "recovery" | "retention" | "warnings";
 
 export interface RunRouteFilters extends ScopeFilters {
@@ -330,7 +330,7 @@ function runDetailTabQuery(search: URLSearchParams): RunDetailTab | undefined {
   }
   return value === "overview" ||
     value === "artifacts" ||
-    value === "journal"
+    value === "journal" || value === "backprop"
     ? value
     : undefined;
 }

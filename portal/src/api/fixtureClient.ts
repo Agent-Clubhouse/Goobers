@@ -22,6 +22,7 @@ import type {
   RequestOptions,
   RunEvent,
   RunDetail,
+  RunAttributionResult,
   ChildHistoryPage,
   RunList,
   RunListOptions,
@@ -56,6 +57,7 @@ export interface DaemonFixtures {
   connections?: Record<string, GaggleConnections>;
   workflowDetails?: Record<string, WorkflowDetail>;
   runs: RunList;
+  runAttribution?: Record<string, RunAttributionResult>;
   runDetails?: Record<string, RunDetail>;
   runEvents?: Record<string, EventList>;
   runChildren?: Record<string, ChildHistoryPage>;
@@ -278,6 +280,10 @@ export class FixtureDaemonClient implements DaemonClient {
 
   async listRunEvents(runId: string, options?: RequestOptions): Promise<EventList> {
     return fixture(required(this.fixtures.runEvents, runId, "run events"), options);
+  }
+
+  async getRunAttribution(runId: string, gaggle: string, options?: RequestOptions): Promise<RunAttributionResult> {
+    return fixture(this.fixtures.runAttribution?.[runId] ?? { schema: "goobers.dev/backprop/read/v1", runId, gaggle, observedAt: new Date().toISOString(), availability: "absent", inputBytes: 0, evidence: [] }, options);
   }
 
   async listRunChildren(runId: string, cursor = "", options?: RequestOptions): Promise<ChildHistoryPage> {

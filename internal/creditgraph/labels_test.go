@@ -263,3 +263,23 @@ func TestGroundTruthLabelsWeightFaultAuditConfidence(t *testing.T) {
 		t.Fatalf("labeled audit is not deterministic: %+v vs %+v", incorrect, again)
 	}
 }
+
+func TestDecodeLabelStoreRefusesInvalidProvenance(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	valid := humanLabel("run-1", LabelCorrect, at)
+	valid.ID = "label-test"
+	valid.RecordedAt = at
+	for _, mutate := range []func(*GroundTruthLabel){
+		func(l *GroundTruthLabel) { l.Outcome = "invented" }, func(l *GroundTruthLabel) { l.Source = "agent" }, func(l *GroundTruthLabel) { l.LabeledBy = "" }, func(l *GroundTruthLabel) { l.LabeledAt = time.Time{} }, func(l *GroundTruthLabel) { l.RecordedAt = time.Time{} }, func(l *GroundTruthLabel) { l.RunID = "foreign" },
+	} {
+		label := valid
+		mutate(&label)
+		data, err := json.Marshal(LabelStore{Schema: LabelStoreSchemaVersion, RunID: "run-1", Labels: []GroundTruthLabel{label}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := DecodeLabelStore(data); err == nil {
+			t.Fatalf("invalid provenance accepted: %+v", label)
+		}
+	}
+}

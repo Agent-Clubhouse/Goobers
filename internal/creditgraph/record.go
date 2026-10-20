@@ -610,6 +610,11 @@ func ReadRunRecord(runDir string) (RunRecord, error) {
 	if err != nil {
 		return RunRecord{}, err
 	}
+	return DecodeRunRecord(data)
+}
+
+// DecodeRunRecord validates already bounded persisted bytes without reading or writing files.
+func DecodeRunRecord(data []byte) (RunRecord, error) {
 	var record RunRecord
 	if err := json.Unmarshal(data, &record); err != nil {
 		return RunRecord{}, fmt.Errorf("decode attribution record: %w", err)
