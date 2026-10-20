@@ -208,3 +208,63 @@ records `claim.force_released`. An unavailable audit journal blocks the override
 The operator accepts responsibility for any still-running provider request; this
 escape hatch does not cancel a remote merge. Prefer the fixed expiry unless the
 outcome has been verified.
+
+## Withdrawing passes after base movement
+
+With `github:pr:review` declared, `post-merge` revisits the standing native
+verdicts of open siblings and `reconcile-post-merge` sweeps open PRs even when
+Goobers did not perform the merge. Both use the review identity that owns the
+status context. The shipped merge-review workflows declare this credential on
+both tasks. Existing workflows without it still load and run, but emit a warning
+and do not advance the native-verdict sweep; add the capability and grant that
+identity commit-status read/write access to enable this protection. Azure DevOps
+has no native verdict reader on this path and is not covered by this sweep.
+
+Only a readable existing successful verdict is eligible. A current-base pass
+and a pass whose base advance is provably disjoint from the PR's files remain
+unchanged. Overlap, rename-source overlap, a divergent/rewound base, malformed
+base evidence, or an unreadable base comparison withdraws the pass to pending.
+A GitHub comparison reaching its [300-file limit](https://docs.github.com/en/rest/commits/commits#compare-two-commits)
+is also unverifiable; pagination does not reveal the omitted files.
+An unreadable native status is retried; it is never treated as proof that a
+status exists. No status is created on an unreviewed head. Pending/failing
+verdicts stay unchanged.
+
+### Sweep latency and recovery
+
+`maxPullRequests` bounds native-verdict attempts per reconciliation invocation
+(default 10, maximum 100), independently of the existing park/queue batches.
+The durable cursor saves a fetched page before effects and checkpoints after
+each attempt. Failures rotate through a retry queue, sharing the budget with
+new pages, so one broken PR cannot starve the scan. Changing the budget retains
+the current page size until wraparound; process restarts resume pending work.
+Each pass through the list starts over to detect subsequent external landings.
+
+For a stable list of N PRs, a healthy scheduler and no failures, allow roughly
+`ceil(N / batch)` successful invocations plus one wraparound invocation for a
+complete visit, plus provider request time. Retry work reduces fresh-page
+throughput. The reference workflow runs hourly, so this is eventual withdrawal,
+not instant invalidation or a wall-clock SLA. Scheduling limits, provider
+outages, a disabled workflow, or a changing paginated list can increase delay.
+Require branches to be up to date before merging when that residual window is
+unacceptable. No branch-protection setting is changed automatically.
+
+### Publication custody
+
+Native publication and withdrawal share the repository merge lock (the instance
+flock locally, the renewed claims-plane lease in stage pods). Withdrawal reads
+the live PR and native status after acquiring custody, checks the delta, and
+rechecks head/base before writing. A queued withdrawal therefore preserves a
+fresh pass for the current base. Publication also rechecks its pins after
+acquiring custody, so a queued old review cannot restore a pass for a moved
+base. The provider call completes before custody is released.
+
+This requires one owning gaggle and publishing identity for the status context,
+all writers using this protocol, and at most one native verdict/merge stage per
+run at a time (the shipped workflow is sequential). The claims lease is owned
+by run, not stage. Other installations, manual status writers, and legacy
+binaries do not share that custody. GitHub/Gitea commit-status APIs offer no
+conditional write or fencing token: an ambiguous request completing remotely
+after a crash, cancellation, or lease loss is outside this ordering guarantee.
+The sweep will revisit it; this feature cannot promise zero stale exposure
+across those failures or an atomic provider base-update/status-withdrawal.

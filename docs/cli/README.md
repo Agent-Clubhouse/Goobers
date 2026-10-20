@@ -3354,7 +3354,8 @@ issue the merged PR's body references (Fixes/Closes/Resolves #N)
 done. When the backlog lives on another provider than the PR (a
 GitHub backlog for Azure DevOps code), only references by the
 issue's full URL count. Declared input: pullNumber (required — the
-just-merged PR).
+just-merged PR). With github:pr:review declared, withdraw native passes
+whose reviewed files were invalidated by the base movement.
 Exit codes: 0 = done (even if the PR body references no issue, or
 there are no other open PRs — both are normal outcomes, not
 errors), 1 = business error, 2 = usage/IO error.
@@ -3811,6 +3812,9 @@ issue close-out, and sibling fan-out through the normal post-merge path;
 an open or unmerged pull request remains pending. Completed entries are
 durably skipped on later runs. Task inputs maxPullRequests and lookback
 set the same bounds (defaults: 10 and 168h; hard maximum: 100).
+With github:pr:review declared, also revisit a resumable bounded batch
+of open PR verdicts and withdraw passes invalidated by base movement,
+including external merges. Failed PRs retry without starving later pages.
 Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
 ~~~
 

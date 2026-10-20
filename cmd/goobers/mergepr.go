@@ -1103,24 +1103,7 @@ func cleanupMergedBranch(ctx context.Context, root string, headRepository *provi
 // genuinely intersects this PR's own files still must (a valid review
 // against the old base says nothing about a file it never saw change).
 func baseMovementIntersectsPR(ctx context.Context, provider *providers.Dispatcher, repo providers.RepositoryRef, pullNumber, oldBaseSHA, newBaseSHA string) (bool, error) {
-	prFiles, err := provider.PullRequestFiles(ctx, repo, pullNumber)
-	if err != nil {
-		return false, fmt.Errorf("list PR's own files: %w", err)
-	}
-	moved, err := provider.CompareCommits(ctx, repo, oldBaseSHA, newBaseSHA)
-	if err != nil {
-		return false, fmt.Errorf("compare base %s...%s: %w", oldBaseSHA, newBaseSHA, err)
-	}
-	prPaths := make(map[string]struct{}, len(prFiles))
-	for _, f := range prFiles {
-		prPaths[f.Path] = struct{}{}
-	}
-	for _, f := range moved.Files {
-		if _, ok := prPaths[f.Path]; ok {
-			return true, nil
-		}
-	}
-	return false, nil
+	return prstatus.BaseMovementIntersectsPR(ctx, provider, repo, pullNumber, oldBaseSHA, newBaseSHA)
 }
 
 // writeMergeResult writes the declared result file's flat JSON —

@@ -956,7 +956,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
-	record := verdictRecord{provider: prProvider, statusPublisher: reviewProvider, repo: repo, number: selectedNumber, author: verdictAuthor, current: current, standing: statusComments}
+	record := verdictRecord{root: root, provider: prProvider, statusPublisher: reviewProvider, repo: repo, number: selectedNumber, author: verdictAuthor, current: current, standing: statusComments}
 	if posted.Decision == apiv1.VerdictPass {
 		if err := record.publish(ctx, comment, posted, stdout, stderr); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
@@ -1165,13 +1165,11 @@ func withdrawStandingVerdict(ctx context.Context, root string, provider remediat
 	if current.HeadSHA != reviewedHead {
 		return
 	}
-	publisher, err := newVerdictStatusPublisher(root, repo)
-	if err == nil {
-		req := prstatus.StaleVerdictStatusRequest(repo, strconv.Itoa(number), current.HeadSHA, current.BaseSHA, reason, current.URL)
-		err = publishVerdictStatus(ctx, publisher, req, true, io.Discard, stderr)
-	}
-	if err != nil {
-		pf(stderr, "warning: could not withdraw PR #%d's %s status: %v\n", number, providers.MergeReviewStatusContext, err)
+	r := newVerdictBaseReconciler(root, repo, provider, stderr)
+	if r != nil {
+		if err := r.reconcile(ctx, number, stderr); err != nil {
+			pf(stderr, "warning: could not withdraw PR #%d's %s status: %v\n", number, providers.MergeReviewStatusContext, err)
+		}
 	}
 }
 
@@ -1193,6 +1191,7 @@ func newVerdictStatusPublisher(root string, repo providers.RepositoryRef) (remed
 // it, and so a pass never authorizes a native merge before its durable
 // record exists.
 type verdictRecord struct {
+	root            string
 	provider        remediationProvider
 	statusPublisher any
 	repo            providers.RepositoryRef
@@ -1211,7 +1210,7 @@ func (r verdictRecord) publish(ctx context.Context, comment string, posted apiv1
 	if err != nil {
 		return err
 	}
-	return publishVerdictStatus(ctx, r.statusPublisher, req, false, stdout, stderr)
+	return publishCurrentVerdictStatus(ctx, r.root, r.provider, r.statusPublisher, req, stdout, stderr)
 }
 
 // targetURL links the status to the sticky verdict comment when one already

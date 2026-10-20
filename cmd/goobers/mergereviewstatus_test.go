@@ -317,6 +317,9 @@ func TestVerdictRecordPublishesGiteaCommitStatus(t *testing.T) {
 	var status map[string]string
 	var statusPath string
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/repos/your-org/your-repo/pulls/77", func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"number": 77, "state": "open", "head": map[string]string{"sha": "reviewed-head"}, "base": map[string]string{"sha": "reviewed-base"}})
+	})
 	mux.HandleFunc("/api/v1/repos/your-org/your-repo/statuses/", func(w http.ResponseWriter, r *http.Request) {
 		statusPath = r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&status); err != nil {
@@ -335,6 +338,7 @@ func TestVerdictRecordPublishesGiteaCommitStatus(t *testing.T) {
 	gitea := providers.NewGiteaProvider(server.URL, "review-token")
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: "your-org", Name: "your-repo"}
 	record := verdictRecord{
+		root:     newVerdictTestRoot(t),
 		provider: gitea, statusPublisher: gitea, repo: repo, number: 77, author: "goobers",
 		current: providers.PullRequestSummary{Number: 77, HeadSHA: "reviewed-head", BaseSHA: "reviewed-base", URL: "https://gitea.test/pr/77"},
 	}

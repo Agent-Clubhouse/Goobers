@@ -190,7 +190,8 @@ const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
 	"done. When the backlog lives on another provider than the PR (a\n" +
 	"GitHub backlog for Azure DevOps code), only references by the\n" +
 	"issue's full URL count. Declared input: pullNumber (required — the\n" +
-	"just-merged PR).\n" +
+	"just-merged PR). With github:pr:review declared, withdraw native passes\n" +
+	"whose reviewed files were invalidated by the base movement.\n" +
 	"Exit codes: 0 = done (even if the PR body references no issue, or\n" +
 	"there are no other open PRs — both are normal outcomes, not\n" +
 	"errors), 1 = business error, 2 = usage/IO error.\n"
@@ -869,18 +870,22 @@ func fanOutNeedsRemediation(ctx context.Context, provider remediationProvider, r
 		}
 	}
 
-	// HeadPrefix scopes the fan-out to goober-authored siblings (G1's
+	// Label fan-out is filtered to goober-authored siblings below (G1's
 	// goober-authored-repo assumption, matching pr-select/gather-sibling-
 	// context's own default) — a human/other-agent PR sharing the same base
-	// isn't pr-remediation's to touch. SkipCheckState: triage needs neither
+	// is not pr-remediation's to touch. Native verdict withdrawal examines all
+	// listed PRs, but only changes an existing pass. SkipCheckState: triage needs neither
 	// field ListPullRequests would otherwise resolve per candidate.
 	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
+		Repository: repo, Base: base, SkipCheckState: true,
 	})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s: %w", base, err))
 		return nil, nil, errs
 	}
+
+	errs = append(errs, withdrawSiblingBaseVerdicts(ctx, root, provider, repo, mergedNumber, others, stderr)...)
+	others = filterPullRequestsByHeadPrefix(others, providerBranchNamespace())
 
 	// Opportunistic reuse of #523's sibling-context cache: if the SAME
 	// merge-review run's earlier gather-sibling-context stage already fetched

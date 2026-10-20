@@ -355,7 +355,7 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		for _, f := range files {
 			out = append(out, map[string]interface{}{"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch})
 		}
-		writeFakeJSON(w, map[string]interface{}{"merge_base_commit": map[string]interface{}{"sha": "irrelevant-for-this-fixture"}, "files": out})
+		writeFakeJSON(w, map[string]interface{}{"merge_base_commit": map[string]interface{}{"sha": strings.SplitN(key, "...", 2)[0]}, "files": out})
 	})
 	mux.HandleFunc(prefix+"/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
 		st.mergeCalls++
