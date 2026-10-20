@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dslmigrate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -21,6 +24,25 @@ func TestDocsUpdaterShippedCopiesStayInSync(t *testing.T) {
 	root := repositoryRoot(t)
 	referenceWorkflows := loadDocsUpdaterConfig(t, filepath.Join(root, "reference-workflows"), "goobers")
 	example := loadDocsUpdaterConfig(t, filepath.Join(root, "config-examples"), "acme-web")
+
+	// Compare the same DSL representation while the examples migrate separately.
+	// Use the actual migrator so derived repoFrom and placement fields still
+	// participate in the equality assertion instead of being discarded.
+	if example.workflow.DSLVersion != referenceWorkflows.workflow.DSLVersion {
+		source, err := yaml.Marshal(example.workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		migrated, err := dslmigrate.Migrate(source, referenceWorkflows.workflow.DSLVersion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var definition apiv1.Workflow
+		if err := yaml.Unmarshal([]byte(migrated.After), &definition); err != nil {
+			t.Fatal(err)
+		}
+		example.workflow = definition
+	}
 
 	referenceWorkflows.workflow.Spec.Gaggle = ""
 	example.workflow.Spec.Gaggle = ""
