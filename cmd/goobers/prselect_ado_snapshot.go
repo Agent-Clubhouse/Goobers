@@ -20,7 +20,7 @@ func (s branchPolicyPRSelectSource) selectionSnapshot(ctx context.Context, repo 
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", id, err)
 		}
-		matched, err := req.identityFilters.MatchesSummary(pr)
+		matched, err := adoSelectionMatchesSummary(req.identityFilters, pr)
 		if err != nil || !matched {
 			return nil, nil, err
 		}
@@ -33,6 +33,9 @@ func (s branchPolicyPRSelectSource) selectionSnapshot(ctx context.Context, repo 
 		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
 	}
 	return pullRequestsForSelectionCommon(ctx, prs, req, selectionResolver{
+		matches: func(pr providers.PullRequestSummary) (bool, error) {
+			return adoSelectionMatchesSummary(req.identityFilters, pr)
+		},
 		target: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
 			for _, pr := range prs {
 				if strconv.Itoa(pr.Number) == id {
@@ -62,5 +65,5 @@ func adoSelectionNeedsChecks(pr providers.PullRequestSummary, req prSelectSource
 	if !eligibleByMergeReviewPolicy(pr, req.requiredOptInLabel, req.respectAssignee, req.selfIdentity) {
 		return false, nil
 	}
-	return req.identityFilters.MatchesSummary(pr)
+	return adoSelectionMatchesSummary(req.identityFilters, pr)
 }
