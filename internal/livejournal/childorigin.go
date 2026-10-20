@@ -78,6 +78,14 @@ func (run *liveRun) rememberChildStart(key string, event journal.Event) {
 }
 
 func (run *liveRun) childOriginReceipt(runID string, op Op) (ChildOriginReceipt, error) {
+	// Recovery can retain a complete append whose checkpoint failed. Never
+	// expose its receipt until the checkpoint has also succeeded, even after
+	// a process restart or an idle close discarded the in-memory error state.
+	if run.jr != nil {
+		if err := run.jr.Checkpoint(); err != nil {
+			return ChildOriginReceipt{}, err
+		}
+	}
 	event, ok := run.childStarts[op.Key]
 	if !ok {
 		return ChildOriginReceipt{}, fmt.Errorf("no committed child origin for emit key %q", op.Key)
@@ -88,4 +96,47 @@ func (run *liveRun) childOriginReceipt(runID string, op Op) (ChildOriginReceipt,
 	}
 	receipt := ChildOriginReceipt{Key: op.Key, Seq: event.Seq, Branch: event.Branch, Stage: event.Stage, Attempt: event.Attempt, Class: event.AttemptClass, Origin: *origin}
 	return receipt, receipt.Validate(runID, op)
+}
+
+// invalidateChildAppend discards uncertain cached authority. Owned writers are
+// closed so the next acquire reconstructs dedup keys from committed events.
+// A loan cannot be closed here; quarantine it until reconciliation succeeds.
+// Caller holds run.mu, including across removal from the writer cache.
+func (w *Writer) invalidateChildAppend(runID string, run *liveRun) {
+	if run.adopted && run.jr != nil && !run.jr.Closed() {
+		run.childAppendUncertain = true
+		return
+	}
+	if run.jr != nil {
+		_ = run.jr.Close()
+		run.jr = nil
+	}
+	// Clear terminal dedup too, so already-acquired stale references must
+	// reacquire instead of serving receipts from the uncertain cache.
+	run.keys = make(map[string]uint64)
+	run.childStarts = nil
+	w.forgetLoan(runID, run)
+}
+
+// reconcileChildAppend repairs the borrowed handle without releasing its
+// owner's lock. Nothing can use cached dedup or return receipts until both
+// the append boundary and checkpoint are repaired and the durable keys read.
+func (run *liveRun) reconcileChildAppend() error {
+	if err := run.jr.RepairAppendBoundary(); err != nil {
+		return err
+	}
+	if err := run.jr.Checkpoint(); err != nil {
+		return err
+	}
+	reader, err := journal.OpenReadOnly(run.dir)
+	if err != nil {
+		return err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	deriveDedupState(run, events)
+	run.childAppendUncertain = false
+	return nil
 }
