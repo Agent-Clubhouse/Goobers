@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
 const tokenLineSize = 44 // 32 random bytes, unpadded base64url, and a newline.
@@ -30,7 +32,7 @@ func readToken(path string) ([]byte, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() != tokenLineSize {
 		return nil, ErrUnavailable
 	}
-	file, err := os.Open(path)
+	file, err := safeopen.Open(path)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
