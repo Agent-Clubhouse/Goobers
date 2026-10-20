@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +21,11 @@ import (
 )
 
 func TestRegistrySelectsNativeCodexWithHostProbeState(t *testing.T) {
+	registryCodexConfinement(t, false)
+}
+func TestRegistryFallbackCodexWithHostTempState(t *testing.T) { registryCodexConfinement(t, true) }
+func registryCodexConfinement(t *testing.T, fallback bool) {
+	t.Helper()
 	base, err := sandbox.New()
 	if errors.Is(err, sandbox.ErrUnavailable) || errors.Is(err, sandbox.ErrUnsupported) {
 		t.Skip(err)
@@ -44,7 +50,11 @@ func TestRegistrySelectsNativeCodexWithHostProbeState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nexec '" + strings.ReplaceAll(executable, "'", "'\\''") + "' -test.run='^TestRegistryCodexChild$' -- \"$@\"\n"
+	extra := ""
+	if fallback {
+		extra = " --force-batch"
+	}
+	script := "#!/bin/sh\nexec '" + strings.ReplaceAll(executable, "'", "'\\''") + "' -test.run='^TestRegistryCodexChild$' --" + extra + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -58,11 +68,33 @@ func TestRegistrySelectsNativeCodexWithHostProbeState(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := harness.RunRequest{Workspace: workspace, Model: "fixture-model", Sandbox: boundary, IsolateHome: true,
+		CompletionPath: ".goobers/result.json",
 		HarnessOptions: map[string]apiextensionsv1.JSON{"auth": {Raw: []byte(`"ambient-chatgpt"`)}}}
 	registry := e.driverRegistry("codex", request)
-	session, attempts, err := registry.Start(t.Context(), "codex", chat.StartOptions{Workspace: workspace, Level: chat.Auto, Ceiling: chat.NewCeiling(chat.Auto, chat.Auto, chat.Auto)})
+	session, attempts, err := registry.Start(t.Context(), "codex", chat.StartOptions{Workspace: workspace, Model: "fixture-model", Level: chat.Auto, Ceiling: chat.NewCeiling(chat.Auto, chat.Auto, chat.Auto)})
 	if err != nil {
 		t.Fatalf("native registry startup: %v; attempts %+v", err, attempts)
+	}
+	if fallback {
+		defer func() { _ = session.Close() }()
+		if len(attempts) != 2 || attempts[1].Driver != "execshim" {
+			t.Fatalf("expected per-turn fallback: %+v", attempts)
+		}
+		if _, err := session.Send(t.Context(), chat.Text("fixture"), chat.SendOptions{Delivery: chat.Prompt}); err != nil {
+			t.Fatal(err)
+		}
+		for event := range session.Events() {
+			if event.Type == "error" {
+				t.Fatalf("fallback execution failed: %+v", event.Data)
+			}
+			if event.Type == "turn_ended" {
+				if event.Data["reason"] != "end_turn" {
+					t.Fatal(event.Data)
+				}
+				return
+			}
+		}
+		t.Fatal("fallback ended without completion")
 	}
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
@@ -73,8 +105,29 @@ func TestRegistrySelectsNativeCodexWithHostProbeState(t *testing.T) {
 }
 
 func TestRegistryCodexChild(t *testing.T) {
+	if slices.Contains(os.Args, "--version") {
+		fmt.Println("codex-cli 0.163.0")
+		os.Exit(0)
+	}
+	if slices.Contains(os.Args, "login") {
+		fmt.Println("Logged in using ChatGPT")
+		os.Exit(0)
+	}
+	if slices.Contains(os.Args, "exec") {
+		if err := os.MkdirAll(".goobers", 0700); err != nil {
+			os.Exit(7)
+		}
+		if err := os.WriteFile(".goobers/result.json", []byte(`{"status":"success","summary":"confined fallback fixture"}`), 0600); err != nil {
+			os.Exit(8)
+		}
+		fmt.Println(`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`)
+		os.Exit(0)
+	}
 	if !slices.Contains(os.Args, "app-server") {
 		t.Skip("native child fixture")
+	}
+	if slices.Contains(os.Args, "--force-batch") {
+		os.Exit(3)
 	}
 	scanner := bufio.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
