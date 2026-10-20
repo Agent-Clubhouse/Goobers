@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 14 |
+| `draft` | 15 |
 | `approved` | 25 |
 | `implemented` | 29 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **78** |
+| **Total** | **79** |
 
 ## `docs/adr/`
 
@@ -72,6 +72,7 @@ word — read the page, not this table, before depending on it.
 | [NetworkPolicy composition — the facts the egress model rests on](networkpolicy-composition.md) | `implemented` | — | #4294 | #3568, #4294 | — | — | eedb41ea6 (2026-10-02) |
 | [Notification output boundary](notification-output.md) | `historical` | — | — | — | — | — | — |
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
+| [Design: Orchestrator pattern](orchestrator-pattern.md) | `draft` | DSL, child admission, MCP, local runner, Temporal, workspace custody | — | — | — | — | 605c88f0c4924585d0727878ec3f9d687a312c9f (2026-10-20) |
 | [Design: Conditional and plan-driven fan-out](plan-driven-dynamic-fan-out.md) | `approved` | workflow DSL, runner, journal, conformance | #1310 | — | — | — | 561268950 (2026-10-14) |
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | — | — | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | — | — | #2305, #2884 | — | — | — |
