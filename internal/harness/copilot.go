@@ -1329,8 +1329,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
 			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv,
-			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
-			repairUsage,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry, repairUsage,
 		)
 	}
 	out = Outcome{
