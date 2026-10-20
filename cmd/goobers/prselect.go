@@ -1758,6 +1758,7 @@ func pullRequestSummaryFromPoll(pr providers.PullRequestSummary, poll providers.
 	}
 	pr.CheckState = poll.CheckState
 	pr.Body = poll.Body
+	pr.BodyIncomplete = false
 	pr.Integrity = poll.Integrity
 	return pr
 }

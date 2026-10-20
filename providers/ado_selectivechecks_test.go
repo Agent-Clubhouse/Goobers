@@ -33,7 +33,7 @@ func TestADOListPullRequestsWithCheckFilterPreservesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prs) != 2 || prs[0].CheckState != CheckStatePassing || prs[1].CheckState != "" || prs[0].State != "open" || prs[0].Body != "Context" {
+	if len(prs) != 2 || prs[0].CheckState != CheckStatePassing || prs[1].CheckState != "" || prs[0].State != "open" || prs[0].Body != "Context" || !prs[0].BodyIncomplete || !prs[1].BodyIncomplete {
 		t.Fatalf("snapshot=%+v", prs)
 	}
 	if policies.Load() != 1 {

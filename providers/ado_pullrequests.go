@@ -926,7 +926,7 @@ func summarizeADOPullRequest(pr adoPullRequest) PullRequestSummary {
 		HeadSHA: pr.LastMergeSourceCommit.CommitID, BaseSHA: pr.LastMergeTargetCommit.CommitID,
 		Draft: pr.IsDraft, Labels: adoLabelNames(pr.Labels),
 		// The list exposes creationDate, not an update time; leave UpdatedAt unknown.
-		Body: pr.Description, Integrity: apiintegrity.Unapproved,
+		Body: pr.Description, BodyIncomplete: true, Integrity: apiintegrity.Unapproved,
 	}
 }
 

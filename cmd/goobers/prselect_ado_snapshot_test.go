@@ -123,7 +123,7 @@ func TestADOSelectionSnapshotNarrowsReadsWithoutLosingMetadata(t *testing.T) {
 			if byNumber[10].Mergeable == nil || *byNumber[10].Mergeable || byNumber[10].CheckState != "" {
 				t.Fatalf("conflict lost or needlessly checked: %+v", byNumber[10])
 			}
-			if !byNumber[3].Draft || byNumber[3].State != "open" || byNumber[3].Body != "Fixes #5" {
+			if !byNumber[3].Draft || byNumber[3].State != "open" || byNumber[3].Body != "Fixes #5" || !byNumber[3].BodyIncomplete {
 				t.Fatalf("metadata projection incomplete: %+v", byNumber[3])
 			}
 			fixture.mu.Lock()
