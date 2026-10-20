@@ -391,7 +391,7 @@
                 "required": ["name", "ref"],
                 "properties": {
                   "name": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$", "description": "Unique base selector within this child policy." },
-                  "ref": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^refs/(heads|tags)/.+$", "description": "Fully qualified same-repository branch or tag ref; semantic validation rejects revision expressions." }
+                  "ref": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^refs/(heads|tags)/.+$", "examples": ["refs/heads/main"], "description": "Fully qualified same-repository branch or tag ref; semantic validation rejects revision expressions." }
                 }
               }
             },
