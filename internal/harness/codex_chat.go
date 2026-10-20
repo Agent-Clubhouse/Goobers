@@ -292,7 +292,7 @@ func (s *codexChatSession) openThread(ctx context.Context, o chat.StartOptions) 
 		}
 		models = append(models, chat.ModelInfo{ID: m.Model, Label: m.DisplayName, Efforts: efforts, DefaultEffort: string(m.DefaultReasoningEffort)})
 	}
-	s.emit("session_info", map[string]any{"models": models, "currentModel": s.model, "currentEffort": s.effort, "levels": s.caps.LiveLevels}, "")
+	s.emit("session_info", map[string]any{"models": models, "currentModel": s.model, "currentEffort": s.effort, "levels": s.caps.LiveLevels, "currentLevel": s.level}, "")
 	return nil
 }
 

@@ -214,7 +214,7 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 		m := obj(raw)
 		models = append(models, chat.ModelInfo{ID: str(m["value"]), Label: str(m["displayName"]), Efforts: []string{}})
 	}
-	s.emit("session_info", object{"models": models, "currentModel": o.Model, "currentEffort": "", "levels": capabilities().LiveLevels}, "")
+	s.emit("session_info", object{"models": models, "currentModel": o.Model, "currentEffort": "", "levels": capabilities().LiveLevels, "currentLevel": s.level}, "")
 	return s, nil
 }
 
@@ -389,31 +389,7 @@ func (s *Session) frame(m object) {
 		}
 		pending <- result
 	case "control_request":
-		r := obj(m["request"])
-		id := str(m["request_id"])
-		if r["subtype"] != "can_use_tool" || id == "" {
-			s.emit("protocol_unknown", unknown("control_request/"+str(r["subtype"])).data, "")
-			s.respondAsync(id, object{"subtype": "error", "error": "unsupported control request"})
-			return
-		}
-		s.mu.Lock()
-		_, duplicate := s.permissions[id]
-		if !duplicate {
-			s.permissions[id] = r
-		}
-		s.mu.Unlock()
-		if duplicate {
-			s.emit("protocol_unknown", unknown("duplicate_control_request").data, "")
-			go func() { _ = s.Close() }()
-			return
-		}
-		data := object{"requestId": id, "toolCallId": str(r["tool_use_id"]), "title": str(r["tool_name"]), "kind": "tool", "content": permissionPreview(str(r["tool_name"]), obj(r["input"])), "options": []object{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "reject_once", "kind": "reject_once", "label": "Deny"}}}
-		kind := "permission_request"
-		if r["tool_name"] == "AskUserQuestion" {
-			kind = "question"
-			data["questions"] = questions(obj(r["input"]))
-		}
-		s.emit(kind, data, "")
+		s.permissionFrame(m)
 	case "control_cancel_request":
 		id := str(m["request_id"])
 		s.mu.Lock()
@@ -559,7 +535,7 @@ func (s *Session) SetModel(ctx context.Context, model string) error {
 	}
 	_, err := s.control(ctx, request)
 	if err == nil {
-		s.emit("model_changed", object{"model": model}, "")
+		s.emit("model_changed", object{"modelId": model}, "")
 	}
 	return err
 }
@@ -718,4 +694,32 @@ func (s *Session) Close() error {
 		close(s.done)
 	})
 	return s.closeErr
+}
+
+func (s *Session) permissionFrame(m object) {
+	r := obj(m["request"])
+	id := str(m["request_id"])
+	if r["subtype"] != "can_use_tool" || id == "" {
+		s.emit("protocol_unknown", unknown("control_request/"+str(r["subtype"])).data, "")
+		s.respondAsync(id, object{"subtype": "error", "error": "unsupported control request"})
+		return
+	}
+	s.mu.Lock()
+	_, duplicate := s.permissions[id]
+	if !duplicate {
+		s.permissions[id] = r
+	}
+	s.mu.Unlock()
+	if duplicate {
+		s.emit("protocol_unknown", unknown("duplicate_control_request").data, "")
+		go func() { _ = s.Close() }()
+		return
+	}
+	data := object{"requestId": id, "toolCallId": str(r["tool_use_id"]), "title": str(r["tool_name"]), "kind": "tool", "content": permissionPreview(str(r["tool_name"]), obj(r["input"])), "options": []object{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "reject_once", "kind": "reject_once", "label": "Deny"}}}
+	kind := "permission_request"
+	if r["tool_name"] == "AskUserQuestion" {
+		kind = "question"
+		data["questions"] = questions(obj(r["input"]))
+	}
+	s.emit(kind, data, "")
 }

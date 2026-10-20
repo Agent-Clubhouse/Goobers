@@ -134,103 +134,9 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 		acknowledge(*pending, delivered, nil)
 		pendingAck = true
 	}
-	steering := req.Steering
-	commands := req.Controls
-	ticker := time.NewTicker(min(100*time.Millisecond, controls.timeout))
-	defer ticker.Stop()
-	queued := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return out, nil, ctx.Err()
-		case now := <-ticker.C:
-			if err := controls.expire(runCtx, now); err != nil {
-				return out, nil, err
-			}
-		case command, ok := <-commands:
-			if !ok {
-				commands = nil
-				continue
-			}
-			controls.dispatch(runCtx, command)
-		case steer, ok := <-steering:
-			if !ok {
-				steering = nil
-				continue
-			}
-			requested := chat.Delivery(steer.Delivery)
-			if requested == "" {
-				requested = chat.Steer
-			}
-			if requested == chat.Queued && s.Capabilities().Queue == "none" {
-				acknowledge(steer, "", chat.ErrUnsupported)
-				continue
-			}
-			if steer.SteeringMode == "interrupt-and-continue" || requested == chat.Steer && !s.Capabilities().Steer {
-				closeErr := s.Close()
-				if closeErr != nil {
-					acknowledge(steer, "", closeErr)
-					return out, nil, closeErr
-				}
-				return out, &steer, nil
-			}
-			delivery, sendErr := s.Send(runCtx, chat.Text(steer.Text), chat.SendOptions{Delivery: requested, CommandID: steer.CommandID})
-			if sendErr == nil && delivery == chat.Queued {
-				queued++
-			}
-			acknowledge(steer, delivery, sendErr)
-			if sendErr != nil && errors.Is(sendErr, chat.ErrClosed) {
-				return out, nil, sendErr
-			}
-		case event, ok := <-s.Events():
-			if !ok {
-				return out, nil, fmt.Errorf("chat session ended before turn completion")
-			}
-			if err := project(event); err != nil {
-				return out, nil, err
-			}
-			switch event.Type {
-			case "completion.accepted":
-				if payload, ok := event.Data["payload"].(json.RawMessage); ok {
-					out.Payload = append([]byte(nil), payload...)
-				}
-			case "error":
-				if fatal, _ := event.Data["fatal"].(bool); fatal {
-					return out, nil, fmt.Errorf("chat driver reported execution failure")
-				}
-			case "turn_ended":
-				if settled, known := event.Data["settled"].(bool); known {
-					if !settled {
-						continue
-					}
-					queued = 0
-				} else if queued > 0 {
-					queued--
-					continue
-				}
-				if event.Data["reason"] != "end_turn" {
-					return out, nil, fmt.Errorf("chat turn did not complete")
-				}
-				if err := s.Close(); err != nil {
-					return out, nil, err
-				}
-				if len(out.Payload) == 0 {
-					payload, readErr := readChatCompletion(request.Workspace, request.CompletionPath)
-					if readErr != nil {
-						return out, nil, readErr
-					}
-					out.Payload = payload
-				}
-				if request.ValidateCompletion != nil {
-					if err := request.ValidateCompletion(out.Payload); err != nil {
-						return out, nil, err
-					}
-				}
-				return out, nil, nil
-			}
-		}
-	}
+	return driveChatEvents(ctx, runCtx, req, request, s, controls, project)
 }
+
 func readChatCompletion(workspace, path string) ([]byte, error) {
 	root, err := os.OpenRoot(workspace)
 	if err != nil {
@@ -250,4 +156,124 @@ func readChatCompletion(workspace, path string) ([]byte, error) {
 		return nil, fmt.Errorf("chat completion exceeds limit")
 	}
 	return data, nil
+}
+
+func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionRequest, request harness.RunRequest, s chat.Session, controls *driverControls, project func(chat.Event) error) (harness.Outcome, *interactive.Steering, error) {
+	steering := req.Steering
+	commands := req.Controls
+	ticker := time.NewTicker(min(100*time.Millisecond, controls.timeout))
+	defer ticker.Stop()
+	completion := chatCompletion{}
+	for {
+		select {
+		case <-ctx.Done():
+			return completion.out, nil, ctx.Err()
+		case now := <-ticker.C:
+			if err := controls.expire(runCtx, now); err != nil {
+				return completion.out, nil, err
+			}
+		case command, ok := <-commands:
+			if !ok {
+				commands = nil
+				continue
+			}
+			controls.dispatch(runCtx, command)
+		case steer, ok := <-steering:
+			if !ok {
+				steering = nil
+				continue
+			}
+			restart, queued, err := deliverSteering(runCtx, s, steer)
+			if queued {
+				completion.queued++
+			}
+			if err != nil || restart != nil {
+				return completion.out, restart, err
+			}
+		case event, ok := <-s.Events():
+			if !ok {
+				return completion.out, nil, fmt.Errorf("chat session ended before turn completion")
+			}
+			if err := project(event); err != nil {
+				return completion.out, nil, err
+			}
+			settled, err := completion.observe(event, request, s)
+			if err != nil || settled {
+				return completion.out, nil, err
+			}
+		}
+	}
+}
+
+func deliverSteering(ctx context.Context, s chat.Session, steer interactive.Steering) (*interactive.Steering, bool, error) {
+	requested := chat.Delivery(steer.Delivery)
+	if requested == "" {
+		requested = chat.Steer
+	}
+	if requested == chat.Queued && s.Capabilities().Queue == "none" {
+		acknowledge(steer, "", chat.ErrUnsupported)
+		return nil, false, nil
+	}
+	if steer.SteeringMode == "interrupt-and-continue" || requested == chat.Steer && !s.Capabilities().Steer {
+		if err := s.Close(); err != nil {
+			acknowledge(steer, "", err)
+			return nil, false, err
+		}
+		return &steer, false, nil
+	}
+	delivery, err := s.Send(ctx, chat.Text(steer.Text), chat.SendOptions{Delivery: requested, CommandID: steer.CommandID})
+	acknowledge(steer, delivery, err)
+	if errors.Is(err, chat.ErrClosed) {
+		return nil, false, err
+	}
+	return nil, err == nil && delivery == chat.Queued, nil
+}
+
+type chatCompletion struct {
+	out    harness.Outcome
+	queued int
+}
+
+func (c *chatCompletion) observe(event chat.Event, request harness.RunRequest, session chat.Session) (bool, error) {
+	switch event.Type {
+	case "completion.accepted":
+		if payload, ok := event.Data["payload"].(json.RawMessage); ok {
+			c.out.Payload = append([]byte(nil), payload...)
+		}
+	case "error":
+		if fatal, _ := event.Data["fatal"].(bool); fatal {
+			return false, fmt.Errorf("chat driver reported execution failure")
+		}
+	case "turn_ended":
+		if settled, known := event.Data["settled"].(bool); known {
+			if !settled {
+				return false, nil
+			}
+			c.queued = 0
+		} else if c.queued > 0 {
+			c.queued--
+			return false, nil
+		}
+		if event.Data["reason"] != "end_turn" {
+			return false, fmt.Errorf("chat turn did not complete")
+		}
+		return true, c.finish(request, session)
+	}
+	return false, nil
+}
+func (c *chatCompletion) finish(request harness.RunRequest, session chat.Session) error {
+	if err := session.Close(); err != nil {
+		return err
+	}
+	if len(c.out.Payload) == 0 {
+		payload, err := readChatCompletion(request.Workspace, request.CompletionPath)
+		if err != nil {
+			return err
+		}
+		c.out.Payload = payload
+	}
+	if request.ValidateCompletion != nil {
+		return request.ValidateCompletion(c.out.Payload)
+	}
+	return nil
 }
