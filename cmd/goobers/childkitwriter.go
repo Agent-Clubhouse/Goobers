@@ -150,6 +150,20 @@ func verifyChildKitIdentity(id journal.RunIdentity, attempt dispatcher.Attempt) 
 }
 
 func narrowChildKit(kit *agentickit.Kit, ceiling credentials.ChildCeiling) error {
+	// Generated children cannot receive Copilot's model token: its GitHub
+	// scopes may include publication authority that labels cannot attenuate.
+	for _, spec := range kit.Goobers {
+		if spec.Harness == "" || spec.Harness == apiv1.HarnessCopilot {
+			return errors.New("child kit requires separable model authentication without BYO MCP")
+		}
+	}
+	return narrowAgenticKitCredentials(kit, ceiling)
+}
+
+// narrowAgenticKitCredentials retains only grants already present in the
+// captured stage kit. A parent may retain its own Copilot model credential;
+// this does not attenuate that token's GitHub scopes or delegate it to a child.
+func narrowAgenticKitCredentials(kit *agentickit.Kit, ceiling credentials.ChildCeiling) error {
 	if err := ceiling.Validate(); err != nil {
 		return err
 	}
@@ -157,7 +171,7 @@ func narrowChildKit(kit *agentickit.Kit, ceiling credentials.ChildCeiling) error
 		return errors.New("isolated child publication is not supported")
 	}
 	for _, spec := range kit.Goobers {
-		if spec.Harness == "" || spec.Harness == apiv1.HarnessCopilot || len(spec.MCPServers) != 0 {
+		if len(spec.MCPServers) != 0 {
 			return errors.New("child kit requires separable model authentication without BYO MCP")
 		}
 	}
