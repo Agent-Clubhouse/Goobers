@@ -30,6 +30,17 @@ describe("approval dock", () => {
     finish(false);
     await waitFor(() => expect(screen.getByRole("button", {name: "Reject"})).toBeEnabled());
   });
+  it("unlocks repeated rejections even when replay batches identical failure messages", async () => {
+    const onAnswer = vi.fn().mockResolvedValue(true);
+    const view = render(<PermissionCard request={permission} disabled={false} onAnswer={onAnswer} />);
+    for (const responseSequence of [2, 4]) {
+      fireEvent.click(screen.getByRole("button", {name: "Reject"}));
+      await screen.findByText(/Response accepted/);
+      view.rerender(<PermissionCard request={{...permission, failure: "Driver unavailable", responseSequence}} disabled={false} onAnswer={onAnswer} />);
+      await waitFor(() => expect(screen.getByRole("button", {name: "Reject"})).toBeEnabled());
+    }
+    expect(onAnswer).toHaveBeenCalledTimes(2);
+  });
   it("sends all selected answers, with explicit written answers taking precedence", async () => {
     const onAnswer = vi.fn().mockResolvedValue(true);
     render(<QuestionCard request={question} disabled={false} onAnswer={onAnswer} />);

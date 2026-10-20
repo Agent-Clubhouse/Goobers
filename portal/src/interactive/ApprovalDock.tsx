@@ -4,7 +4,7 @@ import { Action } from "../ui/Action";
 // Composer-docked approvals and numbered provider options follow Clubhouse's
 // ApprovalDock.tsx at 3309665c (MIT; see CLUBHOUSE-LICENSE.txt).
 export interface PermissionOption { optionId: "allow_once" | "reject_once"; label: string }
-export interface RequestBase { requestId: string; turnId: string; sequence: number; failure?: string; pending?: boolean }
+interface RequestBase { requestId: string; turnId: string; sequence: number; failure?: string; pending?: boolean; responseSequence?: number }
 export interface PermissionRequest extends RequestBase {
   kind: "permission"; title: string; description?: string; preview: string[]; options: PermissionOption[];
 }
@@ -26,7 +26,7 @@ interface CardProps { disabled: boolean; denyMessage?: boolean; onAnswer: (answe
 export function PermissionCard({request, disabled, denyMessage, onAnswer}: CardProps & {request: PermissionRequest}) {
   const [status, setStatus] = useState<"idle" | "sending" | "accepted">("idle");
   const sent = status !== "idle";
-  useEffect(() => { if (request.failure) setStatus("idle"); }, [request.failure]);
+  useEffect(() => { if (request.failure) setStatus("idle"); }, [request.failure, request.responseSequence]);
   const [feedback, setFeedback] = useState("");
   const reviewable = request.preview.some(text => text.trim());
   async function choose(option: PermissionOption) {
@@ -60,7 +60,7 @@ export function QuestionCard({request, disabled, onAnswer}: CardProps & {request
   const [free, setFree] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<"idle" | "sending" | "accepted">("idle");
   const sent = status !== "idle";
-  useEffect(() => { if (request.failure) setStatus("idle"); }, [request.failure]);
+  useEffect(() => { if (request.failure) setStatus("idle"); }, [request.failure, request.responseSequence]);
   function choose(question: Question, id: string) {
     if (disabled || request.pending || sent) return;
     setFree(current => ({...current, [question.id]: ""}));

@@ -104,6 +104,7 @@ const testOnlyExports = {
     "loadRunDetail",
     "isVerdictArtifact",
   ],
+  "src/interactive/ApprovalDock.tsx": ["PermissionCard", "QuestionCard"],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
   "src/theme.ts": ["themeStorageKey", "persistTheme"],

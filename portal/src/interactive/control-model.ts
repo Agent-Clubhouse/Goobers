@@ -49,6 +49,7 @@ export function pendingApprovals(events: InteractiveEvent[], activeTurnId?: stri
       pending.set(id, {kind: "question", requestId: id, turnId: activeTurnId, sequence: event.sequence, questions});
     } else if (pending.has(id) && event.type.startsWith("command.")) {
       const request = pending.get(id)!;
+      request.responseSequence = event.sequence;
       request.pending = event.type !== "command.rejected";
       request.failure = event.type === "command.rejected" ? text(data.reason) || "The driver rejected the response. Review the request and try again." : undefined;
     }
