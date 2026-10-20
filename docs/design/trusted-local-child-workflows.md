@@ -65,12 +65,21 @@ agent-supplied envelope field.
 Use explicit child environments and private CLI configuration/home directories.
 Delegate the parent stage's permitted authentication mode: a parent using an
 ambient harness login may delegate that same selected harness login; a parent
-using an explicit model key may delegate only its scoped key and must never
-fall back to stored login. The instance and Goober policy remain authoritative;
+using an explicit model key may delegate only the parent's exact selected
+grant/reference and must never fall back to stored login or resolve another
+stored secret. The host retains this binding for the stage occurrence and
+checks every selected child profile before constructing its runtime. The instance and Goober policy remain authoritative;
 refuse ambient authentication only where the parent itself would be refused.
 Do not inherit unrelated provider tokens, other stored CLI logins, Git credential
 helpers or unselected MCP credentials. Preserve restrictions such as Codex
 keyring-only authentication when delegating the selected login.
+
+A future extension may use the experimental orchestrator design's DSL-declared
+`allowedAgentProfiles` ceiling to authorize a different harness/model. Both that
+profile and its credential reference must be explicitly declared in the parent's
+DSL ceiling and granted by the instance. V1 does not implement that extension;
+selecting an otherwise allowed Goober is not authority to resolve another secret.
+The retained authentication binding is the extension point.
 
 Config discovery, launcher handshakes and authentication preflight are launches
 too: use the invocation's delegated authentication scope or consume configuration
