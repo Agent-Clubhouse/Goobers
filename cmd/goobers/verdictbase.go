@@ -42,7 +42,7 @@ func newVerdictBaseReconciler(root string, repo providers.RepositoryRef, reader 
 // A previously queued withdrawal therefore observes, and preserves, a fresh
 // pass published for the current base. Only a readable standing pass is changed.
 func (r *verdictBaseReconciler) reconcile(ctx context.Context, number int, stderr io.Writer) error {
-	return withVerdictCustody(ctx, r.root, r.repo, func(ctx context.Context) error {
+	return withVerdictPublicationCustody(ctx, r.root, r.repo, func(ctx context.Context) error {
 		pull := strconv.Itoa(number)
 		live, err := r.reader.GetPullRequest(ctx, r.repo, pull)
 		if err != nil {
