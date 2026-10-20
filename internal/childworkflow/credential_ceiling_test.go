@@ -33,6 +33,10 @@ func TestProposalRefusesRemoteInseparableCopilotModelAuthentication(t *testing.T
 	source = strings.Replace(source, "      run:\n        command: [\"true\"]\n", "", 1)
 	requireCode(t, validator(t, input), source, "credential_isolation")
 	input.Config.Engine = nil
+	t.Run("local without parent preview opt-in", func(t *testing.T) {
+		requireCode(t, validator(t, input), source, "credential_isolation")
+	})
+	input.AllowPreviewFeatures = true
 	if _, err := validator(t, input).Validate([]byte(source)); err != nil {
 		t.Fatalf("trusted-local same-login candidate refused before exact binding admission: %v", err)
 	}

@@ -248,6 +248,8 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 	var floor []transcriptEvent
 	aggregate := claudeUsageAccumulator{}
 	models := make(map[string]*claudeUsageAccumulator)
+	previousModels := make(map[string]*claudeModelUsage)
+	var previousCost *float64
 	var mcpServersReported bool
 	var mcpServerStatus map[string]string
 	mcpToolUse := newClaudeMCPToolUseTracker()
@@ -312,6 +314,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 					mcpServerStatus[server.Name] = server.Status
 				}
 			}
+			normalizeClaudeResultUsage(&native, &previousCost, previousModels)
 			events, recognized := convertClaudeMessage(native)
 			mcpToolUse.observe(events)
 			if !recognized {
@@ -411,6 +414,46 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 		mcpServerStatus:    mcpServerStatus,
 		mcpToolsUsed:       mcpToolUse.used,
 	}, true
+}
+
+// normalizeClaudeResultUsage converts modelUsage and total_cost_usd session
+// totals, including usage restored by --resume, before canonical event emission
+// and metric accumulation. Top-level usage remains the per-turn fallback.
+func normalizeClaudeResultUsage(native *claudeStreamMessage, previousCost **float64, previousModels map[string]*claudeModelUsage) {
+	if native.Type != "result" {
+		return
+	}
+	native.TotalCostUSD = claudeUsageDelta(native.TotalCostUSD, previousCost)
+	for name, usage := range native.ModelUsage {
+		previous := previousModels[name]
+		if previous == nil {
+			previous = &claudeModelUsage{}
+			previousModels[name] = previous
+		}
+		native.ModelUsage[name] = claudeModelUsage{
+			InputTokens:              claudeUsageDelta(usage.InputTokens, &previous.InputTokens),
+			OutputTokens:             claudeUsageDelta(usage.OutputTokens, &previous.OutputTokens),
+			CacheReadInputTokens:     claudeUsageDelta(usage.CacheReadInputTokens, &previous.CacheReadInputTokens),
+			CacheCreationInputTokens: claudeUsageDelta(usage.CacheCreationInputTokens, &previous.CacheCreationInputTokens),
+			CostUSD:                  claudeUsageDelta(usage.CostUSD, &previous.CostUSD),
+		}
+	}
+}
+
+// claudeUsageDelta preserves omitted fields and counts a decrease as a reset
+// (for example /clear or a resume without saved totals). Startup error envelopes
+// carrying zero therefore contribute no additional usage, never a negative cost.
+func claudeUsageDelta[T int64 | float64](current *T, previous **T) *T {
+	if current == nil {
+		return nil
+	}
+	delta := *current
+	if *previous != nil && *current >= **previous {
+		delta -= **previous
+	}
+	value := *current
+	*previous = &value
+	return &delta
 }
 
 func convertClaudeMessage(native claudeStreamMessage) ([]transcriptEvent, bool) {

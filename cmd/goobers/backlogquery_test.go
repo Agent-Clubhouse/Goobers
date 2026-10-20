@@ -576,8 +576,46 @@ func TestBacklogQueryRetiresOwnAgedOutProviderClaimHolder(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout, "claimed 7") {
 		t.Fatalf("aged-out claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+
 	if !providerReleasePosted(server, 7, "agedoutholder") {
 		t.Fatal("aged-out own provider claim was not released")
+	}
+}
+
+func TestBacklogQueryRecognizesLegacyProviderClaimAfterUpgrade(t *testing.T) {
+	root := initDemo(t)
+	layout := layoutFor(root)
+	canonical, err := layout.ReadIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Repeat("e", 32)
+	if legacy == canonical {
+		legacy = strings.Repeat("d", 32)
+	}
+	if err := os.WriteFile(filepath.Join(root, "instance-id"), []byte(legacy+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.EnsureIdentity(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Legacy stranded item", "goobers:approved")
+	server.addCommentAtAs(7, server.authenticatedLogin,
+		providerClaimBreadcrumbForInstance(t, "legacyholder", legacy),
+		time.Now().Add(-(localscheduler.ClaimHistoryTTL + time.Hour)))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recoveringrun")
+	t.Setenv(executor.InstanceIDEnvVar, canonical)
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("legacy claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !providerReleasePosted(server, 7, "legacyholder") {
+		t.Fatal("legacy provider claim was not recognized as this root's")
 	}
 }
 

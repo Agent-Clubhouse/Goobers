@@ -281,6 +281,10 @@ func TestEngineStarterReservesTheRunBeforeStartingTheWorkflow(t *testing.T) {
 	if identityErr != nil || instanceID == "" || id.InstanceID != instanceID {
 		t.Errorf("reservation identity %q differs from durable root %q (%v)", id.InstanceID, instanceID, identityErr)
 	}
+	rootID, rootIdentityErr := instance.ReadRootIdentity(fixture.layout.Root)
+	if rootIdentityErr != nil || id.InstanceID != rootID {
+		t.Errorf("run.yaml identity %q differs from root identity %q (%v)", id.InstanceID, rootID, rootIdentityErr)
+	}
 	if id.GooberDigest != "sha256:deadbeef" {
 		t.Errorf("reserved run identity GooberDigest = %q, want the scheduler's pinned digest", id.GooberDigest)
 	}
