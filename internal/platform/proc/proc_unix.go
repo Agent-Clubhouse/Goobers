@@ -123,10 +123,20 @@ func alive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	if err := process.Signal(syscall.Signal(0)); err != nil && !errors.Is(err, syscall.EPERM) {
+	return probeProcessAlive(func() error { return process.Signal(syscall.Signal(0)) }, func() bool { return zombie(pid) })
+}
+
+func probeProcessAlive(signalZero func() error, isZombie func() bool) bool {
+	if err := signalZero(); err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
-	return !zombie(pid)
+	if isZombie() {
+		return false
+	}
+	// A zombie may have been reaped between the first signal probe and
+	// reading its state. Confirm that an unreadable state is still alive.
+	err := signalZero()
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func killWorkspaceProcesses(string) error {
