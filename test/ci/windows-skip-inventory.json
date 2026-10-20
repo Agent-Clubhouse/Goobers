@@ -187,6 +187,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/chat",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Experimental chat driver contract and fixture tests run in Linux unit shards. Windows coverage remains build/vet only; native process quiescence is not Windows-qualified."
+    },
+    {
       "package": "internal/claimability",
       "coverage": "none",
       "category": "not-selected",
