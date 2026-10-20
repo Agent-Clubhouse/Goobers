@@ -6,15 +6,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -238,6 +242,98 @@ func TestADOTerminalLabelFactoryPreservesBearerScheme(t *testing.T) {
 	for _, got := range fixture.headers {
 		if got != "Bearer entra-token" {
 			t.Fatal("Entra credential was not sent as Bearer")
+		}
+	}
+}
+
+// The terminal finalizer and restarted daemon must compose through the durable
+// outbox, resolving credentials again instead of retaining the failed client.
+func TestADOTerminalAbortLabelReplaysAfterRestartWithRotatedCredentials(t *testing.T) {
+	l := layoutFor(initDemo(t))
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Repos = adoTerminalConfig(instance.ADOAuthPAT).Repos
+	if err := instance.WriteConfig(l.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TERMINAL_ADO_PAT", "initial-label-pat")
+	repo := terminalRepositoryRefForProject(cfg, apiv1.RepoRef{})
+	fixture := &adoTerminalLabelsFixture{reject: true}
+	server := fixture.server(t, repo)
+	pointTerminalADOLabelerAt(t, server.URL)
+	label, err := buildTerminalRunAbortLabeler(cfg, apiv1.RepoRef{}, journal.NewRegistryScrubber(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-ado-label-restart"
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{RunID: runID, Workflow: "implementation", Gaggle: l.Gaggle()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+	if err := jr.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "ado", Kind: "pr", ID: "42"}, Runner: map[string]any{"operation": prOpenOperation}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	q := newTerminalReportQueue(l)
+	q.Now = func() time.Time { return now }
+	if err := labelAbortedRunPR(l.RunsDir(), runID, journal.PhaseAborted, jr, repo, label, q); err == nil {
+		t.Fatal("expected native ADO delivery failure")
+	}
+	events := runAbortLabelEvents(t, l.RunsDir(), runID)
+	if len(events) != 1 || events[0].Error == nil || events[0].Error.Code != "run_abort_label_failed" {
+		t.Fatalf("failed ref.touched missing: %+v", events)
+	}
+	pending, err := filepath.Glob(filepath.Join(q.Dir, "*.json"))
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending intents=%v err=%v", pending, err)
+	}
+	data, err := os.ReadFile(pending[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var intent terminalreport.Effect
+	if err := json.Unmarshal(data, &intent); err != nil {
+		t.Fatal(err)
+	}
+	if intent.Kind != terminalreport.AbortLabel || intent.Repository != repo || intent.ItemID != "42" || intent.RunID != runID {
+		t.Fatalf("wrong durable intent: %+v", intent)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.mu.Lock()
+	fixture.reject = false
+	fixture.headers = nil
+	fixture.mu.Unlock()
+	t.Setenv("TERMINAL_ADO_PAT", "rotated-label-pat")
+	now = now.Add(2 * time.Minute)
+	restarted := newTerminalReportQueue(l)
+	restarted.Now = func() time.Time { return now }
+	apply := func(ctx context.Context, effect terminalreport.Effect) error {
+		return replayTerminalReport(ctx, l, journal.NewRegistryScrubber(), nil, effect)
+	}
+	if err := restarted.Reconcile(context.Background(), 8, apply); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = filepath.Glob(filepath.Join(restarted.Dir, "*.json"))
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("delivered intent retained: %v err=%v", pending, err)
+	}
+	if err := restarted.Reconcile(context.Background(), 8, apply); err != nil {
+		t.Fatal(err)
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if fixture.posts != 1 || fixture.label != abortedRunLabel || len(fixture.headers) == 0 {
+		t.Fatalf("posts=%d label=%s requests=%d", fixture.posts, fixture.label, len(fixture.headers))
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:rotated-label-pat"))
+	for _, header := range fixture.headers {
+		if header != want {
+			t.Error("replay did not reload rotated credentials")
 		}
 	}
 }

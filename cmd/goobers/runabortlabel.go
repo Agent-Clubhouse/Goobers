@@ -223,7 +223,7 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate t
 		return err
 	}
 	var labelErr error
-	if len(reports) > 0 && reports[0] != nil && repo.Provider != providers.ProviderADO {
+	if len(reports) > 0 && reports[0] != nil {
 		effect.Gaggle = reports[0].Gaggle
 		labelErr = reports[0].Publish(ctx, effect, apply)
 	} else {

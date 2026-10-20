@@ -7,4 +7,6 @@ delete-by-ID behavior. Credential injection stays at the command composition
 root, which resolves provider:pr:write and the credential source's PAT/Bearer
 scheme for the terminal repository. No new provider API or DSL capability is
 introduced. Tests cover native HTTP routing, selection visibility and scoped
-credential delivery. Durable replay enablement follows the separate #7668 fix.
+credential delivery. With #7668 merged, terminal ADO labels also use its durable outbox. The
+composed regression covers failed native delivery, restart, fresh credential
+resolution and removal of the successfully replayed intent.
