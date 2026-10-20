@@ -73,8 +73,11 @@ That origin hosts:
 - the event or connection endpoint used by enrolled instances.
 
 The fleet URI is a deployment identity, not merely a convenient link. Instances pin
-the fleet identity discovered at this URI and use it as the audience for fleet-issued
-credentials.
+the fleet identity discovered at this URI. Credentials presented to the fleet target
+its audience; request delegations presented to an instance target that instance's
+distinct audience, as specified by the
+[fleet authentication contract](fleet-delegated-authentication.md). Enrollment
+credentials and delegated operation credentials are not interchangeable.
 
 ### 2.2 A gateway, not a second configuration system
 
@@ -220,14 +223,20 @@ fleet API.
 
 ### 5.2 Request envelope
 
+The proposed [fleet authentication contract](fleet-delegated-authentication.md)
+applies the 2026-10-14 decision that Fleet owns human identity and Goobers is a
+trusted admin surface. It specifies protected Fleet-asserted principal/consent
+facts, local action/target limits, replay handling and authorization renewal for
+forwarded HITL writes. These additions are not shipped.
+
 The fleet portal MUST NOT turn a user request into an anonymous trusted backend call.
 Every proxied request carries a signed, short-lived delegation envelope containing at
 least:
 
 - fleet ID and issuer;
 - request ID and issue/expiry times;
-- authenticated user subject;
-- effective fleet and group roles;
+- opaque Fleet-asserted principal reference and effect grant for consent-class actions;
+- Fleet authorization decision and service provenance (not a daemon user directory);
 - target instance ID;
 - allowed operation or capability;
 - HTTP method and normalized target path; and
@@ -235,8 +244,12 @@ least:
 
 The instance validates the envelope, target, expiry, signature, and requested
 capability before executing the request. The instance remains the final authorization
-boundary and MAY apply stricter local policy. This prevents a compromised or
-misconfigured proxy from silently bypassing instance authorization.
+boundary for its action/target ceiling and MAY apply stricter local restrictions.
+It verifies Fleet provenance, not the human behind Fleet's assertion. A compromised
+Fleet signer can impersonate principals within that ceiling; local checks limit
+scope but do not independently prove human consent. Service-only requests never
+satisfy consent-class actions. Record the asserted reference/grant unchanged with
+the exact occurrence and command binding.
 
 Delegation envelopes are single-request or narrowly replay-bounded credentials. They
 are never general bearer tokens that can be reused to access other instances.
@@ -252,11 +265,18 @@ If an instance is offline:
 - queued commands are out of scope until their durability, expiry, cancellation, and
   duplicate-execution semantics are designed.
 
-Instance scheduling and execution continue while the fleet is unavailable. Fleet
-availability must not become a runtime dependency for work already configured at an
-instance.
+Independently authorized instance scheduling and automation continue while Fleet
+is unavailable. New forwarded HITL effects are instead subject to the bounded
+Fleet command-lease proposal; losing renewal pauses new effects without claiming
+that already-submitted provider writes were rolled back.
 
 ## 6. Enrollment and registration
+
+The production Fleet/Agent contract supplied by the project owner on 2026-10-06
+refines the older generic transport proposal below. Its detailed integration
+baseline is [fleet authentication, section 4](fleet-delegated-authentication.md#4-production-fleetagent-integration-baseline).
+Enrollment/runtime currently use delegated Entra identity; headless workload
+identity requires an explicitly supported additional flow.
 
 ### 6.1 Discovery
 
@@ -281,52 +301,42 @@ It does not expose fleet groups, users, instances, run data, or policy.
 
 ### 6.2 Enrollment flow
 
-The initial explicit flow is:
-
-1. A fleet or group administrator creates a single-use, short-lived enrollment grant
-   bound to a fleet group and an allowed initial capability set.
-2. An instance administrator runs a command such as:
-
-   ```text
-   goobers fleet join \
-     --url https://goobers.example.com \
-     --enrollment-token-file <protected-file>
-   ```
-
-3. The instance retrieves discovery metadata and displays the canonical fleet identity,
-   target group, requested data scopes, requested command capabilities, and certificate
-   or key fingerprint.
-4. After explicit confirmation, the instance proves possession of its locally generated
-   key and redeems the enrollment grant.
-5. The fleet returns the assigned instance registration and a renewable,
-   instance-scoped credential.
-6. The instance pins the fleet ID, canonical URI, and signing-key authority, then opens
-   the outbound channel.
-
-Managed environments MAY replace the enrollment grant with workload-identity
-attestation, but the resulting registration has the same scope and audit record.
-
-Enrollment grants are secret, single-use, expire quickly, and never appear in
-`instance.yaml`, command history, logs, or the config repository. The fleet URI and
-non-secret instance registration ID MAY be configuration.
+Enrollment is one-time: discover `/.well-known/goobers-fleet`, authenticate the
+enrolling user with Entra, generate a local P-256 Agent keypair, and prove private
+key possession during registration. Persist registration IDs, Fleet signing public
+key, Agent private key and authentication state in protected durable storage.
+Reconnection reuses registration; tokens/private keys never enter source control,
+logs or model context. Do not replace the supported delegated flow with arbitrary
+service credentials. Workload-identity enrollment/runtime is a separately gated
+future capability (HAW-AUTH-010).
 
 ### 6.3 Connection
 
-The instance maintains an outbound mTLS HTTP/2, WebSocket, or equivalent
-application-layer channel to the fleet. The transport remains an implementation
-decision, but it MUST provide:
+The cloud Agent is outbound-only. Permit TCP 443 to the Fleet HTTPS origin,
+Microsoft Entra endpoints and the Fleet-returned Azure Web PubSub `wss://` URL.
+Expose no inbound Fleet port. The Agent and daemon share a host/pod network
+namespace; allowed requests are forwarded to literal loopback HTTP, by default
+`http://127.0.0.1:8085`. That port must not be publicly published.
 
-- mutual peer authentication;
-- connection and request-level identity;
-- multiplexed live requests and event publication;
-- bounded queues and backpressure;
-- heartbeat and last-seen semantics;
-- credential rotation without re-enrollment;
-- reconnect with bounded exponential backoff; and
-- clean revocation behavior.
+At runtime the Agent obtains an Entra bearer and posts to
+`/api/fleet/v2/agents/{instanceId}/negotiate`. Fleet returns a temporary Web PubSub
+access URL, currently valid for up to one hour. The Agent opens the reliable
+WebSocket, signs Fleet's challenge with its registered P-256 private key and waits
+for `ready` before dispatch. Each request carries a Fleet-signed delegation bound
+to the instance, registration, exact connection, route, request ID, expiry and
+replay protections; verify it before loopback forwarding.
 
-The fleet never instructs an instance to open an arbitrary URL or proxy an arbitrary
-destination. Routing is limited to the registered instance product API.
+Use the Web PubSub reliable protocol for keepalive/reconnect/resume. After handshake,
+post authenticated presence to `/api/fleet/v2/agents/{instanceId}/presence` every
+30 seconds; Fleet expires presence after 90 seconds. If resume yields a different
+transport connection, discard the old session and negotiate/challenge again.
+`401/403/404` ends the session; `409` means superseded and requires re-establishment.
+
+Fleet may fence/revoke the connection and send cancellation frames. Report
+cancellation confirmed only when Agent/daemon evidence says the work stopped;
+socket closure or presence expiry alone is not that evidence. Persist/reconcile
+uncertain operation outcomes across reconnection. The new HITL adapter additionally
+needs protected Agent-to-daemon provenance and local gaggle policy enforcement.
 
 ### 6.4 Leave, move, and revoke
 
@@ -342,8 +352,13 @@ destination. Routing is limited to the registered instance product API.
 
 ### 7.1 Human authentication
 
-The fleet portal owns human OIDC integration. Instances do not need separate browser
-client registrations or public login redirects.
+Fleet owns human identity, enterprise sign-in, sessions, membership and per-user
+gaggle permissions. The Goobers dashboard/API behind Fleet does not authenticate
+humans, run another OIDC/MSAL flow, keep a user directory or require a second Entra
+login application. Existing standalone trusted local/admin operations are unchanged;
+optional standalone browser login is a separate later track, not a HITL prerequisite.
+Fleet service-connection authentication and protected asserted facts are distinct
+from human authentication by Goobers.
 
 Recommended issuer postures are:
 
@@ -393,8 +408,19 @@ For each request, the fleet portal:
 5. creates a narrowly scoped delegation envelope; and
 6. routes the request to the target instance.
 
-The instance independently validates the delegation and applies local restrictions.
-A deny at either layer denies the request.
+The Agent/local adapter validates Fleet service provenance and request integrity;
+the instance enforces local action/target restrictions. Goobers does not repeat
+Fleet's human token or directory checks. A deny at either boundary denies the
+forwarded request, without falling back to trusted-local actor stamping.
+
+For the proposed HITL write surface, fleet policy resolves per-user gaggle access
+inside those fleet/group/instance bounds. The instance retains a per-gaggle action
+and target ceiling and explicitly selected server-owned provider bindings. It
+retains Fleet's opaque principal and consent grant as asserted facts; service-only
+actions cannot satisfy human approval. The provider executing identity and the
+initiating principal remain separate audit fields. A per-user provider OBO profile
+is a later opt-in alternative, not a login requirement or automatic fallback. See
+the [detailed comparison](fleet-delegated-authentication.md#12-provider-execution-profiles-server-owned-credentials-versus-per-user-obo).
 
 ## 8. Data boundaries
 
