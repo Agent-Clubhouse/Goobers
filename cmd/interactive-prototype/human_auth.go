@@ -206,6 +206,10 @@ fetch("/auth/exchange", {method:"POST", credentials:"same-origin", headers:{"Con
 // beneath /api/. The human secret never becomes model/tool authority.
 func authenticatedPrototypeHandler(next http.Handler, address, port string, human *humanAuth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Same-site loopback previews must not frame the authenticated portal:
+		// its own scripts would otherwise retain the human's origin credential.
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
