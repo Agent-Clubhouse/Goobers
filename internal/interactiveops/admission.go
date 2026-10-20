@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/lock"
 )
 
+// ErrCapacity reports exhausted or unavailable helper worker capacity.
 var ErrCapacity = errors.New("helper execution capacity unavailable")
 
 // reserveWorker serializes admission across host processes sharing Root. OS
@@ -20,7 +21,8 @@ func (s *Service) reserveWorker(scope Scope, dir string) (*lock.Handle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: admission is busy", ErrCapacity)
 	}
-	defer admission.Release()
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = admission.Release() }()
 	entries, err := os.ReadDir(s.opts.Root)
 	if err != nil {
 		return nil, err

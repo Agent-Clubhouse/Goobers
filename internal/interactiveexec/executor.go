@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 )
 
+// Config configures trusted sources, adapters, and workspace boundaries.
 type Config struct {
 	StateDir, SourceDir, Mode string
 	Model, SelfBinary         string
@@ -41,6 +42,7 @@ type Config struct {
 	ResolveAuthority func(context.Context, interactive.ExecutionRequest, auth.Provider) (auth.ConnectionRef, error)
 }
 
+// Executor runs isolated interactive work with explicit writer custody.
 type Executor struct {
 	config       Config
 	chatRegistry func(string, harness.RunRequest) *chat.Registry
@@ -74,6 +76,7 @@ func (e *Executor) hasBaseline(workspace string) bool {
 	return err == nil && regexp.MustCompile(`^[0-9a-f]{40}$`).Match(base)
 }
 
+// New constructs the interactive executor from trusted host configuration.
 func New(config Config) (*Executor, error) {
 	if config.Mode != "local-tools" && config.Mode != "codex-local" {
 		return nil, fmt.Errorf("executor must be local-tools or codex-local")
@@ -131,6 +134,7 @@ func (e *Executor) Recover(_ context.Context, req interactive.ExecutionRequest) 
 	return nil
 }
 
+// Stop fences the session’s provider authority.
 func (e *Executor) Stop(ctx context.Context, owner, sessionID string) error {
 	if owner != e.config.Principal.Identity().Subject {
 		return fmt.Errorf("session owner does not match local identity")
@@ -149,6 +153,7 @@ func (e *Executor) Stop(ctx context.Context, owner, sessionID string) error {
 	return nil
 }
 
+// Execute runs the selected adapter and waits for owned writers to stop.
 func (e *Executor) Execute(ctx context.Context, req interactive.ExecutionRequest, emit func(interactive.ExecutionEvent) error) (result interactive.ExecutionResult, runErr error) {
 	if req.Owner != e.config.Principal.Identity().Subject {
 		return result, fmt.Errorf("executor identity mismatch")
@@ -355,7 +360,8 @@ func copySourceContext(ctx context.Context, source, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer sourceRoot.Close()
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = sourceRoot.Close() }()
 	count := 0
 	var total int64
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {

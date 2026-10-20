@@ -18,11 +18,13 @@ import (
 	"github.com/goobers/goobers/internal/platform/lock"
 )
 
+// Service stores reviewed helper proposals and observed execution receipts.
 type Service struct {
 	opts   Options
 	policy *Policy
 }
 
+// New constructs a scoped helper operations service.
 func New(opts Options) (*Service, error) {
 	if (opts.ConfigDir != "" || opts.ConfigDirForScope != nil) && opts.PolicyForScope == nil {
 		return nil, errors.New("native configuration requires an explicit per-session policy")
@@ -138,7 +140,8 @@ func atomicWrite(path string, b []byte) error {
 		return err
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.Remove(name) }()
 	if err = f.Chmod(0600); err == nil {
 		_, err = f.Write(b)
 	}
@@ -219,7 +222,8 @@ func configDigest(dir string) (string, error) {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(hash, "%s\x00%d\x00", rel, len(b))
+		// Hash writes cannot fail.
+		_, _ = fmt.Fprintf(hash, "%s\x00%d\x00", rel, len(b))
 		_, err = hash.Write(b)
 		return err
 	})
@@ -228,6 +232,8 @@ func configDigest(dir string) (string, error) {
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
+
+// Snapshot returns configuration, proposals, and observed runs for a scope.
 func (s *Service) Snapshot(ctx context.Context, scope Scope) (State, error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
@@ -275,6 +281,8 @@ func (s *Service) Snapshot(ctx context.Context, scope Scope) (State, error) {
 	}
 	return State{Mode: mode, Policy: policy, Goobers: set.Goobers, ActorID: scope.ActorID, SessionID: scope.SessionID, InstanceRoot: root, Repository: repo, ConfigDigest: dg, Gaggles: set.Gaggles, Workflows: set.Workflows, Runs: runs, Actions: actions, Backlog: readBacklog(repo), WorkflowDraft: draft, CommandCapabilities: append([]CommandCapability{}, policy.CommandCapabilities...), Capabilities: []string{"read configured gaggle/workflow/run state", "propose/apply gaggle and workflow displayName/enabled", "author/add validated bounded local workflows", "submit real Goobers workflow and observe journal", "request stop of an owned run"}, Limitations: []string{"provider configuration is context only; no live ADO/Azure credentials copied", "deterministic workflow steering unsupported; steer the interactive workspace session instead", fmt.Sprintf("native helper limits: %d active globally, %d per owner, one per session; bounded process; no cloud-scale claim", s.opts.MaxActive, s.opts.MaxActivePerOwner), "configuration applies only to this isolated session fixture"}}, nil
 }
+
+// Propose validates and persists an immutable action for human review.
 func (s *Service) Propose(ctx context.Context, scope Scope, req Request) (Action, error) {
 	if err := ctx.Err(); err != nil {
 		return Action{}, err
@@ -327,7 +335,8 @@ func (s *Service) Propose(ctx context.Context, scope Scope, req Request) (Action
 		if err != nil {
 			return Action{}, err
 		}
-		defer os.RemoveAll(candidate)
+		// Best-effort cleanup; the operation result is reported separately.
+		defer func() { _ = os.RemoveAll(candidate) }()
 		a.ExpectedConfigDigest, err = configDigest(candidate)
 		if err != nil {
 			return Action{}, err
@@ -335,6 +344,8 @@ func (s *Service) Propose(ctx context.Context, scope Scope, req Request) (Action
 	}
 	return a, saveAction(dir, &a)
 }
+
+// Get returns an action belonging to the requested scope.
 func (s *Service) Get(ctx context.Context, scope Scope, id string) (Action, error) {
 	if err := ctx.Err(); err != nil {
 		return Action{}, err
@@ -355,6 +366,8 @@ func (s *Service) Get(ctx context.Context, scope Scope, id string) (Action, erro
 	s.reconcile(dir, &a, runs)
 	return a, nil
 }
+
+// Apply applies or replays the exact reviewed action.
 func (s *Service) Apply(ctx context.Context, scope Scope, id string) (Action, error) {
 	if err := ctx.Err(); err != nil {
 		return Action{}, err

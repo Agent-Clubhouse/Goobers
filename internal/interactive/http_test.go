@@ -37,7 +37,9 @@ func TestHTTPAuthorizationReplayAndValidation(t *testing.T) {
 	}
 	replay := apiRequest(s, "POST", apiPrefix+"/sessions", "alice", req)
 	var same Session
-	json.Unmarshal(replay.Body.Bytes(), &same)
+	if err := json.Unmarshal(replay.Body.Bytes(), &same); err != nil {
+		t.Fatal(err)
+	}
 	if same.ID != session.ID {
 		t.Fatal("create replay duplicated session")
 	}

@@ -13,6 +13,7 @@ import (
 
 	sdk "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
+
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/chat/chattest"
 	"github.com/goobers/goobers/internal/invoke"
@@ -92,7 +93,7 @@ func TestNativeDeliveryAndCancelIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	for _, want := range []chat.Delivery{chat.Prompt, chat.Steer, chat.Queued} {
 		got, err := s.Send(context.Background(), chat.Text("hello"), chat.SendOptions{Delivery: want, CommandID: "command"})
 		if got != want || err != nil {
@@ -168,7 +169,7 @@ func TestResumeMissingAndStalled(t *testing.T) {
 			if s.(chat.ResumeInfo).ResumeFallback() != want {
 				t.Fatal("wrong fallback")
 			}
-			s.Close()
+			_ = s.Close()
 		})
 	}
 }
@@ -219,13 +220,13 @@ func TestPermissionPolicyAndClose(t *testing.T) {
 	if _, ok := (<-done).(*rpc.PermissionDecisionApproveOnce); ok {
 		t.Fatal("stale approval widened plan level")
 	}
-	s.SetLevel(context.Background(), chat.Ask)
+	_, _ = s.SetLevel(context.Background(), chat.Ask)
 	go func() {
 		decision, _ := s.permission(&rpc.PermissionRequestWrite{}, sdk.PermissionInvocation{})
 		done <- decision
 	}()
 	next(t, s, "permission_request")
-	s.Close()
+	_ = s.Close()
 	select {
 	case decision := <-done:
 		if _, ok := decision.(*rpc.PermissionDecisionApproveOnce); ok {
@@ -246,9 +247,9 @@ func TestOuterPolicyCannotBeOverridden(t *testing.T) {
 		return b, nil
 	}
 	s0, _ := d.Start(context.Background(), options())
-	defer s0.Close()
+	defer func() { _ = s0.Close() }()
 	s := s0.(*session)
-	s.SetLevel(context.Background(), chat.FullAccess)
+	_, _ = s.SetLevel(context.Background(), chat.FullAccess)
 	decision, _ := s.permission(&rpc.PermissionRequestWrite{}, sdk.PermissionInvocation{})
 	if _, ok := decision.(*rpc.PermissionDecisionApproveOnce); ok {
 		t.Fatal("outer denial bypassed")
@@ -259,14 +260,14 @@ func TestFixtureTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	fixture, err := chattest.ReadFixture(file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := &fakeNative{}
 	s, _ := testDriver(f).Start(context.Background(), options())
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	err = fixture.Replay(func() (map[string]any, error) { return nil, errors.New("unexpected client record") }, func(e chattest.Entry) error {
 		data, _ := json.Marshal(e.Msg)
 		var native sdk.SessionEvent
@@ -279,7 +280,7 @@ func TestFixtureTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	_ = s.Close()
 	types := map[string]int{}
 	for e := range s.Events() {
 		types[e.Type]++
@@ -298,14 +299,14 @@ func TestRecordedTwoTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	fixture, err := chattest.ReadFixture(file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := &fakeNative{}
 	s, _ := testDriver(f).Start(context.Background(), options())
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	err = fixture.Replay(func() (map[string]any, error) { return nil, errors.New("unexpected client message") }, func(e chattest.Entry) error {
 		data, _ := json.Marshal(e.Msg)
 		var native sdk.SessionEvent
@@ -318,7 +319,7 @@ func TestRecordedTwoTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	_ = s.Close()
 	turns, usage := 0, 0
 	for e := range s.Events() {
 		if e.Type == "turn_ended" {

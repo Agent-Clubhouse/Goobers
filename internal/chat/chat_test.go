@@ -2,10 +2,14 @@ package chat_test
 
 import (
 	"context"
-	"github.com/goobers/goobers/internal/chat"
-	"github.com/goobers/goobers/internal/chat/chattest"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/invoke"
+
+	"github.com/goobers/goobers/internal/chat"
+	"github.com/goobers/goobers/internal/chat/chattest"
 )
 
 func TestFakeConformance(t *testing.T) {
@@ -27,7 +31,7 @@ func TestRegistryFallback(t *testing.T) {
 	if err != nil || len(attempts) != 1 {
 		t.Fatal(err, attempts)
 	}
-	s.Close()
+	_ = s.Close()
 	if _, _, err := r.Start(context.Background(), "unknown", chat.StartOptions{}); err == nil {
 		t.Fatal("cross-provider fallback")
 	}
@@ -93,5 +97,21 @@ func TestFixtureRequestIDNamespacesAndNullMatch(t *testing.T) {
 	}, func(chattest.Entry) error { return nil })
 	if err == nil {
 		t.Fatal("missing field matched explicit null")
+	}
+}
+
+type custodyProbeDriver struct{ chattest.FakeDriver }
+
+func (custodyProbeDriver) ID() string { return "unsafe-probe" }
+func (custodyProbeDriver) Probe(context.Context) (chat.Probe, error) {
+	return chat.Probe{}, invoke.ErrWorkspaceNotQuiescent
+}
+func TestRegistryNeverFallsBackPastProbeCustody(t *testing.T) {
+	r := chat.NewRegistry()
+	_ = r.Register("copilot", &custodyProbeDriver{})
+	_ = r.Register("copilot", &chattest.FakeDriver{})
+	s, attempts, err := r.Start(context.Background(), "copilot", chat.StartOptions{})
+	if s != nil || !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) || len(attempts) != 1 {
+		t.Fatal(s, attempts, err)
 	}
 }

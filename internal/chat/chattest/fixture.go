@@ -8,6 +8,7 @@ import (
 	"reflect"
 )
 
+// Header describes the version and provenance of a Clubhouse-compatible fixture.
 type Header struct {
 	Kind     string                                        `json:"kind"`
 	Format   string                                        `json:"format"`
@@ -16,6 +17,8 @@ type Header struct {
 	Source   string                                        `json:"source"`
 	CLI      struct{ Name, Version, VersionOutput string } `json:"cli"`
 }
+
+// Entry holds one directional fixture record.
 type Entry struct {
 	Kind   string         `json:"kind"`
 	From   string         `json:"from"`
@@ -28,11 +31,14 @@ type Entry struct {
 		Code int `json:"code"`
 	} `json:"exit"`
 }
+
+// Fixture contains a validated header and ordered wire records.
 type Fixture struct {
 	Header  Header
 	Entries []Entry
 }
 
+// ReadFixture parses bounded JSONL records and validates their format.
 func ReadFixture(r io.Reader) (Fixture, error) {
 	var f Fixture
 	s := bufio.NewScanner(r)

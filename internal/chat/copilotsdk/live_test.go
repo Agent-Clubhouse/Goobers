@@ -3,12 +3,13 @@ package copilotsdk
 import (
 	"context"
 	"encoding/json"
-	sdk "github.com/github/copilot-sdk/go"
-	"github.com/github/copilot-sdk/go/rpc"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	sdk "github.com/github/copilot-sdk/go"
+	"github.com/github/copilot-sdk/go/rpc"
 
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/harness"
@@ -28,7 +29,7 @@ func TestLiveCopilotChat(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		encoder := json.NewEncoder(file)
 		_ = encoder.Encode(map[string]any{"kind": "header", "format": "clubhouse-chat-fixture", "version": 1, "protocol": "copilot-sdk", "source": "recorded", "cli": map[string]string{"name": "copilot", "version": "1.0.98"}, "description": "Two live tiny turns; only allowlisted public content and usage retained; message IDs normalized"})
 		original := *d
@@ -80,7 +81,7 @@ func TestLiveCopilotChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	for i := 0; i < 2; i++ {
 		actual, err := s.Send(ctx, chat.Text("Reply with only the word ok."), chat.SendOptions{Delivery: chat.Prompt})
 		if err != nil || actual != chat.Prompt {

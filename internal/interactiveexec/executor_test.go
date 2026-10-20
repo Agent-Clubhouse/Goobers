@@ -84,7 +84,7 @@ func TestNativeUnconfirmedInterruptionNeverAcknowledgesOrRestarts(t *testing.T) 
 func TestLaunchRefusalDoesNotInventUnknownWriter(t *testing.T) {
 	_, proof := invoke.WithWorkspaceQuiescence(context.Background())
 	refusal := errors.New("binary absent")
-	if got := verifyWriters(proof, refusal); got != refusal {
+	if got := verifyWriters(proof, refusal); !errors.Is(got, refusal) {
 		t.Fatalf("launch refusal converted to custody uncertainty: %v", got)
 	}
 	if err := verifyWriters(proof, nil); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {

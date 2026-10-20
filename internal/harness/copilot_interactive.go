@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	copilot "github.com/github/copilot-sdk/go"
+
 	"github.com/goobers/goobers/internal/invoke"
 )
 
@@ -27,6 +28,7 @@ type InteractiveCopilotProcess struct {
 	closeErr       error
 }
 
+// Close joins the owned process tree before reclaiming temporary state.
 func (p *InteractiveCopilotProcess) Close() error {
 	p.once.Do(func() {
 		p.process.close()

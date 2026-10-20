@@ -10,10 +10,13 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// Scope binds helper operations to an actor and session.
 type Scope struct {
 	ActorID   string `json:"actorId"`
 	SessionID string `json:"sessionId"`
 }
+
+// Options configures trusted helper dependencies and admission limits.
 type Options struct {
 	Root              string
 	Binary            string
@@ -31,6 +34,8 @@ type Options struct {
 	// Nil enables both built-in capabilities; an empty slice disables all.
 	CommandCapabilities []CommandCapability
 }
+
+// Request describes a proposed configuration or workflow operation.
 type Request struct {
 	Kind           string  `json:"kind"`
 	IdempotencyKey string  `json:"idempotencyKey"`
@@ -42,6 +47,8 @@ type Request struct {
 	RunID          string  `json:"runId,omitempty"`
 	Message        string  `json:"message,omitempty"`
 }
+
+// Action records a reviewed proposal and its durable execution receipt.
 type Action struct {
 	ID                     string     `json:"id"`
 	OperationID            string     `json:"operationId"`
@@ -72,6 +79,8 @@ type Action struct {
 	CleanupConfirmed       bool       `json:"cleanupConfirmed,omitempty"`
 	StopRequested          bool       `json:"stopRequested,omitempty"`
 }
+
+// Run summarizes an observed native workflow run.
 type Run struct {
 	ID          string    `json:"id"`
 	Workflow    string    `json:"workflow"`
@@ -81,12 +90,16 @@ type Run struct {
 	JournalPath string    `json:"journalPath"`
 	StartedAt   time.Time `json:"startedAt"`
 }
+
+// BacklogItem describes a controlled backlog fixture.
 type BacklogItem struct {
 	ID     int    `json:"id"`
 	Title  string `json:"title"`
 	State  string `json:"state"`
 	Source string `json:"source"`
 }
+
+// State combines the scoped configuration and observed operation history.
 type State struct {
 	ReadOnly            bool                `json:"readOnly,omitempty"`
 	Policy              Policy              `json:"policy"`

@@ -24,6 +24,8 @@ type activeRun struct {
 	request  ExecutionRequest
 	steering chan Steering
 }
+
+// Service coordinates durable sessions, execution leases, and command admission.
 type Service struct {
 	mu         sync.Mutex
 	reloadMu   sync.Mutex
@@ -41,6 +43,7 @@ type Service struct {
 	fatal      error
 }
 
+// Open loads session state and acquires exclusive coordinator ownership.
 func Open(opts Options) (*Service, error) {
 	if opts.StateDir == "" {
 		return nil, errors.New("interactive StateDir is required")
@@ -106,8 +109,7 @@ func Open(opts Options) (*Service, error) {
 		err = nil
 	}
 	if err != nil || s.state.Version != 1 || s.state.Sessions == nil || s.state.Creates == nil {
-		held.Release()
-		return nil, fmt.Errorf("invalid interactive state: %w", err)
+		return nil, errors.Join(fmt.Errorf("invalid interactive state: %w", err), held.Release())
 	}
 	// Recovery never silently relaunches an execution or an external operation.
 	for _, rec := range s.state.Sessions {
@@ -140,13 +142,13 @@ func Open(opts Options) (*Service, error) {
 		}
 	}
 	if err := s.persist(s.state); err != nil {
-		held.Release()
-		return nil, err
+		return nil, errors.Join(err, held.Release())
 	}
 	go s.watchLeases()
 	return s, nil
 }
 
+// Close stops owned executions and releases coordinator resources.
 func (s *Service) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -201,6 +203,8 @@ func (s *Service) record(owner, id string) (*sessionRecord, error) {
 	}
 	return rec, nil
 }
+
+// Session returns the session visible to its owner.
 func (s *Service) Session(owner, id string) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,6 +214,8 @@ func (s *Service) Session(owner, id string) (Session, error) {
 	}
 	return clone(rec.Session), nil
 }
+
+// ListSessions lists sessions belonging to an owner.
 func (s *Service) ListSessions(owner string) []Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -222,6 +228,8 @@ func (s *Service) ListSessions(owner string) []Session {
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt) })
 	return sessions
 }
+
+// Create creates or replays an idempotent session request.
 func (s *Service) Create(owner string, req CreateRequest) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -281,6 +289,7 @@ type commandOrigin struct {
 	digest string
 }
 
+// Command validates and records a session command before dispatching its effects.
 func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Command) (CommandReceipt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

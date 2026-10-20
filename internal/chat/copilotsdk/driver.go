@@ -11,6 +11,7 @@ import (
 	"time"
 
 	sdk "github.com/github/copilot-sdk/go"
+
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/harness"
 )
@@ -31,12 +32,15 @@ type backend struct {
 	servers map[string]sdk.MCPServerConfig
 	policy  sdk.PermissionHandlerFunc
 }
+
+// Driver probes a transport and opens sessions within host authority.
 type Driver struct {
 	Adapter *harness.CopilotAdapter
 	Request harness.RunRequest
 	open    func(context.Context) (*backend, error)
 }
 
+// ID returns the transport identity.
 func (d *Driver) ID() string { return "copilot-sdk" }
 func capabilities() chat.Capabilities {
 	c := chat.MinimalCapabilities()
@@ -77,6 +81,8 @@ func (d *Driver) connect(ctx context.Context) (*backend, error) {
 		return s, nil
 	}}, nil
 }
+
+// Probe checks transport availability without sending a model prompt.
 func (d *Driver) Probe(ctx context.Context) (chat.Probe, error) {
 	b, err := d.connect(ctx)
 	p := chat.Probe{Capabilities: capabilities()}
@@ -106,7 +112,7 @@ func resumeExists(home, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	info, err := root.Stat(filepath.Join("session-state", id))
 	if os.IsNotExist(err) {
 		return false, nil
@@ -116,6 +122,8 @@ func resumeExists(home, id string) (bool, error) {
 	}
 	return info.IsDir(), nil
 }
+
+// Start opens a session within the supplied host authority.
 func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	s := newSession(runCtx, cancel, o)

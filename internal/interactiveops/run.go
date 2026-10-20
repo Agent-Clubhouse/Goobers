@@ -12,12 +12,13 @@ import (
 	"sync"
 	"time"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/sqliteuri"
-	_ "modernc.org/sqlite"
 )
 
 func readRuns(root string) ([]Run, error) {
@@ -70,7 +71,8 @@ func nativeReceipt(dir string, a *Action) (state, runID, reason string) {
 	if err != nil {
 		return "", "", ""
 	}
-	defer db.Close()
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = db.Close() }()
 	_ = db.QueryRow("SELECT state,run_id,reason FROM triggers WHERE key=? AND actor=?", a.OperationID, "standalone-cli").Scan(&state, &runID, &reason)
 	return
 }
@@ -202,7 +204,8 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 }
 func (b *boundedOutput) String() string { b.mu.Lock(); defer b.mu.Unlock(); return string(b.data) }
 func (s *Service) execute(scope Scope, dir, id string, worker *lock.Handle) {
-	defer worker.Release()
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = worker.Release() }()
 	a, err := readAction(dir, id)
 	if err != nil {
 		return

@@ -3,6 +3,7 @@ package copilotsdk
 import (
 	sdk "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
+
 	"github.com/goobers/goobers/internal/chat"
 )
 
