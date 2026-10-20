@@ -144,6 +144,8 @@ type runJournal struct {
 	// reconstructed from recorded activity results, never mutable journal reads.
 	childOrigins map[string]livejournal.ChildOriginReceipt
 
+	owner         *journalCommitOwner
+	branch        int
 	proj          JournalProjection
 	machine       *wf.Machine
 	terminalCause *journal.TerminalCause
@@ -170,7 +172,7 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 		return nil, err
 	}
 	if err := workflow.SetQueryHandler(ctx, JournalQuery, func() (JournalProjection, error) {
-		return rec.proj, nil
+		return rec.projectionSnapshot(), nil
 	}); err != nil {
 		return nil, fmt.Errorf("engine: register journal query: %w", err)
 	}
@@ -266,17 +268,29 @@ func (r *runJournal) append(ctx workflow.Context, ev journal.Event) {
 
 func (r *runJournal) appendAt(at time.Time, ev journal.Event) {
 	e := ev
+	if e.Branch == 0 {
+		e.Branch = r.branch
+	}
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opAppend, Event: &e, Time: at})
+	r.trackOwnedOp()
 }
 
 func (r *runJournal) artifactAt(at time.Time, op JournalArtifactOp) {
 	o := op
+	if o.Branch == 0 {
+		o.Branch = r.branch
+	}
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opArtifact, Artifact: &o, Time: at})
+	r.trackOwnedOp()
 }
 
 func (r *runJournal) spanAt(at time.Time, op JournalSpanOp) {
 	o := op
+	if o.Branch == 0 {
+		o.Branch = r.branch
+	}
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opSpan, Span: &o, Time: at})
+	r.trackOwnedOp()
 }
 
 // runStarted mirrors journal.Create's own opening append.
