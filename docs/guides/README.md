@@ -49,6 +49,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Guide: GitHub token scopes for V0 (local runner)](github-token-scopes.md)
 - [GitHub webhook triggers](github-webhooks.md)
 - [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)
+- [Stage CLI capability checks](harness-cli-capabilities.md)
 - [Codex stage transcripts and usage](harness-codex-telemetry.md)
 - [Copilot usage when a stage is cancelled](harness-copilot-cancellation-accounting.md)
 - [Copilot stage authentication and configuration isolation](harness-copilot-isolation.md)
