@@ -57,7 +57,7 @@ const exemptions = [
     symbol: "e2e/real-daemon.mjs",
     reason: "Playwright real-dashboard web-server entry point invoked from playwright.config.ts.",
   },
-  ...["interactive-server.mjs", "interactive.acceptance.ts", "interactive.config.ts"].map(name => ({
+  ...["interactive-server.mjs", "interactive.acceptance.ts", "interactive.config.ts", "interactive-auth.ts"].map(name => ({
     type: "files",
     file: `e2e/${name}`,
     symbol: `e2e/${name}`,
@@ -110,6 +110,8 @@ const testOnlyExports = {
     "loadRunDetail",
     "isVerdictArtifact",
   ],
+  "src/interactive/client.ts": ["normalizeEvent"],
+  "src/interactive/chat-model.ts": ["parseUnifiedDiff", "diffStats"],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
   "src/theme.ts": ["themeStorageKey", "persistTheme"],
