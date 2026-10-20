@@ -27,3 +27,10 @@ MIT licensed, commit `3309665c`, `src/shared/chat/{runtime,events,capabilities}.
 fixture-format ideas, not a copy of the TypeScript implementation. Native
 Codex app-server and Claude stream-json drivers can implement the same seam;
 the exec shim preserves their existing per-turn adapters meanwhile.
+
+Session-preserving interrupt requires `ActiveTurnIdentifier`: the host captures
+the outstanding native turn before requesting interruption, then waits for a
+settled `turn_ended` carrying that `data.nativeTurnId` and verifies that no native
+work remains active. A buffered earlier idle is not sufficient. Drivers without
+that identity use custody-proven close/restart; attached management bridges
+always use close/restart until a reviewed per-turn callback drain exists.

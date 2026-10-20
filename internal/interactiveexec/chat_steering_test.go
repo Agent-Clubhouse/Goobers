@@ -26,6 +26,7 @@ type interruptDriver struct {
 	replies                   int
 	pendingRequests           bool
 	closed                    bool
+	active                    bool
 	stop                      context.CancelFunc
 }
 
@@ -47,6 +48,7 @@ func (s *interruptSession) Send(ctx context.Context, content []chat.ContentBlock
 	}
 	delivery, err := s.Session.Send(ctx, content, options)
 	d.sends++
+	d.active = true
 	if d.sends == 2 && d.completionPath != "" {
 		if _, err := os.Stat(d.completionPath); !os.IsNotExist(err) {
 			return "", fmt.Errorf("old completion still present: %w", err)
@@ -67,9 +69,16 @@ func (s *interruptSession) Send(ctx context.Context, content []chat.ContentBlock
 }
 func (s *interruptSession) Interrupt(context.Context) error {
 	s.driver.interrupts++
+	s.driver.active = false
 	s.driver.Session.Emit("completion.accepted", map[string]any{"payload": json.RawMessage(`{"status":"success","summary":"old turn"}`)})
-	s.driver.Session.Emit("turn_ended", map[string]any{"reason": "cancelled", "settled": true})
+	s.driver.Session.Emit("turn_ended", map[string]any{"reason": "cancelled", "settled": true, "nativeTurnId": "active"})
 	return nil
+}
+func (s *interruptSession) ActiveTurnID() string {
+	if s.driver.active {
+		return "active"
+	}
+	return ""
 }
 func (s *interruptSession) Close() error { s.driver.closed = true; return s.Session.Close() }
 func (s *interruptSession) RespondPermission(context.Context, string, chat.PermissionResponse) error {
@@ -216,6 +225,7 @@ type failedInterruptSession struct {
 	events            chan chat.Event
 }
 
+func (s *failedInterruptSession) ActiveTurnID() string { return "active" }
 func (s *failedInterruptSession) Capabilities() chat.Capabilities {
 	return chat.Capabilities{Interrupt: s.supported}
 }

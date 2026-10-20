@@ -54,6 +54,14 @@ func interruptAndContinue(ctx context.Context, session chat.Session, steer inter
 	if !session.Capabilities().Interrupt {
 		return restartAfterInterrupt(session, steer, emit, "unsupported")
 	}
+	identity, ok := session.(chat.ActiveTurnIdentifier)
+	if !ok {
+		return restartAfterInterrupt(session, steer, emit, "turn-identity-unavailable")
+	}
+	target := identity.ActiveTurnID()
+	if target == "" {
+		return restartAfterInterrupt(session, steer, emit, "no-active-turn")
+	}
 	interruptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := session.Interrupt(interruptCtx); err != nil {
@@ -63,7 +71,7 @@ func interruptAndContinue(ctx context.Context, session chat.Session, steer inter
 		}
 		return restartAfterInterrupt(session, steer, emit, interruptFailure(interruptCtx, err))
 	}
-	restart, err := awaitInterruptedIdle(interruptCtx, session, project)
+	restart, err := awaitInterruptedIdle(interruptCtx, session, identity, target, project)
 	if err != nil {
 		if !restart || ctx.Err() != nil {
 			acknowledge(steer, "", err)
@@ -99,7 +107,7 @@ func clearInterruptedCompletion(request harness.RunRequest) error {
 	return nil
 }
 
-func awaitInterruptedIdle(ctx context.Context, session chat.Session, project func(chat.Event) error) (bool, error) {
+func awaitInterruptedIdle(ctx context.Context, session chat.Session, identity chat.ActiveTurnIdentifier, target string, project func(chat.Event) error) (bool, error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -111,7 +119,7 @@ func awaitInterruptedIdle(ctx context.Context, session chat.Session, project fun
 			if err := project(event); err != nil {
 				return false, err
 			}
-			if event.Type == "turn_ended" && event.Data["settled"] == true {
+			if event.Type == "turn_ended" && event.Data["settled"] == true && event.Data["nativeTurnId"] == target && identity.ActiveTurnID() == "" {
 				return false, nil
 			}
 			if event.Type == "error" && event.Data["fatal"] == true {

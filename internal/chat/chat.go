@@ -170,6 +170,13 @@ type Driver interface {
 	Start(context.Context, StartOptions) (Session, error)
 }
 
+// ActiveTurnIdentifier binds interruption settlement to a native turn. An empty
+// identity means no active or queued work. Drivers emit the same identity in
+// turn_ended.data.nativeTurnId; hosts without this proof must close and restart.
+type ActiveTurnIdentifier interface {
+	ActiveTurnID() string
+}
+
 // Session is a live conversation whose Close operation joins workspace writers.
 type Session interface {
 	NativeID() string
