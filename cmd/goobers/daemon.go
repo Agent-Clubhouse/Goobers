@@ -43,6 +43,9 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
+	CapacityRejection     string
+	CandidateConfigDigest string
+
 	SourceStarts        *startintent.Sources
 	ExecutionGeneration string
 	OrdinaryRuntime     ordinaryRuntimeBuilder
@@ -340,7 +343,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
 	runtime, err := openSchedulerRuntime(schedulerDefinitionsInput{
-		Layout: l, Config: cfg, Definitions: set, Validation: report,
+		RecoverAtCapacity: options.recoverGenerationCapacity,
+		Layout:            l, Config: cfg, Definitions: set, Validation: report,
 		WaitGroup: wg, Telemetry: observation.tel, RollupDB: observation.rollupDB,
 		Watermarks: observation.watermarks, InstanceLog: observation.instanceLog,
 		SharedRegistry: sharedReg, TerminalNotifier: terminalNotifier,
@@ -363,7 +367,21 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("config directory changed during daemon setup; retry startup")
 	}
 
+	candidateDigest := configDigest
+	if runtime.recoveredConfigDigest != "" {
+		configDigest = runtime.recoveredConfigDigest
+	}
+	if options.recoverGenerationCapacity {
+		if err := observation.instanceLog.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{
+			"kind": appliedGenerationAnnotation, "configGeneration": definitions.ExecutionGeneration, "configDigest": configDigest,
+		}}); err != nil {
+			return nil, fmt.Errorf("journal startup generation: %w", err)
+		}
+	}
+
 	return &schedulerSetup{
+		CapacityRejection:        runtime.capacityRejection,
+		CandidateConfigDigest:    candidateDigest,
 		observation:              observation,
 		runtime:                  runtime,
 		ChildRuntime:             definitions.ChildRuntime,
@@ -2103,6 +2121,8 @@ func warnUnresolvableResume(log *journal.InstanceLog, id journal.RunIdentity, mi
 
 // schedulerDefinitionsInput names the dependencies for this construction boundary.
 type schedulerDefinitionsInput struct {
+	RecoverAtCapacity bool
+
 	Layout           instance.Layout
 	Config           *instance.Config
 	Definitions      *instance.ConfigSet

@@ -756,6 +756,7 @@ func (u *upSession) prepare() int {
 	u.claimRecoveryGate = localscheduler.NewRecoveryGate()
 	var setupOptions []schedulerSetupOption
 	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate, u.tracker)
+	setupOptions = append(setupOptions, func(options *schedulerSetupOptions) { options.recoverGenerationCapacity = true })
 	buildSetup := buildSchedulerSetup
 	if *u.skipPreflight {
 		buildSetup = buildSchedulerSetupAllowingInvalidConfig
@@ -771,6 +772,9 @@ func (u *upSession) prepare() int {
 		})
 	}
 	pf(u.stdout, "startup: scheduler initialized\n")
+	if u.setup.CapacityRejection != "" {
+		pf(u.stderr, "warning: %s; serving verified retained generation %s\n", u.setup.CapacityRejection, u.setup.ExecutionGeneration)
+	}
 	// #4070: say, every start, whether one stage's memory is bounded. Stage
 	// subprocesses share this daemon's memory cgroup, so an unbounded stage
 	// can OOM-kill the control plane and take every in-flight run with it —
@@ -1625,6 +1629,14 @@ func (u *upSession) startScheduler() int {
 		observedDigest: u.setup.ConfigDigest,
 		digests:        u.configDigests,
 		gaggleHealth:   u.gaggleHealth,
+	}
+	if u.setup.CapacityRejection != "" {
+		u.reloader.retentionRejected = true
+		u.reloader.observedDigest = u.setup.CandidateConfigDigest
+		if err := u.reloader.reject(u.setup.CandidateConfigDigest, errors.New(u.setup.CapacityRejection)); err != nil {
+			pf(u.stderr, "error: record rejected startup candidate: %v\n", err)
+			return 1
+		}
 	}
 	// The workflow mutation service was built above so the HTTP handler could
 	// register the surface before the reloader existed. Now that it does,
