@@ -145,9 +145,10 @@ func AttachParentAuthoringSkill(kit *agentickit.Kit, authority Authority) error 
 		instructions = make(map[string]string)
 	}
 	directory := ".claude/skills/"
-	if spec.Harness == apiv1.HarnessCodex {
+	switch spec.Harness {
+	case apiv1.HarnessCodex:
 		directory = ".agents/skills/"
-	} else if spec.Harness == apiv1.HarnessCopilot {
+	case apiv1.HarnessCopilot:
 		directory = ".github/skills/"
 	}
 	instructions[kit.Envelope.Goober] += "\n\nBefore composing a child workflow, read " + directory + ParentAuthoringSkillName + "/SKILL.md and its catalog.json. The catalog is advisory; the child tools enforce current authority.\n"

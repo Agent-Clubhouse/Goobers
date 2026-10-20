@@ -57,9 +57,10 @@ func TestWorkerKitDeliversCapturedSkillsThroughPodExecutor(t *testing.T) {
 				t.Fatal(err)
 			}
 			directory := ".claude"
-			if selected == apiv1.HarnessCodex {
+			switch selected {
+			case apiv1.HarnessCodex:
 				directory = ".agents"
-			} else if selected == apiv1.HarnessCopilot {
+			case apiv1.HarnessCopilot:
 				directory = ".github"
 			}
 			adapter := &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
