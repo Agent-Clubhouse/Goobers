@@ -1051,7 +1051,7 @@ jobs:
       - name: Find previous main timing run
         id: previous-timing
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const {data} = await github.rest.actions.listWorkflowRuns({
@@ -2817,7 +2817,7 @@ jobs:
       # serialize validation. It must neither file nor close the latest incident.
       - name: Check latest main commit
         id: latest-main
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           result-encoding: string
           script: |
@@ -2844,7 +2844,7 @@ jobs:
             needs.shipped.result == 'failure' ||
             needs.windows-smoke.result == 'failure')
           }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = "CI: main branch validation failed";
@@ -2907,7 +2907,7 @@ jobs:
             needs.shipped.result == 'success' &&
             needs.windows-smoke.result == 'success'
           }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = "CI: main branch validation failed";
