@@ -173,7 +173,10 @@ func TestResolveAdjacentLineConflictsStageFailureRollsBack(t *testing.T) {
 	if len(files) != 1 || files[0].Path != "package.json" {
 		t.Fatalf("unmerged files = %v, want the manifest still conflicted", files)
 	}
-	entries, _ := filepath.Glob(filepath.Join(dir, ".goobers-resolve-*"))
+	entries, err := filepath.Glob(filepath.Join(dir, ".package.json.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(entries) != 0 {
 		t.Fatalf("leftover temp files: %v", entries)
 	}
