@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/platform/secfile"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -752,6 +753,13 @@ func seedClaudeCredentialsForPlatform(
 		case "USERPROFILE":
 			userProfile = value
 		}
+	}
+	if credentials.TrustedLocalProcess(ctx) {
+		auth, ok := credentials.TrustedLocalAuthenticationFor(ctx, "claude-code")
+		if !ok {
+			return credentials.ErrChildAuthenticationIsolation
+		}
+		sourceDir = auth.Home
 	}
 	// HOME wins when explicitly set — matching the convention used for
 	// resolving Copilot's config home (copilotConfigHome). USERPROFILE is

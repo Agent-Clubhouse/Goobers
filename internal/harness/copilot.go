@@ -1205,6 +1205,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
 		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
 	}
+	if err := seedTrustedLocalCopilotAuthentication(ctx, env); err != nil {
+		return Outcome{}, err
+	}
 	if len(req.MCPServers) > 0 {
 		env, err = prepareCopilotMCP(ctx, req, env)
 		if err != nil {

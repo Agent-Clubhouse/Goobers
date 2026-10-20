@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/safepath"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -192,6 +193,12 @@ func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, option
 		return PreflightInfo{}, fmt.Errorf("harness: codex: %q not found on PATH — install Codex CLI and sign in with ChatGPT before running agentic stages", bin)
 	}
 	env := ambientCodexEnv(c.ExtraEnvAllowlist, c.EnvUnset)
+	if credentials.TrustedLocalProcess(ctx) {
+		env, err = trustedLocalCodexEnvironment(ctx, credentials.TrustedLocalBaseEnvironment(ctx, env), config)
+		if err != nil {
+			return PreflightInfo{}, err
+		}
+	}
 	baseCommand := resolveHarnessCommand(c.Command)
 	versionCommand := append(append([]string(nil), baseCommand...), "--version")
 	versionResult, err := c.runner().Run(ctx, ProcessRequest{Command: versionCommand, Env: env, MaxTranscriptBytes: maxPreflightDiagnosticBytes})
@@ -313,6 +320,11 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		return Outcome{}, fmt.Errorf("harness: codex: invalid configuration: %w", err)
 	}
 	if options.auth == CodexAuthAmbientChatGPT {
+		if credentials.TrustedLocalProcess(ctx) {
+			if _, err := trustedLocalCodexEnvironment(ctx, nil, options); err != nil {
+				return Outcome{}, err
+			}
+		}
 		if _, err := c.PreflightConfig(ctx, req.Model, req.HarnessOptions); err != nil {
 			return Outcome{}, err
 		}
@@ -531,11 +543,14 @@ func (c *CodexAdapter) invocationEnvCapabilities(auth CodexAuthMode) map[string]
 func (c *CodexAdapter) configureAuthEnvironment(ctx context.Context, env []string, options codexConfig) ([]string, error) {
 	env = dropForeignCodexAPIKey(env)
 	if options.auth == CodexAuthAmbientChatGPT {
+		if credentials.TrustedLocalProcess(ctx) {
+			return trustedLocalCodexEnvironment(ctx, env, options)
+		}
 		// Keep telemetry, repository routing, and every non-model scoped
 		// capability from buildCredentialEnv; only API-key selection is removed.
 		return withAmbientCodexHome(env), nil
 	}
-	if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil {
+	if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil && !credentials.TrustedLocalProcess(ctx) {
 		token, err := c.ModelCredential(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("harness: codex: resolve agent:model credential: %w", err)
