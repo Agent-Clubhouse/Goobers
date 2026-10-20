@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"golang.org/x/mod/semver"
@@ -69,9 +68,10 @@ func validateClaudeHostSafetyOptions(args []string) error {
 func validateClaudeHostSafetyEnv(env []string) error {
 	for _, entry := range env {
 		key, value, _ := strings.Cut(entry, "=")
-		if slices.Contains([]string{"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "CLAUDE_CODE_DISABLE_HOOKS"}, key) &&
-			value != "" && value != "0" && value != "false" {
-			return fmt.Errorf("harness: claude-code: %s can disable host-process safety hooks; remove it for unattended stages", key)
+		for _, blocked := range []string{"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "CLAUDE_CODE_DISABLE_HOOKS"} {
+			if strings.EqualFold(key, blocked) && value != "" && value != "0" && value != "false" {
+				return fmt.Errorf("harness: claude-code: %s can disable host-process safety hooks; remove it for unattended stages", key)
+			}
 		}
 	}
 	return nil

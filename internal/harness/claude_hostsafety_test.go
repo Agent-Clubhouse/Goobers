@@ -106,7 +106,13 @@ func TestClaudeHostSafetyVersionFloor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, key := range []string{"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "CLAUDE_CODE_DISABLE_HOOKS"} {
+	for _, key := range []string{
+		"CLAUDE_CODE_SIMPLE",
+		"CLAUDE_CODE_SAFE_MODE",
+		"CLAUDE_CODE_DISABLE_HOOKS",
+		"claude_code_disable_hooks",
+		"Claude_Code_Safe_Mode",
+	} {
 		if validateClaudeHostSafetyEnv([]string{key + "=1"}) == nil {
 			t.Fatalf("%s bypass accepted", key)
 		}
