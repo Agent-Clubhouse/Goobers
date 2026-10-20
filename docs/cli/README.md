@@ -3491,6 +3491,10 @@ rebase-pr and update-behind-pr classify comments by this same rule
 before they clear needs-remediation; give them the same identityMode and
 excludeAuthors.
 
+Shared mode permits three routing attempts per PR head, recorded on the
+PR. Further attempts park it with needs-human and merge-escalated and a
+visible note; feedback remains unaddressed. A new head resets the budget.
+
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such
 a response acknowledges only human comments within that second or
