@@ -11,11 +11,62 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
+func TestCopilotMissingUsageIsDiagnosedAfterCaptureFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		processErr error
+		native     []byte
+		missing    bool
+	}{
+		{name: "successful CLI without usage", missing: true},
+		{name: "failed CLI without usage", processErr: errors.New("CLI failed"), missing: true},
+		{name: "model name without accounting", native: []byte(`{"type":"session.shutdown","data":{"modelMetrics":{"observed":{}}}}` + "\n"), missing: true},
+		{name: "observed zero tokens", native: []byte(`{"type":"session.shutdown","data":{"modelMetrics":{"observed":{"usage":{"inputTokens":0,"outputTokens":0}}}}}` + "\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}, err: tc.processErr, act: func(req ProcessRequest) error {
+				if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
+					return err
+				}
+				if tc.native != nil {
+					return writeNativeSessionLog(req, tc.native)
+				}
+				return nil
+			}}
+			out, err := (&CopilotAdapter{Command: []string{"copilot"}, Runner: runner}).Run(context.Background(), RunRequest{
+				HarnessVersion: "GitHub Copilot CLI 1.0.91.", Envelope: testEnvelope(workspace), Workspace: workspace,
+				CompletionPath: DefaultResultPath, Credentials: pushCredentials(t, "unused", "unused"),
+			})
+			if !errors.Is(err, tc.processErr) {
+				t.Fatalf("usage diagnostics changed process outcome: %v", err)
+			}
+			if got := strings.Contains(out.AgentTelemetryDetail, "copilot_usage_missing"); got != tc.missing {
+				t.Fatalf("missing=%v detail=%q", tc.missing, out.AgentTelemetryDetail)
+			}
+		})
+	}
+}
+
+func TestCopilotUsageDiagnosticAcceptsPerModelAndNestedAccounting(t *testing.T) {
+	zero := int64(0)
+	for _, out := range []Outcome{
+		{ModelUsage: []telemetry.ModelUsage{{Model: "observed", InputTokens: &zero}}},
+		{AgentEvents: []journal.Event{{Agent: &journal.AgentProvenance{Usage: journal.AgentUsage{OutputTokens: &zero}}}}},
+	} {
+		if !copilotUsageObserved(out) {
+			t.Fatalf("observed accounting diagnosed as missing: %+v", out)
+		}
+	}
+}
+
 func TestCopilotUsageVersionNegotiation(t *testing.T) {
-	for _, reported := range []string{"GitHub Copilot CLI 1.0.81-1.", "GitHub Copilot CLI 1.0.81.", "GitHub Copilot CLI 1.0.83.", "copilot version 1.2.3", "v1.0.83", "1.0.83+build.4"} {
+	for _, reported := range []string{"GitHub Copilot CLI 1.0.81-1.", "GitHub Copilot CLI 1.0.81.", "GitHub Copilot CLI 1.0.83.", "GitHub Copilot CLI 1.0.91.", "GitHub Copilot CLI 1.0.98.", "copilot version 1.2.3", "v1.0.83", "1.0.83+build.4"} {
 		if !copilotSupportsUsageOutput(reported) {
 			t.Errorf("documented compatible version refused: %q", reported)
 		}
@@ -35,6 +86,8 @@ func TestCopilotUsageCompatibilityPreservesObservedSessionAccounting(t *testing.
 		{name: "older CLI", version: "GitHub Copilot CLI 1.0.80."},
 		{name: "unknown CLI"},
 		{name: "new CLI missing usage file", version: "GitHub Copilot CLI 1.0.83.", usageFlag: true},
+		{name: "reported regression CLI", version: "GitHub Copilot CLI 1.0.91.", usageFlag: true},
+		{name: "current CLI", version: "GitHub Copilot CLI 1.0.98.", usageFlag: true},
 		{name: "new CLI malformed usage file", version: "GitHub Copilot CLI 1.0.83.", usageFlag: true, malformed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
