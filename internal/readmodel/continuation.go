@@ -7,6 +7,9 @@ import (
 	"github.com/goobers/goobers/internal/runlineage"
 )
 
+const continuationIndexDDL = `CREATE INDEX IF NOT EXISTS idx_run_continuations ON run(trigger_ref, run_id)
+ WHERE trigger_kind = 'manual' AND json_extract(operator_json, '$.ContinuedFromRunID') = trigger_ref;`
+
 const continuationPageQuery = `SELECT r.run_id, r.phase FROM run r
  WHERE r.trigger_kind = 'manual' AND r.trigger_ref = ?
  AND json_extract(r.operator_json, '$.ContinuedFromRunID') = r.trigger_ref

@@ -728,7 +728,4 @@ WHERE root <> '';
 CREATE INDEX IF NOT EXISTS idx_run_gaggle_workflow_phase_recency
 	ON run(gaggle, workflow, phase, started_at DESC, run_id ASC);
 `,
-	// v24: keyset continuation lookup excludes manual refs without lineage.
-	`CREATE INDEX IF NOT EXISTS idx_run_continuations ON run(trigger_ref, run_id)
- WHERE trigger_kind = 'manual' AND json_extract(operator_json, '$.ContinuedFromRunID') = trigger_ref;`,
 }

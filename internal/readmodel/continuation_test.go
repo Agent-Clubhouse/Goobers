@@ -205,3 +205,78 @@ func TestContinuationPagesUseIndexAtScale(t *testing.T) {
 		t.Fatal("continuation index unused")
 	}
 }
+
+func TestContinuationPagesRemainCorrectWithoutIndex(t *testing.T) {
+	ctx := t.Context()
+	store := openTestStore(t)
+	if _, err := store.writer.ExecContext(ctx, `DROP INDEX idx_run_continuations`); err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for i := 0; i < 123; i++ {
+		id := fmt.Sprintf("child-%04d", i)
+		parent := "other"
+		if i%2 == 0 {
+			parent = "source"
+			want = append(want, id)
+		}
+		identity := journal.RunIdentity{RunID: id, Gaggle: "g", Workflow: "wf",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual, Ref: "source"}, ContinuedFromRunID: parent}
+		if err := store.UpsertRun(ctx, ProjectRun(identity, Projection{}, completedRunEvents())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	cursor := ""
+	for {
+		page, err := store.ContinuationRuns(ctx, "source", cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) > 50 {
+			t.Fatalf("unbounded page: %d", len(page.Runs))
+		}
+		for _, run := range page.Runs {
+			got = append(got, run.ID)
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if page.NextCursor <= cursor {
+			t.Fatalf("cursor did not advance: %q -> %q", cursor, page.NextCursor)
+		}
+		cursor = page.NextCursor
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("children without index = %v, want %v", got, want)
+	}
+}
+
+func TestContinuationIndexReopenIsIdempotentAndRepairsMissingIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	for _, step := range []string{"create", "reapply", "recreate"} {
+		t.Run(step, func(t *testing.T) {
+			store, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			state, err := store.State(t.Context())
+			if err != nil || state.SchemaVersion != 23 {
+				t.Fatalf("schema version must remain rollback-compatible: %+v, %v", state, err)
+			}
+			var ddl string
+			if err := store.reader.QueryRowContext(t.Context(), `SELECT sql FROM sqlite_schema WHERE name = 'idx_run_continuations'`).Scan(&ddl); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(ddl, "json_extract(operator_json, '$.ContinuedFromRunID') = trigger_ref") {
+				t.Fatalf("unexpected index: %s", ddl)
+			}
+			if step == "reapply" {
+				if _, err := store.writer.ExecContext(t.Context(), `DROP INDEX idx_run_continuations`); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}

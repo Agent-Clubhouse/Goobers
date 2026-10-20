@@ -2010,8 +2010,9 @@ func TestTraceShowsRepassCount(t *testing.T) {
 			if !strings.Contains(stdout.String(), "\nlast activity: ") {
 				t.Fatalf("trace stdout missing last activity: %q", stdout.String())
 			}
-			if !strings.Contains(stdout.String(), "\n"+tt.want+"\nevents:") {
-				t.Fatalf("trace stdout missing repass header %q after phase: %q", tt.want, stdout.String())
+			wantHeaders := "\n" + tt.want + "continuations: incomplete (lineage index unavailable or awaiting journal ingestion)\n\nevents:"
+			if !strings.Contains(stdout.String(), wantHeaders) {
+				t.Fatalf("trace stdout missing ordered repass and incomplete-lineage headers %q: %q", wantHeaders, stdout.String())
 			}
 		})
 	}
