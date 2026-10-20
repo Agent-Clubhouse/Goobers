@@ -67,8 +67,33 @@ func ensureRootIdentity(ctx context.Context, root string, requireConfig bool) (s
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if id, err := ReadRootIdentity(root); err == nil || (!errors.Is(err, os.ErrNotExist) && !rootIdentityReadContended(err)) {
-		return id, err
+	handle, err := acquireRootIdentityLock(ctx, filepath.Join(root, RootIdentityFileName+".lock"))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = handle.Release() }()
+
+	canonical, canonicalErr := ReadRootIdentity(root)
+	if canonicalErr != nil && !errors.Is(canonicalErr, os.ErrNotExist) {
+		return "", canonicalErr
+	}
+	legacy, legacyErr := readLegacyIdentity(root)
+	if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
+		return "", legacyErr
+	}
+	if canonicalErr == nil {
+		if legacyErr == nil {
+			if err := ensureRootIdentityAlias(root, canonical, legacy); err != nil {
+				return "", err
+			}
+		}
+		return canonical, nil
+	}
+	if legacyErr == nil {
+		if err := journal.WriteFileAtomic(filepath.Join(root, RootIdentityFileName), []byte(legacy+"\n"), 0o644); err != nil {
+			return "", err
+		}
+		return legacy, nil
 	}
 	if _, err := os.Lstat(filepath.Join(root, RootDecommissionFileName)); !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("cannot adopt an unidentified historical root; restore its original identity")
@@ -77,14 +102,6 @@ func ensureRootIdentity(ctx context.Context, root string, requireConfig bool) (s
 		if info, err := os.Stat(NewLayout(root).ConfigFile()); err != nil || !info.Mode().IsRegular() {
 			return "", fmt.Errorf("instance identity requires an existing instance.yaml")
 		}
-	}
-	handle, err := acquireRootIdentityLock(ctx, filepath.Join(root, RootIdentityFileName+".lock"))
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = handle.Release() }()
-	if id, err := ReadRootIdentity(root); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return id, err
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
