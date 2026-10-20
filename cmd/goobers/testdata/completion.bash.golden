@@ -107,7 +107,7 @@ _goobers_completion()
             esac
             ;;
         up)
-            flags+=" --quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
+            flags+=" --quiet --diagnostics --notify --skip-preflight --recover-config-generation --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
             ;;
         self-update)
             flags+=" --policy --include-prerelease --branch --target --health-ticks --health-timeout"
