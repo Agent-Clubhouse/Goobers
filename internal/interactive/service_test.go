@@ -401,7 +401,7 @@ func TestSplitStreamSecretsAndSensitiveEventFieldsAreScrubbed(t *testing.T) {
 	run := receiveRun(t, e)
 	secret := "ghp_" + strings.Repeat("a", 36)
 	for _, part := range []string{"hello " + secret[:10], secret[10:] + " world "} {
-		if err := run.emit(ExecutionEvent{Type: "assistant.delta", Data: map[string]any{"text": part}}); err != nil {
+		if err := run.emit(ExecutionEvent{Type: "assistant.delta", Data: map[string]any{"text": part, "chat": map[string]any{"type": "agent_message_chunk", "data": map[string]any{"content": []any{map[string]any{"type": "text", "text": part}}}}}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -411,7 +411,7 @@ func TestSplitStreamSecretsAndSensitiveEventFieldsAreScrubbed(t *testing.T) {
 	run.result <- ExecutionResult{Message: "done"}
 	waitStatus(t, s, "alice", session.ID, "idle")
 	b, _ := os.ReadFile(filepath.Join(s.opts.StateDir, "sessions.json"))
-	if strings.Contains(string(b), secret) || strings.Contains(string(b), "opaque") {
+	if strings.Contains(string(b), secret[:10]) || strings.Contains(string(b), secret[10:]) || strings.Contains(string(b), "opaque") {
 		t.Fatal("secret persisted")
 	}
 	if !strings.Contains(string(b), "REDACTED") {

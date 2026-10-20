@@ -379,6 +379,18 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 		receipt.TurnID = turnID
 		launch = &ExecutionRequest{SessionID: sessionID, TurnID: turnID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
 	case "steer":
+		if cmd.Delivery != "" && cmd.Delivery != "steer" && cmd.Delivery != "queued" && cmd.Delivery != "prompt" {
+			return receipt, problem(400, "invalid", "unknown steering delivery mode")
+		}
+		if cmd.SteeringMode != "" && cmd.SteeringMode != "interrupt-and-continue" {
+			return receipt, problem(400, "invalid", "unknown steering mode")
+		}
+		if (cmd.Delivery == "prompt") != (cmd.SteeringMode == "interrupt-and-continue") {
+			return receipt, problem(400, "invalid", "prompt delivery requires interrupt-and-continue")
+		}
+		if rec.Session.ExecutionMode == "local-tools" && (cmd.Delivery == "queued" || cmd.SteeringMode != "") {
+			return receipt, problem(409, "unsupported", "the demo supports immediate steering only")
+		}
 		if text == "" || cmd.TurnID == "" {
 			return receipt, problem(400, "invalid", "steering text and exact turnId are required")
 		}
@@ -607,7 +619,7 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 	}
 	if steerRun != nil {
 		var once sync.Once
-		message := Steering{CommandID: cmd.CommandID, Text: text}
+		message := Steering{CommandID: cmd.CommandID, Text: text, Delivery: cmd.Delivery, SteeringMode: cmd.SteeringMode}
 		message.Ack = func(err error) {
 			once.Do(func() { s.ackSteering(sessionID, cmd.CommandID, cmd.TurnID, cmd.ExpectedFence, err) })
 		}

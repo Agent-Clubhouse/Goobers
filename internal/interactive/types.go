@@ -96,7 +96,9 @@ type ExecutionRequest struct {
 }
 
 type Steering struct {
-	CommandID, Text string
+	// Delivery and SteeringMode express the requested driver behavior, not an acknowledgement.
+	Delivery, SteeringMode string
+	CommandID, Text        string
 	// Ack(nil) means the harness actually accepted this exact steering message.
 	Ack func(error)
 }
@@ -202,6 +204,8 @@ type Event struct {
 }
 
 type Command struct {
+	Delivery         string `json:"delivery,omitempty"`
+	SteeringMode     string `json:"steeringMode,omitempty"`
 	WorkflowYAML     string `json:"workflowYaml,omitempty"`
 	CommandID        string `json:"commandId"`
 	Type             string `json:"type"`
