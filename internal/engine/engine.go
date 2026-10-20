@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlogdefaults"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -228,7 +229,7 @@ func HumanGateSignal(gateName string) string {
 	return "gate:" + gateName
 }
 
-const temporalHumanGateUnsupported = "engine: human gates require occurrence-bound Temporal signals and are not supported yet"
+const temporalHumanGateUnsupported = engineadmission.HumanGateUnsupported
 
 // Run is the engine's Temporal workflow function. It walks the pinned definition
 // as a state machine: tasks invoke activities to produce result envelopes; gates
