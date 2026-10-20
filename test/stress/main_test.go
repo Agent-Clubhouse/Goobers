@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -548,20 +549,29 @@ func TestRepositoryStressWiring(t *testing.T) {
 		"./internal/harness",
 		"./internal/httpapi",
 	)
-	assertFileContains(t, filepath.Join(root, ".github", "workflows", "stress.yml"),
+	workflowPath := filepath.Join(root, ".github", "workflows", "stress.yml")
+	assertFileContains(t, workflowPath,
 		"schedule:",
 		"workflow_dispatch:",
 		"format('refs/pull/{0}/merge', inputs.pr)",
 		"go run ./test/stress -list",
 		"fromJSON(needs.plan.outputs.shards)",
 		"make stress STRESS_SHARD=",
-		"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7",
 		"flake-ledger:",
 		"github.event_name == 'schedule'",
 		"issues: write",
-		"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8",
 		"go run ./test/flakeledger",
 	)
+	workflow, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"actions/upload-artifact", "actions/download-artifact"} {
+		pin := regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*` + regexp.QuoteMeta(action) + `@[0-9a-fA-F]{40}[ \t]+#[ \t]+v[0-9]+(?:\.[0-9]+){0,2}[ \t]*$`)
+		if !pin.Match(workflow) {
+			t.Errorf("%s must pin %s to a 40-hex SHA with a version comment", workflowPath, action)
+		}
+	}
 }
 
 func TestStressWorkflowTriggers(t *testing.T) {
