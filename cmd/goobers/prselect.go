@@ -153,18 +153,10 @@ func runPRSelectCore(
 		pf(stderr, "error: invalid respectAssignee input: %v\n", err)
 		return 1
 	}
-	selfIdentity := strings.TrimSpace(providerInput("selfIdentity", ""))
-	if respectAssignee && selfIdentity == "" {
-		identitySource, ok := source.(prSelectSelfIdentitySource)
-		if !ok {
-			pf(stderr, "error: selfIdentity is required for respectAssignee on Azure DevOps\n")
-			return 1
-		}
-		selfIdentity, err = identitySource.resolveSelfIdentity(ctx)
-		if err != nil {
-			pf(stderr, "error: resolve selfIdentity for assignee policy: %v\n", err)
-			return 1
-		}
+	selfIdentity, err := resolvePRSelectSelfIdentity(ctx, source, respectAssignee, strings.TrimSpace(providerInput("selfIdentity", "")))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	now := time.Now().UTC()
 	expectedAuthorLogin, err := source.expectedAuthorLogin(ctx, root)
@@ -179,7 +171,11 @@ func runPRSelectCore(
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, openPRs, err := source.pullRequests(ctx, repo, prSelectSourceRequest{
+	selectionRequest := prSelectSourceRequest{
+		excludeLabels:       excludeLabels,
+		requiredOptInLabel:  requiredOptInLabel,
+		respectAssignee:     respectAssignee,
+		selfIdentity:        selfIdentity,
 		base:                base,
 		headPrefixes:        headPrefixes,
 		authorScope:         authorScope,
@@ -187,7 +183,8 @@ func runPRSelectCore(
 		triggerRef:          triggerRef,
 		completeness:        completeness,
 		expectedAuthorLogin: expectedAuthorLogin,
-	})
+	}
+	prs, openPRs, err := source.pullRequests(ctx, repo, selectionRequest)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -274,7 +271,7 @@ func runPRSelectCore(
 			continue
 		}
 		conflicted, err := excludePRSelectConflict(ctx, source, repo, pr,
-			isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin))
+			isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin), selectionRequest)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("route conflict for PR #%d", pr.Number), err, "selected-pr.json")
 		}
@@ -319,6 +316,21 @@ func reconcilePRSelectAborted(ctx context.Context, provider remediationProvider,
 		pf(stdout, "re-queued PR #%d: removed stale %s after verified recovery checks\n", pr.Number, abortedRunLabel)
 	}
 	return refreshed, nil
+}
+
+func resolvePRSelectSelfIdentity(ctx context.Context, source prSelectSource, respectAssignee bool, identity string) (string, error) {
+	if !respectAssignee || identity != "" {
+		return identity, nil
+	}
+	identitySource, ok := source.(prSelectSelfIdentitySource)
+	if !ok {
+		return "", fmt.Errorf("selfIdentity is required for respectAssignee on Azure DevOps")
+	}
+	identity, err := identitySource.resolveSelfIdentity(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve selfIdentity for assignee policy: %w", err)
+	}
+	return identity, nil
 }
 
 func validMergeReviewAuthorScope(authorScope string) bool {
@@ -620,6 +632,10 @@ type prSelectSelfIdentitySource interface {
 }
 
 type prSelectSourceRequest struct {
+	excludeLabels       []string
+	requiredOptInLabel  string
+	respectAssignee     bool
+	selfIdentity        string
 	base                string
 	headPrefixes        []string
 	authorScope         string

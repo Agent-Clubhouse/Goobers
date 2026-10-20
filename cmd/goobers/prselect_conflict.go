@@ -40,7 +40,7 @@ func (p prSelectADOConflictProvider) GetPullRequest(ctx context.Context, repo pr
 // excludePRSelectConflict uses only a confirmed false; unknown computation is
 // still eligible. Non-owned PRs stay read-only. Existing eligibility gates run
 // first, and managed handoffs recheck head and holds before any mutation.
-func excludePRSelectConflict(ctx context.Context, source prSelectSource, repo providers.RepositoryRef, pr providers.PullRequestSummary, managed bool) (bool, error) {
+func excludePRSelectConflict(ctx context.Context, source prSelectSource, repo providers.RepositoryRef, pr providers.PullRequestSummary, managed bool, policy prSelectSourceRequest) (bool, error) {
 	access, ok := source.(prSelectConflictSource)
 	if !ok || access.conflictProvider() == nil {
 		return pr.Mergeable != nil && !*pr.Mergeable, nil
@@ -70,10 +70,32 @@ func excludePRSelectConflict(ctx context.Context, source prSelectSource, repo pr
 	if fresh.HeadSHA != pr.HeadSHA || fresh.HeadSHA == "" {
 		return true, fmt.Errorf("PR #%s head changed or is unknown; retry conflict handoff", id)
 	}
-	if fresh.State != "open" || fresh.Draft || prSelectConflictHeld(fresh) || fresh.Mergeable == nil || *fresh.Mergeable {
-		return true, nil
+	eligible, err := prSelectFreshConflictEligible(pr, fresh, policy)
+	if err != nil || !eligible {
+		return true, err
 	}
 	return true, handoffPRSelectConflict(ctx, provider, repo, fresh)
+}
+
+// Reapply the workflow's policy to the live snapshot, not just built-in holds.
+// The branch/base must also remain the candidate selected by this workflow.
+func prSelectFreshConflictEligible(original, fresh providers.PullRequestSummary, policy prSelectSourceRequest) (bool, error) {
+	if fresh.State != "open" || fresh.Draft || fresh.Mergeable == nil || *fresh.Mergeable {
+		return false, nil
+	}
+	if fresh.Head != original.Head || fresh.Base != original.Base {
+		return false, nil
+	}
+	if prSelectConflictHeld(fresh) || hasPRSelectExclusion(fresh.Labels, policy.excludeLabels) {
+		return false, nil
+	}
+	if !isOwnPullRequest(fresh.Author, fresh.Head, policy.headPrefixes, policy.expectedAuthorLogin) {
+		return false, nil
+	}
+	if !eligibleByMergeReviewPolicy(fresh, policy.requiredOptInLabel, policy.respectAssignee, policy.selfIdentity) {
+		return false, nil
+	}
+	return policy.identityFilters.MatchesSummary(fresh)
 }
 
 func prSelectConflictHeld(pr providers.PullRequestSummary) bool {
