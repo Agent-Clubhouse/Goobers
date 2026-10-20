@@ -84,6 +84,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Configuration generations for admitted runs](run-config-generations.md)
 - [CI runtime acquisitions](runtime-acquisition.md)
 - [Scheduled backlog re-sweep](scheduled-backlog-resweep.md)
+- [Move workflows from DSL 2.0 to 3.0](dsl-3-migration.md)
 - [Run-journal schema compatibility](schema-migrations.md)
 - [External secret stores](secret-stores.md)
 - [Security alert intake](security-alert-intake.md)
