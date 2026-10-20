@@ -44,9 +44,10 @@ var claimSettleOutcomes = map[string]bool{"completed": true, "abandoned": true}
 // cross-process claims lock, exactly as the CLI provider-chain subcommands
 // do, so API callers and subprocess callers share one atomicity domain.
 type daemonClaimService struct {
-	layout instance.Layout
-	log    *journal.InstanceLog
-	shared claimsclient.SharedClaimResolver
+	layout        instance.Layout
+	log           *journal.InstanceLog
+	shared        claimsclient.SharedClaimResolver
+	markerRelease func(context.Context, localscheduler.ClaimEntry, claimrelease.Reason) error
 	// recover is the daemon's OWN stale-claim sweep, injected rather than
 	// reconstructed: it closes over the intervention predicate and the
 	// restart-time recovery gate (up.go), which are in-memory daemon state
@@ -197,6 +198,9 @@ func (s *daemonClaimService) Renew(ctx context.Context, request httpapi.ClaimReq
 // when one is given) — the plane's form of releaseClaimsForRun, contained
 // to the caller's own run exactly like the single-item shape.
 func (s *daemonClaimService) Release(ctx context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	if request.ProviderCleanup {
+		return s.releaseProviderClaim(ctx, request)
+	}
 	if request.ItemID == "" {
 		return s.releaseAllForRun(ctx, request)
 	}
@@ -343,6 +347,7 @@ func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 		ClaimedAt:      entry.ClaimedAt,
 		RenewedAt:      entry.RenewedAt,
 		ExpiresAt:      entry.ExpiresAt,
+		ReleasePending: entry.ReleasePending,
 		SharedDeadline: entry.SharedDeadline,
 		SharedRevoked:  entry.SharedRevoked,
 		SharedOwner:    entry.SharedOwner,

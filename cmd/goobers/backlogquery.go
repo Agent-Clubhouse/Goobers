@@ -3596,73 +3596,80 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 	}
 	var released []string
 	var providerErr error
+	var entries []claimsclient.Entry
 	err = ledger.Locked(claimContext(), claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
-		entries, lerr := tx.ForRunAll(claimContext(), runID)
-		if lerr != nil {
-			return fmt.Errorf("read this run's claims: %w", lerr)
-		}
-		if len(entries) == 0 {
-			return nil
-		}
-		// Shared release needs only coordination credentials. Do it before
-		// constructing the legacy issue writer; missing label credentials must
-		// not retain a successfully released shared lease.
+		var err error
+		entries, err = tx.ForRunAll(claimContext(), runID)
+		return err
+	})
+	if err != nil {
+		pf(stderr, "error: read this run's claims: %v\n", err)
+		return 1
+	}
+	err = func() error {
 		var localEntries []claimsclient.Entry
 		for _, entry := range entries {
+			if entry.IsPublicationClaim() {
+				continue
+			}
 			if entry.SharedDeadline.IsZero() {
 				localEntries = append(localEntries, entry)
 				continue
 			}
-			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); err != nil {
+			if err := ledger.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); err != nil {
 				return fmt.Errorf("release shared claim %s: %w", entry.ItemID, err)
 			}
 			released = append(released, entry.ItemID)
 		}
-		entries = localEntries
-		if len(entries) == 0 {
+		if len(localEntries) == 0 {
 			return nil
 		}
-
-		repo, rerr := providerRepo(root)
-		if rerr != nil {
-			return rerr
-		}
-		// Work-item claim markers live in the backlog project on ADO, not the
-		// routed code repo, and on the backlog provider when the backlog lives
-		// on another provider (see backlogRepoRefForStage).
-		backlogRepo := backlogRepoRefForStage(root, repo)
-		stageProvider, err := newProviderForStage(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
-		if err != nil {
-			return err
-		}
-		issueProvider, ok := stageProvider.(backlogIssueProvider)
+		releaser, ok := ledger.(claimsclient.ProviderReleaser)
 		if !ok {
-			return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
+			return fmt.Errorf("claim ledger does not support provider cleanup custody")
+		}
+		// Plane clients delegate provider cleanup to the daemon, which owns
+		// both the durable reservation and its separate per-item cleanup lock.
+		var issueProvider backlogIssueProvider
+		var backlogRepo providers.RepositoryRef
+		if _, remote := ledger.(*claimsclient.HTTP); !remote {
+			repo, err := providerRepo(root)
+			if err != nil {
+				return err
+			}
+			backlogRepo = backlogRepoRefForStage(root, repo)
+			stageProvider, err := newProviderForStage(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
+			if err != nil {
+				return err
+			}
+			issueProvider, ok = stageProvider.(backlogIssueProvider)
+			if !ok {
+				return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
+			}
 		}
 		ctx, cancel := providerCommandContext()
 		defer cancel()
-
-		for _, entry := range entries {
-			// End the provider claim epoch while the claim lock still prevents a
-			// new local owner from claiming this item. Keep the ledger entry if
-			// provider cleanup fails so a retry retains the item ID.
-			if _, rerr := issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-				Repository:       backlogRepo,
-				ID:               entry.ItemID,
-				RunID:            runID,
-				LedgerAuthorized: true,
-				Reason:           workflowReleaseStepReason,
-			}); rerr != nil {
-				providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
-				return providerErr
+		for _, entry := range localEntries {
+			ok, err := releaser.ReleaseWithProvider(ctx, entry, workflowReleaseStepReason, func(ctx context.Context) error {
+				_, err := issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+					Repository: backlogRepo, ID: entry.ItemID, RunID: runID,
+					LedgerAuthorized: true, Reason: workflowReleaseStepReason,
+				})
+				if err != nil {
+					providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, err)
+					return providerErr
+				}
+				return nil
+			})
+			if err != nil {
+				return err
 			}
-			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); rerr != nil {
-				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
+			if ok {
+				released = append(released, entry.ItemID)
 			}
-			released = append(released, entry.ItemID)
 		}
 		return nil
-	})
+	}()
 	if err != nil {
 		if providerErr != nil {
 			return failProviderStage(stderr, "release backlog claims", providerErr, "")
