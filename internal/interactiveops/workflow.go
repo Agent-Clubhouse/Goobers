@@ -122,141 +122,18 @@ func (s *Service) validateWorkflow(content, repo string) WorkflowValidation {
 	if err := yaml.UnmarshalStrict([]byte(content), &wf); err != nil {
 		return fail("yaml", "workflow", err)
 	}
-	if err := onlyKeys(raw, "apiVersion", "kind", "dslVersion", "metadata", "spec"); err != nil {
-		return fail("policy", "workflow", err)
+	if diagnostic := s.validateWorkflowPolicy(&wf, raw); diagnostic != nil {
+		v.Diagnostics = append(v.Diagnostics, *diagnostic)
+		return v
 	}
-	if wf.Kind != "Workflow" || wf.APIVersion != "goobers.dev/v1alpha1" || (wf.DSLVersion != "2.0" && wf.DSLVersion != "3.0") || !namePattern.MatchString(wf.Name) || wf.Spec.Gaggle != s.policyGaggle() {
-		return fail("policy", "metadata", errors.New("use DSL 2.0/3.0, a safe workflow name and the session-authorized gaggle"))
+	bound, diagnostic := s.bindWorkflowTasks(&wf, raw, repo, &v)
+	if diagnostic != nil {
+		v.Diagnostics = append(v.Diagnostics, *diagnostic)
+		return v
 	}
-	metadata, _ := raw["metadata"].(map[string]any)
-	if err := onlyKeys(metadata, "name", "annotations"); err != nil {
-		return fail("policy", "metadata", err)
-	}
-	for name, value := range wf.Annotations {
-		if (name != "goobers.dev/acknowledge-manual-only" && (wf.DSLVersion != "3.0" || name != "goobers.dev/allow-preview-features")) || value != "true" {
-			return fail("policy", "metadata.annotations", errors.New("only manual-only acknowledgment and DSL3 preview acknowledgment are authorized"))
-		}
-	}
-	spec, _ := raw["spec"].(map[string]any)
-	if err := onlyKeys(spec, "gaggle", "displayName", "enabled", "triggers", "readiness", "start", "tasks"); err != nil {
-		return fail("policy", "spec", err)
-	}
-	triggers, _ := spec["triggers"].([]any)
-	if len(triggers) != 1 || len(wf.Spec.Triggers) != 1 || wf.Spec.Triggers[0].Type != apiv1.TriggerManual {
-		return fail("policy", "spec.triggers", errors.New("exactly one manual trigger is required"))
-	}
-	trigger, _ := triggers[0].(map[string]any)
-	if err := onlyKeys(trigger, "type"); err != nil {
-		return fail("policy", "spec.triggers", err)
-	}
-	if ready, ok := spec["readiness"]; ok {
-		m, _ := ready.(map[string]any)
-		if err := onlyKeys(m, "maxConcurrentRuns"); err != nil {
-			return fail("policy", "spec.readiness", err)
-		}
-		if n, ok := m["maxConcurrentRuns"]; ok && n != float64(1) {
-			return fail("policy", "spec.readiness", errors.New("maxConcurrentRuns must be 1"))
-		}
-	}
-	if len(wf.Spec.Tasks) < 1 || len(wf.Spec.Tasks) > 8 {
-		return fail("policy", "spec.tasks", errors.New("require 1–8 bounded deterministic stages"))
-	}
-	tasks, _ := spec["tasks"].([]any)
-	bound := make([][]string, len(wf.Spec.Tasks))
-	for i := range wf.Spec.Tasks {
-		task := &wf.Spec.Tasks[i]
-		field := fmt.Sprintf("spec.tasks[%d]", i)
-		m, _ := tasks[i].(map[string]any)
-		if err := onlyKeys(m, "name", "type", "goal", "timeoutSeconds", "run", "next", "runsOn"); err != nil {
-			return fail("policy", field, err)
-		}
-		if task.Type != apiv1.TaskDeterministic || task.TimeoutSeconds < 1 || task.TimeoutSeconds > 30 || task.Run == nil {
-			return fail("policy", field, errors.New("deterministic stages require 1–30 second limits and run controls"))
-		}
-		run, _ := m["run"].(map[string]any)
-		if err := onlyKeys(run, "workspace", "network", "command"); err != nil {
-			return fail("policy", field+".run", err)
-		}
-		if task.Run.Workspace != apiv1.WorkspaceScratch {
-			return fail("policy", field+".run", errors.New("workspace:scratch is required"))
-		}
-		if wf.DSLVersion == "2.0" {
-			if task.Run.Network != apiv1.NetworkNone || task.RunsOn != nil {
-				return fail("policy", field+".run", errors.New("DSL2 requires run.network:none and no runsOn"))
-			}
-		} else {
-			if task.Run.Network != "" || task.RunsOn == nil {
-				return fail("policy", field+".runsOn", errors.New("DSL3 requires runsOn.restrictions:[network:none], without run.network"))
-			}
-			placement, _ := m["runsOn"].(map[string]any)
-			if err := onlyKeys(placement, "restrictions"); err != nil {
-				return fail("policy", field+".runsOn", err)
-			}
-			if len(task.RunsOn.Restrictions) != 1 || task.RunsOn.Restrictions[0] != "network:none" {
-				return fail("policy", field+".runsOn", errors.New("only the enforced network:none restriction is authorized"))
-			}
-		}
-		args := task.Run.Command
-		if len(args) < 3 || args[0] != "node" {
-			return fail("command", field+".run.command", errors.New("only node --test or node --check with explicit scoped files is authorized"))
-		}
-		var capability CommandCapability
-		switch args[1] {
-		case "--test":
-			capability = CommandNodeTest
-			if len(args) > 18 {
-				return fail("command", field+".run.command", errors.New("node --test accepts 1–16 explicit .test.mjs files"))
-			}
-		case "--check":
-			capability = CommandNodeCheck
-			if len(args) != 3 {
-				return fail("command", field+".run.command", errors.New("node --check accepts exactly one .mjs file"))
-			}
-		default:
-			return fail("command", field+".run.command", errors.New("node flags are not authorized"))
-		}
-		if !s.allows(capability) {
-			return fail("authority", field+".run.command", fmt.Errorf("host has not enabled %s", capability))
-		}
-		portable := append([]string{}, args[:2]...)
-		resolved := append([]string{}, args[:2]...)
-		seen := map[string]bool{}
-		for _, arg := range args[2:] {
-			rel, abs, err := scopedFile(repo, arg, capability)
-			if err != nil {
-				return fail("path", field+".run.command", err)
-			}
-			if seen[rel] {
-				return fail("path", field+".run.command", errors.New("duplicate command target"))
-			}
-			seen[rel] = true
-			portable = append(portable, rel)
-			resolved = append(resolved, abs)
-		}
-		task.Run.Command = portable
-		bound[i] = resolved
-		v.Commands = append(v.Commands, WorkflowCommand{task.Name, capability, append([]string{}, portable...)})
-	}
-	// This subset is an acyclic chain. Reject hidden/unreachable extra work and
-	// repeatable loops even if the full declarative DSL supports them.
-	byName := map[string]string{}
-	for _, task := range wf.Spec.Tasks {
-		if _, exists := byName[task.Name]; exists {
-			return fail("graph", "spec.tasks", errors.New("duplicate stage name"))
-		}
-		byName[task.Name] = task.Next
-	}
-	visited := map[string]bool{}
-	for at := wf.Spec.Start; at != ""; {
-		next, ok := byName[at]
-		if !ok || visited[at] {
-			return fail("graph", "spec.start", errors.New("stages must form an acyclic chain from start to an empty terminal next"))
-		}
-		visited[at] = true
-		at = next
-	}
-	if len(visited) != len(wf.Spec.Tasks) {
-		return fail("graph", "spec.tasks", errors.New("all stages must be reachable exactly once"))
+	if diagnostic := validateWorkflowChain(&wf); diagnostic != nil {
+		v.Diagnostics = append(v.Diagnostics, *diagnostic)
+		return v
 	}
 	validator, err := validate.New()
 	if err != nil {
@@ -290,6 +167,171 @@ func (s *Service) validateWorkflow(content, repo string) WorkflowValidation {
 	v.PayloadDigest = digest(normalized)
 	v.BindingDigest = digest([]byte(repo + "\x00" + string(resolved)))
 	return v
+}
+
+func workflowFailure(code, field string, err error) *WorkflowDiagnostic {
+	return &WorkflowDiagnostic{code, "error", field, err.Error()}
+}
+
+func (s *Service) validateWorkflowPolicy(wf *apiv1.Workflow, raw map[string]any) *WorkflowDiagnostic {
+	if err := onlyKeys(raw, "apiVersion", "kind", "dslVersion", "metadata", "spec"); err != nil {
+		return workflowFailure("policy", "workflow", err)
+	}
+	if wf.Kind != "Workflow" || wf.APIVersion != "goobers.dev/v1alpha1" || (wf.DSLVersion != "2.0" && wf.DSLVersion != "3.0") || !namePattern.MatchString(wf.Name) || wf.Spec.Gaggle != s.policyGaggle() {
+		return workflowFailure("policy", "metadata", errors.New("use DSL 2.0/3.0, a safe workflow name and the session-authorized gaggle"))
+	}
+	metadata, _ := raw["metadata"].(map[string]any)
+	if err := onlyKeys(metadata, "name", "annotations"); err != nil {
+		return workflowFailure("policy", "metadata", err)
+	}
+	for name, value := range wf.Annotations {
+		if (name != "goobers.dev/acknowledge-manual-only" && (wf.DSLVersion != "3.0" || name != "goobers.dev/allow-preview-features")) || value != "true" {
+			return workflowFailure("policy", "metadata.annotations", errors.New("only manual-only acknowledgment and DSL3 preview acknowledgment are authorized"))
+		}
+	}
+	return validateWorkflowSpec(wf, raw)
+}
+
+func validateWorkflowSpec(wf *apiv1.Workflow, raw map[string]any) *WorkflowDiagnostic {
+	spec, _ := raw["spec"].(map[string]any)
+	if err := onlyKeys(spec, "gaggle", "displayName", "enabled", "triggers", "readiness", "start", "tasks"); err != nil {
+		return workflowFailure("policy", "spec", err)
+	}
+	triggers, _ := spec["triggers"].([]any)
+	if len(triggers) != 1 || len(wf.Spec.Triggers) != 1 || wf.Spec.Triggers[0].Type != apiv1.TriggerManual {
+		return workflowFailure("policy", "spec.triggers", errors.New("exactly one manual trigger is required"))
+	}
+	trigger, _ := triggers[0].(map[string]any)
+	if err := onlyKeys(trigger, "type"); err != nil {
+		return workflowFailure("policy", "spec.triggers", err)
+	}
+	if ready, ok := spec["readiness"]; ok {
+		m, _ := ready.(map[string]any)
+		if err := onlyKeys(m, "maxConcurrentRuns"); err != nil {
+			return workflowFailure("policy", "spec.readiness", err)
+		}
+		if n, ok := m["maxConcurrentRuns"]; ok && n != float64(1) {
+			return workflowFailure("policy", "spec.readiness", errors.New("maxConcurrentRuns must be 1"))
+		}
+	}
+	if len(wf.Spec.Tasks) < 1 || len(wf.Spec.Tasks) > 8 {
+		return workflowFailure("policy", "spec.tasks", errors.New("require 1–8 bounded deterministic stages"))
+	}
+	return nil
+}
+
+func (s *Service) bindWorkflowTasks(wf *apiv1.Workflow, raw map[string]any, repo string, v *WorkflowValidation) ([][]string, *WorkflowDiagnostic) {
+	spec, _ := raw["spec"].(map[string]any)
+	tasks, _ := spec["tasks"].([]any)
+	bound := make([][]string, len(wf.Spec.Tasks))
+	for i := range wf.Spec.Tasks {
+		task := &wf.Spec.Tasks[i]
+		field := fmt.Sprintf("spec.tasks[%d]", i)
+		m, _ := tasks[i].(map[string]any)
+		if err := onlyKeys(m, "name", "type", "goal", "timeoutSeconds", "run", "next", "runsOn"); err != nil {
+			return nil, workflowFailure("policy", field, err)
+		}
+		if task.Type != apiv1.TaskDeterministic || task.TimeoutSeconds < 1 || task.TimeoutSeconds > 30 || task.Run == nil {
+			return nil, workflowFailure("policy", field, errors.New("deterministic stages require 1–30 second limits and run controls"))
+		}
+		run, _ := m["run"].(map[string]any)
+		if err := onlyKeys(run, "workspace", "network", "command"); err != nil {
+			return nil, workflowFailure("policy", field+".run", err)
+		}
+		if task.Run.Workspace != apiv1.WorkspaceScratch {
+			return nil, workflowFailure("policy", field+".run", errors.New("workspace:scratch is required"))
+		}
+		if wf.DSLVersion == "2.0" {
+			if task.Run.Network != apiv1.NetworkNone || task.RunsOn != nil {
+				return nil, workflowFailure("policy", field+".run", errors.New("DSL2 requires run.network:none and no runsOn"))
+			}
+		} else {
+			if task.Run.Network != "" || task.RunsOn == nil {
+				return nil, workflowFailure("policy", field+".runsOn", errors.New("DSL3 requires runsOn.restrictions:[network:none], without run.network"))
+			}
+			placement, _ := m["runsOn"].(map[string]any)
+			if err := onlyKeys(placement, "restrictions"); err != nil {
+				return nil, workflowFailure("policy", field+".runsOn", err)
+			}
+			if len(task.RunsOn.Restrictions) != 1 || task.RunsOn.Restrictions[0] != "network:none" {
+				return nil, workflowFailure("policy", field+".runsOn", errors.New("only the enforced network:none restriction is authorized"))
+			}
+		}
+		command, resolved, diagnostic := s.bindWorkflowCommand(task, repo, field)
+		if diagnostic != nil {
+			return nil, diagnostic
+		}
+		bound[i] = resolved
+		v.Commands = append(v.Commands, command)
+	}
+	return bound, nil
+}
+
+func (s *Service) bindWorkflowCommand(task *apiv1.Task, repo, field string) (WorkflowCommand, []string, *WorkflowDiagnostic) {
+	args := task.Run.Command
+	if len(args) < 3 || args[0] != "node" {
+		return WorkflowCommand{}, nil, workflowFailure("command", field+".run.command", errors.New("only node --test or node --check with explicit scoped files is authorized"))
+	}
+	var capability CommandCapability
+	switch args[1] {
+	case "--test":
+		capability = CommandNodeTest
+		if len(args) > 18 {
+			return WorkflowCommand{}, nil, workflowFailure("command", field+".run.command", errors.New("node --test accepts 1–16 explicit .test.mjs files"))
+		}
+	case "--check":
+		capability = CommandNodeCheck
+		if len(args) != 3 {
+			return WorkflowCommand{}, nil, workflowFailure("command", field+".run.command", errors.New("node --check accepts exactly one .mjs file"))
+		}
+	default:
+		return WorkflowCommand{}, nil, workflowFailure("command", field+".run.command", errors.New("node flags are not authorized"))
+	}
+	if !s.allows(capability) {
+		return WorkflowCommand{}, nil, workflowFailure("authority", field+".run.command", fmt.Errorf("host has not enabled %s", capability))
+	}
+	portable := append([]string{}, args[:2]...)
+	resolved := append([]string{}, args[:2]...)
+	seen := map[string]bool{}
+	for _, arg := range args[2:] {
+		rel, abs, err := scopedFile(repo, arg, capability)
+		if err != nil {
+			return WorkflowCommand{}, nil, workflowFailure("path", field+".run.command", err)
+		}
+		if seen[rel] {
+			return WorkflowCommand{}, nil, workflowFailure("path", field+".run.command", errors.New("duplicate command target"))
+		}
+		seen[rel] = true
+		portable = append(portable, rel)
+		resolved = append(resolved, abs)
+	}
+	task.Run.Command = portable
+	return WorkflowCommand{task.Name, capability, append([]string{}, portable...)}, resolved, nil
+}
+
+func validateWorkflowChain(wf *apiv1.Workflow) *WorkflowDiagnostic {
+	// This subset is an acyclic chain. Reject hidden/unreachable extra work and
+	// repeatable loops even if the full declarative DSL supports them.
+	byName := map[string]string{}
+	for _, task := range wf.Spec.Tasks {
+		if _, exists := byName[task.Name]; exists {
+			return workflowFailure("graph", "spec.tasks", errors.New("duplicate stage name"))
+		}
+		byName[task.Name] = task.Next
+	}
+	visited := map[string]bool{}
+	for at := wf.Spec.Start; at != ""; {
+		next, ok := byName[at]
+		if !ok || visited[at] {
+			return workflowFailure("graph", "spec.start", errors.New("stages must form an acyclic chain from start to an empty terminal next"))
+		}
+		visited[at] = true
+		at = next
+	}
+	if len(visited) != len(wf.Spec.Tasks) {
+		return workflowFailure("graph", "spec.tasks", errors.New("all stages must be reachable exactly once"))
+	}
+	return nil
 }
 
 func canonicalRepository(path string) (string, error) {

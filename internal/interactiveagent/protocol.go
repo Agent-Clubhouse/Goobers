@@ -230,30 +230,37 @@ func (c *connection) call(req rpcRequest) {
 	go func() {
 		defer c.requests.Done()
 		defer cancel()
-		defer func() { c.pendingMu.Lock(); delete(c.pending, key); c.pendingMu.Unlock() }()
+		// Retire the request before publishing its terminal response. A client
+		// may immediately reuse the ID after reading that response.
+		respond := func(result any, rpcErr *rpcError) {
+			c.pendingMu.Lock()
+			delete(c.pending, key)
+			c.pendingMu.Unlock()
+			c.respond(req.ID, result, rpcErr)
+		}
 		select {
 		case <-ctx.Done():
-			c.respond(req.ID, toolFailure("cancelled"), nil)
+			respond(toolFailure("cancelled"), nil)
 			return
 		case c.bridge.invokeSlot <- struct{}{}:
 		}
 		defer func() { <-c.bridge.invokeSlot }()
 		if !c.bridge.beginCallback() {
-			c.respond(req.ID, toolFailure("cancelled"), nil)
+			respond(toolFailure("cancelled"), nil)
 			return
 		}
 		defer c.bridge.callbacks.Done()
 		if ctx.Err() != nil {
-			c.respond(req.ID, toolFailure("cancelled"), nil)
+			respond(toolFailure("cancelled"), nil)
 			return
 		}
 		if err := safeCheck(ctx, c.bridge.options.Check); err != nil {
 			c.bridge.audit(params.Name, "denied")
-			c.respond(req.ID, toolFailure("execution_unavailable"), nil)
+			respond(toolFailure("execution_unavailable"), nil)
 			return
 		}
 		if ctx.Err() != nil {
-			c.respond(req.ID, toolFailure("cancelled"), nil)
+			respond(toolFailure("cancelled"), nil)
 			return
 		}
 		c.bridge.audit(params.Name, "started")
@@ -261,20 +268,20 @@ func (c *connection) call(req rpcRequest) {
 		if err != nil {
 			c.bridge.audit(params.Name, "failed")
 			if ctx.Err() != nil {
-				c.respond(req.ID, toolFailure("cancelled"), nil)
+				respond(toolFailure("cancelled"), nil)
 			} else {
-				c.respond(req.ID, toolFailure("tool_failed"), nil)
+				respond(toolFailure("tool_failed"), nil)
 			}
 			return
 		}
 		data, err := json.Marshal(result)
 		if err != nil || len(data) > MaxResponseBytes-1024 || unsafeText(data) {
 			c.bridge.audit(params.Name, "failed")
-			c.respond(req.ID, toolFailure("unsafe_output"), nil)
+			respond(toolFailure("unsafe_output"), nil)
 			return
 		}
 		c.bridge.audit(params.Name, "completed")
-		c.respond(req.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": string(data)}}, "isError": false}, nil)
+		respond(map[string]any{"content": []map[string]string{{"type": "text", "text": string(data)}}, "isError": false}, nil)
 	}()
 }
 

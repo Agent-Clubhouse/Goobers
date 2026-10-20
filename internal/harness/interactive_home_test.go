@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -50,7 +51,12 @@ func TestNativeChatProvidersIsolateHomeAndWrapProcess(t *testing.T) {
 			if !slices.Contains(env, "HOME="+home) || slices.Contains(env, "HOME="+os.Getenv("HOME")) {
 				t.Fatal("native process retained the ambient home")
 			}
-			if info, err := os.Stat(home); err != nil || info.Mode().Perm()&0077 != 0 {
+			info, err := os.Stat(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Windows does not expose Unix mode bits through os.Stat.
+			if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 				t.Fatal("runtime home is not private")
 			}
 		})

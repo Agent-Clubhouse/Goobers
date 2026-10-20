@@ -310,17 +310,8 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 	if err != nil {
 		return CommandReceipt{}, err
 	}
-	if !validCommandID(cmd.CommandID) || len(cmd.Text) > 32768 {
-		return CommandReceipt{}, problem(400, "invalid", "commandId and text size must be valid")
-	}
-	if len(cmd.WorkflowYAML) > 32<<10 {
-		return CommandReceipt{}, problem(400, "invalid_workflow", "child workflow definition exceeds 32 KiB")
-	}
-	if cmd.WorkflowYAML != "" && cmd.Type != "child.request" {
-		return CommandReceipt{}, problem(400, "invalid_workflow", "workflow definition is immutable and may only be supplied when proposing a child")
-	}
-	if cmd.WorkflowYAML != "" && s.clean(cmd.WorkflowYAML) != cmd.WorkflowYAML {
-		return CommandReceipt{}, problem(400, "secret_in_workflow", "child workflow definition contains credential-shaped material")
+	if err := s.validateCommandPayload(cmd); err != nil {
+		return CommandReceipt{}, err
 	}
 	hash := digest(cmd)
 	if origin.digest != "" {
@@ -332,356 +323,49 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 		}
 		return old.Receipt, nil
 	}
-	if rec.Session.Sequence != cmd.ExpectedSequence {
-		return CommandReceipt{}, problem(409, "stale_sequence", "refresh session before submitting this command")
-	}
-	if rec.Session.Fence != cmd.ExpectedFence {
-		return CommandReceipt{}, problem(409, "stale_fence", "execution fence changed")
-	}
-	surface, exists := s.surface(rec.Session.SurfaceID)
-	reviewOnly := cmd.Type == "child.review" && (cmd.Decision == "deny" || cmd.Decision == "accept")
-	if s.reloading && cmd.Type != "stop" && !reviewOnly {
-		return CommandReceipt{}, problem(503, "policy_reloading", "surface policy reload is in progress")
-	}
-	if cmd.Type != "stop" && !reviewOnly && (!s.executionModeAvailable(rec.Session.ExecutionMode) || !surfaceAllowsMode(surface, rec.Session.ExecutionMode)) {
-		return CommandReceipt{}, problem(409, "execution_mode_unavailable", "session execution mode is unpinned or unavailable; create a new session with an enabled mode")
-	}
-
-	if cmd.Type != "stop" && !reviewOnly && rec.Session.ConfigDigest != digest(surface) {
-		return CommandReceipt{}, problem(409, "surface_changed", "surface policy changed; create a new session for the new configuration")
-	}
-	if cmd.Type != "stop" && !reviewOnly && (!exists || !surface.Enabled) {
-		return CommandReceipt{}, problem(409, "surface_unavailable", "surface is disabled; stop remains available")
-	}
-	if cmd.Type != "stop" && !reviewOnly && rec.Session.StopFencePending {
-		return CommandReceipt{}, problem(409, "invalid_state", "external authority fence is pending; retry stop before any new work")
-	}
-	if cmd.Type == "resume" && len(s.active[sessionID]) > 0 {
-		return CommandReceipt{}, problem(409, "recovery_required", "prior writer is still stopping")
-	}
-	if len(rec.Commands) >= 10000 {
-		return CommandReceipt{}, problem(409, "capacity", "prototype command retention limit reached")
-	}
-	receipt := CommandReceipt{CommandID: cmd.CommandID, SessionID: sessionID, Type: cmd.Type, Status: "accepted"}
-	var launch *ExecutionRequest
-	var steerRun *activeRun
-	var stop bool
-	var custody []ExecutionRequest
-	text := s.clean(strings.TrimSpace(cmd.Text))
-	switch cmd.Type {
-	case "message":
-		if len(s.active[sessionID]) > 0 && rec.Session.Status == "idle" {
-			return receipt, problem(409, "checkpoint_required", "wait for child snapshot work to finish before editing the parent")
-		}
-		if text == "" {
-			return receipt, problem(400, "invalid", "message text is required")
-		}
-		if rec.Session.Status != "idle" && rec.Session.Status != "error" {
-			return receipt, problem(409, "busy", "session must be idle before a new message")
-		}
-		if s.opts.Executor == nil {
-			return receipt, problem(503, "executor_unavailable", "no interactive executor is configured")
-		}
-		if rec.Session.OutputBytes >= s.opts.MaxSessionOutputBytes {
-			return receipt, problem(409, "capacity", "session output retention budget reached; create a new session")
-		}
-		if len(rec.Session.Turns) >= 1000 {
-			return receipt, problem(409, "capacity", "prototype turn retention limit reached")
-		}
-		turnID := id("turn_")
-		receipt.TurnID = turnID
-		launch = &ExecutionRequest{SessionID: sessionID, TurnID: turnID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
-	case "steer":
-		if err := validateSteeringCommand(cmd, text, rec.Session); err != nil {
-			return receipt, err
-		}
-		steerRun = s.active[sessionID][cmd.TurnID]
-		if steerRun == nil {
-			return receipt, problem(409, "stale_turn", "target attempt is unavailable")
-		}
-		if len(steerRun.steering) >= cap(steerRun.steering) {
-			return receipt, problem(409, "capacity", "steering queue is full")
-		}
-		receipt.TurnID = cmd.TurnID
-	case "stop":
-		if len(s.active[sessionID]) == 0 && (rec.Session.Status == "recovery_required" || rec.Session.CustodyPending) {
-			base := ExecutionRequest{SessionID: sessionID, Owner: owner, SurfaceID: rec.Session.SurfaceID, Mode: rec.Session.Mode, ExecutionMode: rec.Session.ExecutionMode, TurnID: rec.Session.ActiveTurnID, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence}
-			custody = append(custody, base)
-			for _, child := range rec.Session.Children {
-				if child.Status == "uncertain" {
-					next := base
-					next.ChildID = child.ID
-					next.ReadOnly = true
-					custody = append(custody, next)
-				}
-			}
-		}
-		stop = true
-		receipt.TurnID = rec.Session.ActiveTurnID
-	case "resume":
-		if rec.Session.StopRequested {
-			return receipt, problem(409, "invalid_state", "stop was requested; retry stop to verify remaining custody")
-		}
-		if rec.Session.Status != "recovery_required" && rec.Session.Status != "waiting_auth" {
-			return receipt, problem(409, "invalid_state", "only waiting or interrupted sessions can resume")
-		}
-		if s.opts.Executor == nil {
-			return receipt, problem(503, "executor_unavailable", "no interactive executor is configured")
-		}
-		if rec.Session.ActiveTurnID == "" {
-			return receipt, problem(409, "recovery_required", "interrupted child requires operator reconciliation; no parent turn is resumable")
-		}
-		var turn *Turn
-		for i := range rec.Session.Turns {
-			if rec.Session.Turns[i].ID == rec.Session.ActiveTurnID {
-				turn = &rec.Session.Turns[i]
-			}
-		}
-		if turn == nil {
-			return receipt, problem(409, "recovery_required", "interrupted turn is unavailable")
-		}
-		request := ExecutionRequest{SessionID: sessionID, TurnID: turn.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: turn.Text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence + 1, Attempt: turn.Attempt + 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
-		s.bindSurfaceRequest(&request, surface)
-		if rec.Session.Status == "recovery_required" {
-			recovery, ok := s.opts.Executor.(RecoveryExecutor)
-			if !ok {
-				return receipt, problem(409, "recovery_required", "executor cannot verify prior writer custody")
-			}
-			if err := recovery.Recover(ctx, request); err != nil {
-				return receipt, problem(409, "recovery_required", s.clean(err.Error()))
-			}
-			for _, child := range rec.Session.Children {
-				if child.Status == "uncertain" {
-					childRequest := request
-					childRequest.ChildID = child.ID
-					childRequest.TurnID = child.ID
-					childRequest.ReadOnly = true
-					s.bindSurfaceRequest(&childRequest, surface)
-					if err := recovery.Recover(ctx, childRequest); err != nil {
-						return receipt, problem(409, "recovery_required", s.clean(err.Error()))
-					}
-				}
-			}
-		}
-		launch = &request
-		receipt.TurnID = turn.ID
-	case "child.request":
-		if text == "" {
-			return receipt, problem(400, "invalid", "child prompt is required")
-		}
-		if rec.Session.Status != "idle" && rec.Session.Status != "running" {
-			return receipt, problem(409, "invalid_state", "child cannot be requested in the current state")
-		}
-		if len(rec.Session.Children) >= surface.MaxChildren {
-			return receipt, problem(409, "child_limit", "surface child budget is exhausted")
-		}
-		receipt.ChildID = id("child_")
-		receipt.TurnID = origin.turnID
-	case "child.review":
-		var child *Child
-		for i := range rec.Session.Children {
-			if rec.Session.Children[i].ID == cmd.ChildID {
-				child = &rec.Session.Children[i]
-			}
-		}
-		if child == nil {
-			return receipt, problem(404, "not_found", "child is unavailable")
-		}
-		receipt.ChildID = child.ID
-		switch cmd.Decision {
-		case "approve":
-			if rec.Session.Status != "idle" {
-				return receipt, problem(409, "checkpoint_required", "wait for the parent turn to finish before approving a child snapshot")
-			}
-			if child.Status != "proposed" {
-				return receipt, problem(409, "invalid_state", "child is not eligible for approval")
-			}
-			if s.opts.Executor == nil {
-				return receipt, problem(503, "executor_unavailable", "no interactive executor is configured")
-			}
-			receipt.TurnID = child.ID
-			launch = &ExecutionRequest{SessionID: sessionID, TurnID: child.ID, ChildID: child.ID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, WorkflowYAML: child.WorkflowYAML, Text: child.Prompt, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions, ReadOnly: true}
-		case "deny":
-			if child.Status != "proposed" {
-				return receipt, problem(409, "invalid_state", "only proposed children can be denied")
-			}
-		case "accept":
-			if child.Status != "succeeded" && child.Status != "failed" {
-				return receipt, problem(409, "invalid_state", "only completed child results can be reviewed")
-			}
-		default:
-			return receipt, problem(400, "invalid", "child decision must be approve, deny or accept")
-		}
-	default:
-		return receipt, problem(400, "invalid", "unknown interactive command type")
-	}
-	if launch != nil {
-		s.bindSurfaceRequest(launch, surface)
-		if err := s.checkCapacity(surface, owner, sessionID, cmd.Type == "resume"); err != nil {
-			return receipt, err
-		}
-
-		launch.WorkerID = s.opts.WorkerID
-		launch.LeaseID = id("lease_")
-	}
-	err = s.mutate(func(state *diskState) error {
-		current := state.Sessions[sessionID]
-		firstEvent := len(current.Events)
-		appendEvent(current, "command.accepted", receipt.TurnID, cmd.CommandID, map[string]any{"commandType": cmd.Type, "text": text})
-		switch cmd.Type {
-		case "message":
-			current.Session.Lease = s.newLease(*launch)
-			current.Session.Status = "running"
-			current.Session.ActiveTurnID = launch.TurnID
-			current.Session.Turns = append(current.Session.Turns, Turn{ID: launch.TurnID, Text: text, Status: "running", Attempt: 1, Fence: launch.Fence, StartedAt: time.Now().UTC()})
-			appendEvent(current, "turn.started", launch.TurnID, cmd.CommandID, map[string]any{"attempt": 1, "fence": launch.Fence})
-		case "resume":
-			current.Session.CustodyPending = false
-			for i := range current.Session.Children {
-				if current.Session.Children[i].Lease != nil && current.Session.Children[i].Lease.Status == "custody_pending" {
-					current.Session.Children[i].Lease.Status = "released"
-				}
-			}
-			current.Session.Lease = s.newLease(*launch)
-			current.Session.Status = "running"
-			current.Session.Fence = launch.Fence
-			current.Session.RecoveryReason = ""
-			for i := range current.Session.Turns {
-				if current.Session.Turns[i].ID == launch.TurnID {
-					current.Session.Turns[i].Status = "running"
-					current.Session.Turns[i].Attempt = launch.Attempt
-					current.Session.Turns[i].Fence = launch.Fence
-					current.Session.Turns[i].FinishedAt = nil
-					current.Session.Turns[i].Error = ""
-				}
-			}
-			appendEvent(current, "turn.started", launch.TurnID, cmd.CommandID, map[string]any{"attempt": launch.Attempt, "fence": launch.Fence, "resumed": true})
-		case "stop":
-			current.Session.StopRequested = true
-			current.Session.Fence++
-			current.Session.StopFencePending = s.opts.OnStop != nil
-			current.Session.CustodyPending = current.Session.CustodyPending || len(custody) > 0
-			current.Session.Status = "stopping"
-			appendEvent(current, "session.stopping", current.Session.ActiveTurnID, cmd.CommandID, map[string]any{"fence": current.Session.Fence})
-			for i := range current.Session.Children {
-				if current.Session.Children[i].Status == "proposed" {
-					current.Session.Children[i].Status = "cancelled"
-				}
-			}
-			if len(s.active[sessionID]) == 0 && !current.Session.StopFencePending && !current.Session.CustodyPending {
-				markStopped(current)
-			}
-		case "child.request":
-			executionKind := "interactive-review"
-			if cmd.WorkflowYAML != "" {
-				executionKind = "interactive-workflow"
-			}
-			current.Session.Children = append(current.Session.Children, Child{WorkflowYAML: cmd.WorkflowYAML, WorkflowDigest: workflowDigest(cmd.WorkflowYAML), ActorSource: origin.source, SourceTurnID: origin.turnID, ExecutionKind: executionKind, ReadOnly: true, ID: receipt.ChildID, Prompt: text, Status: "proposed", RequestedAt: time.Now().UTC()})
-			appendEvent(current, "child.proposed", receipt.TurnID, cmd.CommandID, map[string]any{"childId": receipt.ChildID, "prompt": text, "readOnly": true, "workflowYaml": cmd.WorkflowYAML, "workflowDigest": workflowDigest(cmd.WorkflowYAML), "sourceTurnId": origin.turnID})
-		case "child.review":
-			for i := range current.Session.Children {
-				child := &current.Session.Children[i]
-				if child.ID != cmd.ChildID {
-					continue
-				}
-				now := time.Now().UTC()
-				child.ReviewedAt = &now
-				switch cmd.Decision {
-				case "approve":
-					child.Status = "running"
-					child.Lease = s.newLease(*launch)
-				case "deny":
-					child.Status = "denied"
-				case "accept":
-					child.Status = "reviewed"
-				}
-			}
-			kind := "child.reviewed"
-			if cmd.Decision == "approve" {
-				kind = "child.started"
-			}
-			appendEvent(current, kind, receipt.TurnID, cmd.CommandID, map[string]any{"childId": cmd.ChildID, "decision": cmd.Decision})
-		}
-		for i := firstEvent; i < len(current.Events); i++ {
-			current.Events[i].ActorSource = origin.source
-		}
-		receipt.Sequence = current.Session.Sequence
-		current.Commands[cmd.CommandID] = storedCommand{hash, receipt}
-		return nil
-	})
+	surface, err := s.commandSurface(sessionID, cmd, rec)
 	if err != nil {
 		return CommandReceipt{}, err
 	}
-	if launch != nil {
-		s.start(*launch)
+	p := &preparedCommand{
+		command: cmd, origin: origin,
+		receipt: CommandReceipt{CommandID: cmd.CommandID, SessionID: sessionID, Type: cmd.Type, Status: "accepted"},
+		text:    s.clean(strings.TrimSpace(cmd.Text)),
 	}
-	if steerRun != nil {
-		steerRun.steering <- s.steeringMessage(sessionID, cmd, text)
+	if err := s.prepareCommand(ctx, owner, rec, surface, p); err != nil {
+		return p.receipt, err
 	}
-	if stop && len(custody) > 0 {
-		s.mu.Unlock()
-		var custodyErr error
-		recoverer, ok := s.opts.Executor.(RecoveryExecutor)
-		if !ok {
-			custodyErr = errors.New("executor cannot verify prior writer custody")
-		} else {
-			for _, request := range custody {
-				if err := recoverer.Recover(ctx, request); err != nil {
-					custodyErr = err
-					break
-				}
-			}
+
+	if p.launch != nil {
+		s.bindSurfaceRequest(p.launch, surface)
+		if err := s.checkCapacity(surface, owner, p.receipt.SessionID, p.command.Type == "resume"); err != nil {
+			return p.receipt, err
 		}
-		s.mu.Lock()
-		err = s.mutate(func(state *diskState) error {
-			current := state.Sessions[sessionID]
-			current.Session.CustodyPending = custodyErr != nil
-			if custodyErr != nil {
-				current.Session.RecoveryReason = s.clean(custodyErr.Error())
-				appendEvent(current, "recovery.required", "", cmd.CommandID, map[string]any{"reason": current.Session.RecoveryReason})
-			}
-			if custodyErr == nil {
-				for i := range current.Session.Children {
-					if current.Session.Children[i].Status == "uncertain" {
-						current.Session.Children[i].Status = "cancelled"
-					}
-				}
-			}
-			if !current.Session.CustodyPending && !current.Session.StopFencePending && len(s.active[sessionID]) == 0 && current.Session.Status == "stopping" {
-				markStopped(current)
-			}
-			return nil
-		})
-		if err != nil {
+
+		p.launch.WorkerID = s.opts.WorkerID
+		p.launch.LeaseID = id("lease_")
+	}
+	err = s.commitCommand(p, hash)
+	if err != nil {
+		return CommandReceipt{}, err
+	}
+	if p.launch != nil {
+		s.start(*p.launch)
+	}
+	if p.steerRun != nil {
+		p.steerRun.steering <- s.steeringMessage(p.receipt.SessionID, p.command, p.text)
+	}
+	if p.command.Type == "stop" && len(p.custody) > 0 {
+		if err := s.recoverStoppedCommand(ctx, p); err != nil {
 			return CommandReceipt{}, err
 		}
 	}
-	if stop {
-		// The session fence is already durable. Never hold the session lock
-		// while acquiring the broker lock: broker admission checks us too.
-		if s.opts.OnStop != nil {
-			s.mu.Unlock()
-			hookErr := s.opts.OnStop(ctx, owner, sessionID)
-			s.mu.Lock()
-			err = s.mutate(func(state *diskState) error {
-				current := state.Sessions[sessionID]
-				current.Session.StopFencePending = hookErr != nil
-				if hookErr != nil {
-					appendEvent(current, "auth.fence_pending", "", cmd.CommandID, map[string]any{"reason": s.clean(hookErr.Error())})
-				} else if len(s.active[sessionID]) == 0 && !current.Session.CustodyPending && current.Session.Status == "stopping" {
-					markStopped(current)
-				}
-				return nil
-			})
-			if err != nil {
-				return CommandReceipt{}, err
-			}
-		}
-		for _, run := range s.active[sessionID] {
-			run.cancel()
+	if p.command.Type == "stop" {
+		if err := s.stopCommand(ctx, owner, p); err != nil {
+			return CommandReceipt{}, err
 		}
 	}
-	return receipt, nil
+	return p.receipt, nil
 }
 
 func markStopped(rec *sessionRecord) {

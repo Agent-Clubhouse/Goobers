@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // projectConfig derives an execution-only native config snapshot. Registration
@@ -77,6 +78,19 @@ func (s *Service) projectConfig(scope Scope, dst, repo string, p Policy) error {
 	if err != nil {
 		return err
 	}
+	if err = view.projectWorkflows(set, dst, repo, p, wanted, gooberNames); err != nil {
+		return err
+	}
+	if err = projectGoobers(set, src, dst, p, gooberNames); err != nil {
+		return err
+	}
+	if err = validateConfig(dst); err != nil {
+		return fmt.Errorf("filtered native configuration is unsupported: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) projectWorkflows(set *instance.ConfigSet, dst, repo string, p Policy, wanted, gooberNames map[string]bool) error {
 	for _, wf := range set.Workflows {
 		if wf.Spec.Gaggle != p.Gaggle || !wanted[wf.Name] {
 			continue
@@ -103,16 +117,20 @@ func (s *Service) projectConfig(scope Scope, dst, repo string, p Policy) error {
 		}
 		// Only the bounded subset is rebound to the current workspace. Other
 		// configured workflows remain visible but submit validation refuses them.
-		if v := view.validateWorkflow(string(data), repo); v.Valid {
+		if v := s.validateWorkflow(string(data), repo); v.Valid {
 			data = []byte(v.BoundYAML)
 		}
-		if err = os.WriteFile(filepath.Join(dst, "workflow-"+wf.Name+".yaml"), data, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dst, "workflow-"+wf.Name+".yaml"), data, 0600); err != nil {
 			return err
 		}
 	}
 	if len(wanted) > 0 {
 		return errors.New("policy references a workflow absent from the selected gaggle")
 	}
+	return nil
+}
+
+func projectGoobers(set *instance.ConfigSet, src, dst string, p Policy, gooberNames map[string]bool) error {
 	for _, g := range set.Goobers {
 		if !gooberNames[g.Name] {
 			continue
@@ -166,9 +184,6 @@ func (s *Service) projectConfig(scope Scope, dst, repo string, p Policy) error {
 	}
 	if len(gooberNames) > 0 {
 		return errors.New("selected workflow references an unavailable goober")
-	}
-	if err = validateConfig(dst); err != nil {
-		return fmt.Errorf("filtered native configuration is unsupported: %w", err)
 	}
 	return nil
 }

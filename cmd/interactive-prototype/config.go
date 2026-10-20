@@ -199,7 +199,7 @@ func walkConfig(source string, write func(string, []byte) error) (string, error)
 	if err != nil {
 		return "", err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	openedRoot, err := root.Stat(".")
 	if err != nil || !os.SameFile(sourceInfo, openedRoot) {
 		return "", fmt.Errorf("DSL snapshot source changed during inspection")
