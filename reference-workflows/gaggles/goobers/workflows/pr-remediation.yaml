@@ -4,7 +4,7 @@
 # budget changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "2.0"
+dslVersion: "3.0"
 metadata:
   name: pr-remediation
   annotations:
@@ -99,7 +99,6 @@ spec:
         - selectedNumber
         - needsFullRemediation
       next: update-behind-gate
-
     # Full-remediation context stage (issue #362, design doc §5): select one open, goober-
     # authored PR labeled needs-remediation or reporting failing CI, check out
     # ITS branch into this
@@ -143,7 +142,7 @@ spec:
         # pristine branch cut from main and remediate the wrong tree.
         - workspaceBranch
       next: gather-ci-failures
-
+      repoFrom: update-behind-pr
     # PRR-2: enrich only a failing-CI brief with the provider's high-signal,
     # bounded diagnostics. Passing CI is a journal-only no-op with no provider
     # calls. Raw job logs have an explicit 0-byte bound; check summaries and
@@ -167,7 +166,6 @@ spec:
         - hasFailingCI
         - workspaceBranch
       next: gather-sibling-context
-
     # Reuse merge-review's sibling gatherer before cause classification so
     # overlap-attributable verdict findings are charged only to sibling-overlap,
     # while unrelated substantive findings retain their own cause. The command
@@ -206,7 +204,7 @@ spec:
         - hasFailingCI
         - hasSiblingOverlap
       next: rebase-pr
-
+      repoFrom: update-behind-pr
     # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
     # clean rebase never suppresses a known substantive finding, and a rebase
     # unresolved conflict is itself substantive. A conflict consisting only
@@ -283,7 +281,7 @@ spec:
         - policyExcluded
         - policyExcludedReason
       next: rebase-gate
-
+      repoFrom: update-behind-pr
     # A failing cloud check may be unrelated to this PR or already tracked as
     # a flake. Retry the failed jobs once before charging or comparing a
     # remediation attempt. The poll carries rebase-pr's explicit handoff
@@ -332,7 +330,6 @@ spec:
         - policyExcluded
         - policyExcludedReason
       next: remediation-checkpoint
-
     # D4/D5 loop-control (issue #364, design doc §6): runs only when
     # rebase-pr couldn't finish the PR itself this cycle (rebase-gate's
     # "fail" branch — conflict or a substantive finding). Checks out the
@@ -407,7 +404,7 @@ spec:
         - attemptedCauses
         - escalationReason
       next: checkpoint-gate
-
+      repoFrom: rebase-pr
     # PRR-3 / design doc D1: replace only the review-thread section of the
     # versioned brief with native review bodies and anchored inline comments.
     # Resolved and outdated state stay explicit so stale feedback does not burn
@@ -423,7 +420,6 @@ spec:
       capabilities:
         - github:pr:write
       next: gather-issue-context
-
     # Re-check the selected PR immediately before spending another agent
     # session on it. A terminal PR returns no-work and releases its claim, so a
     # merge between checkpointing and rework cannot occupy the remediation
@@ -439,7 +435,6 @@ spec:
       policyActions:
         - release-pr-claim
       next: gather-review-threads
-
     # Reviewer and CI repasses route here rather than directly back to the
     # agent, closing the same merged-while-running window on every attempt.
     - name: guard-before-implement
@@ -453,7 +448,6 @@ spec:
       policyActions:
         - release-pr-claim
       next: warm-module-cache
-
     # #4179: a stalled Go module download inside the agentic implement session
     # is indistinguishable, from the run's own journal, from a looping agent —
     # both present as one lifecycle event and a 90-minute silence, and both
@@ -479,7 +473,7 @@ spec:
       retry:
         maxAttempts: 1
       next: warm-module-cache-gate
-
+      repoFrom: [implement, rebase-pr]
     # A stale-feedback repass (#6126) whose agent pass found the new feedback
     # needs no code change ("thanks", a question the thread reply answers)
     # leaves the branch exactly at the head that already passed review and
@@ -505,7 +499,7 @@ spec:
       expectedOutputs:
         - feedbackNoop
       next: feedback-repass-gate
-
+      repoFrom: implement
     # Implementation can outlive its subject. Re-check before spending a
     # reviewer session on work for a PR that has since become terminal.
     - name: guard-before-review
@@ -519,7 +513,6 @@ spec:
       policyActions:
         - release-pr-claim
       next: review
-
     # PRR-4 / design doc D1: enrich the versioned brief with every resolvable
     # issue the PR declares through GitHub's closing-keyword grammar. Missing
     # references produce an explicit empty section, so this optional evidence
@@ -536,7 +529,6 @@ spec:
         - github:pr:write
         - github:issues:read
       next: guard-before-implement
-
     # Agentic rework in a worktree provisioned on the PR's own branch (see
     # this file's top comment): the SAME implementer goober implementation.yaml
     # uses, entered on an existing PR rather than a fresh issue. Scoped to
@@ -547,44 +539,7 @@ spec:
       type: agentic
       goober: implementer
       goal: >-
-        Remediate this pull request. The worktree is already checked out on
-        the PR's own branch, rebased onto its base where that was possible.
-        Read the enriched remediation-brief.json from the attached context —
-        the gather-issue-context artifact, which supersedes the earlier
-        gather-pr-context, gather-review-threads, and gather-ci-failures
-        remediation-brief.json copies (ignore those). It contains the full
-        merge-review verdict, issue-level PR comments, failing check
-        summaries/annotations, the originating issue body and acceptance
-        criteria, native review bodies, and anchored inline review threads with
-        their resolved/outdated state. Also read the sibling PR file/overlap
-        context (sibling-context.json), plus any rebase conflict left to
-        resolve, and address EVERY
-        finding in the verdict: it is a checklist, and merge-review re-verifies
-        each item before the PR can become merge-ready, so a fix that only
-        addresses some of them just burns another cycle. In every successful
-        result, set outputs.findingResponses to a JSON-encoded array containing
-        exactly one object for each original merge-review verdict finding, in
-        this shape: {"finding": <1-based verdict order>, "disposition":
-        "addressed"|"declined", "detail": "<what changed, or why the finding
-        does not apply>"}. Emit "[]" when that verdict has no findings. This
-        is a scalar JSON string, not a structured output value; the later
-        respond-to-findings stage validates and publishes it. On a reviewer
-        repass, replace the whole array with an updated, complete account of
-        the original verdict — do not report only the new reviewer feedback.
-        Also set outputs.threadResponses to a JSON-encoded array with exactly
-        one object for every unresolved, non-outdated native review thread:
-        {"threadId":"<gathered threadId>","disposition":
-        "addressed"|"obsolete"|"blocked","detail":"<what changed or why the
-        thread remains open>"}. Emit "[]" when there are no live threads.
-        Never invent or substitute thread IDs.
-        If the rebase
-        conflicted, resolving it IS the work. Verify with fast, targeted tests
-        for what you changed, and commit to the PR's branch (push is a separate
-        deterministic stage — see push-remediated below). Do NOT run the full
-        `make ci` / `go test -race ./...` suite in-session — the deterministic
-        local-ci stage below owns that authoritatively (#724). On a repass,
-        first read the reviewer rationale or CI failure evidence attached as
-        context and address it before making further changes.
+        Remediate this pull request. The worktree is already checked out on the PR's own branch, rebased onto its base where that was possible. Read the enriched remediation-brief.json from the attached context — the gather-issue-context artifact, which supersedes the earlier gather-pr-context, gather-review-threads, and gather-ci-failures remediation-brief.json copies (ignore those). It contains the full merge-review verdict, issue-level PR comments, failing check summaries/annotations, the originating issue body and acceptance criteria, native review bodies, and anchored inline review threads with their resolved/outdated state. Also read the sibling PR file/overlap context (sibling-context.json), plus any rebase conflict left to resolve, and address EVERY finding in the verdict: it is a checklist, and merge-review re-verifies each item before the PR can become merge-ready, so a fix that only addresses some of them just burns another cycle. In every successful result, set outputs.findingResponses to a JSON-encoded array containing exactly one object for each original merge-review verdict finding, in this shape: {"finding": <1-based verdict order>, "disposition": "addressed"|"declined", "detail": "<what changed, or why the finding does not apply>"}. Emit "[]" when that verdict has no findings. This is a scalar JSON string, not a structured output value; the later respond-to-findings stage validates and publishes it. On a reviewer repass, replace the whole array with an updated, complete account of the original verdict — do not report only the new reviewer feedback. Also set outputs.threadResponses to a JSON-encoded array with exactly one object for every unresolved, non-outdated native review thread: {"threadId":"<gathered threadId>","disposition": "addressed"|"obsolete"|"blocked","detail":"<what changed or why the thread remains open>"}. Emit "[]" when there are no live threads. Never invent or substitute thread IDs. If the rebase conflicted, resolving it IS the work. Verify with fast, targeted tests for what you changed, and commit to the PR's branch (push is a separate deterministic stage — see push-remediated below). Do NOT run the full `make ci` / `go test -race ./...` suite in-session — the deterministic local-ci stage below owns that authoritatively (#724). On a repass, first read the reviewer rationale or CI failure evidence attached as context and address it before making further changes.
       capabilities:
         - repo:push
         - agent:model
@@ -611,7 +566,7 @@ spec:
       # branch that never moved, so this is defense in depth, not the only
       # guard.)
       next: validate-finding-responses
-
+      repoFrom: rebase-pr
     # Validate the model-authored scalar while the run can still repass into
     # implement. The terminal responder repeats the same validation after
     # publication as defense in depth, but discovering a count mismatch there
@@ -625,7 +580,6 @@ spec:
       inputs:
         resultFile: "finding-response-validation.json"
       next: finding-responses-gate
-
     # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
     # the PR's branch carrying the rework.
     - name: local-ci
@@ -652,7 +606,7 @@ spec:
       retry:
         maxAttempts: 1
       next: local-gate
-
+      repoFrom: implement
     # Review can outlive its subject. Check once more before the expensive
     # project-wide validation stage; a closed PR cannot consume CI capacity or
     # reach publication.
@@ -667,7 +621,6 @@ spec:
       policyActions:
         - release-pr-claim
       next: local-ci
-
     # Local CI can run long enough for the PR to merge or close. Re-check before
     # publishing so a terminal PR releases its claim without pushing or replying.
     #
@@ -693,7 +646,7 @@ spec:
       expectedOutputs:
         - staleInput
       next: push-feedback-gate
-
+      repoFrom: implement
     # Publish (issue #392, design doc §5's "re-push -> clear label"). The
     # counterpart to implementation's push-branch: force-push-with-lease to
     # the PR's own head instead of a plain push to a fresh run branch, then
@@ -726,7 +679,7 @@ spec:
         - head
         - localHead
       next: respond-to-findings
-
+      repoFrom: implement
     # PRR-7 / design doc D3: publish the account only after the branch moved,
     # so every "addressed" claim describes work that actually landed. The
     # stage reads both the original verdict artifact and implement's structured
@@ -756,7 +709,6 @@ spec:
         maxAttempts: 2
         backoffSeconds: 5
       next: published-remediation-gate
-
     - name: resolve-review-threads
       type: deterministic
       goal: Reply to every gathered live review thread, resolve addressed threads, and verify the published head has no unresolved live feedback.
@@ -778,7 +730,6 @@ spec:
         maxAttempts: 2
         backoffSeconds: 5
       next: review-thread-feedback-gate
-
     # Explicit release mirrors backlog-curation's terminal cleanup rather than
     # relying solely on runner finalization. It is idempotent with the early
     # guards and the runner's terminal cleanup.
@@ -794,7 +745,6 @@ spec:
         - release-pr-claim
       # Terminal: the PR is back in merge-review's hands and its remediation
       # slot is immediately available to another open PR.
-
     # Escalation must retain its terminal phase after releasing the claim, so
     # its release stage has an explicit @escalate successor.
     - name: release-escalated-claim
@@ -808,7 +758,6 @@ spec:
       policyActions:
         - release-pr-claim
       next: "@escalate"
-
     # Terminal @escalate for a reviewer "fail" verdict (design doc §4 D2:
     # `fail` is a fundamentally wrong approach, and must NOT be burned on
     # remediation budget the way `needs-changes` is). Escalating here parks
@@ -818,13 +767,7 @@ spec:
       type: deterministic
       goal: Park a reviewer-rejected PR with the terminal escalation reason.
       run:
-        command:
-          [
-            "goobers",
-            "remediation-checkpoint",
-            "--escalate",
-            "the in-run reviewer returned a terminal `fail` verdict on this remediation attempt — the approach itself was rejected, not just its details (design doc §4 D2)",
-          ]
+        command: ["goobers", "remediation-checkpoint", "--escalate", "the in-run reviewer returned a terminal `fail` verdict on this remediation attempt — the approach itself was rejected, not just its details (design doc §4 D2)"]
       inputs:
         resultFile: "reviewer-escalation-result.json"
       capabilities:
@@ -846,20 +789,12 @@ spec:
       # reviewer-rejected remediation indistinguishable from an ordinary
       # failure.
       next: release-escalated-claim
-
+      repoFrom: [implement, rebase-pr]
     - name: park-infrastructure-failure
       type: deterministic
       goal: Park a remediation blocked by a retryable infrastructure failure.
       run:
-        command:
-          [
-            "goobers",
-            "remediation-checkpoint",
-            "--escalate",
-            "local CI could not complete because of a retryable infrastructure failure; no implementation defect was established",
-            "--escalation-outcome",
-            "infrastructure-failure",
-          ]
+        command: ["goobers", "remediation-checkpoint", "--escalate", "local CI could not complete because of a retryable infrastructure failure; no implementation defect was established", "--escalation-outcome", "infrastructure-failure"]
       inputs:
         resultFile: "infrastructure-escalation-result.json"
       capabilities:
@@ -875,20 +810,12 @@ spec:
         - attemptedCauses
         - escalationReason
       next: release-escalated-claim
-
+      repoFrom: [implement, rebase-pr]
     - name: park-invalid-finding-responses
       type: deterministic
       goal: Park a PR whose implementer exhausted the finding-response validation repass budget.
       run:
-        command:
-          [
-            "goobers",
-            "remediation-checkpoint",
-            "--escalate",
-            "the implementer exhausted the in-run repass budget without producing a complete response for every original merge-review finding",
-            "--escalation-outcome",
-            "budget-exhausted",
-          ]
+        command: ["goobers", "remediation-checkpoint", "--escalate", "the implementer exhausted the in-run repass budget without producing a complete response for every original merge-review finding", "--escalation-outcome", "budget-exhausted"]
       inputs:
         resultFile: "finding-response-escalation-result.json"
       capabilities:
@@ -904,7 +831,7 @@ spec:
         - attemptedCauses
         - escalationReason
       next: release-escalated-claim
-
+      repoFrom: implement
     # Human feedback kept changing under the run: every stale-input repass
     # re-gathered it and it had changed again by the next publication check.
     # Park only here, once the repass budget is spent (#6126).
@@ -912,15 +839,7 @@ spec:
       type: deterministic
       goal: Park a PR whose human feedback kept changing faster than the in-run repass budget could answer it.
       run:
-        command:
-          [
-            "goobers",
-            "remediation-checkpoint",
-            "--escalate",
-            "the pull request's human feedback kept changing after it was gathered, and the in-run re-gather budget was exhausted before a publication could answer the current feedback",
-            "--escalation-outcome",
-            "budget-exhausted",
-          ]
+        command: ["goobers", "remediation-checkpoint", "--escalate", "the pull request's human feedback kept changing after it was gathered, and the in-run re-gather budget was exhausted before a publication could answer the current feedback", "--escalation-outcome", "budget-exhausted"]
       inputs:
         resultFile: "stale-feedback-escalation-result.json"
       capabilities:
@@ -936,18 +855,12 @@ spec:
         - attemptedCauses
         - escalationReason
       next: release-escalated-claim
-
+      repoFrom: implement
     - name: park-unresolved-review-threads
       type: deterministic
       goal: Park a remediated PR while native review threads still require attention.
       run:
-        command:
-          [
-            "goobers",
-            "remediation-checkpoint",
-            "--escalate",
-            "unresolved, non-outdated native review threads remain after the published remediation",
-          ]
+        command: ["goobers", "remediation-checkpoint", "--escalate", "unresolved, non-outdated native review threads remain after the published remediation"]
       inputs:
         resultFile: "review-thread-escalation-result.json"
       capabilities:
@@ -958,7 +871,7 @@ spec:
         - record-remediation-checkpoint
         - escalate-pr
       next: release-escalated-claim
-
+      repoFrom: implement
   gates:
     # #4179: same failure-class evaluator local-gate below already uses, same
     # infra disposition (park-infrastructure-failure — this workflow's own
@@ -977,7 +890,6 @@ spec:
         fail: implement
         infra: park-infrastructure-failure
         escalate: park-escalated
-
     # A completed API update is terminal. Every confirmed conflict, substantive
     # finding, failing check, or non-behind candidate enters the existing
     # gather/rebase/agentic path without changing its semantics.
@@ -991,7 +903,6 @@ spec:
       branches:
         pass: release-claim
         fail: gather-pr-context
-
     # Automated branch on rebase-pr's own needsAgent output (internal/
     # gate's generic "output-equals" check — Inputs[params.key] compared to
     # params.equals; no new check needed, this already existed for exactly
@@ -1006,7 +917,6 @@ spec:
       branches:
         pass: release-claim
         fail: retry-failed-ci
-
     # Loop-control decision (#392): remediation-checkpoint runs BEFORE the
     # agentic chain so an exhausted cause budget or a no-progress repeat escalates
     # without first spending an agentic session on a PR that cannot advance.
@@ -1027,7 +937,6 @@ spec:
       branches:
         pass: checkpoint-continue-gate
         fail: release-escalated-claim
-
     # Preserve the existing moot/no-cause behavior: an empty escalation outcome
     # with continueRemediation=false finishes normally rather than escalating.
     - name: checkpoint-continue-gate
@@ -1040,7 +949,6 @@ spec:
       branches:
         pass: guard-before-agent-context
         fail: release-claim
-
     # A malformed or partial finding account is repairable agent output, not a
     # post-publication provider failure. Route its exact validation error back
     # to the implementer before spending review/CI work or moving the PR branch.
@@ -1054,7 +962,6 @@ spec:
         pass: classify-feedback-repass
         fail: guard-before-implement
         escalate: park-invalid-finding-responses
-
     # feedbackNoop="false" is the normal path (pass, never charged). "true"
     # skips review and local CI — both already passed on this exact head —
     # and returns to guard-before-push, which re-verifies the feedback
@@ -1075,7 +982,6 @@ spec:
         pass: guard-before-review
         fail: guard-before-push
         escalate: park-stale-feedback
-
     # Stale-input routing (#6126). guard-before-push and resolve-review-threads
     # report staleInput="" when the live feedback still matches the snapshot
     # (or none was recorded — runs gathered before snapshots existed), else
@@ -1097,7 +1003,6 @@ spec:
         pass: push-remediated
         fail: gather-review-threads
         escalate: park-stale-feedback
-
     - name: review-thread-feedback-gate
       evaluator: automated
       automated:
@@ -1109,7 +1014,6 @@ spec:
         pass: review-threads-gate
         fail: gather-review-threads
         escalate: park-stale-feedback
-
     - name: review-threads-gate
       evaluator: automated
       automated:
@@ -1120,7 +1024,6 @@ spec:
       branches:
         pass: release-claim
         fail: park-unresolved-review-threads
-
     # respond-to-findings records posted=false when push-remediated discovers
     # that the PR closed mid-run. Preserve that terminal no-op by releasing the
     # claim without attempting to reconcile threads on an unpublished head.
@@ -1134,7 +1037,6 @@ spec:
       branches:
         pass: resolve-review-threads
         fail: release-claim
-
     # Agentic reviewer gate, the same shape and the same reviewer goober
     # implementation.yaml uses. The runner computes `git diff base...HEAD` on
     # the stage's worktree and attaches it as the reviewer's evidence — which
@@ -1156,7 +1058,6 @@ spec:
         needs-changes: guard-before-implement
         fail: park-escalated
         escalate: park-escalated
-
     # A genuine CI failure remains actionable by the implementer. Retryable
     # executor/infrastructure failures park with an explicit infra disposition.
     - name: local-gate

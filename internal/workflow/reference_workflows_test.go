@@ -519,7 +519,7 @@ func TestReferenceWorkflowsRemediationRejectsOmittedPersonaActions(t *testing.T)
 	}
 
 	_, err = compileAcknowledged(
-		Definition{Name: remediation.Name, Version: 1, Spec: remediation.Spec},
+		Definition{Name: remediation.Name, Version: 1, DSLVersion: remediation.DSLVersion, Spec: remediation.Spec},
 		WithGoobers(map[string]apiv1.GooberSpec{implementer.Name: implementer.Spec}),
 	)
 	const want = `task "implement" invokes goober "implementer" whose persona prescribes policy action "modify-repository", but policyActions does not declare it`

@@ -16,7 +16,7 @@ func TestShippedBranchCleanupWorkflowIsScheduledAndDryRunByDefault(t *testing.T)
 	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "branch-cleanup.yaml")
 	var w apiv1.Workflow
 	readResweepFixture(t, path, &w)
-	def := Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+	def := Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 	m, err := compileAcknowledged(def)
 	if err != nil {
 		t.Fatal(err)

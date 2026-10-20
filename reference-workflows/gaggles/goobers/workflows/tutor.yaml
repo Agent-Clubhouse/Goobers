@@ -4,7 +4,7 @@
 # budget changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "2.0"
+dslVersion: "3.0"
 metadata:
   name: tutor
   annotations:
@@ -64,7 +64,6 @@ spec:
         - telemetry:read
         - github:pr:write
       next: gather-signals
-
     # Built-in provider-chain style stage: queries the telemetry rollup for
     # cross-run aggregates (T2, #102) and emits the versioned
     # candidate-findings artifact (#148's schema) for the analyst to
@@ -80,7 +79,6 @@ spec:
       capabilities:
         - telemetry:read
       next: analyze
-
     # Agentic diagnosis: resolves the flagged runs' journal evidence
     # read-only (cross-run journal:read, #103) and writes a single
     # prioritized finding + recommended config change as a declared-output
@@ -92,10 +90,7 @@ spec:
       goober: analyst
       workspace: repo-readonly
       goal: >-
-        Diagnose the highest-priority recurring problem from the gathered
-        signals using its resolvable journal evidence, and write a single
-        finding.md artifact naming the exact config change to propose and
-        why (with evidence links).
+        Diagnose the highest-priority recurring problem from the gathered signals using its resolvable journal evidence, and write a single finding.md artifact naming the exact config change to propose and why (with evidence links).
       capabilities:
         - telemetry:read
         - journal:read
@@ -103,7 +98,6 @@ spec:
       expectedOutputs:
         - finding
       next: draft-change
-
     # Agentic authoring: reads the analyst's finding (via ContextPointers,
     # not a fresh telemetry/journal read of its own — narrowest capability
     # footprint that can still cite the same evidence) and drafts the
@@ -122,9 +116,7 @@ spec:
       type: agentic
       goober: config-author
       goal: >-
-        Read the analyst's finding, make exactly the config or skill-body
-        change it recommends (and nothing else, and never both in the same
-        run), and commit to the run's branch.
+        Read the analyst's finding, make exactly the config or skill-body change it recommends (and nothing else, and never both in the same run), and commit to the run's branch.
       capabilities:
         - repo:push
         - agent:model
@@ -133,7 +125,6 @@ spec:
       expectedOutputs:
         - changed-files
       next: gate-removal-guard
-
     # Metric-gaming guard (TUT-A3, #1215, docs/design/tutor-redesign.md §5
     # item 2): the Tutor mines gate-never-fails/gate-repass-churn findings,
     # so the cheapest way for a drafted change to "improve" that metric is to
@@ -153,7 +144,7 @@ spec:
       inputs:
         resultFile: "gate-edit.json"
       next: gate-removal-clear
-
+      repoFrom: draft-change
     # Validate the drafted reference-workflows tree, not the running instance's unchanged
     # config copy. Calling the CLI directly lets the executor substitute the
     # running daemon's exact binary rather than relying on PATH.
@@ -163,7 +154,7 @@ spec:
       run:
         command: ["goobers", "validate", "--source-tree", "reference-workflows"]
       next: config-valid
-
+      repoFrom: draft-change
     # TUT-A2 (#1214, docs/design/tutor-redesign.md §5.1): fail-first
     # validation-authorship contract. A Workflow's `gates:` ARE its
     # validation/branching states, so a new gate on any changed
@@ -173,13 +164,11 @@ spec:
     - name: check-fail-first
       type: deterministic
       goal: >-
-        Refuse to publish a new workflow-level validation stage unless this
-        run's branch also committed evidence it fails against the pre-change
-        config and passes against the fix.
+        Refuse to publish a new workflow-level validation stage unless this run's branch also committed evidence it fails against the pre-change config and passes against the fix.
       run:
         command: ["goobers", "check-fail-first"]
       next: fail-first-valid
-
+      repoFrom: draft-change
     # Deterministic branch push (#237), reached only after config validation
     # and the fail-first check.
     - name: push-branch
@@ -192,7 +181,7 @@ spec:
       policyActions:
         - push-repository-branch
       next: open-pr
-
+      repoFrom: draft-change
     - name: open-pr
       type: deterministic
       goal: Open the PR for the run's proposed config change, with evidence links in the body.
@@ -234,6 +223,7 @@ spec:
       # follow its normal path; structure/skill/validation changes remain
       # CODEOWNER/manual-only and are independently refused by merge-pr.
 
+      repoFrom: draft-change
   gates:
     # A non-zero gate-removal-guard exit means it blocked a self-serving gate
     # edit (TUT-A3, #1215) — abort rather than publishing the branch.
@@ -244,7 +234,6 @@ spec:
       branches:
         pass: validate-config
         fail: "@abort"
-
     # A non-zero validate exit becomes a failure ResultEnvelope. Abort rather
     # than publishing an invalid branch; the runner journals this verdict.
     - name: config-valid
@@ -254,7 +243,6 @@ spec:
       branches:
         pass: check-fail-first
         fail: "@abort"
-
     # TUT-A2 (#1214): a non-zero check-fail-first exit means this branch added
     # a new validation stage (gate) without committed red-then-green evidence
     # (or with evidence that doesn't actually show fail-then-pass). Abort

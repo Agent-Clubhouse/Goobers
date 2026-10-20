@@ -4,7 +4,7 @@
 # budget changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "2.0"
+dslVersion: "3.0"
 metadata:
   name: backlog-curation
   annotations:
@@ -182,18 +182,7 @@ spec:
       type: agentic
       goober: curator
       goal: >-
-        Curate forward items and re-check selected ready items for drift using
-        each item's deterministic staleness signal and the ranked duplicate
-        candidates as evidence. Treat in-flight re-sweep items as read-only.
-        Only mutate items in the deterministic claim artifact; if no mutable
-        item was claimed, do not promote or otherwise change unclaimed backlog
-        items.
-        Unclaimed candidate members are read-only except for narrowly scoped
-        roadmap maintenance on directly linked tracking parents.
-        Dedupe, handle staleness, tag, split oversized items, maintain milestone
-        and tracking-parent organization, and mark each item goobers:ready,
-        goobers:blocked-on-sibling, or goobers:needs-human. Explain every
-        mutation in a comment.
+        Curate forward items and re-check selected ready items for drift using each item's deterministic staleness signal and the ranked duplicate candidates as evidence. Treat in-flight re-sweep items as read-only. Only mutate items in the deterministic claim artifact; if no mutable item was claimed, do not promote or otherwise change unclaimed backlog items. Unclaimed candidate members are read-only except for narrowly scoped roadmap maintenance on directly linked tracking parents. Dedupe, handle staleness, tag, split oversized items, maintain milestone and tracking-parent organization, and mark each item goobers:ready, goobers:blocked-on-sibling, or goobers:needs-human. Explain every mutation in a comment.
       capabilities:
         - github:issues:write
         - github:milestones:write
@@ -230,3 +219,5 @@ spec:
       policyActions:
         - release-backlog-claim
       # Terminal: no `next`.
+
+      repoFrom: curate

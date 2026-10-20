@@ -69,7 +69,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 
 			m, err := compileAcknowledged(
-				Definition{Name: w.Name, Version: 1, Spec: w.Spec},
+				Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec},
 				WithGoobers(map[string]apiv1.GooberSpec{tt.reviewerName: reviewer.Spec}),
 				WithKnownChecks([]string{"output-equals", "land-outcome", "queue-outcome"}))
 

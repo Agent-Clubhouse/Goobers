@@ -69,7 +69,7 @@ func TestReferenceRecoveryPreservesImplementationGates(t *testing.T) {
 		}
 		goobers[goober.Name] = goober.Spec
 	}
-	if _, err := compileAcknowledged(Definition{Name: recovery.Name, Version: 1, Spec: recovery.Spec}, WithGoobers(goobers)); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: recovery.Name, Version: 1, DSLVersion: recovery.DSLVersion, Spec: recovery.Spec}, WithGoobers(goobers)); err != nil {
 		t.Fatalf("recovery workflow does not compile: %v", err)
 	}
 }

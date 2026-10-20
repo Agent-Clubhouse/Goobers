@@ -14,7 +14,9 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-const referenceWorkflowsDir = "../../reference-workflows/gaggles/goobers/workflows"
+// Preserve the pre-lock DSL 2.0 inputs even after the shipped references move
+// to 3.0, so migration and transition-graph conformance remain exercised.
+const referenceWorkflowsDir = "testdata/reference_v2"
 
 func readReferenceWorkflows(t *testing.T) map[string]apiv1.Workflow {
 	t.Helper()
@@ -94,8 +96,8 @@ func TestAcceptanceEveryReferenceWorkflowMigratesClean(t *testing.T) {
 			migrated++
 		})
 	}
-	if migrated == 0 {
-		t.Fatal("no reference workflows were migrated")
+	if migrated != 16 {
+		t.Fatalf("migrated %d reference fixtures, want all 16 pre-lock DSL 2.0 inputs", migrated)
 	}
 }
 
