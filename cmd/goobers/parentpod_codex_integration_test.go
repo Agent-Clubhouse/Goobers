@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"gopkg.in/yaml.v3"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationCodexParentAuthorsChildThroughRealWorkers(t *testing.T) {
@@ -57,8 +58,9 @@ func installQualificationParentProbe(t *testing.T, bin string) {
 	probe := "#!/bin/sh\ncase \"$*\" in\n --version) echo '2.1.0 (qualification preflight)' ;;\n 'auth status') echo '{\"loggedIn\":true}' ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
 	if command == "copilot" {
 		// Copilot's native authentication check is a fixed prompt. The fixture
-		// answers only that exact preflight; arbitrary host inference fails.
-		probe = "#!/bin/sh\ncase \"$*\" in\n --version) echo 'GitHub Copilot CLI 1.0.98 (qualification preflight)' ;;\n --help) echo 'Usage: copilot [OPTIONS] [COMMAND]\nOptions:\n      --allow-all-tools\n      --log-level <level>\n      --log-dir <directory>\n      --session-id <id>\n      --no-remote-export' ;;\n '-p Reply with exactly: ok --allow-all-tools --available-tools= --no-remote-export') echo ok ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
+		// answers only that exact preflight, including the export opt-out and
+		// name-kill deny flags; arbitrary host inference fails.
+		probe = "#!/bin/sh\ncase \"$*\" in\n --version) echo 'GitHub Copilot CLI 1.0.98 (qualification preflight)' ;;\n --help) echo 'Usage: copilot [OPTIONS] [COMMAND]\nOptions:\n      --allow-all-tools\n      --log-level <level>\n      --log-dir <directory>\n      --session-id <id>\n      --no-remote-export' ;;\n '-p Reply with exactly: ok --allow-all-tools --available-tools= --no-remote-export --deny-tool=shell(pkill) --deny-tool=shell(killall) --deny-tool=shell(/usr/bin/pkill) --deny-tool=shell(/usr/bin/killall) --deny-tool=shell(/bin/pkill) --deny-tool=shell(/bin/killall) --deny-tool=shell(/usr/bin/env pkill) --deny-tool=shell(/usr/bin/env killall)') echo ok ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, command), []byte(probe), 0700); err != nil {
 		t.Fatal(err)
