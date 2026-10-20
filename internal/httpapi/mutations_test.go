@@ -509,3 +509,36 @@ func TestMutationRoutesAreRuntimeMutationSurfaceActions(t *testing.T) {
 		t.Fatalf("runtime mutations = %+v, want %+v", found, want)
 	}
 }
+
+type panickingRerunInterventions struct{ fakeInterventions }
+
+func (*panickingRerunInterventions) AcceptRerunStage(context.Context, context.Context, InterventionRequest) (InterventionResult, error) {
+	panic("custody collaborator failed")
+}
+
+func TestRerunPanicReturnsStructuredHTTPError(t *testing.T) {
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithInterventions(&panickingRerunInterventions{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	req, err := http.NewRequest(http.MethodPost, server.URL+stagePath("rerun"), strings.NewReader(`{"actor":"operator","instructionAddendum":"retry"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(HeaderIdempotencyKey, "panic-rerun")
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("rerun dropped HTTP connection: %v", err)
+	}
+	defer response.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusInternalServerError || body["error"] == nil {
+		t.Fatalf("response = %d %v", response.StatusCode, body)
+	}
+}
