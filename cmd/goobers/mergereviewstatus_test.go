@@ -338,7 +338,7 @@ func TestVerdictRecordPublishesGiteaCommitStatus(t *testing.T) {
 	gitea := providers.NewGiteaProvider(server.URL, "review-token")
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: "your-org", Name: "your-repo"}
 	record := verdictRecord{
-		root:     newVerdictTestRoot(t),
+		root:     initDemo(t),
 		provider: gitea, statusPublisher: gitea, repo: repo, number: 77, author: "goobers",
 		current: providers.PullRequestSummary{Number: 77, HeadSHA: "reviewed-head", BaseSHA: "reviewed-base", URL: "https://gitea.test/pr/77"},
 	}

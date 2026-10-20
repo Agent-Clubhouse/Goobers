@@ -4,27 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 
-	"github.com/goobers/goobers/internal/claimsclient"
-	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/prstatus"
 	"github.com/goobers/goobers/providers"
 )
 
-// withVerdictCustody shares merge-pr's repository window with native verdict
-// writers. The owning gaggle must run at most one such stage per run, and all
-// writers of this status context must participate. Provider HTTP completion
-// after a lost lease is not fenced by the forge's commit-status API.
+// Native status writers use the same durable publication claim as finding
+// publication and final landing. Both local and plane clients share custody.
 func withVerdictCustody(ctx context.Context, root string, repo providers.RepositoryRef, fn func(context.Context) error) error {
-	ledger, err := openStageClaimLedger(layoutFor(root))
-	if err != nil {
-		return err
-	}
-	return ledger.MergeLock(ctx, claimsclient.MergeLock{
-		Key:   claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
-		RunID: os.Getenv(executor.RunIDEnvVar), Workflow: os.Getenv(executor.WorkflowEnvVar),
-	}, fn)
+	return withVerdictPublicationCustody(ctx, root, repo, fn)
 }
 
 // publishCurrentVerdictStatus checks pins after acquiring the same custody as

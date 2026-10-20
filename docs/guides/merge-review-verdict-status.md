@@ -251,13 +251,16 @@ unacceptable. No branch-protection setting is changed automatically.
 
 ### Publication custody
 
-Native publication and withdrawal share the repository merge lock (the instance
-flock locally, the renewed claims-plane lease in stage pods). Withdrawal reads
+Native publication and withdrawal share a durable repository publication claim.
+Local and claims-plane clients contend on the same record. Withdrawal reads
 the live PR and native status after acquiring custody, checks the delta, and
 rechecks head/base before writing. A queued withdrawal therefore preserves a
 fresh pass for the current base. Publication also rechecks its pins after
 acquiring custody, so a queued old review cannot restore a pass for a moved
-base. The provider call completes before custody is released.
+base. The provider call completes before custody is released. Claim acquisition is
+bounded to two minutes and the action has a one-minute deadline inside a
+five-minute lease. Custody is verified after the action; a deadline or uncertain
+completion retains the claim until expiry and reports an error.
 
 This requires one owning gaggle and publishing identity for the status context,
 all writers using this protocol, and at most one native verdict/merge stage per

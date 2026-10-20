@@ -71,7 +71,7 @@ func newBaseVerdictFixture() *baseVerdictFixture {
 }
 func baseReconciler(t *testing.T, f *baseVerdictFixture) *verdictBaseReconciler {
 	t.Helper()
-	return &verdictBaseReconciler{root: newVerdictTestRoot(t), repo: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "repo"}, reader: f, publisher: f}
+	return &verdictBaseReconciler{root: initDemo(t), repo: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "repo"}, reader: f, publisher: f}
 }
 func TestBaseVerdictWithdrawal(t *testing.T) {
 	for _, tc := range []struct {
