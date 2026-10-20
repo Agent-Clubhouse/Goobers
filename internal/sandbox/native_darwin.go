@@ -14,6 +14,8 @@ const (
 	seatbeltPath = "/usr/bin/sandbox-exec"
 	seatbeltBase = `(version 1)
 (allow default)
+(deny signal)
+(allow signal (target same-sandbox))
 (deny file-write*)
 (allow file-write*
     (subpath (param "WORKSPACE"))
