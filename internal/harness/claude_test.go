@@ -660,8 +660,8 @@ func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 			if len(out.Payload) == 0 {
 				t.Fatal("completion payload is empty after recovery")
 			}
-			if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 240 {
-				t.Fatalf("combined input token metric = %v, want 240", got)
+			if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 120 {
+				t.Fatalf("repeated cumulative input token metric = %v, want 120", got)
 			}
 		})
 	}
@@ -1402,5 +1402,29 @@ func TestClaudeAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "must not contain a comma") {
 		t.Fatalf("Run error = %v, want comma rejection", err)
+	}
+}
+
+func TestClaudeAdapterRepairAccountsForResumedSessionTotals(t *testing.T) {
+	stubClaudeCredentialsHome(t)
+	workspace := t.TempDir()
+	runner := &claudeSequenceRunner{
+		rawOutputs: [][]byte{readTestData(t, "claude-usage-initial.jsonl"), readTestData(t, "claude-usage-resumed.jsonl")},
+		acts: []func(ProcessRequest) error{nil, func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		}},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.reqs) != 2 || commandOptionValue(runner.reqs[1].Command, "--resume") == "" {
+		t.Fatal("expected same-session repair")
+	}
+	if out.Metrics[telemetry.AttrGenAIUsageInputTokens] != 150 || out.Metrics[telemetry.AttrUsageCostUSD] != 0.75 {
+		t.Fatalf("resumed totals double counted: %v", out.Metrics)
 	}
 }
