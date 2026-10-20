@@ -34,7 +34,9 @@ type session struct {
 	requestEpoch              uint64
 	queued                    int
 	sendPending               bool
-	pendingIdle               []bool
+	pendingIdle               []idleBoundary
+	nativeTurn                uint64
+	nativeIdle                bool
 	once                      sync.Once
 	closeErr                  error
 }
