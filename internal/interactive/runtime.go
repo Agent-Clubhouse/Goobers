@@ -180,7 +180,7 @@ func (s *Service) start(req ExecutionRequest) {
 			}
 			event.Data = data
 			if event.Type == "assistant.delta" || event.Type == "tool.output" {
-				key := event.Type + "/" + fmt.Sprint(event.Data["name"]) + "/" + fmt.Sprint(event.Data["stream"])
+				key := event.Type + "/" + fmt.Sprint(event.Data["name"]) + "/" + fmt.Sprint(event.Data["stream"]) + "/" + fmt.Sprint(event.Data["toolCallId"])
 				previous := pending[key]
 				before, _ := previous.Data["text"].(string)
 				text, _ := event.Data["text"].(string)
@@ -190,13 +190,13 @@ func (s *Service) start(req ExecutionRequest) {
 				}
 				boundary := s.scrubber.SafePrefix([]byte(text))
 				retained := clone(event.Data)
-				retained["text"] = text[boundary:]
+				setStreamingText(retained, text[boundary:])
 				pending[key] = ExecutionEvent{Type: event.Type, Data: retained}
 				if boundary == 0 {
 					return nil
 				}
 				event.Data = clone(event.Data)
-				event.Data["text"] = text[:boundary]
+				setStreamingText(event.Data, text[:boundary])
 			}
 			return s.emit(req, event)
 		}
@@ -222,6 +222,17 @@ func (s *Service) start(req ExecutionRequest) {
 		}
 		s.finish(req, result, err)
 	}()
+}
+
+// Keep the v2 content in step with the safe prefix. Retaining the original
+// chunk under data.chat would expose text withheld by the streaming scrubber.
+func setStreamingText(data map[string]any, text string) {
+	data["text"] = text
+	if envelope, ok := data["chat"].(map[string]any); ok {
+		if payload, ok := envelope["data"].(map[string]any); ok {
+			payload["content"] = []any{map[string]any{"type": "text", "text": text}}
+		}
+	}
 }
 
 func (s *Service) cleanData(data map[string]any) map[string]any {
