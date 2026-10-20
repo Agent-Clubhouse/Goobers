@@ -123,10 +123,7 @@ func isRateLimited(resp *http.Response) bool {
 	case http.StatusTooManyRequests:
 		return true
 	case http.StatusForbidden:
-		if resp.Header.Get("Retry-After") != "" {
-			return true
-		}
-		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		if rateLimitResponse(resp.StatusCode, resp.Header.Get("Retry-After"), resp.Header.Get("X-RateLimit-Remaining"), resp.Header.Get("X-RateLimit-Reset")) {
 			return true
 		}
 		if resp.Body == nil {
@@ -173,10 +170,8 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 		ev.ResetRaw = reset
 		if secs, err := strconv.ParseInt(reset, 10, 64); err == nil {
 			ev.Reset = time.Unix(secs, 0)
-			if wait == 0 {
-				if d := ev.Reset.Sub(p.now()); d > 0 {
-					wait = d
-				}
+			if d := ev.Reset.Sub(p.now()); d > wait && (!ev.RemainingKnown || ev.Remaining == 0) {
+				wait = d
 			}
 		}
 	}

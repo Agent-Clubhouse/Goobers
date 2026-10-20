@@ -408,6 +408,8 @@ type CIPollExecutor struct {
 	// the real wall clock.
 	Now   func() time.Time
 	Sleep func(context.Context, time.Duration) error
+	// Jitter adds nonnegative slack after a provider's quota reset.
+	Jitter func(time.Duration) time.Duration
 }
 
 // NewCIPollExecutor builds a CIPollExecutor with real-clock defaults.
@@ -481,6 +483,13 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		if err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
 				return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
+			}
+			if limit, limited := providers.AsRateLimitError(err); limited {
+				outcome, done, waitErr := e.waitForQuota(ctx, wait, cfg, limit, consecutiveErrors)
+				if done || waitErr != nil {
+					return outcome, waitErr
+				}
+				continue
 			}
 			if providers.IsUnauthorizedError(err) {
 				if !canRefreshCredential {
