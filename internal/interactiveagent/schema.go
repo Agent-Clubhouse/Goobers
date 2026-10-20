@@ -8,8 +8,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/goobers/goobers/internal/secretpattern"
 	"github.com/santhosh-tekuri/jsonschema/v5"
+
+	"github.com/goobers/goobers/internal/secretpattern"
 )
 
 var toolName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
