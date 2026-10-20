@@ -7,6 +7,33 @@ import { createServer } from "node:http";
 
 const api = "/api/v1/interactive";
 
+test("another loopback port cannot frame the authenticated portal", async ({ browser, baseURL }) => {
+  const preview = createServer((_request, response) => {
+    response.setHeader("Content-Type", "text/html");
+    response.end(`<!doctype html><title>Controlled framing fixture</title><iframe src="${baseURL}/#/interactive"></iframe>`);
+  });
+  await new Promise<void>(resolve => preview.listen(0, "127.0.0.1", resolve));
+  const address = preview.address();
+  if (!address || typeof address === "string") throw new Error("Preview fixture did not bind");
+  const context = await browser.newContext({ storageState: humanBrowserOptions().storageState });
+  try {
+    const page = await context.newPage();
+    const blocked = page.waitForEvent("console", {
+      predicate: message => message.type() === "error" && message.text().includes("frame-ancestors"),
+    });
+    await page.goto(`http://127.0.0.1:${address.port}`);
+    expect((await blocked).text()).toContain("frame-ancestors");
+    expect(page.frames().some(frame => frame.url().startsWith(`${baseURL}/`))).toBe(false);
+    // Positive control: the same authenticated browser can load the portal at
+    // top level; only embedding is refused.
+    await page.goto(`${baseURL}/#/interactive`);
+    await expect(page.locator("#main-content")).toContainText("Live stream");
+  } finally {
+    await context.close();
+    await new Promise<void>(resolve => preview.close(() => resolve()));
+  }
+});
+
 test("another loopback port cannot reuse captured cookies as human authority", async ({ browser, baseURL }) => {
   let captured = "";
   const preview = createServer((request, response) => {

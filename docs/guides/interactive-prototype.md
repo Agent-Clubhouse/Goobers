@@ -65,6 +65,9 @@ browser storage; it is never a cookie or URL parameter. Cookies are shared
 across loopback ports, so a preview server capturing cookies still cannot read
 or control sessions. The portal uses authenticated fetch streaming for SSE.
 Host/Origin checks still apply. The session cookie is HttpOnly and SameSite=Strict.
+Every response, including portal assets, API and SSE, sends CSP
+`frame-ancestors 'none'` and `X-Frame-Options: DENY`. This prevents a same-site
+preview from framing the authenticated portal to clickjack human controls.
 Secrets are never added to harness environment, requests or workspace files.
 
 The local persona selector is a controlled demonstration, not Entra sign-in.
