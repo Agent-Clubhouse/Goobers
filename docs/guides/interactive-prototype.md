@@ -320,3 +320,23 @@ are production daemon integration, distributed persistence/workers, native-tool
 compatibility, production child lineage and collaborative sessions.
 
 The internal `agent-tools` stdio command requires both `--socket <path>` and `--token-file <path>`. The latter points to the invocation-private mode-0600 `auth.token`; only the path is a launch argument. Each connection authenticates before MCP parsing or host authority checks. Cross-session kernel read isolation must protect this file; filesystem modes alone do not separate processes running as the same user.
+
+### Browser credential storage confinement
+
+Interactive native launches additionally mask existing standard browser and
+credential-store directories under the host user's home. On macOS this covers
+Chrome, Chromium, Microsoft Edge and Firefox under `Library/Application Support`,
+`Library/Cookies`, `Library/Safari`, Safari's container/group container, and
+`Library/Keychains`. On Linux it covers `~/.config/{google-chrome,chromium,microsoft-edge}`,
+`~/.mozilla`, and `~/.local/share/keyrings`. The server's Goobers human-auth state
+remains read-denied separately. No browser contents are read while constructing
+these masks, and the invocation receives no read exception inside them.
+
+The masks cover new profiles/files created inside those roots after launch.
+An entirely new browser installation needs a fresh invocation; custom profile
+locations are not discovered and need host confinement before use. Symlinked
+roots are resolved to their actual directory, and invalid roots fail launch.
+These controls mitigate browser-storage credential theft; they do not establish
+complete same-UID isolation against browser IPC, inherited handles, host process
+memory, or arbitrary credential copies. Stage-parity network/IPC reachability
+remains a separate limitation.
