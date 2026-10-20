@@ -23,7 +23,8 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/strictyaml"
@@ -104,7 +105,7 @@ type Proposal struct {
 	PolicyDigest      string
 	Workflow          apiv1.Workflow
 	Machine           *workflow.Machine
-	Placements        []engine.PinnedPlacement
+	Placements        []dispatcher.PinnedPlacement
 }
 
 // Validator owns a deep copy of its trusted inputs. Caller mutations cannot
@@ -331,7 +332,7 @@ func (v *Validator) compileProposal(wf apiv1.Workflow, goobers map[string]apiv1.
 	return machine, nil
 }
 
-func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goobers map[string]apiv1.GooberSpec) ([]engine.PinnedPlacement, error) {
+func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goobers map[string]apiv1.GooberSpec) ([]dispatcher.PinnedPlacement, error) {
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{v.context.Gaggle}, Workflows: []apiv1.Workflow{wf}}
 	for name, goober := range goobers {
 		g := apiv1.Goober{Spec: goober}
@@ -357,7 +358,7 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 		return nil, refusal("placement", "", "runsOn", bounded(err.Error()))
 	}
 	if v.context.Backend == BackendEngine {
-		if err := engine.RefusePlacedDefinition(wf.Name, wf.Spec, pins); err != nil {
+		if err := engineadmission.RefusePlacedDefinition(wf.Name, wf.Spec, pins); err != nil {
 			return nil, refusal("backend", "", "spec", bounded(err.Error()))
 		}
 	}
@@ -367,7 +368,7 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 	if err != nil {
 		return nil, fmt.Errorf("snapshot child placements: %w", err)
 	}
-	var independentPins []engine.PinnedPlacement
+	var independentPins []dispatcher.PinnedPlacement
 	if err := json.Unmarshal(pinBytes, &independentPins); err != nil {
 		return nil, err
 	}
