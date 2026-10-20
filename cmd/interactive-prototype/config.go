@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/interactive"
 	"github.com/goobers/goobers/internal/interactiveops"
+	"github.com/goobers/goobers/internal/platform/safeopen"
 	"github.com/goobers/goobers/internal/secretpattern"
 )
 
@@ -239,7 +240,7 @@ func walkConfig(source string, write func(string, []byte) error) (string, error)
 		// WalkDir's cached entry is not authority to open a mutable path.
 		// Root confines resolution even if a directory or file is replaced by
 		// a symlink; the descriptor must still identify the inspected file.
-		file, err := root.Open(relative)
+		file, err := safeopen.OpenRegularInRoot(root, relative)
 		if err != nil {
 			return err
 		}
