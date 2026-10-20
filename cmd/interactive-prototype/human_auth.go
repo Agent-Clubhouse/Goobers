@@ -19,14 +19,14 @@ import (
 )
 
 const humanCookie = "goobers-human-session"
-const humanCSRFCookie = "goobers-human-csrf"
 const humanCSRFHeader = "X-Goobers-CSRF"
 
 var errHumanUnauthenticated = errors.New("open the one-time authentication link in the server's private human-auth.url file before using interactive controls")
 var errHumanCSRF = errors.New("human control request requires the session CSRF header")
 
 // humanAuth is private to this server process. Secrets are never put in driver
-// requests, environment, workspace files, JSON response bodies or the persona cookie.
+// requests, environment, workspace files or the persona cookie. The header binding is delivered only
+// in the same-origin bootstrap response, then held in origin-scoped storage.
 // The one-use bootstrap fragment lives in a private file in denied host state.
 type humanAuth struct {
 	mu        sync.Mutex
@@ -110,7 +110,7 @@ func (a *humanAuth) authorize(r *http.Request) (string, error) {
 	if err != nil || !a.ready || !sameSecret(cookie.Value, a.session) {
 		return "", errHumanUnauthenticated
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead && !sameSecret(r.Header.Get(humanCSRFHeader), a.csrf) {
+	if !sameSecret(r.Header.Get(humanCSRFHeader), a.csrf) {
 		return "", errHumanCSRF
 	}
 	if persona, err := r.Cookie("goobers-local-actor"); err == nil {
@@ -163,6 +163,9 @@ func (a *humanAuth) serveBootstrap(w http.ResponseWriter, r *http.Request) {
 history.replaceState(null, "", "/auth");
 fetch("/auth/exchange", {method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body:JSON.stringify({token})}).then(r => {
   if (!r.ok) throw new Error("Authentication failed or this one-time URL was already used. Restart the server to obtain a new URL.");
+  return r.json();
+}).then(({csrf}) => {
+  localStorage.setItem("goobers.interactive.human-binding", csrf);
   location.replace("/#/interactive");
 }).catch(e => { document.getElementById("status").textContent = e.message; });`))
 		return
@@ -195,9 +198,8 @@ fetch("/auth/exchange", {method:"POST", credentials:"same-origin", headers:{"Con
 		_ = os.Remove(a.linkPath)
 	}
 	http.SetCookie(w, &http.Cookie{Name: humanCookie, Value: a.session, Path: api, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	http.SetCookie(w, &http.Cookie{Name: humanCSRFCookie, Value: a.csrf, Path: "/", SameSite: http.SameSiteStrictMode})
 	a.personaCookie(w, a.actor)
-	writeJSON(w, map[string]string{"status": "authenticated"})
+	writeJSON(w, map[string]string{"status": "authenticated", "csrf": a.csrf})
 }
 
 // All control routes share this boundary, including future routes registered

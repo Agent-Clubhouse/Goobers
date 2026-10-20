@@ -1,7 +1,8 @@
-// The auth cookie is HttpOnly. Only its separate CSRF binding is exposed to the
-// browser client; neither value is kept in pending-command/session storage.
+// Cookies are shared across loopback ports. Keep the independent header binding
+// in origin-scoped storage so a preview server cannot reuse a captured cookie.
 export function humanControlHeaders(): Record<string, string> {
-  if (typeof document === "undefined") return {};
-  const value = document.cookie.split(";").map(part => part.trim()).find(part => part.startsWith("goobers-human-csrf="))?.slice("goobers-human-csrf=".length);
-  return value ? { "X-Goobers-CSRF": value } : {};
+  try {
+    const value = localStorage.getItem("goobers.interactive.human-binding");
+    return value ? { "X-Goobers-CSRF": value } : {};
+  } catch { return {}; }
 }

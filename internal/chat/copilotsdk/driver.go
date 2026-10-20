@@ -198,7 +198,7 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 			s.emit("notice", map[string]any{"code": "model_catalog_unavailable"}, "")
 		}
 	}
-	s.emit("session_info", map[string]any{"models": models, "currentModel": o.Model, "currentEffort": "", "levels": capabilities().LiveLevels}, "")
+	s.emit("session_info", map[string]any{"models": models, "currentModel": o.Model, "currentEffort": "", "levels": capabilities().LiveLevels, "currentLevel": s.level}, "")
 	s.unsubscribe = s.native.On(s.onEvent)
 	go func() { <-runCtx.Done(); _ = s.Close() }()
 	return s, nil

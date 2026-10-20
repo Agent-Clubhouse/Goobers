@@ -59,10 +59,13 @@ this URL or the browser's cookies to an agent, and keep console capture outside
 agent-readable roots.
 
 Every interactive API read and event stream requires the authenticated browser
-cookie. Mutations additionally require its separate CSRF header; the portal
-sends this automatically. Host/Origin and cross-site checks still apply. The
-session cookie is HttpOnly and SameSite=Strict. Session and CSRF secrets are held in server
-memory and never added to harness environment, requests or workspace files.
+cookie AND an independent `X-Goobers-CSRF` header, including reads and SSE.
+The one-time bootstrap response delivers the header binding to origin-scoped
+browser storage; it is never a cookie or URL parameter. Cookies are shared
+across loopback ports, so a preview server capturing cookies still cannot read
+or control sessions. The portal uses authenticated fetch streaming for SSE.
+Host/Origin checks still apply. The session cookie is HttpOnly and SameSite=Strict.
+Secrets are never added to harness environment, requests or workspace files.
 
 The local persona selector is a controlled demonstration, not Entra sign-in.
 Only the authenticated human may select a configured persona. Each browser
@@ -71,7 +74,7 @@ cookie cannot choose an owner. Independent contexts can demonstrate owner
 isolation. This does not provide multi-user remote authentication.
 
 The authentication boundary depends on OS confinement: agents must not read
-server state/logs, browser cookie stores or host process memory. Writable agent
+server state/logs, browser credential/storage profiles or host process memory. Writable agent
 workspaces belong outside denied host state. A sandboxed subprocess fixture
 verifies denied secret reads and rejects unauthenticated approve/apply requests
 even when the loopback service is reachable. Network access alone is not human
@@ -317,3 +320,23 @@ are production daemon integration, distributed persistence/workers, native-tool
 compatibility, production child lineage and collaborative sessions.
 
 The internal `agent-tools` stdio command requires both `--socket <path>` and `--token-file <path>`. The latter points to the invocation-private mode-0600 `auth.token`; only the path is a launch argument. Each connection authenticates before MCP parsing or host authority checks. Cross-session kernel read isolation must protect this file; filesystem modes alone do not separate processes running as the same user.
+
+### Browser credential storage confinement
+
+Interactive native launches additionally mask existing standard browser and
+credential-store directories under the host user's home. On macOS this covers
+Chrome, Chromium, Microsoft Edge and Firefox under `Library/Application Support`,
+`Library/Cookies`, `Library/Safari`, Safari's container/group container, and
+`Library/Keychains`. On Linux it covers `~/.config/{google-chrome,chromium,microsoft-edge}`,
+`~/.mozilla`, and `~/.local/share/keyrings`. The server's Goobers human-auth state
+remains read-denied separately. No browser contents are read while constructing
+these masks, and the invocation receives no read exception inside them.
+
+The masks cover new profiles/files created inside those roots after launch.
+An entirely new browser installation needs a fresh invocation; custom profile
+locations are not discovered and need host confinement before use. Symlinked
+roots are resolved to their actual directory, and invalid roots fail launch.
+These controls mitigate browser-storage credential theft; they do not establish
+complete same-UID isolation against browser IPC, inherited handles, host process
+memory, or arbitrary credential copies. Stage-parity network/IPC reachability
+remains a separate limitation.
