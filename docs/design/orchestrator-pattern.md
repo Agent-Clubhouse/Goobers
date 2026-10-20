@@ -76,7 +76,7 @@ childWorkflows:
       model: configured-fast-model
     - name: review-deep
       goober: reviewer
-      harness: codex-cli
+      harness: codex
       model: configured-review-model
   allowedBases:
     - name: integration
@@ -261,6 +261,25 @@ Conflicts retain both results for a fresh parent decision. Completion of an
 agent or approval of a request alone never releases writer custody.
 
 ## Local and distributed semantics
+
+This table specifies the target contract, not the current local execution
+availability. At the inspected main checkpoint, the local Runner coordinates
+contained child-enabled stages: `cmd/goobers/parentpod_policy.go` requires worker
+authentication and Claude/Codex parent profiles, and
+`AttachParentAuthoringSkill` has the same parent harness restriction.
+
+Consume the [trusted-local provider design (#7571)](https://github.com/Agent-Clubhouse/Goobers/pull/7571)
+and its implementation rather than introducing another local backend flag.
+That provider is selected only for self-only runner inventory with engine
+projection disabled; an unavailable distributed runner never implies local
+fallback. It retains `BackendRunner`, source-bound factories, private credential
+homes, managed attempt worktrees and exact writer-quiescence evidence. Physical
+local child invocations serialize by default through a shared permit, separately
+from the concurrent lineage allowance below. Uncertain writers retain custody
+on daemon loss. This design does not weaken that shared-account trust boundary.
+Copilot parent admission and authoring-skill support are a separate prerequisite
+for Copilot-based local end-to-end qualification; shorthand cannot establish
+that support by choosing a harness string.
 
 | Boundary | Local daemon | Temporal and Kubernetes |
 | --- | --- | --- |
