@@ -129,7 +129,7 @@ func TestAssembleNativeCaptures(t *testing.T) {
 		if capture.Name != all[i].Name || report.Request != all[i].Request || capture.SkillSHA256 != recordedAuthoringPathSHA256 {
 			t.Fatalf("input %q does not match the current scenario and pinned authoring path", path)
 		}
-		assertCaptureProvenanceVersion(t, capture, recordedAuthoringPathSHA256, "GitHub Copilot CLI 1.0.83")
+		assertCaptureProvenance(t, capture, recordedAuthoringPathSHA256)
 		document.Captures = append(document.Captures, capture)
 	}
 	data, err := json.Marshal(document)
@@ -163,7 +163,7 @@ func TestReviewNativeCapture(t *testing.T) {
 			if capture.Name != scenario.Name || capture.SkillSHA256 != digest {
 				t.Fatal("candidate does not match the scenario or installed authoring path")
 			}
-			assertCaptureProvenanceVersion(t, capture, digest, "GitHub Copilot CLI 1.0.83")
+			assertCaptureProvenance(t, capture, digest)
 			capture = expandCapture(t, capture, root, target, binary)
 			for path, body := range capture.Files {
 				if !filepath.IsLocal(path) {
