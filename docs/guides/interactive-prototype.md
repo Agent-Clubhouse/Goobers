@@ -59,10 +59,13 @@ this URL or the browser's cookies to an agent, and keep console capture outside
 agent-readable roots.
 
 Every interactive API read and event stream requires the authenticated browser
-cookie. Mutations additionally require its separate CSRF header; the portal
-sends this automatically. Host/Origin and cross-site checks still apply. The
-session cookie is HttpOnly and SameSite=Strict. Session and CSRF secrets are held in server
-memory and never added to harness environment, requests or workspace files.
+cookie AND an independent `X-Goobers-CSRF` header, including reads and SSE.
+The one-time bootstrap response delivers the header binding to origin-scoped
+browser storage; it is never a cookie or URL parameter. Cookies are shared
+across loopback ports, so a preview server capturing cookies still cannot read
+or control sessions. The portal uses authenticated fetch streaming for SSE.
+Host/Origin checks still apply. The session cookie is HttpOnly and SameSite=Strict.
+Secrets are never added to harness environment, requests or workspace files.
 
 The local persona selector is a controlled demonstration, not Entra sign-in.
 Only the authenticated human may select a configured persona. Each browser
@@ -71,7 +74,7 @@ cookie cannot choose an owner. Independent contexts can demonstrate owner
 isolation. This does not provide multi-user remote authentication.
 
 The authentication boundary depends on OS confinement: agents must not read
-server state/logs, browser cookie stores or host process memory. Writable agent
+server state/logs, browser credential/storage profiles or host process memory. Writable agent
 workspaces belong outside denied host state. A sandboxed subprocess fixture
 verifies denied secret reads and rejects unauthenticated approve/apply requests
 even when the loopback service is reachable. Network access alone is not human
