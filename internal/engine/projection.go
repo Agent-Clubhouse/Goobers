@@ -262,14 +262,14 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 			var ref journal.Ref
 			var recErr error
 			if a.Stage != "" {
-				ref, recErr = jr.RecordStageArtifactWithIntegrity(a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity)
+				ref, recErr = jr.RecordBranchStageArtifactWithIntegrity(a.Branch, a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity)
 			} else {
-				ref, recErr = jr.RecordArtifactWithIntegrity(a.Name, a.Data, integrity)
+				ref, recErr = jr.RecordBranchArtifactWithIntegrity(a.Branch, a.Name, a.Data, integrity)
 			}
 			if recErr != nil {
 				return "", fmt.Errorf("engine: project artifact %q (op %d): %w", a.Name, i+1, recErr)
 			}
-			artifactRefs[a.Name] = ref
+			artifactRefs[projectedArtifactKey(a.Branch, a.Name)] = ref
 		case opSpan:
 			s := op.Span
 			if s == nil {
@@ -284,7 +284,7 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 				// The verdict artifact was recorded just above; the event's Ref
 				// points at it, exactly as internal/gate's recordVerdict wires
 				// the two together.
-				ref, ok := artifactRefs[ev.Name]
+				ref, ok := artifactRefs[projectedArtifactKey(ev.Branch, ev.Name)]
 				if !ok {
 					return "", fmt.Errorf("%w: gate.evaluated (op %d) references unrecorded artifact %q", ErrUnprojectable, i+1, ev.Name)
 				}
@@ -322,11 +322,11 @@ func adoptSpan(jr *journal.Run, src SpanSource, op JournalSpanOp) error {
 	if err != nil {
 		spanErr := fmt.Errorf("span %q (%s): %w", op.Name, op.Ref.Digest, err)
 		return jr.Append(journal.Event{
-			Type: journal.EventError, Stage: op.Stage, Attempt: op.Attempt, AttemptClass: op.Class,
+			Type: journal.EventError, Branch: op.Branch, Stage: op.Stage, Attempt: op.Attempt, AttemptClass: op.Class,
 			Error: journal.ErrorDetailFor(spanUnavailableErrorCode, spanErr),
 		})
 	}
-	_, err = jr.RecordSpanWithSchema(op.Stage, op.Name, op.DataSchema, data)
+	_, err = jr.RecordBranchSpanWithSchema(op.Branch, op.Stage, op.Name, op.DataSchema, data)
 	return err
 }
 
@@ -404,6 +404,10 @@ func validateProjection(proj JournalProjection) error {
 }
 
 func validateOp(op JournalOp, i, total int) error {
+	if opEmitBranch(op) < 0 {
+		return fmt.Errorf("%w: op %d has negative branch", ErrUnprojectable, i)
+	}
+
 	switch op.Kind {
 	case opAppend:
 		ev := op.Event
@@ -497,4 +501,8 @@ func queryProjection(ctx context.Context, q projectionQuerier, workflowID string
 		return JournalProjection{}, fmt.Errorf("engine: decode journal projection for %q: %w", workflowID, err)
 	}
 	return proj, nil
+}
+
+func projectedArtifactKey(branch int, name string) string {
+	return fmt.Sprintf("%d:%s", branch, name)
 }

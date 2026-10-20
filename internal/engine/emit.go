@@ -139,17 +139,17 @@ func (r *runJournal) assignEmitKeys() {
 			continue
 		}
 		scope, attempt := opEmitScope(r.proj.Ops[i])
-		group := fmt.Sprintf("%d|%s|%d", 0, scope, attempt)
+		branch := opEmitBranch(r.proj.Ops[i])
+		group := fmt.Sprintf("%d|%s|%d", branch, scope, attempt)
 		ordinal := r.ordinals[group]
 		r.ordinals[group] = ordinal + 1
-		r.proj.Ops[i].EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", r.proj.Identity.RunID, 0, scope, attempt, ordinal)
+		r.proj.Ops[i].EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", r.proj.Identity.RunID, branch, scope, attempt, ordinal)
 	}
 }
 
 // opEmitScope resolves the (scope, attempt) an op's idempotency key is
 // grouped under: stage ops key by their stage and attempt, gate ops by the
-// gate name, and run-level ops by the empty scope. The engine walk is
-// sequential, so branch is always the root branch.
+// gate name, and run-level ops by the empty scope.
 func opEmitScope(op JournalOp) (string, int) {
 	switch op.Kind {
 	case opArtifact:
@@ -232,7 +232,7 @@ func (r *runJournal) emitTerminal(ctx workflow.Context) {
 // liveOpFrom converts one accumulated JournalOp to the wire op the journal
 // plane accepts.
 func liveOpFrom(op JournalOp) livejournal.Op {
-	out := livejournal.Op{Kind: op.Kind, Key: op.EmitKey, Time: op.Time}
+	out := livejournal.Op{Branch: opEmitBranch(op), Kind: op.Kind, Key: op.EmitKey, Time: op.Time}
 	switch op.Kind {
 	case opAppend:
 		if op.Event != nil {
@@ -255,4 +255,24 @@ func liveOpFrom(op JournalOp) livejournal.Op {
 		}
 	}
 	return out
+}
+
+// opEmitBranch preserves explicit branch attribution through emission and
+// retry-key allocation. Existing serial histories omit it and remain branch 0.
+func opEmitBranch(op JournalOp) int {
+	switch op.Kind {
+	case opAppend:
+		if op.Event != nil {
+			return op.Event.Branch
+		}
+	case opArtifact:
+		if op.Artifact != nil {
+			return op.Artifact.Branch
+		}
+	case opSpan:
+		if op.Span != nil {
+			return op.Span.Branch
+		}
+	}
+	return 0
 }

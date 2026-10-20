@@ -158,6 +158,10 @@ type SpanOp struct {
 // (Adopt): Time is not replayed there at all, because the loaned handle stamps
 // every event from its owner's single clock.
 type Op struct {
+	// Branch is explicit host attribution for an engine operation. Workload
+	// principals cannot set it; an existing verified context remains authority.
+	Branch int `json:"branch,omitempty"`
+
 	Kind       string                  `json:"kind"`
 	Key        string                  `json:"key"`
 	Event      *journal.Event          `json:"event,omitempty"`
@@ -722,7 +726,7 @@ func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
 			run.keys[key] = ev.Seq
 		}
 		if ev.Type == journal.EventArtifactRecorded && ev.Name != "" && ev.Ref != nil {
-			run.artifactRefs[ev.Name] = *ev.Ref
+			run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)] = *ev.Ref
 			if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok {
 				run.rememberArtifactKey(key, *ev.Ref)
 			}
@@ -751,6 +755,9 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 		return EmitResponse{}, errors.New("livejournal: emit carries no ops")
 	}
 	for i, op := range req.Ops {
+		if _, err := opBranchContext(ctx, op); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: op %d: %w", i, err)
+		}
 		if op.Key == "" {
 			return EmitResponse{}, fmt.Errorf("livejournal: op %d carries no idempotency key", i)
 		}
@@ -1063,6 +1070,11 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 // an instance annotation is stamped with, never one the op carries. It is
 // also the run the event observer is notified for.
 func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
+	ctx, err := opBranchContext(ctx, op)
+	if err != nil {
+		return false, err
+	}
+
 	if _, applied := run.keys[op.Key]; applied {
 		return false, w.republishArtifact(ctx, run, op)
 	}
@@ -1093,7 +1105,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.Branch = branch
 		}
 		if ev.Type == journal.EventGateEvaluated && ev.Name != "" {
-			ref, ok := run.artifactRefs[ev.Name]
+			ref, ok := run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)]
 			if !ok && run.adopted {
 				// The refs an adopted run starts with are a snapshot, and the
 				// handle's OWNER keeps recording artifacts through it without
@@ -1104,7 +1116,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 				// re-derive from the journal before refusing. Only on a miss:
 				// the ordinary path stays a map lookup.
 				w.refreshAdopted(run)
-				ref, ok = run.artifactRefs[ev.Name]
+				ref, ok = run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)]
 			}
 			if !ok {
 				return false, fmt.Errorf("gate.evaluated references unrecorded artifact %q", ev.Name)

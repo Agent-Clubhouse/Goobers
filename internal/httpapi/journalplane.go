@@ -145,6 +145,12 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 		// which authorizes journal emission for run X and no other — the same
 		// body-level binding the claims plane applies.
 		if authenticated && (IsPodPrincipal(principal) || generated || parent) {
+			for _, op := range input.Ops {
+				if op.Branch != 0 {
+					writeError(w, http.StatusForbidden, "host_branch_required", "explicit journal branch attribution requires a host principal")
+					return
+				}
+			}
 			if !requirePodRun(w, principal, run, "pod principal may only emit into its own run's journal") {
 				return
 			}

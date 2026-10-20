@@ -232,3 +232,21 @@ func TestJournalPlanePathMatchesOnlyTheEmitRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestJournalBranchOverrideRequiresHostPrincipal(t *testing.T) {
+	service := &fakeJournalService{}
+	authenticator := &fakeAuthenticator{principal: &Principal{Subject: "run:run-1", Issuer: PodPrincipalIssuer}}
+	handler := writePlaneHandler(t, authenticator, RequireRoles(), WithJournalService(service))
+	body := strings.Replace(emitBody("run-1"), `"kind":"append"`, `"branch":2,"kind":"append"`, 1)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/v1/runs/run-1/journal/emit", body))
+	if response.Code != http.StatusForbidden || len(service.requests) != 0 {
+		t.Fatalf("workload authored branch override: %d %s", response.Code, response.Body)
+	}
+	host := writePlaneHandler(t, nil, AllowAll, WithJournalService(service))
+	response = httptest.NewRecorder()
+	host.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/v1/runs/run-1/journal/emit", body))
+	if response.Code != http.StatusOK || len(service.requests) != 1 || service.requests[0].Ops[0].Branch != 2 {
+		t.Fatalf("host attribution lost: %d %s", response.Code, response.Body)
+	}
+}
