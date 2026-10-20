@@ -3,8 +3,9 @@ package gate
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/providers"
 	"testing"
+
+	"github.com/goobers/goobers/providers"
 )
 
 func TestUpsertFailureCommentQuotaDoesNotCreateDuplicate(t *testing.T) {
