@@ -1165,24 +1165,8 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.TerminalCause = &cause
 		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
-		if op.ChildStageStart != nil {
-			seq, origin, err := run.jr.AppendChildStageStarted(ev, op.ChildStageStart.Continuation)
-			if err != nil {
-				return false, err
-			}
-			ev.Seq = seq
-			ev.Runner[journal.ChildWorkflowOccurrenceKey] = origin.StageOccurrence
-			ev.Runner[journal.ChildWorkflowAttemptKey] = origin.AttemptID
-			if _, present := ev.Runner["artifactVisit"]; present {
-				ev.Runner["artifactVisit"] = seq
-			}
-			run.keys[op.Key] = seq
-			run.rememberChildStart(op.Key, ev)
-		} else {
-			if err := run.jr.Append(ev); err != nil {
-				return false, err
-			}
-			run.keys[op.Key] = run.jr.Seq()
+		if err := run.appendEventWithChildOrigin(op, &ev); err != nil {
+			return false, err
 		}
 		if ev.Type == journal.EventRunFinished {
 			run.keys[terminalMarker] = run.jr.Seq()

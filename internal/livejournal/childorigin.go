@@ -77,6 +77,31 @@ func (run *liveRun) rememberChildStart(key string, event journal.Event) {
 	run.childStarts[key] = event
 }
 
+// appendEventWithChildOrigin preserves committed append identity before the
+// caller notifies observers. Caller holds run.mu and has attached the emit key.
+func (run *liveRun) appendEventWithChildOrigin(op Op, event *journal.Event) error {
+	if op.ChildStageStart == nil {
+		if err := run.jr.Append(*event); err != nil {
+			return err
+		}
+		run.keys[op.Key] = run.jr.Seq()
+		return nil
+	}
+	seq, origin, err := run.jr.AppendChildStageStarted(*event, op.ChildStageStart.Continuation)
+	if err != nil {
+		return err
+	}
+	event.Seq = seq
+	event.Runner[journal.ChildWorkflowOccurrenceKey] = origin.StageOccurrence
+	event.Runner[journal.ChildWorkflowAttemptKey] = origin.AttemptID
+	if _, present := event.Runner["artifactVisit"]; present {
+		event.Runner["artifactVisit"] = seq
+	}
+	run.keys[op.Key] = seq
+	run.rememberChildStart(op.Key, *event)
+	return nil
+}
+
 func (run *liveRun) childOriginReceipt(runID string, op Op) (ChildOriginReceipt, error) {
 	// Recovery can retain a complete append whose checkpoint failed. Never
 	// expose its receipt until the checkpoint has also succeeded, even after
