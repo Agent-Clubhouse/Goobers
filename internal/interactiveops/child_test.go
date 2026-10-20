@@ -22,7 +22,11 @@ func TestReviewChildCapacityWaitHonorsContextWithoutStoppingParent(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer held.Release()
+	defer func() {
+		if err := held.Release(); err != nil {
+			t.Error(err)
+		}
+	}()
 	child := Scope{ActorID: parent.ActorID, SessionID: parent.SessionID + "--capacity"}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -76,7 +80,11 @@ func TestReviewChildObservationFailureRetainsReceiptAndMarksPendingCustody(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer worker.Release()
+	defer func() {
+		if err := worker.Release(); err != nil {
+			t.Error(err)
+		}
+	}()
 	corrupted := false
 	result, err := svc.RunReviewChild(ctx, scope, requestID, prompt, func(event ReviewChildEvent) error {
 		if event.Kind == "run" && !corrupted {

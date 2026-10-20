@@ -5,9 +5,10 @@ import (
 	"time"
 )
 
+// ContractVersion is the major version carried by every normalized event.
 const ContractVersion = 2
 
-// Event.Data contains normalized payloads only, never raw RPC params. Fence is
+// Event contains normalized payloads only, never raw RPC params. Fence is
 // the host lease fence, not a model-provided identity. Seq orders this stream;
 // the durable host store assigns its own global sequence on projection.
 type Event struct {
@@ -37,6 +38,8 @@ func init() {
 		eventTypes[t] = true
 	}
 }
+
+// KnownEvent reports whether an event belongs to the current contract vocabulary.
 func KnownEvent(t string) bool { return eventTypes[t] }
 
 // Stream serializes envelope assignment. Emit never blocks a protocol callback;
@@ -50,10 +53,15 @@ type Stream struct {
 	closed  bool
 }
 
+// NewStream creates a bounded stream with host-assigned identity and ordering.
 func NewStream(o StartOptions) *Stream {
 	return &Stream{options: o, seq: o.LastSeq, events: make(chan Event, 1024)}
 }
+
+// Events returns the ordered event channel.
 func (s *Stream) Events() <-chan Event { return s.events }
+
+// Emit adds a normalized event, returning false if the stream cannot accept it.
 func (s *Stream) Emit(t string, data map[string]any, commandID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,6 +84,8 @@ func (s *Stream) Emit(t string, data map[string]any, commandID string) bool {
 		return false
 	}
 }
+
+// Close closes the session or stream after releasing its owned resources.
 func (s *Stream) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,13 +95,15 @@ func (s *Stream) Close() {
 	}
 }
 
-// These payloads are shared with the portal projection. Content is always
+// UserMessage is shared with the portal projection. Content is always
 // normalized blocks; tool input is omitted rather than persisting RPC params.
 type UserMessage struct {
 	Content  []ContentBlock `json:"content"`
 	Source   string         `json:"source"`
 	Delivery Delivery       `json:"delivery"`
 }
+
+// ToolCall describes a normalized tool invocation without raw RPC arguments.
 type ToolCall struct {
 	ToolCallID string         `json:"toolCallId"`
 	Title      string         `json:"title"`
@@ -99,6 +111,8 @@ type ToolCall struct {
 	Status     string         `json:"status"`
 	Content    []ContentBlock `json:"content,omitempty"`
 }
+
+// ToolCallUpdate updates a normalized tool invocation by identity.
 type ToolCallUpdate struct {
 	ToolCallID string         `json:"toolCallId"`
 	Status     string         `json:"status"`
