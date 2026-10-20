@@ -187,6 +187,10 @@ func TestFinishClockBeforeAcceptance(t *testing.T) {
 			if _, err := s.Get(t.Context(), r.ID, r.Actor); err != nil {
 				t.Fatalf("record expired before its acceptance-based retention: %v", err)
 			}
+			acceptTest(t, s, "after-retention", acceptedAt.Add(ReplayRetention+time.Nanosecond))
+			if _, err := s.Get(t.Context(), r.ID, r.Actor); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("record retained beyond its replay window: %v", err)
+			}
 		})
 	}
 }
