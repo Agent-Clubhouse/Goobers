@@ -2,6 +2,7 @@ package claimsclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -69,8 +70,8 @@ func TestSharedCallbacksAndProviderNeverRunUnderClaimsLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := file.Locked(t.Context(), "test-held-refusal", func(tx Ledger) error {
-		if _, _, err := tx.ClaimScoped(t.Context(), key, "run", "implement", time.Minute); err != ErrSharedRequiresUnlocked {
-			return fmt.Errorf("held shared admission did not fail closed: %v", err)
+		if _, _, err := tx.ClaimScoped(t.Context(), key, "run", "implement", time.Minute); !errors.Is(err, ErrSharedRequiresUnlocked) {
+			return fmt.Errorf("held shared admission did not fail closed: %w", err)
 		}
 		return nil
 	}); err != nil {
