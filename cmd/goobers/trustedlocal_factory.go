@@ -160,7 +160,7 @@ func (p *trustedLocalChild) execute(ctx context.Context, env apiv1.InvocationEnv
 	if env.Goober == "" {
 		env.Goober = p.source.goober
 	}
-	request, pin, _, err := p.source.prepare(ctx, env, run, review)
+	request, pin, reader, err := p.source.prepare(ctx, env, run, review)
 	if err != nil {
 		return dispatcher.SurrenderedResult{}, err
 	}
@@ -168,6 +168,9 @@ func (p *trustedLocalChild) execute(ctx context.Context, env apiv1.InvocationEnv
 		return dispatcher.SurrenderedResult{}, errors.New("local invocation has no pinned self placement")
 	}
 	blobs := childpod.ScopedBlobs{Queue: p.source.service.childQueue, Identity: p.source.start.Child.Identity}
+	if err := copyContainedPodContext(ctx, reader, p.source.identity.RunID, blobs, env.ContextPointers); err != nil {
+		return dispatcher.SurrenderedResult{}, err
+	}
 	local := childpod.LocalExecutor{Root: filepath.Join(p.source.journal.Dir(), "trusted-local-attempts"), Recorder: p.source.journal, Blobs: blobs, ModelRef: p.binding.ModelRef}
 	if run == nil && p.binding.Ambient != nil {
 		local.Authentication = []credentials.TrustedLocalAuthentication{*p.binding.Ambient}
@@ -208,6 +211,9 @@ func (p *trustedLocalChild) execute(ctx context.Context, env apiv1.InvocationEnv
 // sibling profile's unrelated authentication. The same check runs on rebuild.
 func (s *daemonCredentialService) localChildAuthentication(ctx context.Context, start childExecutionStart) (trustedLocalAuthenticationBinding, error) {
 	var empty trustedLocalAuthenticationBinding
+	if start.Proposal == nil {
+		return empty, credentials.ErrChildAuthenticationIsolation
+	}
 	dir, err := s.layout.FindRunDir(start.Envelope.ParentRunID)
 	if err != nil {
 		return empty, err

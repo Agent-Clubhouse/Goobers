@@ -209,14 +209,9 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context, delegatedE
 	if c.launcherContract != nil {
 		return *c.launcherContract, nil
 	}
-	probeEnv := baseEnv(nil, nil)
-	if err := refuseChildConfigProbe(ctx); err != nil {
-		// Runtime session preparation already assembled the delegated credential
-		// environment. Other config/preflight callers have no such authority.
-		if !credentials.TrustedLocalProcess(ctx) || len(delegatedEnv) != 1 || delegatedEnv[0] == nil {
-			return launcherContract{}, err
-		}
-		probeEnv = credentials.TrustedLocalEnvironment(ctx, delegatedEnv[0])
+	probeEnv, err := launcherProbeEnvironment(ctx, delegatedEnv)
+	if err != nil {
+		return launcherContract{}, err
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -277,4 +272,18 @@ func markAdapterManagedLauncherVerified(command []string) {
 func adapterManagedLauncherVerified(command []string) bool {
 	_, ok := verifiedAdapterManagedLaunchers.Load(strings.Join(command, "\x00"))
 	return ok
+}
+
+func launcherProbeEnvironment(ctx context.Context, delegatedEnv [][]string) ([]string, error) {
+	probeEnv := baseEnv(nil, nil)
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		// Runtime session preparation already assembled the delegated credential
+		// environment. Other config/preflight callers have no such authority.
+		if !credentials.TrustedLocalProcess(ctx) || len(delegatedEnv) != 1 || delegatedEnv[0] == nil {
+			return nil, err
+		}
+		probeEnv = credentials.TrustedLocalEnvironment(ctx, delegatedEnv[0])
+	}
+
+	return probeEnv, nil
 }

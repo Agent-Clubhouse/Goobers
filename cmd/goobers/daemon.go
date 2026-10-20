@@ -543,6 +543,15 @@ func webhookTriggerSignalsAndBackoff(workflowName string, trigger apiv1.Trigger)
 	return sigs, backoff, nil
 }
 
+// Generated local definitions inherit the parent's selected authentication and
+// are compiled offline. Invocation probes use the delegated launch context.
+func preflightDefinitionHarnesses(input schedulerDefinitionsInput, goobers map[string]apiv1.GooberSpec) (harnessPreflightInfo, *harnessPreflightFailures, error) {
+	if input.TrustedLocalChildRuntime {
+		return nil, nil, nil
+	}
+	return preflightSchedulerHarnessesWithProgress(input.Config, input.Definitions, goobers, input.CredentialStores, input.StartupProgress)
+}
+
 func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefinitions, error) {
 	l, generation, err := schedulerExecutionGeneration(input)
 	if err != nil {
@@ -569,13 +578,9 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	if _, err := appendGooberHarnessWarnings(input.Validation, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	var harnessInfo harnessPreflightInfo
-	var harnessRefusals *harnessPreflightFailures
-	if !input.TrustedLocalChildRuntime {
-		harnessInfo, harnessRefusals, err = preflightSchedulerHarnessesWithProgress(input.Config, input.Definitions, goobers, input.CredentialStores, input.StartupProgress)
-		if err != nil {
-			return nil, err
-		}
+	harnessInfo, harnessRefusals, err := preflightDefinitionHarnesses(input, goobers)
+	if err != nil {
+		return nil, err
 	}
 
 	repoRefs, err := repoRefsByWorkflow(input.Definitions)

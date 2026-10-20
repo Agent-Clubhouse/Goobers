@@ -97,6 +97,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Telemetry load and v0.5.0 validation](telemetry-load-validation.md)
 - [Temporal payload encryption](temporal-payload-codec.md)
 - [Test timing artifacts and budgets](test-timing.md)
+- [Trusted-local child workflows (preview)](trusted-local-child-workflows.md)
 - [Tutor config-only write-boundary](tutor-write-boundary.md)
 - [Windows large-repo runbook](windows-large-repo-runbook.md)
 - [Windows git/worktree audit & policy (#643)](windows-worktree-notes.md)

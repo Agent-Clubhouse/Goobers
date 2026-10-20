@@ -348,12 +348,12 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 		return nil, refusal("placement", "", "spec", bounded(err.Error()))
 	}
 	placement := runnersolve.Solve(inventory, requirements)
-	// The runner coordinates children; pinned stages execute on admitted workers.
-	// The child factory independently refuses unsupported or self placements.
+	// Pinned stages execute through the selected trusted-local or worker provider.
+	// The child factory independently verifies its supported placement.
 	if failures := placement.Unsatisfiable(); len(failures) != 0 {
 		return nil, refusal("placement", failures[0].Stage, "runsOn", bounded(failures[0].Unsat.Diagnostic))
 	}
-	pins, err := bootstrap.PinStagePlacements(v.context.Config, set, wf.Spec.Gaggle, def)
+	pins, err := bootstrap.PinChildStagePlacements(v.context.Config, set, wf.Spec.Gaggle, def)
 	if err != nil {
 		return nil, refusal("placement", "", "runsOn", bounded(err.Error()))
 	}
@@ -383,7 +383,7 @@ func (v *Validator) checkGoober(gaggle, name, stage, field string) (apiv1.Goober
 	}
 	// Copilot model authentication can also carry GitHub publication authority.
 	// A model-only declaration does not prove that this credential is isolated.
-	if (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
+	if !UsesTrustedLocalExecution(v.context.Config) && (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
 		return apiv1.GooberSpec{}, refusal("credential_isolation", stage, field, "child model authentication may carry GitHub publication authority; a separate model-only authentication path is required")
 	}
 	return g, nil

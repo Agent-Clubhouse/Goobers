@@ -449,6 +449,9 @@ type Config struct {
 	// AdmitParentExecution verifies the pinned source and contained daemon plane.
 	AdmitParentExecution func(context.Context, *workflow.Machine) error
 	SelfExecutionDenied  bool
+	// TrustedLocalParents keeps self admission and placement for daemon-owned
+	// parent executors. It conveys no child authority on its own.
+	TrustedLocalParents bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
@@ -3394,7 +3397,7 @@ type taskFrame struct {
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
-	if r.cfg.SelfExecutionDenied && tf.t.ChildWorkflows == nil {
+	if r.cfg.SelfExecutionDenied && (tf.t.ChildWorkflows == nil || r.cfg.TrustedLocalParents) {
 		return r.refuseSelfTask(tf)
 	}
 	if err := r.prepareRecoveredTaskContext(ctx, &tf, branch, &startAttempt, &firstClass, &resumeAccounting); err != nil {

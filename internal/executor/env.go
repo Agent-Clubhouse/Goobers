@@ -219,9 +219,6 @@ func baseEnv(extra []string) []string {
 // variable a stage set by hand in run.env never earns one: the count matches
 // the stage pod's, which stamps from the credentials the plane minted (#5957).
 func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, []string, error) {
-	if credentials.TrustedLocalProcess(ctx) {
-		extraEnvAllowlist = nil
-	}
 	env := baseEnv(withoutDispatcherStamps(extraEnvAllowlist))
 	env = credentials.TrustedLocalBaseEnvironment(ctx, env)
 	keys := make([]string, 0, len(declaredEnv))

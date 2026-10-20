@@ -126,9 +126,9 @@ func (g *parentRoutedGoober) HasAssetBundle() bool {
 }
 
 // Local construction stays eager for ordinary workflows. A pinned parent task
-// does not construct a host harness or resolve its model credentials. Shared
-// profiles still construct the guarded local executor when an ordinary task or
-// gate actually uses it; a failed parent route never falls back to that path.
+// constructs a host harness only after selecting the trusted-local backend.
+// Shared profiles still construct it when an ordinary task or gate uses it.
+// A failed remote parent route never falls back to that path.
 func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory func() (invoke.Goober, error), hasAssets bool, fence executionFenceStart) (invoke.Goober, error) {
 	routed, err := routeContainedParent(root, goober, rec, nil)
 	if err != nil {

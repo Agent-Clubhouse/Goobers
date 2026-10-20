@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 )
 
@@ -40,9 +41,10 @@ type LocalExecutor struct {
 // verified return is imported. Failed proof retains the attempt directory for
 // diagnosis; a later attempt cannot treat cancellation as writer acknowledgement.
 func (e *LocalExecutor) Execute(ctx context.Context, request Request, call func(context.Context, string) (dispatcher.SurrenderedResult, error)) (out dispatcher.SurrenderedResult, err error) {
-	if e == nil || e.Recorder == nil || e.Blobs == nil || e.BeforeStart == nil || e.Returned == nil || call == nil || e.Root == "" {
+	if !e.ready(call) {
 		return out, errors.New("trusted-local execution custody is incomplete")
 	}
+
 	ceiling, ok := credentials.ChildCeilingFromContext(ctx)
 	if !ok || !reflect.DeepEqual(ceiling.ModelOnly(), request.Ceiling) {
 		return out, credentials.ErrChildAuthenticationIsolation
@@ -108,21 +110,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, request Request, call func(
 	// last acknowledged tree and its Git state under a bounded independent scope.
 	owned, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 	defer cancel()
-	returned, err := CaptureOutput(owned, workspace, contract, inputRef.Digest)
-	if err == nil && returned.Workspace != nil && (request.Attempt.Review || request.Attempt.Workspace == "repo-readonly") && returned.Workspace.Snapshot.TreeSHA != expected.TreeSHA {
-		err = errors.New("read-only trusted-local invocation changed workspace")
-	}
-	var outputRef journal.Ref
-	if err == nil {
-		outputRef, err = e.keep(owned, request, "output", returned)
-	}
-	if err == nil && returned.Workspace != nil {
-		transport := Executor{Recorder: e.Recorder, Blobs: e.Blobs}
-		err = transport.applyReturn(owned, request, *expected, contract, returned, nil)
-	}
-	if err == nil {
-		err = e.Returned(owned, request, outputRef)
-	}
+	err = e.importReturn(owned, request, workspace, contract, expected, inputRef)
+
 	if acknowledge != nil {
 		acknowledge(err)
 	}
@@ -150,4 +139,27 @@ func (e *LocalExecutor) keep(ctx context.Context, request Request, kind string, 
 		err = errors.New("trusted-local custody changed at journal boundary")
 	}
 	return ref, err
+}
+
+func (e *LocalExecutor) importReturn(ctx context.Context, request Request, workspace string, contract Contract, expected *recovery.ChildSnapshot, inputRef journal.Ref) error {
+	returned, err := CaptureOutput(ctx, workspace, contract, inputRef.Digest)
+	if err == nil && returned.Workspace != nil && (request.Attempt.Review || request.Attempt.Workspace == "repo-readonly") && returned.Workspace.Snapshot.TreeSHA != expected.TreeSHA {
+		err = errors.New("read-only trusted-local invocation changed workspace")
+	}
+	var outputRef journal.Ref
+	if err == nil {
+		outputRef, err = e.keep(ctx, request, "output", returned)
+	}
+	if err == nil && returned.Workspace != nil {
+		transport := Executor{Recorder: e.Recorder, Blobs: e.Blobs}
+		err = transport.applyReturn(ctx, request, *expected, contract, returned, nil)
+	}
+	if err == nil {
+		err = e.Returned(ctx, request, outputRef)
+	}
+	return err
+}
+
+func (e *LocalExecutor) ready(call func(context.Context, string) (dispatcher.SurrenderedResult, error)) bool {
+	return e != nil && e.Recorder != nil && e.Blobs != nil && e.BeforeStart != nil && e.Returned != nil && call != nil && e.Root != ""
 }

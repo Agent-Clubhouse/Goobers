@@ -63,6 +63,9 @@ func (p *trustedLocalParent) Invoke(ctx context.Context, env apiv1.InvocationEnv
 		return apiv1.ResultEnvelope{}, err
 	}
 	blobs := childpod.ParentBlobs{RunDir: p.source.journal.Dir(), Identity: p.source.identity}
+	if err := copyContainedPodContext(ctx, reader, p.source.identity.RunID, blobs, env.ContextPointers); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	local := childpod.LocalExecutor{Root: filepath.Join(p.source.journal.Dir(), "trusted-local-attempts"), Recorder: p.source.journal, Blobs: blobs, ModelRef: binding.ModelRef}
 	if binding.Ambient != nil {
 		local.Authentication = []credentials.TrustedLocalAuthentication{*binding.Ambient}
@@ -135,6 +138,9 @@ func (p *trustedLocalParent) guidance(ctx context.Context, env apiv1.InvocationE
 }
 
 func recordLocalParentAuthentication(rec runner.OwnedJournalRecorder, reader *journal.Reader, env apiv1.InvocationEnvelope, binding trustedLocalAuthenticationBinding) error {
+	if env.ChildWorkflowOrigin == nil || !binding.valid() {
+		return credentials.ErrChildAuthenticationIsolation
+	}
 	existing, found, err := readLocalParentAuthentication(reader, env.ChildWorkflowOrigin.StageOccurrence)
 	if err != nil {
 		return err
@@ -154,6 +160,9 @@ func recordLocalParentAuthentication(rec runner.OwnedJournalRecorder, reader *jo
 
 func readLocalParentAuthentication(reader *journal.Reader, occurrence string) (trustedLocalAuthenticationBinding, bool, error) {
 	var binding trustedLocalAuthenticationBinding
+	if reader == nil || occurrence == "" {
+		return binding, false, credentials.ErrChildAuthenticationIsolation
+	}
 	events, err := reader.Events()
 	if err != nil {
 		return binding, false, err
@@ -165,7 +174,7 @@ func readLocalParentAuthentication(reader *journal.Reader, occurrence string) (t
 		}
 		var next trustedLocalAuthenticationBinding
 		data, err := json.Marshal(event.Runner["authentication"])
-		if err != nil || json.Unmarshal(data, &next) != nil || (next.ModelRef == "") == (next.Ambient == nil) {
+		if err != nil || json.Unmarshal(data, &next) != nil || !next.valid() {
 			return binding, false, credentials.ErrChildAuthenticationIsolation
 		}
 		if found && !reflect.DeepEqual(binding, next) {

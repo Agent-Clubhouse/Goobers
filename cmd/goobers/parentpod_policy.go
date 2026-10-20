@@ -89,7 +89,7 @@ func containedParentPlacements(cfg *instance.Config, set *instance.ConfigSet, ma
 			}
 		}
 	}
-	pins, err := bootstrap.PinStagePlacements(cfg, set, machine.Def.Spec.Gaggle, machine.Def)
+	pins, err := bootstrap.PinChildStagePlacements(cfg, set, machine.Def.Spec.Gaggle, machine.Def)
 	if err != nil {
 		return nil, err
 	}

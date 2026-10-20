@@ -22,6 +22,19 @@ type trustedLocalAuthenticationBinding struct {
 	Ambient  *credentials.TrustedLocalAuthentication `json:"ambient,omitempty"`
 }
 
+func (binding trustedLocalAuthenticationBinding) valid() bool {
+	switch binding.Harness {
+	case apiv1.HarnessClaudeCode, apiv1.HarnessCodex, apiv1.HarnessCopilot:
+	default:
+		return false
+	}
+	if binding.ModelRef != "" {
+		return binding.Ambient == nil
+	}
+	return binding.Ambient != nil && binding.Ambient.Harness == string(binding.Harness) &&
+		filepath.IsAbs(binding.Ambient.Home)
+}
+
 func trustedLocalAuthenticationFor(goober string, spec apiv1.GooberSpec, grants []credentials.Grant) (trustedLocalAuthenticationBinding, error) {
 	selected := spec.Harness
 	if selected == "" {
@@ -80,6 +93,9 @@ func trustedLocalAuthenticationFor(goober string, spec apiv1.GooberSpec, grants 
 }
 
 func (binding trustedLocalAuthenticationBinding) admitChild(goober string, spec apiv1.GooberSpec, grants []credentials.Grant) error {
+	if !binding.valid() {
+		return credentials.ErrChildAuthenticationIsolation
+	}
 	child, err := trustedLocalAuthenticationFor(goober, spec, grants)
 	if err != nil {
 		return err

@@ -162,3 +162,27 @@ func TestParentAuthoringHarnessDirectories(t *testing.T) {
 		t.Fatal("unsupported authoring harness accepted")
 	}
 }
+
+func TestTrustedLocalAuthoringCatalogIncludesSelfWithoutRemoteFallback(t *testing.T) {
+	a, kit := authoringFixture()
+	a.Admission.Config.Runners = nil
+	a.Admission.Config.Engine = nil
+	if err := AttachParentAuthoringSkill(kit, a); err != nil {
+		t.Fatal(err)
+	}
+	catalog, raw := catalogFromKit(t, kit)
+	if catalog.ExecutionBackend != "trusted-local" || len(catalog.Runners) != 1 || catalog.Runners[0].Name != "self" || catalog.Runners[0].OS == "" {
+		t.Fatalf("local authoring placement=%+v", catalog)
+	}
+	if bytes.Contains(raw, []byte("private-command-marker")) {
+		t.Fatal("local catalog exposed launcher")
+	}
+	a, kit = authoringFixture()
+	if err := AttachParentAuthoringSkill(kit, a); err != nil {
+		t.Fatal(err)
+	}
+	catalog, _ = catalogFromKit(t, kit)
+	if catalog.ExecutionBackend != "contained-worker" || len(catalog.Runners) != 1 || catalog.Runners[0].Name != "isolated" {
+		t.Fatalf("remote inventory acquired local fallback=%+v", catalog)
+	}
+}

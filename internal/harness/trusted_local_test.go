@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -163,6 +164,56 @@ func TestTrustedLocalRunDoesNotResolveAdapterFallback(t *testing.T) {
 	_, err := adapter.Run(trustedLocalTestContext(t), RunRequest{Workspace: t.TempDir(), Model: "requested-model"})
 	if !errors.Is(err, credentials.ErrChildAuthenticationIsolation) || called || lister.calls != 0 {
 		t.Fatalf("unresolved child configuration consulted adapter credentials: resolver=%v lister=%d err=%v", called, lister.calls, err)
+	}
+}
+
+func TestTrustedLocalOfflineConfigDoesNotProbeLauncher(t *testing.T) {
+	adapter := &CopilotAdapter{Command: []string{"wrapper"}, RequireLauncherContract: true, DeferDiscovery: true,
+		Runner: &fakeProcessRunner{act: func(ProcessRequest) error {
+			t.Fatal("offline configuration launched a wrapper")
+			return nil
+		}},
+		ModelCredential: func(context.Context) (string, error) {
+			t.Fatal("offline configuration resolved credentials")
+			return "", nil
+		}}
+	if _, err := adapter.resolveConfig(t.Context(), "requested-model", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTrustedLocalLauncherProbeUsesDelegatedEnvironment(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "unselected-host-token")
+	t.Setenv("GITHUB_TOKEN", "unselected-provider-token")
+	t.Setenv("EXTRA_SECRET", "unselected-secret")
+	ctx := trustedLocalTestContext(t)
+	calls := 0
+	adapter := &CopilotAdapter{Command: []string{"wrapper"}, RequireLauncherContract: true,
+		ModelCredential: func(context.Context) (string, error) {
+			t.Fatal("launcher resolved adapter fallback")
+			return "", nil
+		},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			calls++
+			if !slices.Contains(req.Env, "COPILOT_GITHUB_TOKEN=selected-parent-token") {
+				t.Fatal("launcher lost the selected model credential")
+			}
+			for _, key := range []string{"GITHUB_TOKEN", "EXTRA_SECRET"} {
+				if _, found := environmentValue(req.Env, key); found {
+					t.Fatalf("launcher inherited %s", key)
+				}
+			}
+			if home, _ := environmentValue(req.Env, "HOME"); home == "" || home == os.Getenv("HOME") {
+				t.Fatal("launcher did not receive a private home")
+			}
+			_, err := io.WriteString(req.StdoutCapture, `{"version":1,"sessionMode":"adapter-managed"}`)
+			return ProcessResult{}, err
+		})}
+	if _, err := adapter.launcherSessionContract(ctx, []string{"COPILOT_GITHUB_TOKEN=selected-parent-token"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("launcher probes=%d", calls)
 	}
 }
 
