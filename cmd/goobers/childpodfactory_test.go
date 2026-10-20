@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
@@ -110,7 +111,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 	t.Helper()
 	// Custody and scope assertions must survive full-suite contention. These
 	// in-process requests do not test response latency.
-	const planeDeadline = 10 * time.Second
+	const planeDeadline = time.Minute
 	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, queued: options.queued})
 	s := f.writer.service
 
@@ -183,7 +184,8 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		if contract.Identity.Child == nil || *contract.Identity.Child != *f.writer.identity.Child || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
 			return engine.ChildDispatchResult{}, fmt.Errorf("custody changed: %+v", contract)
 		}
-		owned, stop, err := remoteChildExecutionFence(ctx, server.URL, workerToken, contract)
+		owned, stop, err := remoteChildExecutionFenceWithOptions(ctx, server.URL, workerToken, contract,
+			claimsclient.ExecutionFenceOptions{SnapshotTimeout: planeDeadline})
 		if err != nil {
 			return engine.ChildDispatchResult{}, fmt.Errorf("startup execution observer refused worker: %w", err)
 		}
