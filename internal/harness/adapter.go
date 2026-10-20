@@ -66,6 +66,10 @@ var ErrInvalidCompletion = errors.New("harness: completion file failed validatio
 // an already-prepared workspace (worktree creation and its BaseRef/branch are
 // the runner's concern via internal/worktree, not this package's).
 type RunRequest struct {
+	// IsolateHome requires a sandbox and removes the ambient user profile from
+	// native interactive processes. Model authentication must remain available
+	// through scoped credentials or the provider's isolated authentication path.
+	IsolateHome bool
 	// Mode selects the completion contract this session must satisfy.
 	Mode Mode
 	// Envelope is the invocation envelope (goal, context pointers, declared
@@ -329,6 +333,9 @@ type NestedPolicyCapability interface {
 }
 
 func validateStandardExecution(req RunRequest) error {
+	if req.IsolateHome && req.Sandbox == nil {
+		return ErrSandboxUnavailable
+	}
 	if req.Envelope.NestedAgentPolicy != nil || req.ExecutionPolicy != nil {
 		return fmt.Errorf("harness: nested execution requires the adapter child-launch path")
 	}

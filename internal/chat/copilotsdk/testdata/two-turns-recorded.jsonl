@@ -1,0 +1,13 @@
+{"cli":{"name":"copilot","version":"1.0.98"},"description":"Two live tiny turns; only allowlisted public content and usage retained; message IDs normalized","format":"clubhouse-chat-fixture","kind":"header","protocol":"copilot-sdk","source":"recorded","version":1}
+{"from":"cli","msg":{"data":{},"type":"assistant.turn_start"}}
+{"from":"cli","msg":{"data":{"deltaContent":"ok","messageId":"message"},"type":"assistant.message_delta"}}
+{"from":"cli","msg":{"data":{"inputTokens":3179,"outputTokens":5},"type":"assistant.usage"}}
+{"from":"cli","msg":{"data":{"content":"ok","messageId":"message"},"type":"assistant.message"}}
+{"from":"cli","msg":{"data":{},"type":"assistant.turn_end"}}
+{"from":"cli","msg":{"data":{},"type":"session.idle"}}
+{"from":"cli","msg":{"data":{},"type":"assistant.turn_start"}}
+{"from":"cli","msg":{"data":{"deltaContent":"ok","messageId":"message"},"type":"assistant.message_delta"}}
+{"from":"cli","msg":{"data":{"inputTokens":3223,"outputTokens":5},"type":"assistant.usage"}}
+{"from":"cli","msg":{"data":{"content":"ok","messageId":"message"},"type":"assistant.message"}}
+{"from":"cli","msg":{"data":{},"type":"assistant.turn_end"}}
+{"from":"cli","msg":{"data":{},"type":"session.idle"}}

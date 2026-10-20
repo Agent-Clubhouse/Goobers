@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/goobers/goobers/internal/invoke"
 	"time"
+
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 // Registry is immutable after host setup. Registration order is fallback order
 // within a provider; there is never cross-provider fallback.
 type Registry struct{ drivers map[string][]Driver }
 
+// NewRegistry creates an empty provider-scoped driver registry.
 func NewRegistry() *Registry { return &Registry{drivers: map[string][]Driver{}} }
+
+// Register appends a driver to its provider fallback order.
 func (r *Registry) Register(provider string, d Driver) error {
 	if provider == "" || d == nil {
 		return fmt.Errorf("chat: invalid registration")
@@ -25,6 +29,8 @@ func (r *Registry) Register(provider string, d Driver) error {
 	r.drivers[provider] = append(r.drivers[provider], d)
 	return nil
 }
+
+// Start opens a session within the supplied host authority.
 func (r *Registry) Start(ctx context.Context, provider string, o StartOptions) (Session, []Attempt, error) {
 	var attempts []Attempt
 	for _, d := range r.drivers[provider] {
@@ -42,6 +48,9 @@ func (r *Registry) Start(ctx context.Context, provider string, o StartOptions) (
 			}
 			a.ErrorCode = p.ErrorCode
 			attempts = append(attempts, a)
+			if errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+				return nil, attempts, err
+			}
 			continue
 		}
 		begin = time.Now()

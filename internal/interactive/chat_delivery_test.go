@@ -52,3 +52,20 @@ func TestChatDeliveryIntentIsValidatedAndForwarded(t *testing.T) {
 	default:
 	}
 }
+
+func TestActualSteeringReceiptOverridesRequestedIntent(t *testing.T) {
+	e := newExecutor()
+	s := openTest(t, options(t, e))
+	session := createTest(t, s, "alice")
+	receipt := commandTest(t, s, "alice", session.ID, Command{Type: "message", Text: "work"})
+	run := receiveRun(t, e)
+	steer := commandTest(t, s, "alice", session.ID, Command{Type: "steer", Text: "continue", TurnID: receipt.TurnID, Delivery: "steer"})
+	message := <-run.req.Steering
+	message.AckDelivery("prompt", nil)
+	s.mu.Lock()
+	got := s.state.Sessions[session.ID].Commands[steer.CommandID].Receipt
+	s.mu.Unlock()
+	if got.Status != "delivered" || got.Delivery != "prompt" || got.SteeringMode != "interrupt-and-continue" {
+		t.Fatalf("receipt reports intent instead of actual delivery: %+v", got)
+	}
+}

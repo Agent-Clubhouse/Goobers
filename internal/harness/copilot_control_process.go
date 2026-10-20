@@ -63,9 +63,14 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	if err != nil {
 		return nil, "", err
 	}
+	process, err := startCopilotControlServer(ctx, runner, req, command)
+	return process, sessionID, err
+}
+
+func startCopilotControlServer(ctx context.Context, runner ProcessRunner, req ProcessRequest, command []string) (*copilotControlProcess, error) {
 	token, err := newHarnessSessionID()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	capture := &copilotPortCapture{ready: make(chan int, 1)}
@@ -85,17 +90,17 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	case port = <-capture.ready:
 	case <-done:
 		cancel()
-		return nil, "", copilotControlExitError(process.result, process.err, req.Env)
+		return nil, copilotControlExitError(process.result, process.err, req.Env)
 	case <-startup.Done():
 		process.close()
-		return nil, "", fmt.Errorf("%w: Copilot control startup timed out", errRequiredMCPUnavailable)
+		return nil, fmt.Errorf("%w: Copilot control startup timed out", errRequiredMCPUnavailable)
 	}
 	process.client = copilot.NewClient(&copilot.ClientOptions{Connection: copilot.URIConnection{URL: fmt.Sprintf("127.0.0.1:%d", port), ConnectionToken: token}, LogLevel: "error"})
 	if err := process.client.Start(startup); err != nil {
 		process.close()
-		return nil, "", fmt.Errorf("%w: Copilot control connection failed", errRequiredMCPUnavailable)
+		return nil, fmt.Errorf("%w: Copilot control connection failed", errRequiredMCPUnavailable)
 	}
-	return process, sessionID, nil
+	return process, nil
 }
 
 func (p *copilotControlProcess) close() {

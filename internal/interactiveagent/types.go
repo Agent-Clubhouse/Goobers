@@ -39,7 +39,10 @@ type AuditEvent struct {
 
 // Options binds the bridge to its invocation, policy, and tool handler.
 type Options struct {
-	Tools []Tool
+	// RuntimeDir is a host-controlled parent for the invocation's private bridge.
+	// The host must deny other sessions access to this directory.
+	RuntimeDir string
+	Tools      []Tool
 	// Check must validate the exact invocation's current server lease/fence.
 	// Check and Invoke are serialized across every connection to this bridge.
 	Check  func(context.Context) error

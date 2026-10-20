@@ -46,7 +46,7 @@ func bridgeExecutor(t *testing.T) (*Executor, interactive.ExecutionRequest) {
 		}
 		refs[provider] = connection.Ref
 	}
-	e, err := New(Config{StateDir: t.TempDir(), SourceDir: t.TempDir(), Mode: "local-tools", Model: "legacy-model", SelfBinary: "/trusted/host/goobers", Broker: broker, Principal: principal, TrustedLocalModelLogin: true, ResolveAuthority: func(_ context.Context, req interactive.ExecutionRequest, provider auth.Provider) (auth.ConnectionRef, error) {
+	e, err := New(Config{Sandbox: fixtureSandbox{}, StateDir: t.TempDir(), SourceDir: t.TempDir(), Mode: "local-tools", Model: "legacy-model", SelfBinary: "/trusted/host/goobers", Broker: broker, Principal: principal, TrustedLocalModelLogin: true, ResolveAuthority: func(_ context.Context, req interactive.ExecutionRequest, provider auth.Provider) (auth.ConnectionRef, error) {
 		for _, name := range req.AuthorityRefs {
 			if name == "demo-ado" && provider == auth.ADO || name == "demo-insights" && provider == auth.AppInsights {
 				return refs[provider], nil
@@ -77,6 +77,21 @@ func connectBridge(path string) (*bridgeRPC, error) {
 	conn, err := net.Dial("unix", path)
 	if err != nil {
 		return nil, err
+	}
+	token, err := os.ReadFile(filepath.Join(filepath.Dir(path), "auth.token"))
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err = conn.Write(token); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	var authenticated [3]byte
+	if _, err = io.ReadFull(conn, authenticated[:]); err != nil || string(authenticated[:]) != "OK\n" {
+		_ = conn.Close()
+		return nil, fmt.Errorf("bridge authentication failed")
 	}
 	client := &bridgeRPC{conn: conn, reader: bufio.NewReader(conn)}
 	if _, err = client.request(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`); err != nil {
@@ -111,7 +126,7 @@ func bridgeSocket(request harness.RunRequest) (string, error) {
 		return "", fmt.Errorf("expected one invocation-bound MCP server")
 	}
 	server := request.MCPServers[0]
-	if server.Command != "/trusted/host/goobers" || len(server.Args) != 3 || server.Args[0] != "agent-tools" || server.Args[1] != "--socket" {
+	if server.Command != "/trusted/host/goobers" || len(server.Args) != 5 || server.Args[0] != "agent-tools" || server.Args[1] != "--socket" || server.Args[3] != "--token-file" || server.Args[4] != filepath.Join(filepath.Dir(server.Args[2]), "auth.token") {
 		return "", fmt.Errorf("untrusted MCP command")
 	}
 	return server.Args[2], nil
@@ -474,7 +489,7 @@ func TestNoConfiguredToolsMeansNoNativeMCPBridge(t *testing.T) {
 		}
 		return successOutcome(), nil
 	}
-	if _, err := e.native(context.Background(), req, filepath.Join(t.TempDir(), "workspace"), "", func(string, map[string]any) error { return nil }); err != nil {
+	if _, err := e.native(context.Background(), req, t.TempDir(), "", func(string, map[string]any) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if toolsCalled.Load() != 0 {

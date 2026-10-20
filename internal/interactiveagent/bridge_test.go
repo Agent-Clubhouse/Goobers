@@ -55,6 +55,13 @@ func newClient(t *testing.T, b *Bridge) *client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	token, err := readToken(b.TokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = authenticateClient(conn, token); err != nil {
+		t.Fatal(err)
+	}
 	c := &client{conn: conn, reader: bufio.NewReader(conn), t: t}
 	c.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"test","version":"1"},"capabilities":{}}}`)
 	if c.read().Error != nil {
@@ -112,7 +119,7 @@ func TestUnixSocketStdioRoundTripAndPermissions(t *testing.T) {
 	}
 	input := strings.Join([]string{`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}`, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_context","arguments":{"text":"hello","count":2}}}`, `{"jsonrpc":"2.0","id":4,"method":"ping"}`, `{"jsonrpc":"2.0","id":5,"method":"version"}`}, "\n") + "\n"
 	var output bytes.Buffer
-	if err := ServeStdio(context.Background(), b.SocketPath, strings.NewReader(input), &output); err != nil {
+	if err := ServeStdio(context.Background(), b.SocketPath, b.TokenPath, strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
@@ -352,7 +359,7 @@ func TestOversizedMessageIsRejectedBeforeHostDispatch(t *testing.T) {
 		t.Fatal("oversized request accepted")
 	}
 	var output bytes.Buffer
-	if err := ServeStdio(context.Background(), b.SocketPath, strings.NewReader(strings.Repeat("x", MaxRequestBytes+1)), &output); !errors.Is(err, ErrInvalidMessage) {
+	if err := ServeStdio(context.Background(), b.SocketPath, b.TokenPath, strings.NewReader(strings.Repeat("x", MaxRequestBytes+1)), &output); !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("proxy limit error: %v", err)
 	}
 }
@@ -392,7 +399,7 @@ func TestStdioCancellationClosesBlockedInput(t *testing.T) {
 		}
 	}()
 	done := make(chan error, 1)
-	go func() { done <- ServeStdio(ctx, b.SocketPath, reader, io.Discard) }()
+	go func() { done <- ServeStdio(ctx, b.SocketPath, b.TokenPath, reader, io.Discard) }()
 	cancel()
 	select {
 	case err := <-done:
@@ -409,7 +416,7 @@ func TestUnsafeSocketPermissionsAreRefused(t *testing.T) {
 	if err := os.Chmod(b.SocketPath, 0666); err != nil {
 		t.Fatal(err)
 	}
-	if err := ServeStdio(context.Background(), b.SocketPath, strings.NewReader(""), io.Discard); !errors.Is(err, ErrUnavailable) {
+	if err := ServeStdio(context.Background(), b.SocketPath, b.TokenPath, strings.NewReader(""), io.Discard); !errors.Is(err, ErrUnavailable) {
 		t.Fatal("proxy accepted an unprotected socket")
 	}
 }

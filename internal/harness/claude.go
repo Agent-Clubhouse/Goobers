@@ -504,6 +504,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
 	env = overrideEnv(env, "TMPDIR", tempDir)
 
+	env, err = isolateInteractiveHome(req, env)
+	if err != nil {
+		return Outcome{}, err
+	}
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)
 		if err != nil {

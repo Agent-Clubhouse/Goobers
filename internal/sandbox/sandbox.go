@@ -38,6 +38,9 @@ type Policy struct {
 	// ReadDeniedPaths hides private files or directories from the child.
 	// These are configuration-owned paths, never invocation-envelope input.
 	ReadDeniedPaths []string
+	// ReadBoundaries hide each root except its explicitly allowed subdirectories.
+	// Roots and exceptions are host-owned, never supplied by the agent.
+	ReadBoundaries []ReadBoundary
 }
 
 // New returns the native sandbox for the current operating system.
@@ -46,9 +49,10 @@ func New() (Sandbox, error) {
 }
 
 type validatedPolicy struct {
-	workspace     string
-	writableRoots []string
-	readDenied    []readDeniedPath
+	workspace      string
+	writableRoots  []string
+	readDenied     []readDeniedPath
+	readBoundaries []ReadBoundary
 }
 
 func validate(command *exec.Cmd, policy Policy) (validatedPolicy, error) {
@@ -99,6 +103,10 @@ func validate(command *exec.Cmd, policy Policy) (validatedPolicy, error) {
 		validated.writableRoots = append(validated.writableRoots, resolved)
 	}
 	validated.readDenied, err = validateReadDenials(policy.ReadDeniedPaths, append([]string{workspace}, validated.writableRoots...))
+	if err != nil {
+		return validatedPolicy{}, err
+	}
+	validated.readBoundaries, err = validateReadBoundaries(policy.ReadBoundaries, append([]string{workspace}, validated.writableRoots...))
 	if err != nil {
 		return validatedPolicy{}, err
 	}

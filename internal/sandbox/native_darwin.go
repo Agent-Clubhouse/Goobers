@@ -56,6 +56,17 @@ func (nativeSandbox) Wrap(command *exec.Cmd, policy Policy) error {
 		fmt.Fprintf(&profile, "\n(deny file-read* file-write* (%s (param %q)))", predicate, parameter)
 		args = append(args, "-D", parameter+"="+denied.path)
 	}
+	for i, boundary := range validated.readBoundaries {
+		parameter := "READ_BOUNDARY_" + strconv.Itoa(i)
+		fmt.Fprintf(&profile, "\n(deny file-read* file-write* (require-all (subpath (param %q))", parameter)
+		args = append(args, "-D", parameter+"="+boundary.Root)
+		for j, allowed := range boundary.Allow {
+			exception := parameter + "_ALLOW_" + strconv.Itoa(j)
+			fmt.Fprintf(&profile, " (require-not (subpath (param %q)))", exception)
+			args = append(args, "-D", exception+"="+allowed)
+		}
+		profile.WriteString("))")
+	}
 	args = append(args, "-p", profile.String(), targetPath)
 	command.Path = seatbeltPath
 	command.Args = append(args, targetArgs...)

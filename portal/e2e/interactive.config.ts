@@ -1,3 +1,4 @@
+import { humanBrowserOptions } from "./interactive-auth";
 import { defineConfig, devices } from "@playwright/test";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -8,6 +9,7 @@ import { resolve } from "node:path";
 export const evidenceDirectory = resolve(
   process.env.INTERACTIVE_EVIDENCE_DIR ?? `${tmpdir()}/goobers-interactive-evidence`,
 );
+
 
 export default defineConfig({
   testDir: ".",
@@ -20,6 +22,7 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   use: {
     ...devices["Desktop Chrome"],
+    ...humanBrowserOptions(),
     baseURL: process.env.INTERACTIVE_BASE_URL ?? "http://127.0.0.1:8097",
     trace: "on",
     video: "on",
