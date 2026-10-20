@@ -263,7 +263,7 @@ func (s conflictTestSource) conflictProvider() prSelectConflictProvider { return
 
 func TestPRSelectConflictRechecksHeadAndHumanHold(t *testing.T) {
 	conflict := false
-	original := providers.PullRequestSummary{Number: 42, State: "open", HeadSHA: "old", Mergeable: &conflict}
+	original := providers.PullRequestSummary{Number: 42, State: "open", Head: "goobers/implementation/test", HeadSHA: "old", Mergeable: &conflict}
 	for _, kind := range []providers.ProviderKind{providers.ProviderGitHub, providers.ProviderADO} {
 		for _, tc := range []struct {
 			name, head, hold string
@@ -278,7 +278,7 @@ func TestPRSelectConflictRechecksHeadAndHumanHold(t *testing.T) {
 				p := &conflictTestProvider{fresh: original}
 				p.fresh.HeadSHA = tc.head
 				p.fresh.Labels = []string{tc.hold}
-				excluded, err := excludePRSelectConflict(t.Context(), conflictTestSource{provider: p}, providers.RepositoryRef{Provider: kind}, original, true)
+				excluded, err := excludePRSelectConflict(t.Context(), conflictTestSource{provider: p}, providers.RepositoryRef{Provider: kind}, original, true, prSelectSourceRequest{headPrefixes: []string{"goobers/implementation/"}})
 				if !excluded || (err != nil) != tc.wantError {
 					t.Fatalf("excluded=%v err=%v", excluded, err)
 				}
@@ -292,18 +292,75 @@ func TestPRSelectConflictRechecksHeadAndHumanHold(t *testing.T) {
 
 func TestPRSelectConflictRetriesLabelWithoutDuplicatingNote(t *testing.T) {
 	conflict := false
-	p := &conflictTestProvider{fresh: providers.PullRequestSummary{Number: 42, State: "open", HeadSHA: "head", Mergeable: &conflict}, failLabel: true}
+	p := &conflictTestProvider{fresh: providers.PullRequestSummary{Number: 42, State: "open", Head: "goobers/implementation/test", HeadSHA: "head", Mergeable: &conflict}, failLabel: true}
 	source := conflictTestSource{provider: p}
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub}
-	if _, err := excludePRSelectConflict(t.Context(), source, repo, p.fresh, true); err == nil {
+	if _, err := excludePRSelectConflict(t.Context(), source, repo, p.fresh, true, prSelectSourceRequest{headPrefixes: []string{"goobers/implementation/"}}); err == nil {
 		t.Fatal("failed label write was hidden")
 	}
 	for range 2 {
-		if _, err := excludePRSelectConflict(t.Context(), source, repo, p.fresh, true); err != nil {
+		if _, err := excludePRSelectConflict(t.Context(), source, repo, p.fresh, true, prSelectSourceRequest{headPrefixes: []string{"goobers/implementation/"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if len(p.comments) != 1 || p.labelWrites != 2 {
 		t.Fatalf("comments=%d label writes=%d", len(p.comments), p.labelWrites)
+	}
+}
+
+func TestPRSelectConflictHonorsFreshConfiguredHold(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(42, "Conflicted PR")
+	server.addOpenPR(42, "goobers/implementation/conflict", "main", "head-42", "base", false, nil, nil)
+	server.setPRMergeable(42, false)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "fresh-hold-review")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "custom:hold")
+	t.Chdir(t.TempDir())
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	source, gate, err := newPRSelectSources(root, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict := false
+	p := &conflictTestProvider{fresh: providers.PullRequestSummary{Number: 42, State: "open", HeadSHA: "head-42", Head: "goobers/implementation/conflict", Base: "main", Labels: []string{"custom:hold"}, Mergeable: &conflict}}
+	var out, stderr strings.Builder
+	code := runPRSelectCore(root, repo, conflictTestSource{prSelectSource: source, provider: p}, gate, &out, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if len(p.comments) > 0 || p.labelWrites > 0 {
+		t.Fatalf("fresh configured exclusion ignored: comments=%d labels=%d stdout=%s", len(p.comments), p.labelWrites, out.String())
+	}
+}
+
+func TestPRSelectConflictRechecksConfiguredEligibility(t *testing.T) {
+	conflict := false
+	original := providers.PullRequestSummary{Number: 42, State: "open", Head: "goobers/implementation/test", Base: "main", HeadSHA: "head", Author: "bot", Labels: []string{"review-opt-in"}, Assignees: []string{"self"}, Mergeable: &conflict}
+	policy := prSelectSourceRequest{headPrefixes: []string{"goobers/implementation/"}, excludeLabels: []string{"custom:hold"}, requiredOptInLabel: "review-opt-in", respectAssignee: true, selfIdentity: "self", identityFilters: providers.ListPullRequestsRequest{Author: "bot"}}
+	for _, tc := range []struct {
+		name   string
+		change func(*providers.PullRequestSummary)
+	}{
+		{"configured hold", func(pr *providers.PullRequestSummary) { pr.Labels = append(pr.Labels, "custom:hold") }},
+		{"opt-in removed", func(pr *providers.PullRequestSummary) { pr.Labels = nil }},
+		{"assignee changed", func(pr *providers.PullRequestSummary) { pr.Assignees = []string{"other"} }},
+		{"author filter changed", func(pr *providers.PullRequestSummary) { pr.Author = "other" }},
+		{"branch changed", func(pr *providers.PullRequestSummary) { pr.Head = "human/feature" }},
+		{"base changed", func(pr *providers.PullRequestSummary) { pr.Base = "release" }},
+	} {
+		for _, kind := range []providers.ProviderKind{providers.ProviderGitHub, providers.ProviderADO} {
+			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
+				p := &conflictTestProvider{fresh: original}
+				tc.change(&p.fresh)
+				excluded, err := excludePRSelectConflict(t.Context(), conflictTestSource{provider: p}, providers.RepositoryRef{Provider: kind}, original, true, policy)
+				if err != nil || !excluded {
+					t.Fatalf("excluded=%v err=%v", excluded, err)
+				}
+				if len(p.comments) > 0 || p.labelWrites > 0 {
+					t.Fatal("fresh eligibility change was ignored")
+				}
+			})
+		}
 	}
 }
