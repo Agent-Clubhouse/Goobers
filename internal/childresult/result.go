@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
+// Terminal result limits and the current return-envelope wire version.
 const (
 	MaxSummaryBytes       = 8 << 10
 	MaxReferences         = 16
@@ -26,7 +27,9 @@ const (
 )
 
 var (
-	ErrInvalidTerminalInput  = errors.New("child result: invalid terminal input")
+	// ErrInvalidTerminalInput reports invalid terminal state, timing or bounds.
+	ErrInvalidTerminalInput = errors.New("child result: invalid terminal input")
+	// ErrInvalidTerminalReturn reports invalid return pins or envelope bounds.
 	ErrInvalidTerminalReturn = errors.New("child result: invalid terminal return")
 )
 
