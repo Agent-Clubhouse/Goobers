@@ -25,8 +25,9 @@ func (s *session) onEvent(e sdk.SessionEvent) {
 		s.nativeIdle = false
 		s.nativeTurn++
 		s.busy = true
+		turnID := fmt.Sprint(s.nativeTurn)
 		s.mu.Unlock()
-		s.emit("turn_started", map[string]any{}, "")
+		s.emit("turn_started", map[string]any{"nativeTurnId": turnID}, "")
 	case *rpc.AssistantTurnEndData:
 		// This can precede a follow-up agent turn (#2191). Only session.idle
 		// settles the conversational turn and allows completion handling.

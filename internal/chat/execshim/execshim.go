@@ -114,6 +114,10 @@ func (s *session) Send(ctx context.Context, c []chat.ContentBlock, o chat.SendOp
 	defer s.opMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if o.ExpectedGeneration != nil && *o.ExpectedGeneration != s.nativeTurn {
+		return "", chat.ErrBusy
+	}
+
 	if s.closed {
 		return "", chat.ErrClosed
 	}
@@ -140,7 +144,7 @@ func (s *session) Send(ctx context.Context, c []chat.ContentBlock, o chat.SendOp
 	s.emit("command.accepted", nil, o.CommandID)
 	s.emit("user_message", map[string]any{"content": c, "source": "user", "delivery": chat.Prompt}, o.CommandID)
 	s.emit("command.delivered", map[string]any{"delivery": chat.Prompt}, o.CommandID)
-	s.emit("turn_started", nil, "")
+	s.emit("turn_started", map[string]any{"nativeTurnId": turnID}, "")
 	go func() {
 		defer close(done)
 		defer cancel()
@@ -165,11 +169,23 @@ func (s *session) Send(ctx context.Context, c []chat.ContentBlock, o chat.SendOp
 			s.emit("turn_ended", map[string]any{"reason": reason, "settled": custody == nil, "nativeTurnId": turnID}, "")
 			return
 		}
-		s.emit("completion.accepted", map[string]any{"payload": json.RawMessage(out.Payload), "metrics": out.Metrics}, "")
+		s.emit("completion.accepted", map[string]any{"payload": json.RawMessage(out.Payload), "metrics": out.Metrics, "nativeTurnId": turnID}, "")
 		s.emit("turn_ended", map[string]any{"reason": "end_turn", "settled": true, "nativeTurnId": turnID}, "")
 	}()
 	return chat.Prompt, nil
 }
+
+// TurnGeneration retains evidence of native turns even after they settle.
+func (s *session) TurnGeneration() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeTurn
+}
+
+// EventSequence returns the last published event boundary.
+func (s *session) EventSequence() uint64 { return s.stream.Sequence() }
+
+// ActiveTurnID identifies outstanding native work for interruption settlement.
 func (s *session) ActiveTurnID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
