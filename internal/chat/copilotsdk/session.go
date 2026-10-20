@@ -33,6 +33,8 @@ type session struct {
 	nextRequest               uint64
 	requestEpoch              uint64
 	queued                    int
+	sendPending               bool
+	pendingIdle               []bool
 	once                      sync.Once
 	closeErr                  error
 }
@@ -94,7 +96,9 @@ func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.
 	if actual == chat.Queued {
 		s.queued++
 	}
+	s.sendPending = true
 	s.mu.Unlock()
+	defer s.flushPendingIdle()
 	mode := rpc.SendModeImmediate
 	if actual == chat.Queued {
 		mode = rpc.SendModeEnqueue
