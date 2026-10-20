@@ -51,7 +51,7 @@ func TestSharedReservationSurvivesRestartWithoutAdmission(t *testing.T) {
 	if current.SharedAdmissionPending || !current.ExpiresAt.After(time.Now()) {
 		t.Fatal("acknowledgment did not admit")
 	}
-	if ok, err := ledger.BeginSharedRelease(current); err != nil || !ok {
+	if ok, err := ledger.BeginSharedRelease(current, time.Time{}); err != nil || !ok {
 		t.Fatalf("release reservation: %v %v", ok, err)
 	}
 	ledger, err = OpenClaimLedger(path)
@@ -86,7 +86,7 @@ func TestSharedReservationRevocationWinsOverRemoteAcknowledgment(t *testing.T) {
 	if ok, _, err := ledger.FinishSharedAdmission(pending, time.Now().Add(time.Hour)); err == nil || ok {
 		t.Fatal("late acknowledgment restored revoked execution")
 	}
-	if ok, err := ledger.BeginSharedRelease(pending); err != nil || !ok {
+	if ok, err := ledger.BeginSharedRelease(pending, time.Time{}); err != nil || !ok {
 		t.Fatalf("revoked cleanup reserve: %v %v", ok, err)
 	}
 	if ok, err := ledger.FinishProviderRelease(pending, claimrelease.ForceReleased.Reason().By("operator")); err != nil || !ok {

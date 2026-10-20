@@ -256,9 +256,9 @@ func recoverClaimsWithResolver(
 		if !entry.ExpiresAt.After(now) {
 			continue
 		} // already attempted above
-		if err := client.ReleaseExpected(claimContext(), entry, reasons[entry.RunID]); err != nil {
+		if didRelease, err := client.ReleaseExpected(claimContext(), entry, reasons[entry.RunID]); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
-		} else {
+		} else if didRelease {
 			released = append(released, entry)
 		}
 	}
@@ -274,9 +274,9 @@ func recoverExpiredSharedClaims(ctx context.Context, entries []localscheduler.Cl
 		if entry.SharedDeadline.IsZero() || entry.ExpiresAt.After(now) {
 			continue
 		}
-		if err := coordinated.ReleaseExpected(ctx, entry, localscheduler.StallSweptReason()); err != nil {
+		if didRelease, err := coordinated.ReleaseExpiredExpected(ctx, entry, localscheduler.StallSweptReason(), now); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release expired shared claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
-		} else {
+		} else if didRelease {
 			released = append(released, entry)
 		}
 	}

@@ -143,7 +143,8 @@ func (f *File) ReleaseScoped(ctx context.Context, key Key, runID string, reason 
 	if err != nil || shared == nil {
 		return err
 	}
-	return f.releaseShared(ctx, *shared, reason)
+	_, err = f.releaseShared(ctx, *shared, reason, time.Time{})
+	return err
 }
 
 // ReleaseAllForRun snapshots under the claims lock and releases each exact
@@ -161,10 +162,13 @@ func (f *File) ReleaseAllForRun(ctx context.Context, runID string, reason claimr
 		if entry.IsPublicationClaim() {
 			continue
 		}
-		if err = f.ReleaseExpected(ctx, entry, reason); err != nil {
+		didRelease, err := f.ReleaseExpected(ctx, entry, reason)
+		if err != nil {
 			return released, err
 		}
-		released = append(released, reportEntry(entry))
+		if didRelease {
+			released = append(released, reportEntry(entry))
+		}
 	}
 	return released, err
 }
@@ -289,20 +293,36 @@ func reportEntry(entry Entry) Entry {
 }
 
 // ReleaseExpected releases a snapshot only if its exact incarnation still owns
-// the item. It is used by recovery so a stale scan never releases a successor.
-func (f *File) ReleaseExpected(ctx context.Context, expected Entry, reason claimrelease.Reason) error {
-	if !expected.SharedDeadline.IsZero() {
-		return f.releaseShared(ctx, expected, reason)
+// the item. It reports whether cleanup actually removed that incarnation.
+func (f *File) ReleaseExpected(ctx context.Context, expected Entry, reason claimrelease.Reason) (bool, error) {
+	return f.releaseExpected(ctx, expected, reason, time.Time{})
+}
+
+// ReleaseExpiredExpected also rechecks the current deadline under the claims
+// lock and, for shared claims, the transition lock before reserving cleanup.
+// A stale expiry scan must not release a successfully renewed same-owner lease.
+func (f *File) ReleaseExpiredExpected(ctx context.Context, expected Entry, reason claimrelease.Reason, expiredAt time.Time) (bool, error) {
+	if expiredAt.IsZero() {
+		return false, fmt.Errorf("claimsclient: expiry cleanup requires a cutoff")
 	}
-	return f.Locked(ctx, f.operationName(fileOperationRelease), func(tx Ledger) error {
+	return f.releaseExpected(ctx, expected, reason, expiredAt)
+}
+
+func (f *File) releaseExpected(ctx context.Context, expected Entry, reason claimrelease.Reason, expiredAt time.Time) (released bool, err error) {
+	if !expected.SharedDeadline.IsZero() {
+		return f.releaseShared(ctx, expected, reason, expiredAt)
+	}
+	err = f.Locked(ctx, f.operationName(fileOperationRelease), func(tx Ledger) error {
 		session := tx.(*fileSession)
-		for _, current := range session.ledger.ForRunAll(expected.RunID) {
-			if KeyForEntry(current) == KeyForEntry(expected) && current.ClaimedAt.Equal(expected.ClaimedAt) {
-				return session.releaseEntry(ctx, current, current.RunID, reason)
-			}
+		current, held := matchingEntry(session.ledger, expected)
+		if !held || (!expiredAt.IsZero() && current.ExpiresAt.After(expiredAt)) {
+			return nil
 		}
-		return nil
+		err := session.releaseEntry(ctx, current, current.RunID, reason)
+		released = err == nil
+		return err
 	})
+	return released, err
 }
 
 func (f *File) operationName(fallback string) string {

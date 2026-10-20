@@ -220,13 +220,13 @@ func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpa
 		if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
 			continue
 		}
-		if entry.IsPublicationClaim() {
-			continue
-		}
-		if err := client.ReleaseExpected(ctx, entry, request.Reason); err != nil {
+		didRelease, err := client.ReleaseExpected(ctx, entry, request.Reason)
+		if err != nil {
 			return httpapi.ClaimResponse{}, err
 		}
-		released = append(released, claimEntryWire(entry))
+		if didRelease {
+			released = append(released, claimEntryWire(entry))
+		}
 	}
 
 	if err != nil {

@@ -3,6 +3,7 @@ package claimsclient
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
@@ -41,5 +42,6 @@ func (f *File) ForceReleaseExpected(ctx context.Context, expected Entry, actor s
 	if err != nil || !cleanup {
 		return err
 	}
-	return f.releaseShared(ctx, expected, claimrelease.ForceReleased.Reason().By(actor))
+	_, err = f.releaseShared(ctx, expected, claimrelease.ForceReleased.Reason().By(actor), time.Time{})
+	return err
 }

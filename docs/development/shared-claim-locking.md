@@ -14,7 +14,7 @@ Never acquire the per-item lock while holding the claims lock. Never call a shar
 
 Administrative revocation is the deliberate exception to waiting for the per-item lock: first persist revocation under the claims lock alone, then release that lock before waiting for per-item cleanup. This immediately stops local execution even when the provider is blocked. Final admission rechecks revocation, so a late remote acknowledgment cannot restore execution authority.
 
-Backlog selection keeps blocked-record reconciliation and its local snapshot in a short claims-lock section, then admits candidates separately. Daemon acquire/release, renewals and recovery use the outer file client rather than a client wrapping an already-held ledger. Recovery treats scan results as hints and compares the persisted incarnation again before mutation.
+Backlog selection keeps blocked-record reconciliation and its local snapshot in a short claims-lock section, then admits candidates separately. Daemon acquire/release, renewals and recovery use the outer file client rather than a client wrapping an already-held ledger. Recovery treats scan results as hints and compares the persisted incarnation again before mutation. Expiry cleanup also rechecks the current deadline against the scan cutoff while holding both the transition and claims locks, atomically with persisting the release reservation. A successful same-owner reacquisition can extend the deadline without changing the incarnation; the stale cleanup then skips it and reports no release.
 
 ## Crash and retry contract
 

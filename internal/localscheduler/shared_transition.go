@@ -97,9 +97,11 @@ func (l *ClaimLedger) FinishSharedAdmission(expected ClaimEntry, deadline time.T
 // BeginSharedRelease reserves cleanup of a persisted shared owner, including
 // an admission whose acknowledgment was lost. The transition lock serializes
 // release against renewal; expired execution does not discard cleanup custody.
-func (l *ClaimLedger) BeginSharedRelease(expected ClaimEntry) (bool, error) {
+// A nonzero expiredAt additionally requires the current lease to be expired at
+// that cutoff, checked atomically with reservation under the claims lock.
+func (l *ClaimLedger) BeginSharedRelease(expected ClaimEntry, expiredAt time.Time) (bool, error) {
 	if expected.SharedOwner == (sharedclaim.Owner{}) || expected.SharedDeadline.IsZero() {
 		return false, errors.New("shared release requires persisted ownership")
 	}
-	return l.beginProviderRelease(expected, true)
+	return l.beginProviderRelease(expected, true, expiredAt)
 }

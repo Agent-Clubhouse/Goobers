@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"errors"
+	"time"
 
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/journal"
@@ -23,10 +24,10 @@ func claimEntryStorageKey(entry ClaimEntry) (string, error) {
 // A crashed attempt leaves custody in claims.json; the next lock holder retries
 // cleanup before admitting another owner, even if the execution lease expired.
 func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
-	return l.beginProviderRelease(expected, false)
+	return l.beginProviderRelease(expected, false, time.Time{})
 }
 
-func (l *ClaimLedger) beginProviderRelease(expected ClaimEntry, shared bool) (bool, error) {
+func (l *ClaimLedger) beginProviderRelease(expected ClaimEntry, shared bool, expiredAt time.Time) (bool, error) {
 	if expected.IsPublicationClaim() {
 		return false, errors.New("publication custody cannot use provider cleanup")
 	}
@@ -38,6 +39,12 @@ func (l *ClaimLedger) beginProviderRelease(expected ClaimEntry, shared bool) (bo
 	defer l.mu.Unlock()
 	current, held := l.entries[key]
 	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || current.SharedOwner != expected.SharedOwner {
+		return false, nil
+	}
+	// A same-owner renewal preserves the incarnation but changes its deadline.
+	// Check eligibility atomically with reservation while the caller holds both
+	// the transition lock and the claims lock. Pending release then blocks renewal.
+	if !expiredAt.IsZero() && current.ExpiresAt.After(expiredAt) {
 		return false, nil
 	}
 	if !current.SharedDeadline.IsZero() != shared {

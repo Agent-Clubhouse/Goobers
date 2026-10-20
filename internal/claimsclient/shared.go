@@ -42,7 +42,7 @@ var ErrSharedRequiresUnlocked = errors.New("claimsclient: shared transitions req
 type sharedTransitionLedger interface {
 	BeginSharedAdmission(Key, sharedclaim.Owner, string) (Entry, bool, string, error)
 	FinishSharedAdmission(Entry, time.Time) (bool, string, error)
-	BeginSharedRelease(Entry) (bool, error)
+	BeginSharedRelease(Entry, time.Time) (bool, error)
 	FinishProviderRelease(Entry, claimrelease.Reason) (bool, error)
 }
 
@@ -118,13 +118,13 @@ func (f *File) claimShared(ctx context.Context, key Key, runID, workflow string,
 	return ok, holder, err
 }
 
-func (f *File) releaseShared(ctx context.Context, entry Entry, reason claimrelease.Reason) error {
+func (f *File) releaseShared(ctx context.Context, entry Entry, reason claimrelease.Reason, expiredAt time.Time) (released bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if f.cfg.Shared == nil {
-		return fmt.Errorf("claimsclient: shared release requires its provider resolver")
+		return false, fmt.Errorf("claimsclient: shared release requires its provider resolver")
 	}
-	return f.sharedTransition(KeyForEntry(entry), func() error {
+	err = f.sharedTransition(KeyForEntry(entry), func() error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func (f *File) releaseShared(ctx context.Context, entry Entry, reason claimrelea
 			if err != nil {
 				return err
 			}
-			reserved, err = ledger.BeginSharedRelease(entry)
+			reserved, err = ledger.BeginSharedRelease(entry, expiredAt)
 			return err
 		}); err != nil || !reserved {
 			return err
@@ -166,10 +166,11 @@ func (f *File) releaseShared(ctx context.Context, entry Entry, reason claimrelea
 			if err != nil {
 				return err
 			}
-			_, err = ledger.FinishProviderRelease(entry, reason)
+			released, err = ledger.FinishProviderRelease(entry, reason)
 			return err
 		})
 	})
+	return released, err
 }
 
 func (s *fileSession) releaseEntry(_ context.Context, entry Entry, runID string, reason claimrelease.Reason) error {
