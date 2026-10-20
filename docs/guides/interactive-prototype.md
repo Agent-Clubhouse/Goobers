@@ -65,6 +65,9 @@ browser storage; it is never a cookie or URL parameter. Cookies are shared
 across loopback ports, so a preview server capturing cookies still cannot read
 or control sessions. The portal uses authenticated fetch streaming for SSE.
 Host/Origin checks still apply. The session cookie is HttpOnly and SameSite=Strict.
+Every response, including portal assets, API and SSE, sends CSP
+`frame-ancestors 'none'` and `X-Frame-Options: DENY`. This prevents a same-site
+preview from framing the authenticated portal to clickjack human controls.
 Secrets are never added to harness environment, requests or workspace files.
 
 The local persona selector is a controlled demonstration, not Entra sign-in.
@@ -190,12 +193,22 @@ Do not enable or claim qualification of this path until that action is approved
 and its actual result is recorded. No live model call is required to validate
 configuration or test the local bridge.
 
-The native adapter uses a trusted local workstation boundary. Its prompt asks
-for bounded behavior, but the mediated-tool allowlist does **not** restrict the
-harness's builtin filesystem or shell tools. The bridge's private Unix socket is
-not protection against a hostile process running as the same OS user. Existing
-local model login is infrastructure authentication, not delegated Microsoft
-identity. There is no application-identity fallback.
+Native drivers and the batch fallback require the stage OS sandbox and an
+isolated home. The interactive profile additionally denies access to human
+server state and masks the shared workspace, chat-state and bridge roots,
+allowing only the current invocation's directories. These root masks also cover
+sibling directories created after launch. Each bridge connection authenticates
+with its invocation's private token before host authority checks; the token file
+is readable only within that invocation's sandbox exception. The agent's own
+shell can exercise its existing scoped bridge authority.
+
+The mediated-tool allowlist does **not** restrict the harness's builtin tools;
+the OS sandbox enforces their filesystem boundary. Model API network access and
+residual host IPC remain available under the stage policy. This is a trusted
+local workstation prototype, not complete isolation from hostile same-user host
+processes or arbitrary credential copies. Existing local model login is
+infrastructure authentication, not delegated Microsoft identity. There is no
+application-identity fallback.
 
 ## Demonstrate the local paths
 

@@ -17,9 +17,11 @@ func (s *session) onEvent(e sdk.SessionEvent) {
 			return
 		}
 		s.mu.Lock()
-		if !s.busy {
+		if !s.busy || s.nativeIdle {
 			s.interrupted = false
 		}
+		s.nativeIdle = false
+		s.nativeTurn++
 		s.busy = true
 		s.mu.Unlock()
 		s.emit("turn_started", map[string]any{}, "")
@@ -63,24 +65,45 @@ func (s *session) onEvent(e sdk.SessionEvent) {
 	}
 }
 
+// idleBoundary captures the native turn at observation time. Send acknowledgement
+// may arrive after the next turn starts, so settlement must not use its state.
+type idleBoundary struct {
+	turn      uint64
+	active    bool
+	cancelled bool
+}
+
 func (s *session) finishTurn(aborted bool) {
 	s.mu.Lock()
-	active := s.busy
-	reason := "end_turn"
-	if aborted || s.interrupted {
-		reason = "cancelled"
+	defer s.mu.Unlock()
+	idle := idleBoundary{turn: s.nativeTurn, active: s.busy, cancelled: aborted || s.interrupted}
+	s.nativeIdle = true
+	if idle.cancelled {
 		s.interrupted = true
 	}
-	settled := s.queued == 0 || reason == "cancelled"
-	if reason == "cancelled" {
+	// Invalidate only the requests present at this native boundary. Replaying
+	// its settlement must never cancel requests admitted by the next turn.
+	s.cancelRequestsLocked()
+	if s.sendPending {
+		s.pendingIdle = append(s.pendingIdle, idle)
+		return
+	}
+	s.finishTurnLocked(idle)
+}
+
+func (s *session) finishTurnLocked(idle idleBoundary) {
+	reason := "end_turn"
+	if idle.cancelled {
+		reason = "cancelled"
+	}
+	settled := (s.queued == 0 || idle.cancelled) && idle.turn == s.nativeTurn
+	if idle.cancelled {
 		s.queued = 0
 	} else if s.queued > 0 {
 		s.queued--
 	}
 	s.busy = !settled
-	s.cancelRequestsLocked()
-	s.mu.Unlock()
-	if active {
+	if idle.active {
 		s.emit("turn_ended", map[string]any{"reason": reason, "settled": settled}, "")
 	}
 }
@@ -97,4 +120,15 @@ func (s *session) emitUsage(d *rpc.AssistantUsageData) {
 		data["cacheReadTokens"] = *d.CacheReadTokens
 	}
 	s.emit("usage", data, "")
+}
+
+func (s *session) flushPendingIdle() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sendPending = false
+	pending := s.pendingIdle
+	s.pendingIdle = nil
+	for _, idle := range pending {
+		s.finishTurnLocked(idle)
+	}
 }
