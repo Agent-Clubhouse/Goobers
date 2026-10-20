@@ -61,6 +61,9 @@ func OwnCommentMatcher(ctx context.Context, poster any, repository providers.Rep
 		self, err := identity.AuthenticatedIdentity(ctx)
 		return func(c providers.Comment) bool { return self.ID != "" && strings.EqualFold(c.AuthorID, self.ID) }, err
 	}
+	if repository.Provider == providers.ProviderADO {
+		return func(providers.Comment) bool { return false }, nil
+	}
 	if identity, ok := poster.(interface {
 		AuthenticatedLogin(context.Context) (string, error)
 	}); ok {

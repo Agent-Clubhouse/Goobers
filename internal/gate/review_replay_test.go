@@ -127,3 +127,14 @@ func TestTerminalIntentLoginTrustAndQuota(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalIntentADODisplayNameCannotEstablishOwnership(t *testing.T) {
+	p := reportLoginPoster{Commenter: &fakeCommenter{}, login: "Shared Display Name"}
+	own, err := OwnCommentMatcher(context.Background(), p, providers.RepositoryRef{Provider: providers.ProviderADO})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own(providers.Comment{Author: "Shared Display Name"}) {
+		t.Fatal("ADO display name trusted without authenticated GUID")
+	}
+}
