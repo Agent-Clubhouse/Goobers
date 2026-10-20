@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -42,6 +43,10 @@ const (
 
 // JournalOp is one journal write in a run's projection, in append order.
 type JournalOp struct {
+	// ChildStageStart is reserved for a version-gated child lifecycle caller.
+	// Existing stageStarted calls leave it nil and acquire no child authority.
+	ChildStageStart *livejournal.ChildStageStart `json:"childStageStart,omitempty"`
+
 	// Kind is opAppend, opArtifact, or opSpan.
 	Kind string `json:"kind"`
 	// Event is the append payload (Kind == opAppend). Seq and Schema are
@@ -133,6 +138,10 @@ type JournalProjection struct {
 // (heartbeats, resume repairs, mutation sidecars) have no engine analogue and
 // are documented drift-ledger items where they matter.
 type runJournal struct {
+	// Receipts are separate from projection ordinals and remain workflow state
+	// reconstructed from recorded activity results, never mutable journal reads.
+	childOrigins map[string]livejournal.ChildOriginReceipt
+
 	proj          JournalProjection
 	machine       *wf.Machine
 	terminalCause *journal.TerminalCause

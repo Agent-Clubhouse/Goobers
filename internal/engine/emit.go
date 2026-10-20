@@ -212,6 +212,9 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 	if err := workflow.ExecuteActivity(emitActivityContext(ctx), ActEmitJournal, req).Get(ctx, &resp); err != nil {
 		return fmt.Errorf("engine: emit journal ops for run %s: %w", r.proj.Identity.RunID, err)
 	}
+	if err := r.preserveChildOrigins(ops, resp.ChildOrigins); err != nil {
+		return err
+	}
 	r.emitted = pending
 	return nil
 }
@@ -232,7 +235,7 @@ func (r *runJournal) emitTerminal(ctx workflow.Context) {
 // liveOpFrom converts one accumulated JournalOp to the wire op the journal
 // plane accepts.
 func liveOpFrom(op JournalOp) livejournal.Op {
-	out := livejournal.Op{Kind: op.Kind, Key: op.EmitKey, Time: op.Time}
+	out := livejournal.Op{Kind: op.Kind, Key: op.EmitKey, Time: op.Time, ChildStageStart: op.ChildStageStart}
 	switch op.Kind {
 	case opAppend:
 		if op.Event != nil {
