@@ -23,6 +23,9 @@ func claimEntryStorageKey(entry ClaimEntry) (string, error) {
 // A crashed attempt leaves custody in claims.json; the next lock holder retries
 // cleanup before admitting another owner, even if the execution lease expired.
 func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
+	if expected.IsPublicationClaim() {
+		return false, errors.New("publication custody cannot use provider cleanup")
+	}
 	key, err := claimEntryStorageKey(expected)
 	if err != nil {
 		return false, err
@@ -65,6 +68,9 @@ func (l *ClaimLedger) FinishProviderRelease(expected ClaimEntry, reason claimrel
 	current, held := l.entries[key]
 	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || !current.ReleasePending {
 		return false, nil
+	}
+	if current.IsPublicationClaim() {
+		return false, errors.New("publication custody cannot use provider cleanup")
 	}
 	previous, hadHistory := l.historyEntry(current.RunID, key)
 	released := current

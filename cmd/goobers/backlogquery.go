@@ -3609,6 +3609,9 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 	err = func() error {
 		var localEntries []claimsclient.Entry
 		for _, entry := range entries {
+			if entry.IsPublicationClaim() {
+				continue
+			}
 			if entry.SharedDeadline.IsZero() {
 				localEntries = append(localEntries, entry)
 				continue

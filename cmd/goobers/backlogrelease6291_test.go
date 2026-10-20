@@ -113,3 +113,40 @@ func TestProviderReleaseSlowLockReportsOneAffectedItem(t *testing.T) {
 		t.Fatalf("missing affected-item count: %v", event.Runner)
 	}
 }
+
+func TestBacklogQueryReleasePreservesPublicationCustody(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "publication-run")
+	t.Setenv("GOOBERS_WORKFLOW", "publish")
+	t.Chdir(t.TempDir())
+	path := filepath.Join(root, "scheduler", claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"publication-lock/github/owner/repo/42", "merge-lock/publication/github/owner/repo"} {
+		if ok, _, err := ledger.Claim(id, "publication-run", "publish", time.Minute); err != nil || !ok {
+			t.Fatalf("seed: %v %v", ok, err)
+		}
+	}
+	providerCalls := 0
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		providerCalls++
+		return providers.NewGitHubProvider(token, opts...)
+	}
+	code, stdout, stderr := runArgs(t, "backlog-query", "--release", root)
+	if code != 0 {
+		t.Fatalf("release: %d %s %s", code, stdout, stderr)
+	}
+	current, err := localscheduler.OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := current.ForRunAll("publication-run"); len(entries) != 2 || entries[0].ReleasePending || entries[1].ReleasePending {
+		t.Fatalf("publication custody changed: %+v", entries)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("publication custody constructed a provider %d times", providerCalls)
+	}
+}
