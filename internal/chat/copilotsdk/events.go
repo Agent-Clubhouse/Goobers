@@ -53,17 +53,7 @@ func (s *session) onEvent(e sdk.SessionEvent) {
 	case *rpc.ToolExecutionProgressData:
 		s.emit("tool_call_update", map[string]any{"toolCallId": d.ToolCallID, "status": "in_progress", "content": chat.Text(d.ProgressMessage)}, "")
 	case *rpc.AssistantUsageData:
-		data := map[string]any{}
-		if d.InputTokens != nil {
-			data["inputTokens"] = *d.InputTokens
-		}
-		if d.OutputTokens != nil {
-			data["outputTokens"] = *d.OutputTokens
-		}
-		if d.CacheReadTokens != nil {
-			data["cacheReadTokens"] = *d.CacheReadTokens
-		}
-		s.emit("usage", data, "")
+		s.emitUsage(d)
 	case *rpc.SessionErrorData:
 		s.emit("error", map[string]any{"code": "session_error", "message": "Copilot session failed", "fatal": true}, "")
 	case *rpc.AssistantReasoningData, *rpc.AssistantReasoningDeltaData:
@@ -93,4 +83,18 @@ func (s *session) finishTurn(aborted bool) {
 	if active {
 		s.emit("turn_ended", map[string]any{"reason": reason, "settled": settled}, "")
 	}
+}
+
+func (s *session) emitUsage(d *rpc.AssistantUsageData) {
+	data := map[string]any{}
+	if d.InputTokens != nil {
+		data["inputTokens"] = *d.InputTokens
+	}
+	if d.OutputTokens != nil {
+		data["outputTokens"] = *d.OutputTokens
+	}
+	if d.CacheReadTokens != nil {
+		data["cacheReadTokens"] = *d.CacheReadTokens
+	}
+	s.emit("usage", data, "")
 }
