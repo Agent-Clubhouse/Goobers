@@ -1884,8 +1884,17 @@ func (session *backlogClaimSession) ownTrustedClaimEpoch(ctx context.Context, re
 		if !epoch.Trusted || epoch.RunID != holder {
 			continue
 		}
-		if instanceID == "" || epoch.InstanceID == "" || epoch.InstanceID != instanceID {
+		if instanceID == "" || epoch.InstanceID == "" {
 			return providers.ClaimEpoch{}, false, nil
+		}
+		if epoch.InstanceID != instanceID {
+			matches, matchErr := instance.RootIdentityMatches(session.env.layout.Root, epoch.InstanceID)
+			if matchErr != nil {
+				return providers.ClaimEpoch{}, false, fmt.Errorf("resolve provider claim instance identity: %w", matchErr)
+			}
+			if !matches {
+				return providers.ClaimEpoch{}, false, nil
+			}
 		}
 		return epoch, true, nil
 	}

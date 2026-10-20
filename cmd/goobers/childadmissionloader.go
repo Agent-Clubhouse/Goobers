@@ -25,8 +25,8 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 	if cfg == nil || currentSet == nil || parent.Child != nil || parent.ConfigGeneration == "" || parent.Gaggle == "" || parent.Workflow == "" {
 		return childworkflow.Authority{}, childworkflow.ErrAuthorityUnavailable
 	}
-	owner, err := layout.ReadIdentity()
-	if err != nil || parent.InstanceID != owner {
+	matches, err := instance.RootIdentityMatches(layout.Root, parent.InstanceID)
+	if err != nil || !matches {
 		return childworkflow.Authority{}, fmt.Errorf("child parent instance identity unavailable or mismatched: %w", errors.Join(childworkflow.ErrAuthorityUnavailable, err))
 	}
 	store, err := executionGenerationStore(layout)

@@ -90,11 +90,10 @@ func recoverStartupGeneration(ctx context.Context, input schedulerDefinitionsInp
 	if err != nil {
 		return input, "", fmt.Errorf("retained generation %s failed strict verification; restore its archived bytes and permission modes through storage recovery, then retry; do not delete owner journals or bypass verification: %w", generation, err)
 	}
-	owner, err := input.Layout.EnsureIdentity(ctx)
-	if err != nil {
+	if _, err := input.Layout.EnsureIdentity(ctx); err != nil {
 		return input, "", err
 	}
-	if err := configgeneration.VerifyDirectory(ctx, directory, generation, owner); err != nil {
+	if err := configgeneration.VerifyDirectoryForRoot(ctx, directory, generation, input.Layout.Root); err != nil {
 		return input, "", err
 	}
 	set, report, err := loadConfigDirectory(directory)

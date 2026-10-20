@@ -25,7 +25,7 @@ func telemetryInstanceIdentities(root string) (string, []attribute.KeyValue) {
 	if id, err := instance.ReadLegacyIdentity(root); err == nil {
 		if canonicalID == "" {
 			journalID = id
-		} else if resolved, resolveErr := instance.ResolveRootIdentity(root, id); resolveErr == nil && resolved == canonicalID {
+		} else if matches, matchErr := instance.RootIdentityMatches(root, id); matchErr == nil && matches {
 			journalID = id
 		}
 	}

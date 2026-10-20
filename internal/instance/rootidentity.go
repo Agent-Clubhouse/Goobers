@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -51,7 +50,7 @@ func ReadRootIdentity(root string) (string, error) {
 		return "", fmt.Errorf("invalid instance identity encoding")
 	}
 	id := string(data[:32])
-	if _, err := hex.DecodeString(id); err != nil || strings.ToLower(id) != id {
+	if !ValidIdentity(id) {
 		return "", fmt.Errorf("invalid instance identity encoding")
 	}
 	return id, nil
@@ -80,6 +79,9 @@ func ensureRootIdentity(ctx context.Context, root string, requireConfig bool) (s
 	legacy, legacyErr := readLegacyIdentity(root)
 	if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
 		return "", legacyErr
+	}
+	if _, aliasErr := ReadRootIdentityAliases(root); aliasErr != nil && !errors.Is(aliasErr, os.ErrNotExist) {
+		return "", aliasErr
 	}
 	if canonicalErr == nil {
 		if legacyErr == nil {

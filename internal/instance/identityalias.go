@@ -20,6 +20,10 @@ const (
 	maxIdentityAliasesBytes   = 4096
 )
 
+// ErrRootIdentityNotRecognized means a valid identity is neither canonical for
+// this root nor one of its persisted historical aliases.
+var ErrRootIdentityNotRecognized = errors.New("instance identity is not recognized by this root")
+
 // ReadRootIdentityAliases reads and validates the root-scoped historical
 // identity aliases without changing the root.
 func ReadRootIdentityAliases(root string) ([]string, error) {
@@ -79,29 +83,42 @@ func ReadRootIdentityAliases(root string) ([]string, error) {
 	return aliases, nil
 }
 
-// ResolveRootIdentity returns the canonical identity when value names either
-// the canonical root or one of its persisted historical aliases.
-func ResolveRootIdentity(root, value string) (string, error) {
+// RootIdentityMatches reports whether value names either the canonical root or
+// one of its persisted historical aliases.
+func RootIdentityMatches(root, value string) (bool, error) {
 	canonical, err := ReadRootIdentity(root)
 	if err != nil {
-		return "", err
+		return false, err
 	}
 	if value == canonical {
-		return canonical, nil
+		return true, nil
 	}
 	aliases, err := ReadRootIdentityAliases(root)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("instance identity %q is not recognized by this root", value)
+		return false, nil
 	}
 	if err != nil {
-		return "", err
+		return false, err
 	}
 	for _, alias := range aliases {
 		if value == alias {
-			return canonical, nil
+			return true, nil
 		}
 	}
-	return "", fmt.Errorf("instance identity %q is not recognized by this root", value)
+	return false, nil
+}
+
+// ResolveRootIdentity returns the canonical identity when value names either
+// the canonical root or one of its persisted historical aliases.
+func ResolveRootIdentity(root, value string) (string, error) {
+	matches, err := RootIdentityMatches(root, value)
+	if err != nil {
+		return "", err
+	}
+	if !matches {
+		return "", fmt.Errorf("%w: %q", ErrRootIdentityNotRecognized, value)
+	}
+	return ReadRootIdentity(root)
 }
 
 func ensureRootIdentityAlias(root, canonical, alias string) error {

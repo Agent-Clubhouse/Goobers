@@ -169,10 +169,17 @@ func TestInstanceIdentityMigratesDistinctLegacyIdentityAsAlias(t *testing.T) {
 		t.Fatalf("aliases = %v, %v; want [%q]", aliases, err, legacy)
 	}
 	for _, candidate := range []string{canonical, legacy} {
+		matches, err := RootIdentityMatches(root, candidate)
+		if err != nil || !matches {
+			t.Errorf("RootIdentityMatches(%q) = %v, %v; want true", candidate, matches, err)
+		}
 		resolved, err := ResolveRootIdentity(root, candidate)
 		if err != nil || resolved != canonical {
 			t.Errorf("ResolveRootIdentity(%q) = %q, %v; want %q", candidate, resolved, err, canonical)
 		}
+	}
+	if matches, err := RootIdentityMatches(root, strings.Repeat("d", 32)); err != nil || matches {
+		t.Errorf("foreign RootIdentityMatches = %v, %v; want false, nil", matches, err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, instanceIdentityFile))
 	if err != nil || string(data) != legacy+"\n" {

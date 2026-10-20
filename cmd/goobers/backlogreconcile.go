@@ -979,7 +979,13 @@ func ownedProviderClaimEpoch(
 			return "", false, nil
 		}
 		if epoch.InstanceID != "" && epoch.InstanceID != self {
-			return "", false, nil
+			matches, matchErr := instance.RootIdentityMatches(l.Root, epoch.InstanceID)
+			if matchErr != nil {
+				return "", false, fmt.Errorf("resolve provider claim instance identity: %w", matchErr)
+			}
+			if !matches {
+				return "", false, nil
+			}
 		}
 		if epoch.InstanceID == "" {
 			if _, err := l.FindRunDir(epoch.RunID); err != nil {
