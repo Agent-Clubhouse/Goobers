@@ -123,6 +123,9 @@ func CodexUsesAmbientChatGPT(options map[string]apiextensionsv1.JSON) bool {
 
 // Preflight verifies the Codex CLI and its configured API key.
 func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: no command configured")
 	}
@@ -174,6 +177,9 @@ func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 // PreflightConfig performs the auth check for one resolved goober configuration.
 // The default API-key path intentionally delegates to the historic preflight.
 func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (PreflightInfo, error) {
+	if err := credentials.RefuseUnisolatedChildProcess(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	config, err := normalizeCodexConfig(model, options)
 	if err != nil {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: invalid configuration: %w", err)

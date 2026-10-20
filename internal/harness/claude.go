@@ -323,6 +323,9 @@ func normalizeClaudeConfig(model string, options map[string]apiextensionsv1.JSON
 
 // Preflight verifies that Claude Code is installed and authenticated.
 func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: claude-code: no command configured")
 	}

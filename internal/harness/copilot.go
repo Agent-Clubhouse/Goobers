@@ -348,6 +348,9 @@ func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiexten
 }
 
 func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return ConfigResolution{}, err
+	}
 	if _, err := c.launcherSessionContract(ctx); err != nil {
 		return ConfigResolution{}, err
 	}
@@ -441,6 +444,9 @@ func isDirectCopilotCommand(command []string) bool {
 }
 
 func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilotModelCapabilities, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return nil, err
+	}
 	c.modelsMu.Lock()
 	defer c.modelsMu.Unlock()
 	if c.availableModels != nil {
@@ -602,6 +608,9 @@ func normalizeResolvedCopilotConfig(model string, options map[string]apiextensio
 // Preflight verifies the Copilot CLI binary is on PATH and responds to a
 // version check, returning its reported version on success.
 func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -827,6 +836,9 @@ func (c *CopilotAdapter) authRunnerLabel() string {
 // native command; contract-aware launchers must declare equivalent operations
 // explicitly so Goobers never guesses a different executable or profile.
 func (c *CopilotAdapter) AuthCommand(ctx context.Context, operation string) ([]string, []string, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return nil, nil, err
+	}
 	if len(c.Command) == 0 {
 		return nil, nil, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -912,6 +924,9 @@ func verifyCopilotSessionTranscript(path string) error {
 // (bad path, unreadable file, empty secret) must fail loudly rather than
 // degrade into whatever login the CLI happens to have cached.
 func (c *CopilotAdapter) copilotModelToken(ctx context.Context) (string, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return "", err
+	}
 	if c.ModelCredential != nil {
 		return c.ModelCredential(ctx)
 	}

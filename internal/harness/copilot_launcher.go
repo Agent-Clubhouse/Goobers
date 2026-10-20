@@ -208,6 +208,11 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherC
 	if c.launcherContract != nil {
 		return *c.launcherContract, nil
 	}
+	// A child can consume a pinned contract but cannot launch a handshake
+	// with the daemon's ambient environment to discover one.
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return launcherContract{}, err
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	command := append(append([]string(nil), resolveHarnessCommand(c.Command)...), launcherContractFlag)
