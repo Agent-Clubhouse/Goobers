@@ -205,7 +205,7 @@ describe("interactive workspace", () => {
     render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
     fireEvent.change(await screen.findByLabelText("Steer this turn"), {target: {value: "Focus on tests"}});
     fireEvent.click(screen.getByRole("button", {name: "Steer"}));
-    expect(await screen.findByText(/Your steering was not sent to another turn/)).toBeInTheDocument();
+    expect(await screen.findByText(/Your command was not sent to another turn/)).toBeInTheDocument();
     expect(fx.client.command).toHaveBeenCalledTimes(1);
   });
   it("does not automatically retry an uncertain command response", async () => {
@@ -287,4 +287,36 @@ describe("interactive workspace", () => {
     expect(await screen.findByText("Revoke confirmed by the server.")).toBeInTheDocument();
     expect(fx.client.connectionAction).toHaveBeenCalledWith("ado", "revoke");
   });
+});
+
+
+describe("human driver controls", () => {
+  it("docks a permission request, sends the exact turn/fence, and waits for resolution", async () => {
+    const fx = fixture(makeSession({status: "running", activeTurnId: "t1", capabilities: {steer: true, queue: "none", interrupt: false, permissionExtras: {denyMessage: true}}}));
+    const request: InteractiveEvent = {sequence: 2, sessionId: "s-1", turnId: "t1", time: "2026-01-01T00:00:00Z", type: "permission_request", data: {requestId: "p1", title: "Run checks", content: [{type: "text", text: "npm test"}], options: [{optionId: "allow_once", label: "Allow once"}, {optionId: "reject_once", label: "Deny"}]}};
+    vi.mocked(fx.client.events).mockResolvedValue([request]);
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    await screen.findByRole("region", {name: "Permission request"});
+    expect(screen.queryByRole("textbox", {name: "Steer this turn"})).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", {name: "Denial message"}), {target: {value: "Use the focused checks"}});
+    fireEvent.click(screen.getByRole("button", {name: /^Deny$/}));
+    await waitFor(() => expect(fx.client.command).toHaveBeenCalledWith("s-1", expect.objectContaining({type: "permission.respond", requestId: "p1", optionId: "reject_once", message: "Use the focused checks", turnId: "t1", expectedFence: 1, expectedSequence: 1})));
+    expect(await screen.findByText(/Response accepted/)).toBeVisible();
+    expect(screen.getByRole("region", {name: "Permission request"})).toBeVisible();
+    act(() => fx.event({...request, sequence: 4, type: "permission_resolved", data: {requestId: "p1", by: "human"}}));
+    await screen.findByRole("textbox", {name: "Steer this turn"});
+  });
+  it("does not retarget a permission response after a stale-sequence refresh", async () => {
+    const fx = fixture(makeSession({status: "running", activeTurnId: "t1"}));
+    vi.mocked(fx.client.events).mockResolvedValue([{sequence: 2, sessionId: "s-1", turnId: "t1", time: "2026-01-01T00:00:00Z", type: "permission_request", data: {requestId: "p1", title: "Run checks", content: [{type: "text", text: "npm test"}], options: [{optionId: "allow_once", label: "Allow once"}, {optionId: "reject_once", label: "Deny"}]}}]);
+    vi.mocked(fx.client.command).mockImplementation(async () => {
+      fx.setSession(makeSession({status: "running", activeTurnId: "t2", sequence: 5}));
+      throw new InteractiveError("refresh", "stale_sequence", 409);
+    });
+    render(<InteractivePage client={fx.client} navigate={vi.fn()} sessionId="s-1" />);
+    fireEvent.click(await screen.findByRole("button", {name: "Allow once"}));
+    expect(await screen.findByText(/Your command was not sent to another turn/)).toBeVisible();
+    expect(fx.client.command).toHaveBeenCalledTimes(1);
+  });
+
 });

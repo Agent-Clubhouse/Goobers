@@ -21,7 +21,12 @@ export interface Child {
 }
 export interface Change { path: string; status: string; additions: number; deletions: number }
 export interface Lease { workerId: string; leaseId: string; fence: number; expiresAt: string; status: string }
-export interface ChatCapabilities { steer: boolean; queue: "native" | "client" | "none"; interrupt: boolean }
+export type PermissionLevel = "plan" | "ask" | "auto_edit" | "auto" | "full_access";
+export type SwitchTiming = "live" | "per_turn" | "restart" | "none";
+export interface ChatCapabilities {
+  steer: boolean; queue: "native" | "client" | "none"; interrupt: boolean;
+  questions?: boolean; permissionExtras?: {denyMessage?: boolean}; liveLevels?: PermissionLevel[]; modelSwitch?: SwitchTiming; effortSwitch?: SwitchTiming;
+}
 export interface Session {
   capabilities?: ChatCapabilities;
   lease?: Lease; configDigest?: string; configRevision?: string; members?: {principal: string; role: string}[]; custodyPending?: boolean; stopFencePending?: boolean;
@@ -35,12 +40,15 @@ export interface InteractiveEvent {
   type: string; time: string; data: Record<string, unknown>;
 }
 export interface Command {
-  commandId: string; type: "message" | "steer" | "stop" | "resume" | "child.request" | "child.review";
+  commandId: string; type: "message" | "steer" | "stop" | "resume" | "child.request" | "child.review" | "permission.respond" | "question.answer" | "session.set_model" | "session.set_level" | "session.set_effort";
   expectedSequence: number; expectedFence: number; text?: string; turnId?: string;
+  requestId?: string; message?: string; optionId?: "allow_once" | "reject_once"; answers?: Record<string, string[]>;
+  model?: string; level?: PermissionLevel; effort?: string;
   delivery?: "prompt" | "steer" | "queued"; steeringMode?: "interrupt-and-continue";
   workflowYaml?: string; childId?: string; decision?: "approve" | "accept" | "deny";
 }
 export interface Receipt {
+  requestId?: string; actual?: string;
   commandId: string; sessionId: string; type: string; status: string;
   sequence: number; turnId?: string; childId?: string; delivery?: string; steeringMode?: string;
 }

@@ -9,6 +9,9 @@ import { commandId, describeError, HttpInteractiveClient, InteractiveError, isUn
   type Session, type StreamState, type Surface, type RuntimeStatus, type InteractiveShellStatus, type CreateSessionRequest, type ExecutionModeId } from "../interactive/client";
 import { OperationsPanel } from "../interactive/OperationsPanel";
 import { commandMessages, composerModes, composerLabels, sessionCapabilities, fileDiffs, plainFailure, toolActivities, type MessageDelivery } from "../interactive/chat-model";
+import { ApprovalDock, type ApprovalAnswer } from "../interactive/ApprovalDock";
+import { DriverSettingsPills, type SettingsChange } from "../interactive/DriverSettings";
+import { pendingApprovals, driverSettings } from "../interactive/control-model";
 import "../interactive/interactive.css";
 
 const defaultClient = new HttpInteractiveClient();
@@ -153,8 +156,8 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
     if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
   }
 
-  async function dispatch(command: Command, target = sessionId) {
-    if (!target || commandLock.current) return;
+  async function dispatch(command: Command, target = sessionId): Promise<boolean> {
+    if (!target || commandLock.current) return false;
     const currentGeneration = generation.current;
     commandLock.current = true; setBusy(true); setActionError(undefined);
     if (command.type === "steer") setMessages(current => [...current.filter(item => item.commandId !== command.commandId), {commandId: command.commandId, text: command.text ?? "", turnId: command.turnId, state: "Sending"}]);
@@ -169,35 +172,39 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
           // Unknown responses must retain the exact attempted payload instead.
           if (!(error instanceof InteractiveError) || error.code !== "stale_sequence" || error.status !== 409 || retry === 3) throw error;
           const fresh = await client.session(target);
-          if (currentGeneration !== generation.current) return;
+          if (currentGeneration !== generation.current) return false;
           if (fresh.fence !== command.expectedFence) throw new InteractiveError("The execution fence changed. Review the current session before submitting again.", "stale_fence", 409);
-          if (command.type === "steer" && (fresh.status !== "running" || fresh.activeTurnId !== command.turnId)) throw new InteractiveError("The targeted turn ended or changed. Your steering was not sent to another turn.", "stale_turn", 409);
+          if (command.turnId && (fresh.status !== "running" || fresh.activeTurnId !== command.turnId)) throw new InteractiveError("The targeted turn ended or changed. Your command was not sent to another turn.", "stale_turn", 409);
           setSession(fresh);
           command = { ...command, expectedSequence: fresh.sequence };
           writePending(`pending.${target}`, { sessionId: target, command });
         }
       }
       if (!result) throw new InteractiveError("The session is changing too quickly. Refresh and submit again.", "stale_sequence", 409);
+      if (result.status === "rejected") throw new InteractiveError("The driver rejected this command.", "command_rejected", 409);
       writePending(`pending.${target}`, undefined);
-      if (currentGeneration !== generation.current) return;
+      if (currentGeneration !== generation.current) return false;
       setReceipt(result); setPending(undefined);
       setMessages(current => current.map(item => item.commandId === command.commandId ? {...item, state: humanize(result.status)} : item));
       if (command.type === "message" || command.type === "steer") setDraft("");
       setReload(value => value + 1);
+      return true;
     } catch (error) {
       if (!isUncertain(error)) writePending(`pending.${target}`, undefined);
-      if (currentGeneration !== generation.current) return;
+      if (currentGeneration !== generation.current) return false;
       setActionError(describeError(error));
       setMessages(current => current.map(item => item.commandId === command.commandId ? {...item, state: isUncertain(error) ? "Outcome unknown" : "Rejected"} : item));
       if (isUncertain(error)) setPending({ sessionId: target, command });
       else { setPending(undefined); setReload(value => value + 1); }
+      return false;
     } finally { commandLock.current = false; if (currentGeneration === generation.current) setBusy(false); }
   }
   function send(type: Command["type"], fields: Partial<Command> = {}) {
     if (!session || !connected || pending) return;
     void dispatch({ commandId: commandId(), type, expectedSequence: session.sequence, expectedFence: session.fence, ...fields });
   }
-  const composer = composerModes(sessionCapabilities(session, events), session?.status === "running");
+  const capabilities = sessionCapabilities(session, events);
+  const composer = composerModes(capabilities, session?.status === "running");
   function submit(event: FormEvent, action = composer.primary) {
     event.preventDefault();
     if (!draft.trim() || !session || !action) return;
@@ -231,6 +238,18 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
   }, [runtime, sessionId, statusLabel, session?.lease?.status, onShellStatus]);
   useEffect(() => () => onShellStatus?.(undefined), [onShellStatus]);
   const deliveries = commandMessages(events, messages);
+  const approvals = pendingApprovals(events, active ? session?.activeTurnId : undefined);
+  const settings = driverSettings(events);
+  async function answerRequest(answer: ApprovalAnswer) {
+    if (!canWrite || !session?.activeTurnId) return false;
+    const request = approvals.find(request => request.requestId === answer.requestId && request.turnId === session.activeTurnId);
+    if (!request || request.pending) return false;
+    return dispatch({...answer, commandId: commandId(), turnId: request.turnId, expectedSequence: session.sequence, expectedFence: session.fence});
+  }
+  function changeSettings(change: SettingsChange) {
+    if (!canWrite || !session?.activeTurnId) return;
+    send(change.type, {...change, turnId: session.activeTurnId});
+  }
   return <div className={`interactive-page${session ? " interactive-page-active" : ""}`}>
     <PageHeading title="Interactive" description="A conversation with your gaggle. A workspace for the work." actions={<><Action variant="secondary" disabled={configurationBusy} onClick={() => void refreshConfiguration()}>{configurationBusy ? "Refreshing configuration…" : "Refresh configuration"}</Action><span className="ix-prototype">Experimental</span></>} />
     {runtime && <div className="ix-runtime-bar"><span><Icon name="code" size={14} />{session ? sessionExecutionLabel : "Choose execution when you create a session"}</span><span className="ix-provider-label"><Icon name="gate" size={14} />{runtime.capabilities.liveDelegatedAuth ? "Live delegated provider" : "Controlled local provider · no live Azure authentication"}</span><span className="ix-owner">{runtime.localActors?.length ? <label>Local demo actor <select aria-label="Local actor" value={runtime.identity.name} disabled={switchingIdentity || busy} onChange={event => void switchIdentity(event.target.value)}>{runtime.localActors.map(name => <option key={name} value={name}>{name}</option>)}</select></label> : <><Icon name="goober" size={14} />{runtime.identity.name}</>}</span></div>}
@@ -269,7 +288,8 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
             {!pinned && <Action className="ix-jump-latest" variant="secondary" onClick={jumpToLatest}>Jump to latest</Action>}
             {receipt && <div className="ix-receipt" role="status"><Icon name="check" size={14} />{receiptLabel(receipt, events)}<span title={receipt.commandId}>#{receipt.sequence}</span></div>}
             {actionError && <div role="alert" className="ix-action-error"><strong>{pending ? "Command outcome unknown" : "Command not completed"}</strong><p>{actionError}</p>{pending && <><p>Retry keeps the original command ID and payload so the server can return the existing receipt.</p><Action disabled={busy || !connected} onClick={() => void dispatch(pending.command, pending.sessionId)}>Retry same command</Action><Action onClick={() => setReload(value => value + 1)}>Refresh outcome</Action></>}</div>}
-            <form onSubmit={submit} className="ix-composer"><label htmlFor="interactive-message">{active ? "Steer this turn" : "Message"}</label><textarea ref={draftRef} id="interactive-message" value={draft} onChange={event => setDraft(event.target.value)} placeholder={active ? "Add direction for the active turn…" : session.status === "stopped" ? "This session is stopped." : demoSession ? "Try investigate, fix, test, review, or wait…" : "Describe the work you want the agent to do…"} disabled={!canWrite || !composer.primary} rows={3} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="ix-composer-footer"><span>{active ? composer.primary === "interrupt_continue" ? "Stops the active turn before sending. Writer shutdown must be confirmed." : composer.primary === "queued" ? "Queued for the driver. Delivery is acknowledged separately." : "Steering targets this active turn. Delivery is acknowledged separately." : "⌘ / Ctrl + Enter to send · Local edits stay in the session workspace"}</span>{composer.secondary && <Action variant="secondary" disabled={!canWrite || !draft.trim()} onClick={event => submit(event, composer.secondary)}>{composerLabels[composer.secondary]}</Action>}<Action variant="primary" type="submit" disabled={!canWrite || !draft.trim() || !composer.primary}><Icon name="arrow" size={16} />{busy ? "Sending…" : composer.primary ? composerLabels[composer.primary] : "Unavailable"}</Action></div></form>
+            <DriverSettingsPills settings={settings} capabilities={capabilities} disabled={!canWrite || !active} onChange={changeSettings} />
+            {approvals.length > 0 ? <ApprovalDock requests={approvals} disabled={!canWrite} denyMessage={capabilities?.permissionExtras?.denyMessage} onAnswer={answerRequest} /> : <form onSubmit={submit} className="ix-composer"><label htmlFor="interactive-message">{active ? "Steer this turn" : "Message"}</label><textarea ref={draftRef} id="interactive-message" value={draft} onChange={event => setDraft(event.target.value)} placeholder={active ? "Add direction for the active turn…" : session.status === "stopped" ? "This session is stopped." : demoSession ? "Try investigate, fix, test, review, or wait…" : "Describe the work you want the agent to do…"} disabled={!canWrite || !composer.primary} rows={3} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="ix-composer-footer"><span>{active ? composer.primary === "interrupt_continue" ? "Stops the active turn before sending. Writer shutdown must be confirmed." : composer.primary === "queued" ? "Queued for the driver. Delivery is acknowledged separately." : "Steering targets this active turn. Delivery is acknowledged separately." : "⌘ / Ctrl + Enter to send · Local edits stay in the session workspace"}</span>{composer.secondary && <Action variant="secondary" disabled={!canWrite || !draft.trim()} onClick={event => submit(event, composer.secondary)}>{composerLabels[composer.secondary]}</Action>}<Action variant="primary" type="submit" disabled={!canWrite || !draft.trim() || !composer.primary}><Icon name="arrow" size={16} />{busy ? "Sending…" : composer.primary ? composerLabels[composer.primary] : "Unavailable"}</Action></div></form>}
           </div>
         </>}
       </div>
