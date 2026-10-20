@@ -611,8 +611,8 @@ func normalizeResolvedCopilotConfig(model string, options map[string]apiextensio
 	return normalized, nil
 }
 
-// Preflight verifies the Copilot CLI binary is on PATH and responds to a
-// version check, returning its reported version on success.
+// Preflight verifies executable/version and public CLI options, followed by
+// the configured authentication probe when present.
 func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if err := refuseChildConfigProbe(ctx); err != nil {
 		return PreflightInfo{}, err
@@ -661,6 +661,14 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
 	c.verifyLauncherUsageOutput(ctx, version, args)
+	capabilityCommand := c.Command
+	if c.RequireLauncherContract || c.ExtraArgs != nil {
+		capabilityCommand = nil // custom invocation semantics need launcher evidence
+	}
+	capabilities, err := probeRequiredCLIFlags(ctx, c.runner(), capabilityCommand, "copilot", []string{"--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), copilotRequiredPublicOptions)
+	if err != nil {
+		return PreflightInfo{}, err
+	}
 	c.warnUnprobedStoredAuth(authCheckArgs)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
@@ -737,7 +745,11 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			c.cacheLauncherContract(launcherContract{Version: 1, SessionMode: "adapter-managed"})
 		}
 	}
-	return PreflightInfo{Version: version}, nil
+	authentication := readinessCheck("authentication", "harness_authentication_unobservable", "unobservable", "no authentication probe configured; version and public option checks do not validate credentials")
+	if len(authCheckArgs) > 0 {
+		authentication = readinessCheck("authentication", "harness_authentication_probe_passed", "supported", "configured authentication probe passed; model entitlement is not established by public CLI help")
+	}
+	return PreflightInfo{Version: version, Checks: []ReadinessCheck{capabilities, authentication}}, nil
 }
 
 func (c *CopilotAdapter) runCopilotAuthProbe(ctx context.Context, probe string, req ProcessRequest, version string, launcherProbe bool, successLine string) error {
@@ -819,7 +831,11 @@ func (c *CopilotAdapter) AuthStatus(ctx context.Context) (AuthInfo, error) {
 	}
 	preflight, err := c.Preflight(ctx)
 	if err == nil {
-		info.Status = AuthStatusAuthenticated
+		for _, check := range preflight.Checks {
+			if check.Category == "authentication" && check.Outcome == "supported" {
+				info.Status = AuthStatusAuthenticated
+			}
+		}
 		info.Version = preflight.Version
 		info.Remediation = ""
 		return info, nil
