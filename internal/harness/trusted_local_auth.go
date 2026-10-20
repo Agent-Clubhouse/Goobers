@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/platform/secfile"
@@ -26,8 +27,10 @@ func seedTrustedLocalCopilotAuthentication(ctx context.Context, env []string) er
 	if !credentials.TrustedLocalProcess(ctx) {
 		return nil
 	}
-	if token, _ := environmentValue(env, "COPILOT_GITHUB_TOKEN"); token != "" {
-		return nil
+	for _, entry := range env {
+		if token, ok := strings.CutPrefix(entry, "COPILOT_GITHUB_TOKEN="); ok && token != "" {
+			return nil
+		}
 	}
 	auth, ok := credentials.TrustedLocalAuthenticationFor(ctx, "copilot")
 	if !ok {
