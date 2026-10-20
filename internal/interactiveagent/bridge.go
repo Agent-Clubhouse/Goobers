@@ -15,10 +15,13 @@ import (
 
 // Bridge exposes a private invocation-bound tool endpoint. Its socket location
 // is a local transport endpoint, not a credential. Its
-// parent directory is private to the current OS user and its lifetime is exactly
-// the host invocation. Host callbacks supply authority; no socket request can.
+// parent directory and token live exactly as long as the host invocation.
+// Connections must authenticate before host callbacks supply scoped authority.
 type Bridge struct {
-	SocketPath      string
+	SocketPath string
+	// TokenPath is passed only to this invocation's MCP stdio process.
+	TokenPath       string
+	token           []byte
 	ctx             context.Context
 	cancel          context.CancelFunc
 	listener        net.Listener
@@ -59,9 +62,12 @@ func Start(ctx context.Context, options Options) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Deliberately avoid long state/workspace paths: Darwin's Unix socket path
-	// limit is much shorter than paths in application task directories.
-	directory, err := os.MkdirTemp("/tmp", "gbr-agent-")
+	// Runtime parents must be short: Darwin limits Unix socket path length.
+	parent := options.RuntimeDir
+	if parent == "" {
+		parent = "/tmp"
+	}
+	directory, err := os.MkdirTemp(parent, "gbr-agent-")
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -70,6 +76,12 @@ func Start(ctx context.Context, options Options) (*Bridge, error) {
 		return nil, ErrUnavailable
 	}
 	socket := filepath.Join(directory, "rpc.sock")
+	tokenPath := filepath.Join(directory, "auth.token")
+	token, err := createToken(tokenPath)
+	if err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		_ = os.RemoveAll(directory)
@@ -81,7 +93,7 @@ func Start(ctx context.Context, options Options) (*Bridge, error) {
 		return nil, ErrUnavailable
 	}
 	bound, cancel := context.WithCancel(ctx)
-	b := &Bridge{SocketPath: socket, ctx: bound, cancel: cancel, listener: listener, directory: directory, options: options, tools: tools, definitions: definitions, invokeSlot: make(chan struct{}, 1), connectionSlots: make(chan struct{}, 8), connections: map[net.Conn]struct{}{}}
+	b := &Bridge{SocketPath: socket, TokenPath: tokenPath, token: token, ctx: bound, cancel: cancel, listener: listener, directory: directory, options: options, tools: tools, definitions: definitions, invokeSlot: make(chan struct{}, 1), connectionSlots: make(chan struct{}, 8), connections: map[net.Conn]struct{}{}}
 	go b.accept()
 	go func() { <-bound.Done(); _ = b.Close() }()
 	return b, nil
@@ -183,28 +195,22 @@ func readLine(reader *bufio.Reader) ([]byte, error) {
 	}
 }
 
-// ServeStdio transparently proxies bounded newline-delimited MCP input to one
+// ServeStdio authenticates using tokenPath, then proxies bounded MCP input to one
 // invocation's Unix socket and forwards responses to stdout. It writes no logs.
 // On cancellation/early socket failure it closes in when in is an io.Closer.
 // A custom non-closable input must itself be finite or cancellation-aware.
-func ServeStdio(ctx context.Context, socketPath string, in io.Reader, out io.Writer) error {
+func ServeStdio(ctx context.Context, socketPath, tokenPath string, in io.Reader, out io.Writer) error {
 	if ctx.Err() != nil {
 		return ErrUnavailable
 	}
-	info, err := os.Lstat(socketPath)
-	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
-		return ErrUnavailable
-	}
-	dir, err := os.Lstat(filepath.Dir(socketPath))
-	if err != nil || !dir.IsDir() || dir.Mode().Perm() != 0700 {
-		return ErrUnavailable
-	}
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+	conn, err := connectAuthenticatedBridge(ctx, socketPath, tokenPath)
 	if err != nil {
-		return ErrUnavailable
+		return err
 	}
 	// Best-effort cleanup; the operation result is reported separately.
 	defer func() { _ = conn.Close() }()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	inputDone := make(chan error, 1)
 	outputDone := make(chan error, 1)
 	go func() {
@@ -263,4 +269,28 @@ func ServeStdio(ctx context.Context, socketPath string, in io.Reader, out io.Wri
 			return err
 		}
 	}
+}
+
+func connectAuthenticatedBridge(ctx context.Context, socketPath, tokenPath string) (net.Conn, error) {
+	token, err := readToken(tokenPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(socketPath)
+	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
+		return nil, ErrUnavailable
+	}
+	dir, err := os.Lstat(filepath.Dir(socketPath))
+	if err != nil || !dir.IsDir() || dir.Mode().Perm() != 0700 {
+		return nil, ErrUnavailable
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	if err := authenticateClient(conn, token); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }

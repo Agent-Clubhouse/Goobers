@@ -297,6 +297,15 @@ func (s *codexChatSession) openThread(ctx context.Context, o chat.StartOptions) 
 		return errors.New("codex active model has no supported reasoning effort")
 	}
 
+	models := make([]chat.ModelInfo, 0, len(catalog))
+	for _, m := range catalog {
+		efforts := make([]string, 0, len(m.SupportedReasoningEfforts))
+		for _, effort := range m.SupportedReasoningEfforts {
+			efforts = append(efforts, string(effort.ReasoningEffort))
+		}
+		models = append(models, chat.ModelInfo{ID: m.Model, Label: m.DisplayName, Efforts: efforts, DefaultEffort: string(m.DefaultReasoningEffort)})
+	}
+	s.emit("session_info", map[string]any{"models": models, "currentModel": s.model, "currentEffort": s.effort, "levels": s.caps.LiveLevels, "currentLevel": s.level}, "")
 	return nil
 }
 

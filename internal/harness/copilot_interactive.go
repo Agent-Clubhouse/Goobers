@@ -94,6 +94,10 @@ func (c *CopilotAdapter) OpenInteractive(ctx context.Context, req RunRequest) (r
 			return nil, err
 		}
 	}
+	env, err = isolateInteractiveHome(req, env)
+	if err != nil {
+		return nil, err
+	}
 	command := append(resolveStdioHarnessCommand(append([]string(nil), c.Command...)), "--headless", "--port", "0", "--disable-builtin-mcps")
 	command = withCopilotNoRemoteExport(command)
 	if req.Sandbox != nil {

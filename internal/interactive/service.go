@@ -23,6 +23,7 @@ type activeRun struct {
 	cancel   context.CancelFunc
 	request  ExecutionRequest
 	steering chan Steering
+	controls chan DriverControl
 }
 
 // Service coordinates durable sessions, execution leases, and command admission.
@@ -293,6 +294,9 @@ type commandOrigin struct {
 func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Command) (CommandReceipt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if isDriverControl(cmd.Type) {
+		return s.driverControlLocked(owner, sessionID, cmd)
+	}
 	return s.commandLocked(ctx, owner, sessionID, cmd, commandOrigin{source: "owner"})
 }
 
@@ -388,11 +392,8 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 		receipt.TurnID = turnID
 		launch = &ExecutionRequest{SessionID: sessionID, TurnID: turnID, Owner: owner, SurfaceID: surface.ID, Mode: surface.Mode, ExecutionMode: rec.Session.ExecutionMode, Text: text, WorkspacePath: rec.Session.WorkspacePath, Fence: rec.Session.Fence, Attempt: 1, History: clone(rec.Session.Turns), Instructions: surface.Instructions}
 	case "steer":
-		if text == "" || cmd.TurnID == "" {
-			return receipt, problem(400, "invalid", "steering text and exact turnId are required")
-		}
-		if rec.Session.Status != "running" || rec.Session.ActiveTurnID != cmd.TurnID {
-			return receipt, problem(409, "stale_turn", "target turn is no longer active")
+		if err := validateSteeringCommand(cmd, text, rec.Session); err != nil {
+			return receipt, err
 		}
 		steerRun = s.active[sessionID][cmd.TurnID]
 		if steerRun == nil {
@@ -615,12 +616,7 @@ func (s *Service) commandLocked(ctx context.Context, owner, sessionID string, cm
 		s.start(*launch)
 	}
 	if steerRun != nil {
-		var once sync.Once
-		message := Steering{CommandID: cmd.CommandID, Text: text}
-		message.Ack = func(err error) {
-			once.Do(func() { s.ackSteering(sessionID, cmd.CommandID, cmd.TurnID, cmd.ExpectedFence, err) })
-		}
-		steerRun.steering <- message
+		steerRun.steering <- s.steeringMessage(sessionID, cmd, text)
 	}
 	if stop && len(custody) > 0 {
 		s.mu.Unlock()
@@ -709,7 +705,7 @@ func markStopped(rec *sessionRecord) {
 	appendEvent(rec, "session.stopped", "", "", map[string]any{"writersStopped": true})
 }
 
-func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64, deliveryErr error) {
+func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64, delivery, steeringMode string, deliveryErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_ = s.mutate(func(state *diskState) error {
@@ -724,6 +720,14 @@ func (s *Service) ackSteering(sessionID, commandID, turnID string, fence uint64,
 		kind := "steering.delivered"
 		cmd.Receipt.Status = "delivered"
 		data := map[string]any{}
+		if deliveryErr == nil && delivery != "" {
+			cmd.Receipt.Delivery = delivery
+			cmd.Receipt.SteeringMode = steeringMode
+			data["delivery"] = delivery
+			if steeringMode != "" {
+				data["steeringMode"] = steeringMode
+			}
+		}
 		if deliveryErr != nil {
 			kind = "steering.rejected"
 			cmd.Receipt.Status = "rejected"
@@ -768,4 +772,43 @@ func (s *Service) checkControlLocked(owner, sessionID string) error {
 		return problem(409, "invalid_state", "session control is fenced or awaiting recovery")
 	}
 	return nil
+}
+
+// validateSteeringCommand validates delivery intent and its active-turn target.
+func validateSteeringCommand(cmd Command, text string, session Session) error {
+	if cmd.Delivery != "" && cmd.Delivery != "steer" && cmd.Delivery != "queued" && cmd.Delivery != "prompt" {
+		return problem(400, "invalid", "unknown steering delivery mode")
+	}
+	if cmd.SteeringMode != "" && cmd.SteeringMode != "interrupt-and-continue" {
+		return problem(400, "invalid", "unknown steering mode")
+	}
+	if (cmd.Delivery == "prompt") != (cmd.SteeringMode == "interrupt-and-continue") {
+		return problem(400, "invalid", "prompt delivery requires interrupt-and-continue")
+	}
+	if session.ExecutionMode == "local-tools" && (cmd.Delivery == "queued" || cmd.SteeringMode != "") {
+		return problem(409, "unsupported", "the demo supports immediate steering only")
+	}
+	if text == "" || cmd.TurnID == "" {
+		return problem(400, "invalid", "steering text and exact turnId are required")
+	}
+	if session.Status != "running" || session.ActiveTurnID != cmd.TurnID {
+		return problem(409, "stale_turn", "target turn is no longer active")
+	}
+	return nil
+}
+
+func (s *Service) steeringMessage(sessionID string, cmd Command, text string) Steering {
+	var once sync.Once
+	message := Steering{CommandID: cmd.CommandID, Text: text, Delivery: cmd.Delivery, SteeringMode: cmd.SteeringMode}
+	message.Ack = func(err error) {
+		once.Do(func() { s.ackSteering(sessionID, cmd.CommandID, cmd.TurnID, cmd.ExpectedFence, "", "", err) })
+	}
+	message.AckDelivery = func(delivery string, err error) {
+		mode := ""
+		if delivery == "prompt" {
+			mode = "interrupt-and-continue"
+		}
+		once.Do(func() { s.ackSteering(sessionID, cmd.CommandID, cmd.TurnID, cmd.ExpectedFence, delivery, mode, err) })
+	}
+	return message
 }

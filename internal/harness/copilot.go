@@ -1214,6 +1214,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			argv = append(argv, "--disable-builtin-mcps")
 		}
 	}
+	env, err = isolateInteractiveHome(req, env)
+	if err != nil {
+		return Outcome{}, err
+	}
 	captures, err := c.prepareCopilotCaptures(ctx, req, argv, env, confinement)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)

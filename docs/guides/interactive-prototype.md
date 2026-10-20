@@ -50,11 +50,38 @@ There is no separate surfaces JSON file or executor, lease or admission-limit CL
 configuration; those product settings come from the DSL and remain subject to
 host ceilings.
 
-The local persona selector defaults to Mason and Alex for isolation exercises.
-These are selectable test identities, not verified Entra users. Host/Origin and
-cross-site checks protect the loopback HTTP boundary. Owner identity comes from
-the configured principal adapter, not a command's request body. This is not a
-remote authentication or hostile same-OS-user isolation boundary.
+The server writes a one-use URL to `human-auth.url` inside its private state
+directory and prints only the file path. Open that link in the human's browser
+before using the portal. The file is removed after exchange or clean shutdown. The token is carried in the URL fragment,
+removed from browser history before exchange, and consumed once. Restart the
+server to revoke browser sessions or obtain a new bootstrap URL. Do not give
+this URL or the browser's cookies to an agent, and keep console capture outside
+agent-readable roots.
+
+Every interactive API read and event stream requires the authenticated browser
+cookie AND an independent `X-Goobers-CSRF` header, including reads and SSE.
+The one-time bootstrap response delivers the header binding to origin-scoped
+browser storage; it is never a cookie or URL parameter. Cookies are shared
+across loopback ports, so a preview server capturing cookies still cannot read
+or control sessions. The portal uses authenticated fetch streaming for SSE.
+Host/Origin checks still apply. The session cookie is HttpOnly and SameSite=Strict.
+Every response, including portal assets, API and SSE, sends CSP
+`frame-ancestors 'none'` and `X-Frame-Options: DENY`. This prevents a same-site
+preview from framing the authenticated portal to clickjack human controls.
+Secrets are never added to harness environment, requests or workspace files.
+
+The local persona selector is a controlled demonstration, not Entra sign-in.
+Only the authenticated human may select a configured persona. Each browser
+context receives an opaque server-bound persona cookie; a raw actor-name
+cookie cannot choose an owner. Independent contexts can demonstrate owner
+isolation. This does not provide multi-user remote authentication.
+
+The authentication boundary depends on OS confinement: agents must not read
+server state/logs, browser credential/storage profiles or host process memory. Writable agent
+workspaces belong outside denied host state. A sandboxed subprocess fixture
+verifies denied secret reads and rejects unauthenticated approve/apply requests
+even when the loopback service is reachable. Network access alone is not human
+authority; residual host IPC/browser access requires separate confinement.
 
 ## Configure the experiences in DSL 3.0
 
@@ -166,12 +193,22 @@ Do not enable or claim qualification of this path until that action is approved
 and its actual result is recorded. No live model call is required to validate
 configuration or test the local bridge.
 
-The native adapter uses a trusted local workstation boundary. Its prompt asks
-for bounded behavior, but the mediated-tool allowlist does **not** restrict the
-harness's builtin filesystem or shell tools. The bridge's private Unix socket is
-not protection against a hostile process running as the same OS user. Existing
-local model login is infrastructure authentication, not delegated Microsoft
-identity. There is no application-identity fallback.
+Native drivers and the batch fallback require the stage OS sandbox and an
+isolated home. The interactive profile additionally denies access to human
+server state and masks the shared workspace, chat-state and bridge roots,
+allowing only the current invocation's directories. These root masks also cover
+sibling directories created after launch. Each bridge connection authenticates
+with its invocation's private token before host authority checks; the token file
+is readable only within that invocation's sandbox exception. The agent's own
+shell can exercise its existing scoped bridge authority.
+
+The mediated-tool allowlist does **not** restrict the harness's builtin tools;
+the OS sandbox enforces their filesystem boundary. Model API network access and
+residual host IPC remain available under the stage policy. This is a trusted
+local workstation prototype, not complete isolation from hostile same-user host
+processes or arbitrary credential copies. Existing local model login is
+infrastructure authentication, not delegated Microsoft identity. There is no
+application-identity fallback.
 
 ## Demonstrate the local paths
 
@@ -294,3 +331,25 @@ Conditional Access challenges, real resource authorization and uncertain-write
 qualification. Nothing here provisions those prerequisites. Other open decisions
 are production daemon integration, distributed persistence/workers, native-tool
 compatibility, production child lineage and collaborative sessions.
+
+The internal `agent-tools` stdio command requires both `--socket <path>` and `--token-file <path>`. The latter points to the invocation-private mode-0600 `auth.token`; only the path is a launch argument. Each connection authenticates before MCP parsing or host authority checks. Cross-session kernel read isolation must protect this file; filesystem modes alone do not separate processes running as the same user.
+
+### Browser credential storage confinement
+
+Interactive native launches additionally mask existing standard browser and
+credential-store directories under the host user's home. On macOS this covers
+Chrome, Chromium, Microsoft Edge and Firefox under `Library/Application Support`,
+`Library/Cookies`, `Library/Safari`, Safari's container/group container, and
+`Library/Keychains`. On Linux it covers `~/.config/{google-chrome,chromium,microsoft-edge}`,
+`~/.mozilla`, and `~/.local/share/keyrings`. The server's Goobers human-auth state
+remains read-denied separately. No browser contents are read while constructing
+these masks, and the invocation receives no read exception inside them.
+
+The masks cover new profiles/files created inside those roots after launch.
+An entirely new browser installation needs a fresh invocation; custom profile
+locations are not discovered and need host confinement before use. Symlinked
+roots are resolved to their actual directory, and invalid roots fail launch.
+These controls mitigate browser-storage credential theft; they do not establish
+complete same-UID isolation against browser IPC, inherited handles, host process
+memory, or arbitrary credential copies. Stage-parity network/IPC reachability
+remains a separate limitation.

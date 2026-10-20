@@ -80,15 +80,10 @@ func (c *ClaudeAdapter) prepareClaudeChat(ctx context.Context, req RunRequest, o
 		return launch, err
 	}
 	env = normalizeAnthropicCredentialEnv(append(env, mcpEnv...))
-	configDir, tempDir, err := prepareClaudeRuntime(req.Workspace)
+	env, err = c.prepareInteractiveRuntimeEnv(ctx, req, env)
 	if err != nil {
 		return launch, err
 	}
-	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
-		return launch, err
-	}
-	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
-	env = overrideEnv(env, "TMPDIR", tempDir)
 	if req.Sandbox != nil {
 		roots, err := gitWritableRoots(req.Workspace)
 		if err != nil {

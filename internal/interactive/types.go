@@ -97,15 +97,20 @@ type ExecutionRequest struct {
 	ChildID                                                        string
 	ReadOnly                                                       bool
 	Steering                                                       <-chan Steering
+	Controls                                                       <-chan DriverControl
 	WorkerID, LeaseID                                              string
 	Heartbeat                                                      func() error
 }
 
 // Steering carries an exact command and its executor delivery acknowledgement.
 type Steering struct {
-	CommandID, Text string
+	// Delivery and SteeringMode express the requested driver behavior, not an acknowledgement.
+	Delivery, SteeringMode string
+	CommandID, Text        string
 	// Ack(nil) means the harness actually accepted this exact steering message.
 	Ack func(error)
+	// AckDelivery reports actual transport delivery, never requested intent.
+	AckDelivery func(delivery string, err error)
 }
 
 // ExecutionEvent contains executor output admitted through the current lease.
@@ -221,26 +226,39 @@ type Event struct {
 
 // Command identifies an idempotent session mutation and its fence preconditions.
 type Command struct {
-	WorkflowYAML     string `json:"workflowYaml,omitempty"`
-	CommandID        string `json:"commandId"`
-	Type             string `json:"type"`
-	Text             string `json:"text,omitempty"`
-	ExpectedSequence uint64 `json:"expectedSequence"`
-	ExpectedFence    uint64 `json:"expectedFence"`
-	TurnID           string `json:"turnId,omitempty"`
-	ChildID          string `json:"childId,omitempty"`
-	Decision         string `json:"decision,omitempty"`
+	Message          string              `json:"message,omitempty"`
+	RequestID        string              `json:"requestId,omitempty"`
+	OptionID         string              `json:"optionId,omitempty"`
+	Answers          map[string][]string `json:"answers,omitempty"`
+	Model            string              `json:"model,omitempty"`
+	Level            string              `json:"level,omitempty"`
+	Effort           string              `json:"effort,omitempty"`
+	Delivery         string              `json:"delivery,omitempty"`
+	SteeringMode     string              `json:"steeringMode,omitempty"`
+	WorkflowYAML     string              `json:"workflowYaml,omitempty"`
+	CommandID        string              `json:"commandId"`
+	Type             string              `json:"type"`
+	Text             string              `json:"text,omitempty"`
+	ExpectedSequence uint64              `json:"expectedSequence"`
+	ExpectedFence    uint64              `json:"expectedFence"`
+	TurnID           string              `json:"turnId,omitempty"`
+	ChildID          string              `json:"childId,omitempty"`
+	Decision         string              `json:"decision,omitempty"`
 }
 
 // CommandReceipt records durable acceptance and subsequent delivery status.
 type CommandReceipt struct {
-	CommandID string `json:"commandId"`
-	SessionID string `json:"sessionId"`
-	Type      string `json:"type"`
-	Status    string `json:"status"`
-	Sequence  uint64 `json:"sequence"`
-	TurnID    string `json:"turnId,omitempty"`
-	ChildID   string `json:"childId,omitempty"`
+	RequestID    string  `json:"requestId,omitempty"`
+	Actual       *string `json:"actual,omitempty"`
+	Delivery     string  `json:"delivery,omitempty"`
+	SteeringMode string  `json:"steeringMode,omitempty"`
+	CommandID    string  `json:"commandId"`
+	SessionID    string  `json:"sessionId"`
+	Type         string  `json:"type"`
+	Status       string  `json:"status"`
+	Sequence     uint64  `json:"sequence"`
+	TurnID       string  `json:"turnId,omitempty"`
+	ChildID      string  `json:"childId,omitempty"`
 }
 
 // CreateRequest identifies an idempotent request for a new session.
@@ -260,3 +278,11 @@ type APIError struct {
 
 func (e *APIError) Error() string                    { return fmt.Sprintf("%s: %s", e.Code, e.Message) }
 func problem(status int, code, message string) error { return &APIError{status, code, message} }
+
+// DriverControl carries a human command to the exact active leased session.
+// Check revalidates admission before any native effect; Ack records its result.
+type DriverControl struct {
+	Command Command
+	Check   func() error
+	Ack     func(actual string, err error)
+}

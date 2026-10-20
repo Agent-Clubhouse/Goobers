@@ -43,6 +43,9 @@ type connection struct {
 }
 
 func (b *Bridge) serveConnection(conn net.Conn) {
+	if !b.authenticate(conn) {
+		return
+	}
 	ctx, cancel := context.WithCancel(b.ctx)
 	defer cancel()
 	c := &connection{bridge: b, conn: conn, ctx: ctx, cancel: cancel, pending: map[string]context.CancelFunc{}}

@@ -148,7 +148,7 @@ func (s *codexChatSession) turnCompleted(msg codexRPCMessage) {
 			s.emit("error", map[string]any{"code": "turn_failed", "message": "Codex turn failed", "fatal": false}, "")
 		}
 	}
-	s.emit("turn_ended", map[string]any{"nativeTurnId": p.Turn.Id, "reason": reason}, "")
+	s.emit("turn_ended", map[string]any{"nativeTurnId": p.Turn.Id, "reason": reason, "settled": true}, "")
 }
 
 func (s *codexChatSession) turnError(msg codexRPCMessage) {
@@ -265,7 +265,13 @@ func (s *codexChatSession) questionRequest(msg codexRPCMessage) {
 			return
 		}
 		ids[q.Id] = true
-		questions = append(questions, map[string]any{"id": q.Id, "header": q.Header, "question": q.Question, "options": q.Options, "allowOther": q.IsOther})
+		options := make([]chat.QuestionOption, 0)
+		if q.Options != nil {
+			for _, option := range *q.Options {
+				options = append(options, chat.QuestionOption{ID: option.Label, Label: option.Label})
+			}
+		}
+		questions = append(questions, map[string]any{"questionId": q.Id, "prompt": q.Question, "options": options, "allowMultiple": false, "allowFreeText": q.IsOther})
 	}
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
@@ -318,6 +324,13 @@ func (s *codexChatSession) AnswerQuestion(ctx context.Context, id string, answer
 	if !ok || q.turn != s.active || q.turn == s.blockedTurn {
 		s.mu.Unlock()
 		return chat.ErrUnknownRequest
+	}
+	if answers == nil {
+		delete(s.questions, id)
+		s.mu.Unlock()
+		err := s.reply(q.id, nil, &codexRPCError{Code: -32000, Message: "Question cancelled by host policy"})
+		s.emit("question_resolved", map[string]any{"requestId": id, "resolution": "cancelled"}, "")
+		return err
 	}
 	if len(answers) != len(q.questions) {
 		s.mu.Unlock()

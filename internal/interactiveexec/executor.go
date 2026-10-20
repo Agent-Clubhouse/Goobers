@@ -16,25 +16,32 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/interactive"
 	"github.com/goobers/goobers/internal/interactiveagent"
 	auth "github.com/goobers/goobers/internal/interactiveauth"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/sandbox"
 )
 
 // Config configures trusted sources, adapters, and workspace boundaries.
 type Config struct {
 	StateDir, SourceDir, Mode string
-	Model, SelfBinary         string
-	Broker                    *auth.Broker
-	Principal                 auth.Principal
-	TrustedLocalModelLogin    bool
-	HeartbeatInterval         time.Duration
-	Helper                    func(context.Context, interactive.ExecutionRequest, func(interactive.ExecutionEvent) error) (string, error)
-	ReviewChild               func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (string, error)
-	AgentTools                func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (interactiveagent.Options, error)
+	// Sandbox optionally supplies the host OS wrapper. Native execution creates
+	// the platform sandbox when nil and fails closed if it is unavailable.
+	Sandbox                sandbox.Sandbox
+	Model, SelfBinary      string
+	Broker                 *auth.Broker
+	Principal              auth.Principal
+	TrustedLocalModelLogin bool
+	HeartbeatInterval      time.Duration
+	// DriverRequestTimeout bounds unanswered native permission/question requests.
+	DriverRequestTimeout time.Duration
+	Helper               func(context.Context, interactive.ExecutionRequest, func(interactive.ExecutionEvent) error) (string, error)
+	ReviewChild          func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (string, error)
+	AgentTools           func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (interactiveagent.Options, error)
 	// ResolveAuthority maps the server-pinned symbolic authority refs to an exact
 	// owned broker connection. A zero ref means this provider is unconfigured.
 	// It must never acquire credentials, create a grant, or substitute identity.
@@ -43,10 +50,12 @@ type Config struct {
 
 // Executor runs isolated interactive work with explicit writer custody.
 type Executor struct {
-	config     Config
-	mu         sync.Mutex
-	runNative  func(context.Context, harness.RunRequest) (harness.Outcome, error)
-	runProcess func(context.Context, string, []string, func(harness.TranscriptDelta) error) (harness.ProcessResult, error)
+	config       Config
+	chatRegistry func(string, harness.RunRequest) *chat.Registry
+	newSandbox   func() (sandbox.Sandbox, error)
+	mu           sync.Mutex
+	runNative    func(context.Context, harness.RunRequest) (harness.Outcome, error)
+	runProcess   func(context.Context, string, []string, func(harness.TranscriptDelta) error) (harness.ProcessResult, error)
 }
 
 // PrepareWorkspace returns a complete private snapshot before Helper config
@@ -93,7 +102,7 @@ func New(config Config) (*Executor, error) {
 	if config.HeartbeatInterval <= 0 {
 		config.HeartbeatInterval = 5 * time.Second
 	}
-	if err := os.MkdirAll(filepath.Join(config.StateDir, "workspaces"), 0700); err != nil {
+	if err := os.MkdirAll(workspaceRoot(config.StateDir), 0700); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Join(config.StateDir, "metadata"), 0700); err != nil {
@@ -102,13 +111,18 @@ func New(config Config) (*Executor, error) {
 	return &Executor{config: config}, nil
 }
 
+// Workspaces must be outside the human control plane's read-denied state.
+// Existing nested workspaces are deliberately not migrated while writer
+// custody might be unknown; a host must reconcile old sessions explicitly.
+func workspaceRoot(state string) string { return filepath.Clean(state) + "-workspaces" }
+
 var safeID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,160}$`)
 
 func (e *Executor) workspace(id string) (string, error) {
 	if !safeID.MatchString(id) {
 		return "", fmt.Errorf("invalid server session identity")
 	}
-	return filepath.Join(e.config.StateDir, "workspaces", id), nil
+	return filepath.Join(workspaceRoot(e.config.StateDir), id), nil
 }
 
 // Recover only acknowledges custody after this executor removed its active
@@ -156,18 +170,9 @@ func (e *Executor) Execute(ctx context.Context, req interactive.ExecutionRequest
 	if req.Owner != e.config.Principal.Identity().Subject {
 		return result, fmt.Errorf("executor identity mismatch")
 	}
-	executionMode := req.ExecutionMode
-	if executionMode == "" {
-		executionMode = e.config.Mode // Legacy direct-call tests only; HTTP sessions pin a mode.
-	}
-	if executionMode != "local-tools" && executionMode != "codex-local" {
-		return result, fmt.Errorf("unknown execution mode; no fallback is permitted")
-	}
-	if executionMode == "codex-local" && !e.config.TrustedLocalModelLogin {
-		return result, fmt.Errorf("model execution unavailable: host trusted-local login opt-in is required; choose the explicitly labeled demo mode separately")
-	}
-	if executionMode == "codex-local" && req.Harness != "" && req.Harness != "codex" {
-		return result, fmt.Errorf("configured harness is unsupported for codex-local; no fallback is permitted")
+	executionMode, err := e.executionMode(req)
+	if err != nil {
+		return result, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -286,7 +291,7 @@ func (e *Executor) prepare(ctx context.Context, req interactive.ExecutionRequest
 			return "", fmt.Errorf("invalid child identity")
 		}
 		source = workspace
-		workspace = filepath.Join(e.config.StateDir, "workspaces", req.SessionID+"-"+req.ChildID)
+		workspace = filepath.Join(workspaceRoot(e.config.StateDir), req.SessionID+"-"+req.ChildID)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".git")); err == nil {
 		if !e.hasBaseline(workspace) {
@@ -744,4 +749,21 @@ func (e *Executor) changes(ctx context.Context, workspace string) ([]interactive
 		}
 	}
 	return changes, diff, nil
+}
+
+func (e *Executor) executionMode(req interactive.ExecutionRequest) (string, error) {
+	executionMode := req.ExecutionMode
+	if executionMode == "" {
+		executionMode = e.config.Mode // Legacy direct-call tests only; HTTP sessions pin a mode.
+	}
+	if executionMode != "local-tools" && executionMode != "codex-local" {
+		return "", fmt.Errorf("unknown execution mode; no fallback is permitted")
+	}
+	if executionMode == "codex-local" && !e.config.TrustedLocalModelLogin {
+		return "", fmt.Errorf("model execution unavailable: host trusted-local login opt-in is required; choose the explicitly labeled demo mode separately")
+	}
+	if executionMode == "codex-local" && req.Harness != "" && req.Harness != "codex" && req.Harness != "copilot" && req.Harness != "claude" {
+		return "", fmt.Errorf("configured harness is unsupported for codex-local; no fallback is permitted")
+	}
+	return executionMode, nil
 }

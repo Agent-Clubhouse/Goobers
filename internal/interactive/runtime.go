@@ -149,8 +149,10 @@ func (s *Service) start(req ExecutionRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	steering := make(chan Steering, 16)
 	req.Steering = steering
+	controls := make(chan DriverControl, 16)
+	req.Controls = controls
 	req.Heartbeat = func() error { return s.heartbeat(req) }
-	run := &activeRun{cancel: cancel, request: req, steering: steering}
+	run := &activeRun{cancel: cancel, request: req, steering: steering, controls: controls}
 	if s.active[req.SessionID] == nil {
 		s.active[req.SessionID] = map[string]*activeRun{}
 	}
@@ -180,7 +182,7 @@ func (s *Service) start(req ExecutionRequest) {
 			}
 			event.Data = data
 			if event.Type == "assistant.delta" || event.Type == "tool.output" {
-				key := event.Type + "/" + fmt.Sprint(event.Data["name"]) + "/" + fmt.Sprint(event.Data["stream"])
+				key := event.Type + "/" + fmt.Sprint(event.Data["name"]) + "/" + fmt.Sprint(event.Data["stream"]) + "/" + fmt.Sprint(event.Data["toolCallId"])
 				previous := pending[key]
 				before, _ := previous.Data["text"].(string)
 				text, _ := event.Data["text"].(string)
@@ -190,13 +192,13 @@ func (s *Service) start(req ExecutionRequest) {
 				}
 				boundary := s.scrubber.SafePrefix([]byte(text))
 				retained := clone(event.Data)
-				retained["text"] = text[boundary:]
+				setStreamingText(retained, text[boundary:])
 				pending[key] = ExecutionEvent{Type: event.Type, Data: retained}
 				if boundary == 0 {
 					return nil
 				}
 				event.Data = clone(event.Data)
-				event.Data["text"] = text[:boundary]
+				setStreamingText(event.Data, text[:boundary])
 			}
 			return s.emit(req, event)
 		}
@@ -222,6 +224,17 @@ func (s *Service) start(req ExecutionRequest) {
 		}
 		s.finish(req, result, err)
 	}()
+}
+
+// Keep the v2 content in step with the safe prefix. Retaining the original
+// chunk under data.chat would expose text withheld by the streaming scrubber.
+func setStreamingText(data map[string]any, text string) {
+	data["text"] = text
+	if envelope, ok := data["chat"].(map[string]any); ok {
+		if payload, ok := envelope["data"].(map[string]any); ok {
+			payload["content"] = []any{map[string]any{"type": "text", "text": text}}
+		}
+	}
 }
 
 func (s *Service) cleanData(data map[string]any) map[string]any {
@@ -330,13 +343,7 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 			}
 		}
 		now := time.Now().UTC()
-		for key, cmd := range rec.Commands {
-			if req.ChildID == "" && cmd.Receipt.Type == "steer" && cmd.Receipt.Status == "accepted" && cmd.Receipt.TurnID == req.TurnID {
-				cmd.Receipt.Status = "rejected"
-				rec.Commands[key] = cmd
-				appendEvent(rec, "steering.rejected", req.TurnID, key, map[string]any{"reason": "attempt ended before delivery confirmation"})
-			}
-		}
+		rejectUnconfirmedCommands(rec, req)
 		if result.CustodyPending {
 			rec.Session.CustodyPending = true
 			rec.Session.Status = "recovery_required"

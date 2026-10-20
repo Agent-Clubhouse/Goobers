@@ -231,7 +231,7 @@ func (s *session) requestID() string {
 	s.nextRequest++
 	return fmt.Sprintf("request-%d", s.nextRequest)
 }
-func (s *session) askPermission(epoch uint64, kind string) (chat.PermissionResponse, error) {
+func (s *session) askPermission(epoch uint64, kind string, content []chat.ContentBlock, toolCallID string) (chat.PermissionResponse, error) {
 	s.mu.Lock()
 	if s.closed || s.interrupted || epoch != s.requestEpoch {
 		s.mu.Unlock()
@@ -242,7 +242,7 @@ func (s *session) askPermission(epoch uint64, kind string) (chat.PermissionRespo
 	s.permissions[id] = ch
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.permissions, id); s.mu.Unlock() }()
-	s.emit("permission_request", map[string]any{"requestId": id, "kind": kind, "options": []map[string]string{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "reject_once", "kind": "reject_once", "label": "Deny"}}}, "")
+	s.emit("permission_request", map[string]any{"requestId": id, "title": kind, "kind": kind, "content": content, "toolCallId": toolCallID, "options": []map[string]string{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "reject_once", "kind": "reject_once", "label": "Deny"}}}, "")
 	select {
 	case response := <-ch:
 		if !s.requestCurrent(epoch) {
@@ -284,7 +284,8 @@ func (s *session) permission(req sdk.PermissionRequest, inv sdk.PermissionInvoca
 	if level == chat.Plan || level == chat.Auto || level == chat.FullAccess || level == chat.AutoEdit && (read || write) {
 		return &rpc.PermissionDecisionApproveOnce{}, nil
 	}
-	response, err := s.askPermission(epoch, string(req.Kind()))
+	content, toolCallID := permissionPreview(req)
+	response, err := s.askPermission(epoch, string(req.Kind()), content, toolCallID)
 	if err != nil || response.OptionID != "allow_once" {
 		return deny, nil
 	}
@@ -315,7 +316,11 @@ func (s *session) question(req sdk.UserInputRequest, _ sdk.UserInputInvocation) 
 	s.questions[id] = ch
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.questions, id); s.mu.Unlock() }()
-	s.emit("question", map[string]any{"requestId": id, "questions": []map[string]any{{"id": "answer", "question": req.Question, "options": req.Choices, "allowFreeform": req.AllowFreeform}}}, "")
+	options := make([]chat.QuestionOption, 0, len(req.Choices))
+	for _, choice := range req.Choices {
+		options = append(options, chat.QuestionOption{ID: choice, Label: choice})
+	}
+	s.emit("question", map[string]any{"requestId": id, "questions": []chat.Question{{QuestionID: "answer", Prompt: req.Question, Options: options, AllowFreeText: req.AllowFreeform == nil || *req.AllowFreeform}}}, "")
 	select {
 	case a := <-ch:
 		if a == nil || !s.requestCurrent(epoch) {
@@ -338,7 +343,7 @@ func (s *session) plan(req sdk.ExitPlanModeRequest, _ sdk.ExitPlanModeInvocation
 	epoch := s.requestEpoch
 	s.mu.Unlock()
 	s.emit("plan_document", map[string]any{"content": req.PlanContent, "summary": req.Summary}, "")
-	response, err := s.askPermission(epoch, "exit_plan_mode")
+	response, err := s.askPermission(epoch, "exit_plan_mode", reviewText(req.PlanContent), "")
 	if err != nil {
 		return sdk.ExitPlanModeResult{}, err
 	}

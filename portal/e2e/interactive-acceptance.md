@@ -94,3 +94,14 @@ the loopback demo principal by itself cannot establish multi-user isolation.
 Screenshots and videos are evidence of observed states, not proof of live
 provider access or production isolation. Record test command, branch/commit,
 executor/provider mode and remaining limitations with each qualification run.
+
+## Human authentication in qualification
+
+The fixture reads the server's private one-use bootstrap link file without
+printing the token, retains log redaction as a safeguard, and writes human-browser-state.json with mode 0600 inside the
+private (0700) evidence directory. Playwright uses those cookies and the origin-scoped header
+binding for reads, streams and explicit human controls. The cross-port regression
+uses a separate context without global headers and proves captured cookies
+cannot read or control the API. This is test-harness authority, never an
+agent credential. Keep the state file and traces private, do not publish them,
+and stop the server after qualification to invalidate the session.

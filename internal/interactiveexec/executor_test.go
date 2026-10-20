@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,7 +14,13 @@ import (
 	"github.com/goobers/goobers/internal/interactive"
 	auth "github.com/goobers/goobers/internal/interactiveauth"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/sandbox"
 )
+
+type fixtureSandbox struct{}
+
+func (fixtureSandbox) Wrap(*exec.Cmd, sandbox.Policy) error { return nil }
+func (fixtureSandbox) Mechanism() string                    { return "fixture" }
 
 func TestSnapshotExcludesCredentialsAndRejectsSymlinks(t *testing.T) {
 	source, dest := t.TempDir(), t.TempDir()
@@ -48,7 +55,11 @@ func TestNativeUnconfirmedInterruptionNeverAcknowledgesOrRestarts(t *testing.T) 
 	}
 	started := make(chan struct{})
 	calls := 0
-	e := &Executor{runNative: func(ctx context.Context, _ harness.RunRequest) (harness.Outcome, error) {
+	state := t.TempDir()
+	if err := os.Mkdir(filepath.Join(state, "metadata"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Executor{config: Config{StateDir: state, Sandbox: fixtureSandbox{}}, runNative: func(ctx context.Context, _ harness.RunRequest) (harness.Outcome, error) {
 		calls++
 		ack := invoke.RegisterWorkspaceWriter(ctx)
 		close(started)
@@ -63,7 +74,13 @@ func TestNativeUnconfirmedInterruptionNeverAcknowledgesOrRestarts(t *testing.T) 
 		_, err := e.native(context.Background(), interactive.ExecutionRequest{Steering: steering}, workspace, "", func(string, map[string]any) error { return nil })
 		done <- err
 	}()
-	<-started
+	select {
+	case <-started:
+	case err := <-done:
+		t.Fatalf("native launch refused: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("native launch timed out")
+	}
 	steering <- interactive.Steering{Text: "continue", Ack: func(err error) { acknowledged <- err }}
 	select {
 	case err := <-done:
@@ -180,5 +197,22 @@ func TestCrashCustodyCannotBeClaimedByWorkspaceMarker(t *testing.T) {
 	}
 	if err := e.Recover(context.Background(), req); err == nil {
 		t.Fatal("unknown child writer custody reported recovered")
+	}
+}
+
+func TestNativeStreamReportsSchemaDriftWithoutPayload(t *testing.T) {
+	var data map[string]any
+	stream := &nativeStream{emit: func(kind string, value map[string]any) error {
+		if kind != "protocol_unknown" {
+			t.Fatal(kind)
+		}
+		data = value
+		return nil
+	}}
+	if err := stream.write([]byte("{\"type\":\"future.event\",\"params\":{\"secret\":\"do not log\"}}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if data["name"] != "future.event" || data["params"] != nil || data["secret"] != nil {
+		t.Fatal(data)
 	}
 }
