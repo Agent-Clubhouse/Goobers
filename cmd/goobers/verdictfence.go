@@ -57,7 +57,7 @@ func withPublicationClaim(ctx context.Context, ledger claimsclient.Ledger, lock 
 			return fmt.Errorf("wait for verdict publication custody: %w", err)
 		}
 		started = time.Now()
-		ok, _, err := ledger.ClaimScoped(acquireCtx, lock.Key, lock.RunID, lock.Workflow, lease)
+		ok, err := claimPublicationIfUnheld(acquireCtx, ledger, lock, lease)
 		if err != nil {
 			return fmt.Errorf("acquire verdict publication custody: %w", err)
 		}
@@ -78,9 +78,7 @@ func withPublicationClaim(ctx context.Context, ledger claimsclient.Ledger, lock 
 	if actionCtx.Err() == nil {
 		err = fn(actionCtx)
 	}
-	if actionCtx.Err() != nil {
-		return errors.Join(err, fmt.Errorf("verdict publication custody deadline exceeded; publication/landing outcome uncertain; claim retained until expiry: %w", actionCtx.Err()))
-	}
+	actionErr := actionCtx.Err()
 	verifyCtx, stopVerify := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer stopVerify()
 	entries, verifyErr := ledger.ForRunAll(verifyCtx, lock.RunID)
@@ -90,11 +88,32 @@ func withPublicationClaim(ctx context.Context, ledger claimsclient.Ledger, lock 
 			held = true
 		}
 	}
+	if actionErr != nil {
+		return errors.Join(err, verifyErr, fmt.Errorf("verdict publication custody deadline exceeded; publication/landing outcome uncertain; claim retained until expiry (held=%t): %w", held, actionErr))
+	}
 	if verifyErr != nil || !held || !time.Now().Before(started.Add(lease)) {
 		return errors.Join(err, fmt.Errorf("verdict publication custody lost or unverifiable after action; publication/landing outcome uncertain (held=%t): %w", held, errors.Join(verifyErr, errors.New("custody verification failed"))))
 	}
 	releaseErr := ledger.ReleaseScoped(verifyCtx, lock.Key, lock.RunID, claimrelease.Completed.Because("verdict_publication_closed", ""))
 	return errors.Join(err, releaseErr)
+}
+
+// ClaimScoped normally renews an existing same-run claim. After an uncertain
+// completion that would defeat quarantine: a retry must wait for its retained
+// claim to expire, just like another run. Sequential stages per run are required
+// because separate same-run callers cannot atomically distinguish ownership.
+func claimPublicationIfUnheld(ctx context.Context, ledger claimsclient.Ledger, lock claimsclient.MergeLock, lease time.Duration) (bool, error) {
+	entries, err := ledger.ForRunAll(ctx, lock.RunID)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == lock.Key && entry.ExpiresAt.After(time.Now()) {
+			return false, nil
+		}
+	}
+	ok, _, err := ledger.ClaimScoped(ctx, lock.Key, lock.RunID, lock.Workflow, lease)
+	return ok, err
 }
 
 // Publication may commit during a long pre-merge check or policy lookup.

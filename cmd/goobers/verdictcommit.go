@@ -54,7 +54,10 @@ func (p verdictPublication) commit(candidate apiv1.Verdict, legacy []apiv1.Verdi
 		committed, commitErr = p.commitHeld(ctx, candidate, legacy, finalize, stdout)
 		return commitErr
 	})
-	return committed, err
+	if err != nil {
+		return apiv1.Verdict{}, err
+	}
+	return committed, nil
 }
 
 func (p verdictPublication) commitHeld(ctx context.Context, candidate apiv1.Verdict, legacy []apiv1.Verdict, finalize func(apiv1.Verdict) (apiv1.Verdict, error), stdout io.Writer) (apiv1.Verdict, error) {

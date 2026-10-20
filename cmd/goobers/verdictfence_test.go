@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -72,6 +71,13 @@ func TestVerdictPublicationCustodyRetainsLeaseOnUncertainCompletion(t *testing.T
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "outcome uncertain") {
 		t.Fatalf("uncertain completion reported as success: %v", err)
 	}
+	retryErr := withPublicationClaim(t.Context(), ledger, lock, 40*time.Millisecond, 100*time.Millisecond, time.Second, func(context.Context) error {
+		t.Error("same-run retry bypassed the retained quarantine")
+		return nil
+	})
+	if !errors.Is(retryErr, context.DeadlineExceeded) {
+		t.Fatalf("same-run retry did not wait: %v", retryErr)
+	}
 	ok, holder, err := ledger.ClaimScoped(t.Context(), lock.Key, "second", "merge-review", time.Second)
 	if err != nil || ok || holder != "first" {
 		t.Fatalf("uncertain landing released its quarantine: ok=%t holder=%q err=%v", ok, holder, err)
@@ -126,6 +132,6 @@ func TestApplyVerdictVoidPreservesUnmigratedSameHeadFindings(t *testing.T) {
 	}
 	next, err := publication.commit(apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "Silent pass", HeadSHA: head, BaseSHA: "moved-base"}, records, nil, io.Discard)
 	if err != nil || next.Decision != apiv1.VerdictNeedsChanges || len(next.StandingFindings) != 1 {
-		t.Fatal(fmt.Sprintf("void lost the finding: %+v %v", next, err))
+		t.Fatalf("void lost the finding: %+v %v", next, err)
 	}
 }

@@ -166,7 +166,8 @@ The publication claim waits at most two minutes. Its action, including the
 provider landing request, has a one-minute deadline inside a five-minute lease.
 Ownership is checked again after the action. A timeout or unverifiable custody
 fails visibly with an uncertain-outcome error and retains the claim until lease
-expiry; it does not report a successful guarded landing. Operators should
+expiry, including against retries in the same run; it does not report a
+successful guarded landing. Operators should
 inspect the actual provider result before retrying an uncertain landing.
 
 This contract requires one owning gaggle and sequential participating stages
