@@ -1,0 +1,39 @@
+api: {}
+apiVersion: goobers.dev/v1alpha1
+credentials:
+- capability: github:issues:write
+  token:
+    githubCLI:
+      hostname: github.com
+      user: octocat
+- capability: github:code-scanning:read
+  token:
+    githubCLI:
+      hostname: github.com
+      user: octocat
+- capability: github:dependabot-alerts:read
+  token:
+    githubCLI:
+      hostname: github.com
+      user: octocat
+externalTelemetry: {}
+kind: Instance
+portal:
+  brand: {}
+  support: {}
+  theme: {}
+repos:
+- name: example-repo
+  owner: example-org
+  provider: github
+  token:
+    githubCLI:
+      hostname: github.com
+      user: octocat
+retention: {}
+runConditions:
+  maxParallelRuns: 1
+runner: {}
+telemetry: {}
+webhook:
+  secret: {}
