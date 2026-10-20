@@ -146,6 +146,7 @@ type runJournal struct {
 
 	owner         *journalCommitOwner
 	branch        int
+	branchWalk    *branchWalkFrame
 	proj          JournalProjection
 	machine       *wf.Machine
 	terminalCause *journal.TerminalCause
