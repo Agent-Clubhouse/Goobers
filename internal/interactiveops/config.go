@@ -107,7 +107,8 @@ func (s *Service) ensure(scope Scope, dir string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.RemoveAll(staging) }()
 	files := map[string]string{
 		"manifest.yaml": "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\nmetadata:\n  name: interactive-fixture\nspec:\n  instance: {name: interactive-fixture, environment: dev}\n  gaggles: [interactive]\n",
 		"gaggle.yaml":   "apiVersion: goobers.dev/v1alpha1\nkind: Gaggle\nmetadata:\n  name: interactive\nspec:\n  displayName: Interactive invoice workspace\n  project: {provider: github, owner: controlled-fixture, name: invoice, branch: main}\n  backlog: {provider: github, project: controlled-fixture/invoice}\n  isolation: {namespace: interactive-fixture}\n",
@@ -223,7 +224,8 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 		if err != nil {
 			return "", "", err
 		}
-		defer os.RemoveAll(stage)
+		// Best-effort cleanup; the operation result is reported separately.
+		defer func() { _ = os.RemoveAll(stage) }()
 		b, _ := json.MarshalIndent(map[string]any{"gaggle": req.Gaggle, "workflow": req.Workflow, "displayName": req.DisplayName, "enabled": req.Enabled}, "", "  ")
 		return "Apply scoped " + req.Kind + " to the isolated local fixture", string(b), nil
 	case "add_workflow":
@@ -247,7 +249,8 @@ func (s *Service) preview(scope Scope, dir string, req Request) (string, string,
 		if err != nil {
 			return "", "", err
 		}
-		defer os.RemoveAll(stage)
+		// Best-effort cleanup; the operation result is reported separately.
+		defer func() { _ = os.RemoveAll(stage) }()
 		return "Add validated workflow " + v.Name + " to the local fixture", v.BoundYAML, nil
 	case "submit_run":
 		if s.opts.Binary == "" {
@@ -315,7 +318,7 @@ func (s *Service) stageConfig(scope Scope, dir string, req Request) (string, err
 	ok := false
 	defer func() {
 		if !ok {
-			os.RemoveAll(stage)
+			_ = os.RemoveAll(stage) // Best-effort cleanup of unpublished staging data.
 		}
 	}()
 	config := filepath.Join(dir, "instance", "config")
@@ -390,7 +393,8 @@ func (s *Service) applyConfig(scope Scope, dir string, req Request) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(stage)
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = os.RemoveAll(stage) }()
 	swap, err := instance.PrepareConfigDirSwap(instance.NewLayout(filepath.Join(dir, "instance")), stage)
 	if err != nil {
 		return err

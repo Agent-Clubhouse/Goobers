@@ -13,33 +13,40 @@ import (
 	"sort"
 	"strings"
 
+	yamlv3 "gopkg.in/yaml.v3"
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/workflow"
-	yamlv3 "gopkg.in/yaml.v3"
-	"sigs.k8s.io/yaml"
 )
 
 // CommandCapability is a closed host-selected capability, never an executable
 // path or a model-provided shell fragment.
 type CommandCapability string
 
+// Command capabilities name the allowed deterministic child commands.
 const (
 	CommandNodeTest  CommandCapability = "node-test"
 	CommandNodeCheck CommandCapability = "node-check"
 )
 
+// WorkflowDiagnostic identifies a bounded workflow validation problem.
 type WorkflowDiagnostic struct {
 	Code     string `json:"code"`
 	Severity string `json:"severity"`
 	Field    string `json:"field"`
 	Message  string `json:"message"`
 }
+
+// WorkflowCommand describes an allowed deterministic command.
 type WorkflowCommand struct {
 	Stage      string            `json:"stage"`
 	Capability CommandCapability `json:"capability"`
 	Arguments  []string          `json:"arguments"`
 }
+
+// WorkflowValidation contains a normalized workflow and its validation evidence.
 type WorkflowValidation struct {
 	Valid          bool                 `json:"valid"`
 	Name           string               `json:"name,omitempty"`
@@ -104,7 +111,7 @@ func (s *Service) validateWorkflow(content, repo string) WorkflowValidation {
 	if err := decoder.Decode(&document); err != nil {
 		return fail("yaml", "workflow", err)
 	}
-	if err := decoder.Decode(&document); err != io.EOF {
+	if err := decoder.Decode(&document); !errors.Is(err, io.EOF) {
 		return fail("yaml", "workflow", errors.New("exactly one YAML document is required"))
 	}
 	var raw map[string]any
@@ -126,7 +133,7 @@ func (s *Service) validateWorkflow(content, repo string) WorkflowValidation {
 		return fail("policy", "metadata", err)
 	}
 	for name, value := range wf.Annotations {
-		if (name != "goobers.dev/acknowledge-manual-only" && !(wf.DSLVersion == "3.0" && name == "goobers.dev/allow-preview-features")) || value != "true" {
+		if (name != "goobers.dev/acknowledge-manual-only" && (wf.DSLVersion != "3.0" || name != "goobers.dev/allow-preview-features")) || value != "true" {
 			return fail("policy", "metadata.annotations", errors.New("only manual-only acknowledgment and DSL3 preview acknowledgment are authorized"))
 		}
 	}

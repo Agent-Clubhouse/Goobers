@@ -9,11 +9,13 @@ import (
 	"time"
 )
 
+// Execution modes identify the explicitly selected host adapter.
 const (
 	ExecutionModeCodexLocal = "codex-local"
 	ExecutionModeLocalTools = "local-tools"
 )
 
+// Surface describes an enabled experience and its resolved execution policy.
 type Surface struct {
 	// ConfigRevision covers the resolved non-secret DSL snapshot, including
 	// authority reference mappings which are not carried as prompt material.
@@ -41,6 +43,7 @@ type Surface struct {
 	Instructions             string   `json:"instructions,omitempty"`
 }
 
+// Options configures the session coordinator and its host boundaries.
 type Options struct {
 	// AvailableExecutionModes is the host adapter allowlist. Nil preserves the
 	// package's local-tools default; it never enables a model-backed adapter.
@@ -63,18 +66,21 @@ type Options struct {
 	OnStop func(context.Context, string, string) error
 }
 
+// Executor runs one fenced interactive execution and joins its writers.
 type Executor interface {
 	// Execute returns only once all workspace writers it launched have stopped.
 	// It must honor context cancellation and redact output before calling emit.
 	Execute(context.Context, ExecutionRequest, func(ExecutionEvent) error) (ExecutionResult, error)
 }
 
+// RecoveryExecutor verifies writer custody before recovery may proceed.
 type RecoveryExecutor interface {
 	// Recover confirms old process custody and reconciles ambiguous effects.
 	// It must refuse recovery while a previous writer might still be alive.
 	Recover(context.Context, ExecutionRequest) error
 }
 
+// ExecutionRequest binds an execution to its session, policy, workspace, and lease.
 type ExecutionRequest struct {
 	ConfigRevision, Gaggle, Goober, Model, Harness            string
 	Tools, Workflows, AuthorityRefs, ChildCommandCapabilities []string
@@ -95,6 +101,7 @@ type ExecutionRequest struct {
 	Heartbeat                                                      func() error
 }
 
+// Steering carries an exact command and its executor delivery acknowledgement.
 type Steering struct {
 	// Delivery and SteeringMode express the requested driver behavior, not an acknowledgement.
 	Delivery, SteeringMode string
@@ -103,11 +110,13 @@ type Steering struct {
 	Ack func(error)
 }
 
+// ExecutionEvent contains executor output admitted through the current lease.
 type ExecutionEvent struct {
 	Type string
 	Data map[string]any
 }
 
+// ExecutionResult reports completed output, workspace changes, and custody state.
 type ExecutionResult struct {
 	// CustodyPending means Execute returned without proving all workspace writers stopped.
 	CustodyPending               bool
@@ -117,6 +126,7 @@ type ExecutionResult struct {
 	AuthReason                   string
 }
 
+// Change summarizes a changed workspace path.
 type Change struct {
 	Path      string `json:"path"`
 	Status    string `json:"status"`
@@ -124,10 +134,13 @@ type Change struct {
 	Deletions int    `json:"deletions"`
 }
 
+// Member associates a principal with a session role.
 type Member struct {
 	Principal string `json:"principal"`
 	Role      string `json:"role"`
 }
+
+// Lease records fenced worker ownership and expiry.
 type Lease struct {
 	WorkerID  string    `json:"workerId"`
 	LeaseID   string    `json:"leaseId"`
@@ -135,6 +148,8 @@ type Lease struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 	Status    string    `json:"status"`
 }
+
+// Session contains the durable state and history of one interactive conversation.
 type Session struct {
 	ConfigRevision   string    `json:"configRevision,omitempty"`
 	ExecutionMode    string    `json:"executionMode"`
@@ -164,6 +179,7 @@ type Session struct {
 	RecoveryReason   string    `json:"recoveryReason,omitempty"`
 }
 
+// Turn records a user request and its execution attempt.
 type Turn struct {
 	ID         string     `json:"id"`
 	Text       string     `json:"text"`
@@ -175,6 +191,7 @@ type Turn struct {
 	Error      string     `json:"error,omitempty"`
 }
 
+// Child records a bounded child proposal and review outcome.
 type Child struct {
 	WorkflowYAML   string     `json:"workflowYaml,omitempty"`
 	WorkflowDigest string     `json:"workflowDigest,omitempty"`
@@ -191,6 +208,7 @@ type Child struct {
 	ReviewedAt     *time.Time `json:"reviewedAt,omitempty"`
 }
 
+// Event is one ordered entry in a session’s durable history.
 type Event struct {
 	ActorSource string         `json:"actorSource,omitempty"`
 	Actor       string         `json:"actor"`
@@ -203,6 +221,7 @@ type Event struct {
 	Data        map[string]any `json:"data"`
 }
 
+// Command identifies an idempotent session mutation and its fence preconditions.
 type Command struct {
 	Delivery         string `json:"delivery,omitempty"`
 	SteeringMode     string `json:"steeringMode,omitempty"`
@@ -217,6 +236,7 @@ type Command struct {
 	Decision         string `json:"decision,omitempty"`
 }
 
+// CommandReceipt records durable acceptance and subsequent delivery status.
 type CommandReceipt struct {
 	CommandID string `json:"commandId"`
 	SessionID string `json:"sessionId"`
@@ -227,6 +247,7 @@ type CommandReceipt struct {
 	ChildID   string `json:"childId,omitempty"`
 }
 
+// CreateRequest identifies an idempotent request for a new session.
 type CreateRequest struct {
 	ExecutionMode string `json:"executionMode,omitempty"`
 	CommandID     string `json:"commandId"`
@@ -234,6 +255,7 @@ type CreateRequest struct {
 	Title         string `json:"title,omitempty"`
 }
 
+// APIError contains a safe HTTP status, code, and message.
 type APIError struct {
 	Status  int    `json:"-"`
 	Code    string `json:"code"`
