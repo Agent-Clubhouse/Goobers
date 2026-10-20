@@ -20,14 +20,18 @@ import (
 )
 
 func TestUpAtProtectedGenerationCapacityKeepsDiagnostics(t *testing.T) {
-	testUpAtProtectedGenerationCapacity(t, false)
+	testUpAtProtectedGenerationCapacity(t, false, false)
 }
 
 func TestUpAtProtectedGenerationCapacityLegacyRollback(t *testing.T) {
-	testUpAtProtectedGenerationCapacity(t, true)
+	testUpAtProtectedGenerationCapacity(t, true, false)
 }
 
-func testUpAtProtectedGenerationCapacity(t *testing.T, legacy bool) {
+func TestUpAtProtectedGenerationCapacityAfterCompaction(t *testing.T) {
+	testUpAtProtectedGenerationCapacity(t, false, true)
+}
+
+func testUpAtProtectedGenerationCapacity(t *testing.T, legacy, compact bool) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
 	address := freeLoopbackAddress(t)
@@ -114,6 +118,9 @@ func testUpAtProtectedGenerationCapacity(t *testing.T, legacy bool) {
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if compact {
+		compactGenerationHistory(t, layout, first)
+	}
 	recoveredDir, err := store.Load(t.Context(), first)
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +164,13 @@ func testUpAtProtectedGenerationCapacity(t *testing.T, legacy bool) {
 	}
 	stop := startGenerationTestDaemon(t, root, recoveryOptions...)
 	defer stop()
+	if compact {
+		// Restart a second time after the startup annotation itself ages out.
+		// Both reload and startup authority must survive ordinary retention.
+		stop()
+		compactGenerationHistory(t, layout, first)
+		stop = startGenerationTestDaemon(t, root)
+	}
 	health := readDaemonHealth(t, address)
 	if health.DefinitionReload == nil || health.DefinitionReload.State != "rejected" {
 		t.Fatalf("capacity status: %+v", health.DefinitionReload)
@@ -320,5 +334,16 @@ func TestExplicitStartupGenerationRequiresRetainedCustody(t *testing.T) {
 				t.Fatalf("unverified selection accepted: input=%+v digest=%q err=%v", got, digest, err)
 			}
 		})
+	}
+}
+
+func compactGenerationHistory(t *testing.T, layout instance.Layout, generation string) {
+	t.Helper()
+	cutoff := time.Now().Add(time.Hour)
+	if _, err := journal.CompactInstanceEvents(layout.SchedulerDir(), cutoff, cutoff, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := lastAppliedExecutionGeneration(layout); err != nil || got != generation {
+		t.Fatalf("compaction lost applied authority: got=%q want=%q err=%v", got, generation, err)
 	}
 }

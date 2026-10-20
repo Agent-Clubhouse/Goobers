@@ -63,6 +63,8 @@ did not record it, startup refuses automatic selection: a newer retained run
 may belong to a catalog superseded by a rollback. Legacy reload events can also
 precede a failed activation and are not enough to prove the applied catalog.
 The applied catalog itself remains protected even before it admits a run.
+Journal compaction preserves the latest application event or legacy ambiguity
+barrier by sequence, even when clock rollback gives it an older timestamp.
 
 For an ambiguous legacy root, the startup diagnostic lists retained candidate
 digests, archive modification times, and archive source paths. These times are

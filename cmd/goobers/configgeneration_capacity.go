@@ -15,7 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-const appliedGenerationAnnotation = "config.generation.applied"
+const appliedGenerationAnnotation = journal.ConfigGenerationAppliedAnnotation
 
 // The instance journal is the authority for the last committed catalog, even
 // when a previously retained generation is reused without producing a new run.
@@ -24,9 +24,7 @@ func lastAppliedExecutionGeneration(layout instance.Layout) (string, error) {
 }
 
 func appliedExecutionGenerationReader(layout instance.Layout) func(context.Context) (string, error) {
-	latest := journal.NewInstanceLatest(layout.SchedulerDir(), func(event journal.Event) bool {
-		return event.Type == journal.EventConfigReloaded || event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == appliedGenerationAnnotation
-	})
+	latest := journal.NewInstanceLatest(layout.SchedulerDir(), journal.IsConfigGenerationAuthority)
 	return func(ctx context.Context) (string, error) {
 		event, _, err := latest.Read(ctx)
 		generation, _ := event.Runner["configGeneration"].(string)
