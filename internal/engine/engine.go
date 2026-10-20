@@ -689,6 +689,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				return RunResult{}, err
 			}
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
+			if err := rec.refuseBranchGateCompletion(gr); err != nil {
+				return RunResult{}, err
+			}
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
 			if terminal {
 				resumeState, resumed, serr := settleWalk(ctx, rec, hitl, out, addenda)

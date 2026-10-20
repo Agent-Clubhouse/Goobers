@@ -33,9 +33,13 @@ func TestStaticBranchBodiesRealHistoryReplay(t *testing.T) {
 		}
 	})
 	c := server.Client()
-	for _, mode := range []string{"task-chain", "gate", "timeout", "cancel", "legacy"} {
+	for _, mode := range []string{"task-chain", "gate", "terminal-gate", "timeout", "cancel", "legacy"} {
 		t.Run(mode, func(t *testing.T) {
-			in := branchBodyInput("replay-"+mode, mode == "gate", mode != "gate")
+			gateBody := mode == "gate" || mode == "terminal-gate"
+			in := branchBodyInput("replay-"+mode, gateBody, !gateBody)
+			if mode == "terminal-gate" {
+				in.Run.Spec.Gates[0].Branches["pass"] = ""
+			}
 			if mode == "timeout" {
 				in.Run.Spec.Parallels[0].BranchTimeoutSeconds = 1
 			}
@@ -95,6 +99,9 @@ func TestStaticBranchBodiesRealHistoryReplay(t *testing.T) {
 				}
 				if mode == "cancel" {
 					want = journal.BranchCancelled
+				}
+				if mode == "terminal-gate" {
+					want = journal.BranchFailed
 				}
 				if out.Branches[0].Status != want || out.Branches[1].Status != journal.BranchSucceeded {
 					t.Fatalf("outcomes = %+v", out.Branches)

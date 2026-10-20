@@ -97,3 +97,13 @@ func (r *runJournal) branchGateJoinFailure(gr gateResult, lastStage string, last
 	code, message := failureCause(lastResult.Error)
 	return RunResult{Status: StatusFailed, FinalState: lastStage, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
 }
+
+// A gate can compile with one @join edge and a different edge that completes
+// the run. Check the selected edge before gateTransition consumes it; the
+// branch loop never sees a terminal already returned by that function.
+func (r *runJournal) refuseBranchGateCompletion(gr gateResult) error {
+	if r.branchWalk != nil && gr.Target == wf.TerminalComplete {
+		return fmt.Errorf("engine: branch gate %q completed the run instead of routing to %q", gr.Gate, wf.TargetJoin)
+	}
+	return nil
+}
