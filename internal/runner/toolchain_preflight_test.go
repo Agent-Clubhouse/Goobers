@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,5 +131,43 @@ func TestStartProceedsWhenPreflightPasses(t *testing.T) {
 	}
 	if len(v.calls) != 1 || len(v.calls[0]) != 2 {
 		t.Fatalf("verifier calls = %v, want exactly one with the two declared caps", v.calls)
+	}
+}
+
+type checkoutVerifier struct {
+	fakeVerifier
+	dir string
+}
+
+func (v *checkoutVerifier) VerifyIn(_ context.Context, required []string, dir string) error {
+	v.dir = dir
+	data, err := os.ReadFile(filepath.Join(dir, "global.json"))
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(string(data), `"rollForward":"latestPatch"`) {
+		return errors.New("checkout SDK policy missing")
+	}
+	return nil
+}
+
+func TestStartProbesToolchainsInRepositoryCheckout(t *testing.T) {
+	v := &checkoutVerifier{}
+	r := newPreflightRunner(t, v, nil, map[string]stubTaskResult{
+		"run-preflight-checkout:implement": {status: apiv1.ResultSuccess, summary: "done"},
+	})
+	repo := newFixtureRepoWithFiles(t, map[string]string{
+		"global.json": `{"sdk":{"version":"8.0.404","rollForward":"latestPatch"}}`,
+	})
+	r.cfg.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
+	res, err := preflightStart(t, r, "run-preflight-checkout", []string{"dotnet@8"})
+	if err != nil || res.Phase != journal.PhaseCompleted {
+		t.Fatalf("Start = %+v, %v", res, err)
+	}
+	if v.dir == "" || len(v.calls) != 0 {
+		t.Fatalf("repository probe not used: dir=%q host calls=%v", v.dir, v.calls)
+	}
+	if _, err := os.Stat(v.dir); !os.IsNotExist(err) {
+		t.Fatalf("preflight checkout was not released: %v", err)
 	}
 }

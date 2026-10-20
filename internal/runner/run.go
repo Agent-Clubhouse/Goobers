@@ -1196,7 +1196,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		// preflight entirely (no behavior change), and a resumed run passes nil
 		// (it already cleared preflight at its original Start).
 		if len(in.RequiredCapabilities) > 0 {
-			if err := r.toolchains.Verify(ctx, in.RequiredCapabilities); err != nil {
+			if err := r.verifyToolchains(ctx, in); err != nil {
 				span.Fail(err)
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, toolchainPreflightState, 0, err)
 			}
