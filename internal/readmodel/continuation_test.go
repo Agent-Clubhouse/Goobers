@@ -3,9 +3,11 @@ package readmodel
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -26,12 +28,12 @@ func TestContinuationRunsReturnsDirectChildren(t *testing.T) {
 		}
 	}
 
-	got, err := store.ContinuationRuns(ctx, []string{"source"})
+	got, err := store.ContinuationRuns(ctx, "source", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	children := got["source"]
-	if len(children) != 2 || children[0].RunID != "child-a" || children[1].RunID != "child-b" {
+	children := got.Runs
+	if len(children) != 2 || children[0].ID != "child-a" || children[1].ID != "child-b" {
 		t.Fatalf("continuations = %+v", children)
 	}
 }
@@ -118,11 +120,88 @@ func TestContinuationProjectionUpgradeReplaysExistingRows(t *testing.T) {
 	if !reflect.DeepEqual(got.Operator, projection.Run.Operator) {
 		t.Fatalf("upgraded continuation operator facts = %+v, want %+v", got.Operator, projection.Run.Operator)
 	}
-	children, err := store.ContinuationRuns(ctx, []string{"source"})
+	children, err := store.ContinuationRuns(ctx, "source", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(children["source"]) != 1 || children["source"][0].RunID != identity.RunID {
+	if len(children.Runs) != 1 || children.Runs[0].ID != identity.RunID {
 		t.Fatalf("upgraded continuation reverse lineage = %+v", children)
+	}
+}
+
+func TestContinuationPagesUseIndexAtScale(t *testing.T) {
+	ctx := t.Context()
+	store := openTestStore(t)
+	tx, err := store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for i := 0; i < 3000; i++ {
+		parent := "other"
+		if i < 123 {
+			parent = "source"
+		}
+		// Most rows deliberately share the trigger ref but lack continuation
+		// identity; a residual post-LIMIT filter would starve these pages.
+		operator := fmt.Sprintf(`{"ContinuedFromRunID":%q}`, parent)
+		_, err := tx.ExecContext(ctx, `INSERT INTO run
+  (run_id,gaggle,workflow,trigger_kind,trigger_ref,phase,terminal,started_at,last_seq,operator_json,projection_version)
+  VALUES (?,'g','wf','manual','source','completed',1,'2026-01-01T00:00:00Z',1,?,4)`, fmt.Sprintf("child-%04d", i), operator)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	after := ""
+	seen := map[string]bool{}
+	for {
+		page, err := store.ContinuationRuns(ctx, "source", after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) > 50 {
+			t.Fatalf("unbounded page: %d", len(page.Runs))
+		}
+		for _, row := range page.Runs {
+			if seen[row.ID] {
+				t.Fatalf("duplicate %s", row.ID)
+			}
+			seen[row.ID] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		after = page.NextCursor
+	}
+	if len(seen) != 123 {
+		t.Fatalf("children=%d", len(seen))
+	}
+	rows, err := store.reader.QueryContext(ctx, "EXPLAIN QUERY PLAN "+continuationPageQuery, "source", "child-0049", 51)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	indexed := false
+	for rows.Next() {
+		var a, b, c int
+		var detail string
+		if err := rows.Scan(&a, &b, &c, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(detail, "idx_run_continuations") {
+			indexed = true
+		}
+		if strings.Contains(detail, "SCAN ") || strings.Contains(detail, "TEMP B-TREE") {
+			t.Fatalf("unbounded plan: %s", detail)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !indexed {
+		t.Fatal("continuation index unused")
 	}
 }

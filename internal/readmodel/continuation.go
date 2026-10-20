@@ -3,41 +3,27 @@ package readmodel
 import (
 	"context"
 	"database/sql"
-	"strings"
+
+	"github.com/goobers/goobers/internal/runlineage"
 )
 
-// ContinuationRuns returns direct continuations grouped by source run.
-func (s *Store) ContinuationRuns(ctx context.Context, sourceRunIDs []string) (map[string][]RunRow, error) {
-	out := make(map[string][]RunRow)
-	if len(sourceRunIDs) == 0 {
-		return out, nil
-	}
-	placeholders := make([]string, len(sourceRunIDs))
-	args := make([]any, len(sourceRunIDs))
-	for i, id := range sourceRunIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	query := `SELECT ` + runColumns + ` FROM run r
-		WHERE r.trigger_kind = 'manual' AND r.trigger_ref IN (` +
-		strings.Join(placeholders, ",") + `)
-		ORDER BY r.run_id ASC`
-	err := s.withReadRows(ctx, query, args,
-		"readmodel: list continuations",
-		"readmodel: list continuations",
-		func(rows *sql.Rows) error {
-			row, err := scanRunRow(rows)
-			if err != nil {
+const continuationPageQuery = `SELECT r.run_id, r.phase FROM run r
+ WHERE r.trigger_kind = 'manual' AND r.trigger_ref = ?
+ AND json_extract(r.operator_json, '$.ContinuedFromRunID') = r.trigger_ref
+ AND r.run_id > ? ORDER BY r.run_id ASC LIMIT ?`
+
+// ContinuationRuns returns one indexed page of authenticated direct children.
+func (s *Store) ContinuationRuns(ctx context.Context, sourceRunID, after string) (runlineage.Page, error) {
+	var out runlineage.Page
+	err := s.withReadRows(ctx, continuationPageQuery, []any{sourceRunID, after, runlineage.PageSize + 1},
+		"readmodel: list continuations", "readmodel: list continuations", func(rows *sql.Rows) error {
+			var row runlineage.Run
+			if err := rows.Scan(&row.ID, &row.Phase); err != nil {
 				return err
 			}
-			if row.Operator.ContinuedFromRunID != row.TriggerRef {
-				return nil
-			}
-			out[row.TriggerRef] = append(out[row.TriggerRef], row)
+			out.Runs = append(out.Runs, row)
 			return nil
 		})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	out.Trim()
+	return out, err
 }
