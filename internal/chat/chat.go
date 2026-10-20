@@ -150,6 +150,8 @@ type StartOptions struct {
 type SendOptions struct {
 	Delivery  Delivery
 	CommandID string
+	// ExpectedGeneration rejects admission if native work advanced since interruption.
+	ExpectedGeneration *uint64
 }
 
 // PermissionResponse answers one pending permission request.
@@ -175,6 +177,8 @@ type Driver interface {
 // turn_ended.data.nativeTurnId; hosts without this proof must close and restart.
 type ActiveTurnIdentifier interface {
 	ActiveTurnID() string
+	TurnGeneration() uint64
+	EventSequence() uint64
 }
 
 // Session is a live conversation whose Close operation joins workspace writers.

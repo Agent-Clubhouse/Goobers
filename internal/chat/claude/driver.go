@@ -434,7 +434,7 @@ func (s *Session) frame(m object) {
 			s.active = true
 			s.nativeTurn++
 			s.queued--
-			s.emit("turn_started", object{}, "")
+			s.emit("turn_started", object{"nativeTurnId": strconv.FormatUint(s.nativeTurn, 10)}, "")
 		}
 		events := s.norm.mapFrame(m)
 		if m["type"] == "result" {
@@ -468,6 +468,16 @@ func (s *Session) respondAsync(id string, response object) {
 	}()
 }
 
+// TurnGeneration retains evidence of native turns even after they settle.
+func (s *Session) TurnGeneration() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeTurn
+}
+
+// EventSequence returns the last published event boundary.
+func (s *Session) EventSequence() uint64 { return s.stream.Sequence() }
+
 // ActiveTurnID identifies outstanding native work for interruption settlement.
 func (s *Session) ActiveTurnID() string {
 	s.mu.Lock()
@@ -491,6 +501,11 @@ func (s *Session) Send(ctx context.Context, blocks []chat.ContentBlock, o chat.S
 		return "", chat.ErrUnsupported
 	}
 	s.mu.Lock()
+	if o.ExpectedGeneration != nil && *o.ExpectedGeneration != s.nativeTurn {
+		s.mu.Unlock()
+		return "", chat.ErrBusy
+	}
+
 	if s.closed {
 		s.mu.Unlock()
 		return "", chat.ErrClosed
@@ -510,7 +525,7 @@ func (s *Session) Send(ctx context.Context, blocks []chat.ContentBlock, o chat.S
 	id := s.norm.nativeID
 	s.emit("command.accepted", object{}, o.CommandID)
 	if start {
-		s.emit("turn_started", object{}, o.CommandID)
+		s.emit("turn_started", object{"nativeTurnId": strconv.FormatUint(s.nativeTurn, 10)}, o.CommandID)
 	}
 	s.emit("user_message", object{"content": blocks, "source": "user", "delivery": delivery}, o.CommandID)
 	s.mu.Unlock()

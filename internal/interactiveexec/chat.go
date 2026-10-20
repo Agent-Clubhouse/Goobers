@@ -183,6 +183,8 @@ func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionReque
 	ticker := time.NewTicker(min(100*time.Millisecond, controls.timeout))
 	defer ticker.Stop()
 	completion := chatCompletion{}
+	var discardThrough uint64
+	retiredTurns := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -204,6 +206,8 @@ func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionReque
 			}
 			delivery, err := deliverSteering(runCtx, s, steer, request, project, emit)
 			if delivery.interrupted {
+				discardThrough = delivery.discardThrough
+				retiredTurns[delivery.retiredTurnID] = true
 				completion = chatCompletion{}
 				clear(controls.pending)
 				clear(controls.origins)
@@ -218,6 +222,9 @@ func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionReque
 			if !ok {
 				return completion.out, nil, fmt.Errorf("chat session ended before turn completion")
 			}
+			if discardTerminal(event, discardThrough, retiredTurns) {
+				continue
+			}
 			if err := project(event); err != nil {
 				return completion.out, nil, err
 			}
@@ -227,6 +234,21 @@ func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionReque
 			}
 		}
 	}
+}
+
+func discardTerminal(event chat.Event, fence uint64, retired map[string]bool) bool {
+	if !staleTerminal(event.Type) {
+		return false
+	}
+	if fence > 0 && event.Seq <= fence {
+		return true
+	}
+	id, _ := event.Data["nativeTurnId"].(string)
+	return id != "" && retired[id]
+}
+
+func staleTerminal(kind string) bool {
+	return kind == "turn_ended" || kind == "completion.accepted" || kind == "completion.rejected" || kind == "error"
 }
 
 type chatCompletion struct {

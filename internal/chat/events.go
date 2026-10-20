@@ -85,6 +85,13 @@ func (s *Stream) Emit(t string, data map[string]any, commandID string) bool {
 	}
 }
 
+// Sequence returns the latest published stream boundary.
+func (s *Stream) Sequence() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seq
+}
+
 // Close closes the session or stream after releasing its owned resources.
 func (s *Stream) Close() {
 	s.mu.Lock()

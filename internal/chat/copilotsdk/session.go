@@ -51,6 +51,16 @@ func (s *session) NativeID() string { return s.id }
 // Capabilities advertises the operations implemented by a transport.
 func (s *session) Capabilities() chat.Capabilities { return capabilities() }
 
+// TurnGeneration retains evidence of native turns even after they settle.
+func (s *session) TurnGeneration() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeTurn
+}
+
+// EventSequence returns the last published event boundary.
+func (s *session) EventSequence() uint64 { return s.stream.Sequence() }
+
 // ActiveTurnID identifies outstanding native work for interruption settlement.
 func (s *session) ActiveTurnID() string {
 	s.mu.Lock()
@@ -89,6 +99,11 @@ func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 	s.mu.Lock()
+	if o.ExpectedGeneration != nil && *o.ExpectedGeneration != s.nativeTurn {
+		s.mu.Unlock()
+		return "", chat.ErrBusy
+	}
+
 	if s.closed {
 		s.mu.Unlock()
 		return "", chat.ErrClosed

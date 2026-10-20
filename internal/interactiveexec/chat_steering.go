@@ -13,9 +13,11 @@ import (
 )
 
 type steeringDelivery struct {
-	restart     *interactive.Steering
-	queued      bool
-	interrupted bool
+	restart        *interactive.Steering
+	queued         bool
+	interrupted    bool
+	discardThrough uint64
+	retiredTurnID  string
 }
 
 func managementBridgeAttached(request harness.RunRequest) bool {
@@ -62,6 +64,10 @@ func interruptAndContinue(ctx context.Context, session chat.Session, steer inter
 	if target == "" {
 		return restartAfterInterrupt(session, steer, emit, "no-active-turn")
 	}
+	boundary := interruptBoundary{target: target, generation: identity.TurnGeneration(), before: identity.EventSequence()}
+	if identity.ActiveTurnID() != target {
+		return restartAfterInterrupt(session, steer, emit, "turn-changed")
+	}
 	interruptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := session.Interrupt(interruptCtx); err != nil {
@@ -71,7 +77,7 @@ func interruptAndContinue(ctx context.Context, session chat.Session, steer inter
 		}
 		return restartAfterInterrupt(session, steer, emit, interruptFailure(interruptCtx, err))
 	}
-	restart, err := awaitInterruptedIdle(interruptCtx, session, identity, target, project)
+	fence, restart, err := awaitInterruptedIdle(interruptCtx, session, identity, boundary, project)
 	if err != nil {
 		if !restart || ctx.Err() != nil {
 			acknowledge(steer, "", err)
@@ -87,9 +93,12 @@ func interruptAndContinue(ctx context.Context, session chat.Session, steer inter
 		acknowledge(steer, "", err)
 		return steeringDelivery{}, err
 	}
-	delivery, err := session.Send(ctx, chat.Text(steer.Text), chat.SendOptions{Delivery: chat.Prompt, CommandID: steer.CommandID})
-	acknowledge(steer, delivery, err)
-	return steeringDelivery{interrupted: true, queued: err == nil && delivery == chat.Queued}, err
+	delivery, err := session.Send(ctx, chat.Text(steer.Text), chat.SendOptions{Delivery: chat.Prompt, CommandID: steer.CommandID, ExpectedGeneration: &boundary.generation})
+	if err != nil {
+		return restartAfterInterrupt(session, steer, emit, "replacement-admission-failed")
+	}
+	acknowledge(steer, delivery, nil)
+	return steeringDelivery{interrupted: true, discardThrough: fence, retiredTurnID: boundary.target, queued: delivery == chat.Queued}, nil
 }
 
 func clearInterruptedCompletion(request harness.RunRequest) error {
@@ -107,23 +116,54 @@ func clearInterruptedCompletion(request harness.RunRequest) error {
 	return nil
 }
 
-func awaitInterruptedIdle(ctx context.Context, session chat.Session, identity chat.ActiveTurnIdentifier, target string, project func(chat.Event) error) (bool, error) {
+type interruptBoundary struct {
+	target             string
+	generation, before uint64
+}
+
+func (b interruptBoundary) changed(identity chat.ActiveTurnIdentifier) bool {
+	return identity.TurnGeneration() != b.generation
+}
+
+func (b interruptBoundary) foreign(event chat.Event) bool {
+	if event.Seq <= b.before || event.Type != "turn_started" && event.Type != "turn_ended" {
+		return false
+	}
+	return event.Data["nativeTurnId"] != b.target
+}
+
+func awaitInterruptedIdle(ctx context.Context, session chat.Session, identity chat.ActiveTurnIdentifier, boundary interruptBoundary, project func(chat.Event) error) (uint64, bool, error) {
+	settled := false
 	for {
+		if boundary.changed(identity) {
+			return 0, true, fmt.Errorf("native turn changed during interruption")
+		}
 		select {
 		case <-ctx.Done():
-			return true, ctx.Err()
+			return 0, true, ctx.Err()
 		case event, ok := <-session.Events():
 			if !ok {
-				return true, chat.ErrClosed
+				return 0, true, chat.ErrClosed
 			}
 			if err := project(event); err != nil {
-				return false, err
+				return 0, false, err
 			}
-			if event.Type == "turn_ended" && event.Data["settled"] == true && event.Data["nativeTurnId"] == target && identity.ActiveTurnID() == "" {
-				return false, nil
+			if boundary.foreign(event) {
+				return 0, true, fmt.Errorf("unbound turn boundary during interruption")
+			}
+			if event.Type == "turn_ended" && event.Data["settled"] == true && event.Data["nativeTurnId"] == boundary.target {
+				settled = true
 			}
 			if event.Type == "error" && event.Data["fatal"] == true {
-				return true, fmt.Errorf("driver failed while interrupting")
+				return 0, true, fmt.Errorf("driver failed while interrupting")
+			}
+			// Drain the entire published boundary, not just its first idle. Native
+			// generations retain evidence of turns that both started and ended in Abort.
+			if settled && event.Seq >= identity.EventSequence() {
+				if boundary.changed(identity) || identity.ActiveTurnID() != "" {
+					return 0, true, fmt.Errorf("native turn changed during interruption")
+				}
+				return event.Seq, false, nil
 			}
 		}
 	}
