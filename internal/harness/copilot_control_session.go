@@ -45,6 +45,7 @@ func (s sdkRequiredMCPSession) ExecuteTool(ctx context.Context, name string) (rp
 type copilotControlledRunner struct {
 	permissionRoots []string
 	usage           transcriptCapture
+	finalized       bool
 	base            ProcessRunner
 	request         RunRequest
 	promptIndex     int
@@ -99,6 +100,14 @@ func (r *copilotControlledRunner) Run(ctx context.Context, req ProcessRequest) (
 	if errors.Is(callCtx.Err(), context.Canceled) {
 		err = errors.Join(ErrCanceled, err)
 	}
+	if callCtx.Err() != nil {
+		// Stop the model and retain accounting while the server is still alive.
+		// Adapter-level finalization is idempotent after this early path.
+		err = errors.Join(err, finalizeControlledCopilot(callCtx, r))
+		if r.process != nil {
+			r.process.close()
+		}
+	}
 	return result, err
 }
 
@@ -130,6 +139,7 @@ func (r *copilotControlledRunner) reopenForRetry(_ context.Context, _ ProcessReq
 	}
 	r.session = nil
 	r.ready = false
+	r.finalized = false
 	return nil
 }
 

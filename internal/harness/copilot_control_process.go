@@ -67,7 +67,14 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	if err != nil {
 		return nil, "", err
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	// Prompt/RPC calls retain the caller's cancellation. The owned server gets
+	// only a bounded accounting grace period so abort + usage can run before
+	// teardown; the watchdog still kills it if finalization cannot progress.
+	req.Timeout = effectiveProcessTimeout(ctx, req.Timeout, time.Now()) + copilotFinalizeTimeout
+	runCtx, cancel := copilotAccountingProcessContext(ctx, req.Timeout)
 	capture := &copilotPortCapture{ready: make(chan int, 1)}
 	done := make(chan struct{})
 	process := &copilotControlProcess{cancel: cancel, done: done}
@@ -96,6 +103,25 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 		return nil, "", fmt.Errorf("%w: Copilot control connection failed", errRequiredMCPUnavailable)
 	}
 	return process, sessionID, nil
+}
+
+func copilotAccountingProcessContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-runCtx.Done():
+			return
+		}
+		timer := time.NewTimer(copilotFinalizeTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			cancel()
+		case <-runCtx.Done():
+		}
+	}()
+	return runCtx, cancel
 }
 
 func (p *copilotControlProcess) close() {

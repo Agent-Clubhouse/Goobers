@@ -134,7 +134,17 @@ func (p *readinessProtocolProcess) Run(ctx context.Context, req ProcessRequest) 
 	return result, ctx.Err()
 }
 
+type copilotReadinessFixtureOptions struct {
+	onRPC       func(string)
+	afterSend   func()
+	beforeUsage func() error
+}
+
 func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResult string, usageResponse ...any) error {
+	return serveCopilotReadinessFixtureWithOptions(conn, sends, probeResult, copilotReadinessFixtureOptions{}, usageResponse...)
+}
+
+func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32, probeResult string, options copilotReadinessFixtureOptions, usageResponse ...any) error {
 	reader := bufio.NewReader(conn)
 	probed := false
 	for {
@@ -152,6 +162,9 @@ func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResul
 		}
 		if err := json.Unmarshal(data, &req); err != nil {
 			return err
+		}
+		if options.onRPC != nil {
+			options.onRPC(req.Method)
 		}
 		result := any(map[string]any{})
 		switch req.Method {
@@ -180,7 +193,13 @@ func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResul
 			}
 			probed = true
 			result = map[string]any{"resultType": probeResult, "textResultForLlm": "{}"}
+		case "session.abort":
 		case "session.usage.getMetrics":
+			if options.beforeUsage != nil {
+				if err := options.beforeUsage(); err != nil {
+					return err
+				}
+			}
 			model := map[string]any{"requests": map[string]any{"count": 1, "cost": 1}, "usage": map[string]any{"inputTokens": 42, "outputTokens": 2}, "totalNanoAiu": 1e9}
 			result = map[string]any{"sessionStartTime": time.Now().UTC().Format(time.RFC3339Nano), "totalNanoAiu": 1e9, "modelMetrics": map[string]any{"fixture-model": model}, "agentMetrics": map[string]any{"main": map[string]any{"totalNanoAiu": 1e9, "modelMetrics": map[string]any{"fixture-model": model}}}}
 			if len(usageResponse) > 0 {
@@ -204,6 +223,10 @@ func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResul
 			return err
 		}
 		if req.Method == "session.send" {
+			if options.afterSend != nil {
+				options.afterSend()
+				continue
+			}
 			for _, event := range []map[string]any{{"type": "assistant.message", "data": map[string]any{"messageId": "message", "content": "final answer"}}, {"type": "session.idle", "data": map[string]any{}}} {
 				event["id"] = "fixture-event"
 				event["timestamp"] = time.Now().UTC().Format(time.RFC3339Nano)
