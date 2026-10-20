@@ -2,6 +2,7 @@ package terminalreport
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/lock"
@@ -36,50 +38,69 @@ func (q Queue) now() time.Time {
 }
 
 func effectKey(e Effect) string {
-	identity := string(e.Kind) + "\x00" + string(e.Repository.Provider) + "\x00" + e.Repository.Owner + "\x00" + e.Repository.Project + "\x00" + e.Repository.Name + "\x00" + e.ItemID
+	identity := string(e.Kind) + "\x00" + e.Repository.CanonicalKey() + "\x00" + e.ItemID
 	if e.Kind == AbortLabel {
 		identity += "\x00" + e.RunID
 	}
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
 }
 
-// Publish persists before attempting the provider write. A quota rejection
-// retains the intent with its advertised retry time; the error still reaches
-// the original caller's journal.
+// entry separates durable admission from the delivery lease. File locks protect
+// only disk operations; remote calls never hold them. Generation and Lease guard
+// acknowledgements against a newer intent or a reclaimed delivery lease.
+type entry struct {
+	Effect
+	Generation string    `json:"generation"`
+	Lease      string    `json:"lease,omitempty"`
+	LeaseUntil time.Time `json:"leaseUntil,omitempty"`
+	Body       string    `json:"body,omitempty"`
+}
+
+var errDeliveryPending = errors.New("terminal report delivery already in progress")
+
+func readEntry(path string) (entry, error) {
+	var e entry
+	data, err := os.ReadFile(path)
+	if err == nil {
+		err = json.Unmarshal(data, &e)
+	}
+	return e, err
+}
+
+// Publish durably admits the newest projection even while an older generation
+// is in flight. Admission does not wait for provider calls or the delivery lease.
 func (q Queue) Publish(ctx context.Context, e Effect, apply func(context.Context, Effect) error) error {
-	// A terminal handler often arrives with an expired stage context. Its
-	// publication may be canceled, but the durable intent must survive that.
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return q.withEntry(persistCtx, effectKey(e), func(path string) error {
-		// Repeated finalization or a newer projection must respect an already
-		// advertised quota window for this same provider target.
-		previous, err := os.ReadFile(path)
+	key := effectKey(e)
+	err := q.withEntry(persistCtx, key, func(path string) error {
+		previous, err := readEntry(path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err == nil {
-			var pending Effect
-			if err := json.Unmarshal(previous, &pending); err != nil {
-				return err
-			}
-			if q.now().Before(pending.RetryAt) {
-				e.RetryAt, e.Attempts = pending.RetryAt, pending.Attempts
-			}
+		next := entry{Effect: e, Generation: crand.Text(), Lease: previous.Lease, LeaseUntil: previous.LeaseUntil}
+		if q.now().Before(previous.RetryAt) {
+			next.RetryAt, next.Attempts = previous.RetryAt, previous.Attempts
 		}
-		if err := save(path, e); err != nil {
-			return err
+		// Re-admission of the same intent must retain its first rendered body.
+		if reportIdentity(previous.Effect) == reportIdentity(e) {
+			next.Body = previous.Body
 		}
-		if q.now().Before(e.RetryAt) {
-			return errors.Join(&providers.RateLimitError{Provider: e.Repository.Provider, Reset: e.RetryAt}, q.record(e, "deferred"))
-		}
-		return q.attempt(ctx, path, e, apply)
+		return save(path, next)
 	})
+	if err != nil {
+		return err
+	}
+	_, err = q.deliver(ctx, key, apply, true)
+	return err
 }
 
-// Reconcile retries at most budget due intents. Future quota windows make no
-// provider calls. Per-intent locks serialize concurrent finalizers/reconcilers
-// without blocking unrelated items behind a slow provider.
+func reportIdentity(e Effect) string {
+	identity, _ := json.Marshal([]any{effectKey(e), e.RunID, e.Stage, e.Count, e.Reset})
+	return string(identity)
+}
+
+// Reconcile retries at most budget due intents, skipping active delivery leases.
 func (q Queue) Reconcile(ctx context.Context, budget int, apply func(context.Context, Effect) error) error {
 	entries, err := os.ReadDir(q.Dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -96,26 +117,10 @@ func (q Queue) Reconcile(ctx context.Context, budget int, apply func(context.Con
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		err := q.withEntry(ctx, strings.TrimSuffix(entry.Name(), ".json"), func(path string) error {
-			data, err := os.ReadFile(path)
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			var e Effect
-			if err := json.Unmarshal(data, &e); err != nil {
-				return err
-			}
-			if q.now().Before(e.RetryAt) {
-				return nil
-			}
+		attempted, err := q.deliver(ctx, strings.TrimSuffix(entry.Name(), ".json"), apply, false)
+		if attempted {
 			budget--
-			attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			return q.attempt(attemptCtx, path, e, apply)
-		})
+		}
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -123,24 +128,121 @@ func (q Queue) Reconcile(ctx context.Context, budget int, apply func(context.Con
 	return errors.Join(errs...)
 }
 
-func (q Queue) attempt(ctx context.Context, path string, e Effect, apply func(context.Context, Effect) error) error {
-	err := ctx.Err()
-	if err == nil {
-		err = apply(ctx, e)
-	}
-	if err == nil || errors.Is(err, ErrSuperseded) {
-		outcome := "delivered"
+func (q Queue) claim(ctx context.Context, key string) (entry, error) {
+	var claimed entry
+	err := q.withEntry(ctx, key, func(path string) error {
+		e, err := readEntry(path)
 		if err != nil {
-			outcome = "superseded"
-		}
-		if err := q.record(e, outcome); err != nil {
 			return err
+		}
+		if q.now().Before(e.RetryAt) {
+			return &providers.RateLimitError{Provider: e.Repository.Provider, Reset: e.RetryAt}
+		}
+		if e.Lease != "" && q.now().Before(e.LeaseUntil) {
+			return errDeliveryPending
+		}
+		e.Lease, e.LeaseUntil = crand.Text(), q.now().Add(time.Minute)
+		if e.Generation == "" {
+			e.Generation = crand.Text()
+		}
+		if err := save(path, e); err != nil {
+			return err
+		}
+		claimed = e
+		return nil
+	})
+	return claimed, err
+}
+
+func (q Queue) deliver(ctx context.Context, key string, apply func(context.Context, Effect) error, publishing bool) (bool, error) {
+	e, err := q.claim(ctx, key)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if !publishing {
+			if _, limited := providers.AsRateLimitError(err); limited || errors.Is(err, errDeliveryPending) {
+				return false, nil
+			}
+		}
+		return false, err
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	attemptCtx = gate.WithFailureReportBody(attemptCtx, e.Body, func(body string) error {
+		return q.freeze(attemptCtx, key, e, body)
+	})
+	err = attemptCtx.Err()
+	if err == nil {
+		err = apply(attemptCtx, e.Effect)
+	}
+	return true, q.acknowledge(ctx, key, e, err)
+}
+
+// freeze persists the rendered body before any provider write. If admission
+// superseded this generation during preparation, the old write is skipped.
+func (q Queue) freeze(ctx context.Context, key string, delivered entry, body string) error {
+	return q.withEntry(ctx, key, func(path string) error {
+		current, err := readEntry(path)
+		if err != nil {
+			return err
+		}
+		if current.Generation != delivered.Generation || current.Lease != delivered.Lease {
+			return ErrSuperseded
+		}
+		current.Body = body
+		return save(path, current)
+	})
+}
+
+func (q Queue) acknowledge(ctx context.Context, key string, delivered entry, deliveryErr error) error {
+	outcome := "delivered"
+	if errors.Is(deliveryErr, ErrSuperseded) {
+		outcome = "superseded"
+	} else if deliveryErr != nil {
+		outcome = "deferred"
+	}
+	if outcome == "deferred" {
+		delivered.Effect = q.deferred(delivered.Effect, deliveryErr)
+	}
+	logErr := q.record(delivered.Effect, outcome)
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	err := q.withEntry(persistCtx, key, func(path string) error {
+		current, err := readEntry(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Lease != delivered.Lease {
+			return nil
+		}
+		current.Lease, current.LeaseUntil = "", time.Time{}
+		if current.Generation != delivered.Generation || logErr != nil {
+			// A quota response from the older call still constrains the same target.
+			if _, limited := providers.AsRateLimitError(deliveryErr); limited && current.RetryAt.Before(delivered.RetryAt) {
+				current.RetryAt = delivered.RetryAt
+			}
+			return save(path, current)
+		}
+		if outcome == "deferred" {
+			current.RetryAt, current.Attempts = delivered.RetryAt, delivered.Attempts
+			return save(path, current)
 		}
 		if err := os.Remove(path); err != nil {
 			return err
 		}
 		return durability.SyncDir(q.Dir)
+	})
+	if errors.Is(deliveryErr, ErrSuperseded) {
+		deliveryErr = nil
 	}
+	return errors.Join(deliveryErr, logErr, err)
+}
+
+func (q Queue) deferred(e Effect, err error) Effect {
 	e.Attempts++
 	delay := time.Minute
 	if limit, ok := providers.AsRateLimitError(err); ok {
@@ -150,10 +252,7 @@ func (q Queue) attempt(ctx context.Context, path string, e Effect, apply func(co
 		delay += 2*time.Second + time.Duration(rand.Int64N(int64(time.Second)))
 	}
 	e.RetryAt = q.now().Add(delay)
-	if saveErr := save(path, e); saveErr != nil {
-		return errors.Join(err, saveErr)
-	}
-	return errors.Join(err, q.record(e, "deferred"))
+	return e
 }
 
 func (q Queue) record(e Effect, outcome string) error {
@@ -168,7 +267,7 @@ func (q Queue) record(e Effect, outcome string) error {
 	})
 }
 
-func save(path string, e Effect) error {
+func save(path string, e entry) error {
 	data, err := json.Marshal(e)
 	if err != nil {
 		return err
