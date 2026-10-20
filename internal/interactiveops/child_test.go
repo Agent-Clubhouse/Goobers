@@ -12,6 +12,17 @@ import (
 	"github.com/goobers/goobers/internal/platform/lock"
 )
 
+// RunReviewChild authors and executes one test-only native workflow in a scope
+// the caller has already admitted as a child. The caller must supply a separate
+// immutable repository snapshot through RepositoryForScope (or the ordinary
+// per-scope fixture copy). It shares this Service's admission pool. A failed
+// test is a normal returned Action; errors mean admission, custody, observation,
+// or cancellation failed. No model, provider action, or prompt-derived command
+// is supported.
+func (s *Service) RunReviewChild(ctx context.Context, scope Scope, requestID, prompt string, emit func(ReviewChildEvent) error) (Action, error) {
+	return s.RunReviewChildWithOptions(ctx, scope, requestID, prompt, ReviewChildOptions{}, emit)
+}
+
 func TestReviewChildCapacityWaitHonorsContextWithoutStoppingParent(t *testing.T) {
 	svc, parent := fixture(t, os.Args[0])
 	svc.opts.MaxActivePerOwner = 1
