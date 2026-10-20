@@ -56,6 +56,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Identify active and historical instance roots](instance-identity.md)
 - [Choose where an instance and its config live](instance-placement.md)
 - [Back up and restore an instance root](instance-restore-contract.md)
+- [Interactive sessions and delegated access prototype](interactive-prototype.md)
 - [Investigation artifacts](investigation-artifacts.md)
 - [Instance isolation mandates](isolation-mandates.md)
 - [Export local traces to Jaeger](jaeger-quickstart.md)

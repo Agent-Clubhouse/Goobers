@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { activeArea, parseRoute, routeHash } from "./routing";
 
 describe("definition routing", () => {
+  it("round-trips interactive session identities without encoding authority in the URL", () => {
+    const route = { page: "interactive" as const, sessionId: "session / 42" };
+    expect(routeHash(route)).toBe("#/interactive/session%20%2F%2042");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(parseRoute("#/interactive")).toEqual({ page: "interactive" });
+    expect(activeArea(route)).toBe("interactive");
+  });
   it("round-trips gaggle and workflow identities", () => {
     const gaggle = { page: "gaggle" as const, id: "core tools" };
     const workflow = {

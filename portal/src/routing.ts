@@ -3,6 +3,7 @@ import { hasScopeFilters, type ScopeFilters } from "./scope";
 
 export type Route =
   | { page: "overview" }
+  | { page: "interactive"; sessionId?: string }
   | { page: "instance-detail"; detail: InstanceDetailKind }
   | { page: "workflows" }
   | { page: "goobers"; gaggle?: string }
@@ -55,6 +56,7 @@ export interface ErrorRouteFilters extends ScopeFilters {
 }
 
 export type PrimaryArea =
+  | "interactive"
   | "overview"
   | "workflows"
   | "goobers"
@@ -131,6 +133,9 @@ export function parseRoute(hash = window.location.hash): Route {
       query: optionalQuery(search, "q"),
     };
   }
+  if (area === "interactive") {
+    return id ? { page: "interactive", sessionId: id } : { page: "interactive" };
+  }
   if (area === "workflows") {
     return { page: "workflows" };
   }
@@ -175,6 +180,9 @@ export function parseRoute(hash = window.location.hash): Route {
 }
 
 export function routeHash(route: Route): string {
+  if (route.page === "interactive" && route.sessionId) {
+    return `#/interactive/${encodeURIComponent(route.sessionId)}`;
+  }
   if (route.page === "instance-detail") {
     return `#/instance/${route.detail}`;
   }

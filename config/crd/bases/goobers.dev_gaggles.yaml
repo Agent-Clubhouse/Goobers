@@ -35,6 +35,13 @@ spec:
               may reject unrecognized values.
               More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
+          dslVersion:
+            description: |-
+              DSLVersion pins only the additive interactive contract, independently of workflow pins.
+              Legacy gaggles omit it; existing fields keep their workflow-derived versions.
+            enum:
+            - "3.0"
+            type: string
           kind:
             description: |-
               Kind is a string value representing the REST resource this object represents.
@@ -400,6 +407,222 @@ spec:
                       triggerSilence:
                         type: string
                     type: object
+                type: object
+              interactive:
+                description: Interactive declares optional DSL 3.0 chat entry points
+                  and non-secret broker refs.
+                properties:
+                  authorities:
+                    description: |-
+                      Authorities bind local names to opaque, non-secret host broker references.
+                      They do not grant access; the broker resolves and authorizes each operation.
+                    items:
+                      description: InteractiveAuthority is a non-secret lookup key,
+                        never a credential or grant.
+                      properties:
+                        brokerRef:
+                          description: |-
+                            BrokerRef is resolved only by the host broker; URLs and inline secrets are
+                            not a connection syntax. The local name carries no delegated authority.
+                          maxLength: 256
+                          pattern: ^[A-Za-z0-9][A-Za-z0-9._/-]*$
+                          type: string
+                        name:
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        provider:
+                          enum:
+                          - ado
+                          - app-insights
+                          type: string
+                      required:
+                      - brokerRef
+                      - name
+                      - provider
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  surfaces:
+                    description: Surfaces are optional entry points; an empty block
+                      exposes no chat.
+                    items:
+                      description: |-
+                        InteractiveSurface binds a portal entry point to an existing Goober and a
+                        bounded set of mediated tools. Tools do not configure harness builtin tools.
+                      properties:
+                        authorityRefs:
+                          description: AuthorityRefs resolves against this GaggleInteractive.Authorities
+                            only.
+                          items:
+                            maxLength: 63
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: set
+                        childWorkflows:
+                          description: |-
+                            InteractiveChildWorkflowPolicy bounds reviewed children of interactive
+                            executions; it is distinct from the Workflow DSL 3.1 task.childWorkflows API.
+                          properties:
+                            commandCapabilities:
+                              description: |-
+                                CommandCapabilities permits only these host-validated command families.
+                                Empty permits no command workflow. It does not add arbitrary shell access.
+                              items:
+                                enum:
+                                - node-test
+                                - node-check
+                                type: string
+                              maxItems: 2
+                              type: array
+                              x-kubernetes-list-type: set
+                              x-kubernetes-validations:
+                              - message: unknown child command capability
+                                rule: self.all(x, x in ['node-test', 'node-check'])
+                            enabled:
+                              type: boolean
+                          required:
+                          - enabled
+                          type: object
+                        defaultExecutionMode:
+                          enum:
+                          - codex-local
+                          - local-tools
+                          type: string
+                        description:
+                          maxLength: 1024
+                          type: string
+                        displayName:
+                          maxLength: 120
+                          type: string
+                        enabled:
+                          description: Enabled defaults to true when omitted. A disabled
+                            surface admits no work.
+                          type: boolean
+                        executionModes:
+                          description: |-
+                            ExecutionModes cannot expand the host's independently permitted modes.
+                            local-tools is an explicitly selected fixture adapter, never a fallback.
+                          items:
+                            enum:
+                            - codex-local
+                            - local-tools
+                            type: string
+                          maxItems: 2
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                          x-kubernetes-validations:
+                          - message: unknown interactive execution mode
+                            rule: self.all(x, x in ['codex-local', 'local-tools'])
+                        gooberRef:
+                          description: GooberRef resolves in this gaggle or the existing
+                            instance-shared scope.
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        mode:
+                          enum:
+                          - helper
+                          - workbench
+                          type: string
+                        name:
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        session:
+                          description: InteractiveSessionPolicy declares ceilings;
+                            the host may narrow them further.
+                          properties:
+                            leaseSeconds:
+                              format: int32
+                              maximum: 3600
+                              minimum: 1
+                              type: integer
+                            maxActive:
+                              format: int32
+                              maximum: 64
+                              minimum: 1
+                              type: integer
+                            maxActivePerOwner:
+                              format: int32
+                              maximum: 64
+                              minimum: 1
+                              type: integer
+                            maxChildren:
+                              format: int32
+                              maximum: 8
+                              minimum: 0
+                              type: integer
+                            maxTurnSeconds:
+                              format: int32
+                              maximum: 86400
+                              minimum: 1
+                              type: integer
+                          required:
+                          - leaseSeconds
+                          - maxActive
+                          - maxActivePerOwner
+                          - maxChildren
+                          - maxTurnSeconds
+                          type: object
+                          x-kubernetes-validations:
+                          - message: maxActivePerOwner must not exceed maxActive
+                            rule: self.maxActivePerOwner <= self.maxActive
+                          - message: leaseSeconds must not exceed maxTurnSeconds
+                            rule: self.leaseSeconds <= self.maxTurnSeconds
+                        tools:
+                          description: Tools is a default-deny allowlist for the host's
+                            mediated MCP bridge only.
+                          items:
+                            enum:
+                            - session_context
+                            - inspect_action
+                            - validate_workflow
+                            - propose_action
+                            - propose_child_workflow
+                            - read_work_item
+                            - query_telemetry
+                            type: string
+                          maxItems: 7
+                          type: array
+                          x-kubernetes-list-type: set
+                          x-kubernetes-validations:
+                          - message: unknown interactive mediated tool
+                            rule: self.all(x, x in ['session_context', 'inspect_action',
+                              'validate_workflow', 'propose_action', 'propose_child_workflow',
+                              'read_work_item', 'query_telemetry'])
+                        workflows:
+                          description: Workflows resolves within this gaggle, never
+                            by global name alone.
+                          items:
+                            maxLength: 63
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          maxItems: 64
+                          type: array
+                          x-kubernetes-list-type: set
+                      required:
+                      - defaultExecutionMode
+                      - executionModes
+                      - gooberRef
+                      - mode
+                      - name
+                      - session
+                      type: object
+                      x-kubernetes-validations:
+                      - message: defaultExecutionMode must belong to executionModes
+                        rule: self.defaultExecutionMode in self.executionModes
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                 type: object
               isolation:
                 description: Isolation declares the per-gaggle boundary (namespace
@@ -871,6 +1094,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: spec.interactive requires explicit dslVersion 3.0
+          rule: '!has(self.spec.interactive) || (has(self.dslVersion) && self.dslVersion
+            == ''3.0'')'
     served: true
     storage: true
     subresources:

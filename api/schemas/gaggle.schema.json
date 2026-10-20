@@ -6,7 +6,9 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "spec"],
+  "allOf": [{"if":{"properties":{"spec":{"required":["interactive"]}},"required":["spec"]},"then":{"required":["dslVersion"],"properties":{"dslVersion":{"const":"3.0"}}}}],
   "properties": {
+    "dslVersion": {"const":"3.0", "description":"Pins the additive interactive contract only; does not change or acknowledge ordinary Workflow DSL pins."},
     "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this gaggle definition." },
     "kind": { "const": "Gaggle", "description": "Definition kind; always Gaggle." },
     "metadata": { "$ref": "#/$defs/metadata", "description": "Identity and optional labels or annotations for this gaggle." },
@@ -16,6 +18,7 @@
       "additionalProperties": false,
       "required": ["project", "backlog", "isolation"],
       "properties": {
+        "interactive": {"$ref":"#/$defs/interactive", "description":"Optional preview interactive surfaces, bounded execution policy and opaque non-secret authority references. Empty exposes no surfaces."},
         "displayName": { "type": "string", "description": "Human-facing gaggle name shown in the portal." },
         "cost": {
           "type": "object",
@@ -158,6 +161,284 @@
     }
   },
   "$defs": {
+    "interactive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "surfaces": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/interactiveSurface"
+          },
+          "description": "Optional named chat entry points. Empty or omitted exposes no interactive surface."
+        },
+        "authorities": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/interactiveAuthority"
+          },
+          "description": "Local non-secret names mapped to host broker lookup keys; this creates no connection, credential or grant."
+        }
+      }
+    },
+    "interactiveSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "mode",
+        "gooberRef",
+        "executionModes",
+        "defaultExecutionMode",
+        "session"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Stable name unique within this gaggle; runtime surface identity includes the gaggle."
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Human-facing portal label."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "Human-facing explanation of the surface."
+        },
+        "mode": {
+          "enum": [
+            "helper",
+            "workbench"
+          ],
+          "description": "helper manages configured work; workbench investigates and edits a workspace directly."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Admission switch; omitted means enabled. Disabling stops new work through this surface."
+        },
+        "gooberRef": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Existing Goober name in this gaggle or the instance-shared scope; binds harness, model and Markdown instructions."
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "session_context",
+              "inspect_action",
+              "validate_workflow",
+              "propose_action",
+              "propose_child_workflow",
+              "read_work_item",
+              "query_telemetry"
+            ]
+          },
+          "description": "Default-deny allowlist for mediated host MCP tools, distinct from Goober harness builtin tools."
+        },
+        "workflows": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          },
+          "description": "Allowed Workflow names resolved within this gaggle only. Omitted permits none."
+        },
+        "authorityRefs": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          },
+          "description": "Local names resolved only in this interactive.authorities list. Omitted permits none."
+        },
+        "executionModes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "codex-local",
+              "local-tools"
+            ]
+          },
+          "description": "Declared execution adapters further restricted by the host. local-tools is an explicit controlled fixture, never a silent fallback."
+        },
+        "defaultExecutionMode": {
+          "enum": [
+            "codex-local",
+            "local-tools"
+          ],
+          "description": "Requested default adapter; must belong to executionModes. Host unavailability is an error."
+        },
+        "session": {
+          "$ref": "#/$defs/interactiveSession",
+          "description": "Explicit session ceilings; workers may narrow but must not expand them."
+        },
+        "childWorkflows": {
+          "$ref": "#/$defs/interactiveChildren",
+          "description": "Optional reviewed interactive child policy, separate from Workflow DSL 3.1 task.childWorkflows."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "defaultExecutionMode": {
+                "const": "codex-local"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "executionModes": {
+                "contains": {
+                  "const": "codex-local"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "defaultExecutionMode": {
+                "const": "local-tools"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "executionModes": {
+                "contains": {
+                  "const": "local-tools"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "interactiveSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leaseSeconds",
+        "maxTurnSeconds",
+        "maxChildren",
+        "maxActive",
+        "maxActivePerOwner"
+      ],
+      "properties": {
+        "leaseSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Worker lease duration in seconds, renewed by a valid active execution; must not exceed maxTurnSeconds."
+        },
+        "maxTurnSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400,
+          "description": "Maximum duration of one interactive turn in seconds."
+        },
+        "maxChildren": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Maximum reviewed child proposals admitted within a session; zero disables admission."
+        },
+        "maxActive": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "description": "Maximum active worker leases for this surface across owners."
+        },
+        "maxActivePerOwner": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "description": "Maximum active worker leases per owner on this surface; must not exceed maxActive."
+        }
+      }
+    },
+    "interactiveChildren": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Explicitly enables reviewed bounded child execution."
+        },
+        "commandCapabilities": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "node-test",
+              "node-check"
+            ]
+          },
+          "description": "Allowed host-validated child command families. Empty permits no command workflow; never grants arbitrary shell commands."
+        }
+      }
+    },
+    "interactiveAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "brokerRef",
+        "provider"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Local authority binding name unique within this gaggle."
+        },
+        "brokerRef": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+          "description": "Opaque non-secret host broker lookup key, never a credential or connection definition."
+        },
+        "provider": {
+          "enum": [
+            "ado",
+            "app-insights"
+          ],
+          "description": "Provider expected from the external broker binding; does not configure a new provider connection."
+        }
+      }
+    },
     "metadata": {
       "description": "Deliberately left open (no additionalProperties:false) unlike the rest of this schema: k8s-style metadata objects tolerate forward-compatible extra fields (e.g. a future resourceVersion) by convention (#125).",
       "type": "object",

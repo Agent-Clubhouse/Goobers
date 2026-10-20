@@ -511,16 +511,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	// fresh, per-run directory seeded with nothing but a copy of the stored
 	// credentials (if any) unconditionally, for both sandboxed and
 	// unsandboxed runs.
-	configDir, tempDir, err := prepareClaudeRuntime(req.Workspace)
+	env, err = c.prepareInteractiveRuntimeEnv(ctx, req, env)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+		return Outcome{}, err
 	}
-	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
-		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
-	}
-	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
-	env = overrideEnv(env, "TMPDIR", tempDir)
-
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)
 		if err != nil {
@@ -839,4 +833,18 @@ const keychainItemNotFoundExit = 44
 func isKeychainItemNotFound(err error) bool {
 	var exitErr *exec.ExitError
 	return errors.As(err, &exitErr) && exitErr.ExitCode() == keychainItemNotFoundExit
+}
+
+func (c *ClaudeAdapter) prepareInteractiveRuntimeEnv(ctx context.Context, req RunRequest, env []string) ([]string, error) {
+	configDir, tempDir, err := prepareClaudeRuntime(req.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+	}
+	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
+		return nil, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+	}
+	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
+	env = overrideEnv(env, "TMPDIR", tempDir)
+
+	return isolateInteractiveHome(req, env)
 }

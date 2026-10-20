@@ -1,0 +1,9 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: helper
+spec:
+  gaggle: interactive
+  role: workflow-helper
+  harness: codex
+  instructions: instructions.md

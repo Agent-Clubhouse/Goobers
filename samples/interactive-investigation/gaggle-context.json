@@ -1,0 +1,9 @@
+{
+  "gaggle": "invoice-lab",
+  "description": "Controlled local gaggle for the interactive prototype",
+  "workflows": [{"id":"invoice-check","trigger":"manual","testCommand":["node","--test"],"enabled":true}],
+  "runs": [{"id":"fixture-run-17","workflow":"invoice-check","status":"failed","evidence":"invoice.test.mjs: discount exceeds subtotal"}],
+  "backlog": [{"id":427,"provider":"ado-shaped-fixture","title":"Invoice total becomes negative with a large discount"}],
+  "repositories": [{"name":"sample-app","scope":"goobers-demo/interactive/sample-app"}],
+  "provenance": "configured local fixture; not live gaggle state"
+}

@@ -37,6 +37,10 @@ func withAutoGoobersIOCodex(req RunRequest, selfBin string) RunRequest {
 }
 
 func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin string, env, reservedEnv []string, writeConfig bool) ([]string, []string, []string, error) {
+	return prepareCodexMCPWithChat(ctx, req, configDir, selfBin, env, reservedEnv, writeConfig, nil)
+}
+
+func prepareCodexMCPWithChat(ctx context.Context, req RunRequest, configDir, selfBin string, env, reservedEnv []string, writeConfig bool, chatServers map[string]any) ([]string, []string, []string, error) {
 	reservedServerName := ""
 	if req.GoobersIORegistered {
 		reservedServerName = goobersIOServerName
@@ -62,6 +66,9 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 			return nil, nil, nil, fmt.Errorf("harness: codex: %w", err)
 		}
 		if ok {
+			if chatServers != nil {
+				chatServers[goobersIOServerName] = codexChatStdioServer(runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools))
+			}
 			writeCodexStdioServer(&config, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools))
 			overrides = appendCodexStdioOverrides(overrides, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools))
 		}
@@ -78,9 +85,15 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 	}
 	for _, server := range servers {
 		if server.Command != "" {
+			if chatServers != nil {
+				chatServers[server.Name] = codexChatStdioServer(server.Command, server.Args, server.EnvNames, req.Tools)
+			}
 			writeCodexStdioServer(&config, server.Name, server.Command, server.Args, server.EnvNames, req.Tools)
 			overrides = appendCodexStdioOverrides(overrides, server.Name, server.Command, server.Args, server.EnvNames, req.Tools)
 		} else {
+			if chatServers != nil {
+				chatServers[server.Name] = map[string]any{"url": server.URL, "env_http_headers": server.Headers, "required": true, "enabled": true}
+			}
 			writeCodexHTTPServer(&config, server.Name, server.URL, server.Headers, req.Tools)
 			overrides = appendCodexHTTPOverrides(overrides, server.Name, server.URL, server.Headers, req.Tools)
 		}
@@ -109,11 +122,11 @@ func appendCodexStdioOverrides(overrides []string, name, command string, args, e
 }
 
 func codexOverrideServerName(name string) string {
-	// Codex accepts the auto-wired server's hyphenated name as a bare override
+	// Codex accepts the host-wired servers' hyphenated names as bare override
 	// segment. Quoting it here leaves the quote characters in the resolved MCP
 	// server name on current Codex builds, which then reject the server before
 	// session startup.
-	if name == goobersIOServerName {
+	if name == goobersIOServerName || name == "goobers-interactive" {
 		return name
 	}
 	return tomlQuote(name)

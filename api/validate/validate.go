@@ -402,6 +402,8 @@ const (
 	errorGaggleMixedProviderADO   WarningCode = "CFG010"
 	errorGaggleGitHubBaseURL      WarningCode = "CFG013"
 	errorGaggleHealth             WarningCode = "CFG014"
+	errorInteractiveConfig        WarningCode = "INT001"
+	errorInteractiveReference     WarningCode = "INT002"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1226,6 +1228,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleSiblingLabelOverlap(r)
 	ix.checkGaggleRunControls(r)
 	ix.checkGaggleHealth(r)
+	ix.checkGaggleInteractive(r)
 	ix.checkGaggleOutboxMirrorPath(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)

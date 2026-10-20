@@ -1,0 +1,49 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+dslVersion: "3.0"
+metadata:
+  name: interactive
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+spec:
+  displayName: Interactive invoice workspace
+  project: {provider: ado, owner: goobers-demo, project: interactive, name: sample-app, branch: main}
+  backlog: {provider: ado, project: interactive}
+  isolation: {namespace: interactive-fixture}
+  interactive:
+    authorities:
+      - name: ado-context
+        brokerRef: controlled-local-ado
+        provider: ado
+      - name: telemetry-context
+        brokerRef: controlled-local-app-insights
+        provider: app-insights
+    surfaces:
+      - name: helper
+        displayName: Gaggle Helper
+        description: Manage configured workflows and inspect observed runs through reviewed actions.
+        mode: helper
+        gooberRef: helper
+        executionModes: [codex-local, local-tools]
+        defaultExecutionMode: codex-local
+        tools: [session_context, inspect_action, validate_workflow, propose_action, propose_child_workflow, read_work_item, query_telemetry]
+        workflows: [invoice-check]
+        authorityRefs: [ado-context, telemetry-context]
+        session: {leaseSeconds: 30, maxTurnSeconds: 600, maxChildren: 3, maxActive: 4, maxActivePerOwner: 2}
+        childWorkflows:
+          enabled: true
+          commandCapabilities: [node-test, node-check]
+      - name: workbench
+        displayName: Workbench
+        description: Investigate, edit, test and review an isolated repository workspace.
+        mode: workbench
+        gooberRef: workbench
+        executionModes: [codex-local, local-tools]
+        defaultExecutionMode: codex-local
+        tools: [session_context, inspect_action, validate_workflow, propose_child_workflow, read_work_item, query_telemetry]
+        workflows: [invoice-check]
+        authorityRefs: [ado-context, telemetry-context]
+        session: {leaseSeconds: 30, maxTurnSeconds: 600, maxChildren: 3, maxActive: 4, maxActivePerOwner: 2}
+        childWorkflows:
+          enabled: true
+          commandCapabilities: [node-test, node-check]

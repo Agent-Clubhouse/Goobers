@@ -18,6 +18,7 @@ import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
 import type { Theme } from "../theme";
 import { useUpdateNotice } from "../updateNotice";
+import type { InteractiveShellStatus } from "../interactive/client";
 import { Icon, type IconName } from "../ui/Icon";
 import { SupportFooter } from "./SupportFooter";
 
@@ -26,6 +27,7 @@ const compactShellQuery =
 
 const areaLabels: Record<PrimaryArea, string> = {
   overview: "Overview",
+  interactive: "Interactive",
   workflows: "Workflows",
   goobers: "Goobers",
   runs: "Runs",
@@ -53,6 +55,7 @@ export interface PortalHeaderHost {
 
 interface PortalShellProps {
   activeArea: PrimaryArea;
+  interactiveStatus?: InteractiveShellStatus;
   activeGaggle?: string;
   children: React.ReactNode;
   client: DaemonClient;
@@ -67,6 +70,7 @@ interface PortalShellProps {
 
 export function PortalShell({
   activeArea,
+  interactiveStatus,
   activeGaggle,
   children,
   client,
@@ -128,8 +132,10 @@ export function PortalShell({
       : buildVersion
         ? `${buildVersion}${buildCommit ? ` (${buildCommit})` : ""}`
         : buildCommit;
-  const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
-  const mobileStatus = mobileConnectionStatus(freshness);
+  const prototypeInteractive = activeArea === "interactive" && interactiveStatus?.prototype && !instanceIdentity;
+  const instanceLabel = instanceIdentity?.name ?? (prototypeInteractive ? interactiveStatus.name : "Loading instance");
+  const connectionStatus = prototypeInteractive ? interactiveStatus.connection : describeConnectionStatus(freshness, lastSSEFailure);
+  const mobileStatus = prototypeInteractive ? interactiveStatus.connection : mobileConnectionStatus(freshness);
 
   useEffect(() => {
     const dialog = mobileMenu.current;
@@ -216,9 +222,9 @@ export function PortalShell({
       )}
       <div className="topbar-primary">
         <button
-          aria-label="Go to overview"
+          aria-label={prototypeInteractive ? "Go to interactive workspace" : "Go to overview"}
           className="topbar-brand"
-          onClick={() => navigate({ page: "overview" })}
+          onClick={() => navigate({ page: prototypeInteractive ? "interactive" : "overview" })}
           title={config.brand.tagline}
           type="button"
         >
@@ -235,7 +241,7 @@ export function PortalShell({
         <span aria-hidden="true" className="topbar-divider" />
         <div className="topbar-instance-context" aria-label="Instance context">
           <span className="topbar-instance-name">
-            {instanceIdentity?.name ?? "Loading instance"}
+            {instanceLabel}
           </span>
           {instanceIdentity?.computerName && (
             <>
@@ -272,7 +278,7 @@ export function PortalShell({
                 <span>Host</span>
                 <span>{hostContextLabel(hostContext)}</span>
                 <span>Instance</span>
-                <span>{instanceIdentity?.name ?? "Loading"}</span>
+                <span>{instanceLabel}</span>
                 <span>Version</span>
                 <span>
                   {build ? `${build.version} · ${build.commit || "none"}` : "Unavailable"}
@@ -301,13 +307,13 @@ export function PortalShell({
             {mobileStatus}
           </span>
         )}
-        <LiveUpdatesIndicator
+        {prototypeInteractive ? <span className="ix-shell-status" role="status"><span>{interactiveStatus.connection}</span><small>{interactiveStatus.worker}</small></span> : <LiveUpdatesIndicator
           connectionStatus={connectionStatus}
           details={liveUpdateDetails}
           failure={lastSSEFailure}
           freshness={freshness}
           state={dataFreshness}
-        />
+        />}
         <button
           aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
           className="theme-button"
@@ -331,6 +337,7 @@ export function PortalShell({
         .filter(Boolean)
         .join(" ")}
       data-host={hostContext}
+      data-interactive-prototype={prototypeInteractive || undefined}
     >
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
@@ -338,7 +345,7 @@ export function PortalShell({
       {headerHost ? createPortal(header, headerHost.target) : header}
       <aside className="sidebar">
         <nav className="primary-nav" aria-label="Primary">
-          <button
+          {!prototypeInteractive && <button
             aria-current={activeArea === "overview" ? "page" : undefined}
             aria-label="Overview"
             className={activeArea === "overview" ? "nav-item nav-item-active" : "nav-item"}
@@ -347,8 +354,18 @@ export function PortalShell({
           >
             <Icon name="overview" />
             <span className="nav-label">Overview</span>
-          </button>
+          </button>}
           <button
+            aria-current={activeArea === "interactive" ? "page" : undefined}
+            aria-label="Interactive"
+            className={activeArea === "interactive" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "interactive" })}
+            type="button"
+          >
+            <Icon name="chat" />
+            <span className="nav-label">Interactive</span>
+          </button>
+          {!prototypeInteractive && <><button
             aria-current={activeArea === "workflows" ? "page" : undefined}
             aria-label="Workflows"
             className={activeArea === "workflows" ? "nav-item nav-item-active" : "nav-item"}
@@ -407,11 +424,11 @@ export function PortalShell({
           >
             <Icon name="cost" />
             <span className="nav-label">Cost</span>
-          </button>
+          </button></>}
         </nav>
 
         <div className="sidebar-secondary" id="portal-secondary-navigation">
-          <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
+          {!prototypeInteractive && <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />}
           <SupportFooter />
         </div>
       </aside>
@@ -466,13 +483,19 @@ export function PortalShell({
             </div>
 
             <nav aria-label="More destinations" className="mobile-secondary-nav">
-              <MobileDestination
+              {!prototypeInteractive && <MobileDestination
                 active={activeArea === "overview"}
                 icon="overview"
                 label="Overview"
                 onClick={() => navigateFromMobileMenu({ page: "overview" })}
-              />
+              />}
               <MobileDestination
+                active={activeArea === "interactive"}
+                icon="chat"
+                label="Interactive"
+                onClick={() => navigateFromMobileMenu({ page: "interactive" })}
+              />
+              {!prototypeInteractive && <><MobileDestination
                 active={activeArea === "workflows"}
                 icon="workflow"
                 label="Workflows"
@@ -507,12 +530,12 @@ export function PortalShell({
                 icon="cost"
                 label="Cost"
                 onClick={() => navigateFromMobileMenu({ page: "cost", filters: scopedFilters })}
-              />
+              /></>}
             </nav>
 
             <div className="mobile-menu-details" aria-label="Portal details">
               <div className="mobile-menu-instance">
-                <strong>{instanceIdentity?.name ?? "Loading instance"}</strong>
+                <strong>{instanceLabel}</strong>
                 <span>{connectionStatus}</span>
               </div>
               <dl>

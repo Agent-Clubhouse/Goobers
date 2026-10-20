@@ -108,6 +108,7 @@ func TestDependenciesAreSorted(t *testing.T) {
 		{Name: "mkdir", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "mktemp", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "mvn", InstallHint: "install Maven (Debian/Ubuntu: apt-get install maven)"},
+		{Name: "node", InstallHint: "install Node.js 24 for interactive prototype repository tests"},
 		{Name: "powershell.exe", InstallHint: "use Windows PowerShell 5.1, included with Windows Server; native Windows image tests are Windows-only"},
 		{Name: "ps", InstallHint: "install procps (Debian/Ubuntu: apt-get install procps)"},
 		{Name: "python3", InstallHint: "install Python 3.12 (https://www.python.org/downloads/)"},

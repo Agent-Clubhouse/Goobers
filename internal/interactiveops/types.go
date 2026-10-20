@@ -1,0 +1,126 @@
+// Package interactiveops provides scoped, reviewable helper operations for the
+// experimental interactive portal. It uses the ordinary Goobers validator,
+// config transaction and CLI scheduler; it is never a production admin proxy.
+package interactiveops
+
+import (
+	"context"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+)
+
+// Scope binds helper operations to an actor and session.
+type Scope struct {
+	ActorID   string `json:"actorId"`
+	SessionID string `json:"sessionId"`
+}
+
+// Options configures trusted helper dependencies and admission limits.
+type Options struct {
+	Root              string
+	Binary            string
+	Repository        string
+	ConfigDir         string
+	PolicyForScope    func(Scope) (Policy, error)
+	ConfigDirForScope func(Scope) (string, error)
+	// RepositoryForScope is trusted host wiring, never a browser-supplied path.
+	RepositoryForScope func(Scope) (string, error)
+	// RunRepositoryForScope captures a private run snapshot under the host's atomic idle/session fence. It must not call helper APIs while holding it.
+	RunRepositoryForScope func(context.Context, Scope, string) (string, error)
+	RunTimeout            time.Duration
+	MaxActive             int
+	MaxActivePerOwner     int
+	// Nil enables both built-in capabilities; an empty slice disables all.
+	CommandCapabilities []CommandCapability
+}
+
+// Request describes a proposed configuration or workflow operation.
+type Request struct {
+	Kind           string  `json:"kind"`
+	IdempotencyKey string  `json:"idempotencyKey"`
+	Gaggle         string  `json:"gaggle,omitempty"`
+	Workflow       string  `json:"workflow,omitempty"`
+	DisplayName    *string `json:"displayName,omitempty"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	WorkflowYAML   string  `json:"workflowYaml,omitempty"`
+	RunID          string  `json:"runId,omitempty"`
+	Message        string  `json:"message,omitempty"`
+}
+
+// Action records a reviewed proposal and its durable execution receipt.
+type Action struct {
+	ID                     string     `json:"id"`
+	OperationID            string     `json:"operationId"`
+	ActorID                string     `json:"actorId"`
+	SessionID              string     `json:"sessionId"`
+	Kind                   string     `json:"kind"`
+	Waiting                string     `json:"waiting,omitempty"`
+	Status                 string     `json:"status"`
+	OperationStatus        string     `json:"operationStatus"`
+	Summary                string     `json:"summary"`
+	Preview                string     `json:"preview"`
+	ExpectedConfigDigest   string     `json:"expectedConfigDigest,omitempty"`
+	ConfigDigest           string     `json:"configDigest"`
+	BindingDigest          string     `json:"bindingDigest,omitempty"`
+	PayloadDigest          string     `json:"payloadDigest"`
+	Request                Request    `json:"request"`
+	AuthorizedBy           string     `json:"authorizedBy,omitempty"`
+	AuthorizedAt           *time.Time `json:"authorizedAt,omitempty"`
+	CreatedAt              time.Time  `json:"createdAt"`
+	UpdatedAt              time.Time  `json:"updatedAt"`
+	ExecutionRoot          string     `json:"executionRoot,omitempty"`
+	ExecutionRepository    string     `json:"executionRepository,omitempty"`
+	ExecutionPayloadDigest string     `json:"executionPayloadDigest,omitempty"`
+	ExecutionBindingDigest string     `json:"executionBindingDigest,omitempty"`
+	RunID                  string     `json:"runId,omitempty"`
+	Output                 string     `json:"output,omitempty"`
+	Error                  string     `json:"error,omitempty"`
+	CleanupConfirmed       bool       `json:"cleanupConfirmed,omitempty"`
+	StopRequested          bool       `json:"stopRequested,omitempty"`
+}
+
+// Run summarizes an observed native workflow run.
+type Run struct {
+	ID          string    `json:"id"`
+	Workflow    string    `json:"workflow"`
+	Gaggle      string    `json:"gaggle"`
+	Phase       string    `json:"phase"`
+	Reason      string    `json:"reason,omitempty"`
+	JournalPath string    `json:"journalPath"`
+	StartedAt   time.Time `json:"startedAt"`
+}
+
+// BacklogItem describes a controlled backlog fixture.
+type BacklogItem struct {
+	ID     int    `json:"id"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	Source string `json:"source"`
+}
+
+// State combines the scoped configuration and observed operation history.
+type State struct {
+	ReadOnly            bool                `json:"readOnly,omitempty"`
+	Policy              Policy              `json:"policy"`
+	Goobers             []apiv1.Goober      `json:"goobers"`
+	Mode                string              `json:"mode"`
+	ActorID             string              `json:"actorId"`
+	SessionID           string              `json:"sessionId"`
+	InstanceRoot        string              `json:"instanceRoot"`
+	Repository          string              `json:"repository"`
+	ConfigDigest        string              `json:"configDigest"`
+	Gaggles             []apiv1.Gaggle      `json:"gaggles"`
+	Workflows           []apiv1.Workflow    `json:"workflows"`
+	Runs                []Run               `json:"runs"`
+	Actions             []Action            `json:"actions"`
+	Backlog             []BacklogItem       `json:"backlog"`
+	CommandCapabilities []CommandCapability `json:"commandCapabilities"`
+	WorkflowDraft       string              `json:"workflowDraft"`
+	Capabilities        []string            `json:"capabilities"`
+	Limitations         []string            `json:"limitations"`
+}
+
+// ScopeResolver must derive the actor from authentication and verify session
+// membership. A caller must never accept actorId from JSON or query strings.
+type ScopeResolver func(context.Context, string) (Scope, error)

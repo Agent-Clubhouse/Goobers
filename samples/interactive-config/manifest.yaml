@@ -1,0 +1,9 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: interactive-prototype
+spec:
+  instance:
+    name: interactive-prototype
+    environment: dev
+  gaggles: [interactive]
