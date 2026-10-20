@@ -10,8 +10,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/goobers/goobers/internal/instance"
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
