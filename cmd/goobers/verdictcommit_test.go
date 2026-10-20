@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,23 @@ func TestVerdictReadUsesCommittedSnapshotAfterProjectionFailure(t *testing.T) {
 	got, standing := carryOutstandingFindings([]apiv1.Verdict{first, resolved}, first, 55, true)
 	if got.Decision != apiv1.VerdictPass || got.LedgerGeneration != 2 || len(got.Findings) != 0 || len(standing) != 0 {
 		t.Fatalf("read resurrected resolved findings: %+v standing=%v", got, standing)
+	}
+}
+
+func TestVerdictReadMigratesCompleteLegacyLedger(t *testing.T) {
+	root := newVerdictTestRoot(t)
+	comments := []providers.Comment{
+		statusComment("reviewer", apiv1.Verdict{Decision: apiv1.VerdictPass, HeadSHA: "head"}),
+		statusComment("reviewer", apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, HeadSHA: "head", Findings: []apiv1.Finding{unboundedLineageFinding()}}),
+	}
+	if _, _, err := gatherPRVerdictChecked(root, verdictCommitRepo, 55, comments, "reviewer"); err != nil {
+		t.Fatal(err)
+	}
+	// Losing the provider projection after migration must not lose a finding
+	// from a non-canonical legacy comment.
+	got, standing, err := gatherPRVerdictChecked(root, verdictCommitRepo, 55, nil, "reviewer")
+	if err != nil || got == nil || got.Decision != apiv1.VerdictNeedsChanges || len(standing) != 1 || standing[0] != unboundedLineageID {
+		t.Fatalf("migration lost the legacy ledger: verdict=%+v standing=%v err=%v", got, standing, err)
 	}
 }
 
@@ -336,5 +354,53 @@ func TestApplyVerdictProjectsCommittedConcurrentFinding(t *testing.T) {
 	server.mu.Unlock()
 	if len(reviews) != 1 || reviews[0].state != "CHANGES_REQUESTED" || !strings.Contains(reviews[0].body, `"ledgerGeneration":2`) {
 		t.Fatalf("native review retained pre-commit pass: %+v", reviews)
+	}
+}
+
+// Before the first committed generation, an absent or legacy KV record cannot
+// stand in for the complete thread history. Publishing a snapshot on a read
+// failure would make the missed generation-zero findings invisible forever.
+func TestADOReviewedVerdictFailsClosedWhenLegacyEvidenceIsUnreadable(t *testing.T) {
+	for _, legacyState := range []bool{false, true} {
+		for _, endpoint := range []string{"connectionData", "threads"} {
+			t.Run(fmt.Sprintf("legacy-state=%t/%s", legacyState, endpoint), func(t *testing.T) {
+				root := newVerdictTestRoot(t)
+				repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "project", Name: "repo"}
+				if legacyState {
+					if err := writeVerdictState(root, repo, 55, apiv1.Verdict{Decision: apiv1.VerdictPass, HeadSHA: "head", BaseSHA: "base"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				publication, err := beginVerdictPublication(root, repo, 55)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var writes atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch {
+					case r.Method != http.MethodGet:
+						writes.Add(1)
+						http.Error(w, "unexpected publication", http.StatusBadRequest)
+					case strings.HasSuffix(r.URL.Path, "/"+endpoint):
+						http.Error(w, "unreadable evidence", http.StatusForbidden)
+					case strings.HasSuffix(r.URL.Path, "/connectionData"):
+						_, _ = io.WriteString(w, `{"authenticatedUser":{"id":"reviewer","providerDisplayName":"reviewer"}}`)
+					default:
+						_, _ = io.WriteString(w, `{"value":[]}`)
+					}
+				}))
+				defer server.Close()
+				provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = server.URL })
+				var stdout, stderr bytes.Buffer
+				code := publishADOReviewedVerdict(t.Context(), root, provider, repo, 55, providers.PullRequestSummary{HeadSHA: "head", BaseSHA: "base"}, apiv1.Verdict{Decision: apiv1.VerdictPass}, publication, filepath.Join(root, "result.json"), &stdout, &stderr)
+				current, err := publication.store.Get(t.Context(), verdictStateKey(publication.key))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if code == 0 || writes.Load() != 0 || current.ETag != publication.observed.ETag {
+					t.Fatalf("unreadable legacy evidence published a snapshot: code=%d writes=%d before=%s after=%s stderr=%s", code, writes.Load(), publication.observed.ETag, current.ETag, stderr.String())
+				}
+			})
+		}
 	}
 }

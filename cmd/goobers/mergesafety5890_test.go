@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -489,11 +490,23 @@ func corruptVerdictState(t *testing.T, root string, repo providers.RepositoryRef
 
 // A ledger that cannot be read never lets the API-only lane clear the label.
 func TestUpdateBehindPRFailsClosedOnAnUnreadableLedger(t *testing.T) {
+	for _, withComment := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback-comment=%t", withComment), func(t *testing.T) {
+			testUpdateBehindPRUnreadableLedger(t, withComment)
+		})
+	}
+}
+
+func testUpdateBehindPRUnreadableLedger(t *testing.T, withComment bool) {
+	t.Helper()
 	mergeable := true
 	generic := apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "Fine.", HeadSHA: "head-sha", BaseSHA: "opening-base-sha"}
 	state := &updateBehindServer{
 		mergeable: &mergeable, current: true,
-		labels: []string{needsRemediationLabel}, comments: []map[string]interface{}{verdictCommentFixture(1, "merge-review-bot", generic)},
+		labels: []string{needsRemediationLabel},
+	}
+	if withComment {
+		state.comments = []map[string]interface{}{verdictCommentFixture(1, "merge-review-bot", generic)}
 	}
 	root, workspace := setupUpdateBehindPRTest(t, state)
 	corruptVerdictState(t, root, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}, 55)

@@ -29,11 +29,10 @@ import (
 // editing or deleting it can no longer change what gatherPRVerdict returns
 // once the key exists.
 //
-// gatherPRVerdict, this file's reader, is unchanged in its comment-parsing
-// fallback: an absent key parses the legacy `<!-- verdict-json: ... -->`
-// marker exactly as before (parseVerdictComment) and opportunistically
-// migrates the result into the key, so every existing comment-driven test
-// fixture continues to exercise the same code path unless it sets up a key.
+// gatherPRVerdict, this file's reader, falls back to legacy
+// `<!-- verdict-json: ... -->` comments when the key is absent. It folds all
+// trusted marked records before opportunistically migrating the result into
+// the key, so migration retains findings from non-canonical comments too.
 const (
 	verdictStateSchema        = "goobers.dev/remediation-verdict/v1"
 	verdictStateLockOperation = "remediation-verdict.update"
@@ -198,10 +197,9 @@ func carryOutstandingFindings(records []apiv1.Verdict, latest apiv1.Verdict, prN
 // (#5890). A pass that left a finding on its head standing is published
 // through the non-pass path, so it never reaches merge-pr.
 //
-// When the threads cannot be read, the fold uses the scheduler-state record
-// alone, which every publication keeps cumulative; merge-pr reads the threads
-// again under its lock and refuses if it cannot. A scheduler-state read
-// failure fails the publication.
+// Unreadable identity or threads fail publication. Before the first committed
+// generation, scheduler state alone may omit legacy findings. Publishing that
+// incomplete snapshot would permanently supersede the unread legacy evidence.
 func publishADOReviewedVerdict(ctx context.Context, root string, provider *providers.ADOProvider, repo providers.RepositoryRef, number int, current providers.PullRequestSummary, verdict apiv1.Verdict, publication verdictPublication, resultFile string, stdout, stderr io.Writer) int {
 	var comments []providers.Comment
 	self, err := provider.AuthenticatedIdentity(ctx)
@@ -209,8 +207,7 @@ func publishADOReviewedVerdict(ctx context.Context, root string, provider *provi
 		comments, err = provider.ListPullRequestThreadComments(ctx, repo, strconv.Itoa(number))
 	}
 	if err != nil {
-		pf(stderr, "warning: read earlier verdicts on PR #%d: %v; folding the scheduler-state record only\n", number, err)
-		comments = nil
+		return failProviderStage(stderr, fmt.Sprintf("read earlier verdicts on PR #%d", number), err, resultFile)
 	}
 	verdict.HeadSHA, verdict.BaseSHA = current.HeadSHA, current.BaseSHA
 	legacy, err := verdictRecordsForPR("", repo, number, adoAttributeCommentsByID(comments, self), self.DisplayName)

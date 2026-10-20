@@ -151,6 +151,12 @@ legacy publication-order replay collects every outstanding finding for migration
 After migration, writers must use the atomic publication path; older writers
 cannot extend a committed ledger through generation-zero comments.
 
+Migration on read also preserves the full folded ledger, including findings in
+non-canonical comments. An unreadable state record fails a checked remediation
+read even when no provider comment remains. ADO publication fails before writing
+state if it cannot read the publishing identity or legacy threads; otherwise an
+incomplete first snapshot could permanently hide the findings it missed.
+
 Copy the standing finding's generation into the disposition's
 `findingGeneration`. An answer for an older instance cannot clear a newer one
 with the same ID. A missing generation answers only a legacy finding that also
