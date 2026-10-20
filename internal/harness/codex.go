@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -803,27 +802,6 @@ func (c *codexJSONLCapture) result() (codexParseResult, error) {
 		c.pending = nil
 	}
 	return c.parsed, nil
-}
-
-func parseCodexJSONL(data []byte) (codexParseResult, error) {
-	result := codexParseResult{metrics: map[string]float64{}}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 64*1024), int(DefaultMaxTranscriptBytes))
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := bytes.TrimSpace(scanner.Bytes())
-		if len(raw) == 0 {
-			continue
-		}
-		if err := parseCodexEvent(raw, &result); err != nil {
-			return codexParseResult{}, fmt.Errorf("harness: codex: parse JSONL event %d: %w", line, err)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return codexParseResult{}, fmt.Errorf("harness: codex: read JSONL events: %w", err)
-	}
-	return result, nil
 }
 
 func parseCodexEvent(raw []byte, result *codexParseResult) error {

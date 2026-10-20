@@ -770,3 +770,12 @@ func TestCodexAdapterPreflightPrefersConfiguredCredential(t *testing.T) {
 		t.Fatalf("Preflight error = %v, want configured credential error", err)
 	}
 }
+
+// Parse fixture buffers through the production streaming path too.
+func parseCodexJSONL(data []byte) (codexParseResult, error) {
+	capture := newCodexJSONLCapture(DefaultMaxTranscriptBytes)
+	if _, err := capture.Write(data); err != nil {
+		return codexParseResult{}, err
+	}
+	return capture.result()
+}
