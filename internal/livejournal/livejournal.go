@@ -333,11 +333,12 @@ type Writer struct {
 }
 
 type liveRun struct {
-	childStarts map[string]journal.Event
-	mu          sync.Mutex
-	gaggle      string
-	dir         string
-	jr          *journal.Run
+	childStarts          map[string]journal.Event
+	childAppendUncertain bool
+	mu                   sync.Mutex
+	gaggle               string
+	dir                  string
+	jr                   *journal.Run
 	// clock is nil for an adopted run: the handle belongs to another driver
 	// and was constructed with that driver's clock, which this writer cannot
 	// (and must not) reach into. See Adopt.
@@ -800,19 +801,29 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 		return EmitResponse{}, err
 	}
 	run.lastEmit = w.now()
+	if run.childAppendUncertain {
+		if err := run.reconcileChildAppend(); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: recover uncertain child append: %w", err)
+		}
+	}
 
 	var resp EmitResponse
 	for i := range req.Ops {
 		applied, err := w.applyOp(ctx, req.RunID, run, req.Ops[i])
 		if err != nil {
+			if req.Ops[i].ChildStageStart != nil {
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, fmt.Errorf("livejournal: apply child op %d for run %s: %w", i, req.RunID, err)
+			}
 			w.finishRun(req.RunID, run, &resp)
+			resp.ChildOrigins = nil
 			return resp, fmt.Errorf("livejournal: apply op %d for run %s: %w", i, req.RunID, err)
 		}
 		if req.Ops[i].ChildStageStart != nil {
 			receipt, err := run.childOriginReceipt(req.RunID, req.Ops[i])
 			if err != nil {
-				w.finishRun(req.RunID, run, &resp)
-				return resp, err
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, err
 			}
 			resp.ChildOrigins = append(resp.ChildOrigins, receipt)
 		}
