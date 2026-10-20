@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "2.0"
+dslVersion: "3.0"
 metadata:
   name: quickstart
 spec:
@@ -46,18 +46,21 @@ spec:
       goober: reviewer
       workspace: repo
       goal: Review the committed tutorial change and report focused feedback.
+      repoFrom: implement
       capabilities:
         - agent:model
       next: local-ci
     - name: local-ci
       type: deterministic
       goal: Run the sample project's local CI-equivalent in the worktree.
+      repoFrom: review
       run:
         command: ["make", "ci"]
       next: push-branch
     - name: push-branch
       type: deterministic
       goal: Push the reviewed tutorial change.
+      repoFrom: review
       run:
         command: ["goobers", "push-branch"]
       capabilities:
@@ -68,6 +71,7 @@ spec:
     - name: open-pr
       type: deterministic
       goal: Open the tutorial pull request.
+      repoFrom: review
       run:
         command: ["goobers", "open-pr"]
       inputs:

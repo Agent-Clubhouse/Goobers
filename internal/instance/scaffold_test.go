@@ -67,6 +67,16 @@ func TestInitFresh(t *testing.T) {
 	if len(set.Gaggles) != 1 || len(set.Goobers) != 1 || len(set.Workflows) != 1 {
 		t.Fatalf("unexpected seeded config shape: %+v", set)
 	}
+	if set.Workflows[0].DSLVersion != "3.0" {
+		t.Fatalf("starter DSL = %q, want stable 3.0", set.Workflows[0].DSLVersion)
+	}
+	for _, task := range set.Workflows[0].Spec.Tasks {
+		if task.Name == "push-branch" || task.Name == "open-pr" {
+			if !slices.Equal(task.RepoFrom, apiv1.RepoFrom{"implement"}) {
+				t.Fatalf("starter %s handoff = %v, want implement", task.Name, task.RepoFrom)
+			}
+		}
+	}
 }
 
 func TestInitDemoFresh(t *testing.T) {
@@ -96,6 +106,10 @@ func TestInitDemoFresh(t *testing.T) {
 		t.Fatalf("unexpected demo config shape: %+v", set)
 	}
 	workflow := set.Workflows[0]
+	// The demo remains the packaged 2.0-to-3.0 migration smoke source.
+	if workflow.DSLVersion != "2.0" {
+		t.Fatalf("demo DSL = %q, want legacy 2.0 migration source", workflow.DSLVersion)
+	}
 	if workflow.Name != "demo" || len(workflow.Spec.Tasks) != 4 || len(workflow.Spec.Gates) != 1 {
 		t.Fatalf("unexpected demo workflow: %+v", workflow)
 	}
@@ -139,6 +153,21 @@ func TestInitQuickstartFresh(t *testing.T) {
 		t.Fatalf("unexpected quickstart config shape: %+v", set)
 	}
 	workflow := set.Workflows[0]
+	if workflow.DSLVersion != "3.0" {
+		t.Fatalf("quickstart DSL = %q, want stable 3.0", workflow.DSLVersion)
+	}
+	for _, task := range workflow.Spec.Tasks {
+		var want apiv1.RepoFrom
+		switch task.Name {
+		case "review":
+			want = apiv1.RepoFrom{"implement"}
+		case "local-ci", "push-branch", "open-pr":
+			want = apiv1.RepoFrom{"review"}
+		}
+		if !slices.Equal(task.RepoFrom, want) {
+			t.Fatalf("quickstart %s handoff = %v, want %v", task.Name, task.RepoFrom, want)
+		}
+	}
 	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 6 || len(workflow.Spec.Gates) != 0 {
 		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
 	}

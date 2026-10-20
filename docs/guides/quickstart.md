@@ -133,6 +133,11 @@ bin/goobers trace <run-id> ./demo-instance
 
 ## 2. Graduate to the token-bearing quickstart template
 
+As of v0.6.0, new starter and quickstart workflows explicitly pin supported DSL
+3.0 and declare repository handoffs. Existing configurations keep their pins;
+`init` does not migrate them. The offline demo stays on DSL 2.0 so the packaged
+release smoke continues to exercise migration from 2.0 to 3.0.
+
 Next, use the versioned `quickstart@v1` template for a first autonomous run
 against a disposable GitHub repository you control. This path requires a
 GitHub token and an authenticated agent harness. The shipped template's
