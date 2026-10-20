@@ -153,7 +153,7 @@ func TestExactArgumentsAndReplayRemainHostOwned(t *testing.T) {
 	args := `{"text" : "unchanged", "count":2}`
 	for i := 0; i < 2; i++ {
 		response := c.call(`"stable-id"`, args)
-		if strings.Contains(responseText(response), `"isError":true`) {
+		if response.Error != nil || strings.Contains(responseText(response), `"isError":true`) {
 			t.Fatal(response)
 		}
 	}
@@ -469,5 +469,47 @@ func TestMalformedAndDeepJSONNeverReachesHost(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatal("unsafe input invoked host")
+	}
+}
+
+// holdResponseConn holds the server write after the client can observe it.
+// This exposes the point at which a completed request ID must be reusable.
+type holdResponseConn struct {
+	net.Conn
+	published chan struct{}
+	release   chan struct{}
+	once      sync.Once
+}
+
+func (c *holdResponseConn) Write(data []byte) (int, error) {
+	n, err := c.Conn.Write(data)
+	c.once.Do(func() {
+		close(c.published)
+		<-c.release
+	})
+	return n, err
+}
+
+func TestCompletedRequestIDRetiredBeforeResponsePublished(t *testing.T) {
+	b := startTest(t, Options{})
+	server, client := net.Pipe()
+	defer func() { _ = server.Close(); _ = client.Close() }()
+	held := &holdResponseConn{Conn: server, published: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	c := &connection{bridge: b, conn: held, ctx: ctx, cancel: cancel, pending: map[string]context.CancelFunc{}, initialized: true}
+	defer c.requests.Wait()
+	defer close(held.release)
+	c.handle(rpcRequest{JSONRPC: "2.0", ID: json.RawMessage(`"stable-id"`), Method: "tools/call", Params: json.RawMessage(`{"name":"read_context","arguments":{"text":"first"}}`)})
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := bufio.NewReader(client).ReadBytes('\n'); err != nil {
+		t.Fatal(err)
+	}
+	<-held.published
+	c.pendingMu.Lock()
+	_, pending := c.pending["s:stable-id"]
+	c.pendingMu.Unlock()
+	if pending {
+		t.Fatal("completed request ID is still active after its response was published")
 	}
 }

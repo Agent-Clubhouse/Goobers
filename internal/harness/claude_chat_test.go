@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -64,7 +65,8 @@ func TestClaudeChatPreservesHardening(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if info.Mode().Perm()&0077 != 0 {
+			// Windows does not expose Unix mode bits through os.Stat.
+			if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 				t.Fatal("config not private")
 			}
 		})
