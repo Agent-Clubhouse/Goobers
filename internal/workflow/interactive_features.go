@@ -12,6 +12,27 @@ func interactiveFeature() Feature {
 		DSLVersions: []DSLFeatureSupport{{Version: "3.0", Level: SupportPreview}}}
 }
 
+// interactiveFeatures registers the author-facing leaves under the same
+// independent DSL 3.0 preview contract as their enclosing configuration.
+func interactiveFeatures() []Feature {
+	features := []Feature{interactiveFeature()}
+	for _, suffix := range []string{
+		"authorities.brokerRef", "authorities.name", "authorities.provider",
+		"surfaces.authorityRefs", "surfaces.childWorkflows.commandCapabilities",
+		"surfaces.childWorkflows.enabled", "surfaces.defaultExecutionMode",
+		"surfaces.description", "surfaces.displayName", "surfaces.enabled",
+		"surfaces.executionModes", "surfaces.gooberRef", "surfaces.mode", "surfaces.name",
+		"surfaces.session.leaseSeconds", "surfaces.session.maxActive",
+		"surfaces.session.maxActivePerOwner", "surfaces.session.maxChildren",
+		"surfaces.session.maxTurnSeconds", "surfaces.tools", "surfaces.workflows",
+	} {
+		feature := interactiveFeature()
+		feature.ID = FeatureID(string(FeatureInteractive) + "." + suffix)
+		features = append(features, feature)
+	}
+	return features
+}
+
 // CheckInteractiveFeatureSupport uses only this Gaggle's interactive pin and
 // acknowledgement. It neither inherits Manifest acknowledgement nor authorizes
 // any Workflow's preview version. Existing workflow fan-out stays unchanged.
