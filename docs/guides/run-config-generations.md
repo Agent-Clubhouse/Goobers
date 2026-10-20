@@ -59,8 +59,25 @@ catalog, and the candidate remains rejected. The daemon prints the rejection
 and the unchanged 64-generation / 256-MiB bounds; health and diagnostics remain
 available. The instance journal records the applied generation, including
 reusing an older generation during a rollback. On upgrade from a daemon that
-did not record it, the newest retained run's generation is the recovery source.
+did not record it, startup refuses automatic selection: a newer retained run
+may belong to a catalog superseded by a rollback. Legacy reload events can also
+precede a failed activation and are not enough to prove the applied catalog.
 The applied catalog itself remains protected even before it admits a run.
+
+For an ambiguous legacy root, the startup diagnostic lists retained candidate
+digests, archive modification times, and archive source paths. These times are
+inspection aids, not application authority. Select the intended catalog with:
+
+```sh
+goobers up --recover-config-generation sha256:<digest> <instance>
+```
+
+This verifies retained bytes, archived permissions, and originating instance
+identity before restoring the daemon's applied catalog. It records the explicit
+selection and keeps the live candidate rejected. It does not overwrite source
+files, remove owners, or infer a choice from the newest run. An unknown digest
+or corrupt retained tree refuses startup. Subsequent capacity-exhausted restarts
+can recover the now-recorded catalog automatically.
 
 Inspect `goobers diagnostics bundle <instance>`, restore configuration matching
 a verified retained generation, and run `goobers apply <instance>` (or restart).

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/configgeneration"
@@ -35,58 +37,59 @@ func lastAppliedExecutionGeneration(layout instance.Layout) (string, error) {
 	return "", nil
 }
 
-// Older daemons did not journal the applied generation. Their newest retained
-// run is an explicit recovery source, including terminal-but-recoverable runs;
-// directory modification times and unowned cached generations are not authority.
+// Older reload events predate commit-safe generation metadata. Neither their
+// digest nor a run's start time proves which catalog actually became active.
 func retainedStartupGeneration(ctx context.Context, layout instance.Layout) (string, error) {
 	generation, err := lastAppliedExecutionGeneration(layout)
 	if err != nil || generation != "" {
 		return generation, err
 	}
-	roots, err := layout.RunDirsContext(ctx)
+	return "", legacyGenerationRecoveryError(ctx, layout)
+}
+
+func legacyGenerationRecoveryError(ctx context.Context, layout instance.Layout) error {
+	var message strings.Builder
+	message.WriteString("last applied legacy catalog is ambiguous; no retained run or reload digest will be selected automatically. Select a retained catalog explicitly with: goobers up --recover-config-generation <sha256:digest> <instance>. Selection verifies archived bytes, permission modes and instance ownership before activation. Retained candidates (not yet verified):")
+	root := filepath.Join(layout.Root, "config-generations")
+	entries, err := os.ReadDir(root)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("%s; cannot list retained candidates: %w", message.String(), err)
 	}
-	var newest time.Time
-	var runID string
-	for _, root := range roots {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			return "", err
+	count := 0
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return "", err
-			}
-			if !entry.IsDir() {
-				continue
-			}
-			rd, err := journal.OpenRead(filepath.Join(root, entry.Name()))
-			if errors.Is(err, journal.ErrNotRunDirectory) {
-				continue
-			}
-			if err != nil {
-				return "", err
-			}
-			id, err := rd.Identity()
-			if err != nil {
-				return "", err
-			}
-			if id.ConfigGeneration != "" && (generation == "" || id.StartedAt.After(newest) || id.StartedAt.Equal(newest) && id.RunID > runID) {
-				generation, newest, runID = id.ConfigGeneration, id.StartedAt, id.RunID
-			}
+		decoded, err := hex.DecodeString(entry.Name())
+		if err != nil || len(decoded) != 32 {
+			continue
 		}
+		if count == configgeneration.MaxGenerations {
+			message.WriteString("\nadditional entries omitted at retention limit")
+			break
+		}
+		count++
+		source := filepath.Join("config-generations", entry.Name(), "archive.json")
+		modified := "unknown"
+		if info, err := os.Lstat(filepath.Join(layout.Root, source)); err == nil {
+			modified = info.ModTime().UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(&message, "\ndigest=sha256:%s archiveModifiedAt=%s source=%s", entry.Name(), modified, filepath.ToSlash(source))
 	}
-	if generation == "" {
-		return "", errors.New("no applied or journal-owned generation is available; restore configuration matching a verified retained generation before restarting")
+	if count == 0 {
+		message.WriteString(" none; restore retained custody through storage recovery")
 	}
-	return generation, nil
+	return errors.New(message.String())
 }
 
 func recoverStartupGeneration(ctx context.Context, input schedulerDefinitionsInput, retainer *configgeneration.Retainer) (schedulerDefinitionsInput, string, error) {
-	generation, err := retainedStartupGeneration(ctx, input.Layout)
-	if err != nil {
-		return input, "", err
+	generation := input.RecoveryGeneration
+	if generation == "" {
+		var err error
+		generation, err = retainedStartupGeneration(ctx, input.Layout)
+		if err != nil {
+			return input, "", err
+		}
 	}
 	directory, err := retainer.UseRetained(ctx, generation)
 	if err != nil {
@@ -114,4 +117,13 @@ func recoverStartupGeneration(ctx context.Context, input schedulerDefinitionsInp
 
 func generationCapacityMessage(err error) string {
 	return fmt.Sprintf("%v (limits: %d generations, %d bytes); candidate configuration was not admitted. Restore configuration matching a verified retained generation, or use normal retention after its owners no longer require recovery; do not delete protected owners", err, configgeneration.MaxGenerations, configgeneration.MaxStoredBytes)
+}
+
+func journalStartupGeneration(log *journal.InstanceLog, generation, digest string) error {
+	if err := log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{
+		"kind": appliedGenerationAnnotation, "configGeneration": generation, "configDigest": digest,
+	}}); err != nil {
+		return fmt.Errorf("journal startup generation: %w", err)
+	}
+	return nil
 }

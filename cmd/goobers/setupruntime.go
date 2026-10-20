@@ -59,6 +59,13 @@ func (owned *schedulerRuntime) open(input schedulerDefinitionsInput) (err error)
 	input.RunnerRegistry = owned.runnerRegistry
 	input.ProviderQuota = owned.providerQuota
 	input.Generations = []*configgeneration.Retainer{owned.generations}
+	if input.RecoveryGeneration != "" {
+		owned.capacityRejection = "operator restored a verified retained catalog; live candidate configuration was not admitted"
+		input, owned.recoveredConfigDigest, err = recoverStartupGeneration(context.Background(), input, owned.generations)
+		if err != nil {
+			return fmt.Errorf("explicit retained catalog recovery refused: %w", err)
+		}
+	}
 	owned.definitions, err = buildSchedulerDefinitions(input)
 	if errors.Is(err, configgeneration.ErrCapacity) && input.RecoverAtCapacity {
 		owned.capacityRejection = generationCapacityMessage(err)

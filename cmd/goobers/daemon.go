@@ -251,19 +251,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, err
 	}
-	configLoader := loadConfigDirectory
-	if allowInvalidConfig {
-		configLoader = instance.LoadConfigDirForComparison
-	}
-	set, report, err := configLoader(l.ConfigDir())
+	set, report, err := loadSchedulerConfig(l, allowInvalidConfig)
 	if err != nil {
-		if !allowInvalidConfig || !errors.Is(err, instance.ErrInvalidConfig) || set == nil {
-			return nil, &configReportError{
-				report: report,
-				err:    fmt.Errorf("config directory invalid: %w", err),
-			}
-		}
-		err = nil
+		return nil, err
 	}
 	reportStartupProgress(options.startupProgress, fmt.Sprintf(
 		"loaded configuration (%d gaggle(s), %d workflow(s))",
@@ -343,8 +333,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
 	runtime, err := openSchedulerRuntime(schedulerDefinitionsInput{
-		RecoverAtCapacity: options.recoverGenerationCapacity,
-		Layout:            l, Config: cfg, Definitions: set, Validation: report,
+		RecoverAtCapacity:  options.recoverGenerationCapacity,
+		RecoveryGeneration: options.recoverConfigGeneration,
+		Layout:             l, Config: cfg, Definitions: set, Validation: report,
 		WaitGroup: wg, Telemetry: observation.tel, RollupDB: observation.rollupDB,
 		Watermarks: observation.watermarks, InstanceLog: observation.instanceLog,
 		SharedRegistry: sharedReg, TerminalNotifier: terminalNotifier,
@@ -359,12 +350,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 	}()
 	definitions := runtime.definitions
-	stableDigest, err := configDirectoryDigest(l.ConfigDir())
-	if err != nil || stableDigest != configDigest {
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("config directory changed during daemon setup; retry startup")
+	if err := verifyStartupConfigUnchanged(l, configDigest); err != nil {
+		return nil, err
 	}
 
 	candidateDigest := configDigest
@@ -372,10 +359,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		configDigest = runtime.recoveredConfigDigest
 	}
 	if options.recoverGenerationCapacity {
-		if err := observation.instanceLog.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{
-			"kind": appliedGenerationAnnotation, "configGeneration": definitions.ExecutionGeneration, "configDigest": configDigest,
-		}}); err != nil {
-			return nil, fmt.Errorf("journal startup generation: %w", err)
+		if err := journalStartupGeneration(observation.instanceLog, definitions.ExecutionGeneration, configDigest); err != nil {
+			return nil, err
 		}
 	}
 
@@ -2121,7 +2106,8 @@ func warnUnresolvableResume(log *journal.InstanceLog, id journal.RunIdentity, mi
 
 // schedulerDefinitionsInput names the dependencies for this construction boundary.
 type schedulerDefinitionsInput struct {
-	RecoverAtCapacity bool
+	RecoverAtCapacity  bool
+	RecoveryGeneration string
 
 	Layout           instance.Layout
 	Config           *instance.Config
@@ -2191,4 +2177,27 @@ type runtimeRunnerInput struct {
 	OwnershipAssigneesDefault    string
 	OwnershipUnassignedDefault   string
 	Generations                  []string
+}
+
+func loadSchedulerConfig(l instance.Layout, allowInvalid bool) (*instance.ConfigSet, *validate.Report, error) {
+	loader := loadConfigDirectory
+	if allowInvalid {
+		loader = instance.LoadConfigDirForComparison
+	}
+	set, report, err := loader(l.ConfigDir())
+	if err != nil && (!allowInvalid || !errors.Is(err, instance.ErrInvalidConfig) || set == nil) {
+		return nil, report, &configReportError{report: report, err: fmt.Errorf("config directory invalid: %w", err)}
+	}
+	return set, report, nil
+}
+
+func verifyStartupConfigUnchanged(l instance.Layout, expected string) error {
+	digest, err := configDirectoryDigest(l.ConfigDir())
+	if err != nil {
+		return err
+	}
+	if digest != expected {
+		return fmt.Errorf("config directory changed during daemon setup; retry startup")
+	}
+	return nil
 }

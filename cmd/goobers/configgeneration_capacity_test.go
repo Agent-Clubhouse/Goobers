@@ -20,6 +20,14 @@ import (
 )
 
 func TestUpAtProtectedGenerationCapacityKeepsDiagnostics(t *testing.T) {
+	testUpAtProtectedGenerationCapacity(t, false)
+}
+
+func TestUpAtProtectedGenerationCapacityLegacyRollback(t *testing.T) {
+	testUpAtProtectedGenerationCapacity(t, true)
+}
+
+func testUpAtProtectedGenerationCapacity(t *testing.T, legacy bool) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
 	address := freeLoopbackAddress(t)
@@ -71,11 +79,37 @@ func TestUpAtProtectedGenerationCapacityKeepsDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	scheduler := localscheduler.New(nil, log)
-	if err := scheduler.Reload(nil, nil, time.Now(), "A", "B", last); err != nil {
-		t.Fatal(err)
-	}
-	if err := scheduler.Reload(nil, nil, time.Now(), "B", "A", first); err != nil {
-		t.Fatal(err)
+	if legacy {
+		firstDir, err := store.Load(t.Context(), first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lastDir, err := store.Load(t.Context(), last)
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstDigest, err := configDirectoryDigest(firstDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lastDigest, err := configDirectoryDigest(lastDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Old daemons recorded only the effective digest, not configGeneration.
+		if err := scheduler.Reload(nil, nil, time.Now(), firstDigest, lastDigest); err != nil {
+			t.Fatal(err)
+		}
+		if err := scheduler.Reload(nil, nil, time.Now(), lastDigest, firstDigest); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if err := scheduler.Reload(nil, nil, time.Now(), "A", "B", last); err != nil {
+			t.Fatal(err)
+		}
+		if err := scheduler.Reload(nil, nil, time.Now(), "B", "A", first); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
@@ -90,7 +124,38 @@ func TestUpAtProtectedGenerationCapacityKeepsDiagnostics(t *testing.T) {
 	}
 	writeFixture(t, filepath.Join(layout.ConfigDir(), "generation-note.txt"), "unretainable candidate")
 	writeFixture(t, manifestPath, string(manifest)+"\n# unretainable candidate\n")
-	stop := startGenerationTestDaemon(t, root)
+	var recoveryOptions []string
+	if legacy {
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		var output, diagnostics bytes.Buffer
+		code := runUpContextWithForce(ctx, make(chan struct{}), []string{root}, &output, &diagnostics)
+		cancel()
+		if code != 1 {
+			t.Fatalf("ambiguous legacy startup code=%d stdout=%s stderr=%s", code, output.String(), diagnostics.String())
+		}
+		for _, want := range []string{"last applied legacy catalog is ambiguous", first, last, "archiveModifiedAt=", "source=config-generations/", "goobers up --recover-config-generation"} {
+			if !strings.Contains(diagnostics.String(), want) {
+				t.Fatalf("startup diagnostic missing %q: %s", want, diagnostics.String())
+			}
+		}
+		events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == appliedGenerationAnnotation {
+				t.Fatalf("legacy refusal recorded inferred catalog: %+v", event)
+			}
+		}
+		var bundle, bundleErrors bytes.Buffer
+		if code := runDiagnosticsBundle([]string{"--json", root}, &bundle, &bundleErrors); code != 0 || !json.Valid(bundle.Bytes()) {
+			t.Fatalf("legacy refusal lost diagnostics: code=%d stderr=%s", code, bundleErrors.String())
+		}
+		// The source remains C. Explicit operator selection restores A's catalog
+		// without fabricating application history or overwriting configuration.
+		recoveryOptions = []string{"--recover-config-generation", first}
+	}
+	stop := startGenerationTestDaemon(t, root, recoveryOptions...)
 	defer stop()
 	health := readDaemonHealth(t, address)
 	if health.DefinitionReload == nil || health.DefinitionReload.State != "rejected" {
@@ -107,7 +172,7 @@ func TestUpAtProtectedGenerationCapacityKeepsDiagnostics(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(layout.ForGaggle("example").RunsDir(), "retained-63", "run.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	if health.DefinitionReload.AppliedDigest != recoveredDigest || !strings.Contains(health.DefinitionReload.RejectionReason, "64 generations") {
+	if health.DefinitionReload.AppliedDigest != recoveredDigest || (!legacy && !strings.Contains(health.DefinitionReload.RejectionReason, "64 generations")) {
 		t.Fatalf("wrong recovery or missing limits: %+v", health.DefinitionReload)
 	}
 	var diagnostics, diagnosticErrors bytes.Buffer
@@ -163,7 +228,12 @@ func TestUpAtProtectedGenerationCapacityKeepsDiagnostics(t *testing.T) {
 		writeFixture(t, filepath.Join(layout.ConfigDir(), "generation-note.txt"), "unretainable candidate")
 		writeFixture(t, manifestPath, string(manifest)+"\n# unretainable candidate\n")
 		var wg sync.WaitGroup
-		setup, err := buildSchedulerSetup(context.Background(), layout, &wg, func(options *schedulerSetupOptions) { options.recoverGenerationCapacity = true })
+		setup, err := buildSchedulerSetup(context.Background(), layout, &wg, func(options *schedulerSetupOptions) {
+			options.recoverGenerationCapacity = true
+			if legacy {
+				options.recoverConfigGeneration = first
+			}
+		})
 		if setup != nil {
 			_ = setup.Shutdown(context.Background())
 		}
@@ -202,7 +272,7 @@ func TestStartupGenerationLegacyAndAppliedOwnership(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if generation, err := retainedStartupGeneration(t.Context(), layout); err != nil || generation != "newer" {
+	if generation, err := retainedStartupGeneration(t.Context(), layout); err == nil || generation != "" || !strings.Contains(err.Error(), "legacy catalog is ambiguous") {
 		t.Fatalf("legacy recovery = %q, %v", generation, err)
 	}
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
@@ -221,5 +291,34 @@ func TestStartupGenerationLegacyAndAppliedOwnership(t *testing.T) {
 	pins, err := retainedExecutionGenerationPins(t.Context(), layout)
 	if err != nil || !pins["catalog-without-run"] || !pins["older"] || !pins["newer"] {
 		t.Fatalf("catalog or journal ownership lost: %v %v", pins, err)
+	}
+}
+
+func TestExplicitStartupGenerationRequiresRetainedCustody(t *testing.T) {
+	layout := instance.NewLayout(initDeterministicDemo(t))
+	store, err := executionGenerationStore(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, foreign, err := configgeneration.CaptureForInstance(t.Context(), layout.ConfigDir(), "another-instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Keep(t.Context(), data, foreign, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, generation, want string }{
+		{"unknown", "sha256:" + strings.Repeat("0", 64), "strict verification"},
+		{"foreign", foreign, "different instance"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retainer := &configgeneration.Retainer{Store: store}
+			defer func() { _ = retainer.Close() }()
+			input := schedulerDefinitionsInput{Layout: layout, RecoveryGeneration: tc.generation}
+			got, digest, err := recoverStartupGeneration(t.Context(), input, retainer)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || got.PinnedGeneration != "" || digest != "" {
+				t.Fatalf("unverified selection accepted: input=%+v digest=%q err=%v", got, digest, err)
+			}
+		})
 	}
 }
