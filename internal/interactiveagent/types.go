@@ -10,11 +10,13 @@ import (
 	"time"
 )
 
+// Bridge limits bound request sizes and tool execution output.
 const (
 	MaxRequestBytes  = 64 << 10
 	MaxResponseBytes = 1 << 20
 )
 
+// Tool describes a mediated tool and its input schema.
 type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
@@ -35,6 +37,7 @@ type AuditEvent struct {
 	Phase string
 }
 
+// Options binds the bridge to its invocation, policy, and tool handler.
 type Options struct {
 	Tools []Tool
 	// Check must validate the exact invocation's current server lease/fence.
@@ -47,6 +50,7 @@ type Options struct {
 	ShutdownTimeout time.Duration
 }
 
+// Bridge errors describe rejected transport and tool requests.
 var (
 	ErrUnavailable          = errors.New("interactive tool bridge unavailable")
 	ErrInvalidConfiguration = errors.New("invalid interactive tool bridge configuration")

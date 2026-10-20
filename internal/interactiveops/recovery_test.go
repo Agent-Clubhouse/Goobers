@@ -65,7 +65,11 @@ func TestCrossInstanceAdmissionBudgetsAndUnknownCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Release()
+	defer func() {
+		if err := first.Release(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if _, err = peer.reserveWorker(scopes[1], svc.scopeDir(scopes[1])); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("owner limit not enforced: %v", err)
 	}
@@ -73,7 +77,11 @@ func TestCrossInstanceAdmissionBudgetsAndUnknownCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Release()
+	defer func() {
+		if err := second.Release(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if _, err = svc.reserveWorker(scopes[3], svc.scopeDir(scopes[3])); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("global limit not enforced: %v", err)
 	}
@@ -170,7 +178,11 @@ func TestBusyAdmissionDoesNotDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer held.Release()
+	defer func() {
+		if err := held.Release(); err != nil {
+			t.Error(err)
+		}
+	}()
 	a, err := svc.Propose(ctx, scope, Request{Kind: "submit_run", Workflow: "invoice-check", IdempotencyKey: "busy"})
 	if err != nil {
 		t.Fatal(err)

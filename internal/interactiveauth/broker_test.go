@@ -79,6 +79,7 @@ func TestPrincipalAndResourceIsolation(t *testing.T) {
 	_, err := f.b.ListConnections(Principal{})
 	requireCode(t, err, "unauthenticated")
 	var forged Principal
+	//nolint:staticcheck // SA9005: deliberately verify JSON cannot forge private principal fields.
 	_ = json.Unmarshal([]byte(`{"identity":{"subject":"owner-one"},"verified":true}`), &forged)
 	_, err = f.b.ListConnections(forged)
 	requireCode(t, err, "unauthenticated")

@@ -139,7 +139,8 @@ func (e *Executor) local(ctx context.Context, req interactive.ExecutionRequest, 
 			if err != nil {
 				return "", err
 			}
-			defer root.Close()
+			// Best-effort cleanup; the operation result is reported separately.
+			defer func() { _ = root.Close() }()
 			file, err := root.OpenFile("invoice.mjs", os.O_WRONLY|os.O_TRUNC, 0600)
 			if err != nil {
 				return "", err
@@ -208,7 +209,8 @@ func readWorkspace(workspace, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer root.Close()
+	// Best-effort cleanup; the operation result is reported separately.
+	defer func() { _ = root.Close() }()
 	info, err := root.Stat(name)
 	if err != nil {
 		return "", err

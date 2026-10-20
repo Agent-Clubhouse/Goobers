@@ -67,6 +67,7 @@ func (b *Broker) connectionLocked(p Principal, ref ConnectionRef) (Connection, e
 	return c, nil
 }
 
+// ListConnections returns connection metadata visible to the principal.
 func (b *Broker) ListConnections(p Principal) ([]Connection, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -83,6 +84,7 @@ func (b *Broker) ListConnections(p Principal) ([]Connection, error) {
 	return result, nil
 }
 
+// SetDemoAuthState changes a controlled fixture connection’s authorization state.
 func (b *Broker) SetDemoAuthState(ctx context.Context, p Principal, ref ConnectionRef, state string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -113,6 +115,7 @@ func (b *Broker) SetDemoAuthState(ctx context.Context, p Principal, ref Connecti
 	return b.persistLocked()
 }
 
+// Reauthenticate refreshes a controlled connection without reviving revoked grants.
 func (b *Broker) Reauthenticate(ctx context.Context, p Principal, ref ConnectionRef) (Connection, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -139,6 +142,7 @@ func (b *Broker) Reauthenticate(ctx context.Context, p Principal, ref Connection
 	return clone(c), nil
 }
 
+// RevokeConnection revokes a connection and fences authorities that depend on it.
 func (b *Broker) RevokeConnection(ctx context.Context, p Principal, ref ConnectionRef) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -163,6 +167,7 @@ func (b *Broker) RevokeConnection(ctx context.Context, p Principal, ref Connecti
 	return b.persistLocked()
 }
 
+// IssueAuthority creates an immutable bounded authority for the principal.
 func (b *Broker) IssueAuthority(ctx context.Context, p Principal, req AuthorityRequest) (Authority, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -359,6 +364,7 @@ func (b *Broker) DeriveChild(ctx context.Context, p Principal, parentRef Authori
 	return clone(a), nil
 }
 
+// StopAuthority fences an authority and its descendants.
 func (b *Broker) StopAuthority(ctx context.Context, p Principal, ref AuthorityRef) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -382,6 +388,7 @@ func (b *Broker) StopAuthority(ctx context.Context, p Principal, ref AuthorityRe
 	return b.persistLocked()
 }
 
+// ListAuthorities returns the principal’s authority metadata and budgets.
 func (b *Broker) ListAuthorities(p Principal) ([]AuthorityStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

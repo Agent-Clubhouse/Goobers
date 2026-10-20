@@ -376,6 +376,7 @@ func (b *Broker) Reconcile(ctx context.Context, p Principal, operationID string)
 	return clone(op), fault("outcome_unknown", "no committed provider receipt exists; automatic replay remains prohibited")
 }
 
+// ListOperations returns the principal’s operation receipts for a session.
 func (b *Broker) ListOperations(p Principal, sessionID string) ([]Operation, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

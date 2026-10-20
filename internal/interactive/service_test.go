@@ -303,7 +303,9 @@ func TestAdmissionBudgetsMultipleOwnersAndCompetingCoordinators(t *testing.T) {
 	opts.MaxActivePerOwner = 1
 	s := openTest(t, opts)
 	if other, err := Open(opts); err == nil {
-		other.Close()
+		if err := other.Close(); err != nil {
+			t.Fatal(err)
+		}
 		t.Fatal("second coordinator stole store")
 	}
 	alice := createTest(t, s, "alice")
@@ -426,7 +428,9 @@ func TestSurfacePolicyPinnedAcrossRestartAndStopHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := createTest(t, s, "alice")
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	opts.Surfaces[0].Instructions = "Expanded privileges"
 	var fenced atomic.Bool
 	opts.OnStop = func(context.Context, string, string) error { fenced.Store(true); return nil }
@@ -542,8 +546,12 @@ func TestStopAfterCrashWaitsForOrphanCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
-	os.WriteFile(filepath.Join(opts.StateDir, "sessions.json"), snapshot, 0600)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(opts.StateDir, "sessions.json"), snapshot, 0600); err != nil {
+		t.Fatal(err)
+	}
 	e2 := newExecutor()
 	e2.recoverErr = errors.New("orphan worker could still write")
 	opts.Executor = e2
