@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"slices"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -29,6 +30,11 @@ func containedParentShape(cfg *instance.Config, goobers map[string]apiv1.GooberS
 	}
 	refuse := func(reason string) error {
 		return fmt.Errorf("%w: %s", workflow.ErrChildWorkflowExecutionUnsupported, reason)
+	}
+	if trustedLocalChildren(cfg) {
+		if err := trustedLocalParentActivation(machine.Def.Annotations, runtime.GOOS); err != nil {
+			return err
+		}
 	}
 	if !trustedLocalChildren(cfg) && (cfg == nil || !cfg.EngineProjectionEnabled() || cfg.API.PodTokenKeyFile == "") {
 		return refuse("contained parent requires authenticated worker transport")

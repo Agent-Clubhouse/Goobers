@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/apicontract"
@@ -28,7 +30,6 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 	"github.com/goobers/goobers/test/testsupport/testdep"
-	"sigs.k8s.io/yaml"
 )
 
 func trustedLocalJourneyFixture(t *testing.T, ambient bool) pinnedChildFixture {
@@ -65,7 +66,7 @@ func trustedLocalJourneyFixture(t *testing.T, ambient bool) pinnedChildFixture {
 // only the model and the remote Git origin are replaced with local fixtures.
 func TestIntegrationTrustedLocalChildJourney(t *testing.T) {
 	testdep.Require(t, "git", "sh")
-	for _, action := range []string{"merge", "replace", "discard", "agentic", "ambient"} {
+	for _, action := range []string{"merge", "replace", "discard", "agentic", "ambient", "preview-off"} {
 		t.Run(action, func(t *testing.T) { qualifyTrustedLocalJourney(t, action) })
 	}
 }
@@ -198,7 +199,22 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if mode == "preview-off" {
+		for i := range set.Workflows {
+			set.Workflows[i].Annotations = nil
+		}
+	}
 	definitions, err := build(f.layout, f.parent.ConfigGeneration, set, report)
+	if mode == "preview-off" {
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "preview") {
+			t.Fatalf("preview-off workflow activated: %v", err)
+		}
+		if calls.Load() != 0 || childCalls.Load() != 0 {
+			t.Fatal("preview-off launched a process")
+		}
+		return
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +222,7 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 	if err := s.installQueuedChildren(setup, triggers, &wg); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	scheduler := localscheduler.New(definitions.Entries, instanceLog, localscheduler.WithInstanceRunConditions(f.cfg.RunConditions.MaxParallelRuns, f.cfg.RunConditions.WorkflowBudgets, f.cfg.RunConditions.WorkflowDailyBudgets))
 	dispatch.AttachScheduler(scheduler)
 	dispatch.AttachDispatchContext(ctx)

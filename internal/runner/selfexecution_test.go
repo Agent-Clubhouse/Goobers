@@ -82,7 +82,7 @@ func TestTrustedLocalParentKeepsSelfRefusalAndPlacement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := &Runner{cfg: Config{TrustedLocalParents: true, SelfExecutionDenied: denied, RunnersDeclared: true}}
+		r := &Runner{cfg: Config{TrustedLocalParents: true, SelfExecutionDenied: denied}}
 		task := apiv1.Task{Name: "plan", Type: apiv1.TaskAgentic, ChildWorkflows: &apiv1.ChildWorkflowPolicy{}}
 		frame := taskFrame{jr: jr, t: task}
 		if denied {
