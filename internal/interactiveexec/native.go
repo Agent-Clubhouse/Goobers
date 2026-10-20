@@ -105,7 +105,7 @@ The configured goobers-interactive MCP tools are your native management interfac
 					return "", err
 				}
 				toolNames = bridge.ToolNames()
-				mcpServers = []apiv1.MCPServer{{Name: "goobers-interactive", Command: e.config.SelfBinary, Args: []string{"agent-tools", "--socket", bridge.SocketPath}}}
+				mcpServers = []apiv1.MCPServer{{Name: "goobers-interactive", Command: e.config.SelfBinary, Args: []string{"agent-tools", "--socket", bridge.SocketPath, "--token-file", bridge.TokenPath}}}
 			}
 		}
 		stopInvocation := func() error {

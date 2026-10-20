@@ -58,15 +58,16 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "agent-tools" {
 		flags := flag.NewFlagSet("agent-tools", flag.ContinueOnError)
 		socket := flags.String("socket", "", "private invocation socket")
+		token := flags.String("token-file", "", "private invocation authentication file")
 		if err := flags.Parse(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
-		if *socket == "" || flags.NArg() != 0 {
-			log.Fatal("agent-tools requires only --socket")
+		if *socket == "" || *token == "" || flags.NArg() != 0 {
+			log.Fatal("agent-tools requires --socket and --token-file")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
-		if err := interactiveagent.ServeStdio(ctx, *socket, os.Stdin, os.Stdout); err != nil {
+		if err := interactiveagent.ServeStdio(ctx, *socket, *token, os.Stdin, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
 		return

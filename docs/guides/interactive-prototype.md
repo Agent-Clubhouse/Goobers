@@ -294,3 +294,5 @@ Conditional Access challenges, real resource authorization and uncertain-write
 qualification. Nothing here provisions those prerequisites. Other open decisions
 are production daemon integration, distributed persistence/workers, native-tool
 compatibility, production child lineage and collaborative sessions.
+
+The internal `agent-tools` stdio command requires both `--socket <path>` and `--token-file <path>`. The latter points to the invocation-private mode-0600 `auth.token`; only the path is a launch argument. Each connection authenticates before MCP parsing or host authority checks. Cross-session kernel read isolation must protect this file; filesystem modes alone do not separate processes running as the same user.

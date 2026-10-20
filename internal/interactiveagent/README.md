@@ -1,9 +1,10 @@
 # Invocation-bound native MCP tools
 
-`interactiveagent` connects a native MCP client to a small set of typed host tools. It starts no model or CLI. The host creates one bridge for one admitted execution, binds its callbacks to the verified actor/session/turn/lease, and gives its native adapter a stdio MCP server command such as the application's own `agent-tools --socket <path>` subcommand.
+`interactiveagent` connects a native MCP client to a small set of typed host tools. It starts no model or CLI. The host creates one bridge for one admitted execution, binds its callbacks to the verified actor/session/turn/lease, and gives its native adapter a stdio MCP server command such as the application's own `agent-tools --socket <path> --token-file <private-path>` subcommand.
 
 ```go
 bridge, err := interactiveagent.Start(executionContext, interactiveagent.Options{
+    RuntimeDir: sessionBridgeRoot, // host-owned, isolated from other sessions
     Tools: toolDefinitions,
     Check: func(ctx context.Context) error {
         return sessions.CheckExecution(owner, sessionID, turnID, leaseID, fence)
@@ -16,12 +17,14 @@ bridge, err := interactiveagent.Start(executionContext, interactiveagent.Options
 })
 // Handle err, then defer bridge.Close().
 // The stdio subcommand calls:
-err = interactiveagent.ServeStdio(ctx, socketPath, os.Stdin, os.Stdout)
+err = interactiveagent.ServeStdio(ctx, socketPath, tokenPath, os.Stdin, os.Stdout)
 ```
 
 `Tool` contains `Name`, `Description`, and `InputSchema map[string]any`. `Call` contains the original `ID json.RawMessage`, `Name`, and `Arguments json.RawMessage`. `Options.Emit func(AuditEvent)` receives only a configured tool name and phase; it never receives arguments, results, RPC IDs, or private errors. `Bridge.ToolNames()` returns a copy of configured names.
 
-The bridge uses raw newline-delimited JSON-RPC over a Unix socket. There is no HTTP endpoint or TCP listener. Its short `/tmp/gbr-agent-*/rpc.sock` path fits Darwin's socket limit; the containing directory is `0700` and the socket is `0600`. It is a local transport locator, not a Microsoft token or a replacement for authority checks. Same-OS-user processes are within this local prototype's trust boundary. It is not an isolation boundary against hostile processes with that user's filesystem access.
+The bridge authenticates each Unix connection before accepting newline-delimited JSON-RPC. Each invocation generates 32 random bytes, stored as one unpadded base64url line in `Bridge.TokenPath` (`auth.token`, mode `0600`). The stdio process receives only its path through `--token-file`, reads the bounded regular file, sends the token line, and waits for `OK\n` before forwarding MCP. The host compares the fixed-size token in constant time before parsing any MCP or running `Check`/`Invoke`. Missing, malformed, or foreign-invocation credentials close the connection without returning tool information. Authentication has a five-second deadline, and cancellation closes the socket.
+
+There is no HTTP endpoint or TCP listener. `Options.RuntimeDir` selects the host-controlled parent of a private `gbr-agent-*` directory (mode `0700`); socket mode is `0600`. The default parent is `/tmp` for standalone callers. Hosts must select a short runtime path that fits Darwin's Unix socket limit and enforce kernel read isolation from other invocations. Same-user permissions alone do not protect the token from other same-user processes. Own-invocation access to its scoped tools is intentional; the credential does not grant human approval or replace lease/fence checks. Closing the bridge removes the socket and token. No token bytes enter argv, environment, MCP messages, or audit events.
 
 Supported methods are MCP `initialize`, `tools/list`, `tools/call`, `ping`, `notifications/initialized`, and `notifications/cancelled`, plus a harmless `version` diagnostic. Version negotiation follows the existing `internal/mcpio` subset: supported `2025-11-25`, `2025-06-18`, and `2024-11-05`; an unknown nonempty requested version receives the newest supported version. Tools are unavailable until initialization. Notifications never launch untracked tool effects.
 
@@ -35,4 +38,4 @@ The transport preserves request IDs and argument bytes. It deliberately neither 
 
 `ServeStdio` forwards complete bounded lines and drains accepted replies after normal input EOF. On cancellation or early socket failure it closes an input implementing `io.Closer`. Custom readers must be finite or cancellation-aware; the CLI uses its standard input pipe. The host must close the bridge when its execution ends, and also keep current lease checks on every dispatched operation.
 
-The package tests use real private Unix sockets, real stdio proxying, and controlled host callbacks. They exercise permissions, version negotiation, exact arguments, host-owned replay, unknown tools/fields, identity injection, stale leases, serialization, cancellation, oversized messages, sanitized failures, and schema immutability. They do not invoke Codex, a model, Azure, or ADO. Restricted test environments may require permission to open a local Unix listener. The bridge is enabled on Linux, Darwin, and the listed BSD targets; unsupported platforms return `ErrUnavailable`.
+The package tests use real private Unix sockets, real stdio proxying, and controlled host callbacks. They exercise cross-invocation authentication, missing/malformed/private token files, token cleanup, permissions, version negotiation, exact arguments, host-owned replay, unknown tools/fields, identity injection, stale leases, serialization, cancellation, oversized messages, sanitized failures, and schema immutability. They do not invoke Codex, a model, Azure, or ADO. Restricted test environments may require permission to open a local Unix listener. The bridge is enabled on Linux, Darwin, and the listed BSD targets; unsupported platforms return `ErrUnavailable`.
