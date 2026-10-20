@@ -300,3 +300,24 @@ github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capt
 # the daemon evaluation controller that consumes them is #4425. Remove on wiring.
 github.com/goobers/goobers/internal/gagglehealth.ExtendEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
 github.com/goobers/goobers/internal/gagglehealth.Rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+
+# Shared chat driver conformance/fixture support; used only by tests (#7644).
+github.com/goobers/goobers/internal/chat/chattest.Conformance # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeDriver.ID # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeDriver.Probe # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeDriver.Start # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.AnswerQuestion # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.Capabilities # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.Close # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.Emit # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.Events # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.Interrupt # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.NativeID # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.RespondPermission # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.Send # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.SetLevel # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.FakeSession.SetModel # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.Fixture.Replay # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.ReadFixture # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.contains # Test-only chat driver conformance and fixture support (#7644).
+github.com/goobers/goobers/internal/chat/chattest.key # Test-only chat driver conformance and fixture support (#7644).
