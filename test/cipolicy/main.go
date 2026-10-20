@@ -69,6 +69,10 @@ func run(args []string, getenv func(string) string, git gitRunner, stdout, stder
 		}
 		return 0
 	case "gate":
+		if getenv("CI_CANCELLED") == "true" {
+			_, _ = fmt.Fprintln(stderr, "cipolicy: cancelled CI cannot pass the required gate")
+			return 1
+		}
 		var needs map[string]jobResult
 		if err := json.Unmarshal([]byte(getenv("CI_NEEDS")), &needs); err != nil {
 			_, _ = fmt.Fprintf(stderr, "cipolicy: decode required job results: %v\n", err)

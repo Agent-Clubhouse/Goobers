@@ -98,7 +98,8 @@ func TestCICancellationCannotSkipCurrentHeadRequiredCheck(t *testing.T) {
 	}
 	gate := aggregate.step(t, "Verify required gates")
 	if aggregate.Name != pinnedRequiredCheck || aggregate.ContinueOnError ||
-		gate.Run != "go run ./test/cipolicy gate" || gate.If != "" || gate.ContinueOnError {
+		gate.Run != "go run ./test/cipolicy gate" || gate.If != "always()" || gate.ContinueOnError ||
+		gate.Env["CI_CANCELLED"] != "${{ cancelled() }}" {
 		t.Fatal("the pinned current-SHA check must retain the unconditional fail-closed gate")
 	}
 }

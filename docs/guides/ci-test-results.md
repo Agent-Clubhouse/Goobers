@@ -72,7 +72,8 @@ skipped or retried.
 CI cancellation is scoped to validation jobs, with a separate group per ref,
 job, and matrix leg. A retarget dispatch shares the pull request's groups.
 The required `make ci` aggregate keeps `always()` and rejects cancelled required
-dependencies; it is never skipped because the workflow was cancelled. This
+dependencies. Its verification step also rejects explicit workflow cancellation,
+even if every dependency had already passed; it is never skipped on cancellation. This
 also applies to manual cancellation and retargets that reuse the current head
 SHA, so cancellation cannot satisfy the required check without validation.
 

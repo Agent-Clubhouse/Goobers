@@ -240,6 +240,27 @@ func TestGateCommand(t *testing.T) {
 	}
 }
 
+func TestCancelledRunRejectsOtherwiseSuccessfulGate(t *testing.T) {
+	t.Parallel()
+	for _, profile := range []string{fullProfile, portalProfile} {
+		data, err := json.Marshal(gateResults(profile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, cancelled := range []string{"false", "true"} {
+			env := map[string]string{"CI_EVENT_NAME": "pull_request", "CI_NEEDS": string(data), "CI_CANCELLED": cancelled}
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"gate"}, func(key string) string { return env[key] }, nil, &stdout, &stderr)
+			if (code == 0) != (cancelled == "false") {
+				t.Fatalf("profile=%s cancelled=%s code=%d stderr=%q", profile, cancelled, code, stderr.String())
+			}
+			if cancelled == "true" && (!strings.Contains(stderr.String(), "cancelled CI") || stdout.Len() != 0) {
+				t.Fatal("cancelled run reported a passing required gate")
+			}
+		}
+	}
+}
+
 func TestPolicyMatchesWorkflow(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))

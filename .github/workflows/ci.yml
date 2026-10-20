@@ -2341,8 +2341,10 @@ jobs:
           cache: false
 
       - name: Verify required gates
+        if: always()
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
+          CI_CANCELLED: ${{ cancelled() }}
           CI_NEEDS: ${{ toJSON(needs) }}
         # Selected jobs require success; only classified, explicitly excluded
         # backend jobs may be skipped. Missing profiles and cancellation fail.

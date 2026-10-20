@@ -47,7 +47,7 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 		}
 	}
 	gate := aggregate.step(t, "Verify required gates")
-	if gate.If != "" || gate.ContinueOnError || gate.Run != "go run ./test/cipolicy gate" {
+	if gate.If != "always()" || gate.ContinueOnError || gate.Run != "go run ./test/cipolicy gate" {
 		t.Fatal("manual aggregate must reject missing, skipped, cancelled, and failed gates")
 	}
 }
