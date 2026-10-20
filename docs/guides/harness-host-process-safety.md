@@ -114,9 +114,12 @@ This guards against a known mistake. It is not a sandbox. With Claude Code
 
 Only a sandbox that scopes signals or process IDs closes all of these.
 Goobers' Linux sandbox (bubblewrap) runs the harness in its own PID namespace,
-so host processes are out of reach. Goobers' macOS sandbox restricts file
-writes but does not scope signals, so a sandboxed claude-code stage on macOS
-still depends on this deny ([#7395](https://github.com/Agent-Clubhouse/Goobers/issues/7395)).
+so host processes are out of reach. Goobers' macOS sandbox denies signals
+except to processes in the same sandbox. A stage can still stop its own
+children, but cannot signal host processes outside its sandbox. This applies
+to every sandboxed harness and deterministic shell stage; the runner's
+process-group teardown runs outside the sandbox and remains available.
+Unsandboxed stages still need the harness-specific mitigations described here.
 
 ## codex
 
