@@ -665,7 +665,7 @@ func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSour
 		if !ok {
 			return nil, nil, fmt.Errorf("ADO selection requires an ADO provider")
 		}
-		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider), conflicts: prSelectADOConflictProvider{mergeReviewADOProvider{ADOProvider: ado}}}, nil, nil
+		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider), conflicts: prSelectADOConflictProvider{mergeReviewADOProvider{ADOProvider: ado}}, snapshots: ado}, nil, nil
 	}
 
 	token, err := providerToken(capability.ProviderPRWrite)
@@ -712,9 +712,13 @@ func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root st
 type branchPolicyPRSelectSource struct {
 	provider  adoSelectProvider
 	conflicts prSelectConflictProvider
+	snapshots *providers.ADOProvider
 }
 
 func (s branchPolicyPRSelectSource) pullRequests(ctx context.Context, repo providers.RepositoryRef, request prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	if s.snapshots != nil {
+		return s.selectionSnapshot(ctx, repo, request)
+	}
 	return pullRequestsForSelectionADO(
 		ctx, s.provider, repo, request.base, request.headPrefixes, request.authorScope,
 		request.identityFilters, request.triggerRef, request.completeness, request.expectedAuthorLogin,
