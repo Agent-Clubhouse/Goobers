@@ -70,6 +70,7 @@ type JournalOp struct {
 // journal.Run.RecordStageArtifact; a bare artifact (gate verdicts) leaves them
 // zero.
 type JournalArtifactOp struct {
+	Branch    int                  `json:"branch,omitempty"`
 	Stage     string               `json:"stage,omitempty"`
 	Attempt   int                  `json:"attempt,omitempty"`
 	Class     journal.AttemptClass `json:"class,omitempty"`
@@ -87,6 +88,7 @@ type JournalArtifactOp struct {
 // deterministically knows from history, and the projection writer adopts the
 // span by fetching Ref.Digest rather than recomputing it (#2907).
 type JournalSpanOp struct {
+	Branch     int                  `json:"branch,omitempty"`
 	Stage      string               `json:"stage,omitempty"`
 	Attempt    int                  `json:"attempt,omitempty"`
 	Class      journal.AttemptClass `json:"class,omitempty"`

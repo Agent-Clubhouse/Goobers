@@ -44,7 +44,7 @@ func (w *Writer) applyArtifact(ctx context.Context, run *liveRun, op Op) (bool, 
 		return false, err
 	}
 	run.keys[op.Key] = run.jr.Seq()
-	run.artifactRefs[a.Name] = ref
+	run.artifactRefs[artifactBranchKey(requestBranch(ctx), a.Name)] = ref
 	run.rememberArtifactKey(op.Key, ref)
 	// Committed above whatever happens here: a failed write-through fails the
 	// emit, and the retried op re-publishes from the dedup path.
@@ -62,7 +62,7 @@ func (w *Writer) recordArtifact(ctx context.Context, run *liveRun, a *ArtifactOp
 		}
 		return run.jr.RecordBranchExpectedArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
 	}
-	if a.Stage != "" {
+	if a.Stage != "" || requestBranch(ctx) != 0 {
 		return run.jr.RecordBranchStageArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)
 	}
 	return run.jr.RecordArtifactAnnotated(a.Name, a.Data, integrity, meta)
