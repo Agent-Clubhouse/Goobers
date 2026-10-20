@@ -150,8 +150,8 @@ func TestClaudeAdapterCompletionRepairKeepsNameBasedKillDeny(t *testing.T) {
 }
 
 // TestClaudeAdapterSandboxedRunKeepsNameBasedKillDeny: confinement wraps the
-// argv rather than rebuilding it, so the deny survives. It matters most on
-// macOS, where the native sandbox does not scope signals.
+// argv rather than rebuilding it, so the deny survives as defense in depth
+// alongside the native sandbox's process restrictions.
 func TestClaudeAdapterSandboxedRunKeepsNameBasedKillDeny(t *testing.T) {
 	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()

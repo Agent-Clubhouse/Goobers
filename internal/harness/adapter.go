@@ -256,7 +256,8 @@ type MCPServerFailure struct {
 // PreflightInfo describes the installed harness verified before agentic work
 // starts. Version is the harness/CLI version used for invocation provenance.
 type PreflightInfo struct {
-	Version string
+	Version  string
+	Warnings []string
 }
 
 // ConfigWarningKind identifies a non-blocking harness configuration finding.

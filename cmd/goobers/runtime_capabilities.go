@@ -742,6 +742,7 @@ func init() {
 			return runCompletionCandidates(args, stdout)
 		}),
 		command("__generate-docs", apicontract.ActionConfigTime, runGenerateDocs),
+		command("__claude-host-safety", apicontract.ActionReadOnlyNavigation, runClaudeHostSafety),
 		telemetryCLICommand(),
 		groupCommand(
 			"journal",

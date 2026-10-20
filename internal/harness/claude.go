@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -132,8 +133,9 @@ var defaultClaudeExtraArgs = []string{
 // sandbox. Shapes that still get through (verified live, Claude Code
 // 2.1.292): any `sh -c`/`bash -c` wrapper, even a literal one; `eval`;
 // `xargs -I{}`; `find -exec`; `$(command -v pkill)`; a relative `./pkill`;
-// absolute paths not listed here; and `kill $(pgrep ...)`. Only a
-// PID-namespaced or signal-scoped sandbox closes those.
+// absolute paths not listed here; and `kill $(pgrep ...)`. On supported CLI
+// versions the PreToolUse hook additionally checks the entire command text.
+// Only a PID-namespaced or signal-scoped sandbox closes arbitrary signaling.
 var claudeDeniedNameKillRules = []string{
 	"Bash(pkill:*)",
 	"Bash(killall:*)",
@@ -149,16 +151,16 @@ var claudeDeniedNameKillRules = []string{
 // claudeDeniedNameKillRules.
 //
 // The deny travels as --disallowedTools rather than an injected --settings
-// value on purpose. --settings takes a single file-or-JSON value, and an
-// operator's runner.harnessCommand may already carry one, so injecting a
+// value on purpose. --settings takes a single value, and an operator's
+// runner.harnessCommand may already carry safe inline settings, so injecting a
 // second would either clobber the operator's settings or be clobbered by
 // them. --disallowedTools is its own permission-rule source: Claude Code
 // unions it with every settings layer (an operator --settings, the
-// workspace's .claude/settings.json) and with any --disallowedTools the
+// isolated user settings) and with any --disallowedTools the
 // operator adds, and a deny from any source beats an allow from any source,
 // including --allowedTools and bypassPermissions. The result is strictly
-// additive in both directions: the operator's settings are never dropped,
-// and nothing the operator configures can remove this deny.
+// additive for accepted settings. Hook-disabling overrides are rejected
+// separately before dispatch.
 func claudeHostSafetyArgs() []string {
 	return append([]string{"--disallowedTools"}, claudeDeniedNameKillRules...)
 }
@@ -304,6 +306,14 @@ func normalizeClaudeConfig(model string, options map[string]apiextensionsv1.JSON
 	sort.Strings(names)
 	normalized := make(map[string]string, len(options))
 	for _, name := range names {
+		if name == "requireHostProcessHook" {
+			var required *bool
+			if err := json.Unmarshal(options[name].Raw, &required); err != nil || required == nil {
+				return nil, fmt.Errorf("harness option %q must be a boolean", name)
+			}
+			normalized[name] = fmt.Sprint(*required)
+			continue
+		}
 		if name != "effort" {
 			return nil, fmt.Errorf("unknown harness option %q", name)
 		}
@@ -329,11 +339,17 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: claude-code: no command configured")
 	}
+	if err := validateClaudeHostSafetyOptions(append(slices.Clone(c.Command[1:]), c.ExtraArgs...)); err != nil {
+		return PreflightInfo{}, err
+	}
 	bin := c.Command[0]
 	if _, err := exec.LookPath(bin); err != nil {
 		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q not found on PATH — install Claude Code and sign in before running agentic stages", bin)
 	}
 	env := baseEnv(c.ExtraEnvAllowlist, c.EnvUnset)
+	if err := validateClaudeHostSafetyEnv(env); err != nil {
+		return PreflightInfo{}, err
+	}
 	baseCommand := resolveHarnessCommand(c.Command)
 	versionCommand := append(append([]string(nil), baseCommand...), "--version")
 	versionProbe := fmt.Sprintf("harness: claude-code: %q --version", bin)
@@ -364,7 +380,25 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if err != nil || res.ExitCode != 0 {
 		return PreflightInfo{}, authProbeFailure(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
 	}
-	return PreflightInfo{Version: version}, nil
+	info := PreflightInfo{Version: version}
+	if err := validateClaudeHostSafetyVersion(version); err != nil {
+		info.Warnings = []string{claudeHostSafetyWarning}
+	}
+	return info, nil
+}
+
+// PreflightConfig permits an explicit per-goober requirement while retaining
+// the existing deny-list mitigation on older or unrecognized CLI versions.
+func (c *ClaudeAdapter) PreflightConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (PreflightInfo, error) {
+	normalized, err := normalizeClaudeConfig(model, options)
+	if err != nil {
+		return PreflightInfo{}, err
+	}
+	info, err := c.Preflight(ctx)
+	if err == nil && normalized["requireHostProcessHook"] == "true" {
+		err = validateClaudeHostSafetyVersion(info.Version)
+	}
+	return info, err
 }
 
 // buildClaudeArgv assembles the claude CLI invocation. The prompt is NOT an
@@ -400,6 +434,7 @@ func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID strin
 	// tool-allowlist shape can produce an argv without it. The completion
 	// repair resumes from a copy of this argv and keeps it too.
 	argv = append(argv, claudeHostSafetyArgs()...)
+	argv = append(argv, "--setting-sources", "user")
 	// "auto" is our harness-neutral default sentinel, not a Claude model ID.
 	// Omit it so Claude selects its own default, just as for an empty model.
 	if model != "" && model != "auto" {
@@ -431,6 +466,9 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	if req.Workspace == "" {
 		return Outcome{}, fmt.Errorf("harness: claude-code: RunRequest.Workspace is empty")
 	}
+	if err := validateClaudeHostSafetyOptions(append(slices.Clone(c.Command[1:]), c.ExtraArgs...)); err != nil {
+		return Outcome{}, err
+	}
 	// The self-runner tmp:ephemeral binding for this attempt, reclaimed on
 	// every exit path below.
 	ephemeralTmp, err := establishEphemeralTmp(c.Name(), c.EphemeralTmp, c.EphemeralTmpRoot)
@@ -442,6 +480,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	options, err := normalizeClaudeConfig(req.Model, req.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: invalid configuration: %w", err)
+	}
+	hookVersionErr := validateClaudeHostSafetyVersion(req.HarnessVersion)
+	if options["requireHostProcessHook"] == "true" && hookVersionErr != nil {
+		return Outcome{}, hookVersionErr
 	}
 	if err := validateToolAllowlist(c.Name(), req.Tools); err != nil {
 		return Outcome{}, err
@@ -506,6 +548,9 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	}
 	env = append(env, mcpEnvAdditions...)
 	env = normalizeAnthropicCredentialEnv(env)
+	if err := validateClaudeHostSafetyEnv(env); err != nil {
+		return Outcome{}, err
+	}
 
 	// Isolate this run from the invoking user's ambient ~/.claude: an
 	// unsandboxed run must not inherit the host's personal settings, hooks,
@@ -521,6 +566,11 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	}
 	if err := seedClaudeCredentials(ctx, env, configDir, c.keychainReader()); err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+	}
+	if hookVersionErr == nil {
+		if err := writeClaudeHostSafetySettings(configDir, c.SelfBin); err != nil {
+			return Outcome{}, fmt.Errorf("harness: claude-code: install host-process safety hook: %w", err)
+		}
 	}
 	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
 	env = overrideEnv(env, "TMPDIR", tempDir)
