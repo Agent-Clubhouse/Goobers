@@ -67,6 +67,10 @@ func (p *trustedLocalParent) Invoke(ctx context.Context, env apiv1.InvocationEnv
 		return apiv1.ResultEnvelope{}, err
 	}
 	local := childpod.LocalExecutor{Root: filepath.Join(p.source.journal.Dir(), "trusted-local-attempts"), Recorder: p.source.journal, Blobs: blobs, ModelRef: binding.ModelRef}
+	local.AdoptOutput = func(_ context.Context, out *dispatcher.SurrenderedResult) error {
+		return adoptTrustedLocalOutputs(p.source.journal, reader, out)
+	}
+
 	if binding.Ambient != nil {
 		local.Authentication = []credentials.TrustedLocalAuthentication{*binding.Ambient}
 	}

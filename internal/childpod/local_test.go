@@ -114,3 +114,31 @@ func TestLocalExecutorFreshAttemptAndCancellationStillReturnCustody(t *testing.T
 		t.Fatalf("return count=%d", returned)
 	}
 }
+
+func TestLocalOutputRefusalRetainsCustodyAfterProcessJoin(t *testing.T) {
+	request := requestFixture()
+	blobs, err := blobstore.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusal := errors.New("invalid result provenance")
+	returned := false
+	executor := LocalExecutor{Root: t.TempDir(), Blobs: blobs, Recorder: &recordFake{}, BeforeStart: func(context.Context, Request, Contract, string) error { return nil }, Returned: func(context.Context, Request, journal.Ref) error { returned = true; return nil }, AdoptOutput: func(context.Context, *dispatcher.SurrenderedResult) error { return refusal }}
+	ctx, err := credentials.WithChildCeiling(t.Context(), request.Ceiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, proof := invoke.WithWorkspaceQuiescence(ctx)
+	var workspace string
+	_, err = executor.Execute(ctx, request, func(ctx context.Context, path string) (dispatcher.SurrenderedResult, error) {
+		workspace = path
+		invoke.RegisterWorkspaceWriter(ctx)(nil)
+		return dispatcher.SurrenderedResult{}, nil
+	})
+	if !errors.Is(err, refusal) || !errors.Is(err, invoke.ErrChildCustodyPending) || proof.Verify() == nil || returned {
+		t.Fatalf("invalid output released custody: %v returned=%v", err, returned)
+	}
+	if _, err := os.Stat(workspace); err != nil {
+		t.Fatal("refused output lost diagnostic checkout", err)
+	}
+}

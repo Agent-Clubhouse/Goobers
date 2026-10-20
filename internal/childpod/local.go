@@ -35,6 +35,8 @@ type LocalExecutor struct {
 	// launch. Returned records the exact imported output and writer join.
 	BeforeStart func(context.Context, Request, Contract, string) error
 	Returned    func(context.Context, Request, journal.Ref) error
+	// AdoptOutput validates and records result provenance after writers join.
+	AdoptOutput func(context.Context, *dispatcher.SurrenderedResult) error
 }
 
 // Execute returns only after actual process owners prove quiescence and the
@@ -110,7 +112,12 @@ func (e *LocalExecutor) Execute(ctx context.Context, request Request, call func(
 	// last acknowledged tree and its Git state under a bounded independent scope.
 	owned, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 	defer cancel()
-	err = e.importReturn(owned, request, workspace, contract, expected, inputRef)
+	if e.AdoptOutput != nil {
+		err = e.AdoptOutput(owned, &out)
+	}
+	if err == nil {
+		err = e.importReturn(owned, request, workspace, contract, expected, inputRef)
+	}
 
 	if acknowledge != nil {
 		acknowledge(err)
