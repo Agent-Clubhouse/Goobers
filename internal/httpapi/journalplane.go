@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
+	runjournal "github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
@@ -148,6 +149,15 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 			for _, op := range input.Ops {
 				if op.Branch != 0 {
 					writeError(w, http.StatusForbidden, "host_branch_required", "explicit journal branch attribution requires a host principal")
+					return
+				}
+				rawOccurrence, rawAttempt := false, false
+				if op.Event != nil {
+					_, rawOccurrence = op.Event.Runner[runjournal.ChildWorkflowOccurrenceKey]
+					_, rawAttempt = op.Event.Runner[runjournal.ChildWorkflowAttemptKey]
+				}
+				if op.ChildStageStart != nil || rawOccurrence || rawAttempt {
+					writeError(w, http.StatusForbidden, "child_origin_host_only", "workload principals cannot bind child workflow origins")
 					return
 				}
 			}
