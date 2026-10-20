@@ -1244,8 +1244,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	defer captures.cleanup()
 	argv, env = captures.argv, captures.env
-	nativeTranscriptPath, usageOutputPath := captures.transcriptPath, captures.usagePath
-	repairUsage := &copilotRepairUsage{transcriptPath: nativeTranscriptPath, usagePath: usageOutputPath}
+	nativeTranscriptPath := captures.transcriptPath
+	repairUsage := &copilotRepairUsage{transcriptPath: nativeTranscriptPath, usagePath: captures.usagePath}
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
@@ -1332,7 +1332,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
 			repairUsage,
 		)
-		nativeTranscriptPath, usageOutputPath = repairUsage.transcriptPath, repairUsage.usagePath
 	}
 	out = Outcome{
 		Transcript:               result.Transcript,
@@ -1356,13 +1355,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
-	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry, repairUsage.previousTranscript))
-	applyControlledCopilotUsage(&out, runner)
-	applyCopilotUsageDocument(&out, usageOutputPath, nil)
-	repairUsage.apply(&out)
-	if req.UsageSink != nil {
-		req.UsageSink(maps.Clone(out.Metrics))
-	}
+	runErr = errors.Join(runErr, repairUsage.applyTelemetry(&out, req, runner, agentTelemetry))
 	if runErr != nil {
 		return out, runErr
 	}

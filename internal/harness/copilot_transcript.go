@@ -155,23 +155,32 @@ func readCopilotSessionTranscript(path string, limit int64) (transcriptCapture, 
 	return capture, ok
 }
 
+// Parse each bounded session independently: a tolerated incomplete EOF record
+// in one file must never become a malformed middle record in the next file.
 func readCopilotSessionTranscripts(paths []string, limit int64) (transcriptCapture, bool) {
-	var readers []io.Reader
+	var joined bytes.Buffer
+	var capture transcriptCapture
+	var dropped int64
+	converted := false
 	for _, path := range paths {
-		if path == "" {
+		native, ok := readCopilotSessionTranscript(path, limit)
+		if !ok {
 			continue
 		}
-		file, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		defer func() { _ = file.Close() }()
-		if len(readers) > 0 {
-			readers = append(readers, strings.NewReader("\n"))
-		}
-		readers = append(readers, file)
+		_, _ = joined.Write(native.data)
+		dropped += native.droppedBytes
+		capture = native // Preserve final-session metadata, never sum snapshots here.
+		converted = true
 	}
-	return convertCopilotSessionEvents(io.MultiReader(readers...), limit)
+	if !converted {
+		return transcriptCapture{}, false
+	}
+	data, dropped, err := boundCanonicalTranscript(joined.Bytes(), limit, dropped)
+	if err != nil {
+		return transcriptCapture{}, false
+	}
+	capture.data, capture.droppedBytes, capture.truncated = data, dropped, dropped > 0
+	return capture, true
 }
 
 func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, bool) {

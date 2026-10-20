@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -138,4 +139,15 @@ func sumCopilotUsage[T int64 | float64](first, second *T) *T {
 	}
 	sum := *first + *second
 	return &sum
+}
+
+func (u *copilotRepairUsage) applyTelemetry(out *Outcome, req RunRequest, runner ProcessRunner, emitter *adapterAgentEmitter) error {
+	err := applyCopilotNativeTelemetry(out, req, u.transcriptPath, emitter, u.previousTranscript)
+	applyControlledCopilotUsage(out, runner)
+	applyCopilotUsageDocument(out, u.usagePath, nil)
+	u.apply(out)
+	if req.UsageSink != nil {
+		req.UsageSink(maps.Clone(out.Metrics))
+	}
+	return err
 }

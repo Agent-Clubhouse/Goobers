@@ -136,12 +136,15 @@ func TestCopilotRepairRetainsEachSessionUsageOnce(t *testing.T) {
 func TestCopilotRepairTranscriptKeepsPartialTailTolerance(t *testing.T) {
 	var paths []string
 	for _, data := range []string{
-		`{"type":"assistant.message","data":{"messageId":"first","content":"initial"}}`,
+		"{\"type\":\"assistant.message\",\"data\":{\"messageId\":\"first\",\"content\":\"initial\"}}\n{\"type\":",
 		"{\"type\":\"assistant.message\",\"data\":{\"messageId\":\"second\",\"content\":\"repair\"}}\n{\"type\":",
 	} {
 		path := filepath.Join(t.TempDir(), "events.jsonl")
 		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 			t.Fatal(err)
+		}
+		if _, ok := readCopilotSessionTranscript(path, 1<<20); !ok {
+			t.Fatal("individual partial-tail transcript rejected")
 		}
 		paths = append(paths, path)
 	}
