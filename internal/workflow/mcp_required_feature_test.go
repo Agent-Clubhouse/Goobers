@@ -47,6 +47,7 @@ func TestCompileMaterializesMCPRequiredDefaultForDSL31Only(t *testing.T) {
 			MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
 		},
 	}
+
 	for _, tc := range []struct {
 		version      string
 		wantRequired *bool
@@ -78,5 +79,22 @@ func TestCompileMaterializesMCPRequiredDefaultForDSL31Only(t *testing.T) {
 				t.Fatal("compiler mutated the shared authoring declaration")
 			}
 		})
+	}
+}
+
+func TestMCPRequiredDefaultAppliesAtDSL31AndLater(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+	}{
+		{version: "3.0"},
+		{version: "3.1", want: true},
+		{version: "3.2", want: true},
+		{version: ""},
+		{version: "future"},
+	} {
+		if got := mcpRequiredDefaultApplies(tc.version); got != tc.want {
+			t.Errorf("mcpRequiredDefaultApplies(%q) = %v, want %v", tc.version, got, tc.want)
+		}
 	}
 }

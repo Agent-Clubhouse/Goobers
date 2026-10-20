@@ -446,7 +446,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 // requiredness fail closed; older pins preserve nil as the legacy third state.
 func MaterializeGooberForDefinition(def Definition, spec apiv1.GooberSpec) apiv1.GooberSpec {
 	out := *spec.DeepCopy()
-	if def.DSLVersion != supportmatrix.V31DSLVersion {
+	if !mcpRequiredDefaultApplies(def.DSLVersion) {
 		return out
 	}
 	for i := range out.MCPServers {
@@ -456,6 +456,11 @@ func MaterializeGooberForDefinition(def Definition, spec apiv1.GooberSpec) apiv1
 		}
 	}
 	return out
+}
+
+func mcpRequiredDefaultApplies(version string) bool {
+	order, ok := supportmatrix.CompareDSLVersions(version, supportmatrix.V31DSLVersion)
+	return ok && order >= 0
 }
 
 func materializeGoobersForDefinition(def Definition, goobers map[string]apiv1.GooberSpec) map[string]apiv1.GooberSpec {

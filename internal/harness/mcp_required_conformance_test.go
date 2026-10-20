@@ -108,6 +108,7 @@ func TestConformanceMCPServerRequiredness(t *testing.T) {
 				{name: "optional-fail", required: mcpRequiredFlag(false), dslVersion: "3.1", wantWarning: true},
 				{name: "default-omitted-is-required", dslVersion: "3.1", wantFailure: true},
 				{name: "older-pin-keeps-adapter-semantics", dslVersion: "3.0", legacy: true, wantWarning: true},
+				{name: "missing-pin-keeps-adapter-semantics", legacy: true, wantWarning: true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					workspace := t.TempDir()
@@ -124,13 +125,11 @@ func TestConformanceMCPServerRequiredness(t *testing.T) {
 						Required: tc.required,
 						Command:  "context-server",
 					}
-					if tc.dslVersion == "3.1" {
-						spec := workflow.MaterializeGooberForDefinition(
-							workflow.Definition{DSLVersion: "3.1"},
-							apiv1.GooberSpec{MCPServers: []apiv1.MCPServer{server}},
-						)
-						server = spec.MCPServers[0]
-					}
+					spec := workflow.MaterializeGooberForDefinition(
+						workflow.Definition{DSLVersion: tc.dslVersion},
+						apiv1.GooberSpec{MCPServers: []apiv1.MCPServer{server}},
+					)
+					server = spec.MCPServers[0]
 					out, err := adapter.Run(context.Background(), RunRequest{
 						Envelope:       testEnvelope(workspace, "agent:model"),
 						Workspace:      workspace,
