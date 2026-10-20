@@ -556,8 +556,9 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			Draft:              pr.IsDraft,
 			Labels:             labels,
 			CheckState:         checkState,
-			UpdatedAt:          pr.CreationDate,
-			Integrity:          apiintegrity.Unapproved,
+			// ADO exposes creationDate but no last-update timestamp in its
+			// list response. Leave UpdatedAt unknown instead of inventing one.
+			Integrity: apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
