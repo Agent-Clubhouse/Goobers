@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +53,19 @@ func (d *CodexChatDriver) Probe(ctx context.Context) (chat.Probe, error) {
 	probe := chat.Probe{Capabilities: codexChatCapabilities(d.config.StateDir != "")}
 	config := d.config
 	config.StateDir = "" // Probing must not lock or modify a resumable session.
+	if d.config.StateDir != "" {
+		if !filepath.IsAbs(d.config.StateDir) {
+			probe.Reason = chat.StartFailed
+			return probe, errors.New("codex chat StateDir must be absolute")
+		}
+		if config.Adapter != nil {
+			adapter := *config.Adapter
+			// The batch adapter may put ephemeral files under workspace/.tmp.
+			// Native probes need the same outside-workspace isolation as sessions.
+			adapter.EphemeralTmpRoot = filepath.Dir(d.config.StateDir)
+			config.Adapter = &adapter
+		}
+	}
 	session, err := d.start(ctx, config, chat.StartOptions{Workspace: config.Request.Workspace})
 	if err != nil {
 		probe.Reason = chat.HandshakeFailed
