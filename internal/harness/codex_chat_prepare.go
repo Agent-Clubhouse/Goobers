@@ -186,6 +186,12 @@ func privateCodexDirectory(path string) error {
 }
 
 func codexChatStdioServer(command string, args, envNames, tools []string) map[string]any {
+	if args == nil {
+		args = []string{}
+	}
+	if envNames == nil {
+		envNames = []string{}
+	}
 	server := map[string]any{"command": command, "args": args, "env_vars": envNames, "required": true, "enabled": true}
 	if len(tools) > 0 {
 		server["enabled_tools"] = tools
