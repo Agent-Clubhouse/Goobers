@@ -50,7 +50,14 @@ func (f *adoSelectionReadFixture) server(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(adoSelectionReadPR(n))
+			pr := adoSelectionReadPR(n)
+			for _, candidate := range f.prs {
+				if candidate["pullRequestId"] == n {
+					pr = candidate
+					break
+				}
+			}
+			_ = json.NewEncoder(w).Encode(pr)
 		case r.URL.Path == "/acme/project/_apis/policy/evaluations":
 			id := r.URL.Query().Get("artifactId")
 			id = id[strings.LastIndex(id, "/")+1:]
@@ -144,5 +151,57 @@ func TestADOSelectionPartialWebhookAvoidsUnrelatedListAndPolicies(t *testing.T) 
 	defer fixture.mu.Unlock()
 	if fixture.lists != 0 || fixture.details != 1 || strings.Join(fixture.policyIDs, ",") != "13" {
 		t.Fatalf("reads: list=%d detail=%d policies=%v", fixture.lists, fixture.details, fixture.policyIDs)
+	}
+}
+
+func TestADOSelectionSnapshotIdentityFiltersIgnoreCase(t *testing.T) {
+	for _, mode := range []string{"full", "full target", "partial target"} {
+		for _, tc := range []struct {
+			name, author, reviewer string
+			want                   int
+		}{
+			{"matching UPNs", "author@example.com", "reviewer@example.com", 1},
+			{"different author", "other@example.com", "reviewer@example.com", 0},
+			{"different reviewer", "author@example.com", "other@example.com", 0},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				pr := adoSelectionReadPR(1)
+				pr["createdBy"] = map[string]string{"uniqueName": "Author@Example.COM"}
+				pr["reviewers"] = []map[string]any{{"uniqueName": "Reviewer@Example.COM", "vote": 0}}
+				fixture := &adoSelectionReadFixture{prs: []map[string]any{pr}}
+				source := adoSelectionSourceForTest(t, fixture)
+				req := prSelectSourceRequest{
+					base: "main", headPrefixes: []string{"goobers/implementation/"}, authorScope: authorScopeGoobers,
+					completeness: prSelectCompleteSnapshot,
+					identityFilters: providers.ListPullRequestsRequest{
+						Author: tc.author, RequestedReviewer: tc.reviewer,
+					},
+				}
+				if mode != "full" {
+					req.triggerRef = "github-webhook:pull_request#1"
+				}
+				if mode == "partial target" {
+					req.completeness = prSelectPartialSnapshot
+				}
+				repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Project: "project", Name: "web"}
+				prs, _, err := source.pullRequests(t.Context(), repo, req)
+				if err != nil || len(prs) != tc.want {
+					t.Fatalf("candidates=%+v err=%v; want %d", prs, err, tc.want)
+				}
+				if tc.want > 0 && (prs[0].CheckState != providers.CheckStatePassing || prs[0].Author != "Author@Example.COM" ||
+					len(prs[0].RequestedReviewers) != 1 || prs[0].RequestedReviewers[0] != "Reviewer@Example.COM") {
+					t.Fatalf("identity spelling or checks lost: %+v", prs[0])
+				}
+				fixture.mu.Lock()
+				defer fixture.mu.Unlock()
+				wantPolicies := tc.want
+				if mode == "partial target" {
+					wantPolicies = 1
+				}
+				if len(fixture.policyIDs) != wantPolicies {
+					t.Fatalf("policy reads=%v; want %d", fixture.policyIDs, wantPolicies)
+				}
+			})
+		}
 	}
 }
