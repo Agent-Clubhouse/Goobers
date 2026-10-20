@@ -323,18 +323,15 @@ func upsertMarkerComment(ctx context.Context, poster Commenter, repository provi
 	if err != nil {
 		return err
 	}
-	// Search by stable intent identity, never by rendered prose.
-	for _, c := range comments {
-		if strings.Contains(c.Body, intent) {
-			return nil
-		}
+	if exists, err := reconcileReportDuplicates(ctx, poster, repository, comments, intent); exists || err != nil {
+		return err
 	}
 	found := false
 	for _, c := range comments {
 		if strings.Contains(c.Body, marker) {
 			found = true
 			if err := poster.UpdateComment(ctx, repository, c.ID, body); err == nil {
-				return nil
+				return reconcilePublishedReport(ctx, poster, repository, itemID, marker, intent)
 			} else if _, limited := providers.AsRateLimitError(err); limited {
 				return fmt.Errorf("update comment: %w", err)
 			}
@@ -351,5 +348,5 @@ func upsertMarkerComment(ctx context.Context, poster Commenter, repository provi
 	}); err != nil {
 		return fmt.Errorf("post comment: %w", err)
 	}
-	return nil
+	return reconcilePublishedReport(ctx, poster, repository, itemID, marker, intent)
 }

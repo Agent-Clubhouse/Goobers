@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -67,5 +68,19 @@ func TestTerminalReportGitHubAppAuthorUsesConfiguredIdentity(t *testing.T) {
 	}
 	if paths := forge.requestedPaths(); len(paths) != 0 {
 		t.Fatalf("App identity attempted GET /user: %v", paths)
+	}
+}
+
+func TestTerminalReportADODuplicateCleanupDoesNotBuildMutationProvider(t *testing.T) {
+	root, repo := adoConfiguredPATFixture(t)
+	old := newConfiguredADOProvider
+	newConfiguredADOProvider = func(string, providers.RepositoryRef) (*providers.ADOProvider, error) {
+		t.Fatal("unsupported cleanup must not build a mutation provider")
+		return nil, nil
+	}
+	t.Cleanup(func() { newConfiguredADOProvider = old })
+	c := &escalationCommenter{layout: layoutFor(root)}
+	if err := c.UpdateComment(context.Background(), repo, "20", "Duplicate of comment 10; superseded."); !errors.Is(err, gate.ErrCommentUpdateUnsupported) {
+		t.Fatalf("ADO unsupported boundary lost: %v", err)
 	}
 }

@@ -214,7 +214,7 @@ func (c *escalationCommenter) UpdateComment(ctx context.Context, repository prov
 	if repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, repository)
 		if !providerconfig.BacklogOnOtherProvider(repository, backlog) {
-			return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
+			return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh: %w", gate.ErrCommentUpdateUnsupported)
 		}
 		repository = backlog
 	}

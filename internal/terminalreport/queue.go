@@ -50,10 +50,11 @@ func effectKey(e Effect) string {
 // acknowledgements against a newer intent or a reclaimed delivery lease.
 type entry struct {
 	Effect
-	Generation string    `json:"generation"`
-	Lease      string    `json:"lease,omitempty"`
-	LeaseUntil time.Time `json:"leaseUntil,omitempty"`
-	Body       string    `json:"body,omitempty"`
+	Generation   string    `json:"generation"`
+	Lease        string    `json:"lease,omitempty"`
+	LeaseUntil   time.Time `json:"leaseUntil,omitempty"`
+	Body         string    `json:"body,omitempty"`
+	callDeadline time.Time // Acquisition-time monotonic deadline; never serialized.
 }
 
 var errDeliveryPending = errors.New("terminal report delivery already in progress")
@@ -141,7 +142,14 @@ func (q Queue) claim(ctx context.Context, key string) (entry, error) {
 		if e.Lease != "" && q.now().Before(e.LeaseUntil) {
 			return errDeliveryPending
 		}
-		e.Lease, e.LeaseUntil = crand.Text(), q.now().Add(time.Minute)
+		// Capture wall and monotonic clocks together. The persisted lease is
+		// portable across processes; the call deadline retains its acquisition-time
+		// duration and cannot gain time from a later wall-clock adjustment.
+		acquired := time.Now()
+		leaseNow := q.now()
+		e.Lease, e.LeaseUntil = crand.Text(), leaseNow.Add(reportLeaseDuration)
+		remaining := e.LeaseUntil.Sub(leaseNow) - reportLeaseSkewMargin
+		e.callDeadline = acquired.Add(min(reportCallTimeout, remaining))
 		if e.Generation == "" {
 			e.Generation = crand.Text()
 		}
@@ -155,6 +163,14 @@ func (q Queue) claim(ctx context.Context, key string) (entry, error) {
 }
 
 func (q Queue) deliver(ctx context.Context, key string, apply func(context.Context, Effect) error, publishing bool) (bool, error) {
+	release, entered := enterFlight(key)
+	if !entered {
+		if publishing {
+			return false, errDeliveryPending
+		}
+		return false, nil
+	}
+	defer release()
 	e, err := q.claim(ctx, key)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -167,7 +183,7 @@ func (q Queue) deliver(ctx context.Context, key string, apply func(context.Conte
 		}
 		return false, err
 	}
-	attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	attemptCtx, cancel := context.WithDeadline(ctx, e.callDeadline)
 	defer cancel()
 	attemptCtx = gate.WithFailureReportBody(attemptCtx, e.Body, func(body string) error {
 		return q.freeze(attemptCtx, key, e, body)
@@ -197,7 +213,10 @@ func (q Queue) freeze(ctx context.Context, key string, delivered entry, body str
 
 func (q Queue) acknowledge(ctx context.Context, key string, delivered entry, deliveryErr error) error {
 	outcome := "delivered"
-	if errors.Is(deliveryErr, ErrSuperseded) {
+	var duplicates *gate.DuplicateReportCleanupUnsupported
+	if errors.As(deliveryErr, &duplicates) {
+		outcome = "duplicate_cleanup_unsupported"
+	} else if errors.Is(deliveryErr, ErrSuperseded) {
 		outcome = "superseded"
 	} else if deliveryErr != nil {
 		outcome = "deferred"
@@ -205,7 +224,7 @@ func (q Queue) acknowledge(ctx context.Context, key string, delivered entry, del
 	if outcome == "deferred" {
 		delivered.Effect = q.deferred(delivered.Effect, deliveryErr)
 	}
-	logErr := q.record(delivered.Effect, outcome)
+	logErr := q.record(delivered.Effect, outcome, duplicates)
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	err := q.withEntry(persistCtx, key, func(path string) error {
@@ -236,7 +255,7 @@ func (q Queue) acknowledge(ctx context.Context, key string, delivered entry, del
 		}
 		return durability.SyncDir(q.Dir)
 	})
-	if errors.Is(deliveryErr, ErrSuperseded) {
+	if errors.Is(deliveryErr, ErrSuperseded) || duplicates != nil {
 		deliveryErr = nil
 	}
 	return errors.Join(deliveryErr, logErr, err)
@@ -255,16 +274,23 @@ func (q Queue) deferred(e Effect, err error) Effect {
 	return e
 }
 
-func (q Queue) record(e Effect, outcome string) error {
+func (q Queue) record(e Effect, outcome string, duplicates *gate.DuplicateReportCleanupUnsupported) error {
 	if q.Log == nil {
 		return nil
 	}
-	return q.Log(journal.Event{
+	event := journal.Event{
 		Type: journal.EventRunnerAnnotation, RunID: e.RunID, Stage: e.Stage,
 		Reason: "terminal provider report " + outcome,
 		Runner: map[string]any{"kind": "terminal_report_" + outcome, "reportKind": string(e.Kind), "itemId": e.ItemID,
 			"retryAt": e.RetryAt.UTC().Format(time.RFC3339Nano), "attempts": e.Attempts},
-	})
+	}
+	if duplicates != nil {
+		event.Reason = duplicates.Error()
+		event.Runner["canonicalCommentId"] = duplicates.Canonical.ID
+		event.Runner["canonicalCommentUrl"] = duplicates.Canonical.URL
+		event.Runner["duplicateCommentIds"] = duplicates.DuplicateIDs
+	}
+	return q.Log(event)
 }
 
 func save(path string, e entry) error {
