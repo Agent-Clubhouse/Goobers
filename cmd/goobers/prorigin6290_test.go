@@ -86,7 +86,7 @@ func TestRemediationDefersClaimlessOriginThroughReviewReentry(t *testing.T) {
 	appendEvent(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "implement"})
 	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
 		RepoURL: origin, RunID: "implement-reentry", OwnerRunID: liveOrigin6290,
-		BaseRef: "main", Branch: branch, AcquireRemoteBranch: true,
+		BaseRef: "main", Branch: branch, AcquireRemoteBranch: true, RequireExistingBranch: true,
 	})
 	if err != nil {
 		t.Fatalf("origin could not re-enter implement: %v", err)
@@ -111,7 +111,7 @@ func TestRemediationDefersClaimlessOriginThroughReviewReentry(t *testing.T) {
 	}
 	next, err := manager.Create(context.Background(), worktree.CreateOptions{
 		RepoURL: origin, RunID: "remediation-stage", OwnerRunID: "remediation-run",
-		BaseRef: "main", Branch: branch, AcquireRemoteBranch: true,
+		BaseRef: "main", Branch: branch, AcquireRemoteBranch: true, RequireExistingBranch: true,
 	})
 	if err != nil {
 		t.Fatalf("remediation could not acquire released branch: %v", err)
