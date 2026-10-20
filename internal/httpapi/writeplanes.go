@@ -55,6 +55,10 @@ type ClaimRequest struct {
 	// claimrelease.Unknown — and normalized (bounded, scrubbed) by the
 	// service. Refused on acquire and renew.
 	Reason claimrelease.Reason `json:"reason,omitzero"`
+	// ProviderCleanup asks the daemon to retain cleanup custody and remove the
+	// provider marker before releasing this exact claim incarnation.
+	ProviderCleanup bool      `json:"providerCleanup,omitempty"`
+	ClaimedAt       time.Time `json:"claimedAt,omitzero"`
 }
 
 // MaxClaimLeaseSeconds is the ceiling on ClaimRequest.LeaseSeconds: four
@@ -102,6 +106,7 @@ type ClaimEntry struct {
 	ClaimedAt      time.Time         `json:"claimedAt"`
 	RenewedAt      time.Time         `json:"renewedAt,omitzero"`
 	ExpiresAt      time.Time         `json:"expiresAt"`
+	ReleasePending bool              `json:"releasePending,omitempty"`
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
 	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
@@ -413,6 +418,11 @@ func registerClaimRoute(
 		}
 		if input.Outcome != "" && !settle {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "outcome is only valid for settle")
+			return
+		}
+		if (input.ProviderCleanup || !input.ClaimedAt.IsZero()) &&
+			(!release || !input.ProviderCleanup || input.ClaimedAt.IsZero() || input.ItemID == "") {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "providerCleanup requires a single-item release and claimedAt")
 			return
 		}
 		if !input.Reason.IsZero() && !settle && !release {
