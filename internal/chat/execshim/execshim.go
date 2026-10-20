@@ -156,15 +156,15 @@ func (s *session) Send(ctx context.Context, c []chat.ContentBlock, o chat.SendOp
 				reason = "cancelled"
 			}
 			s.emit("error", map[string]any{"code": "adapter_failed", "message": "Harness invocation failed", "fatal": reason != "cancelled"}, "")
-			s.emit("turn_ended", map[string]any{"reason": reason}, "")
+			s.emit("turn_ended", map[string]any{"reason": reason, "settled": custody == nil}, "")
 			return
 		}
 		s.emit("completion.accepted", map[string]any{"payload": json.RawMessage(out.Payload), "metrics": out.Metrics}, "")
-		s.emit("turn_ended", map[string]any{"reason": "end_turn"}, "")
+		s.emit("turn_ended", map[string]any{"reason": "end_turn", "settled": true}, "")
 	}()
 	return chat.Prompt, nil
 }
-func (s *session) Interrupt(_ context.Context) error {
+func (s *session) Interrupt(ctx context.Context) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	s.mu.Lock()
@@ -172,7 +172,11 @@ func (s *session) Interrupt(_ context.Context) error {
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		<-done
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

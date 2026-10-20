@@ -134,7 +134,7 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 		acknowledge(*pending, delivered, nil)
 		pendingAck = true
 	}
-	return driveChatEvents(ctx, runCtx, req, request, s, controls, project)
+	return driveChatEvents(ctx, runCtx, req, request, s, controls, project, emit)
 }
 
 func chatStartNote(session chat.Session, attempts []chat.Attempt) map[string]any {
@@ -177,7 +177,7 @@ func readChatCompletion(workspace, path string) ([]byte, error) {
 	return data, nil
 }
 
-func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionRequest, request harness.RunRequest, s chat.Session, controls *driverControls, project func(chat.Event) error) (harness.Outcome, *interactive.Steering, error) {
+func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionRequest, request harness.RunRequest, s chat.Session, controls *driverControls, project func(chat.Event) error, emit func(string, map[string]any) error) (harness.Outcome, *interactive.Steering, error) {
 	steering := req.Steering
 	commands := req.Controls
 	ticker := time.NewTicker(min(100*time.Millisecond, controls.timeout))
@@ -202,12 +202,17 @@ func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionReque
 				steering = nil
 				continue
 			}
-			restart, queued, err := deliverSteering(runCtx, s, steer)
-			if queued {
+			delivery, err := deliverSteering(runCtx, s, steer, request, project, emit)
+			if delivery.interrupted {
+				completion = chatCompletion{}
+				clear(controls.pending)
+				clear(controls.origins)
+			}
+			if delivery.queued {
 				completion.queued++
 			}
-			if err != nil || restart != nil {
-				return completion.out, restart, err
+			if err != nil || delivery.restart != nil {
+				return completion.out, delivery.restart, err
 			}
 		case event, ok := <-s.Events():
 			if !ok {
@@ -222,30 +227,6 @@ func driveChatEvents(ctx, runCtx context.Context, req interactive.ExecutionReque
 			}
 		}
 	}
-}
-
-func deliverSteering(ctx context.Context, s chat.Session, steer interactive.Steering) (*interactive.Steering, bool, error) {
-	requested := chat.Delivery(steer.Delivery)
-	if requested == "" {
-		requested = chat.Steer
-	}
-	if requested == chat.Queued && s.Capabilities().Queue == "none" {
-		acknowledge(steer, "", chat.ErrUnsupported)
-		return nil, false, nil
-	}
-	if steer.SteeringMode == "interrupt-and-continue" || requested == chat.Steer && !s.Capabilities().Steer {
-		if err := s.Close(); err != nil {
-			acknowledge(steer, "", err)
-			return nil, false, err
-		}
-		return &steer, false, nil
-	}
-	delivery, err := s.Send(ctx, chat.Text(steer.Text), chat.SendOptions{Delivery: requested, CommandID: steer.CommandID})
-	acknowledge(steer, delivery, err)
-	if errors.Is(err, chat.ErrClosed) {
-		return nil, false, err
-	}
-	return nil, err == nil && delivery == chat.Queued, nil
 }
 
 type chatCompletion struct {
