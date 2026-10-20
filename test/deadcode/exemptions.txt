@@ -321,3 +321,5 @@ github.com/goobers/goobers/internal/chat/chattest.Fixture.Replay # Test-only cha
 github.com/goobers/goobers/internal/chat/chattest.ReadFixture # Test-only chat driver conformance and fixture support (#7644).
 github.com/goobers/goobers/internal/chat/chattest.contains # Test-only chat driver conformance and fixture support (#7644).
 github.com/goobers/goobers/internal/chat/chattest.key # Test-only chat driver conformance and fixture support (#7644).
+[windows] github.com/goobers/goobers/internal/sandbox.validateReadBoundaries # Native read-boundary policy helper (#6524); only Linux/macOS wrappers validate roots, while Windows refuses sandbox construction. expires=2027-01-01
+[windows] github.com/goobers/goobers/internal/sandbox.checkBoundaryWrites # Native read-boundary policy helper (#6524); only Linux/macOS wrappers validate writable exceptions, while Windows refuses sandbox construction. expires=2027-01-01
