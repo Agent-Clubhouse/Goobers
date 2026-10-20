@@ -3,8 +3,9 @@ package gate
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/providers"
 	"testing"
+
+	"github.com/goobers/goobers/providers"
 )
 
 type review7671ChangingReader struct {
@@ -136,5 +137,23 @@ func TestTerminalIntentADODisplayNameCannotEstablishOwnership(t *testing.T) {
 	}
 	if own(providers.Comment{Author: "Shared Display Name"}) {
 		t.Fatal("ADO display name trusted without authenticated GUID")
+	}
+}
+
+func TestADOInfraReplayLostAckChangingLookup(t *testing.T) {
+	p := &review7671ChangingReader{fakeCommenter: &fakeCommenter{err: errors.New("lost publication acknowledgement"), commitOnError: true, updateErr: errors.New("ADO comment editing unsupported")}, readErr: errors.New("temporary label lookup failure")}
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Name: "app"}
+	apply := func() error {
+		return UpsertInfraFailureComment(context.Background(), p, repo, "42", 2, 5, "ci-poll", "run-2", "", nil)
+	}
+	if err := apply(); err == nil {
+		t.Fatal("expected lost acknowledgement")
+	}
+	p.err, p.readErr = nil, nil
+	if err := apply(); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.comments) != 1 {
+		t.Fatal("infrastructure intent duplicated after label lookup recovered")
 	}
 }
