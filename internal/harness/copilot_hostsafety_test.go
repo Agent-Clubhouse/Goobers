@@ -7,6 +7,7 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
