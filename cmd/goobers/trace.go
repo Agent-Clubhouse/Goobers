@@ -609,6 +609,16 @@ func printRunLineage(stdout io.Writer, lineage *readservice.RunLineage) {
 			pf(stdout, "inputs:   %s\n", strings.Join(names, ", "))
 		}
 	}
+
+	if lineage.HistoricalRepassCountPartial {
+		pf(stdout, "history: partial (ancestor depth limit, cycle, or unavailable source)\n")
+	}
+	if lineage.ContinuationsIncomplete {
+		pf(stdout, "continuations: incomplete (lineage index unavailable or awaiting journal ingestion)\n")
+	}
+	if lineage.ContinuationsTruncated {
+		pf(stdout, "continuations: first page only; next cursor=%s\n", lineage.ContinuationsNextCursor)
+	}
 	if len(lineage.Continuations) > 0 {
 		continuations := make([]string, len(lineage.Continuations))
 		for i, continuation := range lineage.Continuations {

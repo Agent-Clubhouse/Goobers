@@ -27,6 +27,10 @@ var declared = map[string]Dependency{
 		Name:        "claude",
 		InstallHint: "install and sign in to Claude Code",
 	},
+	"codex": {
+		Name:        "codex",
+		InstallHint: "install Codex CLI",
+	},
 	"cmd.exe": {
 		Name:        "cmd.exe",
 		InstallHint: "use the Windows command interpreter included with Windows; batch-launcher tests are Windows-only",
@@ -62,10 +66,6 @@ var declared = map[string]Dependency{
 	"go": {
 		Name:        "go",
 		InstallHint: "install the Go toolchain pinned in go.mod",
-	},
-	"grep": {
-		Name:        "grep",
-		InstallHint: "install grep (Debian/Ubuntu: apt-get install grep)",
 	},
 	"head": {
 		Name:        "head",

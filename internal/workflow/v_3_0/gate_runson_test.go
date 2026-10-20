@@ -3,7 +3,7 @@ package v30
 // gate_runson_test.go covers the gates[].runsOn half of decision 001
 // (Goobernetes-E2E-Core, #3798): agentic gates are placeable through the
 // identical runsOn block tasks carry; automated and human gates never are
-// (WF023); a placed gate must declare cpu and memory (WF023, ruling 5); the
+// (WF023); placed gate resource minimums are checked against inventory; the
 // CAP004/CAP005/structural checks read gate blocks exactly as task blocks;
 // and StagePlacements emits a requirement row per placed agentic gate after
 // the task rows, deriving harness:<reviewer harness> from the gate's goober.
@@ -65,28 +65,32 @@ func TestCompileRefusesRunsOnOnNonAgenticGate(t *testing.T) {
 	}
 }
 
-// Ruling 5: a placed gate must carry quantities. Every missing-quantity shape
-// is named in the message so the fix is a one-line edit.
-func TestCompileRefusesPlacedGateWithoutQuantities(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		runsOn *apiv1.RunsOn
-		want   string
-	}{
-		{"missing cpu", &apiv1.RunsOn{Memory: "2Gi"}, `gate "review" declares runsOn without cpu:`},
-		{"missing memory", &apiv1.RunsOn{CPU: "1000m"}, `gate "review" declares runsOn without memory:`},
-		{"missing both", &apiv1.RunsOn{OS: "linux"}, `gate "review" declares runsOn without cpu and memory:`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			def := Definition{Name: "under-provisioned", Version: 1, Spec: gatedSpecWithReviewRunsOn(tc.runsOn, nil)}
-			_, err := compileAcknowledged(def)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("Compile error = %v, want %q", err, tc.want)
+// Compilation is independent of inventory: the shared solver decides whether
+// missing gate resource minimums are warnings or placement refusals.
+func TestPlacedGateResourceMinimumsDependOnInventory(t *testing.T) {
+	for _, runsOn := range []*apiv1.RunsOn{{Memory: "2Gi"}, {CPU: "1000m"}, {}} {
+		def := Definition{Name: "review", Version: 1, Spec: gatedSpecWithReviewRunsOn(runsOn, nil)}
+		if _, err := compileAcknowledged(def); err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		requirements := StagePlacements(def, nil, nil)
+		gate := requirements[len(requirements)-1]
+		if !gate.RequireResourceMinimums {
+			t.Fatal("placed gate must carry resource completeness policy")
+		}
+		for _, distributed := range []bool{false, true} {
+			inv := runnersolve.Inventory{Runners: []runnersolve.Runner{{Name: "worker", Self: !distributed, Capabilities: []string{"harness:copilot"}}}}
+			for _, solve := range []func(runnersolve.Inventory, []runnersolve.StageRequirement) runnersolve.Result{runnersolve.Solve, runnersolve.SolveExecutable} {
+				got := solve(inv, []runnersolve.StageRequirement{gate}).Stages[0]
+				if distributed {
+					if got.Unsat == nil || got.Unsat.Kind != runnersolve.UnsatQuantity {
+						t.Fatalf("distributed result = %+v, want quantity refusal", got)
+					}
+				} else if got.Unsat != nil || len(got.Eligible) != 1 || len(got.Advisories) != 1 {
+					t.Fatalf("local result = %+v, want eligible with advisory", got)
+				}
 			}
-			if !strings.Contains(err.Error(), "ruling 5") {
-				t.Fatalf("Compile error = %v, want the ruling-5 pointer", err)
-			}
-		})
+		}
 	}
 }
 
@@ -206,7 +210,7 @@ func TestStagePlacementsEmitsPlacedAgenticGatesAfterTasks(t *testing.T) {
 		{Stage: "implement", Capabilities: []string{"go@1.26", "harness:claude-code"}, Restrictions: []string{"tmp:ephemeral"}},
 		{Stage: "local-ci", Capabilities: []string{"go@1.26", "run:shell"}, Restrictions: []string{"tmp:ephemeral"}},
 		{
-			Stage: "review", CPU: "1000m", Memory: "2Gi", Disk: "10Gi",
+			Stage: "review", CPU: "1000m", Memory: "2Gi", Disk: "10Gi", RequireResourceMinimums: true,
 			Capabilities: []string{"git", "go@1.26", "harness:copilot"},
 			Restrictions: []string{"network:allowlist", "tmp:ephemeral"},
 		},

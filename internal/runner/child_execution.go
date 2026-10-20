@@ -6,10 +6,13 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// ChildExecutionFactories are supplied only by an isolated host dispatcher.
-// Neither factory may fall back to execution on the daemon host. The dispatcher
+// ChildExecutionFactories are supplied by a source-bound daemon provider. It
 // owns placement, credentials, workspace transport and writer-termination proof.
+// Trusted-local is selected only for an instance without distributed runners;
+// a remote dispatch failure never authorizes host execution.
 type ChildExecutionFactories struct {
+	// TrustedLocal preserves ordinary host capability and self-deny checks.
+	TrustedLocal     bool
 	NewDeterministic NewDeterministicFunc
 	NewAgentic       NewAgenticFunc
 	// BorrowJournal lends the driver's existing handle to remote observation
@@ -19,6 +22,17 @@ type ChildExecutionFactories struct {
 	// VerifyTerminalCustody refuses terminalization while a physical attempt
 	// remains unresolved, including an ownerless watchdog recovery path.
 	VerifyTerminalCustody func(*journal.Run) error
+}
+
+// TrustedLocalChildFactories returns the existing local executor constructors.
+// The host must wrap them in retained-source admission, private authentication,
+// fresh attempt workspaces and writer custody before ForChildExecution. A plain
+// child context still refuses local process launches.
+func (r *Runner) TrustedLocalChildFactories() (ChildExecutionFactories, error) {
+	if r == nil || r.cfg.NewAgentic == nil || r.cfg.NewDeterministic == nil {
+		return ChildExecutionFactories{}, errors.New("local executor factories unavailable")
+	}
+	return ChildExecutionFactories{TrustedLocal: true, NewAgentic: r.cfg.NewAgentic, NewDeterministic: r.cfg.NewDeterministic}, nil
 }
 
 // ForChildExecution constructs an independent driver for exactly one admitted
@@ -36,19 +50,28 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	id.Child = &child
 	cfg := r.cfg
 	cfg.childExecution = &id
+	cfg.childTrustedLocal = factories.TrustedLocal
+	if factories.TrustedLocal {
+		cfg.RunnersDeclared = true
+	}
 	cfg.childBorrowJournal = factories.BorrowJournal
 	cfg.childTerminalCustody = factories.VerifyTerminalCustody
 	cfg.NewDeterministic, cfg.NewAgentic = factories.NewDeterministic, factories.NewAgentic
 	cfg.Escalation, cfg.ClaimedItems = nil, nil
 	cfg.Blocked, cfg.Failed, cfg.ExistingFix = nil, nil, nil
 	cfg.PrepareTerminal, cfg.FinalizeTerminal, cfg.NotifyTerminal = nil, nil, nil
-	cfg.BaselineHealth, cfg.LookPathFunc = nil, nil
+	cfg.BaselineHealth = nil
+	if !factories.TrustedLocal {
+		cfg.LookPathFunc = nil
+	}
 	cfg.ChildHandoff, cfg.ChildParentCapacity = nil, nil
 	cfg.BorrowParentJournal, cfg.AdmitParentExecution = nil, nil
 	cfg.AdditionalRepos = nil
-	// The supplied factories exclusively dispatch remote attempts; their pinned
-	// placement admission owns host capability and self-deny enforcement.
-	cfg.SelfExecutionDenied, cfg.SelfExecutionObserved = false, nil
+	// Remote providers admit their own placement. Trusted-local continues to
+	// honor the daemon's host execution restrictions.
+	if !factories.TrustedLocal {
+		cfg.SelfExecutionDenied, cfg.SelfExecutionObserved = false, nil
+	}
 	return New(cfg)
 }
 
@@ -78,7 +101,7 @@ func (r *Runner) validateChildExecution(in StartInput) error {
 	if in.Child == nil || *in.Child != *expected.Child || in.RunID != expected.RunID || in.Gaggle != expected.Gaggle || in.Machine == nil || in.Machine.Digest() != expected.WorkflowDigest || in.GooberDigest != expected.GooberDigest || r.cfg.ConfigGeneration != expected.ConfigGeneration {
 		return errors.New("runner: isolated driver cannot execute another child or source")
 	}
-	if len(in.RequiredCapabilities) != 0 {
+	if !r.cfg.childTrustedLocal && len(in.RequiredCapabilities) != 0 {
 		return errors.New("runner: isolated child capabilities must be admitted by the stage dispatcher")
 	}
 	return nil

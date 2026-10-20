@@ -1074,6 +1074,10 @@ export interface RunLineage {
     source?: string;
   }>;
   historicalRepassCount: number;
+  historicalRepassCountPartial?: boolean;
+  continuationsTruncated?: boolean;
+  continuationsNextCursor?: string;
+  continuationsIncomplete?: boolean;
 }
 
 export interface LineageRun {
@@ -2159,7 +2163,7 @@ export interface DaemonClient {
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
-  getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;

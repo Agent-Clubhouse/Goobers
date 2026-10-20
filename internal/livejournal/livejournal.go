@@ -158,6 +158,14 @@ type SpanOp struct {
 // (Adopt): Time is not replayed there at all, because the loaned handle stamps
 // every event from its owner's single clock.
 type Op struct {
+	// Branch is explicit host attribution for an engine operation. Workload
+	// principals cannot set it; an existing verified context remains authority.
+	Branch int `json:"branch,omitempty"`
+
+	// ChildStageStart is opt-in committed-origin binding for a trusted host.
+	// Existing engine walks leave it nil until child execution is qualified.
+	ChildStageStart *ChildStageStart `json:"childStageStart,omitempty"`
+
 	Kind       string                  `json:"kind"`
 	Key        string                  `json:"key"`
 	Event      *journal.Event          `json:"event,omitempty"`
@@ -196,6 +204,10 @@ type EmitRequest struct {
 
 // EmitResponse reports what the writer did with a batch.
 type EmitResponse struct {
+	// ChildOrigins contains receipts only for explicitly requested child starts,
+	// in request order. Absence on legacy responses confers no child authority.
+	ChildOrigins []ChildOriginReceipt `json:"childOrigins,omitempty"`
+
 	// Applied counts ops appended by this call.
 	Applied int `json:"applied"`
 	// Deduplicated counts ops whose idempotency key was already applied — a
@@ -321,10 +333,12 @@ type Writer struct {
 }
 
 type liveRun struct {
-	mu     sync.Mutex
-	gaggle string
-	dir    string
-	jr     *journal.Run
+	childStarts          map[string]journal.Event
+	childAppendUncertain bool
+	mu                   sync.Mutex
+	gaggle               string
+	dir                  string
+	jr                   *journal.Run
 	// clock is nil for an adopted run: the handle belongs to another driver
 	// and was constructed with that driver's clock, which this writer cannot
 	// (and must not) reach into. See Adopt.
@@ -720,9 +734,10 @@ func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
 	for _, ev := range events {
 		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
 			run.keys[key] = ev.Seq
+			run.rememberChildStart(key, ev)
 		}
 		if ev.Type == journal.EventArtifactRecorded && ev.Name != "" && ev.Ref != nil {
-			run.artifactRefs[ev.Name] = *ev.Ref
+			run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)] = *ev.Ref
 			if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok {
 				run.rememberArtifactKey(key, *ev.Ref)
 			}
@@ -751,6 +766,12 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 		return EmitResponse{}, errors.New("livejournal: emit carries no ops")
 	}
 	for i, op := range req.Ops {
+		if _, err := opBranchContext(ctx, op); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: op %d: %w", i, err)
+		}
+		if err := validateChildStart(op); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: op %d: %w", i, err)
+		}
 		if op.Key == "" {
 			return EmitResponse{}, fmt.Errorf("livejournal: op %d carries no idempotency key", i)
 		}
@@ -780,13 +801,31 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 		return EmitResponse{}, err
 	}
 	run.lastEmit = w.now()
+	if run.childAppendUncertain {
+		if err := run.reconcileChildAppend(); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: recover uncertain child append: %w", err)
+		}
+	}
 
 	var resp EmitResponse
 	for i := range req.Ops {
 		applied, err := w.applyOp(ctx, req.RunID, run, req.Ops[i])
 		if err != nil {
+			if req.Ops[i].ChildStageStart != nil {
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, fmt.Errorf("livejournal: apply child op %d for run %s: %w", i, req.RunID, err)
+			}
 			w.finishRun(req.RunID, run, &resp)
+			resp.ChildOrigins = nil
 			return resp, fmt.Errorf("livejournal: apply op %d for run %s: %w", i, req.RunID, err)
+		}
+		if req.Ops[i].ChildStageStart != nil {
+			receipt, err := run.childOriginReceipt(req.RunID, req.Ops[i])
+			if err != nil {
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, err
+			}
+			resp.ChildOrigins = append(resp.ChildOrigins, receipt)
 		}
 		if applied {
 			resp.Applied++
@@ -1063,6 +1102,11 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 // an instance annotation is stamped with, never one the op carries. It is
 // also the run the event observer is notified for.
 func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
+	ctx, err := opBranchContext(ctx, op)
+	if err != nil {
+		return false, err
+	}
+
 	if _, applied := run.keys[op.Key]; applied {
 		return false, w.republishArtifact(ctx, run, op)
 	}
@@ -1093,7 +1137,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.Branch = branch
 		}
 		if ev.Type == journal.EventGateEvaluated && ev.Name != "" {
-			ref, ok := run.artifactRefs[ev.Name]
+			ref, ok := run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)]
 			if !ok && run.adopted {
 				// The refs an adopted run starts with are a snapshot, and the
 				// handle's OWNER keeps recording artifacts through it without
@@ -1104,7 +1148,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 				// re-derive from the journal before refusing. Only on a miss:
 				// the ordinary path stays a map lookup.
 				w.refreshAdopted(run)
-				ref, ok = run.artifactRefs[ev.Name]
+				ref, ok = run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)]
 			}
 			if !ok {
 				return false, fmt.Errorf("gate.evaluated references unrecorded artifact %q", ev.Name)
@@ -1121,10 +1165,9 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.TerminalCause = &cause
 		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
-		if err := run.jr.Append(ev); err != nil {
+		if err := run.appendEventWithChildOrigin(op, &ev); err != nil {
 			return false, err
 		}
-		run.keys[op.Key] = run.jr.Seq()
 		if ev.Type == journal.EventRunFinished {
 			run.keys[terminalMarker] = run.jr.Seq()
 		}

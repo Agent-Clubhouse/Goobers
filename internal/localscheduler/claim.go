@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,6 +57,9 @@ type ClaimEntry struct {
 	ClaimedAt time.Time `json:"claimedAt"`
 	RenewedAt time.Time `json:"renewedAt,omitzero"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	// ReleasePending retains cleanup custody while provider I/O runs outside
+	// the claims lock. Only FinishProviderRelease may discard this entry.
+	ReleasePending bool `json:"releasePending,omitempty"`
 	// SharedDeadline marks admission that must not be renewed through the
 	// local-only path, including after the ledger is reopened on restart.
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
@@ -236,7 +240,7 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 
 	legacy := make(map[string]ClaimEntry)
 	for storageKey, entry := range l.entries {
-		if entry.Gaggle == "" && entry.Provider == "" {
+		if entry.Gaggle == "" && entry.Provider == "" && !entry.ReleasePending {
 			legacy[storageKey] = entry
 		}
 	}
@@ -367,6 +371,9 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	planned := make([]plannedClaim, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
+		if entry.IsPublicationClaim() {
+			continue
+		}
 		if !entry.SharedDeadline.IsZero() {
 			return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before reclaim")
 		}
@@ -454,6 +461,9 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 // holds l.mu so a checked claim cannot change before the batch is committed.
 func (l *ClaimLedger) refusePlannedClaims(planned []plannedClaim, runID string, now time.Time) (bool, string, error) {
 	for _, claim := range planned {
+		if existing := l.entries[claim.storageKey]; existing.ReleasePending {
+			return true, existing.RunID, nil
+		}
 		if historical, ok := l.historyEntry(runID, claim.storageKey); ok && historical.SharedRevoked {
 			return true, "", errors.New("localscheduler: shared execution was administratively revoked")
 		}
@@ -461,11 +471,11 @@ func (l *ClaimLedger) refusePlannedClaims(planned []plannedClaim, runID string, 
 			return true, "", errors.New("localscheduler: shared claim cannot be reclaimed through local-only admission")
 		}
 		if claim.legacyStorageKey != "" {
-			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
+			if existing, held := l.entries[claim.legacyStorageKey]; held && (existing.ReleasePending || (!existing.expired(now) && existing.RunID != runID)) {
 				return true, existing.RunID, nil
 			}
 		}
-		if existing, held := l.entries[claim.storageKey]; held && !existing.expired(now) && existing.RunID != runID {
+		if existing, held := l.entries[claim.storageKey]; held && (existing.ReleasePending || (!existing.expired(now) && existing.RunID != runID)) {
 			return true, existing.RunID, nil
 		}
 	}
@@ -491,11 +501,11 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	// An unresolved item-only claim could belong to any namespace, so it
 	// remains exclusive against every scoped claimant until its lease expires.
 	if legacyStorageKey != "" {
-		if existing, held := l.entries[legacyStorageKey]; held && !existing.expired(now) {
+		if existing, held := l.entries[legacyStorageKey]; held && (existing.ReleasePending || !existing.expired(now)) {
 			return false, existing.RunID, nil
 		}
 	}
-	if existing, held := l.entries[storageKey]; held && !existing.expired(now) && existing.RunID != runID {
+	if existing, held := l.entries[storageKey]; held && (existing.ReleasePending || (!existing.expired(now) && (existing.RunID != runID || existing.IsPublicationClaim()))) {
 		return false, existing.RunID, nil
 	}
 
@@ -611,6 +621,9 @@ func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string, reason claimr
 // a renewal racing a legitimate ownership change is stale work for the
 // caller to stop retrying, not a failure.
 func (l *ClaimLedger) RenewEntry(entry ClaimEntry, leaseDuration time.Duration) (ok bool, err error) {
+	if entry.IsPublicationClaim() {
+		return false, nil
+	}
 	if entry.Gaggle == "" || entry.Provider == "" {
 		ok, _, err = l.Claim(entry.ItemID, entry.RunID, entry.Workflow, leaseDuration)
 		return ok, err
@@ -636,6 +649,12 @@ func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner,
 	}
 	if entry.RunID != runID {
 		return nil
+	}
+	if entry.ReleasePending {
+		return ErrClaimReleasePending
+	}
+	if entry.IsPublicationClaim() && reason.Code != PublicationLockReleaseCode {
+		return errors.New("publication custody requires verified release or bounded expiry")
 	}
 	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
 		return errors.New("localscheduler: shared release requires acknowledged owner-scoped handoff")
@@ -663,14 +682,14 @@ func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner,
 // reserved for operator recovery of stuck claims and journals a distinct event
 // so the override cannot be mistaken for normal run cleanup.
 func (l *ClaimLedger) ForceRelease(itemID string) error {
-	return l.forceRelease(itemID, forceReleaseActorCLI, sharedclaim.Owner{})
+	return l.forceRelease(itemID, forceReleaseActorCLI, sharedclaim.Owner{}, "")
 }
 
 // ForceReleaseEntry force-releases entry without losing its namespace and
 // records actor in the distinct administrative journal event.
 func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if entry.Gaggle == "" || entry.Provider == "" {
-		return l.forceRelease(entry.ItemID, actor, sharedclaim.Owner{})
+		return l.forceRelease(entry.ItemID, actor, sharedclaim.Owner{}, "")
 	}
 	storageKey, err := (ClaimKey{
 		Gaggle:     entry.Gaggle,
@@ -680,10 +699,27 @@ func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if err != nil {
 		return err
 	}
-	return l.forceRelease(storageKey, actor, sharedclaim.Owner{})
+	return l.forceRelease(storageKey, actor, sharedclaim.Owner{}, "")
 }
 
-func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.Owner) error {
+// ForceReleasePublicationEntry is the explicit operator escape hatch. The
+// caller must name the exact publication key and provide an identity and reason.
+func (l *ClaimLedger) ForceReleasePublicationEntry(entry ClaimEntry, actor, reason string) error {
+	if !entry.IsPublicationClaim() || strings.TrimSpace(reason) == "" || strings.TrimSpace(actor) == "" {
+		return errors.New("publication override requires a publication key, operator identity and reason")
+	}
+	key := entry.ItemID
+	if entry.Gaggle != "" && entry.Provider != "" {
+		var err error
+		key, err = (ClaimKey{Gaggle: entry.Gaggle, Provider: entry.Provider, ExternalID: entry.ExternalID}).storageKey()
+		if err != nil {
+			return err
+		}
+	}
+	return l.forceRelease(key, actor, sharedclaim.Owner{}, reason)
+}
+
+func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.Owner, publicationReason string) error {
 	if actor == "" {
 		return errors.New("localscheduler: force-release actor is required")
 	}
@@ -691,8 +727,11 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.O
 	defer l.mu.Unlock()
 
 	entry, held := l.entries[storageKey]
-	if !held {
+	if !held || (entry.IsPublicationClaim() && publicationReason == "") {
 		return nil
+	}
+	if entry.ReleasePending {
+		return ErrClaimReleasePending
 	}
 	if owner != (sharedclaim.Owner{}) && entry.SharedOwner != owner {
 		return sharedclaim.ErrNotOwner
@@ -701,6 +740,17 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.O
 		return errors.New("localscheduler: shared force-release requires remote coordination")
 	}
 	reason := claimrelease.ForceReleased.Reason().By(actor).Normalize()
+	if entry.IsPublicationClaim() {
+		reason = claimrelease.ForceReleased.Because("publication_operator_override", publicationReason).By(actor).Normalize()
+		if l.log == nil {
+			return errors.New("publication override requires an audit journal")
+		}
+		// Record intent durably BEFORE removing custody; a journal failure must
+		// leave the quarantine intact. The ordinary release event follows below.
+		if err := l.log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Name: entry.ItemID, Gaggle: entry.Gaggle, RunID: entry.RunID, Workflow: entry.Workflow, ClaimRelease: &reason, Runner: map[string]any{"operation": "publication_override_requested", "actor": actor, "reason": publicationReason}}); err != nil {
+			return err
+		}
+	}
 	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
 	l.recordReleasedHistory(storageKey, entry, l.now(), reason)
 	delete(l.entries, storageKey)
@@ -758,7 +808,7 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 		// Expiry ends execution authority, not cleanup custody. A shared
 		// record must pass through provider-coordinated release before its
 		// persisted incarnation can be discarded, including after a crash.
-		if !entry.SharedDeadline.IsZero() {
+		if !entry.SharedDeadline.IsZero() || entry.ReleasePending {
 			continue
 		}
 		if entry.expired(now) {

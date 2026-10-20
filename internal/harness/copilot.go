@@ -348,9 +348,17 @@ func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiexten
 }
 
 func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
-	if _, err := c.launcherSessionContract(ctx); err != nil {
+	if err := refuseChildConfigProbe(ctx); err != nil {
 		return ConfigResolution{}, err
 	}
+	// Offline admission must not launch a configured wrapper, even when model
+	// discovery itself is deferred. The actual invocation verifies its contract.
+	if !c.DeferDiscovery {
+		if _, err := c.launcherSessionContract(ctx); err != nil {
+			return ConfigResolution{}, err
+		}
+	}
+
 	effectiveOptions, fallback, err := copilotFallbackOption(options)
 	if err != nil {
 		return ConfigResolution{}, err
@@ -441,6 +449,9 @@ func isDirectCopilotCommand(command []string) bool {
 }
 
 func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilotModelCapabilities, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return nil, err
+	}
 	c.modelsMu.Lock()
 	defer c.modelsMu.Unlock()
 	if c.availableModels != nil {
@@ -602,6 +613,9 @@ func normalizeResolvedCopilotConfig(model string, options map[string]apiextensio
 // Preflight verifies the Copilot CLI binary is on PATH and responds to a
 // version check, returning its reported version on success.
 func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -678,6 +692,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			// export opt-out as a stage. A v2 launcher's declared probe starts no
 			// agent session and receives its arguments exactly as declared.
 			authCommand = withCopilotNoRemoteExport(authCommand)
+			authCommand = withCopilotHostSafety(authCommand)
 		}
 		sessionTranscript := ""
 		sessionCleanup := func() {}
@@ -826,6 +841,9 @@ func (c *CopilotAdapter) authRunnerLabel() string {
 // native command; contract-aware launchers must declare equivalent operations
 // explicitly so Goobers never guesses a different executable or profile.
 func (c *CopilotAdapter) AuthCommand(ctx context.Context, operation string) ([]string, []string, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return nil, nil, err
+	}
 	if len(c.Command) == 0 {
 		return nil, nil, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -911,6 +929,9 @@ func verifyCopilotSessionTranscript(path string) error {
 // (bad path, unreadable file, empty secret) must fail loudly rather than
 // degrade into whatever login the CLI happens to have cached.
 func (c *CopilotAdapter) copilotModelToken(ctx context.Context) (string, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return "", err
+	}
 	if c.ModelCredential != nil {
 		return c.ModelCredential(ctx)
 	}
@@ -1160,6 +1181,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	argv = append(argv, extra...)
 	argv = withCopilotNoRemoteExport(argv)
+	argv = withCopilotHostSafety(argv)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
 			argv = append(argv, copilotGitHubMCPRegistrationArg(req.Envelope.Capabilities))
@@ -1202,6 +1224,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
 		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
+	}
+	if err := seedTrustedLocalCopilotAuthentication(ctx, env); err != nil {
+		return Outcome{}, err
 	}
 	if len(req.MCPServers) > 0 {
 		env, err = prepareCopilotMCP(ctx, req, env)

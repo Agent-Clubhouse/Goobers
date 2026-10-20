@@ -415,7 +415,11 @@ standing comment is marked stale, and a standing verdict status on the
 unchanged head turns pending; exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
-selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
+selectedBaseSha from Task.InputsFrom. Every published verdict carries
+standingFindings: the findings earlier reviews raised on the same head
+that no verdict answered in its dispositions (resolved with evidence,
+or rejected with a reason). A pass that leaves one standing is
+published as needs-changes (#5890). Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
 ~~~
 
@@ -825,11 +829,13 @@ $ goobers claims list --stale
 force-release a claim through the live daemon or claims.lock
 
 ~~~text
-Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
+Usage: goobers claims release [--publication-custody-reason=text] [--force] [--gaggle=name --provider=name] <item-id> [path]
 
 Print the claim holder, age, and expiry, then force-release the item.
 --force is required while the holding run is non-terminal. The override
-is recorded as claim.force_released in the instance journal. Default
+is recorded as claim.force_released in the instance journal. Publication
+locks additionally require --publication-custody-reason and audit the OS
+operator identity before release. Default
 path is ".". Scope flags are required when the item id exists in more
 than one namespace. Exit codes: 0 = released, 1 = refused/not found/
 ambiguous, 2 = usage/IO error.
@@ -2510,7 +2516,10 @@ so the stage forces a fresh review instead; --no-verdict-cache skips that
 lookup, always forcing a fresh review. It also resolves the selected PR's
 base drift deterministically (selectedBaseDrift: current|behind|unknown,
 with selectedMergeBaseSha/selectedBaseTipSha) so the reviewer is told
-whether the base moved instead of inferring it. Exit codes: 0 = context
+whether the base moved instead of inferring it, and lists as
+standingFindings the findings an earlier review raised on the selected
+head that no later review resolved or rejected, for the reviewer to
+answer (#5890). Exit codes: 0 = context
 gathered (possibly empty — no siblings is not an error), 1 = business
 error, 2 = usage/IO error.
 ~~~
@@ -2929,7 +2938,10 @@ review comment counts until answered. Feedback that
 cannot be read refuses as human-feedback-unverifiable. Comments are
 classified as pr-comment-watch classifies them, under the same
 identityMode and excludeAuthors inputs. Set false to merge over
-comments), resultFile (default merge-result.json). Successful merges
+comments), resultFile (default merge-result.json). It also refuses
+while a finding an earlier review raised on the live head stands
+unanswered: a later pass clears none without a resolved or rejected
+disposition (#5890). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked,
 skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
 (merged or not — see the result file's "merged" field), 1 = business
@@ -3342,7 +3354,8 @@ issue the merged PR's body references (Fixes/Closes/Resolves #N)
 done. When the backlog lives on another provider than the PR (a
 GitHub backlog for Azure DevOps code), only references by the
 issue's full URL count. Declared input: pullNumber (required — the
-just-merged PR).
+just-merged PR). With github:pr:review declared, withdraw native passes
+whose reviewed files were invalidated by the base movement.
 Exit codes: 0 = done (even if the PR body references no issue, or
 there are no other open PRs — both are normal outcomes, not
 errors), 1 = business error, 2 = usage/IO error.
@@ -3477,6 +3490,10 @@ identity, such a comment is that person's and counts as human.
 rebase-pr and update-behind-pr classify comments by this same rule
 before they clear needs-remediation; give them the same identityMode and
 excludeAuthors.
+
+Shared mode permits three routing attempts per PR head, recorded on the
+PR. Further attempts park it with needs-human and merge-escalated and a
+visible note; feedback remains unaddressed. A new head resets the budget.
 
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such
@@ -3799,6 +3816,9 @@ issue close-out, and sibling fan-out through the normal post-merge path;
 an open or unmerged pull request remains pending. Completed entries are
 durably skipped on later runs. Task inputs maxPullRequests and lookback
 set the same bounds (defaults: 10 and 168h; hard maximum: 100).
+With github:pr:review declared, also revisit a resumable bounded batch
+of open PR verdicts and withdraw passes invalidated by base movement,
+including external merges. Failed PRs retry without starving later pages.
 Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
 ~~~
 
@@ -5445,7 +5465,7 @@ $ goobers trace --transcripts <run-id>
 run the daemon (scheduler + runner + loopback HTTP API)
 
 ~~~text
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--recover-config-generation digest] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
@@ -5468,7 +5488,10 @@ startup after reporting each candidate.
 
 Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
-It does not skip the harness admission preflight: a workflow whose agentic
+--recover-config-generation selects and restores a retained applied catalog
+by digest after strict verification. The live candidate stays rejected;
+this does not overwrite source files or bypass retained permission checks.
+--skip-preflight does not skip the harness admission preflight: a workflow whose agentic
 stage needs a harness that fails its startup check is still refused, while
 other workflows keep running. A check that failed only because the model
 provider was rate limiting or unreachable is re-run with backoff, and the
@@ -5528,7 +5551,11 @@ merge-base or at a base commit since, is red because its base was, so
 it is updated the same way. Other candidates are routed to full
 remediation, including a PR carrying goobers:needs-remediation that has
 human feedback no Goobers response has answered: this lane clears that
-label, and the feedback needs the agentic path. Comments are classified
+label, and the feedback needs the agentic path. So is a PR whose head
+carries a finding an earlier review raised and no later review resolved
+or rejected, even under a later pass: a current branch does not heal
+it (#5890). A verdict ledger that cannot be read fails the stage.
+Comments are classified
 as pr-comment-watch classifies them, under the same identityMode
 (dedicated or shared; default dedicated) and excludeAuthors inputs; set
 them to pr-comment-watch's values. A run dispatched for one

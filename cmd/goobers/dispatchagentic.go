@@ -693,6 +693,11 @@ func (r podArtifactRecorder) Dir() string { return r.dir }
 // run's journal at all rather than being dropped because the pod is not the
 // daemon.
 func (r podArtifactRecorder) Append(ev journal.Event) error {
+	return r.AppendContext(context.Background(), ev)
+}
+
+// AppendContext bounds emission by the polling stage deadline.
+func (r podArtifactRecorder) AppendContext(ctx context.Context, ev journal.Event) error {
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	runID := os.Getenv(dispatcher.EnvRunID)
 	if daemonAPI == "" || runID == "" {
@@ -703,7 +708,7 @@ func (r podArtifactRecorder) Append(ev journal.Event) error {
 	}
 	emitter := &livejournal.HTTPEmitter{BaseURL: daemonAPI, Token: os.Getenv(dispatcher.EnvPodToken)}
 	event := ev
-	_, err := emitter.Emit(context.Background(), livejournal.EmitRequest{
+	_, err := emitter.Emit(ctx, livejournal.EmitRequest{
 		RunID:  runID,
 		Gaggle: os.Getenv(dispatcher.EnvGaggle),
 		Ops: []livejournal.Op{{

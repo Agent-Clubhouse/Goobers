@@ -13,6 +13,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlogdefaults"
+	"github.com/goobers/goobers/internal/childresult"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -197,6 +199,11 @@ func (in RunInput) previewFeaturesEnabled() bool {
 
 // RunResult is the terminal outcome of a workflow run.
 type RunResult struct {
+	// ChildResult is reserved for generated child execution. Nil preserves the
+	// exact historical root result encoding; execution remains refused until the
+	// child lifecycle is wired. WithChildResult validates and removes bulk Outputs.
+	ChildResult *childresult.TerminalReturn `json:"childResult,omitempty"`
+
 	Status     string                          `json:"status"`
 	FinalState string                          `json:"finalState,omitempty"`
 	Outputs    map[string]apiv1.ResultEnvelope `json:"outputs,omitempty"`
@@ -228,7 +235,7 @@ func HumanGateSignal(gateName string) string {
 	return "gate:" + gateName
 }
 
-const temporalHumanGateUnsupported = "engine: human gates require occurrence-bound Temporal signals and are not supported yet"
+const temporalHumanGateUnsupported = engineadmission.HumanGateUnsupported
 
 // Run is the engine's Temporal workflow function. It walks the pinned definition
 // as a state machine: tasks invoke activities to produce result envelopes; gates

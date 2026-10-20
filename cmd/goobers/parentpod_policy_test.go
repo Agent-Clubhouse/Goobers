@@ -14,6 +14,11 @@ import (
 
 func containedParentFixture(t *testing.T, change ...func(string) string) pinnedChildFixture {
 	t.Helper()
+	return containedParentHarnessFixture(t, apiv1.HarnessClaudeCode, change...)
+}
+
+func containedParentHarnessFixture(t *testing.T, selected apiv1.Harness, change ...func(string) string) pinnedChildFixture {
+	t.Helper()
 	return newPinnedChildFixture(t, func(root string) {
 		path := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
@@ -22,7 +27,7 @@ func containedParentFixture(t *testing.T, change ...func(string) string) pinnedC
 		}
 		writeFileContent(t, path, parent)
 		path = filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
-		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))
+		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: "+string(selected), 1))
 		path = filepath.Join(root, "instance.yaml")
 		var doc map[string]any
 		if err := yaml.Unmarshal([]byte(readFileContent(t, path)), &doc); err != nil {
@@ -31,10 +36,10 @@ func containedParentFixture(t *testing.T, change ...func(string) string) pinnedC
 		delete(doc, "runner")
 		doc["schemaVersion"] = 2
 		grants, _ := doc["credentials"].([]any)
-		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": "claude-code", "token": map[string]any{"env": "PARENT_TEST_MODEL_TOKEN"}})
+		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": string(selected), "token": map[string]any{"env": "PARENT_TEST_MODEL_TOKEN"}})
 		doc["engine"] = map[string]any{"hostPort": "temporal:7233"}
 		doc["api"] = map[string]any{"podTokenKeyFile": filepath.Join(root, "pod-key")}
-		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": "ghcr.io/example/parent:1", "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "capabilities": []string{"isolated-parent"}}}}
+		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": "ghcr.io/example/parent:1", "provides": map[string]any{"os": "linux", "harnesses": []string{string(selected)}, "capabilities": []string{"isolated-parent"}}}}
 		data, err := yaml.Marshal(doc)
 		if err != nil {
 			t.Fatal(err)
@@ -61,7 +66,7 @@ func TestContainedParentPlacementScopesOnlyOptedInStages(t *testing.T) {
 }
 
 func TestContainedParentPlacementRequiresIsolatedSelectedStage(t *testing.T) {
-	for _, mode := range []string{"scratch", "copilot", "no-worker", "self", "not-opted-in"} {
+	for _, mode := range []string{"scratch", "unsupported-harness", "no-worker", "self", "not-opted-in"} {
 		t.Run(mode, func(t *testing.T) {
 			f := containedParentFixture(t)
 			_, machine, err := childStageCatalog(f.cfg, f.applied, childworkflow.ParentSelection{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow, Stage: "plan"}, childworkflow.BackendRunner)
@@ -71,9 +76,9 @@ func TestContainedParentPlacementRequiresIsolatedSelectedStage(t *testing.T) {
 			switch mode {
 			case "scratch":
 				machine.Def.Spec.Tasks[0].Workspace = apiv1.WorkspaceScratch
-			case "copilot":
+			case "unsupported-harness":
 				for i := range f.applied.Goobers {
-					f.applied.Goobers[i].Spec.Harness = apiv1.HarnessCopilot
+					f.applied.Goobers[i].Spec.Harness = apiv1.Harness("unsupported")
 				}
 			case "no-worker":
 				f.cfg = &instance.Config{API: f.cfg.API}
@@ -84,6 +89,40 @@ func TestContainedParentPlacementRequiresIsolatedSelectedStage(t *testing.T) {
 			}
 			if _, err := containedParentPlacements(f.cfg, f.applied, machine); err == nil {
 				t.Fatal("unsupported placement admitted")
+			}
+		})
+	}
+}
+
+func TestContainedParentCopilotPlacement(t *testing.T) {
+	f := containedParentHarnessFixture(t, apiv1.HarnessCopilot)
+	_, machine, err := childStageCatalog(f.cfg, f.applied, childworkflow.ParentSelection{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow, Stage: "plan"}, childworkflow.BackendRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins, err := containedParentPlacements(f.cfg, f.applied, machine)
+	if err != nil || len(pins) != 1 || pins[0].Self {
+		t.Fatalf("Copilot parent placement: %v %v", pins, err)
+	}
+	for _, mode := range []string{"byo-mcp", "no-engine", "no-key", "non-linux", "self"} {
+		t.Run(mode, func(t *testing.T) {
+			f := containedParentHarnessFixture(t, apiv1.HarnessCopilot)
+			switch mode {
+			case "byo-mcp":
+				for i := range f.applied.Goobers {
+					f.applied.Goobers[i].Spec.MCPServers = []apiv1.MCPServer{{Name: "external", Command: "external"}}
+				}
+			case "no-engine":
+				f.cfg = &instance.Config{API: f.cfg.API, Runners: f.cfg.Runners}
+			case "no-key":
+				f.cfg.API.PodTokenKeyFile = ""
+			case "non-linux":
+				f.cfg.Runners[1].Provides.OS = "windows"
+			case "self":
+				f.cfg.Runners[1].Host = "self"
+			}
+			if _, err := containedParentPlacements(f.cfg, f.applied, machine); err == nil {
+				t.Fatal("Copilot bypassed containment")
 			}
 		})
 	}

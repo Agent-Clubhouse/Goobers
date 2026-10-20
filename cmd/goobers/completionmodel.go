@@ -247,6 +247,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "diagnostics", desc: "Capture deep per-stage diagnostics for hang debugging"},
 		{name: "notify", desc: "Desktop-notify on escalated/failed runs (=all for every outcome)"},
 		{name: "skip-preflight", desc: "Start despite config validation errors"},
+		{name: "recover-config-generation", takesArg: true, desc: "Restore a verified retained applied catalog by digest"},
 		{name: "watch-config", desc: "Hot-reload materialized config-directory edits (default on; instance.yaml requires restart)"},
 		{name: "drain-timeout", takesArg: true, desc: "Force shutdown after this graceful-drain duration"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
@@ -506,6 +507,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the claim"},
 		{name: "provider", takesArg: true, desc: "Provider owning the claim"},
 		{name: "force", desc: "Release a claim held by a non-terminal run"},
+		{name: "publication-custody-reason", takesArg: true, desc: "Explicitly override the named publication lock with an audited reason"},
 	},
 	"trace": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},

@@ -367,6 +367,7 @@ var commands = map[string]Command{
 	"post-merge": {
 		ResultFile: "post-merge-result.json",
 		Capabilities: []CapabilityUse{
+			optional(capability.GitHubPRReview, "without the review identity credential, native stale-base verdict withdrawal is skipped with a warning"),
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so merged pull-request inspection fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so post-merge issue updates fail at runtime"),
 		},
@@ -440,6 +441,7 @@ var commands = map[string]Command{
 	"reconcile-post-merge": {
 		ResultFile: "reconcile-post-merge-result.json",
 		Capabilities: []CapabilityUse{
+			optional(capability.GitHubPRReview, "without the review identity credential, native stale-base verdict withdrawal is skipped with a warning"),
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so late merge inspection fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so late merge issue reconciliation fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so late merge branch cleanup fails at runtime"),

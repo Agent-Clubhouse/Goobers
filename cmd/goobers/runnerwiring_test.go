@@ -4041,7 +4041,13 @@ func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ provider
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return append([]providers.Comment(nil), f.comments...), nil
+	comments := append([]providers.Comment(nil), f.comments...)
+	for i := range comments {
+		if comments[i].Author == "" {
+			comments[i].Author = "report-bot"
+		}
+	}
+	return comments, nil
 }
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
@@ -5497,4 +5503,8 @@ func TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot(t *tes
 	if !strings.HasSuffix(cfg.AzureMonitorReplayRoot, filepath.Join("telemetry-export", "azure-monitor")) {
 		t.Fatalf("AzureMonitorReplayRoot = %q, want it under the instance root's telemetry-export/azure-monitor", cfg.AzureMonitorReplayRoot)
 	}
+}
+
+func (f *blockedHandlerFakeCommenter) AuthenticatedLogin(context.Context) (string, error) {
+	return "report-bot", nil
 }

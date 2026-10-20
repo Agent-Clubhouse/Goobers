@@ -96,12 +96,6 @@ func runsOnStages(def Definition) []PlacementStage {
 //     function over its inputs and a human gate pauses for a portal decision;
 //     both evaluate in the daemon/control plane by definition, so runsOn on
 //     either is a compile error, never a silently ignored block.
-//   - Ruling 5: a placed gate must carry quantities. The gaggle floor
-//     deliberately has no cpu/memory, and an agentic review is the most
-//     expensive stage class in a lane; inheriting the floor's capabilities
-//     with no envelope would be a silent under-provision. So a gate runsOn
-//     without explicit cpu AND memory is a compile error, not a default —
-//     default-to-self would make "did my gate place?" invisible in the yaml.
 //   - A placed gate must name its reviewer. The reviewer's harness is the
 //     gate's derived requirement (DerivedGateCapabilities reads
 //     gate.Agentic.Goober); an agentic gate with runsOn but no agentic:
@@ -110,6 +104,9 @@ func runsOnStages(def Definition) []PlacementStage {
 //     (WF014) catches the shape on the config-tree path; this is the
 //     interpreter's own fail-closed arm so the API path and the CRD cannot
 //     reach placeableStages with it.
+//
+// Resource completeness is checked by the shared placement solver, where
+// local inventories can warn and distributed inventories remain strict.
 func gateRunsOnProblems(def Definition) []string {
 	var problems []string
 	for _, gate := range def.Spec.Gates {
@@ -127,18 +124,6 @@ func gateRunsOnProblems(def Definition) []string {
 				"gate %q declares runsOn but has no agentic: block naming its reviewer goober, so the reviewer's harness requirement cannot be derived and the gate could place on a runner without one (decision 001, dsl-3.0.md §2); add agentic.goober or remove runsOn",
 				gate.Name))
 			continue
-		}
-		var missing []string
-		if gate.RunsOn.CPU == "" {
-			missing = append(missing, "cpu")
-		}
-		if gate.RunsOn.Memory == "" {
-			missing = append(missing, "memory")
-		}
-		if len(missing) > 0 {
-			problems = append(problems, fmt.Sprintf(
-				"gate %q declares runsOn without %s: a placed agentic gate must declare cpu and memory explicitly — the gaggle floor carries no quantities and a review is the most expensive stage class in a lane, so an inherited envelope would silently under-provision the reviewer (decision 001 ruling 5, dsl-3.0.md §2)",
-				gate.Name, strings.Join(missing, " and ")))
 		}
 	}
 	return problems

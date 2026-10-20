@@ -136,11 +136,11 @@ func insertRun(ctx context.Context, tx *sql.Tx, id runIdentity, events []journal
 		}
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms, instance_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms, instance_id, continued_from_run_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id.RunID, id.Workflow, id.WorkflowVersion, nullIfEmpty(id.WorkflowDigest), id.Gaggle,
 		nullIfEmpty(id.Trigger.Kind), nullIfEmpty(id.Trigger.Ref), nullIfEmpty(status),
-		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt), nullIfEmpty(instanceID))
+		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt), nullIfEmpty(instanceID), id.ContinuedFromRunID)
 	if err != nil {
 		return fmt.Errorf("rollup: insert run %s: %w", id.RunID, err)
 	}

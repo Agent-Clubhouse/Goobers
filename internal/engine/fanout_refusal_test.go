@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -68,7 +69,7 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 			if !found {
 				t.Fatalf("StartInput refusal %v does not name %s on %q", err, tc.feature, tc.state)
 			}
-			if err := RefuseDefinition(tc.def.Name, tc.def.Spec); !errors.Is(err, tc.sentinel) {
+			if err := engineadmission.RefuseDefinition(tc.def.Name, tc.def.Spec); !errors.Is(err, tc.sentinel) {
 				t.Fatalf("daemon preflight: %v", err)
 			}
 			var ts testsuite.WorkflowTestSuite

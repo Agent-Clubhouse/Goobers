@@ -18,6 +18,7 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -1028,15 +1029,16 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 	if err != nil {
 		return fmt.Errorf("open instance log for slow claim lock: %w", err)
 	}
-	if err := log.Append(journal.Event{
-		Type: journal.EventClaimLockSlow,
-		Runner: map[string]any{
-			"operation":    operation,
-			"pid":          os.Getpid(),
-			"waitDuration": waitDuration.String(),
-			"holdDuration": holdDuration.String(),
-		},
-	}); err != nil {
+	details := map[string]any{
+		"operation":    operation,
+		"pid":          os.Getpid(),
+		"waitDuration": waitDuration.String(),
+		"holdDuration": holdDuration.String(),
+	}
+	if operation == claimsclient.ProviderReleaseReserveOperation || operation == claimsclient.ProviderReleaseFinalizeOperation {
+		details["itemCount"] = 1
+	}
+	if err := log.Append(journal.Event{Type: journal.EventClaimLockSlow, Runner: details}); err != nil {
 		_ = log.Close()
 		return fmt.Errorf("append slow claim lock event: %w", err)
 	}

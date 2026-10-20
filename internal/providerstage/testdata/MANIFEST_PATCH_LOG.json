@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "f9df3463a18c3a4d567a913d10c13824dbcd1d7bf8d7a33c87e99bc07374a7df",
+  "snapshotSha256": "0c35785783f6f56cc94efba14ad5d5081af64141cff95fa6aab572d6ff7693b2",
   "changes": [
     {
       "version": 1,
@@ -84,6 +84,10 @@
     {
       "version": 21,
       "description": "Version 20 broke existing configs: every merge-review pr-select written before v0.6.0-alpha.3 declares github:pr:write and stopped validating. pr-select now accepts github:pr:write as an explicit alternative to provider:pr:write at validation, so configs from both before and after version 20 validate. Runtime credential selection is unchanged. Snapshot rows gain an alternatives list; no other row changes."
+    },
+    {
+      "version": 22,
+      "description": "Add optional github:pr:review usage to post-merge and reconcile-post-merge for stale-base native verdict withdrawal (#7461). Existing workflow admission and required grants remain unchanged; without the optional review credential withdrawal is visibly skipped. Shipped workflows explicitly opt in with the owning review identity."
     }
   ]
 }

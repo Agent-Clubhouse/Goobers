@@ -538,7 +538,7 @@ func TestADOProviderGetPullRequest(t *testing.T) {
 	if summary.Author != "mona@example.com" {
 		t.Fatalf("Author = %q", summary.Author)
 	}
-	if summary.Body != "Implements PBI 100" {
-		t.Fatalf("Body = %q", summary.Body)
+	if summary.Body != "Implements PBI 100" || summary.BodyIncomplete {
+		t.Fatalf("Body = %q, incomplete=%v", summary.Body, summary.BodyIncomplete)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -42,10 +42,10 @@ func (p *Policy) workStreak() streak {
 		},
 		write: p.State.WriteFailureStreak,
 		comment: func(ctx context.Context, repo providers.RepositoryRef, itemID string, count int, stage, runID, runURL string, applying []string) error {
-			return gate.UpsertFailureComment(ctx, p.Poster, repo, itemID, count, stage, runID, runURL, applying)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.WorkFailure, Repository: repo, ItemID: itemID, Count: count, Stage: stage, RunID: runID, RunURL: runURL, Labels: applying})
 		},
 		reset: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID, runURL string) error {
-			return gate.ResetFailureComment(ctx, p.Poster, repo, itemID, runID, runURL)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.WorkFailure, Repository: repo, ItemID: itemID, RunID: runID, RunURL: runURL, Reset: true})
 		},
 	}
 }
@@ -56,12 +56,22 @@ func (p *Policy) infraStreak() streak {
 		load:      p.State.LoadInfraFailureStreak,
 		write:     p.State.WriteInfraFailureStreak,
 		comment: func(ctx context.Context, repo providers.RepositoryRef, itemID string, count int, stage, runID, runURL string, applying []string) error {
-			return gate.UpsertInfraFailureComment(ctx, p.Poster, repo, itemID, count, InfraFailureStreakThreshold, stage, runID, runURL, applying)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.InfraFailure, Repository: repo, ItemID: itemID, Count: count, Threshold: InfraFailureStreakThreshold, Stage: stage, RunID: runID, RunURL: runURL, Labels: applying})
 		},
 		reset: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID, runURL string) error {
-			return gate.ResetInfraFailureComment(ctx, p.Poster, repo, itemID, runID, runURL)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.InfraFailure, Repository: repo, ItemID: itemID, RunID: runID, RunURL: runURL, Reset: true})
 		},
 	}
+}
+
+func (p *Policy) publishReport(ctx context.Context, e terminalreport.Effect) error {
+	e.Gaggle = p.Gaggle
+	e.Attribution, _ = providers.AttributionFromContext(ctx)
+	apply := func(ctx context.Context, e terminalreport.Effect) error { return e.Apply(ctx, p.Poster) }
+	if p.Reports != nil {
+		return p.Reports.Publish(ctx, e, apply)
+	}
+	return apply(ctx, e)
 }
 
 // applyCircuitBreaker charges a genuine/work terminal to the work streak.

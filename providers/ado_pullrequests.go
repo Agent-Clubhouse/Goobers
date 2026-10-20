@@ -229,6 +229,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		return PullRequestPollResult{}, err
 	}
 	result := PullRequestPollResult{
+		Mergeable:          adoMergeable(pr.MergeStatus),
 		Number:             pr.PullRequestID,
 		Title:              pr.Title,
 		Author:             adoIdentityName(pr.CreatedBy),
@@ -244,6 +245,9 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
 		URL:                p.pullRequestWebURL(pr.adoPullRequest),
 		Integrity:          apiintegrity.Unapproved,
+	}
+	if pr.Labels != nil {
+		result.Labels = adoLabelNames(pr.Labels)
 	}
 	projectName := pr.Repository.Project.Name
 	if projectName == "" {
@@ -468,6 +472,17 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 // ListPullRequests lists active Azure DevOps pull requests matching the
 // provider-neutral base and head-prefix filters.
 func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
+	return p.listPullRequests(ctx, req, nil)
+}
+
+// ListPullRequestsWithCheckFilter retains the full metadata snapshot, resolving
+// policy checks only for candidates the caller still needs to evaluate. The
+// callback does not filter list membership or authorize additional reads.
+func (p *ADOProvider) ListPullRequestsWithCheckFilter(ctx context.Context, req ListPullRequestsRequest, shouldCheck func(PullRequestSummary) (bool, error)) ([]PullRequestSummary, error) {
+	return p.listPullRequests(ctx, req, shouldCheck)
+}
+
+func (p *ADOProvider) listPullRequests(ctx context.Context, req ListPullRequestsRequest, shouldCheck func(PullRequestSummary) (bool, error)) ([]PullRequestSummary, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return nil, err
 	}
@@ -536,35 +551,23 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		if !titleMatched {
 			continue
 		}
-		labels := adoLabelNames(pr.Labels)
-		var checkState CheckState
-		if !req.SkipCheckState {
+		summary := summarizeADOPullRequest(pr)
+		summary.URL = p.pullRequestWebURL(pr)
+		check, err := adoListNeedsChecks(req.SkipCheckState, summary, shouldCheck)
+		if err != nil {
+			return nil, err
+		}
+		if check {
 			projectName := pr.Repository.Project.Name
 			if projectName == "" {
 				projectName = p.project(req.Repository)
 			}
-			checkState, _, err = p.pollPullRequestPolicies(ctx, projectName, pr.Repository.Project.ID, strconv.Itoa(pr.PullRequestID), nil)
+			summary.CheckState, _, err = p.pollPullRequestPolicies(ctx, projectName, pr.Repository.Project.ID, strconv.Itoa(pr.PullRequestID), nil)
 			if err != nil {
 				return nil, err
 			}
 		}
-		out = append(out, PullRequestSummary{
-			ID:                 strconv.Itoa(pr.PullRequestID),
-			Number:             pr.PullRequestID,
-			URL:                p.pullRequestWebURL(pr),
-			Title:              pr.Title,
-			Author:             author,
-			RequestedReviewers: requestedReviewers,
-			Head:               head,
-			Base:               strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
-			HeadSHA:            pr.LastMergeSourceCommit.CommitID,
-			BaseSHA:            pr.LastMergeTargetCommit.CommitID,
-			Draft:              pr.IsDraft,
-			Labels:             labels,
-			CheckState:         checkState,
-			UpdatedAt:          pr.CreationDate,
-			Integrity:          apiintegrity.Unapproved,
-		})
+		out = append(out, summary)
 	}
 	return out, nil
 }
@@ -643,6 +646,8 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 }
 
 type adoPullRequest struct {
+	MergeStatus           string        `json:"mergeStatus,omitempty"`
+	Description           string        `json:"description"`
 	PullRequestID         int           `json:"pullRequestId"`
 	URL                   string        `json:"url"`
 	Status                string        `json:"status"`
@@ -665,13 +670,11 @@ type adoPullRequestsResponse struct {
 }
 
 // adoPullRequestDetail extends adoPullRequest with the fields a single-PR GET
-// returns that a list does not: description and reviewers (for
-// review-decision mapping). The embedded adoPullRequest already carries
+// returns beyond the list projection. The embedded adoPullRequest carries
 // Repository, which this type relies on for the project identity needed to
 // key policy evaluations.
 type adoPullRequestDetail struct {
 	adoPullRequest
-	Description string `json:"description"`
 	// MergeStatus/MergeID/LastMergeCommit/CompletionOptions/
 	// AutoCompleteSetBy back the landing surfaces (CONF-3 #2076, design
 	// doc §4): MergeStatus is the completion job's own outcome
@@ -679,7 +682,6 @@ type adoPullRequestDetail struct {
 	// "notSet"), LastMergeCommit is the landed commit once MergeStatus is
 	// "succeeded", and AutoCompleteSetBy is present iff auto-complete is
 	// currently armed (nil once ADO clears it — completion or eviction).
-	MergeStatus       string                `json:"mergeStatus,omitempty"`
 	MergeID           string                `json:"mergeId,omitempty"`
 	LastMergeCommit   adoCommitRef          `json:"lastMergeCommit"`
 	CompletionOptions *adoCompletionOptions `json:"completionOptions,omitempty"`
@@ -899,5 +901,46 @@ func adoChangedFileStatus(changeType string) string {
 		return "renamed"
 	default:
 		return "modified"
+	}
+}
+
+func adoListNeedsChecks(skip bool, pr PullRequestSummary, filter func(PullRequestSummary) (bool, error)) (bool, error) {
+	if skip {
+		return false, nil
+	}
+	if filter != nil {
+		return filter(pr)
+	}
+	return true, nil
+}
+
+func summarizeADOPullRequest(pr adoPullRequest) PullRequestSummary {
+	return PullRequestSummary{
+		Mergeable: adoMergeable(pr.MergeStatus),
+		ID:        strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID,
+		Title: pr.Title, Author: adoIdentityName(pr.CreatedBy),
+		RequestedReviewers: adoRequestedReviewerNames(pr.Reviewers),
+		State:              adoPullRequestState(pr.Status), Merged: strings.EqualFold(pr.Status, "completed"),
+		Head:    strings.TrimPrefix(pr.SourceRefName, "refs/heads/"),
+		Base:    strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
+		HeadSHA: pr.LastMergeSourceCommit.CommitID, BaseSHA: pr.LastMergeTargetCommit.CommitID,
+		Draft: pr.IsDraft, Labels: adoLabelNames(pr.Labels),
+		// The list exposes creationDate, not an update time; leave UpdatedAt unknown.
+		Body: pr.Description, BodyIncomplete: true, Integrity: apiintegrity.Unapproved,
+	}
+}
+
+// adoMergeable distinguishes a confirmed merge conflict from pending computation
+// and policy/infrastructure failures, which do not prove a textual conflict.
+func adoMergeable(status string) *bool {
+	switch status {
+	case "conflicts":
+		value := false
+		return &value
+	case "succeeded":
+		value := true
+		return &value
+	default:
+		return nil
 	}
 }

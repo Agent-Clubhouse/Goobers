@@ -67,6 +67,7 @@ func (w *workerSeams) admitSelfExecution(stage string) error {
 }
 
 func withSelfExecutionPolicy(rc runner.Config, cfg *instance.Config, tel *telemetry.Client) runner.Config {
+	rc.TrustedLocalParents = trustedLocalChildren(cfg)
 	rc.SelfExecutionDenied = cfg.SelfExecutionDenied()
 	rc.SelfExecutionObserved = selfExecutionObserver(cfg, tel)
 	return rc

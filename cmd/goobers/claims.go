@@ -63,6 +63,8 @@ type claimAdminRequest struct {
 	ExpectedClaimedAt time.Time `json:"expectedClaimedAt,omitempty"`
 	Force             bool      `json:"force,omitempty"`
 	Actor             string    `json:"actor,omitempty"`
+	PublicationReason string    `json:"publicationReason,omitempty"`
+	Operator          string    `json:"operator,omitempty"`
 	CreatedAt         time.Time `json:"createdAt"`
 }
 
@@ -219,10 +221,12 @@ func runClaimsActive(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const claimsReleaseHelp = "Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n" +
+const claimsReleaseHelp = "Usage: goobers claims release [--publication-custody-reason=text] [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n" +
 	"Print the claim holder, age, and expiry, then force-release the item.\n" +
 	"--force is required while the holding run is non-terminal. The override\n" +
-	"is recorded as claim.force_released in the instance journal. Default\n" +
+	"is recorded as claim.force_released in the instance journal. Publication\n" +
+	"locks additionally require --publication-custody-reason and audit the OS\n" +
+	"operator identity before release. Default\n" +
 	"path is \".\". Scope flags are required when the item id exists in more\n" +
 	"than one namespace. Exit codes: 0 = released, 1 = refused/not found/\n" +
 	"ambiguous, 2 = usage/IO error.\n"
@@ -233,6 +237,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "gaggle owning the claim")
 	provider := fs.String("provider", "", "provider owning the claim")
 	force := fs.Bool("force", false, "release a claim held by a non-terminal run")
+	publicationReason := fs.String("publication-custody-reason", "", "explicitly override the named publication lock with an audited reason")
 	fs.Usage = helpUsage(stderr, "claims release")
 	itemID, root, ok := parseRequiredArgOptionalRoot(fs, args)
 	if !ok {
@@ -294,6 +299,8 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		ExpectedClaimedAt: entry.ClaimedAt,
 		Force:             *force,
 		Actor:             claimAdminActorCLI,
+		PublicationReason: *publicationReason,
+		Operator:          fmt.Sprintf("uid:%d", os.Getuid()),
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -454,7 +461,7 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 				return nil
 			}
 			layout := instance.NewLayout(filepath.Dir(schedulerDir))
-			if err := forceReleaseClaim(context.Background(), ledger, localLifecycleSharedClaimResolver(layout), entry, req.Actor); err != nil {
+			if err := releaseAdminClaim(ledger, layout, entry, req); err != nil {
 				return err
 			}
 			resp.Released = &entry
@@ -615,4 +622,19 @@ func sweepPendingClaimAdminRequests(
 			return resp
 		},
 	)
+}
+
+// The generic force-release path deliberately cannot override publication
+// custody. This explicit operator request is the sole administrative opt-in.
+func releaseAdminClaim(ledger *localscheduler.ClaimLedger, layout instance.Layout, entry localscheduler.ClaimEntry, req claimAdminRequest) error {
+	if entry.IsPublicationClaim() {
+		if strings.TrimSpace(req.PublicationReason) == "" {
+			return errors.New("publication custody requires --publication-custody-reason naming why early release is safe")
+		}
+		return ledger.ForceReleasePublicationEntry(entry, req.Operator, req.PublicationReason)
+	}
+	if req.PublicationReason != "" {
+		return errors.New("--publication-custody-reason requires an exact publication-lock key")
+	}
+	return forceReleaseClaim(context.Background(), ledger, localLifecycleSharedClaimResolver(layout), entry, req.Actor)
 }

@@ -108,9 +108,65 @@
     "elected": {
       "type": "boolean",
       "description": "PR-lifecycle only (PRL-021): whether this PR was the single-lander election's deterministic winner for its overlap cluster at the moment this verdict was published."
+    },
+    "ledgerGeneration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Runner-owned committed publication generation; zero denotes legacy records."
+    },
+    "dispositions": {
+      "type": "array",
+      "description": "PR-lifecycle only (#5890): explicit answers to findings an earlier verdict raised on the same head. Such a finding stays outstanding until a later verdict resolves it with evidence or rejects it with a reason.",
+      "items": { "$ref": "#/$defs/disposition" }
+    },
+    "standingFindings": {
+      "type": "array",
+      "description": "PR-lifecycle only (#5890), runner-owned: findings earlier verdicts raised on this head that no verdict has dispositioned, apart from the ones this verdict raises itself. Carried on every published record, whatever its decision.",
+      "items": { "$ref": "#/$defs/finding" }
     }
   },
   "$defs": {
+    "disposition": {
+      "description": "One explicit answer to an earlier finding on the same head.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["findingId", "outcome"],
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "resolved" } } },
+          "then": { "required": ["evidence"], "properties": { "evidence": { "type": "string", "pattern": "\\S" } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "rejected" } } },
+          "then": { "required": ["reason"], "properties": { "reason": { "type": "string", "pattern": "\\S" } } }
+        }
+      ],
+      "properties": {
+        "findingId": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "The id of the earlier finding being answered, copied verbatim."
+        },
+        "findingGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Copy the standing finding ledgerGeneration. Zero answers only a legacy finding."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["resolved", "rejected"],
+          "description": "resolved: the reviewed diff already addresses the finding. rejected: the finding does not hold."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "Where the reviewed diff addresses the finding. Required when outcome is resolved."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the finding does not hold. Required when outcome is rejected."
+        }
+      }
+    },
     "finding": {
       "description": "One actionable or informational review observation.",
       "type": "object",
@@ -121,6 +177,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Stable finding identity copied across repasses; assigned by the runner when omitted on the first occurrence."
+        },
+        "ledgerGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Runner-owned finding instance generation. Preserved while this unchanged finding stays open."
         },
         "learningSignature": {
           "type": "string",

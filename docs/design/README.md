@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 14 |
+| `draft` | 16 |
 | `approved` | 25 |
 | `implemented` | 29 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **78** |
+| **Total** | **80** |
 
 ## `docs/adr/`
 
@@ -50,6 +50,7 @@ word — read the page, not this table, before depending on it.
 | [DSL 3.0](dsl-3.0.md) | `approved` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: DSL Version Lifecycle & Multi-Version Runtime](dsl-version-lifecycle.md) | `implemented` | — | — | #860, #861, #862, #863, #864, #865, #866, #867, #868, #869 | — | — | — |
 | [Design: an e2e soak harness for load-dependent failures](e2e-soak-harness.md) | `approved` | — | — | — | #1480, #1481 | — | — |
+| [Design: Child workflows and conditional fan-out on the Temporal engine](engine-child-workflows.md) | `draft` | distributed engine, admission, journal, workspaces, capacity | — | — | — | — | — |
 | [Design: EvalSuite CI gating, baseline management & alerting](evals-ci-gating.md) | `historical` | — | — | — | — | — | — |
 | [Design: EvalSuite — end-to-end workflow evaluation](evals-suite.md) | `historical` | — | — | — | — | — | — |
 | [External call-out stages](external-call-out-stages.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
@@ -83,6 +84,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |
 | [Decision: dedicated workflows own repository and test-suite quality](test-suite-quality-workflow.md) | `implemented` | — | — | #1568, #1489 | — | — | — |
 | [Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels](trust-boundary-hardening.md) | `approved` | — | — | — | — | — | — |
+| [Design: trusted-local child execution](trusted-local-child-workflows.md) | `draft` | — | — | — | — | — | — |
 | [Design: Tutor v2 — version-aware, instance-scoped process self-improvement](tutor-redesign.md) | `implemented` | — | — | #1192, #1193, #1194, #1213, #1214, #1215, #1216, #1217, #1218, #1219 | — | — | — |
 | [Design: Unattended operation — an instance that survives a week without an operator](unattended-operation.md) | `draft` | — | — | — | — | — | — |
 | [Unified index-backed run reads](unified-index-backed-run-reads.md) | `superseded` | — | — | — | — | [`portal-read-architecture.md`](portal-read-architecture.md) | — |

@@ -47,7 +47,7 @@ type ADOProvider struct {
 	jitter           func(time.Duration) time.Duration
 
 	stateMu         sync.RWMutex
-	stateCategories map[string][]adoWorkItemState
+	stateCategories map[string]adoStateCategoryCache
 	// doneStates decides when a predecessor stops blocking (ADO-N32); the
 	// zero value means the default Resolved, Completed and Removed
 	// categories.
@@ -706,7 +706,8 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			return p.deliveredCredentialRejected(resp, method, endpoint, authRetried)
 		},
 		isRateLimited: func(resp *http.Response) bool {
-			return resp.StatusCode == http.StatusTooManyRequests
+			return (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) &&
+				rateLimitResponse(resp.StatusCode, resp.Header.Get("Retry-After"), resp.Header.Get("X-RateLimit-Remaining"), resp.Header.Get("X-RateLimit-Reset"))
 		},
 		planRateLimit:    p.rateLimitPlan,
 		observeRateLimit: p.observeRateLimit,
@@ -774,6 +775,14 @@ func (p *ADOProvider) invalidateCredential() bool {
 func (p *ADOProvider) rateLimitPlan(resp *http.Response, endpoint string, attempt int) (time.Duration, RateLimitEvent) {
 	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	serverDelay, directed := retryAfterDelay(raw, p.now())
+	resetRaw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset"))
+	var reset time.Time
+	if seconds, err := strconv.ParseInt(resetRaw, 10, 64); err == nil && seconds > 0 {
+		reset = time.Unix(seconds, 0).UTC()
+		if delay := reset.Sub(p.now()); delay > serverDelay {
+			serverDelay, directed = delay, true
+		}
+	}
 	wait := serverDelay
 	if !directed || serverDelay <= 0 {
 		wait = fallbackBackoff(attempt, p.jitter)
@@ -788,6 +797,9 @@ func (p *ADOProvider) rateLimitPlan(resp *http.Response, endpoint string, attemp
 		Status:        resp.StatusCode,
 		RetryAfter:    serverDelay,
 		RetryAfterRaw: raw,
+		Reset:         reset,
+		ResetRaw:      resetRaw,
+		RemainingRaw:  strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")),
 		Attempt:       attempt,
 	}
 	if remaining, known := adoRemainingHeader(resp); known {

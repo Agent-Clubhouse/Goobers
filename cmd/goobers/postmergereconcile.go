@@ -32,9 +32,10 @@ const (
 )
 
 type postMergeReconcileLedger struct {
-	Version        int                                `json:"version"`
-	Entries        map[string]postMergeReconcileEntry `json:"entries"`
-	OpenPRScanPage map[string]int                     `json:"openPRScanPage,omitempty"`
+	VerdictBaseScans map[string]verdictBaseScan         `json:"verdictBaseScans,omitempty"`
+	Version          int                                `json:"version"`
+	Entries          map[string]postMergeReconcileEntry `json:"entries"`
+	OpenPRScanPage   map[string]int                     `json:"openPRScanPage,omitempty"`
 }
 
 type postMergeReconcileEntry struct {
@@ -80,6 +81,9 @@ const reconcilePostMergeHelp = "Usage: goobers reconcile-post-merge [--max N] [-
 	"an open or unmerged pull request remains pending. Completed entries are\n" +
 	"durably skipped on later runs. Task inputs maxPullRequests and lookback\n" +
 	"set the same bounds (defaults: 10 and 168h; hard maximum: 100).\n" +
+	"With github:pr:review declared, also revisit a resumable bounded batch\n" +
+	"of open PR verdicts and withdraw passes invalidated by base movement,\n" +
+	"including external merges. Failed PRs retry without starving later pages.\n" +
 	"Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.\n"
 
 func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
@@ -150,6 +154,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	verdictErr := reconcileNativeBaseVerdicts(ctx, root, provider, repo, providerInput("base", providerBaseBranch()), *limit, stderr)
 	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, root, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
 	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
@@ -162,6 +167,9 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
 		report.Scanned, report.Reconciled, report.Pending, report.Expired)
+	if verdictErr != nil {
+		unparkErrs = append(unparkErrs, verdictErr)
+	}
 	if len(unparkErrs) > 0 {
 		return failProviderStage(stderr, "reconcile open pull request parks", errors.Join(unparkErrs...), "")
 	}
@@ -741,9 +749,10 @@ func withPostMergeReconcileSession(ctx context.Context, root string, fn func(*po
 
 func emptyPostMergeReconcileLedger() postMergeReconcileLedger {
 	return postMergeReconcileLedger{
-		Version:        postMergeReconcileVersion,
-		Entries:        map[string]postMergeReconcileEntry{},
-		OpenPRScanPage: map[string]int{},
+		VerdictBaseScans: map[string]verdictBaseScan{},
+		Version:          postMergeReconcileVersion,
+		Entries:          map[string]postMergeReconcileEntry{},
+		OpenPRScanPage:   map[string]int{},
 	}
 }
 
@@ -763,6 +772,9 @@ func decodePostMergeReconcileLedger(value stateclient.Value) (postMergeReconcile
 	}
 	if ledger.OpenPRScanPage == nil {
 		ledger.OpenPRScanPage = map[string]int{}
+	}
+	if ledger.VerdictBaseScans == nil {
+		ledger.VerdictBaseScans = map[string]verdictBaseScan{}
 	}
 	ledger.Entries = canonicalizePostMergeReconcileEntries(ledger.Entries)
 	return ledger, nil

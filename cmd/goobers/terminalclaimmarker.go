@@ -253,11 +253,45 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 	defer cancel()
 	reason := claimHolderReleaseReason(l, runID)
 	for _, entry := range entries {
-		if _, err := release(ctx, providers.ClaimWorkItemRequest{
-			Repository: repo,
-			ID:         claimEntryExternalID(entry),
-			RunID:      runID,
-			Reason:     reason,
+		if entry.ReleasePending {
+			ledger, err := fileClaimLedger(l)
+			if err == nil {
+				_, err = ledger.(claimsclient.ProviderReleaser).ReleaseWithProvider(ctx, entry, reason, func(ctx context.Context) error {
+					_, err := release(ctx, providers.ClaimWorkItemRequest{
+						Repository: repo, ID: claimEntryExternalID(entry), RunID: runID,
+						LedgerAuthorized: true, Reason: reason,
+					})
+					return err
+				})
+			}
+			if err != nil {
+				recordClaimMarkerReleaseError(log, entry, err)
+			}
+			continue
+		}
+		if err := claimProviderReleaseLock(l)(claimsclient.KeyForEntry(entry), func() error {
+			// A bulk release may have reserved or finalized this snapshot while
+			// terminal cleanup waited. Never repeat provider I/O after it can
+			// have admitted a successor, or bypass its durable retry custody.
+			ledger, err := fileClaimLedger(l)
+			if err != nil {
+				return err
+			}
+			current, err := ledger.ForRunAll(ctx, runID)
+			if err != nil {
+				return err
+			}
+			for _, candidate := range current {
+				if claimsclient.KeyForEntry(candidate) != claimsclient.KeyForEntry(entry) ||
+					!candidate.ClaimedAt.Equal(entry.ClaimedAt) || candidate.ReleasePending {
+					continue
+				}
+				_, err := release(ctx, providers.ClaimWorkItemRequest{
+					Repository: repo, ID: claimEntryExternalID(entry), RunID: runID, Reason: reason,
+				})
+				return err
+			}
+			return nil
 		}); err != nil {
 			recordClaimMarkerReleaseError(log, entry, err)
 		}

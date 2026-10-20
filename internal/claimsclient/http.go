@@ -22,12 +22,14 @@ import (
 // the daemon's handler surface (the same reason internal/dispatcher restates
 // MintedCredential).
 type claimRequest struct {
-	Gaggle       string `json:"gaggle,omitempty"`
-	Provider     string `json:"provider,omitempty"`
-	ItemID       string `json:"itemId,omitempty"`
-	RunID        string `json:"runId"`
-	Workflow     string `json:"workflow,omitempty"`
-	LeaseSeconds int    `json:"leaseSeconds,omitempty"`
+	Gaggle          string    `json:"gaggle,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	ItemID          string    `json:"itemId,omitempty"`
+	RunID           string    `json:"runId"`
+	Workflow        string    `json:"workflow,omitempty"`
+	LeaseSeconds    int       `json:"leaseSeconds,omitempty"`
+	ProviderCleanup bool      `json:"providerCleanup,omitempty"`
+	ClaimedAt       time.Time `json:"claimedAt,omitzero"`
 	// Reason is release-only (#4421); omitted when zero so the request shape
 	// of every other route is unchanged.
 	Reason claimrelease.Reason `json:"reason,omitzero"`
