@@ -661,11 +661,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
 	c.verifyLauncherUsageOutput(ctx, version, args)
-	capabilityCommand := c.Command
-	if c.RequireLauncherContract || c.ExtraArgs != nil {
-		capabilityCommand = nil // custom invocation semantics need launcher evidence
-	}
-	capabilities, err := probeRequiredCLIFlags(ctx, c.runner(), capabilityCommand, "copilot", []string{"--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), copilotRequiredPublicOptions)
+	capabilities, err := c.preflightPublicCapabilities(ctx)
 	if err != nil {
 		return PreflightInfo{}, err
 	}

@@ -83,3 +83,11 @@ func advertisedCLIOptions(help string) []string {
 	}
 	return options
 }
+
+func (c *CopilotAdapter) preflightPublicCapabilities(ctx context.Context) (ReadinessCheck, error) {
+	command := c.Command
+	if c.RequireLauncherContract || c.ExtraArgs != nil {
+		command = nil
+	}
+	return probeRequiredCLIFlags(ctx, c.runner(), command, "copilot", []string{"--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), copilotRequiredPublicOptions)
+}
