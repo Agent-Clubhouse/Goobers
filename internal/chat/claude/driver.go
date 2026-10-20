@@ -34,6 +34,7 @@ type Driver struct {
 	ControlTimeout time.Duration
 }
 
+// ID returns the stable native transport identity.
 func (d *Driver) ID() string { return "claude_stream_json" }
 func capabilities() chat.Capabilities {
 	c := chat.MinimalCapabilities()
@@ -102,6 +103,8 @@ func stripHostSession(env []string) []string {
 	}
 	return out
 }
+
+// Probe performs a zero-prompt initialize handshake and joins the probe process.
 func (d *Driver) Probe(ctx context.Context) (chat.Probe, error) {
 	p := chat.Probe{Capabilities: capabilities()}
 	session, err := d.Start(ctx, d.ProbeOptions)
@@ -118,6 +121,8 @@ func (d *Driver) Probe(ctx context.Context) (chat.Probe, error) {
 	}
 	return p, nil
 }
+
+// Start launches a hardened, owned process and completes its control handshake.
 func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -246,9 +251,14 @@ type Session struct {
 var _ chat.Driver = (*Driver)(nil)
 var _ chat.Session = (*Session)(nil)
 
-func (s *Session) NativeID() string                { s.mu.Lock(); defer s.mu.Unlock(); return s.norm.nativeID }
+// NativeID returns the CLI identity, available after the first system/init frame.
+func (s *Session) NativeID() string { s.mu.Lock(); defer s.mu.Unlock(); return s.norm.nativeID }
+
+// Capabilities reports the implemented native operations.
 func (s *Session) Capabilities() chat.Capabilities { return capabilities() }
-func (s *Session) Events() <-chan chat.Event       { return s.stream.Events() }
+
+// Events returns the bounded normalized event stream.
+func (s *Session) Events() <-chan chat.Event { return s.stream.Events() }
 func (s *Session) emit(kind string, data object, command string) {
 	if !s.stream.Emit(kind, data, command) {
 		if s.failed.CompareAndSwap(false, true) {
@@ -453,6 +463,8 @@ func (s *Session) respondAsync(id string, response object) {
 		}
 	}()
 }
+
+// Send delivers text using a prompt or native next/later priority.
 func (s *Session) Send(ctx context.Context, blocks []chat.ContentBlock, o chat.SendOptions) (chat.Delivery, error) {
 	if _, err := chat.PlainText(blocks); err != nil {
 		return "", err
@@ -502,6 +514,8 @@ func (s *Session) Send(ctx context.Context, blocks []chat.ContentBlock, o chat.S
 	s.emit("command.delivered", object{"delivery": delivery}, o.CommandID)
 	return delivery, nil
 }
+
+// Interrupt requests cancellation without claiming writer quiescence.
 func (s *Session) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
 	s.norm.interrupting = true
@@ -509,6 +523,8 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	_, err := s.control(ctx, object{"subtype": "interrupt"})
 	return err
 }
+
+// SetLevel clamps the requested mode to the immutable host ceiling.
 func (s *Session) SetLevel(ctx context.Context, level chat.Level) (chat.Level, error) {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
@@ -522,6 +538,8 @@ func (s *Session) SetLevel(ctx context.Context, level chat.Level) (chat.Level, e
 	}
 	return level, err
 }
+
+// SetModel changes the live model; empty or auto selects the CLI default.
 func (s *Session) SetModel(ctx context.Context, model string) error {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
@@ -586,6 +604,8 @@ func (s *Session) respond(ctx context.Context, id string, response object, quest
 	s.resolve(id, r, str(response["behavior"]))
 	return nil
 }
+
+// RespondPermission answers a pending permission without persistent grants.
 func (s *Session) RespondPermission(ctx context.Context, id string, r chat.PermissionResponse) error {
 	switch r.OptionID {
 	case "allow_once", "allow":
@@ -604,6 +624,8 @@ func (s *Session) RespondPermission(ctx context.Context, id string, r chat.Permi
 		return chat.ErrUnsupported
 	}
 }
+
+// AnswerQuestion echoes the original question input with the selected answers.
 func (s *Session) AnswerQuestion(ctx context.Context, id string, answers chat.QuestionAnswers) error {
 	s.mu.Lock()
 	r := s.permissions[id]
@@ -620,6 +642,8 @@ func (s *Session) AnswerQuestion(ctx context.Context, id string, answers chat.Qu
 	updated["answers"] = wireAnswers
 	return s.respond(ctx, id, object{"behavior": "allow", "updatedInput": updated}, true)
 }
+
+// Close stops and joins the owned process tree before releasing workspace custody.
 func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()

@@ -211,7 +211,7 @@ func TestDriverFixtureReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			if s.NativeID() != "" {
 				t.Fatal("native session appeared before first prompt")
 			}
@@ -322,7 +322,7 @@ func TestNativeControlsAndPriorities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	for _, delivery := range []chat.Delivery{chat.Prompt, chat.Steer, chat.Queued} {
 		if got, err := s.Send(ctx, chat.Text("hold"), chat.SendOptions{Delivery: delivery}); err != nil || got != delivery {
 			t.Fatal(got, err)
@@ -367,7 +367,7 @@ func TestPermissionCancellationAndOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if _, err := session.Send(ctx, chat.Text("permission"), chat.SendOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestCloseJoinsDescendantWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if _, err := s.Send(ctx, chat.Text("child"), chat.SendOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestQueuedTurnLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if actual, err := s.Send(ctx, chat.Text("hold"), chat.SendOptions{Delivery: chat.Queued}); err != nil || actual != chat.Prompt {
 		t.Fatal("idle delivery", actual, err)
 	}
@@ -481,7 +481,7 @@ func TestPermissionModeDriftFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	s := session.(*Session)
 	s.frame(object{"type": "system", "subtype": "status", "permissionMode": "bypassPermissions"})
 	select {
@@ -507,7 +507,7 @@ func TestUnexpectedExitRetainsCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	_, _ = s.Send(ctx, chat.Text("die"), chat.SendOptions{})
 	select {
 	case <-s.(*Session).done:
