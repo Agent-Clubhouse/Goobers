@@ -42,7 +42,8 @@ type InstanceEventsCompaction struct {
 // records whose event time is at or after keepAfter, run.started records at
 // or after keepRunStartsAfter, the init.completed marker, plus the latest
 // scheduled trigger per workflow, worker divergence, and externally reported
-// cluster-check result as restart checkpoints. A zero keepAfter
+// cluster-check result, and latest configuration authority (including a legacy
+// ambiguity barrier) as restart checkpoints. A zero keepAfter
 // keeps every record (a no-op on the journal — used when the caller only wants
 // the surrounding db-vacuum maintenance). Records are preserved as their
 // ORIGINAL raw line bytes, never re-marshaled, so any forward-compatible
@@ -217,6 +218,8 @@ func compactInstanceEventsData(
 	latestTrigger := make(map[string]int)
 	latestWorkerDivergence := make(map[string]int)
 	latestClusterCheck := make(clusterCheckCheckpoints)
+	latestConfigAuthority := -1
+	var latestConfigSeq uint64
 	for _, line := range bytes.SplitAfter(complete, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -236,6 +239,10 @@ func compactInstanceEventsData(
 		}
 		if meta.Schema != EventSchema {
 			return InstanceEventsCompaction{}, nil, unsupportedPayloadSchema("event", meta.Schema, EventSchema)
+		}
+		if IsConfigGenerationAuthority(Event{Type: meta.Type, Runner: meta.Runner}) &&
+			(latestConfigAuthority < 0 || meta.Seq >= latestConfigSeq) {
+			latestConfigAuthority, latestConfigSeq = len(records), meta.Seq
 		}
 		rec := record{line: line, time: meta.Time}
 		rec.runStarted = meta.Type == EventRunStarted
@@ -258,7 +265,7 @@ func compactInstanceEventsData(
 		keepClusterCheck := rec.clusterCheckKey != "" && latestClusterCheck[rec.clusterCheckKey].index == i
 		keepBudgetHistory := rec.runStarted &&
 			(keepRunStartsAfter.IsZero() || !rec.time.Before(keepRunStartsAfter))
-		if compactDropsAgedRecord(rec.time, keepAfter, keepTriggerCheckpoint, keepWorkerDivergenceCheckpoint || keepClusterCheck, keepBudgetHistory, rec.initDone) {
+		if compactDropsAgedRecord(rec.time, keepAfter, keepTriggerCheckpoint, keepWorkerDivergenceCheckpoint || keepClusterCheck || i == latestConfigAuthority, keepBudgetHistory, rec.initDone) {
 			result.Dropped++
 			continue
 		}

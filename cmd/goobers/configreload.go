@@ -77,6 +77,8 @@ func (l *openPRLoop) stopCurrent() {
 }
 
 type configReloader struct {
+	retentionRejected bool
+
 	watching       bool
 	layout         instance.Layout
 	setup          *schedulerSetup
@@ -210,7 +212,7 @@ func (r *configReloader) pollOnceMode(now time.Time, forceSourceValidation bool)
 	oldDigest = r.appliedDigest
 	r.lastRejectionMessage = ""
 	r.pollDigest.Invalidate() // Explicit apply always reads the current bytes.
-	if forceSourceValidation {
+	if forceSourceValidation || r.retentionRejected {
 		r.observedDigest = ""
 	}
 	if pollErr := r.poll(now); pollErr != nil {
@@ -273,7 +275,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return nil
 	}
 	r.observedDigest = digest
-	if digest == r.appliedDigest {
+	if digest == r.appliedDigest && !r.retentionRejected {
 		return nil
 	}
 
@@ -336,7 +338,7 @@ func (r *configReloader) poll(now time.Time) error {
 	definitions.EngineRuntime.adoptFrom(r.setup.EngineRuntime)
 	publish := func() error {
 		return r.publishOrdinaryDefinitions(definitions, func() error {
-			return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest)
+			return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest, definitions.ExecutionGeneration)
 		})
 	}
 	if err := r.publishChildDefinitions(definitions.Set, publish); err != nil {
@@ -345,6 +347,7 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	superseded := supersededWorkflows(newPinnedDefinitions(r.setup.Config, r.setup.Machines, r.setup.GooberDigests, r.setup.RepoRefs, r.setup.Definitions),
 		newPinnedDefinitions(r.setup.Config, definitions.Machines, definitions.GooberDigests, definitions.RepoRefs, definitions.Set))
+	r.setup.ExecutionGeneration = definitions.ExecutionGeneration
 	r.setup.EngineRuntime = definitions.EngineRuntime
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
@@ -401,6 +404,7 @@ func (r *configReloader) poll(now time.Time) error {
 	r.digests.Set(digest)
 	r.transientRetry = transientReloadRetry{}
 	r.rejectionReason = ""
+	r.retentionRejected = false
 	r.candidateWarnings = nil
 	// Advisory persistence cannot turn a successfully applied configuration
 	// into a reload failure. poll's generation check deduplicates this work.
@@ -427,6 +431,8 @@ func (r *configReloader) publishReloadStatus(now time.Time) {
 func (r *configReloader) reloadStatus(now time.Time) readservice.DefinitionReloadStatus {
 	state := "current"
 	switch {
+	case r.retentionRejected && r.rejectedDigest == r.observedDigest:
+		state = "rejected"
 	case r.lastDigestError != "":
 		state = "unreadable"
 	case r.appliedDigest != r.observedDigest && r.rejectedDigest == r.observedDigest:
@@ -448,6 +454,9 @@ func (r *configReloader) reloadStatus(now time.Time) readservice.DefinitionReloa
 }
 
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
+	if errors.Is(reloadErr, configgeneration.ErrCapacity) {
+		r.retentionRejected = true
+	}
 	message := configReloadErrorMessage(reloadErr)
 	r.lastRejectionMessage = message
 	r.rejectionReason = message

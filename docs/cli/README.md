@@ -5457,7 +5457,7 @@ $ goobers trace --transcripts <run-id>
 run the daemon (scheduler + runner + loopback HTTP API)
 
 ~~~text
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--recover-config-generation digest] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
@@ -5480,7 +5480,10 @@ startup after reporting each candidate.
 
 Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
-It does not skip the harness admission preflight: a workflow whose agentic
+--recover-config-generation selects and restores a retained applied catalog
+by digest after strict verification. The live candidate stays rejected;
+this does not overwrite source files or bypass retained permission checks.
+--skip-preflight does not skip the harness admission preflight: a workflow whose agentic
 stage needs a harness that fails its startup check is still refused, while
 other workflows keep running. A check that failed only because the model
 provider was rate limiting or unreachable is re-run with backoff, and the

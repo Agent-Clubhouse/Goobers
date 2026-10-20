@@ -200,6 +200,7 @@ complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress li
 complete -c goobers -n '__fish_seen_subcommand_from up' -l diagnostics -d 'Capture deep per-stage diagnostics for hang debugging'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l notify -d 'Desktop-notify on escalated/failed runs (=all for every outcome)'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l skip-preflight -d 'Start despite config validation errors'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l recover-config-generation -r -d 'Restore a verified retained applied catalog by digest'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l watch-config -d 'Hot-reload materialized config-directory edits (default on; instance.yaml requires restart)'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l drain-timeout -r -d 'Force shutdown after this graceful-drain duration'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l cleanup-spans-only-runs -d 'Delete reported legacy spans-only run directories at startup'
