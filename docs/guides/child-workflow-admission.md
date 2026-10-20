@@ -151,14 +151,23 @@ selected separately by self-only instance configuration, without extra flags.
 Public opt-in remains gated pending
 the complete supported parent/child journey below.
 
-Windows trusted-local child execution remains **unqualified preview** until the
-Windows runtime custody tests execute successfully; a cross-GOOS build is only
-compile qualification. Strict workspace launches use a Job Object that forbids
-breakaway before the suspended root starts. Stop/join must observe that exact
-Job's active-process count reach zero after termination. Missing custody,
-accounting errors, or timeout refuse snapshot and handoff acknowledgement;
-successful process cancellation alone is insufficient. This primitive does not
-by itself activate the trusted-local child backend.
+Windows trusted-local child execution remains **unqualified preview**. Strict
+workspace custody is refused: an empty Job Object proves only Job membership,
+not that every process able to write the workspace has stopped. Known escapes
+include `Win32_Process.Create` through WMI, the WSL broker, and launches through
+COM or services; their processes need not join the caller's Job. Disabling
+breakaway before resuming the root does not close these brokered paths.
+
+`StopAndWait` retains the exact non-breakaway Job until its active-process count
+reaches zero, then returns the distinct `ErrQuiescenceJobMembershipOnly` result,
+including on repeated calls. Strict invocation proof rejects this result and
+refuses snapshot capture and handoff acknowledgement. Missing custody,
+accounting errors and timeout instead return `ErrQuiescenceUnobservable`.
+A cross-GOOS build qualifies compilation only; the Windows runtime test checks
+Job membership, not strict custody. No unqualified-preview opt-in is supplied
+by this primitive, so Windows strict execution remains refused. Any future
+preview override must be explicit about accepting these escapes; ordinary
+local-mode selection cannot authorize it. This does not activate the backend.
 
 Each physical attempt receives a separately signed generated-child identity
 bound to its run and immutable execution contract. Its dedicated HTTP owners

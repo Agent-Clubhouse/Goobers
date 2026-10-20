@@ -25,8 +25,8 @@ func TestWindowsQuiescenceRefusesMissingOrBreakawayCustody(t *testing.T) {
 	}
 }
 
-// This test qualifies the Windows runtime only when actually executed there;
-// cross-compiling it is not evidence of Job membership or accounting behavior.
+// This test checks Job membership only when actually executed on Windows;
+// neither runtime success nor cross-compilation qualifies workspace custody.
 func TestWindowsQuiescenceWaitsForOwnedJobDescendants(t *testing.T) {
 	root := t.TempDir()
 	child, grandchild := filepath.Join(root, "child.pid"), filepath.Join(root, "grandchild.pid")
@@ -79,15 +79,23 @@ func TestWindowsQuiescenceWaitsForOwnedJobDescendants(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if err := tree.StopAndWait(ctx); err != nil {
-		t.Fatal(err)
+	if err := tree.StopAndWait(ctx); !errors.Is(err, ErrQuiescenceJobMembershipOnly) {
+		t.Fatalf("expected membership-only result: %v", err)
 	}
 	for _, pid := range pids {
 		if Alive(pid) {
-			t.Fatalf("writer %d survived successful custody proof", pid)
+			t.Fatalf("Job member %d survived observed termination", pid)
 		}
 	}
-	if err := tree.StopAndWait(ctx); err != nil {
-		t.Fatalf("retained proof not idempotent: %v", err)
+	if err := tree.StopAndWait(ctx); !errors.Is(err, ErrQuiescenceJobMembershipOnly) {
+		t.Fatalf("retained membership result not idempotent: %v", err)
+	}
+}
+
+func TestWindowsQuiescenceRetainsMembershipOnlyResult(t *testing.T) {
+	tree := &Tree{closed: true, jobMembershipEmpty: true}
+	err := tree.StopAndWait(t.Context())
+	if !errors.Is(err, ErrQuiescenceJobMembershipOnly) || errors.Is(err, ErrQuiescenceUnobservable) {
+		t.Fatalf("observed membership must be distinct from unknown custody: %v", err)
 	}
 }

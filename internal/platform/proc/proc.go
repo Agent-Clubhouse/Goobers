@@ -24,7 +24,8 @@ func Configure(cmd *exec.Cmd) {
 
 // StartOptions selects custody that must be established before any user code
 // executes. RequireQuiescence disables Windows Job breakaway; a later stop
-// cannot recover custody of a descendant that was already allowed to escape.
+// cannot recover a descendant already allowed to escape. This does not contain
+// brokered Windows launches; StopAndWait reports membership-only evidence.
 type StartOptions struct {
 	RequireQuiescence bool
 }

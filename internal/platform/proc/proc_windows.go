@@ -65,12 +65,12 @@ type Tree struct {
 	// root keeps the root's process object, and so its pid, from being
 	// recycled while kill still walks the recorded parentage below it; its
 	// lifetime bounds which recorded children are real (#6744).
-	root          windows.Handle
-	startTime     time.Time
-	job           windows.Handle
-	closed        bool
-	strictCustody bool
-	quiescent     bool
+	root               windows.Handle
+	startTime          time.Time
+	job                windows.Handle
+	closed             bool
+	strictCustody      bool
+	jobMembershipEmpty bool
 }
 
 // processLifetime is a process's creation time and, once it has exited, its

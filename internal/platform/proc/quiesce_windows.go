@@ -13,7 +13,7 @@ import (
 )
 
 // jobBasicAccountingInformation matches JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.
-// ActiveProcesses is a custody observation, not the number ever assigned.
+// ActiveProcesses observes current membership, not workspace writer custody.
 type jobBasicAccountingInformation struct {
 	TotalUserTime             int64
 	TotalKernelTime           int64
@@ -25,12 +25,13 @@ type jobBasicAccountingInformation struct {
 	TotalTerminatedProcesses  uint32
 }
 
-// StopAndWait attests only Jobs that prohibited breakaway before the suspended
-// root was resumed. Legacy Jobs can be killed, but their emptiness cannot prove
-// that escaped writers are gone. PID enumeration is never a substitute.
+// StopAndWait observes only Jobs that prohibited breakaway before the suspended
+// root was resumed. Even these Jobs cannot contain brokered WMI, WSL, COM or
+// service launches. An empty Job returns ErrQuiescenceJobMembershipOnly, never
+// strict workspace custody. PID enumeration is never a substitute.
 func (t *Tree) StopAndWait(ctx context.Context) error {
-	if t.quiescent {
-		return nil
+	if t.jobMembershipEmpty {
+		return ErrQuiescenceJobMembershipOnly
 	}
 	if !t.strictCustody || t.closed || t.job == 0 {
 		return fmt.Errorf("workspace process has no retained non-breakaway Job: %w", ErrQuiescenceUnobservable)
@@ -66,6 +67,6 @@ func (t *Tree) StopAndWait(ctx context.Context) error {
 	runtime.SetFinalizer(t, nil)
 	_ = windows.CloseHandle(t.job)
 	t.job = 0
-	t.closed, t.quiescent = true, true
-	return nil
+	t.closed, t.jobMembershipEmpty = true, true
+	return ErrQuiescenceJobMembershipOnly
 }
