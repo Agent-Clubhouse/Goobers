@@ -33,7 +33,11 @@ func (e *Executor) nativeSandbox() (sandbox.Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sandbox.WithReadDenials(base, []string{state}), nil
+	browserRoots, err := humanBrowserBoundaries()
+	if err != nil {
+		return nil, errors.Join(harness.ErrSandboxUnavailable, err)
+	}
+	return sandbox.WithReadBoundaries(sandbox.WithReadDenials(base, []string{state}), browserRoots), nil
 }
 
 func chatStatePath(state, workspace string) string {

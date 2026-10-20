@@ -170,18 +170,9 @@ func (e *Executor) Execute(ctx context.Context, req interactive.ExecutionRequest
 	if req.Owner != e.config.Principal.Identity().Subject {
 		return result, fmt.Errorf("executor identity mismatch")
 	}
-	executionMode := req.ExecutionMode
-	if executionMode == "" {
-		executionMode = e.config.Mode // Legacy direct-call tests only; HTTP sessions pin a mode.
-	}
-	if executionMode != "local-tools" && executionMode != "codex-local" {
-		return result, fmt.Errorf("unknown execution mode; no fallback is permitted")
-	}
-	if executionMode == "codex-local" && !e.config.TrustedLocalModelLogin {
-		return result, fmt.Errorf("model execution unavailable: host trusted-local login opt-in is required; choose the explicitly labeled demo mode separately")
-	}
-	if executionMode == "codex-local" && req.Harness != "" && req.Harness != "codex" && req.Harness != "copilot" && req.Harness != "claude" {
-		return result, fmt.Errorf("configured harness is unsupported for codex-local; no fallback is permitted")
+	executionMode, err := e.executionMode(req)
+	if err != nil {
+		return result, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -758,4 +749,21 @@ func (e *Executor) changes(ctx context.Context, workspace string) ([]interactive
 		}
 	}
 	return changes, diff, nil
+}
+
+func (e *Executor) executionMode(req interactive.ExecutionRequest) (string, error) {
+	executionMode := req.ExecutionMode
+	if executionMode == "" {
+		executionMode = e.config.Mode // Legacy direct-call tests only; HTTP sessions pin a mode.
+	}
+	if executionMode != "local-tools" && executionMode != "codex-local" {
+		return "", fmt.Errorf("unknown execution mode; no fallback is permitted")
+	}
+	if executionMode == "codex-local" && !e.config.TrustedLocalModelLogin {
+		return "", fmt.Errorf("model execution unavailable: host trusted-local login opt-in is required; choose the explicitly labeled demo mode separately")
+	}
+	if executionMode == "codex-local" && req.Harness != "" && req.Harness != "codex" && req.Harness != "copilot" && req.Harness != "claude" {
+		return "", fmt.Errorf("configured harness is unsupported for codex-local; no fallback is permitted")
+	}
+	return executionMode, nil
 }

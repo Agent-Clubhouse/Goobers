@@ -100,15 +100,21 @@ func (s *codexChatSession) turnStarted(msg codexRPCMessage) {
 		s.unknown("payload", msg.Method)
 		return
 	}
-	s.mu.Lock()
-	duplicate := s.active == p.Turn.Id || s.lastEnded == p.Turn.Id
-	if !duplicate {
-		s.active = p.Turn.Id
-	}
-	s.mu.Unlock()
-	if !duplicate {
+	if s.activateTurn(p.Turn.Id) {
 		s.emit("turn_started", map[string]any{"nativeTurnId": p.Turn.Id}, "")
 	}
+}
+
+func (s *codexChatSession) activateTurn(id string) bool {
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id == "" || s.active == id || s.lastEnded == id {
+		return false
+	}
+	s.active = id
+	return true
 }
 
 func (s *codexChatSession) turnCompleted(msg codexRPCMessage) {
@@ -117,6 +123,7 @@ func (s *codexChatSession) turnCompleted(msg codexRPCMessage) {
 		s.unknown("payload", msg.Method)
 		return
 	}
+	s.cancelQuestions(p.Turn.Id)
 	s.mu.Lock()
 	if s.lastEnded == p.Turn.Id {
 		s.mu.Unlock()
@@ -131,7 +138,6 @@ func (s *codexChatSession) turnCompleted(msg codexRPCMessage) {
 		s.erroredTurn = p.Turn.Id
 	}
 	s.mu.Unlock()
-	s.cancelQuestions(p.Turn.Id)
 	reason := "end_turn"
 	if p.Turn.Status == "interrupted" {
 		reason = "cancelled"
@@ -147,9 +153,12 @@ func (s *codexChatSession) turnCompleted(msg codexRPCMessage) {
 
 func (s *codexChatSession) turnError(msg codexRPCMessage) {
 	var p cp.ErrorNotification
-	if json.Unmarshal(msg.Params, &p) != nil {
+	if json.Unmarshal(msg.Params, &p) != nil || p.TurnId == "" {
 		s.unknown("payload", msg.Method)
 		return
+	}
+	if !p.WillRetry {
+		s.cancelQuestions(p.TurnId)
 	}
 	s.mu.Lock()
 	duplicate := !p.WillRetry && s.erroredTurn == p.TurnId
@@ -235,41 +244,61 @@ func (s *codexChatSession) serverRequest(msg codexRPCMessage) {
 		s.emit("notice", map[string]any{"code": "approval_declined", "message": "Codex requested additional permission; this driver keeps the existing sandbox and declined the request.", "method": msg.Method}, "")
 		_ = s.reply(msg.ID, result, nil)
 	case "item/tool/requestUserInput":
-		var p cp.ToolRequestUserInputParams
-		if json.Unmarshal(msg.Params, &p) != nil || len(p.Questions) == 0 || len(p.Questions) > 32 {
-			_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32602, Message: "invalid questions"})
-			return
-		}
-		ids := map[string]bool{}
-		questions := make([]map[string]any, 0, len(p.Questions))
-		for _, q := range p.Questions {
-			if q.IsSecret || q.Id == "" || ids[q.Id] {
-				_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32602, Message: "secret or invalid questions are unsupported"})
-				return
-			}
-			ids[q.Id] = true
-			options := make([]chat.QuestionOption, 0)
-			if q.Options != nil {
-				for _, option := range *q.Options {
-					options = append(options, chat.QuestionOption{ID: option.Label, Label: option.Label})
-				}
-			}
-			questions = append(questions, map[string]any{"questionId": q.Id, "prompt": q.Question, "options": options, "allowMultiple": false, "allowFreeText": q.IsOther})
-		}
-		key := string(msg.ID)
-		s.mu.Lock()
-		if _, exists := s.questions[key]; exists || len(s.questions) >= 64 {
-			s.mu.Unlock()
-			_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32600, Message: "duplicate or excessive question request"})
-			return
-		}
-		s.questions[key] = codexChatQuestion{id: msg.ID, turn: p.TurnId, questions: p.Questions}
-		s.mu.Unlock()
-		s.emit("question", map[string]any{"requestId": key, "questions": questions}, "")
+		s.questionRequest(msg)
 	default:
 		s.unknown("request", msg.Method)
 		_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32601, Message: "method not supported"})
 	}
+}
+
+func (s *codexChatSession) questionRequest(msg codexRPCMessage) {
+	var p cp.ToolRequestUserInputParams
+	if json.Unmarshal(msg.Params, &p) != nil || len(p.Questions) == 0 || len(p.Questions) > 32 {
+		_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32602, Message: "invalid questions"})
+		return
+	}
+	ids := map[string]bool{}
+	questions := make([]map[string]any, 0, len(p.Questions))
+	for _, q := range p.Questions {
+		if q.IsSecret || q.Id == "" || ids[q.Id] {
+			_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32602, Message: "secret or invalid questions are unsupported"})
+			return
+		}
+		ids[q.Id] = true
+		options := make([]chat.QuestionOption, 0)
+		if q.Options != nil {
+			for _, option := range *q.Options {
+				options = append(options, chat.QuestionOption{ID: option.Label, Label: option.Label})
+			}
+		}
+		questions = append(questions, map[string]any{"questionId": q.Id, "prompt": q.Question, "options": options, "allowMultiple": false, "allowFreeText": q.IsOther})
+	}
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	s.mu.Lock()
+	if s.closing.Load() || p.TurnId == "" || p.TurnId != s.active || p.TurnId == s.blockedTurn {
+		s.mu.Unlock()
+		_ = s.reply(msg.ID, map[string]any{"answers": map[string]any{}}, nil)
+		return
+	}
+	for _, q := range s.questions {
+		if string(q.id) == string(msg.ID) {
+			s.mu.Unlock()
+			_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32600, Message: "duplicate question request"})
+			return
+		}
+	}
+	if len(s.questions) >= 64 {
+		s.mu.Unlock()
+		_ = s.reply(msg.ID, nil, &codexRPCError{Code: -32600, Message: "excessive question requests"})
+		return
+	}
+	// Host IDs never repeat, even if the server reuses its RPC ID next turn.
+	s.questionSeq++
+	key := fmt.Sprintf("codex-question-%d", s.questionSeq)
+	s.questions[key] = codexChatQuestion{id: msg.ID, turn: p.TurnId, questions: p.Questions}
+	s.mu.Unlock()
+	s.emit("question", map[string]any{"requestId": key, "questions": questions}, "")
 }
 
 func (s *codexChatSession) RespondPermission(context.Context, string, chat.PermissionResponse) error {
@@ -282,12 +311,17 @@ func (s *codexChatSession) AnswerQuestion(ctx context.Context, id string, answer
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.closing.Load() {
 		return chat.ErrClosed
 	}
 	s.mu.Lock()
 	q, ok := s.questions[id]
-	if !ok {
+	if !ok || q.turn != s.active || q.turn == s.blockedTurn {
 		s.mu.Unlock()
 		return chat.ErrUnknownRequest
 	}
@@ -320,7 +354,12 @@ func (s *codexChatSession) AnswerQuestion(ctx context.Context, id string, answer
 	return nil
 }
 func (s *codexChatSession) cancelQuestions(turn string) {
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
 	s.mu.Lock()
+	if turn != "" && turn == s.active {
+		s.blockedTurn = turn
+	}
 	pending := map[string]codexChatQuestion{}
 	for id, q := range s.questions {
 		if turn == "" || q.turn == turn {

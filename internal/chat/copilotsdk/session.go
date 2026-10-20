@@ -31,6 +31,8 @@ type session struct {
 	permissions               map[string]chan chat.PermissionResponse
 	questions                 map[string]chan chat.QuestionAnswers
 	nextRequest               uint64
+	requestEpoch              uint64
+	queued                    int
 	once                      sync.Once
 	closeErr                  error
 }
@@ -89,6 +91,9 @@ func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.
 		s.busy = true
 		s.interrupted = false
 	}
+	if actual == chat.Queued {
+		s.queued++
+	}
 	s.mu.Unlock()
 	mode := rpc.SendModeImmediate
 	if actual == chat.Queued {
@@ -102,6 +107,9 @@ func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.
 		s.mu.Lock()
 		if !wasBusy {
 			s.busy = false
+		}
+		if actual == chat.Queued && s.queued > 0 {
+			s.queued--
 		}
 		s.mu.Unlock()
 		s.emit("command.rejected", map[string]any{"code": "send_failed"}, o.CommandID)
@@ -120,6 +128,7 @@ func (s *session) Interrupt(ctx context.Context) error {
 		return chat.ErrClosed
 	}
 	s.interrupted = true
+	s.cancelRequestsLocked()
 	s.mu.Unlock()
 	call, stop := s.callContext(ctx)
 	defer stop()
@@ -160,6 +169,7 @@ func (s *session) Close() error {
 	s.once.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		s.cancelRequestsLocked()
 		s.mu.Unlock()
 		s.cancel()
 		if s.unsubscribe != nil {
@@ -215,9 +225,9 @@ func (s *session) requestID() string {
 	s.nextRequest++
 	return fmt.Sprintf("request-%d", s.nextRequest)
 }
-func (s *session) askPermission(kind string, content []chat.ContentBlock, toolCallID string) (chat.PermissionResponse, error) {
+func (s *session) askPermission(epoch uint64, kind string, content []chat.ContentBlock, toolCallID string) (chat.PermissionResponse, error) {
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.interrupted || epoch != s.requestEpoch {
 		s.mu.Unlock()
 		return chat.PermissionResponse{}, chat.ErrClosed
 	}
@@ -229,6 +239,9 @@ func (s *session) askPermission(kind string, content []chat.ContentBlock, toolCa
 	s.emit("permission_request", map[string]any{"requestId": id, "title": kind, "kind": kind, "content": content, "toolCallId": toolCallID, "options": []map[string]string{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "reject_once", "kind": "reject_once", "label": "Deny"}}}, "")
 	select {
 	case response := <-ch:
+		if !s.requestCurrent(epoch) {
+			response = chat.PermissionResponse{OptionID: "reject_once"}
+		}
 		s.emit("permission_resolved", map[string]any{"requestId": id, "optionId": response.OptionID}, "")
 		return response, nil
 	case <-s.ctx.Done():
@@ -237,6 +250,9 @@ func (s *session) askPermission(kind string, content []chat.ContentBlock, toolCa
 }
 func (s *session) permission(req sdk.PermissionRequest, inv sdk.PermissionInvocation) (rpc.PermissionDecision, error) {
 	deny := &rpc.PermissionDecisionUserNotAvailable{}
+	s.mu.Lock()
+	epoch := s.requestEpoch
+	s.mu.Unlock()
 	if req == nil || s.backend.policy == nil {
 		return deny, nil
 	}
@@ -251,7 +267,7 @@ func (s *session) permission(req sdk.PermissionRequest, inv sdk.PermissionInvoca
 	level := s.level
 	closed := s.closed
 	s.mu.Unlock()
-	if closed {
+	if closed || !s.requestCurrent(epoch) {
 		return deny, nil
 	}
 	read := req.Kind() == rpc.PermissionRequestKindRead
@@ -263,7 +279,7 @@ func (s *session) permission(req sdk.PermissionRequest, inv sdk.PermissionInvoca
 		return &rpc.PermissionDecisionApproveOnce{}, nil
 	}
 	content, toolCallID := permissionPreview(req)
-	response, err := s.askPermission(string(req.Kind()), content, toolCallID)
+	response, err := s.askPermission(epoch, string(req.Kind()), content, toolCallID)
 	if err != nil || response.OptionID != "allow_once" {
 		return deny, nil
 	}
@@ -273,17 +289,22 @@ func (s *session) permission(req sdk.PermissionRequest, inv sdk.PermissionInvoca
 	level = s.level
 	closed = s.closed
 	s.mu.Unlock()
-	if closed || level == chat.Plan && !read {
+	if closed || !s.requestCurrent(epoch) || level == chat.Plan && !read {
 		return deny, nil
 	}
-	return s.backend.policy(req, inv)
+	decision, err = s.backend.policy(req, inv)
+	if !s.requestCurrent(epoch) {
+		return deny, nil
+	}
+	return decision, err
 }
 func (s *session) question(req sdk.UserInputRequest, _ sdk.UserInputInvocation) (sdk.UserInputResponse, error) {
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.interrupted {
 		s.mu.Unlock()
 		return sdk.UserInputResponse{}, chat.ErrClosed
 	}
+	epoch := s.requestEpoch
 	id := s.requestID()
 	ch := make(chan chat.QuestionAnswers, 1)
 	s.questions[id] = ch
@@ -296,7 +317,7 @@ func (s *session) question(req sdk.UserInputRequest, _ sdk.UserInputInvocation) 
 	s.emit("question", map[string]any{"requestId": id, "questions": []chat.Question{{QuestionID: "answer", Prompt: req.Question, Options: options, AllowFreeText: req.AllowFreeform == nil || *req.AllowFreeform}}}, "")
 	select {
 	case a := <-ch:
-		if a == nil {
+		if a == nil || !s.requestCurrent(epoch) {
 			s.emit("question_resolved", map[string]any{"requestId": id, "resolution": "cancelled"}, "")
 			return sdk.UserInputResponse{}, fmt.Errorf("question cancelled by host policy")
 		}
@@ -312,15 +333,38 @@ func (s *session) question(req sdk.UserInputRequest, _ sdk.UserInputInvocation) 
 	}
 }
 func (s *session) plan(req sdk.ExitPlanModeRequest, _ sdk.ExitPlanModeInvocation) (sdk.ExitPlanModeResult, error) {
+	s.mu.Lock()
+	epoch := s.requestEpoch
+	s.mu.Unlock()
 	s.emit("plan_document", map[string]any{"content": req.PlanContent, "summary": req.Summary}, "")
-	response, err := s.askPermission("exit_plan_mode", reviewText(req.PlanContent), "")
+	response, err := s.askPermission(epoch, "exit_plan_mode", reviewText(req.PlanContent), "")
 	if err != nil {
 		return sdk.ExitPlanModeResult{}, err
 	}
-	approved := response.OptionID == "allow_once" && s.ceiling.Clamp(chat.AutoEdit) != chat.Plan
+	approved := s.requestCurrent(epoch) && response.OptionID == "allow_once" && s.ceiling.Clamp(chat.AutoEdit) != chat.Plan
 	action := ""
 	if approved && slices.Contains(req.Actions, req.RecommendedAction) {
 		action = req.RecommendedAction
 	}
 	return sdk.ExitPlanModeResult{Approved: approved, SelectedAction: action, Feedback: response.Message}, nil
+}
+
+func (s *session) requestCurrent(epoch uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && !s.interrupted && epoch == s.requestEpoch
+}
+
+// Called with mu held. Advance identity even when an answer was already removed
+// from the map: its callback must still fail a post-interrupt policy recheck.
+func (s *session) cancelRequestsLocked() {
+	s.requestEpoch++
+	for id, ch := range s.permissions {
+		delete(s.permissions, id)
+		ch <- chat.PermissionResponse{OptionID: "reject_once"}
+	}
+	for id, ch := range s.questions {
+		delete(s.questions, id)
+		ch <- nil
+	}
 }

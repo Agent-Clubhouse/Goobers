@@ -203,29 +203,14 @@ func ServeStdio(ctx context.Context, socketPath, tokenPath string, in io.Reader,
 	if ctx.Err() != nil {
 		return ErrUnavailable
 	}
-	token, err := readToken(tokenPath)
+	conn, err := connectAuthenticatedBridge(ctx, socketPath, tokenPath)
 	if err != nil {
 		return err
-	}
-	info, err := os.Lstat(socketPath)
-	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
-		return ErrUnavailable
-	}
-	dir, err := os.Lstat(filepath.Dir(socketPath))
-	if err != nil || !dir.IsDir() || dir.Mode().Perm() != 0700 {
-		return ErrUnavailable
-	}
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-	if err != nil {
-		return ErrUnavailable
 	}
 	// Best-effort cleanup; the operation result is reported separately.
 	defer func() { _ = conn.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	if err = authenticateClient(conn, token); err != nil {
-		return err
-	}
 	inputDone := make(chan error, 1)
 	outputDone := make(chan error, 1)
 	go func() {
@@ -284,4 +269,28 @@ func ServeStdio(ctx context.Context, socketPath, tokenPath string, in io.Reader,
 			return err
 		}
 	}
+}
+
+func connectAuthenticatedBridge(ctx context.Context, socketPath, tokenPath string) (net.Conn, error) {
+	token, err := readToken(tokenPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(socketPath)
+	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
+		return nil, ErrUnavailable
+	}
+	dir, err := os.Lstat(filepath.Dir(socketPath))
+	if err != nil || !dir.IsDir() || dir.Mode().Perm() != 0700 {
+		return nil, ErrUnavailable
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	if err := authenticateClient(conn, token); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }

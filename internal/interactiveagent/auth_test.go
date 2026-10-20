@@ -48,7 +48,8 @@ func TestTwoBridgesRejectForeignAndMissingCredentials(t *testing.T) {
 			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 			_, _ = io.WriteString(conn, prefix+initialize+call)
 			response, err := io.ReadAll(conn)
-			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			var timeout net.Error
+			if errors.As(err, &timeout) && timeout.Timeout() {
 				t.Fatal("unauthenticated connection was not rejected promptly")
 			}
 			if len(response) != 0 || checks.Load() != 0 || calls.Load() != 0 {

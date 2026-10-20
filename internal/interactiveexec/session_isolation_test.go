@@ -5,6 +5,7 @@ package interactiveexec
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -34,19 +35,23 @@ func TestNativeTwoSessionReadAndBridgeIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	var checkedB, invokedB atomic.Int32
+	var checkedA, invokedA, checkedB, invokedB atomic.Int32
 	start := func(other bool) *interactiveagent.Bridge {
 		b, err := interactiveagent.Start(t.Context(), interactiveagent.Options{RuntimeDir: root,
 			Tools: []interactiveagent.Tool{{Name: "ping", Description: "Fixture", InputSchema: map[string]any{"type": "object", "additionalProperties": false}}},
 			Check: func(context.Context) error {
 				if other {
 					checkedB.Add(1)
+				} else {
+					checkedA.Add(1)
 				}
 				return nil
 			},
 			Invoke: func(context.Context, interactiveagent.Call) (any, error) {
 				if other {
 					invokedB.Add(1)
+				} else {
+					invokedA.Add(1)
 				}
 				return map[string]any{"ok": true}, nil
 			}})
@@ -96,6 +101,9 @@ func TestNativeTwoSessionReadAndBridgeIsolation(t *testing.T) {
 	if checkedB.Load() != 0 || invokedB.Load() != 0 {
 		t.Fatalf("foreign bridge reached policy/invoke: %d/%d", checkedB.Load(), invokedB.Load())
 	}
+	if checkedA.Load() == 0 || invokedA.Load() == 0 {
+		t.Fatalf("own bridge did not reach policy/invoke: %d/%d", checkedA.Load(), invokedA.Load())
+	}
 }
 
 func TestSessionIsolationChild(t *testing.T) {
@@ -139,9 +147,29 @@ func isolationBridgeCall(socket string, token []byte) error {
 	if string(ack[:]) != "OK\n" {
 		return errors.New("authentication rejected")
 	}
-	if _, err := io.WriteString(conn, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"ping\",\"arguments\":{}}}\n"); err != nil {
-		return err
+	reader := bufio.NewReader(conn)
+	requests := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ping","arguments":{}}}`,
 	}
-	_, err = bufio.NewReader(conn).ReadString('\n')
-	return err
+	for _, request := range requests {
+		if _, err := io.WriteString(conn, request+"\n"); err != nil {
+			return err
+		}
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return err
+		}
+		var response struct {
+			Error  json.RawMessage `json:"error"`
+			Result map[string]any  `json:"result"`
+		}
+		if err := json.Unmarshal(line, &response); err != nil {
+			return err
+		}
+		if len(response.Error) != 0 || response.Result == nil || response.Result["isError"] == true {
+			return errors.New("bridge did not return a successful MCP result")
+		}
+	}
+	return nil
 }

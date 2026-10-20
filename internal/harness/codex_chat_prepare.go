@@ -39,18 +39,9 @@ func prepareCodexChat(ctx context.Context, cfg CodexChatConfig, o chat.StartOpti
 	if c == nil || len(c.Command) == 0 {
 		return p, errors.New("codex chat requires a configured adapter")
 	}
-	req := cfg.Request
-	if req.Workspace == "" {
-		req.Workspace = o.Workspace
-	}
-	if !filepath.IsAbs(req.Workspace) || (o.Workspace != "" && filepath.Clean(o.Workspace) != filepath.Clean(req.Workspace)) {
-		return p, errors.New("codex chat workspace must match the trusted absolute invocation workspace")
-	}
-	if len(req.Tools) != 0 {
-		return p, errors.New("codex chat does not support a restrictive built-in tool allowlist")
-	}
-	if o.Model != "" {
-		req.Model = o.Model
+	req, err := codexChatRequest(cfg.Request, o)
+	if err != nil {
+		return p, err
 	}
 	options, err := normalizeCodexConfig(req.Model, req.HarnessOptions)
 	if err != nil {
@@ -227,4 +218,20 @@ func confineCodexChat(req RunRequest, argv []string, state string) ([]string, er
 	}
 	confined, _, err := confineArgv(req.Sandbox, argv, req.Workspace, append(roots, state))
 	return confined, err
+}
+
+func codexChatRequest(req RunRequest, o chat.StartOptions) (RunRequest, error) {
+	if req.Workspace == "" {
+		req.Workspace = o.Workspace
+	}
+	if !filepath.IsAbs(req.Workspace) || (o.Workspace != "" && filepath.Clean(o.Workspace) != filepath.Clean(req.Workspace)) {
+		return req, errors.New("codex chat workspace must match the trusted absolute invocation workspace")
+	}
+	if len(req.Tools) != 0 {
+		return req, errors.New("codex chat does not support a restrictive built-in tool allowlist")
+	}
+	if o.Model != "" {
+		req.Model = o.Model
+	}
+	return req, nil
 }

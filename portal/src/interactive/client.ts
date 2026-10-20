@@ -1,4 +1,5 @@
 import { humanControlHeaders } from "./humanAuth";
+import { subscribeHumanStream } from "./humanStream";
 
 export type ExecutionModeId = "codex-local" | "local-tools";
 export interface ExecutionModeOption { id: ExecutionModeId; label: string; available: boolean; reason?: string; liveQualified: boolean }
@@ -77,9 +78,9 @@ export class HttpInteractiveClient implements InteractiveClient {
     let response: Response;
     try {
       response = await this.fetcher(this.base + path, {
-        method: body === undefined ? "GET" : "POST", credentials: "same-origin",
+        method: body === undefined ? "GET" : "POST", credentials: "same-origin", redirect: "error",
         signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(30000) : undefined,
-        headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json", ...humanControlHeaders() }) },
+        headers: { Accept: "application/json", ...humanControlHeaders(), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch { throw new InteractiveError("The server response was lost. The outcome is unknown; refresh before retrying the same command.", "network", 0); }
@@ -99,15 +100,7 @@ export class HttpInteractiveClient implements InteractiveClient {
   changes(id: string) { return this.request<Changes>(`/sessions/${encodeURIComponent(id)}/changes`); }
   command(id: string, input: Command) { return this.request<Receipt>(`/sessions/${encodeURIComponent(id)}/commands`, input); }
   subscribe(id: string, after: number, onEvent: (event: InteractiveEvent) => void, onState: (state: StreamState) => void): StreamSubscription {
-    if (typeof EventSource === "undefined") { onState("reconnecting"); return { close() {} }; }
-    const stream = new EventSource(`${this.base}/sessions/${encodeURIComponent(id)}/events?after=${after}`, { withCredentials: true });
-    stream.onopen = () => onState("live");
-    stream.onerror = () => onState("reconnecting");
-    stream.addEventListener("interactive", event => {
-      try { onEvent(normalizeEvent(JSON.parse((event as MessageEvent<string>).data))); }
-      catch { onState("reconnecting"); }
-    });
-    return { close: () => stream.close() };
+    return subscribeHumanStream(`${this.base}/sessions/${encodeURIComponent(id)}/events`, after, this.fetcher, event => onEvent(normalizeEvent(event)), onState);
   }
 }
 // Accept the durable host envelope and standalone v2 envelopes at one boundary.

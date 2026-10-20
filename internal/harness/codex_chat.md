@@ -5,13 +5,14 @@ chat contract with driver ID `codex_app_server`; the host registers it under
 provider key `codex`. The adapter and RunRequest supply the same credential,
 MCP, shell environment and outer sandbox authority as batch Codex invocations.
 The driver owns process setup and verified shutdown. Unsupported rich media,
-native queues, tool allowlists and unknown models/efforts fail explicitly.
+queues, tool allowlists and unknown models/efforts fail explicitly.
 
 `StateDir` is an absolute, host-owned directory unique to one chat session,
 outside its workspace (including symlink resolution). It is locked while active,
 retained for native resume, and cleaned by the host on session disposal.
-Probes create disposable state beside the host-owned session directory, rather
-than inheriting a batch adapter temp root inside the workspace. Without a
+Probes create disposable child state inside the host-owned session directory,
+within its outer sandbox exception, without touching the retained home or lock.
+They never inherit a batch adapter temp root inside the workspace. Without a
 StateDir, the configured ephemeral root must itself be outside the workspace;
 state is temporary and native resume is not advertised. Failed quiescence retains state and reports
 `invoke.ErrWorkspaceNotQuiescent`; the host must retain custody. Close does not
@@ -47,7 +48,12 @@ exec-policy amendments are automatically declined with a visible notice.
 There is no human accept path and no persisted exec-policy amendment. Broader
 human approvals are a follow-up requiring proof that each accepted request
 remains within the existing ceiling. Plain user questions are supported;
-secret questions and unsupported server requests are rejected. Unknown requests
+secret questions and unsupported server requests are rejected. Interrupt admission,
+non-retrying failures and terminal results invalidate pending questions before
+any later answer can be sent. Late requests are declined; host question IDs are
+unique even when native RPC IDs are reused. Idle notifications do not settle a
+turn, and idle interrupts do not affect the next turn. Queue capability is `none`
+until a queue is implemented. Unknown requests
 always receive `-32601`; diagnostics never include raw request params.
 
 The process-backed fixture suite exercises framing, handshake order, turn and
