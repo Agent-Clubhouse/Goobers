@@ -647,8 +647,11 @@ type codexParseResult struct {
 }
 
 func mergeCodexMetrics(destination, source map[string]float64) {
+	// exec resume restores the thread's token totals. turn.completed carries
+	// those cumulative totals, so only the increase belongs to the repair.
+	// A failed repair with absent/zero usage must not erase the initial turn.
 	for name, value := range source {
-		destination[name] += value
+		destination[name] += max(0, value-destination[name])
 	}
 }
 
@@ -832,8 +835,10 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		result.started = true
 	case "turn.completed":
 		result.completed = true
-		result.metrics[telemetry.AttrGenAIUsageInputTokens] += event.Usage.InputTokens
-		result.metrics[telemetry.AttrGenAIUsageOutputTokens] += event.Usage.OutputTokens
+		mergeCodexMetrics(result.metrics, map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens:  event.Usage.InputTokens,
+			telemetry.AttrGenAIUsageOutputTokens: event.Usage.OutputTokens,
+		})
 	case "turn.failed":
 		result.failed = event.Error.Message
 	case "error":
