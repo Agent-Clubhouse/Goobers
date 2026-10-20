@@ -314,27 +314,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 					mcpServerStatus[server.Name] = server.Status
 				}
 			}
-			if native.Type == "result" {
-				// modelUsage and total_cost_usd are session running totals,
-				// including saved usage restored by --resume. Normalize before
-				// both canonical event emission and metric accumulation.
-				// Top-level usage is the per-turn main-loop fallback.
-				native.TotalCostUSD = claudeUsageDelta(native.TotalCostUSD, &previousCost)
-				for name, usage := range native.ModelUsage {
-					previous := previousModels[name]
-					if previous == nil {
-						previous = &claudeModelUsage{}
-						previousModels[name] = previous
-					}
-					native.ModelUsage[name] = claudeModelUsage{
-						InputTokens:              claudeUsageDelta(usage.InputTokens, &previous.InputTokens),
-						OutputTokens:             claudeUsageDelta(usage.OutputTokens, &previous.OutputTokens),
-						CacheReadInputTokens:     claudeUsageDelta(usage.CacheReadInputTokens, &previous.CacheReadInputTokens),
-						CacheCreationInputTokens: claudeUsageDelta(usage.CacheCreationInputTokens, &previous.CacheCreationInputTokens),
-						CostUSD:                  claudeUsageDelta(usage.CostUSD, &previous.CostUSD),
-					}
-				}
-			}
+			normalizeClaudeResultUsage(&native, &previousCost, previousModels)
 			events, recognized := convertClaudeMessage(native)
 			mcpToolUse.observe(events)
 			if !recognized {
@@ -434,6 +414,30 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 		mcpServerStatus:    mcpServerStatus,
 		mcpToolsUsed:       mcpToolUse.used,
 	}, true
+}
+
+// normalizeClaudeResultUsage converts modelUsage and total_cost_usd session
+// totals, including usage restored by --resume, before canonical event emission
+// and metric accumulation. Top-level usage remains the per-turn fallback.
+func normalizeClaudeResultUsage(native *claudeStreamMessage, previousCost **float64, previousModels map[string]*claudeModelUsage) {
+	if native.Type != "result" {
+		return
+	}
+	native.TotalCostUSD = claudeUsageDelta(native.TotalCostUSD, previousCost)
+	for name, usage := range native.ModelUsage {
+		previous := previousModels[name]
+		if previous == nil {
+			previous = &claudeModelUsage{}
+			previousModels[name] = previous
+		}
+		native.ModelUsage[name] = claudeModelUsage{
+			InputTokens:              claudeUsageDelta(usage.InputTokens, &previous.InputTokens),
+			OutputTokens:             claudeUsageDelta(usage.OutputTokens, &previous.OutputTokens),
+			CacheReadInputTokens:     claudeUsageDelta(usage.CacheReadInputTokens, &previous.CacheReadInputTokens),
+			CacheCreationInputTokens: claudeUsageDelta(usage.CacheCreationInputTokens, &previous.CacheCreationInputTokens),
+			CostUSD:                  claudeUsageDelta(usage.CostUSD, &previous.CostUSD),
+		}
+	}
 }
 
 // claudeUsageDelta preserves omitted fields and counts a decrease as a reset
