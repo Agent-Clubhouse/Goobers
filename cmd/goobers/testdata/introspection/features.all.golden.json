@@ -75,7 +75,22 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.backprop.granularity",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backprop.groundTruth.sources",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backprop.version",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -991,6 +1006,11 @@
     },
     {
       "name": "workflow.spec.backprop.granularity",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.backprop.groundTruth.sources",
       "stability": "ga",
       "sinceVersion": "dev"
     },

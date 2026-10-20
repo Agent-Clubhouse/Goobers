@@ -17,8 +17,7 @@ func childCurrentCustodyPolicy(cfg *instance.Config, source *instance.ConfigSet,
 	if err != nil {
 		return childworkflow.AdmissionContext{}, err
 	}
-	instance.ApplyGaggleCICommand(selected)
-	instance.ApplyGaggleOutboxMirror(selected)
+	instance.ApplyGaggleDefaults(selected)
 	admitted, err := admitChildValidationGoobers(cfg, goobersByName(selected))
 	if err != nil {
 		return childworkflow.AdmissionContext{}, err

@@ -610,7 +610,7 @@ func (in *GaggleSpec) DeepCopyInto(out *GaggleSpec) {
 	if in.Backprop != nil {
 		in, out := &in.Backprop, &out.Backprop
 		*out = new(GaggleBackprop)
-		**out = **in
+		(*in).DeepCopyInto(*out)
 	}
 	if in.Sandbox != nil {
 		in, out := &in.Sandbox, &out.Sandbox
@@ -2100,12 +2100,33 @@ func (in *GaggleHealthNotifications) DeepCopy() *GaggleHealthNotifications {
 }
 func (in *GaggleBackprop) DeepCopyInto(out *GaggleBackprop) {
 	*out = *in
+	if in.GroundTruth != nil {
+		in, out := &in.GroundTruth, &out.GroundTruth
+		*out = new(BackpropGroundTruth)
+		(*in).DeepCopyInto(*out)
+	}
 }
 func (in *GaggleBackprop) DeepCopy() *GaggleBackprop {
 	if in == nil {
 		return nil
 	}
 	out := new(GaggleBackprop)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *BackpropGroundTruth) DeepCopyInto(out *BackpropGroundTruth) {
+	*out = *in
+	if in.Sources != nil {
+		in, out := &in.Sources, &out.Sources
+		*out = make([]BackpropLabelSource, len(*in))
+		copy(*out, *in)
+	}
+}
+func (in *BackpropGroundTruth) DeepCopy() *BackpropGroundTruth {
+	if in == nil {
+		return nil
+	}
+	out := new(BackpropGroundTruth)
 	in.DeepCopyInto(out)
 	return out
 }

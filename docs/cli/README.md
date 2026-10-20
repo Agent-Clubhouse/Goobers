@@ -149,6 +149,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry gaggle`](#goobers-telemetry-gaggle) | report gaggle-wide Backprop credit, recurring findings, trends, and links |
 | [`goobers telemetry label`](#goobers-telemetry-label) | record a ground-truth verdict for a Backprop-enrolled run |
 | [`goobers telemetry mark-fix`](#goobers-telemetry-mark-fix) | mark a Backprop finding for post-fix verification |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
@@ -4982,7 +4983,7 @@ $ goobers status --agents --json
 configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|gaggle|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4995,6 +4996,7 @@ label:   record a ground-truth verdict for a Backprop-enrolled run
 claim:   append a Backprop claim from inside an agentic stage
 claims:  print the Backprop claims earlier stages of this run recorded
 shadow:  compare Backprop shadow-mode findings with actual run outcomes
+gaggle:  gaggle-wide Backprop credit, recurring findings, trends, and links
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -5146,6 +5148,30 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry gaggle`
+
+report gaggle-wide Backprop credit, recurring findings, trends, and links
+
+~~~text
+Usage: goobers telemetry gaggle --gaggle=name [--json] [--since=RFC3339] [--until=RFC3339] [path]
+
+Summarize one gaggle's active Backprop attribution across its workflows:
+per-workflow and per-stage credit and blame share, the top recurring
+findings, each workflow's trend against the previous window of the same
+length, and cross-workflow links. A link exists only where two runs
+recorded the same identifier (an external reference touched by both, or a
+run continuation); nothing is inferred. The window defaults to the seven
+days before --until (default now). Shadow records are never read. Exit
+codes: 0 = OK, 1 = query error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry gaggle --gaggle=goobers
+$ goobers telemetry gaggle --gaggle=goobers --json --since=2026-01-01T00:00:00Z
 ~~~
 
 ## `goobers telemetry label`

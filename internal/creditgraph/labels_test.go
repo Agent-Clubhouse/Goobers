@@ -10,11 +10,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func writeLabelTestRecord(t *testing.T, runDir, runID string) []byte {
 	t.Helper()
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	run, err := journal.Create(filepath.Dir(runDir), journal.RunIdentity{RunID: runID, Workflow: "implementation"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(RunRecord{Schema: RecordSchemaVersion, Status: RecordComplete, RunID: runID})
@@ -261,5 +267,40 @@ func TestGroundTruthLabelsWeightFaultAuditConfidence(t *testing.T) {
 	}
 	if again := audit(LabelIncorrect); again.ID != incorrect.ID || again.Confidence != incorrect.Confidence {
 		t.Fatalf("labeled audit is not deterministic: %+v vs %+v", incorrect, again)
+	}
+}
+
+func TestRecordLabelHonorsPinnedGroundTruthSources(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		sources []string
+		wantErr bool
+	}{
+		{name: "human accepted", sources: []string{"human"}},
+		{name: "explicit opt-out refuses", sources: []string{}, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run, runDir := recordTestRun(t, map[string]any{
+				"mode": "active", "version": "v1", "groundTruth": map[string]any{"sources": test.sources},
+			})
+			if err := run.Close(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(RunRecord{Schema: RecordSchemaVersion, Status: RecordComplete, RunID: "run-enabled"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(runDir, RecordFileName), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = RecordLabel(context.Background(), runDir, humanLabel("run-enabled", LabelCorrect, at))
+			if test.wantErr != (err != nil) {
+				t.Fatalf("RecordLabel() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if test.wantErr && !strings.Contains(err.Error(), "does not accept") {
+				t.Fatalf("RecordLabel() error = %v, want source refusal", err)
+			}
+		})
 	}
 }

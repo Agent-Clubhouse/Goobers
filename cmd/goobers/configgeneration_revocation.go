@@ -42,8 +42,7 @@ func checkCurrentMergeAuthority(layout instance.Layout, env apiv1.InvocationEnve
 	if err != nil {
 		return fmt.Errorf("current merge authority unavailable: %w (%s)", err, validationIssueSummary(report))
 	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	instance.ApplyGaggleDefaults(set)
 	goobers, err := resolveGoobersForGaggle(set, env.Gaggle)
 	if err != nil {
 		return fmt.Errorf("merge authority revoked: %w", err)

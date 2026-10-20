@@ -23,7 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|gaggle|prune|prune-orphans|compact> [flags] [path]\n\n" +
 	"configure: enable or disable customer-owned Application Insights export\n" +
 	"test:    send one secret-safe direct-ingestion connectivity probe\n" +
 	"merges: confirmed PR landings and daily counts by originating instance\n" +
@@ -35,6 +35,7 @@ const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|err
 	"claim:   append a Backprop claim from inside an agentic stage\n" +
 	"claims:  print the Backprop claims earlier stages of this run recorded\n" +
 	"shadow:  compare Backprop shadow-mode findings with actual run outcomes\n" +
+	"gaggle:  gaggle-wide Backprop credit, recurring findings, trends, and links\n" +
 	"prune:   remove terminal runs outside the configured retention bounds\n" +
 	"prune-orphans: report or delete old run directories that lack run.yaml\n" +
 	"compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)\n"
