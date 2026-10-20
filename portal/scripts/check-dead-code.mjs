@@ -57,6 +57,12 @@ const exemptions = [
     symbol: "e2e/real-daemon.mjs",
     reason: "Playwright real-dashboard web-server entry point invoked from playwright.config.ts.",
   },
+  ...["interactive-server.mjs", "interactive.acceptance.ts", "interactive.config.ts", "interactive-auth.ts"].map(name => ({
+    type: "files",
+    file: `e2e/${name}`,
+    symbol: `e2e/${name}`,
+    reason: "Standalone interactive-prototype acceptance entry point documented in the interactive prototype guide.",
+  })),
 ];
 
 const testOnlyExports = {
@@ -105,6 +111,8 @@ const testOnlyExports = {
     "isVerdictArtifact",
   ],
   "src/interactive/ApprovalDock.tsx": ["PermissionCard", "QuestionCard"],
+  "src/interactive/client.ts": ["normalizeEvent"],
+  "src/interactive/chat-model.ts": ["parseUnifiedDiff", "diffStats"],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
   "src/theme.ts": ["themeStorageKey", "persistTheme"],
