@@ -383,7 +383,9 @@ func (v *Validator) checkGoober(gaggle, name, stage, field string) (apiv1.Goober
 	}
 	// Copilot model authentication can also carry GitHub publication authority.
 	// A model-only declaration does not prove that this credential is isolated.
-	if !UsesTrustedLocalExecution(v.context.Config) && (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
+	// Trusted-local binding is available only when the parent opted into preview.
+	trustedLocal := v.context.AllowPreviewFeatures && UsesTrustedLocalExecution(v.context.Config)
+	if !trustedLocal && (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
 		return apiv1.GooberSpec{}, refusal("credential_isolation", stage, field, "child model authentication may carry GitHub publication authority; a separate model-only authentication path is required")
 	}
 	return g, nil
