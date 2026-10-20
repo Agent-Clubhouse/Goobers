@@ -94,15 +94,16 @@ func TestCodexChatServerRequestsAlwaysAnsweredWithinCeiling(t *testing.T) {
 }
 func TestCodexChatQuestionsAndThreadFiltering(t *testing.T) {
 	s, c := codexChatEventFixture(t)
+	s.activateTurn("turn")
 	params := map[string]any{"threadId": "thread", "turnId": "turn", "questions": []any{map[string]any{"id": "q", "header": "Choice", "question": "Choose", "options": []any{map[string]any{"label": "One", "description": "first"}}}}}
 	s.receive(codexRPCMessage{ID: json.RawMessage(`7`), Method: "item/tool/requestUserInput", Params: codexRaw(params)})
 	if len(c.messages(t)) != 0 {
 		t.Fatal("question answered before user")
 	}
-	if err := s.AnswerQuestion(context.Background(), "7", chat.QuestionAnswers{"q": []string{"One"}}); err != nil {
+	if err := s.AnswerQuestion(context.Background(), "codex-question-1", chat.QuestionAnswers{"q": []string{"One"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AnswerQuestion(context.Background(), "7", chat.QuestionAnswers{"q": []string{"One"}}); !errors.Is(err, chat.ErrUnknownRequest) {
+	if err := s.AnswerQuestion(context.Background(), "codex-question-1", chat.QuestionAnswers{"q": []string{"One"}}); !errors.Is(err, chat.ErrUnknownRequest) {
 		t.Fatal("duplicate answer accepted")
 	}
 	params["threadId"] = "other"
@@ -173,5 +174,147 @@ func TestCodexChatRPCMalformedAndCancellation(t *testing.T) {
 	case <-rpc.done:
 	default:
 		t.Fatal("uncertain turn delivery left session alive")
+	}
+}
+
+func codexChatAsk(s *codexChatSession, turn string) {
+	s.receive(codexRPCMessage{ID: json.RawMessage(`7`), Method: "item/tool/requestUserInput", Params: codexRaw(map[string]any{
+		"threadId": "thread", "turnId": turn, "questions": []any{map[string]any{"id": "q", "question": "Choose"}},
+	})})
+}
+
+func TestCodexChatInterruptInvalidatesBeforeAcknowledgement(t *testing.T) {
+	// Drive writes explicitly so the interrupt acknowledgement cannot race the
+	// assertions: question cancellation must precede even the interrupt write.
+	s := &codexChatSession{nativeID: "thread", stream: chat.NewStream(chat.StartOptions{}), questions: map[string]codexChatQuestion{}}
+	s.rpc = newCodexRPC(&codexChatCapture{}, s.receive, nil)
+	defer s.rpc.fail(chat.ErrClosed)
+	defer s.stream.Close()
+	s.activateTurn("turn")
+	codexChatAsk(s, "turn")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Interrupt(ctx) }()
+	nextWrite := func() codexRPCWrite {
+		t.Helper()
+		select {
+		case w := <-s.rpc.writes:
+			return w
+		case <-ctx.Done():
+			t.Fatal("interrupt stalled")
+			return codexRPCWrite{}
+		}
+	}
+	w := nextWrite()
+	if !bytes.Contains(w.data, []byte(`"answers":{}`)) {
+		t.Fatalf("pending question not declined first: %s", w.data)
+	}
+	w.done <- nil
+	w = nextWrite()
+	var interrupt codexRPCMessage
+	if err := json.Unmarshal(w.data, &interrupt); err != nil || interrupt.Method != "turn/interrupt" {
+		t.Fatalf("expected native interrupt: %s %v", w.data, err)
+	}
+	if err := s.AnswerQuestion(ctx, "codex-question-1", chat.QuestionAnswers{"q": {"late"}}); !errors.Is(err, chat.ErrUnknownRequest) {
+		t.Fatalf("answer accepted before interrupt acknowledgement: %v", err)
+	}
+	// A duplicate start/late start response must not reopen the interrupted turn.
+	s.activateTurn("turn")
+	if s.blockedTurn != "turn" {
+		t.Fatal("duplicate start reopened interrupted questions")
+	}
+	w.done <- nil
+	s.rpc.mu.Lock()
+	response := s.rpc.pending[string(interrupt.ID)]
+	s.rpc.mu.Unlock()
+	response <- codexRPCMessage{ID: interrupt.ID, Result: codexRaw(map[string]any{})}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCodexChatQuestionTerminalLifecycle(t *testing.T) {
+	for _, terminal := range []string{"completed", "failed", "interrupted", "nonretry_error"} {
+		t.Run(terminal, func(t *testing.T) {
+			s, capture := codexChatEventFixture(t)
+			s.activateTurn("turn")
+			codexChatAsk(s, "turn")
+			if terminal == "nonretry_error" {
+				s.receive(codexRPCMessage{Method: "error", Params: codexRaw(map[string]any{"threadId": "thread", "turnId": "turn", "willRetry": false})})
+			} else {
+				s.receive(codexRPCMessage{Method: "turn/completed", Params: codexRaw(map[string]any{"threadId": "thread", "turn": map[string]any{"id": "turn", "status": terminal}})})
+			}
+			answers := chat.QuestionAnswers{"q": {"late"}}
+			if err := s.AnswerQuestion(context.Background(), "codex-question-1", answers); !errors.Is(err, chat.ErrUnknownRequest) {
+				t.Fatalf("terminal question remained answerable: %v", err)
+			}
+			codexChatAsk(s, "turn") // Delayed server requests must also be declined.
+			messages := capture.messages(t)
+			if len(messages) != 2 {
+				t.Fatalf("unanswered stale requests: %d", len(messages))
+			}
+			for _, msg := range messages {
+				if string(msg.Result) != `{"answers":{}}` {
+					t.Fatalf("stale answer delivered: %s", msg.Result)
+				}
+			}
+			s.activateTurn("next")
+			codexChatAsk(s, "next") // Native RPC ID 7 is intentionally reused.
+			if err := s.AnswerQuestion(context.Background(), "codex-question-1", answers); !errors.Is(err, chat.ErrUnknownRequest) {
+				t.Fatalf("old host answer addressed a new request: %v", err)
+			}
+			if err := s.AnswerQuestion(context.Background(), "codex-question-2", answers); err != nil {
+				t.Fatalf("next turn question unavailable: %v", err)
+			}
+		})
+	}
+}
+
+func TestCodexChatIdleInterruptAndIntermediateIdle(t *testing.T) {
+	s, capture := codexChatEventFixture(t)
+	if err := s.Interrupt(context.Background()); err != nil || len(capture.messages(t)) != 0 {
+		t.Fatalf("idle interrupt sent native request: %v", err)
+	}
+	s.activateTurn("next")
+	codexChatAsk(s, "next")
+	s.receive(codexRPCMessage{Method: "thread/status/changed", Params: codexRaw(map[string]any{"threadId": "thread", "status": map[string]any{"type": "idle"}})})
+	s.receive(codexRPCMessage{Method: "error", Params: codexRaw(map[string]any{"threadId": "thread", "turnId": "next", "willRetry": true})})
+	for _, event := range codexChatDrain(s) {
+		if event.Type == "turn_ended" || event.Type == "question_resolved" {
+			t.Fatalf("intermediate event settled the turn: %+v", event)
+		}
+	}
+	if err := s.AnswerQuestion(context.Background(), "codex-question-1", chat.QuestionAnswers{"q": {"answer"}}); err != nil {
+		t.Fatalf("intermediate idle/retry invalidated question: %v", err)
+	}
+	s.receive(codexRPCMessage{Method: "turn/completed", Params: codexRaw(map[string]any{"threadId": "thread", "turn": map[string]any{"id": "next", "status": "completed"}})})
+	ended := 0
+	for _, event := range codexChatDrain(s) {
+		if event.Type == "turn_ended" {
+			ended++
+			if event.Data["reason"] != "end_turn" {
+				t.Fatalf("idle interrupt poisoned next result: %+v", event)
+			}
+		}
+	}
+	if ended != 1 {
+		t.Fatalf("terminal result count: %d", ended)
+	}
+}
+
+func TestCodexChatQueueCapabilityMatchesSend(t *testing.T) {
+	for _, persistent := range []bool{false, true} {
+		s, capture := codexChatEventFixture(t)
+		s.caps = codexChatCapabilities(persistent)
+		if s.Capabilities().Queue != "none" {
+			t.Fatal("unimplemented client queue advertised")
+		}
+		if _, err := s.Send(context.Background(), chat.Text("queued"), chat.SendOptions{Delivery: chat.Queued}); !errors.Is(err, chat.ErrUnsupported) {
+			t.Fatalf("queue behavior differs from capability: %v", err)
+		}
+		if len(capture.messages(t)) != 0 {
+			t.Fatal("unsupported queue delivered a native turn")
+		}
 	}
 }

@@ -314,26 +314,72 @@ func TestCodexChatProbePreservesUnprovenWriterCustody(t *testing.T) {
 	}
 }
 
-func TestCodexChatProbeUsesHostStateParentOutsideWorkspace(t *testing.T) {
+func TestCodexChatProbeUsesHostStateRootOutsideWorkspace(t *testing.T) {
 	cfg := codexChatFixture(t)
 	cfg.StateDir = filepath.Join(t.TempDir(), "session")
 	cfg.Adapter.EphemeralTmpRoot = filepath.Join(cfg.Request.Workspace, ".tmp")
 	if err := os.Mkdir(cfg.Adapter.EphemeralTmpRoot, 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "home"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	retained := filepath.Join(cfg.StateDir, "home", "retained-session")
+	if err := os.WriteFile(retained, []byte("retained"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	originalTmp := cfg.Adapter.EphemeralTmpRoot
-	probe, err := NewCodexChatDriver(cfg).Probe(context.Background())
+	driver := NewCodexChatDriver(cfg)
+	driver.start = func(ctx context.Context, probeCfg CodexChatConfig, o chat.StartOptions) (*codexChatSession, error) {
+		if probeCfg.StateDir != "" || probeCfg.Adapter.EphemeralTmpRoot != cfg.StateDir {
+			t.Fatal("probe escaped the host session's state exception")
+		}
+		return startCodexChat(ctx, probeCfg, o)
+	}
+	probe, err := driver.Probe(context.Background())
 	if err != nil || !probe.HandshakeOK {
 		t.Fatalf("native probe rejected batch temp root: %+v %v", probe, err)
 	}
 	if cfg.Adapter.EphemeralTmpRoot != originalTmp {
 		t.Fatal("probe mutated shared adapter")
 	}
-	if _, err := os.Stat(cfg.StateDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("probe touched retained session state: %v", err)
-	}
-	entries, err := os.ReadDir(filepath.Dir(cfg.StateDir))
-	if err != nil || len(entries) != 0 {
+	entries, err := os.ReadDir(cfg.StateDir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "home" {
 		t.Fatalf("probe retained disposable state: %v %v", entries, err)
+	}
+	data, err := os.ReadFile(retained)
+	if err != nil || string(data) != "retained" {
+		t.Fatalf("probe changed retained session: %q %v", data, err)
+	}
+}
+
+func TestCodexChatCloseCancelsPendingQuestion(t *testing.T) {
+	cfg := codexChatFixture(t)
+	session, err := NewCodexChatDriver(cfg).Start(context.Background(), chat.StartOptions{Workspace: cfg.Request.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := session.(*codexChatSession)
+	defer func() { _ = s.Close() }()
+	if _, err := s.Send(context.Background(), chat.Text("question"), chat.SendOptions{Delivery: chat.Prompt}); err != nil {
+		t.Fatal(err)
+	}
+	s.receive(codexRPCMessage{ID: json.RawMessage(`7`), Method: "item/tool/requestUserInput", Params: codexRaw(map[string]any{
+		"threadId": s.NativeID(), "turnId": "turn-1", "questions": []any{map[string]any{"id": "q", "question": "Choose"}},
+	})})
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerQuestion(context.Background(), "codex-question-1", chat.QuestionAnswers{"q": {"late"}}); !errors.Is(err, chat.ErrClosed) {
+		t.Fatalf("closed session accepted an answer: %v", err)
+	}
+	cancelled := 0
+	for event := range s.Events() {
+		if event.Type == "question_resolved" && event.Data["resolution"] == "cancelled" {
+			cancelled++
+		}
+	}
+	if cancelled != 1 {
+		t.Fatalf("pending question cancellations: %d", cancelled)
 	}
 }

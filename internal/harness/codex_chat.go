@@ -40,7 +40,7 @@ func (*CodexChatDriver) ID() string { return "codex_app_server" }
 func codexChatCapabilities(persistent bool) chat.Capabilities {
 	c := chat.MinimalCapabilities()
 	c.Steer, c.Interrupt, c.Questions, c.SystemPrompt = true, true, true, true
-	c.Queue, c.Usage, c.ModelSwitch, c.EffortSwitch = "client", "tokens", "per_turn", "per_turn"
+	c.Queue, c.Usage, c.ModelSwitch, c.EffortSwitch = "none", "tokens", "per_turn", "per_turn"
 	c.LiveLevels = []chat.Level{chat.Plan, chat.Auto}
 	if persistent {
 		c.Resume = "native"
@@ -48,21 +48,29 @@ func codexChatCapabilities(persistent bool) chat.Capabilities {
 	return c
 }
 
-// Probe verifies the installed transport without modifying retained session state.
+// Probe verifies the installed transport in disposable state beneath the host-owned session root.
 func (d *CodexChatDriver) Probe(ctx context.Context) (chat.Probe, error) {
 	probe := chat.Probe{Capabilities: codexChatCapabilities(d.config.StateDir != "")}
 	config := d.config
-	config.StateDir = "" // Probing must not lock or modify a resumable session.
+	config.StateDir = "" // Disposable child state never locks or modifies the retained home.
 	if d.config.StateDir != "" {
 		if !filepath.IsAbs(d.config.StateDir) {
 			probe.Reason = chat.StartFailed
 			return probe, errors.New("codex chat StateDir must be absolute")
 		}
+		if err := privateCodexDirectory(d.config.StateDir); err != nil {
+			probe.Reason = chat.StartFailed
+			return probe, err
+		}
+		if err := validateCodexChatState(d.config.StateDir, config.Request.Workspace); err != nil {
+			probe.Reason = chat.StartFailed
+			return probe, err
+		}
 		if config.Adapter != nil {
 			adapter := *config.Adapter
 			// The batch adapter may put ephemeral files under workspace/.tmp.
-			// Native probes need the same outside-workspace isolation as sessions.
-			adapter.EphemeralTmpRoot = filepath.Dir(d.config.StateDir)
+			// Keep probes inside the session's outer-sandbox exception.
+			adapter.EphemeralTmpRoot = d.config.StateDir
 			config.Adapter = &adapter
 		}
 	}
@@ -97,20 +105,25 @@ func (d *CodexChatDriver) Start(ctx context.Context, options chat.StartOptions) 
 }
 
 type codexChatSession struct {
-	rpc           *codexRPC
-	tree          *proc.Tree
-	waitDone      chan struct{}
-	proof         *invoke.WorkspaceQuiescence
-	acknowledge   func(error)
-	prepared      preparedCodexChat
-	caps          chat.Capabilities
-	stream        *chat.Stream
-	cliVersion    string
-	closeOnce     sync.Once
-	closeErr      error
-	closing       atomic.Bool
-	sendMu        sync.Mutex
+	rpc         *codexRPC
+	tree        *proc.Tree
+	waitDone    chan struct{}
+	proof       *invoke.WorkspaceQuiescence
+	acknowledge func(error)
+	prepared    preparedCodexChat
+	caps        chat.Capabilities
+	stream      *chat.Stream
+	cliVersion  string
+	closeOnce   sync.Once
+	closeErr    error
+	closing     atomic.Bool
+	sendMu      sync.Mutex
+	// requestMu orders question replies against lifecycle invalidation. Never
+	// hold it while waiting for a native RPC response (the reader drains turns).
+	requestMu     sync.Mutex
 	mu            sync.Mutex
+	blockedTurn   string
+	questionSeq   uint64
 	nativeID      string
 	active        string
 	lastEnded     string
@@ -349,17 +362,18 @@ func (s *codexChatSession) Send(ctx context.Context, content []chat.ContentBlock
 		if err := s.rpc.request(ctx, "turn/start", request, &response); err != nil {
 			return "", err
 		}
-		s.mu.Lock()
-		if response.Turn.Status == "inProgress" && response.Turn.Id != s.lastEnded {
-			s.active = response.Turn.Id
+		if response.Turn.Status == "inProgress" {
+			s.activateTurn(response.Turn.Id)
 		}
-		s.mu.Unlock()
 	}
 	s.emit("user_message", map[string]any{"content": content, "source": "user", "delivery": delivery}, o.CommandID)
 	return delivery, nil
 }
 
 func (s *codexChatSession) Interrupt(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.closing.Load() {
 		return chat.ErrClosed
 	}
@@ -369,12 +383,15 @@ func (s *codexChatSession) Interrupt(ctx context.Context) error {
 	if turn == "" {
 		return nil
 	}
+	s.cancelQuestions(turn) // Invalidate at admission, before waiting for native acknowledgement.
 	return s.rpc.request(ctx, "turn/interrupt", cp.TurnInterruptParams{ThreadId: id, TurnId: turn}, nil)
 }
 
 func (s *codexChatSession) Close() error {
 	s.closeOnce.Do(func() {
+		s.requestMu.Lock()
 		s.closing.Store(true)
+		s.requestMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		err := s.tree.StopAndWait(ctx)
