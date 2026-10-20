@@ -15,6 +15,7 @@ import (
 
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/chat/chattest"
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 // A real child process exercises JSONL framing, request correlation, process
@@ -278,5 +279,37 @@ func TestCodexChatStdioConfigUsesArraysAndCredentialNames(t *testing.T) {
 	cfg = codexChatStdioServer("tool", []string{"arg"}, []string{"MCP_TOKEN"}, nil)
 	if cfg["required"] != true || cfg["env_vars"].([]string)[0] != "MCP_TOKEN" {
 		t.Fatal(cfg)
+	}
+}
+
+func TestCodexChatStateCannotBeModifiedByWorkspaceTools(t *testing.T) {
+	cfg := codexChatFixture(t)
+	cfg.StateDir = filepath.Join(cfg.Request.Workspace, "private-state")
+	_, err := prepareCodexChat(context.Background(), cfg, chat.StartOptions{})
+	if err == nil || !strings.Contains(err.Error(), "outside the invocation workspace") {
+		t.Fatalf("workspace could modify native configuration: %v", err)
+	}
+}
+
+func TestCodexChatProbePreservesUnprovenWriterCustody(t *testing.T) {
+	for _, duringStart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("during_start_%t", duringStart), func(t *testing.T) {
+			d := NewCodexChatDriver(CodexChatConfig{})
+			failure := fmt.Errorf("fixture cleanup could not prove writer exit: %w", invoke.ErrWorkspaceNotQuiescent)
+			d.start = func(context.Context, CodexChatConfig, chat.StartOptions) (*codexChatSession, error) {
+				if duringStart {
+					return nil, failure
+				}
+				// Simulate an already completed Close that retained custody. The
+				// process-backed conformance tests separately exercise actual shutdown.
+				s := &codexChatSession{cliVersion: "fixture", closeErr: failure}
+				s.closeOnce.Do(func() {})
+				return s, nil
+			}
+			probe, err := d.Probe(context.Background())
+			if probe.HandshakeOK || !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+				t.Fatalf("probe discarded failed custody: %+v %v", probe, err)
+			}
+		})
 	}
 }

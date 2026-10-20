@@ -7,7 +7,7 @@ MCP, shell environment and outer sandbox authority as batch Codex invocations.
 The driver owns process setup and verified shutdown. Unsupported rich media,
 native queues, tool allowlists and unknown models/efforts fail explicitly.
 
-`StateDir` is an absolute, host-owned directory unique to one chat session. It
+`StateDir` is an absolute, host-owned directory unique to one chat session, outside its workspace (including symlink resolution). It
 is locked while active, retained for native thread resume, and cleaned by the
 host when the session is disposed. Without it, the driver uses temporary state
 and advertises no native resume. Failed quiescence retains state and reports

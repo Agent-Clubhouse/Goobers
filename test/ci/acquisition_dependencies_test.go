@@ -23,6 +23,7 @@ var dependencyAcquisitionDecisions = map[string]dependencyAcquisition{
 	"claude":         {reason: "preinstalled CLI; live service tests are separately opt-in, not binary provisioning"},
 	"codex":          {reason: "preinstalled CLI; live service tests are separately opt-in, not binary provisioning"},
 	"cmd.exe":        {reason: "preinstalled Windows command interpreter; the MSI-shaped Azure CLI fixture launches a locally built synthetic executable"},
+	"codex":          {reason: "preinstalled CLI; schema generation is local and installed-CLI/live service smoke tests are explicitly opt-in, not binary provisioning"},
 	"copilot":        {reason: "preinstalled CLI; live service tests are separately opt-in, not binary provisioning"},
 	"cp":             {reason: "local coreutils operation"},
 	"dirname":        {reason: "local coreutils operation"},
