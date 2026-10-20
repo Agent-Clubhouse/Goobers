@@ -32,6 +32,7 @@ type session struct {
 	questions                 map[string]chan chat.QuestionAnswers
 	nextRequest               uint64
 	requestEpoch              uint64
+	queued                    int
 	once                      sync.Once
 	closeErr                  error
 }
@@ -90,6 +91,9 @@ func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.
 		s.busy = true
 		s.interrupted = false
 	}
+	if actual == chat.Queued {
+		s.queued++
+	}
 	s.mu.Unlock()
 	mode := rpc.SendModeImmediate
 	if actual == chat.Queued {
@@ -103,6 +107,9 @@ func (s *session) Send(ctx context.Context, content []chat.ContentBlock, o chat.
 		s.mu.Lock()
 		if !wasBusy {
 			s.busy = false
+		}
+		if actual == chat.Queued && s.queued > 0 {
+			s.queued--
 		}
 		s.mu.Unlock()
 		s.emit("command.rejected", map[string]any{"code": "send_failed"}, o.CommandID)

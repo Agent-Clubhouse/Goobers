@@ -33,7 +33,10 @@ func (s *session) onEvent(e sdk.SessionEvent) {
 		s.finishTurn(d.Aborted != nil && *d.Aborted)
 	case *rpc.AbortData:
 		if root {
-			s.finishTurn(true)
+			s.mu.Lock()
+			s.interrupted = true
+			s.cancelRequestsLocked()
+			s.mu.Unlock()
 		}
 	case *rpc.AssistantMessageData:
 		s.emit("agent_message", map[string]any{"content": chat.Text(d.Content), "messageId": d.MessageID}, "")
@@ -78,10 +81,16 @@ func (s *session) finishTurn(aborted bool) {
 		reason = "cancelled"
 		s.interrupted = true
 	}
-	s.busy = false
+	settled := s.queued == 0 || reason == "cancelled"
+	if reason == "cancelled" {
+		s.queued = 0
+	} else if s.queued > 0 {
+		s.queued--
+	}
+	s.busy = !settled
 	s.cancelRequestsLocked()
 	s.mu.Unlock()
 	if active {
-		s.emit("turn_ended", map[string]any{"reason": reason, "settled": true}, "")
+		s.emit("turn_ended", map[string]any{"reason": reason, "settled": settled}, "")
 	}
 }
