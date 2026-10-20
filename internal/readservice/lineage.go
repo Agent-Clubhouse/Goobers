@@ -73,10 +73,6 @@ func lineagePage(lineage *RunLineage, page runlineage.Page) *RunLineage {
 	return lineage
 }
 
-func (s *Local) offlineRunLineage(ctx context.Context, target RunSummary) (*RunLineage, error) {
-	return s.offlineRunLineagePage(ctx, target, "")
-}
-
 func (s *Local) offlineRunLineagePage(ctx context.Context, target RunSummary, after string) (*RunLineage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

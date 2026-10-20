@@ -25,7 +25,7 @@ func TestOfflineLineageDoesNotOpenUnrelatedJournals(t *testing.T) {
 	opens := 0
 	openRunObserver = func(string) { opens++ }
 	t.Cleanup(func() { openRunObserver = nil })
-	if _, err := service.offlineRunLineage(context.Background(), RunSummary{ID: "target"}); err != nil {
+	if _, err := service.offlineRunLineagePage(context.Background(), RunSummary{ID: "target"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if opens != 0 {
@@ -116,7 +116,7 @@ func TestOfflineLineageBoundsAncestorJournalOpens(t *testing.T) {
 	opens := 0
 	openRunObserver = func(string) { opens++ }
 	t.Cleanup(func() { openRunObserver = nil })
-	lineage, err := service.offlineRunLineage(t.Context(), RunSummary{ID: "target", Lineage: &RunLineage{Source: &LineageRun{ID: "ancestor-0"}}})
+	lineage, err := service.offlineRunLineagePage(t.Context(), RunSummary{ID: "target", Lineage: &RunLineage{Source: &LineageRun{ID: "ancestor-0"}}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestOfflineLineageUsesOnDiskRollup(t *testing.T) {
 	opens := 0
 	openRunObserver = func(string) { opens++ }
 	t.Cleanup(func() { openRunObserver = nil })
-	lineage, err := service.offlineRunLineage(t.Context(), RunSummary{ID: "source"})
+	lineage, err := service.offlineRunLineagePage(t.Context(), RunSummary{ID: "source"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
