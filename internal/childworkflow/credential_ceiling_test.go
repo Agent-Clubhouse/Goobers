@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 func TestProposalOwnsTrustedCredentialCeiling(t *testing.T) {
@@ -20,8 +22,9 @@ func TestProposalOwnsTrustedCredentialCeiling(t *testing.T) {
 		t.Fatal("returned delegation aliases trusted source")
 	}
 }
-func TestProposalRefusesInseparableCopilotModelAuthentication(t *testing.T) {
+func TestProposalRefusesRemoteInseparableCopilotModelAuthentication(t *testing.T) {
 	input := testContext()
+	input.Config.Engine = &instance.EngineConfig{}
 	g := input.Goobers["coder"]
 	g.Harness = "copilot"
 	input.Goobers["coder"] = g
@@ -29,6 +32,10 @@ func TestProposalRefusesInseparableCopilotModelAuthentication(t *testing.T) {
 	source := strings.Replace(validProposal, "type: deterministic", "type: agentic\n      goober: coder\n      capabilities: [agent:model]", 1)
 	source = strings.Replace(source, "      run:\n        command: [\"true\"]\n", "", 1)
 	requireCode(t, validator(t, input), source, "credential_isolation")
+	input.Config.Engine = nil
+	if _, err := validator(t, input).Validate([]byte(source)); err != nil {
+		t.Fatalf("trusted-local same-login candidate refused before exact binding admission: %v", err)
+	}
 	// An unused allowlisted goober has no access to this deterministic child.
 	if _, err := validator(t, input).Validate([]byte(validProposal)); err != nil {
 		t.Fatal(err)

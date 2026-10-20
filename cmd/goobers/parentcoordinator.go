@@ -17,6 +17,9 @@ func containedParentSelection(cfg *instance.Config, set *instance.ConfigSet, mac
 	if err != nil {
 		return engineSelection{}, err
 	}
+	if trustedLocalChildren(cfg) {
+		return engineSelection{ReasonClass: "trusted_local_parent", FallbackReason: "the daemon executes child-enabled stages on its admitted local host"}, nil
+	}
 	stages := make(map[string]bool, len(pins))
 	for _, pin := range pins {
 		stages[pin.Stage] = true

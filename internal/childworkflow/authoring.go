@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -29,6 +30,7 @@ var parentAuthoringSkill string
 // explicit fields prevent credentials, instructions and launcher configuration
 // from crossing from instance configuration into the model's workspace.
 type AuthoringCatalog struct {
+	ExecutionBackend    string             `json:"executionBackend"`
 	SchemaVersion       string             `json:"schemaVersion"`
 	DSLVersion          string             `json:"dslVersion"`
 	Gaggle              string             `json:"gaggle"`
@@ -97,7 +99,7 @@ type AuthoringGoober struct {
 	PolicyActions []string `json:"policyActions,omitempty"`
 }
 
-// AuthoringRunner describes a declared Linux image runner, not live readiness.
+// AuthoringRunner describes an eligible declared runner, not live readiness.
 // Image references, endpoints, environment, auth and mounts are deliberately absent.
 type AuthoringRunner struct {
 	Name         string   `json:"name"`
@@ -122,7 +124,7 @@ func AttachParentAuthoringSkill(kit *agentickit.Kit, authority Authority) error 
 		return ErrAuthorityUnavailable
 	}
 	spec, ok := kit.Goobers[kit.Envelope.Goober]
-	if !ok || (spec.Harness != apiv1.HarnessClaudeCode && spec.Harness != apiv1.HarnessCodex) {
+	if !ok || (spec.Harness != apiv1.HarnessClaudeCode && spec.Harness != apiv1.HarnessCodex && spec.Harness != apiv1.HarnessCopilot) {
 		return ErrAuthorityUnavailable
 	}
 	if _, exists := kit.SkillPackages[ParentAuthoringSkillName]; exists || slices.Contains(spec.Skills, ParentAuthoringSkillName) {
@@ -145,8 +147,11 @@ func AttachParentAuthoringSkill(kit *agentickit.Kit, authority Authority) error 
 		instructions = make(map[string]string)
 	}
 	directory := ".claude/skills/"
-	if spec.Harness == apiv1.HarnessCodex {
+	switch spec.Harness {
+	case apiv1.HarnessCodex:
 		directory = ".agents/skills/"
+	case apiv1.HarnessCopilot:
+		directory = ".github/skills/"
 	}
 	instructions[kit.Envelope.Goober] += "\n\nBefore composing a child workflow, read " + directory + ParentAuthoringSkillName + "/SKILL.md and its catalog.json. The catalog is advisory; the child tools enforce current authority.\n"
 	kit.SkillPackages, kit.Goobers, kit.Instructions = packages, goobers, instructions
@@ -166,6 +171,11 @@ func parentAuthoringCatalog(authority Authority) ([]byte, error) {
 		Goobers: []AuthoringGoober{}, Runners: []AuthoringRunner{}}
 	_, validationErr := NewValidator(input)
 	catalog.NewSubmissions = validationErr == nil
+	local := UsesTrustedLocalExecution(input.Config)
+	catalog.ExecutionBackend = "contained-worker"
+	if local {
+		catalog.ExecutionBackend = "trusted-local"
+	}
 	if input.Gaggle.Spec.RunsOn != nil {
 		catalog.PlacementFloor = *input.Gaggle.Spec.RunsOn.DeepCopy()
 	}
@@ -183,22 +193,12 @@ func parentAuthoringCatalog(authority Authority) ([]byte, error) {
 		}
 		catalog.Goobers = append(catalog.Goobers, AuthoringGoober{Name: name, Harness: string(spec.Harness), Capabilities: allowed, PolicyActions: sortedAuthoringStrings(spec.PolicyActions)})
 	}
-	for _, runner := range input.Config.ResolvedRunners() {
-		kind, err := instance.ClassifyRunnerHost(runner.Host)
-		if err != nil || kind != instance.RunnerHostImage || runner.Provides.OS != instance.RunnerOSLinux {
-			continue
-		}
-		if len(catalog.Runners) >= 128 {
-			return nil, errors.New("parent authoring runner catalog exceeds bound")
-		}
-		p := runner.Provides
-		entry := AuthoringRunner{Name: runner.Name, OS: string(p.OS), CPU: p.CPU, Memory: p.Memory, Disk: p.Disk, Shell: p.Shell, Harnesses: sortedAuthoringStrings(p.Harnesses), Capabilities: sortedAuthoringStrings(p.Capabilities), Restrictions: []string{}}
-		for _, restriction := range runner.Restrictions {
-			entry.Restrictions = append(entry.Restrictions, string(restriction))
-		}
-		entry.Restrictions = sortedAuthoringStrings(entry.Restrictions)
-		catalog.Runners = append(catalog.Runners, entry)
+	runners, err := authoringRunners(input.Config, local)
+	if err != nil {
+		return nil, err
 	}
+
+	catalog.Runners = runners
 	slices.SortFunc(catalog.Runners, func(a, b AuthoringRunner) int { return cmp.Compare(a.Name, b.Name) })
 	data, err := json.MarshalIndent(catalog, "", "  ")
 	if err != nil || len(data) > maxAuthoringCatalogBytes {
@@ -211,4 +211,28 @@ func sortedAuthoringStrings(values []string) []string {
 	result := append([]string{}, values...)
 	slices.Sort(result)
 	return slices.Compact(result)
+}
+
+func authoringRunners(cfg *instance.Config, local bool) ([]AuthoringRunner, error) {
+	runners := []AuthoringRunner{}
+	for _, runner := range cfg.ResolvedRunners() {
+		kind, err := instance.ClassifyRunnerHost(runner.Host)
+		if err != nil || (!local && (kind != instance.RunnerHostImage || runner.Provides.OS != instance.RunnerOSLinux)) {
+			continue
+		}
+		if len(runners) >= 128 {
+			return nil, errors.New("parent authoring runner catalog exceeds bound")
+		}
+		p := runner.Provides
+		if local && p.OS == "" {
+			p.OS = instance.RunnerOS(runtime.GOOS)
+		}
+		entry := AuthoringRunner{Name: runner.Name, OS: string(p.OS), CPU: p.CPU, Memory: p.Memory, Disk: p.Disk, Shell: p.Shell, Harnesses: sortedAuthoringStrings(p.Harnesses), Capabilities: sortedAuthoringStrings(p.Capabilities), Restrictions: []string{}}
+		for _, restriction := range runner.Restrictions {
+			entry.Restrictions = append(entry.Restrictions, string(restriction))
+		}
+		entry.Restrictions = sortedAuthoringStrings(entry.Restrictions)
+		runners = append(runners, entry)
+	}
+	return runners, nil
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/platform/secfile"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -322,6 +323,9 @@ func normalizeClaudeConfig(model string, options map[string]apiextensionsv1.JSON
 
 // Preflight verifies that Claude Code is installed and authenticated.
 func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: claude-code: no command configured")
 	}
@@ -752,6 +756,13 @@ func seedClaudeCredentialsForPlatform(
 		case "USERPROFILE":
 			userProfile = value
 		}
+	}
+	if credentials.TrustedLocalProcess(ctx) {
+		auth, ok := credentials.TrustedLocalAuthenticationFor(ctx, "claude-code")
+		if !ok {
+			return credentials.ErrChildAuthenticationIsolation
+		}
+		sourceDir = auth.Home
 	}
 	// HOME wins when explicitly set — matching the convention used for
 	// resolving Copilot's config home (copilotConfigHome). USERPROFILE is

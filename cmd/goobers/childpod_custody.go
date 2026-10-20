@@ -129,9 +129,12 @@ func (s *daemonCredentialService) pendingChildPodScopes(ctx context.Context, rea
 				return nil, nil, errors.Join(invoke.ErrWorkspaceNotQuiescent, err)
 			}
 			seen[digest], physical[contract.PodAttempt] = true, true
-			retained, err := readChildRetainedAttempt(ctx, reader, store, event, contract, digest)
-			if err != nil {
-				return nil, nil, err
+			var retained childpod.RetainedAttempt
+			if event.Runner["backend"] != "trusted-local" {
+				retained, err = readChildRetainedAttempt(ctx, reader, store, event, contract, digest)
+				if err != nil {
+					return nil, nil, err
+				}
 			}
 			pending[digest] = childPodScope{Event: event, Contract: contract, Retained: retained}
 			continue
@@ -191,6 +194,9 @@ func (s *daemonCredentialService) reconcileChildPodCustody(ctx context.Context, 
 		if digest == "" || value.Event.Seq < scope.Event.Seq {
 			digest, scope = key, value
 		}
+	}
+	if scope.Event.Runner["backend"] == "trusted-local" {
+		return invoke.ErrChildCustodyPending
 	}
 	eligible, err := s.childPodCustodyPending(ctx, reader, digest)
 	if err != nil || !eligible {

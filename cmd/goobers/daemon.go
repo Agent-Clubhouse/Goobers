@@ -543,6 +543,15 @@ func webhookTriggerSignalsAndBackoff(workflowName string, trigger apiv1.Trigger)
 	return sigs, backoff, nil
 }
 
+// Generated local definitions inherit the parent's selected authentication and
+// are compiled offline. Invocation probes use the delegated launch context.
+func preflightDefinitionHarnesses(input schedulerDefinitionsInput, goobers map[string]apiv1.GooberSpec) (harnessPreflightInfo, *harnessPreflightFailures, error) {
+	if input.TrustedLocalChildRuntime {
+		return nil, nil, nil
+	}
+	return preflightSchedulerHarnessesWithProgress(input.Config, input.Definitions, goobers, input.CredentialStores, input.StartupProgress)
+}
+
 func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefinitions, error) {
 	l, generation, err := schedulerExecutionGeneration(input)
 	if err != nil {
@@ -569,10 +578,11 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	if _, err := appendGooberHarnessWarnings(input.Validation, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, harnessRefusals, err := preflightSchedulerHarnessesWithProgress(input.Config, input.Definitions, goobers, input.CredentialStores, input.StartupProgress)
+	harnessInfo, harnessRefusals, err := preflightDefinitionHarnesses(input, goobers)
 	if err != nil {
 		return nil, err
 	}
+
 	repoRefs, err := repoRefsByWorkflow(input.Definitions)
 	if err != nil {
 		return nil, err
@@ -2119,23 +2129,26 @@ type schedulerDefinitionsInput struct {
 	RecoverAtCapacity  bool
 	RecoveryGeneration string
 
-	Layout           instance.Layout
-	Config           *instance.Config
-	Definitions      *instance.ConfigSet
-	Validation       *validate.Report
-	WaitGroup        *sync.WaitGroup
-	RunnerRegistry   *daemonRunnerRegistry
-	Telemetry        *telemetry.Client
-	RollupDB         *rollup.DB
-	Watermarks       *intake.Store
-	InstanceLog      *journal.InstanceLog
-	SharedRegistry   *journal.RegistryScrubber
-	WorktreeManagers map[string]*worktree.Manager
-	ProviderQuota    *localscheduler.ProviderQuotaState
-	TerminalNotifier runner.TerminalNotifier
-	CredentialStores credentials.StoreResolver
-	StartupProgress  func(string)
-	Generations      []*configgeneration.Retainer
+	// Generated local definitions reuse admitted profiles; authenticated probes
+	// belong to the delegated invocation, never instance-wide reconstruction.
+	TrustedLocalChildRuntime bool
+	Layout                   instance.Layout
+	Config                   *instance.Config
+	Definitions              *instance.ConfigSet
+	Validation               *validate.Report
+	WaitGroup                *sync.WaitGroup
+	RunnerRegistry           *daemonRunnerRegistry
+	Telemetry                *telemetry.Client
+	RollupDB                 *rollup.DB
+	Watermarks               *intake.Store
+	InstanceLog              *journal.InstanceLog
+	SharedRegistry           *journal.RegistryScrubber
+	WorktreeManagers         map[string]*worktree.Manager
+	ProviderQuota            *localscheduler.ProviderQuotaState
+	TerminalNotifier         runner.TerminalNotifier
+	CredentialStores         credentials.StoreResolver
+	StartupProgress          func(string)
+	Generations              []*configgeneration.Retainer
 	// PinnedGeneration names the admitted generation whose retained tree is
 	// Layout's config directory; the build reuses it instead of re-retaining.
 	PinnedGeneration string

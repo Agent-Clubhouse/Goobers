@@ -62,3 +62,33 @@ func TestContainedOutputAdoptionCapsProvenanceAndPreservesByteClaims(t *testing.
 		})
 	}
 }
+
+func TestTrustedLocalOutputAdoptionIncludesEmptyArtifacts(t *testing.T) {
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{RunID: "local-output-test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	reader, err := journal.OpenReadOnly(run.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{nil, []byte("local authored output")} {
+		ref, err := run.RecordArtifact("stdout", data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pointer := apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, Integrity: apiv1.IntegrityTrusted}
+		out := dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Integrity: apiv1.IntegrityTrusted, Artifacts: []apiv1.ArtifactPointer{pointer}}}
+		if err := adoptTrustedLocalOutputs(run, reader, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Result.Integrity != apiv1.IntegrityDerived || out.Result.Artifacts[0].Integrity != apiv1.IntegrityDerived {
+			t.Fatal("local output promoted provenance")
+		}
+		out.Result.Artifacts[0].Size++
+		if err := adoptTrustedLocalOutputs(run, reader, &out); err == nil {
+			t.Fatal("incorrect byte claim accepted")
+		}
+	}
+}

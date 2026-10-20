@@ -926,7 +926,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	invokeName, invokeArgs := commandInvocation(name, command[1:])
 	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
-	cmd.Env = stageEnv
+	cmd.Env = credentials.TrustedLocalEnvironment(ctx, stageEnv)
 	if result, refused := e.refuseGuardedCredentialAccess(run, cmd.Env, env.TaskID); refused {
 		return result, nil
 	}

@@ -21,7 +21,7 @@ import (
 )
 
 func TestWorkerKitDeliversCapturedSkillsThroughPodExecutor(t *testing.T) {
-	for _, selected := range []apiv1.Harness{apiv1.HarnessClaudeCode, apiv1.HarnessCodex} {
+	for _, selected := range []apiv1.Harness{apiv1.HarnessClaudeCode, apiv1.HarnessCodex, apiv1.HarnessCopilot} {
 		t.Run(string(selected), func(t *testing.T) {
 			root := initDemo(t)
 			layout := instance.NewLayout(root)
@@ -57,8 +57,11 @@ func TestWorkerKitDeliversCapturedSkillsThroughPodExecutor(t *testing.T) {
 				t.Fatal(err)
 			}
 			directory := ".claude"
-			if selected == apiv1.HarnessCodex {
+			switch selected {
+			case apiv1.HarnessCodex:
 				directory = ".agents"
+			case apiv1.HarnessCopilot:
+				directory = ".github"
 			}
 			adapter := &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 				got, err := os.ReadFile(filepath.Join(req.Workspace, directory, "skills", "implement", "SKILL.md"))

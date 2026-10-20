@@ -75,3 +75,43 @@ func TestSelfExecutionDeniedLocalReviewerParksBeforeProvisioning(t *testing.T) {
 		t.Fatalf("review refusal: %v parked %d", err, parked)
 	}
 }
+
+func TestTrustedLocalParentKeepsSelfRefusalAndPlacement(t *testing.T) {
+	for _, denied := range []bool{false, true} {
+		jr, err := journal.Create(t.TempDir(), journal.RunIdentity{RunID: "local-parent", Workflow: "workflow", WorkflowVersion: 1, Gaggle: "web", Trigger: journal.Trigger{Kind: journal.TriggerManual}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := &Runner{cfg: Config{TrustedLocalParents: true, SelfExecutionDenied: denied}}
+		task := apiv1.Task{Name: "plan", Type: apiv1.TaskAgentic, ChildWorkflows: &apiv1.ChildWorkflowPolicy{}}
+		frame := taskFrame{jr: jr, t: task}
+		if denied {
+			result, _, err := r.runTask(t.Context(), frame, 0, 1, journal.AttemptPolicy, "", nil, false, nil)
+			if err != nil || result.Status != apiv1.ResultBlocked {
+				t.Fatalf("local parent bypassed deny: %+v %v", result, err)
+			}
+		} else if err := r.recordHostTaskPlacement(frame, 1, journal.AttemptPolicy); err != nil {
+			t.Fatal(err)
+		}
+		reader, err := journal.OpenReadOnly(jr.Dir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			t.Fatal(err)
+		}
+		placements := 0
+		for _, e := range events {
+			if e.Type == journal.EventRunnerPlacement {
+				placements++
+			}
+		}
+		if (placements == 0) != denied {
+			t.Fatalf("denied=%v placements=%d", denied, placements)
+		}
+		if err := jr.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
