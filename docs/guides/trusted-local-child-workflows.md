@@ -10,9 +10,10 @@ annotation.
 The existing `metadata.annotations.goobers.dev/allow-preview-features: "true"`
 workflow annotation is the explicit opt-in. Without it, child workflow admission
 is refused before launch; ordinary mode-1 workflows keep their existing behavior.
-Startup installs the provider only for a self-only instance. macOS/Linux runtime
-qualification and review gate release; Windows strict custody remains refused
-at admission even with preview features enabled.
+Startup installs the provider only for a self-only instance. The macOS/Linux
+preview landed in [#7663](https://github.com/Agent-Clubhouse/Goobers/pull/7663),
+with hermetic journeys passing locally on macOS and in hosted Linux CI. Windows
+strict custody remains refused at admission even with preview features enabled.
 
 ## Execution contract
 

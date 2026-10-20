@@ -1,17 +1,18 @@
 # Child workflow admission internals (preview)
 
-The proposed [trusted-local extension](../design/trusted-local-child-workflows.md)
-adds an explicitly selected host-process backend for self-only instances. Its
-credential ceiling and workspace custody contract match contained execution;
-its trust boundary is the daemon user's OS account. Local implementation and
-qualification are pending; the historical slices below describe delivered work.
+The preview [trusted-local provider](trusted-local-child-workflows.md) supplies
+host-process children for self-only macOS/Linux instances. Its credential ceiling
+and workspace custody contract match contained execution; its trust boundary is
+the daemon user's OS account. It requires the existing workflow preview annotation.
+Windows strict custody remains refused.
 
-Child execution is not enabled by this slice. Public runner and engine entry
-points still refuse workflows containing opted-in child stages. Offline
-`goobers workflow validate-child` remains the usable authoring preview.
-The internal services described here establish admission, workspace custody and
-wait coordination. A qualified isolated execution backend is still required
-before an executing parent can submit, wait for, or reconcile a child publicly.
+The historical slices below describe admission, workspace custody and wait
+coordination at their landing points. Their original execution restrictions are
+not current availability claims: see the trusted-local guide and
+[contained child transport guide](contained-child-transport.md) for the composed
+daemon providers and their qualification limits. Standalone or incompletely
+composed runners remain refused. Offline `goobers workflow validate-child`
+provides advisory validation; it does not grant execution authority.
 
 ## Authority and receipt ownership
 
@@ -83,18 +84,19 @@ continuation. Durable wait time is excluded from the ordinary run-duration limit
 explicit caller cancellation and deadlines still apply. Restart recovery adopts
 the retained checkout and refuses malformed or mismatched wait records.
 
-These owners do not enable a public execution path yet. The installed launcher
-requires an isolated stage backend and defers when one is unavailable. The local
-host process path refuses child execution before credentials or environment are
-materialized. Without delegated publication, the credential ceiling allows only
-an explicitly delegated model credential; opaque repository/provider and named
-MCP tokens are withheld. Filtering a capability label cannot narrow a token's
-actual permissions or isolate stored CLI logins.
+These owners originally supplied internal foundations without enabling public
+execution. The composed daemon now selects the contained or trusted-local
+provider from instance policy. Trusted-local children may use only the parent
+stage's exact selected model grant/reference or its permitted selected harness
+login; they cannot resolve other stored secrets. Unselected provider and MCP
+tokens remain withheld. Filtering a capability label cannot narrow a token's
+actual permissions or isolate a shared OS account.
 
-The current internal handoff is serial and requires a managed repository workspace.
-Parallel parent stages, parent pod waits, and the supported contained executor need
-separate qualification before runtime enablement. Admission's separate per-stage
-slots do not imply that these execution shapes already work. The disposition
+The original internal handoff was serial and required a managed repository
+workspace. Later parallel-parent and contained-executor qualification is recorded
+in the transport guide; trusted-local physical child invocations remain serialized
+by default. Admission's separate per-stage slots alone do not qualify an execution
+shape. The disposition
 follow-up below releases completed child slots only after a verified parent
 choice. No recursion is enabled.
 
@@ -136,9 +138,9 @@ children; exhausted capacity continues to refuse new intake. A family tombstone
 releases its associated history, while unresolved plans retain their evidence.
 Back up before upgrading; older binaries refuse the newer schema.
 
-This remains internal runtime preparation. Public execution stays disabled until
-an isolated backend and its supported parent/child execution shape are qualified.
-The tool and local disposition do not implement delegated PR publication.
+This disposition slice supplied internal runtime preparation; the composed
+providers now use it under their execution and custody gates. The tool and local
+disposition alone do not implement delegated PR publication.
 
 ## Contained worker authority and recovery
 
@@ -146,10 +148,10 @@ Daemon startup connects the retained child launcher to the existing Temporal
 worker transport when a shared pod signing key, Temporal client, surrender store
 and live journal writer are available. Missing dependencies leave accepted work
 queued. The contained backend requires pinned Linux image runner placement and
-does not fall back to host execution. The proposed trusted-local provider is
-selected separately by self-only instance configuration, without extra flags.
-Public opt-in remains gated pending
-the complete supported parent/child journey below.
+does not fall back to host execution. The trusted-local provider is selected
+separately by self-only instance configuration, with the existing workflow preview
+annotation and no additional flag. Its supported journey and platform limits are
+recorded in the trusted-local guide; the sections below cover contained execution.
 
 Each physical attempt receives a separately signed generated-child identity
 bound to its run and immutable execution contract. Its dedicated HTTP owners
