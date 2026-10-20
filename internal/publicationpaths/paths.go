@@ -33,3 +33,15 @@ func ExcludePatterns() []gitexclude.Pattern {
 		{Line: "/" + launcherSessionPrefix + "*"},
 	}
 }
+
+// WorkPathspecs selects project changes for status and staging, even when
+// checkout exclusions are absent or a reserved path is already tracked.
+// Keep this derived from the publication policy so commit-repair prompts and
+// recovery patches cannot select artifacts that publication would reject.
+func WorkPathspecs() []string {
+	paths := []string{"."}
+	for _, pattern := range ExcludePatterns() {
+		paths = append(paths, ":(exclude,top)"+strings.TrimPrefix(pattern.Line, "/"))
+	}
+	return paths
+}
