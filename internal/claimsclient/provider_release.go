@@ -21,6 +21,8 @@ type ProviderReleaser interface {
 	ReleaseWithProvider(context.Context, Entry, claimrelease.Reason, func(context.Context) error) (bool, error)
 }
 
+// ReleaseWithProvider delegates cleanup and custody release to the daemon,
+// which resolves the provider from trusted configuration rather than the callback.
 func (h *HTTP) ReleaseWithProvider(ctx context.Context, entry Entry, reason claimrelease.Reason, _ func(context.Context) error) (bool, error) {
 	key := KeyForEntry(entry)
 	if err := scopedKey(key); err != nil {
@@ -42,6 +44,8 @@ type providerReleaseLedger interface {
 	FinishProviderRelease(Entry, claimrelease.Reason) (bool, error)
 }
 
+// ReleaseWithProvider reserves custody, runs cleanup outside the claims lock,
+// and finalizes only the reserved incarnation after cleanup succeeds.
 func (f *File) ReleaseWithProvider(ctx context.Context, entry Entry, reason claimrelease.Reason, cleanup func(context.Context) error) (released bool, err error) {
 	if f.cfg.ProviderReleaseLock == nil || f.cfg.Lock == nil {
 		return false, fmt.Errorf("claimsclient: provider release requires separate cleanup and claims locks")
