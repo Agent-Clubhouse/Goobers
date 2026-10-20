@@ -538,6 +538,7 @@ type upWorkers struct {
 	templateChecksDone                 <-chan struct{}
 	templateNotices                    <-chan updateCheckResult
 	terminalCleanupRetryDone           <-chan struct{}
+	terminalReportRetryDone            <-chan struct{}
 	updateCheckDone                    <-chan struct{}
 	updateNotices                      <-chan updateCheckResult
 	worktreeRetentionTickerDone        chan struct{}
@@ -2059,6 +2060,7 @@ func (u *upSession) readyForWork() int {
 	terminalCleanupRetryCtx, u.stopTerminalCleanupRetry = context.WithCancel(context.Background())
 	defer u.stopTerminalCleanupRetry()
 	u.terminalCleanupRetryDone = startTerminalCleanupRetry(terminalCleanupRetryCtx, u.cleanupRetries, u.terminalCleanupRetryErrors, u.readyNow)
+	u.terminalReportRetryDone = startTerminalReportRetry(u.ctx, u.l, u.setup.SharedRegistry, u.setup.SecretStores, u.setup.InstanceLog, u.readyNow)
 	u.startupTerminalFinalize = startStartupTerminalFinalize(u.ctx, u.setup, u.resumeResult.Terminal)
 	u.startupMergedPRCostSweepDone = u.mergedPRCostSweeps.startDeferred(u.ctx, u.readyNow)
 	pf(u.stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", u.root, len(u.setup.Entries), u.apiServer.Scheme(), u.apiServer.Address(), httpapi.Prefix)
@@ -2225,6 +2227,9 @@ func (u *upSession) finish() int {
 	u.stopTerminalCleanupRetry()
 	u.startupTerminalFinalize.finishAfterDrain()
 	<-u.terminalCleanupRetryDone
+	if u.terminalReportRetryDone != nil {
+		<-u.terminalReportRetryDone
+	}
 	runTerminalCleanupRetryFinal(u.cleanupRetries, u.terminalCleanupRetryErrors, u.readyNow)
 	if !drainResult.forced {
 		pln(u.stdout, "shutdown complete: all runs drained")
