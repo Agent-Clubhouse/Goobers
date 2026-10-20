@@ -86,22 +86,23 @@ func (c Ceiling) Clamp(l Level) Level {
 
 // Capabilities advertises the operations implemented by a transport.
 type Capabilities struct {
-	Steer         bool    `json:"steer"`
-	Queue         string  `json:"queue"` // native | client | none
-	Interrupt     bool    `json:"interrupt"`
-	Resume        string  `json:"resume"` // native | replay | none
-	PlanApproval  bool    `json:"planApproval"`
-	Questions     bool    `json:"questions"`
-	Subagents     string  `json:"subagents"` // full | ids_only | none
-	Usage         string  `json:"usage"`     // cost | tokens | context | none
-	Limits        bool    `json:"limits"`
-	Images        bool    `json:"images"`
-	SlashCommands bool    `json:"slashCommands"`
-	ModelSwitch   string  `json:"modelSwitch"` // live | per_turn | restart | none
-	EffortSwitch  string  `json:"effortSwitch"`
-	LiveLevels    []Level `json:"liveLevels"`
-	Login         string  `json:"login"`
-	SystemPrompt  bool    `json:"systemPrompt"`
+	PermissionExtras PermissionExtras `json:"permissionExtras"`
+	Steer            bool             `json:"steer"`
+	Queue            string           `json:"queue"` // native | client | none
+	Interrupt        bool             `json:"interrupt"`
+	Resume           string           `json:"resume"` // native | replay | none
+	PlanApproval     bool             `json:"planApproval"`
+	Questions        bool             `json:"questions"`
+	Subagents        string           `json:"subagents"` // full | ids_only | none
+	Usage            string           `json:"usage"`     // cost | tokens | context | none
+	Limits           bool             `json:"limits"`
+	Images           bool             `json:"images"`
+	SlashCommands    bool             `json:"slashCommands"`
+	ModelSwitch      string           `json:"modelSwitch"` // live | per_turn | restart | none
+	EffortSwitch     string           `json:"effortSwitch"`
+	LiveLevels       []Level          `json:"liveLevels"`
+	Login            string           `json:"login"`
+	SystemPrompt     bool             `json:"systemPrompt"`
 }
 
 // MinimalCapabilities returns a conservative capability record with no optional operations.
@@ -159,6 +160,7 @@ type PermissionResponse struct {
 }
 
 // QuestionAnswers maps question identities to selected or free-form answers.
+// A nil map cancels the request without selecting or inventing an answer.
 type QuestionAnswers map[string][]string
 
 // Driver probes a transport and opens sessions within host authority.
@@ -238,4 +240,32 @@ type Attempt struct {
 // control. Empty effort requests the provider default when supported.
 type EffortSetter interface {
 	SetEffort(context.Context, string) error
+}
+
+// PermissionExtras advertises optional permission response semantics.
+type PermissionExtras struct {
+	DenyMessage bool `json:"denyMessage"`
+}
+
+// Question is a provider-neutral structured user question.
+type Question struct {
+	QuestionID    string           `json:"questionId"`
+	Prompt        string           `json:"prompt"`
+	Options       []QuestionOption `json:"options"`
+	AllowMultiple bool             `json:"allowMultiple"`
+	AllowFreeText bool             `json:"allowFreeText"`
+}
+
+// QuestionOption is one selectable stable answer identity and label.
+type QuestionOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// ModelInfo contains only advertised model and effort choices.
+type ModelInfo struct {
+	ID            string   `json:"id"`
+	Label         string   `json:"label"`
+	Efforts       []string `json:"efforts"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }

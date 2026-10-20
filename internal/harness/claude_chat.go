@@ -22,19 +22,7 @@ func (c *ClaudeAdapter) ChatDriver(req RunRequest) *claudechat.Driver {
 	}
 }
 func (c *ClaudeAdapter) prepareClaudeChat(ctx context.Context, req RunRequest, o chat.StartOptions, args []string) (launch claudechat.Launch, err error) {
-	if err := validateStandardExecution(req); err != nil {
-		return launch, err
-	}
-	if len(c.Command) == 0 || req.Workspace == "" {
-		return launch, errors.New("claude chat: command and workspace required")
-	}
-	if o.Workspace != "" && o.Workspace != req.Workspace {
-		return launch, errors.New("claude chat: workspace differs from authorized request")
-	}
-	if len(c.ExtraArgs) > 0 {
-		return launch, errors.New("claude chat: extra argv is unsupported by native transport")
-	}
-	if err := validateToolAllowlist(c.Name(), req.Tools); err != nil {
+	if err := c.validateClaudeChatRequest(req, o); err != nil {
 		return launch, err
 	}
 	options, err := normalizeClaudeConfig(req.Model, req.HarnessOptions)
@@ -113,4 +101,23 @@ func (c *ClaudeAdapter) prepareClaudeChat(ctx context.Context, req RunRequest, o
 		argv = wrapped
 	}
 	return claudechat.Launch{Command: argv, Env: env, Dir: req.Workspace, Cleanup: ephemeralTmp.Reclaim}, nil
+}
+
+func (c *ClaudeAdapter) validateClaudeChatRequest(req RunRequest, o chat.StartOptions) error {
+	if err := validateStandardExecution(req); err != nil {
+		return err
+	}
+	if len(c.Command) == 0 || req.Workspace == "" {
+		return errors.New("claude chat: command and workspace required")
+	}
+	if o.Workspace != "" && o.Workspace != req.Workspace {
+		return errors.New("claude chat: workspace differs from authorized request")
+	}
+	if len(c.ExtraArgs) > 0 {
+		return errors.New("claude chat: extra argv is unsupported by native transport")
+	}
+	if err := validateToolAllowlist(c.Name(), req.Tools); err != nil {
+		return err
+	}
+	return nil
 }

@@ -38,6 +38,7 @@ type Driver struct {
 func (d *Driver) ID() string { return "claude_stream_json" }
 func capabilities() chat.Capabilities {
 	c := chat.MinimalCapabilities()
+	c.PermissionExtras.DenyMessage = true
 	c.Steer, c.Interrupt, c.Questions = true, true, true
 	c.Queue, c.Resume, c.Subagents, c.Usage = "native", "native", "ids_only", "cost"
 	c.ModelSwitch, c.EffortSwitch = "live", "live"
@@ -208,6 +209,12 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 	}
 	s.version = str(response["claude_code_version"])
 	s.emit("session_started", object{"capabilities": capabilities()}, "")
+	models := []chat.ModelInfo{}
+	for _, raw := range arr(response["models"]) {
+		m := obj(raw)
+		models = append(models, chat.ModelInfo{ID: str(m["value"]), Label: str(m["displayName"]), Efforts: []string{}})
+	}
+	s.emit("session_info", object{"models": models, "currentModel": o.Model, "currentEffort": "", "levels": capabilities().LiveLevels, "currentLevel": s.level}, "")
 	return s, nil
 }
 
@@ -216,6 +223,7 @@ type controlReply struct {
 	err   error
 }
 type writeRequest struct {
+	epoch *uint64
 	frame object
 	done  chan error
 }
@@ -238,6 +246,7 @@ type Session struct {
 	pending                map[string]chan controlReply
 	permissions            map[string]object
 	counter                uint64
+	requestEpoch           uint64
 	active, closed         bool
 	timeout                time.Duration
 	writeQ                 chan writeRequest
@@ -272,6 +281,15 @@ func (s *Session) writer() {
 		case <-s.done:
 			return
 		case req := <-s.writeQ:
+			if req.epoch != nil {
+				s.mu.Lock()
+				stale := *req.epoch != s.requestEpoch || s.closed
+				s.mu.Unlock()
+				if stale {
+					req.done <- chat.ErrUnknownRequest
+					continue
+				}
+			}
 			data, err := json.Marshal(req.frame)
 			if err == nil {
 				_, err = s.stdin.Write(append(data, '\n'))
@@ -289,13 +307,16 @@ func (s *Session) writer() {
 	}
 }
 func (s *Session) write(ctx context.Context, frame object) error {
+	return s.writeEpoch(ctx, frame, nil)
+}
+func (s *Session) writeEpoch(ctx context.Context, frame object, epoch *uint64) error {
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
 		return chat.ErrClosed
 	}
-	req := writeRequest{frame: frame, done: make(chan error, 1)}
+	req := writeRequest{frame: frame, epoch: epoch, done: make(chan error, 1)}
 	select {
 	case s.writeQ <- req:
 	case <-ctx.Done():
@@ -382,31 +403,7 @@ func (s *Session) frame(m object) {
 		}
 		pending <- result
 	case "control_request":
-		r := obj(m["request"])
-		id := str(m["request_id"])
-		if r["subtype"] != "can_use_tool" || id == "" {
-			s.emit("protocol_unknown", unknown("control_request/"+str(r["subtype"])).data, "")
-			s.respondAsync(id, object{"subtype": "error", "error": "unsupported control request"})
-			return
-		}
-		s.mu.Lock()
-		_, duplicate := s.permissions[id]
-		if !duplicate {
-			s.permissions[id] = r
-		}
-		s.mu.Unlock()
-		if duplicate {
-			s.emit("protocol_unknown", unknown("duplicate_control_request").data, "")
-			go func() { _ = s.Close() }()
-			return
-		}
-		data := object{"requestId": id, "toolCallId": str(r["tool_use_id"]), "title": str(r["tool_name"]), "options": []object{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "deny", "kind": "reject_once", "label": "Deny"}}}
-		kind := "permission_request"
-		if r["tool_name"] == "AskUserQuestion" {
-			kind = "question"
-			data["questions"] = questions(obj(r["input"]))
-		}
-		s.emit(kind, data, "")
+		s.permissionFrame(m)
 	case "control_cancel_request":
 		id := str(m["request_id"])
 		s.mu.Lock()
@@ -439,12 +436,16 @@ func (s *Session) frame(m object) {
 		}
 		events := s.norm.mapFrame(m)
 		if m["type"] == "result" {
+			s.cancelPermissionsLocked()
 			s.active = false
 			if remaining, ok := m["queued_turn_count"].(float64); ok {
 				s.queued = max(0, int(remaining))
 			}
 		}
 		for _, e := range events {
+			if e.kind == "turn_ended" {
+				e.data["settled"] = s.queued == 0
+			}
 			s.emit(e.kind, e.data, "")
 		}
 		if m["type"] == "result" {
@@ -518,7 +519,16 @@ func (s *Session) Send(ctx context.Context, blocks []chat.ContentBlock, o chat.S
 // Interrupt requests cancellation without claiming writer quiescence.
 func (s *Session) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
-	s.norm.interrupting = true
+	if s.closed {
+		s.mu.Unlock()
+		return chat.ErrClosed
+	}
+	if !s.active && s.queued == 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	s.norm.interrupting = s.active
+	s.cancelPermissionsLocked()
 	s.mu.Unlock()
 	_, err := s.control(ctx, object{"subtype": "interrupt"})
 	return err
@@ -549,7 +559,7 @@ func (s *Session) SetModel(ctx context.Context, model string) error {
 	}
 	_, err := s.control(ctx, request)
 	if err == nil {
-		s.emit("model_changed", object{"model": model}, "")
+		s.emit("model_changed", object{"modelId": model}, "")
 	}
 	return err
 }
@@ -571,9 +581,9 @@ func questions(input object) []object {
 		var options []object
 		for _, rawOption := range arr(q["options"]) {
 			option := obj(rawOption)
-			options = append(options, object{"label": str(option["label"]), "description": str(option["description"])})
+			options = append(options, object{"id": str(option["label"]), "label": str(option["label"])})
 		}
-		out = append(out, object{"id": str(q["question"]), "question": str(q["question"]), "header": str(q["header"]), "multiSelect": q["multiSelect"] == true, "options": options})
+		out = append(out, object{"questionId": str(q["question"]), "prompt": str(q["question"]), "allowMultiple": q["multiSelect"] == true, "allowFreeText": true, "options": options})
 	}
 	return out
 }
@@ -591,13 +601,17 @@ func (s *Session) respond(ctx context.Context, id string, response object, quest
 		s.mu.Unlock()
 		return chat.ErrUnknownRequest
 	}
+	epoch := s.requestEpoch
 	delete(s.permissions, id)
 	s.mu.Unlock()
 	if response["behavior"] == "allow" && response["updatedInput"] == nil {
 		response["updatedInput"] = obj(r["input"])
 	}
-	err := s.write(ctx, object{"type": "control_response", "response": object{"subtype": "success", "request_id": id, "response": response}})
+	err := s.writeEpoch(ctx, object{"type": "control_response", "response": object{"subtype": "success", "request_id": id, "response": response}}, &epoch)
 	if err != nil {
+		if errors.Is(err, chat.ErrUnknownRequest) {
+			return err
+		}
 		_ = s.Close()
 		return err
 	}
@@ -627,6 +641,9 @@ func (s *Session) RespondPermission(ctx context.Context, id string, r chat.Permi
 
 // AnswerQuestion echoes the original question input with the selected answers.
 func (s *Session) AnswerQuestion(ctx context.Context, id string, answers chat.QuestionAnswers) error {
+	if answers == nil {
+		return s.respond(ctx, id, object{"behavior": "deny", "message": "Question cancelled by host policy"}, true)
+	}
 	s.mu.Lock()
 	r := s.permissions[id]
 	input := obj(r["input"])
@@ -648,6 +665,7 @@ func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		s.requestEpoch++
 		s.mu.Unlock()
 		// Capture and stop descendants BEFORE closing stdin can orphan them.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -705,4 +723,50 @@ func (s *Session) Close() error {
 		close(s.done)
 	})
 	return s.closeErr
+}
+
+func (s *Session) permissionFrame(m object) {
+	r := obj(m["request"])
+	id := str(m["request_id"])
+	if r["subtype"] != "can_use_tool" || id == "" {
+		s.emit("protocol_unknown", unknown("control_request/"+str(r["subtype"])).data, "")
+		s.respondAsync(id, object{"subtype": "error", "error": "unsupported control request"})
+		return
+	}
+	s.mu.Lock()
+	if s.closed || s.norm.interrupting {
+		s.mu.Unlock()
+		s.respondAsync(id, object{"subtype": "success", "response": object{"behavior": "deny", "message": "Turn cancelled"}})
+		s.resolve(id, r, "cancelled")
+		return
+	}
+	_, duplicate := s.permissions[id]
+	if !duplicate {
+		s.permissions[id] = r
+	}
+	s.mu.Unlock()
+	if duplicate {
+		s.emit("protocol_unknown", unknown("duplicate_control_request").data, "")
+		go func() { _ = s.Close() }()
+		return
+	}
+	data := object{"requestId": id, "toolCallId": str(r["tool_use_id"]), "title": str(r["tool_name"]), "kind": "tool", "content": permissionPreview(str(r["tool_name"]), obj(r["input"])), "options": []object{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "reject_once", "kind": "reject_once", "label": "Deny"}}}
+	kind := "permission_request"
+	if r["tool_name"] == "AskUserQuestion" {
+		kind = "question"
+		data["questions"] = questions(obj(r["input"]))
+	}
+	s.emit(kind, data, "")
+}
+
+// Called with mu held at a turn boundary. A queued approval carries the epoch
+// to the writer, so it cannot become a grant after cancellation overtakes it.
+func (s *Session) cancelPermissionsLocked() {
+	s.requestEpoch++
+	pending := s.permissions
+	s.permissions = map[string]object{}
+	for id, request := range pending {
+		s.respondAsync(id, object{"subtype": "success", "response": object{"behavior": "deny", "message": "Turn ended or cancelled"}})
+		s.resolve(id, request, "cancelled")
+	}
 }
