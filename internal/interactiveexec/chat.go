@@ -119,7 +119,7 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 			}
 		}
 	}()
-	if err := emit("execution.note", map[string]any{"driverAttempts": attempts}); err != nil {
+	if err := emit("execution.note", chatStartNote(s, attempts)); err != nil {
 		return out, nil, err
 	}
 	commandID := ""
@@ -135,6 +135,25 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 		pendingAck = true
 	}
 	return driveChatEvents(ctx, runCtx, req, request, s, controls, project)
+}
+
+func chatStartNote(session chat.Session, attempts []chat.Attempt) map[string]any {
+	note := map[string]any{"driverAttempts": attempts}
+	info, ok := session.(chat.ResumeInfo)
+	if !ok {
+		return note
+	}
+	fallback := info.ResumeFallback()
+	switch fallback {
+	case chat.ResumeNotFound:
+		note["message"] = "Previous session was not found; started a fresh session."
+	case chat.ResumeStalled:
+		note["message"] = "Resuming the previous session timed out; started a fresh session."
+	default:
+		return note
+	}
+	note["resumeFallback"] = fallback
+	return note
 }
 
 func readChatCompletion(workspace, path string) ([]byte, error) {
