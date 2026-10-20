@@ -267,12 +267,20 @@ func TestRunInterventionClaimLockContentionReturnsTypedErrorBeforeBudget(t *test
 			run: func(ctx context.Context, service *intervention.Service, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 				return service.AcceptRerunStage(ctx, context.Background(), input)
 			},
-			input: httpapi.InterventionRequest{Stage: "implement", Actor: "operator", InstructionAddendum: "preserve the commit"},
+			input: httpapi.InterventionRequest{Stage: "review", Actor: "operator", InstructionAddendum: "preserve the commit"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runID := "run-lock-budget-" + tc.name
-			fixture := newInterventionWiringFixture(t, interventionTestMachine(t, apiv1.EvaluatorAgentic), runID, []journal.Event{
+			// Keep the request valid through custody preflight so this test
+			// isolates the claim-lock budget rather than missing workspace.
+			definition := interventionTestMachine(t, apiv1.EvaluatorAgentic).Def
+			definition.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+			machine, err := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture := newInterventionWiringFixture(t, machine, runID, []journal.Event{
 				{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
 				{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
 				{Type: journal.EventGateStarted, Gate: "review"},

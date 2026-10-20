@@ -380,6 +380,18 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 			fmt.Sprintf("run %q is %s; only escalated runs can rerun a stage", input.RunID, resolved.phase),
 		)
 	}
+	if err := resolved.runner.PreflightRerunStage(admission, runner.RerunStageInput{
+		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
+		Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum, ExpectedTerminalSeq: resolved.terminalSeq,
+	}); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return httpapi.InterventionResult{}, err
+		}
+		if errors.Is(err, runner.ErrRerunCustodyUnavailable) {
+			return httpapi.InterventionResult{}, interventionConflict("rerun_custody_unavailable", err.Error())
+		}
+		return httpapi.InterventionResult{}, interventionConflict("rerun_preflight_failed", err.Error())
+	}
 	_, err = s.execute(admission, execution, background, resolved, true, "rerun", input, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.RerunStage(ctx, runner.RerunStageInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
@@ -744,7 +756,7 @@ func (s *Service) execute(
 	if background && input.IdempotencyKey == "" {
 		return runner.Result{}, interventionBadRequest("idempotency_key_required", "Idempotency-Key is required")
 	}
-	lease, err := s.beginExecution(admission, resolved, reacquireClaims)
+	lease, err := s.beginExecution(admission, resolved, reacquireClaims && action != "rerun")
 	if err != nil {
 		return runner.Result{}, err
 	}
@@ -754,7 +766,24 @@ func (s *Service) execute(
 			http.StatusServiceUnavailable, "request_budget_exceeded", "the intervention was not accepted within the request budget", err,
 		)
 	}
+	if action == "rerun" {
+		replayed, err := recheckRerunAcceptance(resolved, input)
+		if replayed || err != nil {
+			lease.Close()
+			return runner.Result{}, err
+		}
+		if reacquireClaims {
+			if err := s.reacquireClaims(admission, resolved); err != nil {
+				lease.Close()
+				return runner.Result{}, err
+			}
+			lease.reacquiredClaims = true
+		}
+	}
 	if err := recordInterventionMarker(resolved, action, input); err != nil {
+		if action == "rerun" {
+			err = errors.Join(err, lease.releaseReacquiredClaims())
+		}
 		lease.Close()
 		return runner.Result{}, err
 	}

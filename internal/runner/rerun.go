@@ -159,6 +159,12 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
 		}
+		rerunBranch, err := r.rerunWorkspaceBranch(ctx, startIn, events, in.Stage)
+		if err != nil {
+			return Result{}, err
+		}
+		startIn.WorkspaceBranch = rerunBranch
+		startIn.requireExistingWorkspace = rerunBranch != ""
 		if err := jr.Append(journal.Event{
 			Type:                journal.EventStageRerunRequested,
 			Stage:               in.Stage,
@@ -197,7 +203,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		}
 		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(mapJoinSubjectEvents(seedEvents, ws.fanIn))
 		ws.lastResult = discardToleratedFailureOutputs(in.Machine, ws.lastStage, ws.lastResult)
-		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+		ws.workspaceBranch = rerunBranch
 		ws.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
 		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
