@@ -87,19 +87,20 @@ var newGiteaRunAbortLabelProvider = func(baseURL string, source providers.TokenS
 }
 
 // newTerminalRunAbortLabelProviderForProject dispatches on the terminal
-// repository's own declared provider kind. ADO is not reachable here: the
-// label is a PR-write on the repo the terminal run acted on, and an unsupported
-// kind must fail loudly rather than fall through to a GitHub call against a
-// non-GitHub forge.
-func newTerminalRunAbortLabelProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource) (workItemUpdater, error) {
+// repository's own declared provider kind. Labels are PR writes against that
+// repository; ADO uses the native Git labels sub-endpoint, never Boards tags.
+// Unknown providers fail rather than falling through to GitHub.
+func newTerminalRunAbortLabelProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource, registrar providers.SecretRegistrar, adoScheme string) (workItemUpdater, error) {
 	return terminalProviderForProject(
 		cfg,
 		project,
 		source,
 		newRunAbortLabelProvider,
 		newGiteaRunAbortLabelProvider,
-		nil,
-		"",
+		func(repo providers.RepositoryRef, kind string, source providers.TokenSource) (workItemUpdater, error) {
+			return newADORunAbortLabelProvider(repo, kind, source, registrar)
+		},
+		adoScheme,
 		func(kind providers.ProviderKind) error {
 			return fmt.Errorf("run-abort labeling does not support repository provider %q", kind)
 		},
@@ -109,8 +110,8 @@ func newTerminalRunAbortLabelProviderForProject(cfg *instance.Config, project ap
 // buildTerminalRunAbortLabeler mirrors buildTerminalBranchDelete's shape: the
 // same credential/capability wiring — including the per-gaggle project scoping
 // (#2692 sibling), since the PR being labeled lives in the run gaggle's own
-// repo — but github:pr:write (already used for PR open/poll/close) rather than
-// github:branch:delete, since labeling a PR is a PR-write operation.
+// repo — with provider:pr:write on ADO and the existing github:pr:write
+// binding on GitHub/Gitea, since labeling a PR is a PR-write operation.
 func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (prLabelFunc, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
@@ -127,12 +128,19 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 	if err != nil {
 		return nil, fmt.Errorf("build run-abort label credentials: %w", err)
 	}
+	repo := terminalRepositoryRefForProject(cfg, project)
+	required := string(capability.GitHubPRWrite)
+	if repo.Provider == providers.ProviderADO {
+		required = string(capability.ProviderPRWrite)
+	}
+	resolvedProject := apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
+	adoScheme := adoCredentialSchemes(cfg, resolvedProject, grants)[required]
 	label := func(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
-		set, err := injector.Materialize(ctx, []string{string(capability.GitHubPRWrite)})
+		set, err := injector.Materialize(ctx, []string{required})
 		if err != nil {
 			return providers.WorkItem{}, scrubTerminalError(registrar, err)
 		}
-		provider, err := newTerminalRunAbortLabelProviderForProject(cfg, project, set.For(string(capability.GitHubPRWrite)))
+		provider, err := newTerminalRunAbortLabelProviderForProject(cfg, project, set.For(required), registrar, adoScheme)
 		if err != nil {
 			return providers.WorkItem{}, scrubTerminalError(registrar, err)
 		}
@@ -215,7 +223,7 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate t
 		return err
 	}
 	var labelErr error
-	if len(reports) > 0 && reports[0] != nil && repo.Provider != providers.ProviderADO {
+	if len(reports) > 0 && reports[0] != nil {
 		effect.Gaggle = reports[0].Gaggle
 		labelErr = reports[0].Publish(ctx, effect, apply)
 	} else {
