@@ -23,6 +23,7 @@ type activeRun struct {
 	cancel   context.CancelFunc
 	request  ExecutionRequest
 	steering chan Steering
+	controls chan DriverControl
 }
 
 // Service coordinates durable sessions, execution leases, and command admission.
@@ -293,6 +294,9 @@ type commandOrigin struct {
 func (s *Service) Command(ctx context.Context, owner, sessionID string, cmd Command) (CommandReceipt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if isDriverControl(cmd.Type) {
+		return s.driverControlLocked(owner, sessionID, cmd)
+	}
 	return s.commandLocked(ctx, owner, sessionID, cmd, commandOrigin{source: "owner"})
 }
 

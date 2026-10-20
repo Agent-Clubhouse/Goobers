@@ -37,9 +37,11 @@ type Config struct {
 	Principal              auth.Principal
 	TrustedLocalModelLogin bool
 	HeartbeatInterval      time.Duration
-	Helper                 func(context.Context, interactive.ExecutionRequest, func(interactive.ExecutionEvent) error) (string, error)
-	ReviewChild            func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (string, error)
-	AgentTools             func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (interactiveagent.Options, error)
+	// DriverRequestTimeout bounds unanswered native permission/question requests.
+	DriverRequestTimeout time.Duration
+	Helper               func(context.Context, interactive.ExecutionRequest, func(interactive.ExecutionEvent) error) (string, error)
+	ReviewChild          func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (string, error)
+	AgentTools           func(context.Context, interactive.ExecutionRequest, string, func(string, map[string]any) error) (interactiveagent.Options, error)
 	// ResolveAuthority maps the server-pinned symbolic authority refs to an exact
 	// owned broker connection. A zero ref means this provider is unconfigured.
 	// It must never acquire credentials, create a grant, or substitute identity.

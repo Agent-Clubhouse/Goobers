@@ -535,6 +535,12 @@
       "reason": "Experimental, not Windows-qualified. Tests run in the Linux unit shards; Windows coverage remains build/vet only."
     },
     {
+      "package": "internal/interactiveagent",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Experimental chat driver contract and fixture tests run in Linux unit shards. Windows coverage remains build/vet only; native process quiescence is not Windows-qualified."
+    },
+    {
       "package": "internal/interactiveauth",
       "coverage": "none",
       "category": "not-selected",

@@ -149,8 +149,10 @@ func (s *Service) start(req ExecutionRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	steering := make(chan Steering, 16)
 	req.Steering = steering
+	controls := make(chan DriverControl, 16)
+	req.Controls = controls
 	req.Heartbeat = func() error { return s.heartbeat(req) }
-	run := &activeRun{cancel: cancel, request: req, steering: steering}
+	run := &activeRun{cancel: cancel, request: req, steering: steering, controls: controls}
 	if s.active[req.SessionID] == nil {
 		s.active[req.SessionID] = map[string]*activeRun{}
 	}
@@ -341,13 +343,7 @@ func (s *Service) finish(req ExecutionRequest, result ExecutionResult, runErr er
 			}
 		}
 		now := time.Now().UTC()
-		for key, cmd := range rec.Commands {
-			if req.ChildID == "" && cmd.Receipt.Type == "steer" && cmd.Receipt.Status == "accepted" && cmd.Receipt.TurnID == req.TurnID {
-				cmd.Receipt.Status = "rejected"
-				rec.Commands[key] = cmd
-				appendEvent(rec, "steering.rejected", req.TurnID, key, map[string]any{"reason": "attempt ended before delivery confirmation"})
-			}
-		}
+		rejectUnconfirmedCommands(rec, req)
 		if result.CustodyPending {
 			rec.Session.CustodyPending = true
 			rec.Session.Status = "recovery_required"

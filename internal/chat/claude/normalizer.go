@@ -83,7 +83,7 @@ func (n *normalizer) mapFrame(m object) []event {
 		sub := str(m["subtype"])
 		switch sub {
 		case "init":
-			return []event{ev("session_info", object{"nativeSessionId": n.nativeID, "model": str(m["model"]), "cliVersion": str(m["claude_code_version"])})}
+			return []event{ev("session_info", object{"nativeSessionId": n.nativeID, "currentModel": str(m["model"]), "cliVersion": str(m["claude_code_version"])})}
 		case "status":
 			if m["status"] == "compacting" {
 				return []event{ev("notice", object{"code": "compacting", "message": "Compacting context"})}

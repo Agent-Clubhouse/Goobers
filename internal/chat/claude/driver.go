@@ -38,6 +38,7 @@ type Driver struct {
 func (d *Driver) ID() string { return "claude_stream_json" }
 func capabilities() chat.Capabilities {
 	c := chat.MinimalCapabilities()
+	c.PermissionExtras.DenyMessage = true
 	c.Steer, c.Interrupt, c.Questions = true, true, true
 	c.Queue, c.Resume, c.Subagents, c.Usage = "native", "native", "ids_only", "cost"
 	c.ModelSwitch, c.EffortSwitch = "live", "live"
@@ -208,6 +209,12 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 	}
 	s.version = str(response["claude_code_version"])
 	s.emit("session_started", object{"capabilities": capabilities()}, "")
+	models := []chat.ModelInfo{}
+	for _, raw := range arr(response["models"]) {
+		m := obj(raw)
+		models = append(models, chat.ModelInfo{ID: str(m["value"]), Label: str(m["displayName"]), Efforts: []string{}})
+	}
+	s.emit("session_info", object{"models": models, "currentModel": o.Model, "currentEffort": "", "levels": capabilities().LiveLevels}, "")
 	return s, nil
 }
 
@@ -400,7 +407,7 @@ func (s *Session) frame(m object) {
 			go func() { _ = s.Close() }()
 			return
 		}
-		data := object{"requestId": id, "toolCallId": str(r["tool_use_id"]), "title": str(r["tool_name"]), "options": []object{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "deny", "kind": "reject_once", "label": "Deny"}}}
+		data := object{"requestId": id, "toolCallId": str(r["tool_use_id"]), "title": str(r["tool_name"]), "kind": "tool", "content": permissionPreview(str(r["tool_name"]), obj(r["input"])), "options": []object{{"optionId": "allow_once", "kind": "allow_once", "label": "Allow once"}, {"optionId": "reject_once", "kind": "reject_once", "label": "Deny"}}}
 		kind := "permission_request"
 		if r["tool_name"] == "AskUserQuestion" {
 			kind = "question"
@@ -445,6 +452,9 @@ func (s *Session) frame(m object) {
 			}
 		}
 		for _, e := range events {
+			if e.kind == "turn_ended" {
+				e.data["settled"] = s.queued == 0
+			}
 			s.emit(e.kind, e.data, "")
 		}
 		if m["type"] == "result" {
@@ -571,9 +581,9 @@ func questions(input object) []object {
 		var options []object
 		for _, rawOption := range arr(q["options"]) {
 			option := obj(rawOption)
-			options = append(options, object{"label": str(option["label"]), "description": str(option["description"])})
+			options = append(options, object{"id": str(option["label"]), "label": str(option["label"])})
 		}
-		out = append(out, object{"id": str(q["question"]), "question": str(q["question"]), "header": str(q["header"]), "multiSelect": q["multiSelect"] == true, "options": options})
+		out = append(out, object{"questionId": str(q["question"]), "prompt": str(q["question"]), "allowMultiple": q["multiSelect"] == true, "allowFreeText": true, "options": options})
 	}
 	return out
 }
@@ -627,6 +637,9 @@ func (s *Session) RespondPermission(ctx context.Context, id string, r chat.Permi
 
 // AnswerQuestion echoes the original question input with the selected answers.
 func (s *Session) AnswerQuestion(ctx context.Context, id string, answers chat.QuestionAnswers) error {
+	if answers == nil {
+		return s.respond(ctx, id, object{"behavior": "deny", "message": "Question cancelled by host policy"}, true)
+	}
 	s.mu.Lock()
 	r := s.permissions[id]
 	input := obj(r["input"])

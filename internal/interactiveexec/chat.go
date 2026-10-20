@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/goobers/goobers/internal/chat"
 	"github.com/goobers/goobers/internal/chat/copilotsdk"
@@ -53,7 +54,7 @@ func (e *Executor) driverRegistry(provider string, request harness.RunRequest) *
 		}
 		adapter = c
 	case "codex":
-		c := &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Join(request.Workspace, ".tmp")}
+		c := &harness.CodexAdapter{Command: []string{"codex"}, EphemeralTmp: true, EphemeralTmpRoot: filepath.Dir(chatStatePath(e.config.StateDir, request.Workspace))}
 		if e.runNative == nil {
 			_ = registry.Register(provider, harness.NewCodexChatDriver(harness.CodexChatConfig{Adapter: c, Request: request, StateDir: chatStatePath(e.config.StateDir, request.Workspace)}))
 		}
@@ -99,7 +100,11 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 			return out, nil, errors.Join(saveErr, s.Close())
 		}
 	}
+	controls := newDriverControls(s, e.config.DriverRequestTimeout)
 	project := func(event chat.Event) error {
+		if err := controls.observe(&event); err != nil {
+			return err
+		}
 		if projected, ok := interactiveagent.ProjectChatEvent(event); ok {
 			return emit(projected.Type, projected.Data)
 		}
@@ -130,10 +135,24 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 		pendingAck = true
 	}
 	steering := req.Steering
+	commands := req.Controls
+	ticker := time.NewTicker(min(100*time.Millisecond, controls.timeout))
+	defer ticker.Stop()
+	queued := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return out, nil, ctx.Err()
+		case now := <-ticker.C:
+			if err := controls.expire(runCtx, now); err != nil {
+				return out, nil, err
+			}
+		case command, ok := <-commands:
+			if !ok {
+				commands = nil
+				continue
+			}
+			controls.dispatch(runCtx, command)
 		case steer, ok := <-steering:
 			if !ok {
 				steering = nil
@@ -156,6 +175,9 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 				return out, &steer, nil
 			}
 			delivery, sendErr := s.Send(runCtx, chat.Text(steer.Text), chat.SendOptions{Delivery: requested, CommandID: steer.CommandID})
+			if sendErr == nil && delivery == chat.Queued {
+				queued++
+			}
 			acknowledge(steer, delivery, sendErr)
 			if sendErr != nil && errors.Is(sendErr, chat.ErrClosed) {
 				return out, nil, sendErr
@@ -177,6 +199,15 @@ func (e *Executor) driveChat(ctx, runCtx context.Context, req interactive.Execut
 					return out, nil, fmt.Errorf("chat driver reported execution failure")
 				}
 			case "turn_ended":
+				if settled, known := event.Data["settled"].(bool); known {
+					if !settled {
+						continue
+					}
+					queued = 0
+				} else if queued > 0 {
+					queued--
+					continue
+				}
 				if event.Data["reason"] != "end_turn" {
 					return out, nil, fmt.Errorf("chat turn did not complete")
 				}

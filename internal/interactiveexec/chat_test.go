@@ -41,7 +41,7 @@ func (s *steeringSession) Send(ctx context.Context, c []chat.ContentBlock, o cha
 	s.driver.sends++
 	if s.driver.sends == 2 {
 		s.driver.Session.Emit("completion.accepted", map[string]any{"payload": json.RawMessage(`{"status":"success","summary":"native steering"}`)})
-		s.driver.Session.Emit("turn_ended", map[string]any{"reason": "end_turn"})
+		s.driver.Session.Emit("turn_ended", map[string]any{"reason": "end_turn", "settled": true})
 	}
 	return delivery, err
 }

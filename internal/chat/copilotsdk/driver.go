@@ -24,6 +24,7 @@ type nativeSession interface {
 	Disconnect() error
 }
 type backend struct {
+	models  func(context.Context) ([]sdk.ModelInfo, error)
 	create  func(context.Context, *sdk.SessionConfig) (nativeSession, string, error)
 	resume  func(context.Context, string, *sdk.ResumeSessionConfig) (nativeSession, error)
 	close   func() error
@@ -67,7 +68,7 @@ func (d *Driver) connect(ctx context.Context) (*backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &backend{home: p.Home, tools: p.AvailableTools, servers: p.Servers, policy: p.Permissions, close: p.Close, create: func(ctx context.Context, c *sdk.SessionConfig) (nativeSession, string, error) {
+	return &backend{models: p.Client.ListModels, home: p.Home, tools: p.AvailableTools, servers: p.Servers, policy: p.Permissions, close: p.Close, create: func(ctx context.Context, c *sdk.SessionConfig) (nativeSession, string, error) {
 		s, e := p.Client.CreateSession(ctx, c)
 		if e != nil {
 			return nil, "", e
@@ -184,6 +185,20 @@ func (d *Driver) Start(ctx context.Context, o chat.StartOptions) (chat.Session, 
 		}
 	}
 	s.emit("session_started", map[string]any{"driver": d.ID(), "nativeSessionId": s.id, "capabilities": capabilities(), "resumeFallback": s.fallback}, "")
+	models := []chat.ModelInfo{}
+	if b.models != nil {
+		modelCtx, stop := context.WithTimeout(runCtx, 10*time.Second)
+		catalog, listErr := b.models(modelCtx)
+		stop()
+		if listErr == nil {
+			for _, m := range catalog {
+				models = append(models, chat.ModelInfo{ID: m.ID, Label: m.Name, Efforts: []string{}})
+			}
+		} else {
+			s.emit("notice", map[string]any{"code": "model_catalog_unavailable"}, "")
+		}
+	}
+	s.emit("session_info", map[string]any{"models": models, "currentModel": o.Model, "currentEffort": "", "levels": capabilities().LiveLevels}, "")
 	s.unsubscribe = s.native.On(s.onEvent)
 	go func() { <-runCtx.Done(); _ = s.Close() }()
 	return s, nil

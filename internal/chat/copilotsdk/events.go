@@ -32,7 +32,7 @@ func (s *session) onEvent(e sdk.SessionEvent) {
 		s.busy = false
 		s.mu.Unlock()
 		if active {
-			s.emit("turn_ended", map[string]any{"reason": reason}, "")
+			s.emit("turn_ended", map[string]any{"reason": reason, "settled": true}, "")
 		}
 	case *rpc.AssistantMessageData:
 		s.emit("agent_message", map[string]any{"content": chat.Text(d.Content), "messageId": d.MessageID}, "")
