@@ -193,7 +193,19 @@
       "reason": "Experimental chat driver contract and fixture tests run in Linux unit shards. Windows coverage remains build/vet only; native process quiescence is not Windows-qualified."
     },
     {
+      "package": "internal/chat/claude",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Experimental chat driver contract and fixture tests run in Linux unit shards. Windows coverage remains build/vet only; native process quiescence is not Windows-qualified."
+    },
+    {
       "package": "internal/chat/copilotsdk",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Experimental chat driver contract and fixture tests run in Linux unit shards. Windows coverage remains build/vet only; native process quiescence is not Windows-qualified."
+    },
+    {
+      "package": "internal/chat/execshim",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Experimental chat driver contract and fixture tests run in Linux unit shards. Windows coverage remains build/vet only; native process quiescence is not Windows-qualified."
@@ -227,6 +239,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/codexprotocol",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Generated native JSON bindings have no Windows-specific seam; encoding tests run in Linux unit shards and Windows builds/vet compile them."
     },
     {
       "package": "internal/configauthoring",
@@ -1457,12 +1475,6 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
-    },
-    {
-      "package": "internal/codexprotocol",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Generated native JSON bindings have no Windows-specific seam; encoding tests run in Linux unit shards and Windows builds/vet compile them."
     }
   ]
 }
