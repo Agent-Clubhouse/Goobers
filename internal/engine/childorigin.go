@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
