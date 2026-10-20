@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { routeHash, type Navigate } from "../routing";
 import { Action } from "../ui/Action";
 import { Icon } from "../ui/Icon";
@@ -8,6 +8,7 @@ import { commandId, describeError, HttpInteractiveClient, InteractiveError, isUn
   type Changes, type Command, type InteractiveClient, type InteractiveEvent, type Receipt,
   type Session, type StreamState, type Surface, type RuntimeStatus, type InteractiveShellStatus, type CreateSessionRequest, type ExecutionModeId } from "../interactive/client";
 import { OperationsPanel } from "../interactive/OperationsPanel";
+import { commandMessages, fileDiffs, plainFailure, toolActivities, type MessageDelivery } from "../interactive/chat-model";
 import "../interactive/interactive.css";
 
 const defaultClient = new HttpInteractiveClient();
@@ -41,10 +42,13 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
   const [draft, setDraft] = useState("");
   const [tab, setTab] = useState<InspectorTab>("context");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const cursor = useRef(0);
   const generation = useRef(0);
   const draftRef = useRef<HTMLTextAreaElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const [pinned, setPinned] = useState(true);
+  const [messages, setMessages] = useState<MessageDelivery[]>([]);
   const followRef = useRef(true);
   const commandLock = useRef(false);
 
@@ -76,6 +80,7 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
   useEffect(() => {
     const currentGeneration = ++generation.current;
     setSession(undefined); setEvents([]); setChanges(undefined); setSessionError(undefined);
+    setTab("context"); setMessages([]); setPinned(true); setInspectorOpen(false);
     const saved = sessionId ? readPending<PendingCommand>(`pending.${sessionId}`) : undefined;
     setActionError(saved ? "A previous request did not receive a confirmed response. Refresh or retry the original command to reconcile its outcome." : undefined);
     setReceipt(undefined); setPending(saved); setDraft(saved?.command.text ?? "");
@@ -94,6 +99,8 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
     let refreshing = false;
     let streamLive = false;
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let frame: number | undefined;
+    let incoming: InteractiveEvent[] = [];
     setStreamState("connecting"); setPolling(false);
     const refresh = async () => {
       if (refreshing || cancelled) return;
@@ -113,13 +120,18 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
     void refresh();
     const subscription = client.subscribe(sessionId, cursor.current, event => {
       if (cancelled || event.sessionId !== sessionId) return;
-      setEvents(current => mergeEvents(current, [event]));
+      // Batch streamed chunks per frame, as in Clubhouse ChatStream (MIT).
+      incoming.push(event);
+      if (frame === undefined) frame = requestAnimationFrame(() => {
+        const batch = incoming; incoming = []; frame = undefined;
+        if (!cancelled) setEvents(current => mergeEvents(current, batch));
+      });
       // The REST cursor advances only after a contiguous replay, never because a
       // newer streamed event arrived ahead of an earlier persisted event.
       if (!refreshTimer) refreshTimer = setTimeout(() => { refreshTimer = undefined; void refresh(); }, 150);
     }, state => { if (!cancelled) { streamLive = state === "live"; setStreamState(state); if (streamLive) setPolling(false); } });
     const interval = setInterval(() => { void refresh(); }, 2000);
-    return () => { cancelled = true; subscription.close(); clearInterval(interval); clearTimeout(refreshTimer); };
+    return () => { cancelled = true; subscription.close(); clearInterval(interval); clearTimeout(refreshTimer); if (frame !== undefined) cancelAnimationFrame(frame); };
   }, [client, sessionId, connected, reload]);
 
   useEffect(() => {
@@ -130,12 +142,21 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
     return () => { cancelled = true; };
   }, [client, sessionId, session?.sequence, tab, connected]);
 
-  useEffect(() => { if (followRef.current) endRef.current?.scrollIntoView?.({ block: "nearest" }); }, [events.length, session?.turns?.length]);
+  // Clubhouse ChatStream pinned-scroll pattern (3309665c, MIT). Only move
+  // the transcript; scrollIntoView also moves the portal's ancestor scrollers.
+  useLayoutEffect(() => {
+    if (followRef.current && transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+  }, [events, session?.turns, messages]);
+  function jumpToLatest() {
+    followRef.current = true; setPinned(true);
+    if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+  }
 
   async function dispatch(command: Command, target = sessionId) {
     if (!target || commandLock.current) return;
     const currentGeneration = generation.current;
     commandLock.current = true; setBusy(true); setActionError(undefined);
+    if (command.type === "steer") setMessages(current => [...current.filter(item => item.commandId !== command.commandId), {commandId: command.commandId, text: command.text ?? "", turnId: command.turnId, state: "Sending"}]);
     writePending(`pending.${target}`, { sessionId: target, command });
     try {
       let result: Receipt | undefined;
@@ -159,12 +180,14 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
       writePending(`pending.${target}`, undefined);
       if (currentGeneration !== generation.current) return;
       setReceipt(result); setPending(undefined);
+      setMessages(current => current.map(item => item.commandId === command.commandId ? {...item, state: humanize(result.status)} : item));
       if (command.type === "message" || command.type === "steer") setDraft("");
       setReload(value => value + 1);
     } catch (error) {
       if (!isUncertain(error)) writePending(`pending.${target}`, undefined);
       if (currentGeneration !== generation.current) return;
       setActionError(describeError(error));
+      setMessages(current => current.map(item => item.commandId === command.commandId ? {...item, state: isUncertain(error) ? "Outcome unknown" : "Rejected"} : item));
       if (isUncertain(error)) setPending({ sessionId: target, command });
       else { setPending(undefined); setReload(value => value + 1); }
     } finally { commandLock.current = false; if (currentGeneration === generation.current) setBusy(false); }
@@ -204,7 +227,8 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
     onShellStatus?.(runtime ? { prototype: runtime.providerMode === "controlled-local", name: "Local prototype", connection: sessionId ? statusLabel : "Interactive service available", worker: session?.lease ? `Worker ${session.lease.status}` : "No active worker" } : undefined);
   }, [runtime, sessionId, statusLabel, session?.lease?.status, onShellStatus]);
   useEffect(() => () => onShellStatus?.(undefined), [onShellStatus]);
-  return <div className="interactive-page">
+  const deliveries = commandMessages(events, messages);
+  return <div className={`interactive-page${session ? " interactive-page-active" : ""}`}>
     <PageHeading title="Interactive" description="A conversation with your gaggle. A workspace for the work." actions={<><Action variant="secondary" disabled={configurationBusy} onClick={() => void refreshConfiguration()}>{configurationBusy ? "Refreshing configuration…" : "Refresh configuration"}</Action><span className="ix-prototype">Experimental</span></>} />
     {runtime && <div className="ix-runtime-bar"><span><Icon name="code" size={14} />{session ? sessionExecutionLabel : "Choose execution when you create a session"}</span><span className="ix-provider-label"><Icon name="gate" size={14} />{runtime.capabilities.liveDelegatedAuth ? "Live delegated provider" : "Controlled local provider · no live Azure authentication"}</span><span className="ix-owner">{runtime.localActors?.length ? <label>Local demo actor <select aria-label="Local actor" value={runtime.identity.name} disabled={switchingIdentity || busy} onChange={event => void switchIdentity(event.target.value)}>{runtime.localActors.map(name => <option key={name} value={name}>{name}</option>)}</select></label> : <><Icon name="goober" size={14} />{runtime.identity.name}</>}</span></div>}
     {configurationError && <div role="alert" className="ix-runtime-unavailable">Configuration refresh failed: {configurationError}. Showing the last confirmed configuration.</div>}
@@ -228,24 +252,25 @@ export function InteractivePage({ sessionId, navigate, client = defaultClient, o
           {agentSession && <div className="ix-execution-notice" role="status"><Icon name="info" size={15} /><span>{executionOption?.liveQualified ? "Agent live qualification reported by this server." : "Agent mode is not live-qualified. Availability only indicates host opt-in; it is not evidence of a successful model run."}</span></div>}
           {executionUnavailable && <div className="ix-banner ix-banner-warning" role="alert"><Icon name="alert" /><p>{retiredPolicy ? "This session is bound to a retired configuration. Create a new session for the current policy." : modeDisallowed ? "This execution mode is no longer allowed by the surface configuration." : executionOption?.reason || "The selected execution mode has not been confirmed available on this host."} This session remains pinned to its original mode; no demo fallback is used.</p></div>}
           {!connected && <div className="ix-banner" role="status"><Icon name="info" /><p>View disconnected. Accepted work may continue on the server. Reconnect to replay saved events; no work is restarted.</p></div>}
-          {session.status === "waiting_auth" && <div className="ix-banner ix-banner-warning" role="alert"><Icon name="gate" /><div><strong>Waiting for authorization</strong><p>Provider access is blocked. Review the connection in Access, then explicitly resume when permitted. There is no application identity fallback.</p><Action onClick={() => setTab("access")}>Review access</Action></div></div>}
+          {session.status === "waiting_auth" && <div className="ix-banner ix-banner-warning" role="alert"><Icon name="gate" /><div><strong>Waiting for authorization</strong><p>Provider access is blocked. Review the connection in Access, then explicitly resume when permitted. There is no application identity fallback.</p><Action onClick={() => { setTab("access"); setInspectorOpen(true); }}>Review access</Action></div></div>}
           {session.status === "recovery_required" && <div className="ix-banner ix-banner-warning" role="alert"><Icon name="alert" /><div><strong>Recovery required</strong><p>{session.recoveryReason || "The previous execution ended unexpectedly. Resume verifies writer custody before accepting new work."}</p><Action disabled={busy || !connected || !!pending || retiredPolicy || executionUnavailable || session.stopFencePending} onClick={() => send("resume")}>Resume session</Action></div></div>}
           {session.stopFencePending && <div className="ix-banner ix-banner-warning" role="alert"><Icon name="alert" /><p>Stop authorization fence is pending. Retry stop to complete propagation; writer custody remains retained.</p></div>}
           {session.status === "stopping" && <div className="ix-banner" role="status"><span className="ix-spinner" /><p>Stop requested. Waiting for the executor to confirm writers and child processes have stopped.</p></div>}
           {session.status === "stopped" && <div className="ix-banner" role="status"><Icon name="check" /><p>Session stopped. History and cumulative changes remain available for review.</p></div>}
-          <div className="ix-transcript" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation" onScroll={event => { const element = event.currentTarget; followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; }}>
+          <div ref={transcriptRef} className="ix-transcript" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation" onScroll={event => { const element = event.currentTarget; followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; setPinned(followRef.current); }}>
             {!session.turns?.length && <div className="ix-conversation-empty"><span className="ix-orb"><Icon name={session.mode === "helper" ? "chat" : "code"} size={27} /></span><h3>{demoSession ? "Try the sample investigation." : session.mode === "helper" ? "Start with the bigger picture." : "Go from question to working change."}</h3><p>{demoSession ? "This deterministic demo runs real sample tools from explicit commands. It does not reason about arbitrary requests or use a language model." : session.mode === "helper" ? "Describe your goal in your own words. The agent can inspect gaggle context and propose exact workflow changes for your review." : "Describe the work in your own words. Investigate, edit and test in the session workspace; review proposed workflow actions before they run."}</p><div className="ix-starters">{(demoSession ? session.mode === "helper" ? ["Investigate the sample invoice repository", "Design workflow for the sample gaggle"] : ["Investigate the sample invoice repository", "Fix the sample invoice bug and test it"] : session.mode === "helper" ? ["Help me understand this gaggle and identify a useful next workflow", "Design a workflow for reviewing recent changes and explain the tradeoffs"] : ["Investigate this repository, choose a small improvement, and verify it", "Plan a bounded review workflow for the changes and show me its definition"]).map(text => <button key={text} type="button" onClick={() => { setDraft(text); draftRef.current?.focus(); }}>{text}<Icon name="arrow" size={14} /></button>)}</div></div>}
-            {(session.turns ?? []).map(turn => <section className="ix-turn" key={turn.id} aria-label={`Turn ${turn.id}`}><div className="ix-user-message"><div className="ix-message-byline"><span>You</span><Timestamp value={turn.startedAt} /></div><p>{turn.text}</p></div><TurnActivity actorLabel={agentSession ? "Agent" : demoSession ? "Demo executor" : "Executor"} events={events.filter(event => event.turnId === turn.id)} active={active && turn.id === session.activeTurnId} />{turn.error && <p role="alert" className="ix-turn-error">{turn.error}</p>}</section>)}
-            <div ref={endRef} />
+            {(session.turns ?? []).map(turn => <section className="ix-turn" key={turn.id} aria-label={`Turn ${turn.id}`}><div className="ix-user-message"><div className="ix-message-byline"><span>You</span><Timestamp value={turn.startedAt} /></div><p>{turn.text}</p></div><CommandBubbles messages={deliveries.filter(message => message.turnId === turn.id)} /><TurnActivity actorLabel={agentSession ? "Agent" : demoSession ? "Demo executor" : "Executor"} events={events.filter(event => event.turnId === turn.id)} active={active && turn.id === session.activeTurnId} />{turn.error && <p role="alert" className="ix-turn-error">{turn.error}</p>}</section>)}
+            <CommandBubbles messages={deliveries.filter(message => !session.turns.some(turn => turn.id === message.turnId))} />
           </div>
           <div className="ix-composer-wrap">
+            {!pinned && <Action className="ix-jump-latest" variant="secondary" onClick={jumpToLatest}>Jump to latest</Action>}
             {receipt && <div className="ix-receipt" role="status"><Icon name="check" size={14} />{receiptLabel(receipt, events)}<span title={receipt.commandId}>#{receipt.sequence}</span></div>}
             {actionError && <div role="alert" className="ix-action-error"><strong>{pending ? "Command outcome unknown" : "Command not completed"}</strong><p>{actionError}</p>{pending && <><p>Retry keeps the original command ID and payload so the server can return the existing receipt.</p><Action disabled={busy || !connected} onClick={() => void dispatch(pending.command, pending.sessionId)}>Retry same command</Action><Action onClick={() => setReload(value => value + 1)}>Refresh outcome</Action></>}</div>}
             <form onSubmit={submit} className="ix-composer"><label htmlFor="interactive-message">{active ? "Steer this turn" : "Message"}</label><textarea ref={draftRef} id="interactive-message" value={draft} onChange={event => setDraft(event.target.value)} placeholder={active ? "Add direction for the active turn…" : session.status === "stopped" ? "This session is stopped." : demoSession ? "Try investigate, fix, test, review, or wait…" : "Describe the work you want the agent to do…"} disabled={!canWrite} rows={3} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="ix-composer-footer"><span>{active ? "Steering targets this active turn. Delivery is acknowledged separately." : "⌘ / Ctrl + Enter to send · Local edits stay in the session workspace"}</span><Action variant="primary" type="submit" disabled={!canWrite || !draft.trim()}><Icon name="arrow" size={16} />{busy ? "Sending…" : active ? "Send steering" : "Send message"}</Action></div></form>
           </div>
         </>}
       </div>
-      {session && <aside className="ix-inspector" aria-label="Session inspector"><div className="ix-inspector-tabs" role="tablist" aria-label="Session details">{inspectorTabs.map(item => <button key={item} type="button" role="tab" id={`ix-tab-${item}`} aria-controls={`ix-panel-${item}`} aria-selected={tab === item} tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)} onKeyDown={event => { const tabs = inspectorTabs; const index = tabs.indexOf(item); const next = event.key === "ArrowRight" ? tabs[(index + 1) % tabs.length] : event.key === "ArrowLeft" ? tabs[(index + tabs.length - 1) % tabs.length] : undefined; if (next) { event.preventDefault(); setTab(next); document.getElementById(`ix-tab-${next}`)?.focus(); } }}>{humanize(item)}{item === "changes" && !!session.changes?.length && <span>{session.changes.length}</span>}{item === "children" && !!session.children?.length && <span>{session.children.length}</span>}</button>)}</div><div className="ix-inspector-body" role="tabpanel" id={`ix-panel-${tab}`} aria-labelledby={`ix-tab-${tab}`}>
+      {session && <aside key={session.id} className={`ix-inspector${inspectorOpen ? " ix-inspector-open" : ""}`} aria-label="Session inspector"><Action className="ix-inspector-toggle" variant="secondary" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(value => !value)}>{inspectorOpen ? "Close session details" : "Session details"}</Action><div className="ix-inspector-tabs" role="tablist" aria-label="Session details">{inspectorTabs.map(item => <button key={item} type="button" role="tab" id={`ix-tab-${item}`} aria-controls={`ix-panel-${item}`} aria-selected={tab === item} tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)} onKeyDown={event => { const tabs = inspectorTabs; const index = tabs.indexOf(item); const next = event.key === "ArrowRight" ? tabs[(index + 1) % tabs.length] : event.key === "ArrowLeft" ? tabs[(index + tabs.length - 1) % tabs.length] : undefined; if (next) { event.preventDefault(); setTab(next); document.getElementById(`ix-tab-${next}`)?.focus(); } }}>{humanize(item)}{item === "changes" && !!session.changes?.length && <span>{session.changes.length}</span>}{item === "children" && !!session.children?.length && <span>{session.children.length}</span>}</button>)}</div><div className="ix-inspector-body" role="tabpanel" id={`ix-panel-${tab}`} aria-labelledby={`ix-tab-${tab}`}>
         {tab === "context" && <><div className="ix-inspector-heading"><Icon name="gaggle" /><h3>Session context</h3></div>{surface?.configRevision && !retiredPolicy && <SurfaceSummary surface={surface} />}<p>{surface?.description || "Scope and execution are bound by the configured surface."}</p><dl className="ix-facts"><div><dt>Experience</dt><dd>{surface?.name ?? session.surfaceId}</dd></div><div><dt>Experience mode</dt><dd>{humanize(session.mode)}</dd></div><div><dt>Execution · pinned for this session</dt><dd>{sessionExecutionLabel}</dd></div><div><dt>Owner</dt><dd>{session.owner}</dd></div><div><dt>Worker lease</dt><dd>{session.lease ? humanize(session.lease.status) : "No lease reported"}{session.custodyPending ? " · custody pending" : ""}</dd></div>{session.lease && <><div><dt>Worker</dt><dd>{session.lease.workerId}</dd></div><div><dt>Lease expiry</dt><dd><Timestamp value={session.lease.expiresAt} /></dd></div></>}{session.configDigest && <div><dt>Pinned configuration</dt><dd className="ix-path">{session.configDigest}</dd></div>}<div><dt>Execution fence</dt><dd>{session.fence}</dd></div><div><dt>Persisted sequence</dt><dd>{session.sequence}</dd></div><div><dt>Workspace</dt><dd className="ix-path">{session.workspacePath || "Created when work begins"}</dd></div></dl>{!retiredPolicy && surface?.instructions && <details className="ix-details"><summary>Configured instructions</summary><p>{surface.instructions}</p></details>}<div className="ix-context-note"><Icon name="info" /><p>A new experience starts a new session with its own authority. Server policy controls the worker lease and available tools.</p></div><Action variant="secondary" onClick={() => setTab(session.mode === "helper" ? "actions" : "changes")}>{session.mode === "helper" ? "Manage gaggle" : "Review changes"}</Action><details className="ix-details"><summary>Durable event ledger ({events.length})</summary><ol className="ix-ledger">{events.map(event => <li key={event.sequence}><span>#{event.sequence}</span><strong>{event.type}</strong><Timestamp value={event.time} /></li>)}</ol></details></>}
         {tab === "actions" && <OperationsPanel surface={surface} policyRetired={retiredPolicy} executionMode={session.executionMode} key={session.id} sessionId={session.id} disabled={busy || !connected || !!pending || ["stopped", "stopping", "recovery_required"].includes(session.status)} />}
         {tab === "changes" && <ChangesPanel changes={changes} session={session} events={events} />}
@@ -338,11 +363,20 @@ function eventText(event: InteractiveEvent): string {
   const value = event.data.text ?? event.data.delta ?? event.data.message ?? event.data.output ?? event.data.result;
   return typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 }
+function CommandBubbles({ messages }: { messages: MessageDelivery[] }) {
+  return <>{messages.map(message => <div className="ix-user-message ix-command-message" key={message.commandId} data-command-id={message.commandId}><div className="ix-message-byline"><span>You</span><span className={`ix-status ix-delivery-${message.state.toLowerCase().replaceAll(" ", "-")}`} role="status">{message.state}</span></div><p>{message.text}</p></div>)}</>;
+}
 function TurnActivity({ events, active, actorLabel }: { events: InteractiveEvent[]; active: boolean; actorLabel: string }) {
   const final = events.filter(event => event.type === "assistant.message");
   const partial = events.filter(event => event.type === "assistant.delta").map(eventText).join("");
-  const activities = events.filter(event => ["tool.started", "tool.output", "tool.completed", "steering.delivered", "steering.rejected", "auth.required"].includes(event.type));
-  return <div className="ix-assistant"><div className="ix-message-byline"><span><Icon name="goober" size={16} />{actorLabel}</span>{active && <span className="ix-working"><span className="ix-spinner" />Working</span>}</div>{activities.length > 0 && <div className="ix-activities">{activities.map(event => <details className="ix-tool" key={event.sequence}><summary><Icon name={event.type === "tool.completed" || event.type === "steering.delivered" ? "check" : event.type === "auth.required" ? "gate" : "code"} size={14} /><span>{activityLabel(event)}</span><span className="ix-event-seq">#{event.sequence}</span></summary><pre>{eventText(event) || JSON.stringify(event.data, null, 2)}</pre></details>)}</div>}{final.length ? final.map(event => <div className="ix-response" key={event.sequence}>{eventText(event)}</div>) : partial ? <div className="ix-response" aria-live="off">{partial}{active && <span className="ix-caret" />}</div> : active ? <p className="ix-empty-small">Waiting for execution output…</p> : null}</div>;
+  const tools = toolActivities(events);
+  const explored = tools.filter(tool => tool.readOnly);
+  const other = tools.filter(tool => !tool.readOnly);
+  function toolCard(tool: typeof tools[number]) {
+    const last = tool.events[tool.events.length - 1];
+    return <details className="ix-tool" key={tool.id}><summary><Icon name={last.type === "tool.completed" ? "check" : "code"} size={14} /><span>{activityLabel(last)}</span></summary><pre>{tool.events.map(event => eventText(event) || String(event.data.detail ?? "")).filter(Boolean).join("\n") || "No output reported."}</pre></details>;
+  }
+  return <div className="ix-assistant"><div className="ix-message-byline"><span><Icon name="goober" size={16} />{actorLabel}</span>{active && <span className="ix-working"><span className="ix-spinner" />Working</span>}</div>{tools.length > 0 && <div className="ix-activities">{explored.length > 0 && <details className="ix-tool ix-exploration"><summary><Icon name="code" size={14} /><span>Explored {new Set(explored.map(tool => tool.path ?? tool.id)).size} files</span></summary>{explored.map(toolCard)}</details>}{other.map(toolCard)}</div>}{events.filter(event => event.type === "auth.required").map(event => <p className="ix-turn-error" key={event.sequence}>{plainFailure(event.data).text}</p>)}{final.length ? final.map(event => <div className="ix-response" key={event.sequence}>{eventText(event)}</div>) : partial ? <div className="ix-response" aria-live="off">{partial}{active && <span className="ix-caret" />}</div> : active ? <p className="ix-empty-small">Waiting for execution output…</p> : null}</div>;
 }
 function activityLabel(event: InteractiveEvent): string {
   if (event.type === "steering.delivered") return "Steering delivered to the active turn";
@@ -364,7 +398,7 @@ function ChangesPanel({ changes, session, events }: { changes?: Changes; session
   const files = changes?.changes ?? session.changes ?? [];
   const diff = changes?.diff ?? session.diff;
   const tests = events.filter(event => event.type === "tool.completed" && /(?:test|pytest|vitest|jest)/i.test(String(event.data.name ?? "") + " " + String(event.data.command ?? "")));
-  return <><div className="ix-inspector-heading"><Icon name="code" /><h3>Cumulative changes</h3></div><p>Changes are measured against the session workspace base. Review all turns together before taking work elsewhere.</p><section className="ix-test-evidence" aria-label="Test evidence"><h4>Test evidence</h4>{tests.length ? tests.slice(-5).map(event => <details key={event.sequence}><summary><Icon name={event.data.exitCode === 0 ? "check" : "code"} size={13} /><span>{activityLabel(event)}</span></summary><Timestamp value={event.time} /><pre>{eventText(event) || "The executor reported this completion without output."}</pre></details>) : <p>No completed test command has been reported.</p>}</section>{!files.length && !diff ? <div className="ix-inspector-empty"><Icon name="artifact" size={28} /><strong>No changes reported</strong><span>Edits and test output will appear after the executor performs them.</span></div> : <><ul className="ix-change-list">{files.map(file => <li key={file.path}><span title={file.path}>{file.path}</span><small>{file.status}</small>{(file.additions > 0 || file.deletions > 0) && <><b className="ix-added">+{file.additions}</b><b className="ix-deleted">−{file.deletions}</b></>}</li>)}</ul>{diff && <pre className="ix-diff" tabIndex={0} aria-label="Cumulative diff">{diff.split("\n").map((line, index) => <span key={index} className={line.startsWith("+") ? "ix-diff-add" : line.startsWith("-") ? "ix-diff-remove" : line.startsWith("@@") ? "ix-diff-hunk" : ""}>{line}{"\n"}</span>)}</pre>}</>}</>;
+  return <><div className="ix-inspector-heading"><Icon name="code" /><h3>Cumulative changes</h3></div><p>Changes are measured against the session workspace base. Review all turns together before taking work elsewhere.</p><section className="ix-test-evidence" aria-label="Test evidence"><h4>Test evidence</h4>{tests.length ? tests.slice(-5).map(event => <details key={event.sequence}><summary><Icon name={event.data.exitCode === 0 ? "check" : "code"} size={13} /><span>{activityLabel(event)}</span></summary><Timestamp value={event.time} /><pre>{eventText(event) || "The executor reported this completion without output."}</pre></details>) : <p>No completed test command has been reported.</p>}</section>{!files.length && !diff ? <div className="ix-inspector-empty"><Icon name="artifact" size={28} /><strong>No changes reported</strong><span>Edits and test output will appear after the executor performs them.</span></div> : <>{diff ? fileDiffs(diff).map(file => <details className="ix-diff-card" key={file.path} open><summary><span>{file.path}</span><b className="ix-added">+{file.added}</b><b className="ix-deleted">−{file.removed}</b></summary><pre className="ix-diff" tabIndex={0} aria-label={`Diff for ${file.path}`}>{file.raw.split("\n").map((line, index) => <span key={index} className={line.startsWith("+") && !line.startsWith("+++") ? "ix-diff-add" : line.startsWith("-") && !line.startsWith("---") ? "ix-diff-remove" : line.startsWith("@@") ? "ix-diff-hunk" : ""}>{line}{"\n"}</span>)}</pre></details>) : <ul className="ix-change-list">{files.map(file => <li key={file.path}><span>{file.path}</span><small>{file.status}</small><b className="ix-added">+{file.additions}</b><b className="ix-deleted">−{file.deletions}</b></li>)}</ul>}</>}</>;
 }
 function ChildrenPanel({ session, maxChildren, disabled, send, executionMode, surface, policyRetired }: {
   surface?: Surface; policyRetired?: boolean; executionMode?: string; session: Session; maxChildren: number; disabled: boolean;
@@ -427,7 +461,7 @@ function AccessPanel({ session, events, runtime, client, refreshRuntime, onResum
     {pendingAction && <p role="status" className="ix-empty-small">Connection change pending server confirmation…</p>}{error && <p role="alert" className="ix-action-error">{error}</p>}{result && <p role="status" className="ix-empty-small">{result}</p>}
     {session.status === "waiting_auth" && <Action variant="primary" disabled={disabled || !!pendingAction} onClick={onResume}>Resume session</Action>}
     <div className="ix-context-note"><Icon name="info" /><p>A session identity is not a provider credential. Tokens are never requested or displayed in chat. There is no silent application identity fallback.</p></div>
-    {authEvents.map(event => <div className="ix-banner ix-banner-warning" key={event.sequence}><p>{eventText(event) || "Provider authorization requires attention on the server."}</p></div>)}
+    {authEvents.map(event => <div className="ix-banner ix-banner-warning" key={event.sequence}><div><p>{plainFailure(event.data).text}</p><details className="ix-diagnostics"><summary>Technical details</summary><pre>{plainFailure(event.data).detail}</pre></details></div></div>)}
   </>;
 }
 
