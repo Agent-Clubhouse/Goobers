@@ -438,6 +438,7 @@ type AgentProvenance struct {
 // supplied per call in StartInput, not fixed here.
 type Config struct {
 	childExecution       *journal.RunIdentity
+	childTrustedLocal    bool
 	childBorrowJournal   func(string, string, *journal.Run) (func(), error)
 	childTerminalCustody func(*journal.Run) error
 	ChildHandoff         ChildHandoff

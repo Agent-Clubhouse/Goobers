@@ -69,7 +69,9 @@ func bindChildRuntime(ctx context.Context, start childExecutionStart, runtime pr
 	}
 	// Local-runner probes are inapplicable once the exclusive stage dispatcher
 	// admitted the exact retained placement. Parent limits remain in ReserveChild.
-	runtime.entry.RequiredCapabilities = nil
-	runtime.entry.PlacementRefusal, runtime.entry.HarnessRefusal, runtime.entry.HarnessRecheck = "", "", nil
+	if !executors.TrustedLocal {
+		runtime.entry.RequiredCapabilities = nil
+		runtime.entry.PlacementRefusal, runtime.entry.HarnessRefusal, runtime.entry.HarnessRecheck = "", "", nil
+	}
 	return runtime, nil
 }
