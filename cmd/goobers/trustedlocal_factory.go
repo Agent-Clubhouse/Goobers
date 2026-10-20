@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -242,7 +244,7 @@ func (s *daemonCredentialService) localChildAuthentication(ctx context.Context, 
 		return empty, err
 	}
 	defer func() { _ = lease.Release() }()
-	set, _, err := loadConfigDirectory(directory)
+	set, err := s.loadTrustedLocalChildConfig(directory)
 	if err != nil {
 		return empty, err
 	}
@@ -276,4 +278,21 @@ func (s *daemonCredentialService) localChildAuthentication(ctx context.Context, 
 		}
 	}
 	return binding, nil
+}
+
+func (s *daemonCredentialService) loadTrustedLocalChildConfig(directory string) (*instance.ConfigSet, error) {
+	set, report, err := loadConfigDirectory(directory)
+	if err != nil {
+		return nil, fmt.Errorf("load trusted-local child generation: %w (%s)", err, validationIssueSummary(report))
+	}
+	// Match daemon startup/reload: warnings remain nonfatal, but must reach
+	// the instance journal before child admission continues.
+	warnings := report.Warnings()
+	if len(warnings) != 0 && s.log == nil {
+		return nil, errors.New("trusted-local child config warning journal unavailable")
+	}
+	if err := journalValidationWarnings(s.log, warnings); err != nil {
+		return nil, err
+	}
+	return set, nil
 }
