@@ -62,13 +62,23 @@ isolation check globally. Only the admitted trusted-local provider may opt into
 the host-process path, through a host-owned context marker rather than an
 agent-supplied envelope field.
 
-Use explicit child environments and private CLI configuration/home directories;
-do not inherit provider tokens, stored CLI logins, Git credential helpers or
-unselected MCP credentials through ambient configuration. Resolve only admitted
-model credentials. Publication uses the existing canonical host publication
-owner under the same delegation ceiling, never an ambient shell token.
-These controls bound credentials supplied by Goobers; they do not make a shared
-OS account inaccessible to malicious host code.
+Use explicit child environments and private CLI configuration/home directories.
+Delegate the parent stage's permitted authentication mode: a parent using an
+ambient harness login may delegate that same selected harness login; a parent
+using an explicit model key may delegate only its scoped key and must never
+fall back to stored login. The instance and Goober policy remain authoritative;
+refuse ambient authentication only where the parent itself would be refused.
+Do not inherit unrelated provider tokens, other stored CLI logins, Git credential
+helpers or unselected MCP credentials. Preserve restrictions such as Codex
+keyring-only authentication when delegating the selected login.
+
+Config discovery, launcher handshakes and authentication preflight are launches
+too: use the invocation's delegated authentication scope or consume configuration
+already resolved by admission. Unresolved child config must fail before an
+adapter-wide credential resolver or ambient discovery can run. Publication uses
+the existing canonical host publication owner under the same delegation ceiling,
+never an ambient shell token. These controls bound credentials supplied by
+Goobers; they do not make a shared OS account inaccessible to malicious host code.
 
 ## Custody and parity
 
@@ -100,11 +110,13 @@ serialization and workspace custody, with focused hermetic tests.
 Tests must exercise the production composition with fake model/forge adapters:
 self-only selection, no fallback from remote placement, accepted child execution,
 agentic and deterministic stages, parent wait/continuation, parallel serialization,
-fresh retries, cancellation with descendants, credential narrowing and rejection
-of ambient authentication, terminal snapshots, and all three dispositions.
+fresh retries, cancellation with descendants, credential narrowing, parent ambient-to-child ambient delegation and
+parent explicit-key-to-child explicit-key enforcement, terminal snapshots, and all three dispositions.
 Crash tests must prove unresolved writers retain custody and cannot be retried.
 
 Run targeted race tests on macOS and Linux, `make build`, and a cross-GOOS
 Windows build. A Windows cross-build checks portability, not Job Object runtime
-behavior; report that distinction explicitly. No live model, cloud resource,
+behavior. Windows trusted-local execution remains unqualified preview until a
+Windows runtime custody test passes. Jobs must prohibit breakaway before root
+execution; missing custody or unobservable accounting fails closed. No live model, cloud resource,
 Temporal server or cluster is required for the local qualification.
