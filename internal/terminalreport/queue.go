@@ -92,6 +92,14 @@ func (q Queue) Publish(ctx context.Context, e Effect, apply func(context.Context
 	if err != nil {
 		return err
 	}
+	replay, entered, err := q.enterReplay()
+	if err != nil {
+		return err
+	}
+	if !entered {
+		return errDeliveryPending
+	}
+	defer func() { _ = replay.Release() }()
 	_, err = q.deliver(ctx, key, apply, true)
 	return err
 }
@@ -101,8 +109,19 @@ func reportIdentity(e Effect) string {
 	return string(identity)
 }
 
-// Reconcile retries at most budget due intents, skipping active delivery leases.
+// Reconcile retries at most budget due intents while holding the outbox-wide
+// replay lock. Publishers still enqueue but do not deliver while another
+// process owns this loop.
 func (q Queue) Reconcile(ctx context.Context, budget int, apply func(context.Context, Effect) error) error {
+	replay, entered, err := q.enterReplay()
+	if err != nil {
+		return err
+	}
+	if !entered {
+		return nil
+	}
+	defer func() { _ = replay.Release() }()
+
 	entries, err := os.ReadDir(q.Dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -259,6 +278,20 @@ func (q Queue) acknowledge(ctx context.Context, key string, delivered entry, del
 		deliveryErr = nil
 	}
 	return errors.Join(deliveryErr, logErr, err)
+}
+
+func (q Queue) enterReplay() (*lock.Handle, bool, error) {
+	if err := os.MkdirAll(q.Dir, 0o700); err != nil {
+		return nil, false, err
+	}
+	held, err := lock.TryAcquire(filepath.Join(q.Dir, replayLockFileName))
+	if errors.Is(err, lock.ErrHeld) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return held, true, nil
 }
 
 func (q Queue) deferred(e Effect, err error) Effect {

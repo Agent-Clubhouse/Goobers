@@ -9,12 +9,11 @@ const (
 	reportCallTimeout     = 30 * time.Second
 	reportLeaseSkewMargin = 30 * time.Second
 	reportLeaseDuration   = reportCallTimeout + reportLeaseSkewMargin
+	replayLockFileName    = "replay.lock"
 )
 
-// A JSON lease alone cannot exclude a still-live publisher after a forward
-// wall-clock adjustment. The process-wide guard covers fresh Queue values,
-// separate outbox directories and generations for the same provider target.
-// Admission remains independent; only remote delivery is single-flight.
+// Keep the target-scoped in-process guard across distinct queue directories.
+// The outbox replay flock is the cross-process authority for one queue.
 var reportFlights sync.Map
 
 func enterFlight(key string) (func(), bool) {
