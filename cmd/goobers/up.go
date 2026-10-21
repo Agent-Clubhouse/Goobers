@@ -1144,7 +1144,10 @@ func (u *upSession) configureAPI() int {
 	// releases its slot when its existing settlement path observes completion.
 	u.cancelPlane.engine = newDaemonEngineCancelService(u.l, u.setup.Interventions, u.engineClient, u.engineGuards, u.setup.InstanceLog)
 	claimPlane := newDaemonClaimService(u.l, u.setup.InstanceLog, u.recoverExpiredClaims)
-	u.recoverExpiredClaims = claimPlane.recoverExpired
+	if err := claimPlane.initializeMergeLock(); err != nil {
+		claimPlane.close()
+		return reportDaemonStartupError(u.stderr, "restore merge exclusion", err)
+	}
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
 	claimPlane.markerRelease = u.releaseProviderClaimMarker
 	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(u.engineClient.Temporal(), surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)

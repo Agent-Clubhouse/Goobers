@@ -64,11 +64,16 @@ func newClaimsPlane(t *testing.T) *claimsPlane {
 		t.Fatal(err)
 	}
 	t.Cleanup(journalWriter.Close)
+	service := newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+		return recoverClaims(layout, instanceLog, now, nil, nil)
+	})
+	if err := service.initializeMergeLock(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.close)
 	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
 		httpapi.WithAuthenticator(authenticator),
-		httpapi.WithClaimService(newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-			return recoverClaims(layout, instanceLog, now, nil, nil)
-		})),
+		httpapi.WithClaimService(service),
 		httpapi.WithJournalService(journalWriter),
 	)
 	if err != nil {

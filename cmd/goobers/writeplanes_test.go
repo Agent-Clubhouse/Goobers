@@ -31,9 +31,14 @@ func newClaimServiceFixture(t *testing.T) (*daemonClaimService, instance.Layout)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = instanceLog.Close() })
-	return newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+	service := newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 		return recoverClaims(layout, instanceLog, now, nil, nil)
-	}), layout
+	})
+	if err := service.initializeMergeLock(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.close)
+	return service, layout
 }
 
 func claimPlaneRequest(runID string) httpapi.ClaimRequest {

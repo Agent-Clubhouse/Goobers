@@ -948,6 +948,11 @@ func (l *ClaimLedger) persist() error {
 		return fmt.Errorf("localscheduler: persist claim ledger: %w", err)
 	}
 	l.history = history
+	entries := make([]ClaimEntry, 0, len(l.entries))
+	for _, entry := range l.entries {
+		entries = append(entries, entry)
+	}
+	notifyClaimMutation(l.path, entries)
 	return nil
 }
 

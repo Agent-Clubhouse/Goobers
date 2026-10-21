@@ -48,9 +48,8 @@ type daemonClaimService struct {
 	log           *journal.InstanceLog
 	shared        claimsclient.SharedClaimResolver
 	markerRelease func(context.Context, localscheduler.ClaimEntry, claimrelease.Reason) error
-	mergeAcquire  sync.Mutex
-	mergeMu       sync.Mutex
-	mergeHeld     *daemonMergeLock
+	mergeFlock    *mergeFlockState
+	stopMergeHook func()
 	// recover is the daemon's OWN stale-claim sweep, injected rather than
 	// reconstructed: it closes over the intervention predicate and the
 	// restart-time recovery gate (up.go), which are in-memory daemon state
@@ -65,7 +64,19 @@ func newDaemonClaimService(
 	log *journal.InstanceLog,
 	recover func(now time.Time) ([]localscheduler.ClaimEntry, error),
 ) *daemonClaimService {
-	return &daemonClaimService{layout: layout, log: log, recover: recover}
+	service := &daemonClaimService{
+		layout: layout, log: log, recover: recover,
+		mergeFlock: newMergeFlockState(filepath.Join(layout.SchedulerDir(), mergeLockFileName)),
+	}
+	service.stopMergeHook = service.registerMergeLedgerObserver()
+	return service
+}
+
+func (s *daemonClaimService) close() {
+	if s.stopMergeHook != nil {
+		s.stopMergeHook()
+	}
+	s.mergeFlock.close()
 }
 
 func (s *daemonClaimService) lockPath() string {
@@ -209,9 +220,6 @@ func (s *daemonClaimService) Release(ctx context.Context, request httpapi.ClaimR
 }
 
 func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
-	s.mergeAcquire.Lock()
-	defer s.mergeAcquire.Unlock()
-
 	if (request.Gaggle == "") != (request.Provider == "") {
 		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 			"gaggle and provider must be given together for a release of every claim the run holds", nil)
@@ -244,7 +252,6 @@ func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpa
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
-	s.releaseMergeLockForRun(request.RunID, request.Gaggle, request.Provider)
 	return httpapi.ClaimResponse{Ok: true, Released: released}, nil
 }
 
@@ -391,7 +398,7 @@ func (s *daemonClaimService) Recover(_ context.Context, _ httpapi.ClaimRecoverRe
 			http.StatusServiceUnavailable, "claims_recovery_unavailable",
 			"this server does not run claim recovery", nil)
 	}
-	released, err := s.recoverExpired(time.Now())
+	released, err := s.recover(time.Now())
 	if err != nil && !isJournaledClaimsLockTimeout(err) {
 		return httpapi.ClaimRecoverResponse{}, err
 	}
