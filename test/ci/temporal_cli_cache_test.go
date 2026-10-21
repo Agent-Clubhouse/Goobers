@@ -35,11 +35,11 @@ func TestTemporalCLIIsAcquiredOnceAndRestoredByTestJobs(t *testing.T) {
 		if !strings.Contains(strings.Join(job.Needs, " "), temporalCLIJob) {
 			t.Errorf("%s does not depend on the Temporal CLI acquisition job", name)
 		}
-		if job.Env[temporalcli.EnvVar] == "" {
-			t.Errorf("%s does not set %s to the restored binary", name, temporalcli.EnvVar)
+		if value := job.Env[temporalcli.EnvVar]; value != "" {
+			t.Errorf("%s sets job-level %s=%q; runner.* is unavailable in jobs.<id>.env, so export it from a step through GITHUB_ENV", name, temporalcli.EnvVar, value)
 		}
 		if job.RunsOn != "ubuntu-latest" {
-			t.Errorf("%s sets %s but runs on %q; only the Ubuntu acquisition job populates this OS/architecture cache", name, temporalcli.EnvVar, job.RunsOn)
+			t.Errorf("%s consumes %s but runs on %q; only the Ubuntu acquisition job populates this OS/architecture cache", name, temporalcli.EnvVar, job.RunsOn)
 		}
 		restore := job.step(t, "Restore Temporal CLI")
 		if !strings.HasPrefix(restore.Uses, temporalCacheAction) {
@@ -52,6 +52,21 @@ func TestTemporalCLIIsAcquiredOnceAndRestoredByTestJobs(t *testing.T) {
 		}
 		if restore.with("fail-on-cache-miss") != "true" {
 			t.Errorf("%s restore must fail on a cache miss instead of exporting a nonexistent %s path", name, temporalcli.EnvVar)
+		}
+		export := job.step(t, "Export Temporal CLI path")
+		if job.stepIndex(restore.Name) >= job.stepIndex(export.Name) {
+			t.Errorf("%s must export %s after restoring the cached binary", name, temporalcli.EnvVar)
+		}
+		for _, want := range []string{temporalcli.EnvVar + "=$RUNNER_TEMP/temporal-cli/temporal", "$GITHUB_ENV"} {
+			if !strings.Contains(export.Run, want) {
+				t.Errorf("%s export step = %q, want it to contain %q", name, export.Run, want)
+			}
+		}
+	}
+
+	for name, job := range workflow.Jobs {
+		if value := job.Env[temporalcli.EnvVar]; strings.Contains(value, "runner.") {
+			t.Errorf("%s sets %s with runner context in job-level env: %q", name, temporalcli.EnvVar, value)
 		}
 	}
 }

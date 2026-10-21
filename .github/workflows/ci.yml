@@ -853,8 +853,6 @@ jobs:
         shard: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      GOOBERS_TEMPORAL_CLI: ${{ runner.temp }}/temporal-cli/temporal
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -874,6 +872,9 @@ jobs:
           path: ${{ runner.temp }}/temporal-cli
           key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
           fail-on-cache-miss: true
+
+      - name: Export Temporal CLI path
+        run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
 
       - name: Download modules
         timeout-minutes: 12
@@ -1033,8 +1034,6 @@ jobs:
     if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      GOOBERS_TEMPORAL_CLI: ${{ runner.temp }}/temporal-cli/temporal
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -1054,6 +1053,9 @@ jobs:
           path: ${{ runner.temp }}/temporal-cli
           key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
           fail-on-cache-miss: true
+
+      - name: Export Temporal CLI path
+        run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
 
       - name: Download modules
         timeout-minutes: 12
