@@ -104,8 +104,22 @@ func validateConfig(cfg config) error {
 		return errors.New("at least one build context is required")
 	}
 
-	buildNames := make(map[string]struct{}, len(cfg.Builds))
-	for _, build := range cfg.Builds {
+	if err := validateBuilds(cfg.Builds); err != nil {
+		return err
+	}
+	forbidden, err := validateForbidden(cfg.Module, cfg.Forbidden)
+	if err != nil {
+		return err
+	}
+	if err := validateLanes(cfg.Module, cfg.Lanes, forbidden); err != nil {
+		return err
+	}
+	return validateClosureRules(cfg.Module, cfg.ClosureRules)
+}
+
+func validateBuilds(builds []buildContext) error {
+	buildNames := make(map[string]struct{}, len(builds))
+	for _, build := range builds {
 		if build.Name == "" || build.GOOS == "" || build.GOARCH == "" {
 			return errors.New("each build context requires name, goos, and goarch")
 		}
@@ -114,22 +128,28 @@ func validateConfig(cfg config) error {
 		}
 		buildNames[build.Name] = struct{}{}
 	}
+	return nil
+}
 
-	forbidden := make(map[string]struct{}, len(cfg.Forbidden))
-	for _, rule := range cfg.Forbidden {
-		if err := validateBoundary(cfg.Module, rule, "forbidden boundary"); err != nil {
-			return err
+func validateForbidden(module string, rules []boundary) (map[string]struct{}, error) {
+	forbidden := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		if err := validateBoundary(module, rule, "forbidden boundary"); err != nil {
+			return nil, err
 		}
 		if _, duplicate := forbidden[rule.Path]; duplicate {
-			return fmt.Errorf("duplicate forbidden boundary %q", rule.Path)
+			return nil, fmt.Errorf("duplicate forbidden boundary %q", rule.Path)
 		}
 		forbidden[rule.Path] = struct{}{}
 	}
+	return forbidden, nil
+}
 
-	lanePaths := make(map[string]struct{}, len(cfg.Lanes))
-	for _, item := range cfg.Lanes {
-		if !isWithin(item.Path, cfg.Module) || item.Path == cfg.Module {
-			return fmt.Errorf("lane path %q must be below module %q", item.Path, cfg.Module)
+func validateLanes(module string, lanes []lane, forbidden map[string]struct{}) error {
+	lanePaths := make(map[string]struct{}, len(lanes))
+	for _, item := range lanes {
+		if !isWithin(item.Path, module) || item.Path == module {
+			return fmt.Errorf("lane path %q must be below module %q", item.Path, module)
 		}
 		if _, duplicate := lanePaths[item.Path]; duplicate {
 			return fmt.Errorf("duplicate lane %q", item.Path)
@@ -150,12 +170,16 @@ func validateConfig(cfg config) error {
 		default:
 			return fmt.Errorf("lane %q has invalid decision %q (want accepted, pending, or declined)", item.Path, item.Decision)
 		}
-		if err := validateAllowlist(cfg.Module, item, forbidden); err != nil {
+		if err := validateAllowlist(module, item, forbidden); err != nil {
 			return err
 		}
 	}
-	closureNames := make(map[string]struct{}, len(cfg.ClosureRules))
-	for _, rule := range cfg.ClosureRules {
+	return nil
+}
+
+func validateClosureRules(module string, rules []closureRule) error {
+	closureNames := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
 		if strings.TrimSpace(rule.Name) == "" || len(rule.Roots) == 0 || len(rule.Forbidden) == 0 {
 			return errors.New("each closure rule requires name, roots, and forbidden prefixes")
 		}
@@ -165,8 +189,8 @@ func validateConfig(cfg config) error {
 		closureNames[rule.Name] = struct{}{}
 		roots := make(map[string]struct{}, len(rule.Roots))
 		for _, root := range rule.Roots {
-			if !isWithin(root, cfg.Module) || root == cfg.Module {
-				return fmt.Errorf("closure rule %q root %q must be below module %q", rule.Name, root, cfg.Module)
+			if !isWithin(root, module) || root == module {
+				return fmt.Errorf("closure rule %q root %q must be below module %q", rule.Name, root, module)
 			}
 			if _, duplicate := roots[root]; duplicate {
 				return fmt.Errorf("closure rule %q repeats root %q", rule.Name, root)
