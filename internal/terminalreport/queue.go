@@ -97,7 +97,7 @@ func (q Queue) Publish(ctx context.Context, e Effect, apply func(context.Context
 		return err
 	}
 	if !entered {
-		return errDeliveryPending
+		return nil
 	}
 	defer func() { _ = replay.Release() }()
 	_, err = q.deliver(ctx, key, apply, true)
@@ -118,8 +118,10 @@ func (q Queue) Reconcile(ctx context.Context, budget int, apply func(context.Con
 		return err
 	}
 	if !entered {
+		q.recordReplaySkip()
 		return nil
 	}
+	resetReplaySkips(q.Dir)
 	defer func() { _ = replay.Release() }()
 
 	entries, err := os.ReadDir(q.Dir)
@@ -291,7 +293,33 @@ func (q Queue) enterReplay() (*lock.Handle, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	_ = held.Announce("terminal-report.replay")
 	return held, true, nil
+}
+
+func (q Queue) recordReplaySkip() {
+	count := replaySkip(q.Dir)
+	if q.Log == nil || count != 3 {
+		return
+	}
+	lockPath := filepath.Join(q.Dir, replayLockFileName)
+	holder, announced := lock.ReadHolder(lockPath)
+	runner := map[string]any{
+		"kind":      "terminal_report_replay_skipped",
+		"skipCount": count,
+	}
+	reason := "terminal report replay skipped repeatedly because another process owns the outbox"
+	if announced {
+		runner["holderOperation"] = holder.Operation
+		runner["holderPid"] = holder.PID
+		runner["holderHost"] = holder.Host
+		runner["holderAcquiredAt"] = holder.AcquiredAt.UTC().Format(time.RFC3339Nano)
+	}
+	_ = q.Log(journal.Event{
+		Type:   journal.EventRunnerAnnotation,
+		Reason: reason,
+		Runner: runner,
+	})
 }
 
 func (q Queue) deferred(e Effect, err error) Effect {
