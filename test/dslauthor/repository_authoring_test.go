@@ -497,7 +497,9 @@ func assertCaptureProvenance(t *testing.T, capture invocationCapture, skillDiges
 	t.Helper()
 	// The installed CLI updated between native sessions in this capture batch.
 	// Keep both observed versions pinned; session.start must still match exactly.
-	if capture.CapturedWith != "GitHub Copilot CLI 1.0.98" && capture.CapturedWith != "GitHub Copilot CLI 1.0.100" {
+	if capture.CapturedWith != "GitHub Copilot CLI 1.0.98" &&
+		capture.CapturedWith != "GitHub Copilot CLI 1.0.100" &&
+		capture.CapturedWith != "GitHub Copilot CLI 1.0.101" {
 		t.Fatalf("unreviewed capture CLI version %q", capture.CapturedWith)
 	}
 	assertCaptureProvenanceVersion(t, capture, skillDigest, capture.CapturedWith)
