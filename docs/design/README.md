@@ -15,11 +15,11 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 15 |
-| `approved` | 26 |
+| `approved` | 27 |
 | `implemented` | 30 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **81** |
+| **Total** | **82** |
 
 ## `docs/adr/`
 
