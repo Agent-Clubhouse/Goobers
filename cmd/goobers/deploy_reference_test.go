@@ -14,10 +14,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/app"
-	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/netpolrender"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -246,6 +246,9 @@ func TestDeployReferenceAPIProbes(t *testing.T) {
 	checkProbe("startupProbe", container.StartupProbe, "/readyz")
 	checkProbe("readinessProbe", container.ReadinessProbe, "/readyz")
 	checkProbe("livenessProbe", container.LivenessProbe, "/healthz")
+	if grace := container.LivenessProbe.TerminationGracePeriodSeconds; grace == nil || *grace != 15 {
+		t.Errorf("livenessProbe terminationGracePeriodSeconds = %v, want 15", grace)
+	}
 }
 
 func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) {
@@ -381,9 +384,9 @@ func TestDeployReferenceWorkerRolloutAndCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 		spec := deployment.Spec.Template.Spec
-		minimum := workerhost.DefaultDrainTimeout + dispatcher.DefaultDisposalTimeout
-		if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second <= minimum {
-			t.Errorf("%s: pod shutdown grace must exceed %s for worker drain and stage cleanup", name, minimum)
+		minimum := workerhost.DefaultDrainTimeout + workerhost.ChildSettlementTimeout
+		if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second < minimum {
+			t.Errorf("%s: pod shutdown grace must cover %s of worker drain and child settlement", name, minimum)
 		}
 		if name != "worker-deployment.yaml" {
 			continue
@@ -399,6 +402,51 @@ func TestDeployReferenceWorkerRolloutAndCleanup(t *testing.T) {
 		}) {
 			t.Error("worker temp must use bounded pod-private storage")
 		}
+	}
+}
+
+func TestDeployReferenceAPISingletonShutdownAndDisruption(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/api-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Errorf("strategy = %q, want %q for the lock-bearing RWO singleton", deployment.Spec.Strategy.Type, appsv1.RecreateDeploymentStrategyType)
+	}
+	spec := deployment.Spec.Template.Spec
+	if len(spec.Containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(spec.Containers))
+	}
+	args := spec.Containers[0].Args
+	flagIndex := slices.Index(args, "--drain-timeout")
+	if flagIndex < 0 || flagIndex+1 >= len(args) {
+		t.Fatalf("api args %v do not bound the otherwise-unbounded daemon drain", args)
+	}
+	drain, err := time.ParseDuration(args[flagIndex+1])
+	if err != nil {
+		t.Fatalf("parse daemon drain bound %q: %v", args[flagIndex+1], err)
+	}
+	if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second < drain {
+		t.Errorf("pod shutdown grace %v must cover daemon drain bound %s", spec.TerminationGracePeriodSeconds, drain)
+	}
+
+	pdbRaw, err := os.ReadFile("../../deploy/reference/goobers-system/api-pdb.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pdb policyv1.PodDisruptionBudget
+	if err := yaml.Unmarshal(pdbRaw, &pdb); err != nil {
+		t.Fatal(err)
+	}
+	if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 {
+		t.Errorf("PDB maxUnavailable = %v, want 1 so singleton node drains are not blocked", pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Spec.Selector == nil || !maps.Equal(pdb.Spec.Selector.MatchLabels, deployment.Spec.Selector.MatchLabels) {
+		t.Errorf("PDB selector %v does not match Deployment selector %v", pdb.Spec.Selector, deployment.Spec.Selector)
 	}
 }
 

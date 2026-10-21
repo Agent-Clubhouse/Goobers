@@ -768,9 +768,10 @@ The Linux reference worker uses `Recreate` because its instance root holds locks
 on an RWO volume: the old pod must exit before its replacement starts. This
 introduces a brief polling interruption during upgrades; Temporal retains queued
 work. Keep this worker at one replica until instance storage is separated for
-additional workers. Both worker templates allow 90 seconds for shutdown, covering
-the default 30-second Temporal drain, up to 30 seconds of stage-pod cleanup, and
-process exit. Increase the pod grace period when increasing `--drain-timeout`.
+additional workers. Both worker templates allow six minutes for shutdown, covering
+the default 30-second Temporal drain, five-minute child-custody settlement, and a
+30-second process-exit margin. Increase the pod grace period when increasing
+`--drain-timeout`.
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
 

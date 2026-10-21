@@ -20,6 +20,7 @@ resources:
   - networkpolicies.yaml
   - api-rbac.yaml
   - api-deployment.yaml
+  - api-pdb.yaml
   - api-service.yaml
   - api-ingress-example.yaml
   - journal-pvc.yaml
