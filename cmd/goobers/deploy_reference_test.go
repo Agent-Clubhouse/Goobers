@@ -430,8 +430,12 @@ func TestDeployReferenceAPISingletonShutdownAndDisruption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse daemon drain bound %q: %v", args[flagIndex+1], err)
 	}
-	if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second < drain {
-		t.Errorf("pod shutdown grace %v must cover daemon drain bound %s", spec.TerminationGracePeriodSeconds, drain)
+	if drain != time.Minute {
+		t.Errorf("manifest drain bound = %s, want 1m for remotely dispatched stages", drain)
+	}
+	const shutdownMargin = time.Minute
+	if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second < drain+shutdownMargin {
+		t.Errorf("pod shutdown grace %v must cover daemon drain bound %s plus %s shutdown margin", spec.TerminationGracePeriodSeconds, drain, shutdownMargin)
 	}
 
 	pdbRaw, err := os.ReadFile("../../deploy/reference/goobers-system/api-pdb.yaml")

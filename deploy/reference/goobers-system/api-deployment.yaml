@@ -26,11 +26,12 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: goobers-api
-      # `goobers up` otherwise drains indefinitely. The explicit 60m
-      # --drain-timeout below bounds that drain; this adds 60s for final
-      # checkpoint and HTTP shutdown. Raise both values together when a
-      # deployment's longest single-stage ceiling is higher.
-      terminationGracePeriodSeconds: 3660
+      # This disabled cloud reference assumes stages are remote-dispatched.
+      # `goobers up` lets an active local fallback reach its next boundary for
+      # at most 60s, then parks it for startup recovery. The extra 60s covers
+      # checkpoint and HTTP shutdown. Do not copy this bound to a local
+      # self-executing daemon, whose default drain remains unbounded.
+      terminationGracePeriodSeconds: 120
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
@@ -45,7 +46,7 @@ spec:
           image: goobers # rewritten by your overlay's images: transformer (#3287)
           # CHANGE-ME: configure the listener/authentication and separate the worker
           # instance root before enabling this sole journal-owning daemon.
-          args: ["up", "--drain-timeout", "60m", "/var/lib/goobers"]
+          args: ["up", "--drain-timeout", "60s", "/var/lib/goobers"]
           ports:
             - name: http
               containerPort: 8080 # CHANGE-ME to the configured listener port
