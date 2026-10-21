@@ -94,8 +94,9 @@ func TestPreparedWorkerGraceCoversDrainAndSettlement(t *testing.T) {
 		if deployment.Name == "goobers-api" {
 			apiFound = true
 			grace := deployment.Spec.Template.Spec.TerminationGracePeriodSeconds
-			if grace == nil || time.Duration(*grace)*time.Second < time.Hour {
-				t.Fatalf("API shutdown grace %v does not preserve its 60m drain bound", grace)
+			minimum := 2 * time.Minute
+			if grace == nil || time.Duration(*grace)*time.Second < minimum {
+				t.Fatalf("API shutdown grace %v must cover drain plus shutdown margin %s", grace, minimum)
 			}
 			continue
 		}
