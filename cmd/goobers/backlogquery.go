@@ -1397,19 +1397,20 @@ func (session *backlogClaimSession) reportRevisionMismatch(itemID string, index 
 	return 0
 }
 
-// acquire is the claim transaction: the blocked-record reconcile and the
-// select-then-acquire loop inside one Locked section. On the file backend
-// that is the single claims.lock critical section it has always been; on
-// the plane the daemon serializes each acquire and the blocked-record
-// filter stays a stage-local read until the scheduler-state route lands
-// (finding 002 C2).
+// Reconcile local selection state under the claims lock, then admit each item
+// through the client outside that section. Shared admission performs provider
+// I/O; its durable reservation and final CAS arbitrate selection races just as
+// the HTTP backend's separate requests already do.
 func (session *backlogClaimSession) acquire(ctx context.Context) error {
-	return session.ledger.Locked(ctx, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error {
-		return session.acquireLocked(ctx, tx)
-	})
+	if err := session.ledger.Locked(ctx, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error {
+		return session.prepareClaimsLocked(ctx, tx)
+	}); err != nil {
+		return err
+	}
+	return claimsclient.Sequence(ctx, session.ledger, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error { return session.acquireItems(ctx, tx) })
 }
 
-func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger claimsclient.Ledger) error {
+func (session *backlogClaimSession) prepareClaimsLocked(ctx context.Context, ledger claimsclient.Ledger) error {
 	if !session.claimSetPrepared {
 		var err error
 		session.eligible, session.observedSkips, err = reconcileBlockedEligibilityLocked(
@@ -1438,6 +1439,10 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 		}
 		session.driftBackoffChecked = true
 	}
+	return nil
+}
+
+func (session *backlogClaimSession) acquireItems(ctx context.Context, ledger claimsclient.Ledger) error {
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
 		session.nextClaimIndex++
@@ -1948,7 +1953,7 @@ func (session *backlogClaimSession) rollback(ctx context.Context, item providers
 }
 
 func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem, reason claimrelease.Reason) error {
-	return session.ledger.Locked(ctx, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
+	return claimsclient.Sequence(ctx, session.ledger, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
 		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID, reason)
 	})
 }

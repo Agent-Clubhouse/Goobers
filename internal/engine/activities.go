@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mutationsidecar"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -312,6 +313,9 @@ func classifySeamError(err error) error {
 	}
 	if rejection := workspaceRevisionRejection(err); rejection != nil {
 		return temporal.NewNonRetryableApplicationError(rejection.Message, rejection.Code, err)
+	}
+	if errors.Is(err, planehttp.ErrBudgetExhausted) {
+		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
 	}
 	if invoke.IsInfrastructureFailure(err) {
 		options := temporal.ApplicationErrorOptions{}

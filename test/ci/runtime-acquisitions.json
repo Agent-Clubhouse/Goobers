@@ -101,6 +101,7 @@
       "Makefile#ci::go-modules",
       "Makefile#cmdgoobers-growth-update::go-modules",
       "Makefile#cmdgoobers-growth::go-modules",
+      "Makefile#complexity-move-update::go-modules",
       "Makefile#complexity-update::go-modules",
       "Makefile#complexity::go-modules",
       "Makefile#cover-check::go-modules",

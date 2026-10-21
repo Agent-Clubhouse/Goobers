@@ -12,6 +12,10 @@ spec:
   # Disabled until an adopter configures TLS, pod authentication, and exclusive
   # instance ownership. See ../README.md: Mode-3 authority and storage prerequisites.
   replicas: 0
+  # This singleton holds the lock-bearing RWO instance root. Its replacement
+  # cannot start until the old pod releases both the process lock and volume.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: goobers-api
@@ -22,6 +26,12 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: goobers-api
+      # This disabled cloud reference assumes stages are remote-dispatched.
+      # `goobers up` lets an active local fallback reach its next boundary for
+      # at most 60s, then parks it for startup recovery. The extra 60s covers
+      # checkpoint and HTTP shutdown. Do not copy this bound to a local
+      # self-executing daemon, whose default drain remains unbounded.
+      terminationGracePeriodSeconds: 120
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
@@ -36,7 +46,7 @@ spec:
           image: goobers # rewritten by your overlay's images: transformer (#3287)
           # CHANGE-ME: configure the listener/authentication and separate the worker
           # instance root before enabling this sole journal-owning daemon.
-          args: ["up", "/var/lib/goobers"]
+          args: ["up", "--drain-timeout", "60s", "/var/lib/goobers"]
           ports:
             - name: http
               containerPort: 8080 # CHANGE-ME to the configured listener port
@@ -122,6 +132,8 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
+            # A liveness-triggered kill must not inherit the long pod drain.
+            terminationGracePeriodSeconds: 15
           volumeMounts:
             # Same instance-root layout as the worker. This lock-bearing RWO
             # volume must remain single-node mounted.

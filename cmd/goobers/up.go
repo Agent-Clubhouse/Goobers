@@ -50,6 +50,11 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+// Local runs may execute long agentic stages inside this process, so their
+// historical default remains unbounded. Remote-dispatch deployments opt into
+// a finite --drain-timeout in their manifests.
+const localDaemonDrainTimeoutDefault time.Duration = 0
+
 // drainProgressInterval controls shutdown progress reporting. It is a variable
 // so tests can exercise cadence without waiting for the production interval.
 var drainProgressInterval = 10 * time.Second
@@ -597,7 +602,7 @@ func (u *upSession) configure() int {
 	u.quiet = fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	u.diagnostics = fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
 	u.watchConfig = fs.Bool("watch-config", true, "hot-reload materialized config-directory edits (default true; instance.yaml changes require restart)")
-	u.drainTimeout = fs.Duration("drain-timeout", 0, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
+	u.drainTimeout = fs.Duration("drain-timeout", localDaemonDrainTimeoutDefault, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
 
 	fs.Var(&u.notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	u.skipPreflight = fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")

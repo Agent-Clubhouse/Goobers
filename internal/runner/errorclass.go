@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -149,6 +150,8 @@ func classifyDispatchFailure(err error) (string, telemetry.ErrorClass) {
 	code := errCodeExecutor
 	var coded stageCodedError
 	switch {
+	case errors.Is(err, planehttp.ErrBudgetExhausted):
+		code = telemetry.ErrCodeInfraFailure
 	case errors.As(err, &coded) && coded.StageErrorCode() != "":
 		code = coded.StageErrorCode()
 	case invoke.IsTimeout(err):

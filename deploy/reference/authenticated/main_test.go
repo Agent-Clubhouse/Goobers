@@ -6,16 +6,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/workerhost"
 )
 
 const topologyTestCommit = "0123456789abcdef0123456789abcdef01234567"
@@ -69,6 +72,53 @@ func volume(t *testing.T, d appsv1.Deployment, name string) corev1.Volume {
 	}
 	t.Fatalf("missing volume %s", name)
 	return corev1.Volume{}
+}
+
+func TestPreparedWorkerGraceCoversDrainAndSettlement(t *testing.T) {
+	docs := generated(t, fixture(t))
+	apiFound, pdbFound, workerFound := false, false, false
+	for _, d := range docs {
+		if d["kind"] == "PodDisruptionBudget" {
+			var pdb policyv1.PodDisruptionBudget
+			decode(t, d, &pdb)
+			if pdb.Name == "goobers-api" && pdb.Spec.MaxUnavailable != nil && pdb.Spec.MaxUnavailable.IntValue() == 1 {
+				pdbFound = true
+			}
+			continue
+		}
+		if d["kind"] != "Deployment" {
+			continue
+		}
+		var deployment appsv1.Deployment
+		decode(t, d, &deployment)
+		if deployment.Name == "goobers-api" {
+			apiFound = true
+			grace := deployment.Spec.Template.Spec.TerminationGracePeriodSeconds
+			minimum := 2 * time.Minute
+			if grace == nil || time.Duration(*grace)*time.Second < minimum {
+				t.Fatalf("API shutdown grace %v must cover drain plus shutdown margin %s", grace, minimum)
+			}
+			continue
+		}
+		if deployment.Name != "goobers-worker" {
+			continue
+		}
+		workerFound = true
+		grace := deployment.Spec.Template.Spec.TerminationGracePeriodSeconds
+		minimum := workerhost.DefaultDrainTimeout + workerhost.ChildSettlementTimeout
+		if grace == nil || time.Duration(*grace)*time.Second < minimum {
+			t.Fatalf("worker shutdown grace %v must cover drain plus settlement %s", grace, minimum)
+		}
+	}
+	if !pdbFound {
+		t.Fatal("prepared topology has no drain-safe goobers-api PDB")
+	}
+	if !apiFound {
+		t.Fatal("prepared topology has no goobers-api Deployment")
+	}
+	if !workerFound {
+		t.Fatal("prepared topology has no goobers-worker Deployment")
+	}
 }
 
 func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T) {

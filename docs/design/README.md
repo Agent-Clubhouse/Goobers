@@ -15,11 +15,11 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 15 |
-| `approved` | 25 |
+| `approved` | 26 |
 | `implemented` | 30 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **80** |
+| **Total** | **81** |
 
 ## `docs/adr/`
 
@@ -40,6 +40,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — | — | — | — |
 | [Design: Dashboard co-branding and support hooks](cobrand.md) | `implemented` | — | — | #1381 | — | — | — |
+| [Control plane: high availability, rolling updates and externalized state](control-plane-ha.md) | `approved` | — | #7694, #7695, #7696, #7697, #7698, #7699, #7700, #7701 | — | — | — | — |
 | [Credit graph contract](credit-graph.md) | `implemented` | — | — | #4077, #4078, #6355 | — | — | 324c31ac6 (2026-10-02) |
 | [Cross-Platform Support — Linux & Windows nodes](cross-platform-support.md) | `approved` | — | — | #639, #643, #647, #651 | #3151, #2440 | — | b1d7b362c (2026-09-07) |
 | [Daemon identity on multi-owner instances](daemon-identity-multi-owner.md) | `implemented` | — | — | #3414, #3415, #4527 | — | — | — |
@@ -95,6 +96,12 @@ word — read the page, not this table, before depending on it.
 | [Windows Pod Restrictions](windows-pod-restrictions.md) | `implemented` | — | — | #3619 | — | — | — |
 | [Resident worker blob transport](worker-blob-transport.md) | `implemented` | — | — | #5293 | — | — | 2ea5900aa (2026-10-02) |
 | [Design: Workflow CD — GitOps config source for the local daemon](workflow-cd.md) | `implemented` | — | — | #454, #455, #456, #457, #458, #459, #460, #461 | — | — | ff826744e (2026-10-13) |
+
+## `docs/design/decisions/`
+
+| Document | Status | Owner / area | Tracking | Delivered by | Remaining | Superseded by | Verified |
+|---|---|---|---|---|---|---|---|
+| [HA cloud dependency decision](decisions/ha-cloud-dependencies.md) | `approved` | — | — | — | — | — | — |
 
 ## `docs/design/v0/`
 

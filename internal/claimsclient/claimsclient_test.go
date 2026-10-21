@@ -265,7 +265,7 @@ func TestFileBackendMatchesTheLedger(t *testing.T) {
 	// took none.
 	wantOps := []string{
 		fileOperationClaim, fileOperationClaim, fileOperationClaim, fileOperationClaim,
-		fileOperationRelease, fileOperationReleaseAll,
+		fileOperationRelease, fileOperationReleaseAll, fileOperationRelease, fileOperationRelease,
 	}
 	if !reflect.DeepEqual(lock.ops, wantOps) {
 		t.Fatalf("lock operations = %v, want %v", lock.ops, wantOps)

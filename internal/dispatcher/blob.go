@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/daemonclient"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/retryutil"
 )
 
@@ -36,7 +37,7 @@ const defaultBlobTimeout = 60 * time.Second
 // RetryDeadline of its own. A caller with a tighter context deadline already
 // in force (e.g. dispatchexec.go's 15s write-through batch budget) is
 // unaffected: context.WithTimeout always honors the earlier of the two.
-const defaultBlobRetryDeadline = 60 * time.Second
+const defaultBlobRetryDeadline = 240 * time.Second
 
 // BlobClient is the network blob plane client (decision 010): a
 // blobstore.Store implementation that fetches and puts sha256 digests over
@@ -166,7 +167,7 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 	if deadline <= 0 {
 		deadline = defaultBlobRetryDeadline
 	}
-	return retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
+	err := retryutil.UntilWithRetryMargin(ctx, deadline, planehttp.RetryDeadlineMargin, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		err := c.PutOnce(ctx, digest, data)
 		var status *BlobStatusError
 		if errors.As(err, &status) {
@@ -175,6 +176,10 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 		var transport *BlobTransportError
 		return errors.As(err, &transport), err
 	})
+	if errors.Is(err, retryutil.ErrDeadlineExceeded) {
+		return fmt.Errorf("%w: %w", planehttp.ErrBudgetExhausted, err)
+	}
+	return err
 }
 
 // BlobStatusError is a blob endpoint's non-success HTTP answer, carrying the

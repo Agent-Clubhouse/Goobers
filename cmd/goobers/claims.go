@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -415,6 +416,7 @@ func runClaimAdmin(root string, req claimAdminRequest) (claimAdminResponse, erro
 
 func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req claimAdminRequest) (claimAdminResponse, error) {
 	var resp claimAdminResponse
+	var sharedCleanup *localscheduler.ClaimEntry
 	operation := claimLockOperationAdminList
 	if req.Operation == claimAdminOperationRelease {
 		operation = claimLockOperationAdminRelease
@@ -460,16 +462,27 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 				resp.Error = fmt.Sprintf("claim is held by non-terminal run %s; --force is required", entry.RunID)
 				return nil
 			}
-			layout := instance.NewLayout(filepath.Dir(schedulerDir))
-			if err := releaseAdminClaim(ledger, layout, entry, req); err != nil {
+			needsCleanup, err := releaseAdminClaim(ledger, entry, req)
+			if err != nil {
 				return err
 			}
-			resp.Released = &entry
+			if needsCleanup {
+				sharedCleanup = &entry
+			} else if entry.SharedDeadline.IsZero() || entry.IsPublicationClaim() {
+				resp.Released = &entry
+			}
 		default:
 			return fmt.Errorf("claims: unknown admin operation %q", req.Operation)
 		}
 		return nil
 	})
+	if err == nil && sharedCleanup != nil {
+		layout := instance.NewLayout(filepath.Dir(schedulerDir))
+		err = forceReleaseClaim(context.Background(), layout, log, localLifecycleSharedClaimResolver(layout), *sharedCleanup, req.Actor)
+		if err == nil {
+			resp.Released = sharedCleanup
+		}
+	}
 	return resp, err
 }
 
@@ -626,15 +639,20 @@ func sweepPendingClaimAdminRequests(
 
 // The generic force-release path deliberately cannot override publication
 // custody. This explicit operator request is the sole administrative opt-in.
-func releaseAdminClaim(ledger *localscheduler.ClaimLedger, layout instance.Layout, entry localscheduler.ClaimEntry, req claimAdminRequest) error {
+func releaseAdminClaim(ledger *localscheduler.ClaimLedger, entry localscheduler.ClaimEntry, req claimAdminRequest) (needsCleanup bool, err error) {
 	if entry.IsPublicationClaim() {
 		if strings.TrimSpace(req.PublicationReason) == "" {
-			return errors.New("publication custody requires --publication-custody-reason naming why early release is safe")
+			return false, errors.New("publication custody requires --publication-custody-reason naming why early release is safe")
 		}
-		return ledger.ForceReleasePublicationEntry(entry, req.Operator, req.PublicationReason)
+		return false, ledger.ForceReleasePublicationEntry(entry, req.Operator, req.PublicationReason)
 	}
 	if req.PublicationReason != "" {
-		return errors.New("--publication-custody-reason requires an exact publication-lock key")
+		return false, errors.New("--publication-custody-reason requires an exact publication-lock key")
 	}
-	return forceReleaseClaim(context.Background(), ledger, localLifecycleSharedClaimResolver(layout), entry, req.Actor)
+	if !entry.SharedDeadline.IsZero() {
+		// Revoke under the claims lock before waiting for a transition or
+		// resolving provider credentials. Remote cleanup follows outside it.
+		return ledger.RevokeSharedExecution(claimsclient.KeyForEntry(entry), entry.SharedOwner, req.Actor)
+	}
+	return false, ledger.ForceReleaseEntry(entry, req.Actor)
 }

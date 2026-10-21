@@ -1269,9 +1269,9 @@ const blobWriteThroughFailureArtifact = "blob-write-through.errors"
 // recordStageArtifacts call makes.
 //
 // ONE BUDGET FOR THE BATCH, not one per artifact, because the per-artifact
-// default is dispatcher.BlobClient's 60s (internal/dispatcher/blob.go) and the
+// default is dispatcher.BlobClient's 240s (internal/dispatcher/blob.go) and the
 // batch is not bounded to two: on the agentic path every span routes through
-// RecordSpanWithSchema -> RecordArtifact -> recordStageArtifacts. Serial 60s
+// RecordSpanWithSchema -> RecordArtifact -> recordStageArtifacts. Serial
 // stalls after the stage has already finished are how a pod that has done its
 // work fails to surrender for minutes and gets reclaimed by the disposal gate
 // as an infrastructure fault. A REFUSING endpoint is instant (connection
@@ -1298,7 +1298,7 @@ func (t artifactTiming) withDefaults() artifactTiming {
 		t.blobWriteThroughBudget = blobWriteThroughBudget
 	}
 	if t.journalRetryDeadline <= 0 {
-		t.journalRetryDeadline = 3 * time.Second
+		t.journalRetryDeadline = 240 * time.Second
 	}
 	return t
 }

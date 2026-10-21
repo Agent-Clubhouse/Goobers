@@ -431,9 +431,6 @@ func TestStageClaimLedgerFailsClosedWithoutToken(t *testing.T) {
 	if _, err := fileClaimLedger(layout); err != nil {
 		t.Fatalf("fileClaimLedger consulted the stage environment: %v", err)
 	}
-	if _, err := heldClaimLedger(layout); err != nil {
-		t.Fatalf("heldClaimLedger consulted the stage environment: %v", err)
-	}
 }
 
 // TestBacklogDedupeReadsClaimsOverThePlane is the seam proof: with the

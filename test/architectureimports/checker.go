@@ -14,10 +14,11 @@ import (
 )
 
 type config struct {
-	Module    string         `json:"module"`
-	Builds    []buildContext `json:"builds"`
-	Forbidden []boundary     `json:"forbidden"`
-	Lanes     []lane         `json:"lanes"`
+	Module       string         `json:"module"`
+	Builds       []buildContext `json:"builds"`
+	Forbidden    []boundary     `json:"forbidden"`
+	Lanes        []lane         `json:"lanes"`
+	ClosureRules []closureRule  `json:"closureRules,omitempty"`
 }
 
 type buildContext struct {
@@ -30,6 +31,12 @@ type buildContext struct {
 type boundary struct {
 	Path      string `json:"path"`
 	Rationale string `json:"rationale"`
+}
+
+type closureRule struct {
+	Name      string     `json:"name"`
+	Roots     []string   `json:"roots"`
+	Forbidden []boundary `json:"forbidden"`
 }
 
 type lane struct {
@@ -147,6 +154,36 @@ func validateConfig(cfg config) error {
 			return err
 		}
 	}
+	closureNames := make(map[string]struct{}, len(cfg.ClosureRules))
+	for _, rule := range cfg.ClosureRules {
+		if strings.TrimSpace(rule.Name) == "" || len(rule.Roots) == 0 || len(rule.Forbidden) == 0 {
+			return errors.New("each closure rule requires name, roots, and forbidden prefixes")
+		}
+		if _, duplicate := closureNames[rule.Name]; duplicate {
+			return fmt.Errorf("duplicate closure rule %q", rule.Name)
+		}
+		closureNames[rule.Name] = struct{}{}
+		roots := make(map[string]struct{}, len(rule.Roots))
+		for _, root := range rule.Roots {
+			if !isWithin(root, cfg.Module) || root == cfg.Module {
+				return fmt.Errorf("closure rule %q root %q must be below module %q", rule.Name, root, cfg.Module)
+			}
+			if _, duplicate := roots[root]; duplicate {
+				return fmt.Errorf("closure rule %q repeats root %q", rule.Name, root)
+			}
+			roots[root] = struct{}{}
+		}
+		prefixes := make(map[string]struct{}, len(rule.Forbidden))
+		for _, denied := range rule.Forbidden {
+			if strings.TrimSpace(denied.Path) == "" || strings.TrimSpace(denied.Rationale) == "" {
+				return fmt.Errorf("closure rule %q forbidden prefixes require path and rationale", rule.Name)
+			}
+			if _, duplicate := prefixes[denied.Path]; duplicate {
+				return fmt.Errorf("closure rule %q repeats forbidden prefix %q", rule.Name, denied.Path)
+			}
+			prefixes[denied.Path] = struct{}{}
+		}
+	}
 	return nil
 }
 
@@ -212,6 +249,9 @@ func check(ctx context.Context, root string, cfg config) (string, error) {
 		}
 	}
 	if accepted == 0 {
+		if err := checkClosures(ctx, root, cfg); err != nil {
+			return "", err
+		}
 		if pending > 0 {
 			return fmt.Sprintf("no accepted pilot namespaces; %d pending lane(s) remain preregistered, synthetic checks still apply", pending), nil
 		}
@@ -232,15 +272,45 @@ func check(ctx context.Context, root string, cfg config) (string, error) {
 			}
 		}
 	}
-	return fmt.Sprintf("%d accepted pilot lane(s) satisfy reviewed boundaries in %d build context(s)", accepted, len(cfg.Builds)), nil
+	if err := checkClosures(ctx, root, cfg); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d accepted pilot lane(s) and %d closure rule(s) satisfy reviewed boundaries in %d build context(s)", accepted, len(cfg.ClosureRules), len(cfg.Builds)), nil
+}
+
+func checkClosures(ctx context.Context, root string, cfg config) error {
+	for _, build := range cfg.Builds {
+		for _, rule := range cfg.ClosureRules {
+			for _, importPath := range rule.Roots {
+				graph, err := loadPackageGraph(ctx, root, build, importPath, false, false)
+				if err != nil {
+					return fmt.Errorf("closure %s root %s (%s): %w", rule.Name, importPath, build.Name, err)
+				}
+				if err := checkClosure(rule, importPath, graph); err != nil {
+					return fmt.Errorf("closure %s root %s (%s): %w", rule.Name, importPath, build.Name, err)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func loadGraph(ctx context.Context, root string, build buildContext, importPath string) (map[string]listedPackage, error) {
-	args := []string{"list", "-json", "-deps", "-test", "-e"}
+	return loadPackageGraph(ctx, root, build, importPath, true, true)
+}
+
+func loadPackageGraph(ctx context.Context, root string, build buildContext, importPath string, includeTests, recursive bool) (map[string]listedPackage, error) {
+	args := []string{"list", "-json", "-deps", "-e"}
+	if includeTests {
+		args = append(args, "-test")
+	}
 	if len(build.Tags) > 0 {
 		args = append(args, "-tags="+strings.Join(build.Tags, ","))
 	}
-	args = append(args, importPath+"/...")
+	if recursive {
+		importPath += "/..."
+	}
+	args = append(args, importPath)
 	command := exec.CommandContext(ctx, "go", args...)
 	command.Dir = root
 	command.Env = append(os.Environ(), "GOOS="+build.GOOS, "GOARCH="+build.GOARCH, "CGO_ENABLED=0")
@@ -280,6 +350,37 @@ func loadGraph(ctx context.Context, root string, build buildContext, importPath 
 		}
 	}
 	return graph, nil
+}
+
+func checkClosure(rule closureRule, root string, graph map[string]listedPackage) error {
+	if _, ok := graph[root]; !ok {
+		return fmt.Errorf("root is missing from the Go package graph")
+	}
+	queue := []graphStep{{path: root, chain: []string{root}}}
+	visited := make(map[string]bool)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if visited[current.path] {
+			continue
+		}
+		visited[current.path] = true
+		pkg := graph[current.path]
+		imports := append([]string(nil), pkg.Imports...)
+		sort.Strings(imports)
+		for _, imported := range imports {
+			chain := append(append([]string(nil), current.chain...), imported)
+			for _, denied := range rule.Forbidden {
+				if isWithin(imported, denied.Path) {
+					return fmt.Errorf("forbidden cloud dependency %s (%s); chain: %s", imported, denied.Rationale, strings.Join(chain, " -> "))
+				}
+			}
+			if _, exists := graph[imported]; exists {
+				queue = append(queue, graphStep{path: imported, chain: chain})
+			}
+		}
+	}
+	return nil
 }
 
 func formatPackageError(importPath string, problem packageError) error {

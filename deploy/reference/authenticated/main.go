@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,11 +31,13 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/netpolrender"
+	"github.com/goobers/goobers/internal/workerhost"
 )
 
 const systemNS = "goobers-system"
 const apiURL = "https://goobers-api.goobers-system.svc:8080"
 const temporalHost = "temporal-frontend.goobers-temporal:7233"
+const workerTerminationGrace = workerhost.DefaultDrainTimeout + workerhost.ChildSettlementTimeout + 30*time.Second
 
 type options struct {
 	TemporalCodecKeySecret                                                          string
@@ -282,7 +285,7 @@ func controlPlaneResources(o options, cfg *instance.Config, bundle preparedBundl
 
 	// Keep the base's selectors/probes/security posture, but omit its disabled
 	// operator, Windows deployment, example ingress, and unrelated CRD RBAC.
-	for _, name := range []string{"namespace.yaml", "api-rbac.yaml", "api-service.yaml", "worker-service-rbac.yaml"} {
+	for _, name := range []string{"namespace.yaml", "api-rbac.yaml", "api-service.yaml", "api-pdb.yaml", "worker-service-rbac.yaml"} {
 		docs, err := readDocs(filepath.Join(o.Reference, "goobers-system", name))
 		if err != nil {
 			return nil, err
@@ -561,8 +564,10 @@ func deployment(o options, bundle, initCommand string, data map[string][]byte, d
 	d.Spec.Replicas = &one
 	d.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 	p := &d.Spec.Template.Spec
-	seconds := int64(90)
-	p.TerminationGracePeriodSeconds = &seconds
+	if !daemon {
+		seconds := int64(workerTerminationGrace / time.Second)
+		p.TerminationGracePeriodSeconds = &seconds
+	}
 	d.Spec.Template.Annotations = map[string]string{"goobers.dev/config-bundle": bundle}
 	mode := int32(0440)
 	var modes map[string]int32
