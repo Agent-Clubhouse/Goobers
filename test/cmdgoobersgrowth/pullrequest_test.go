@@ -31,7 +31,7 @@ func TestPullRequestGrowthDeclarations(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "files":
-				put(t, root, "cmd/goobers/c.go", "")
+				put(t, root, "cmd/goobers/c.go", "package main\n")
 			default:
 				put(t, root, "cmd/goobers/a.go", "package main\n\n// a\n// added adapter\n")
 			}
@@ -56,7 +56,7 @@ func TestPullRequestGrowthDeclarations(t *testing.T) {
 			if (code != 0) != wantFailure {
 				t.Fatalf("status %d: %s", code, output)
 			}
-			if wantFailure && !strings.Contains(output, "unjustified cmd/goobers growth") {
+			if wantFailure && !strings.Contains(output, "unjustified cmd/* growth") {
 				t.Fatal(output)
 			}
 		})
@@ -75,9 +75,10 @@ func TestConcurrentMainGrowthDoesNotCountAgainstPullRequest(t *testing.T) {
 	// Even the checked-out synthetic merge includes unrelated growth. The gate
 	// must count immutable head objects, rather than this working tree.
 	git(t, root, "-c", "user.name=Gate Test", "-c", "user.email=gate@example.invalid", "-c", "commit.gpgsign=false", "merge", "--no-edit", head)
-	if code, output := invoke(root, "-base-ref", main, "-head-ref", head); code != 0 || !strings.Contains(output, "PR non-test-file-count +0") {
+	if code, output := invoke(root, "-base-ref", main, "-head-ref", head); code != 0 || !strings.Contains(output, "PR cmd/goobers non-test-file-count +0") {
 		t.Fatalf("unrelated growth: %d %s", code, output)
 	}
+
 	if code, output := invoke(root); code != 0 {
 		t.Fatalf("main report failed: %s", output)
 	}
@@ -98,6 +99,19 @@ func TestConcurrentMainGrowthDoesNotCountAgainstPullRequest(t *testing.T) {
 	main = commitAll(t, root)
 	if code, output := invoke(root, "-base-ref", main, "-head-ref", head); code != 0 {
 		t.Fatalf("concurrent merge invalidated declaration: %s", output)
+	}
+}
+
+func TestSecondCommandGrowthRequiresDeclaration(t *testing.T) {
+	root := fixture(t)
+	put(t, root, "cmd/goobers-cloud/main.go", "package main\n\nfunc main() {}\n")
+	base := commitAll(t, root)
+	put(t, root, "cmd/goobers-cloud/main.go", "package main\n\n// added cloud wiring\nfunc main() {}\n")
+	head := commitAll(t, root)
+	code, output := invoke(root, "-base-ref", base, "-head-ref", head)
+	if code == 0 || !strings.Contains(output, "cmd/goobers-cloud non-test-line-count +1") ||
+		!strings.Contains(output, "unjustified cmd/* growth") {
+		t.Fatalf("second command growth was not rejected: status=%d output=%s", code, output)
 	}
 }
 
