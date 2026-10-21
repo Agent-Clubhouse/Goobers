@@ -240,6 +240,11 @@ complexity:
 complexity-update:
 	$(GO) run ./test/complexitygate -update
 
+## complexity-move-update: Move baseline rows for byte-identical function moves from HEAD.
+.PHONY: complexity-move-update
+complexity-move-update:
+	$(GO) run ./test/complexitygate -update-moves
+
 ## flake-policy: Reject anonymous flake skips and workflow retries.
 .PHONY: flake-policy
 flake-policy:

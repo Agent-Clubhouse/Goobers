@@ -643,6 +643,117 @@ func TestRunUpdateRejectsPreEditedBudgetWithoutJustification(t *testing.T) {
 	}
 }
 
+func TestRunMoveUpdateRelocatesOnlyByteIdenticalFunction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	oldPath := filepath.Join(root, "cmd", "goobers", "legacy.go")
+	writeFile(t, oldPath, branchyFunction)
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	writeFile(t, baselinePath, "!ratchet-budget 1\ncmd/goobers/legacy.go\tBranchy\t6\n!body-length-cap 200\n")
+	commitAll(t, root)
+
+	if err := os.Remove(oldPath); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(root, "internal", "controlplane", "legacy.go")
+	writeFile(t, newPath, branchyFunction)
+
+	args := []string{"-root", root, "-hard", "5", "-ratchet", "4", "-report", "3", "-update-moves"}
+	var stdout, stderr bytes.Buffer
+	if code := run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("move update exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	written, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), "cmd/goobers/legacy.go") {
+		t.Fatalf("move update retained old path:\n%s", written)
+	}
+	for _, want := range []string{"internal/controlplane/legacy.go\tBranchy\t6"} {
+		if !strings.Contains(string(written), want) {
+			t.Fatalf("move update omitted %q:\n%s", want, written)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	enforce := []string{"-root", root, "-hard", "5", "-ratchet", "4", "-report", "3"}
+	if code := run(enforce, &stdout, &stderr); code != 0 {
+		t.Fatalf("enforcement after move update exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunMoveUpdateRejectsChangedFunction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	oldPath := filepath.Join(root, "cmd", "goobers", "legacy.go")
+	writeFile(t, oldPath, branchyFunction)
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	originalBaseline := "!ratchet-budget 1\ncmd/goobers/legacy.go\tBranchy\t6\n!body-length-cap 200\n"
+	writeFile(t, baselinePath, originalBaseline)
+	commitAll(t, root)
+
+	if err := os.Remove(oldPath); err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(branchyFunction, "total += value", "total += value + 1", 1)
+	writeFile(t, filepath.Join(root, "internal", "controlplane", "legacy.go"), changed)
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"-root", root, "-hard", "5", "-ratchet", "4", "-report", "3", "-update-moves"}
+	if code := run(args, &stdout, &stderr); code != 1 {
+		t.Fatalf("changed move exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not one unambiguous byte-identical move") {
+		t.Fatalf("stderr = %q, want byte-identical move refusal", stderr.String())
+	}
+	written, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(written) != originalBaseline {
+		t.Fatalf("rejected move changed baseline:\n%s", written)
+	}
+}
+
+func TestRelocatePureMovesCarriesBodyLengthCeiling(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	oldKey := key("cmd/goobers/legacy.go", "Branchy")
+	writeFile(t, filepath.Join(root, "cmd", "goobers", "legacy.go"), branchyFunction)
+	commitAll(t, root)
+
+	newPath := "internal/controlplane/legacy.go"
+	functions, err := scanFile(newPath, []byte(branchyFunction))
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := testBaseline(t, 1, map[string]int{})
+	committed.BodyLengthCap = 10
+	committed.BodyLengths[oldKey] = 15
+	current := committed
+	current.Entries = mapsClone(committed.Entries)
+	current.EntryJustifications = mapsClone(committed.EntryJustifications)
+	current.BodyLengths = mapsClone(committed.BodyLengths)
+	current.BodyJustifications = mapsClone(committed.BodyJustifications)
+
+	moves, err := relocatePureMoves(root, functions, &committed, &current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newKey := key(newPath, "Branchy")
+	if moves[oldKey] != newKey || current.BodyLengths[newKey] != 15 {
+		t.Fatalf("moves = %v, body lengths = %v; want %s -> %s preserving ceiling 15", moves, current.BodyLengths, oldKey, newKey)
+	}
+	if _, retained := current.BodyLengths[oldKey]; retained {
+		t.Fatalf("old body-length row remains after move: %v", current.BodyLengths)
+	}
+}
+
 func TestRunUpdateCannotBaselineNewOversizedFunction(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
