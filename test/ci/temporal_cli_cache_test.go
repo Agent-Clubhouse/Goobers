@@ -38,6 +38,9 @@ func TestTemporalCLIIsAcquiredOnceAndRestoredByTestJobs(t *testing.T) {
 		if job.Env[temporalcli.EnvVar] == "" {
 			t.Errorf("%s does not set %s to the restored binary", name, temporalcli.EnvVar)
 		}
+		if job.RunsOn != "ubuntu-latest" {
+			t.Errorf("%s sets %s but runs on %q; only the Ubuntu acquisition job populates this OS/architecture cache", name, temporalcli.EnvVar, job.RunsOn)
+		}
 		restore := job.step(t, "Restore Temporal CLI")
 		if !strings.HasPrefix(restore.Uses, temporalCacheAction) {
 			t.Errorf("%s restore uses %q, want %s<pin>", name, restore.Uses, temporalCacheAction)
@@ -46,6 +49,9 @@ func TestTemporalCLIIsAcquiredOnceAndRestoredByTestJobs(t *testing.T) {
 			!strings.Contains(restore.with("key"), "runner.arch") ||
 			!strings.Contains(restore.with("key"), "TEMPORAL_CLI_VERSION") {
 			t.Errorf("%s cache key %q must include OS, architecture, and Temporal CLI version", name, restore.with("key"))
+		}
+		if restore.with("fail-on-cache-miss") != "true" {
+			t.Errorf("%s restore must fail on a cache miss instead of exporting a nonexistent %s path", name, temporalcli.EnvVar)
 		}
 	}
 }

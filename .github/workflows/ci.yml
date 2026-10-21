@@ -873,6 +873,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/temporal-cli
           key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+          fail-on-cache-miss: true
 
       - name: Download modules
         timeout-minutes: 12
@@ -1052,6 +1053,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/temporal-cli
           key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+          fail-on-cache-miss: true
 
       - name: Download modules
         timeout-minutes: 12

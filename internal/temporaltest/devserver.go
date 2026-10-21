@@ -2,8 +2,11 @@ package temporaltest
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -28,13 +31,12 @@ const CLIVersion = temporalcli.Version
 // worker/bootstrap paths cannot run in the SDK's in-process test environment)
 // acquire the temporal CLI binary (#3393).
 //
-// If CLIEnvVar is set, the named path is used directly via
-// DevServerOptions.ExistingPath — an offline path that works in an
-// egress-controlled environment and, as a side effect, pins the dev-server
-// version instead of floating on whatever "default" currently resolves to on
-// temporal.download. If CLIEnvVar is unset, the pinned CLI is fetched with
-// bounded retry into the system temporary directory. Either way,
-// StartDevServer logs which mode it used through t.
+// If CLIEnvVar names an existing executable, it is used directly via
+// DevServerOptions.ExistingPath. If that path is missing, the pinned CLI is
+// fetched there with bounded retry; an existing non-executable path fails
+// clearly instead of reaching process startup. If CLIEnvVar is unset, the same
+// downloader uses the system temporary directory. StartDevServer logs which
+// mode it used through t.
 //
 // opts is passed through to the SDK as-is except for the two acquisition
 // fields (ExistingPath and CachedDownload), which StartDevServer overwrites
@@ -42,33 +44,61 @@ const CLIVersion = temporalcli.Version
 func StartDevServer(ctx context.Context, t testing.TB, opts testsuite.DevServerOptions) (*testsuite.DevServer, error) {
 	t.Helper()
 
-	existingPath, mode := resolveDevServerAcquisition(os.Getenv(CLIEnvVar))
-	if existingPath == "" {
-		existingPath = filepath.Join(os.TempDir(), "temporal-cli-"+CLIVersion)
-		if err := temporalcli.Download(ctx, existingPath); err != nil {
+	acquisition, err := resolveDevServerAcquisition(os.Getenv(CLIEnvVar))
+	if err != nil {
+		return nil, err
+	}
+	t.Logf("temporaltest: %s", acquisition.mode)
+	if acquisition.download {
+		if err := temporalcli.Download(ctx, acquisition.path); err != nil {
 			return nil, err
 		}
-		mode = "starting Temporal dev server via retrying cached download (version=" + CLIVersion + ")"
 	}
-	opts.ExistingPath = existingPath
+	opts.ExistingPath = acquisition.path
 	opts.CachedDownload = testsuite.CachedDownload{}
-	t.Logf("temporaltest: %s", mode)
 
 	return testsuite.StartDevServer(ctx, opts)
 }
 
+type devServerAcquisition struct {
+	path     string
+	mode     string
+	download bool
+}
+
 // resolveDevServerAcquisition decides how to acquire the Temporal CLI binary
-// given the raw value of CLIEnvVar, returning the path to use, if any, plus a
-// human-readable description of the mode for logging.
+// given the raw value of CLIEnvVar.
 //
 // Split out from StartDevServer so the decision — the part #3393 is actually
 // about — is testable without spawning a real dev server process or touching
 // the network.
-func resolveDevServerAcquisition(rawEnv string) (existingPath, mode string) {
-	if path := strings.TrimSpace(rawEnv); path != "" {
-		return path, "starting Temporal dev server from existing CLI (" + CLIEnvVar + "=" + path + ")"
+func resolveDevServerAcquisition(rawEnv string) (devServerAcquisition, error) {
+	path := strings.TrimSpace(rawEnv)
+	configured := path != ""
+	if !configured {
+		path = filepath.Join(os.TempDir(), "temporal-cli-"+CLIVersion)
 	}
-	return "",
-		"starting Temporal dev server via cached download (version=" + CLIVersion + "); set " + CLIEnvVar +
-			" to a pre-existing Temporal CLI binary to run offline"
+
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		mode := "starting Temporal dev server via retrying cached download (version=" + CLIVersion + ")"
+		if configured {
+			mode = "configured Temporal CLI is missing; downloading pinned CLI to " + CLIEnvVar + "=" + path
+		}
+		return devServerAcquisition{path: path, mode: mode, download: true}, nil
+	}
+	if err != nil {
+		return devServerAcquisition{}, fmt.Errorf("inspect %s=%q: %w", CLIEnvVar, path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return devServerAcquisition{}, fmt.Errorf("%s=%q is not a regular file", CLIEnvVar, path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return devServerAcquisition{}, fmt.Errorf("%s=%q is not executable", CLIEnvVar, path)
+	}
+	mode := "starting Temporal dev server from cached CLI (version=" + CLIVersion + ")"
+	if configured {
+		mode = "starting Temporal dev server from existing CLI (" + CLIEnvVar + "=" + path + ")"
+	}
+	return devServerAcquisition{path: path, mode: mode}, nil
 }
