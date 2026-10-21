@@ -1,7 +1,9 @@
-# cmd/goobers growth review
+# cmd/* growth review
 
-CI measures each pull request's non-test Go lines and files at its head against
-its merge-base with the target branch. Tests and child packages do not count.
+CI measures each pull request's non-test Go lines and files for every
+`package main` directly below `cmd/` at its head against its merge-base with
+the target branch. Tests and child packages do not count. New commands are
+ratcheted from their first merged skeleton.
 A decrease or unchanged count passes. If either count grows, add a **new** file
 `test/cmdgoobersgrowth/justifications/<issue-or-branch>.md` explaining why the
 command package must grow and why the reusable work belongs there. Review that
