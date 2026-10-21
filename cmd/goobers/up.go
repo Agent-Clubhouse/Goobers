@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -2680,9 +2679,5 @@ func buildPodVerifier(cfg *instance.Config) (podauth.Verifier, error) {
 	if path == "" {
 		return podauth.NewRegistry(), nil
 	}
-	key, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
-	}
-	return podauth.NewSignedKey(bytes.TrimSpace(key))
+	return podauth.LoadSignedKeyFile(path)
 }

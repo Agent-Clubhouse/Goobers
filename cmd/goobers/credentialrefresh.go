@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
@@ -11,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -45,7 +42,10 @@ import (
 //     podauth.MaxCredentialGrantTTL.
 //   - HOW IT ENDS. It expires, and a local grant is revoked when its attempt
 //     returns. With a configured pod-token key, grants remain verifiable
-//     across daemon restarts; otherwise the signing key is process-local.
+//     across daemon restarts. Revocation remains process-local, so restart or
+//     another replica forgets it until shared revocation is added; expiry is
+//     the cross-process bound. Rotating the startup-loaded key invalidates all
+//     outstanding grants.
 //   - HOW FAST. Each grant is rate-limited (grantRefreshBurst, then one per
 //     grantRefreshInterval), and every refresh is journaled with the attempt.
 
@@ -59,7 +59,6 @@ const credentialRefreshMarker = "credentials.refreshed"
 const (
 	grantRefreshBurst    = 6
 	grantRefreshInterval = 20 * time.Second
-	stageGrantKeyDomain  = "goobers/credential-refresh-grant/v1"
 )
 
 // stageGrantIssuer holds the daemon's grant signing key and the per-grant
@@ -105,21 +104,9 @@ func newStageGrantIssuerForKeyFile(endpoint, keyFile string) (*stageGrantIssuer,
 		log.Printf("warning: api.podTokenKeyFile is not configured; credential-refresh grants will not survive a daemon restart")
 		return newStageGrantIssuer(endpoint)
 	}
-	raw, err := os.ReadFile(keyFile)
+	key, err := podauth.LoadDerivedSignedKeyFile(keyFile, podauth.CredentialGrantKeyDomain)
 	if err != nil {
-		return nil, fmt.Errorf("read credential grant source key %s: %w", keyFile, err)
-	}
-	raw = bytes.TrimSpace(raw)
-	if _, err := podauth.NewSignedKey(raw); err != nil {
-		return nil, fmt.Errorf("credential grant source key %s: %w", keyFile, err)
-	}
-	secret, err := hkdf.Key(sha256.New, raw, nil, stageGrantKeyDomain, 32)
-	if err != nil {
-		return nil, fmt.Errorf("derive credential grant key: %w", err)
-	}
-	key, err := podauth.NewSignedKey(secret)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("credential grant source key: %w", err)
 	}
 	return &stageGrantIssuer{
 		key: key, endpoint: endpoint, now: time.Now,
@@ -144,7 +131,7 @@ func (s *daemonCredentialService) withStageGrants(root, listenAddress string, tl
 	}
 	issuer, err := newStageGrantIssuerForKeyFile(endpoint, keyFile)
 	if err != nil {
-		log.Printf("warning: credential-refresh grants are disabled: %v", err)
+		log.Printf("warning: credential-refresh grants and child-workflow stage authority are disabled: %v", err)
 		return s
 	}
 	s.grants = issuer

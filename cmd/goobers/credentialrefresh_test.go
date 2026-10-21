@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/providers"
@@ -98,6 +99,7 @@ func TestCredentialGrantKeyIsSharedAndDomainSeparated(t *testing.T) {
 	if err := os.WriteFile(keyA, rawA, 0600); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := os.WriteFile(keyB, []byte(strings.Repeat("b", 32)), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +134,38 @@ func TestCredentialGrantKeyIsSharedAndDomainSeparated(t *testing.T) {
 	}
 	if _, err := rawPodTokenKey.VerifyCredentialGrant(token); err == nil {
 		t.Fatal("raw pod-token key validated a domain-separated credential grant")
+	}
+}
+
+func TestCredentialGrantSurvivesRestart(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "pod.key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("s", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := &instance.Config{API: instance.APIConfig{PodTokenKeyFile: keyPath}}
+	firstRoot, secondRoot := t.TempDir(), t.TempDir()
+	first := (&daemonCredentialService{
+		config: config,
+		shared: journal.NewRegistryScrubber(),
+	}).withStageGrants(firstRoot, "127.0.0.1:8080", false)
+	second := (&daemonCredentialService{
+		config: config,
+		shared: journal.NewRegistryScrubber(),
+	}).withStageGrants(secondRoot, "127.0.0.1:8080", false)
+	t.Cleanup(func() {
+		unregisterDaemonStageGrants(firstRoot, first)
+		unregisterDaemonStageGrants(secondRoot, second)
+	})
+	grant, err := first.MintStageGrant(
+		runnerStageEnvelope("run-restart", "build", 1),
+		[]string{"repo:push"},
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted, err := second.admitGrant(grant.Token, "repo:push"); err != nil || admitted.RunID != "run-restart" {
+		t.Fatalf("fresh daemon rejected pre-restart grant: %+v, %v", admitted, err)
 	}
 }
 

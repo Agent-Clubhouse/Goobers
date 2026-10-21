@@ -38,7 +38,9 @@ func containedParentHarnessFixture(t *testing.T, selected apiv1.Harness, change 
 		grants, _ := doc["credentials"].([]any)
 		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": string(selected), "token": map[string]any{"env": "PARENT_TEST_MODEL_TOKEN"}})
 		doc["engine"] = map[string]any{"hostPort": "temporal:7233"}
-		doc["api"] = map[string]any{"podTokenKeyFile": filepath.Join(root, "pod-key")}
+		keyPath := filepath.Join(root, "pod-key")
+		writeFileContent(t, keyPath, strings.Repeat("k", 32))
+		doc["api"] = map[string]any{"podTokenKeyFile": keyPath}
 		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": "ghcr.io/example/parent:1", "provides": map[string]any{"os": "linux", "harnesses": []string{string(selected)}, "capabilities": []string{"isolated-parent"}}}}
 		data, err := yaml.Marshal(doc)
 		if err != nil {
