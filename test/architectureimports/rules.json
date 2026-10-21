@@ -43,6 +43,46 @@
       "rationale": "worker construction is outside pilot domain behavior"
     }
   ],
+  "closureRules": [
+    {
+      "name": "local-runtime-excludes-cloud",
+      "roots": [
+        "github.com/goobers/goobers/cmd/goobers",
+        "github.com/goobers/goobers/internal/runner",
+        "github.com/goobers/goobers/internal/localscheduler",
+        "github.com/goobers/goobers/internal/journal",
+        "github.com/goobers/goobers/internal/livejournal",
+        "github.com/goobers/goobers/internal/readmodel",
+        "github.com/goobers/goobers/internal/triggerqueue"
+      ],
+      "forbidden": [
+        {
+          "path": "github.com/jackc/pgx",
+          "rationale": "Postgres belongs only to the cloud control-plane implementation"
+        },
+        {
+          "path": "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob",
+          "rationale": "object-storage clients belong only to the cloud control-plane implementation"
+        },
+        {
+          "path": "github.com/aws/aws-sdk-go",
+          "rationale": "S3 clients belong only to a future cloud object-store implementation"
+        },
+        {
+          "path": "github.com/aws/aws-sdk-go-v2",
+          "rationale": "S3 clients belong only to a future cloud object-store implementation"
+        },
+        {
+          "path": "github.com/minio/minio-go",
+          "rationale": "S3-compatible clients belong only to a future cloud object-store implementation"
+        },
+        {
+          "path": "github.com/goobers/goobers/internal/cloud",
+          "rationale": "local runtimes must not depend on cloud-only packages"
+        }
+      ]
+    }
+  ],
   "lanes": [
     {
       "path": "github.com/goobers/goobers/internal/docchurn",
