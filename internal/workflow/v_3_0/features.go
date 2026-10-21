@@ -1386,6 +1386,11 @@ func addParallelFeatures(used featureSet, parallel apiv1.Parallel) {
 // FeaturesForGoober returns registry metadata for the DSL features used by
 // spec. VER-2 consumes the returned levels to enforce compatibility policy.
 func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
+	for _, server := range spec.MCPServers {
+		if server.Required != nil {
+			return nil, fmt.Errorf("goober spec.mcpServers.required requires dslVersion %q", "3.1")
+		}
+	}
 	used := featureSet{}
 	used.add(featureGooberGaggle, featureGooberRole, featureGooberInstructions)
 	if spec.DisplayName != "" {

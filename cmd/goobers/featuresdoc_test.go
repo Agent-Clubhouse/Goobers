@@ -164,7 +164,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"GooberSpec.Capabilities":             {"goober.spec.capabilities"},
 		"GooberSpec.Skills":                   {"goober.spec.skills"},
 		"GooberSpec.Tools":                    {"goober.spec.tools"},
-		"GooberSpec.MCPServers":               {"goober.spec.mcpServers"},
+		"GooberSpec.MCPServers":               {"goober.spec.mcpServers", "goober.spec.mcpServers.required"},
 		"GooberSpec.PolicyActions":            {"goober.spec.policyActions"},
 		"GooberSpec.ConditionalPolicyActions": {"goober.spec.conditionalPolicyActions"},
 		"GooberSpec.ScaleFactor":              {"goober.spec.scaleFactor"},

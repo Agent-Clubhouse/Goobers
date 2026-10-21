@@ -118,6 +118,7 @@ func AllFeatures() []Feature {
 	for _, feature := range v31ArtifactFeatures() {
 		merge(feature)
 	}
+	merge(v31MCPRequiredFeature())
 	features = append(features, childWorkflowFeatures()...)
 	features = append(features, fanOutFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
@@ -293,6 +294,7 @@ func binaryLayerFeatureForDSL(id FeatureID, since string, versions ...string) Fe
 const v31InitialFeatureVersion = "v0.5.0"
 
 const (
+	featureGooberMCPServersRequired    FeatureID = "goober.spec.mcpServers.required"
 	featureTaskArtifactSlots           FeatureID = "task.artifactSlots"
 	featureTaskArtifactSlotsName       FeatureID = "task.artifactSlots.name"
 	featureTaskArtifactSlotsMediaType  FeatureID = "task.artifactSlots.mediaType"
@@ -344,6 +346,21 @@ func v31ArtifactFeatures() []Feature {
 		})
 	}
 	return features
+}
+
+func v31MCPRequiredFeature() Feature {
+	return Feature{
+		ID:           featureGooberMCPServersRequired,
+		Level:        SupportPreview,
+		SinceVersion: supportmatrix.NextPlannedRelease,
+		History: []SupportTransition{{
+			Level: SupportPreview, SinceVersion: supportmatrix.NextPlannedRelease,
+		}},
+		DSLVersions: []DSLFeatureSupport{{
+			Version: supportmatrix.V31DSLVersion,
+			Level:   SupportPreview,
+		}},
+	}
 }
 
 // FeaturesForGoober resolves features used by a goober for a pinned definition.
@@ -666,7 +683,20 @@ func featuresForV31Gaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 }
 
 func featuresForV31Goober(spec apiv1.GooberSpec) ([]Feature, error) {
-	return featuresForV30Goober(spec)
+	legacy := spec
+	legacy.MCPServers = append([]apiv1.MCPServer(nil), spec.MCPServers...)
+	requiredDeclared := false
+	for i := range legacy.MCPServers {
+		if legacy.MCPServers[i].Required != nil {
+			requiredDeclared = true
+			legacy.MCPServers[i].Required = nil
+		}
+	}
+	features, err := featuresForV30Goober(legacy)
+	if err != nil || !requiredDeclared {
+		return features, err
+	}
+	return append(features, v31MCPRequiredFeature()), nil
 }
 
 func checkV31FeatureSupport(features []Feature, allowPreview bool) []FeatureDiagnostic {

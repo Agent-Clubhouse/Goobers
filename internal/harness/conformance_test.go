@@ -12,6 +12,8 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 )
 
+func mcpRequiredFlag(value bool) *bool { return &value }
+
 // This file is the conformance suite #2776 asks for: every capability
 // dimension that's diverged silently between adapters in the past (tools
 // allowlist #1471, goobers-io #2774, declared mcpServers #1492) gets one
@@ -206,8 +208,9 @@ func TestConformanceMCPServersMaterializeAndAreReachable(t *testing.T) {
 				CompletionPath: DefaultResultPath,
 				Credentials:    creds,
 				MCPServers: []apiv1.MCPServer{{
-					Name:    "context",
-					Command: "context-server",
+					Name:     "context",
+					Required: mcpRequiredFlag(false),
+					Command:  "context-server",
 					CredentialRefs: []apiv1.MCPCredentialRef{
 						{Capability: "contents:read", Env: "CONTEXT_TOKEN"},
 					},

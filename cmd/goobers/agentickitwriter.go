@@ -148,6 +148,7 @@ func (w agenticKitWriter) buildSnapshotKit(l instance.Layout, snapshot *workerCo
 	if !ok {
 		return nil, fmt.Errorf("goober %q is not defined in gaggle %q", env.Goober, env.Gaggle)
 	}
+	spec = materializeAgenticKitGoober(set, env, spec)
 	scoped := map[string]apiv1.GooberSpec{env.Goober: spec}
 
 	instructions, err := snapshot.instructionsFor(scoped)
@@ -212,4 +213,16 @@ func (w agenticKitWriter) buildSnapshotKit(l instance.Layout, snapshot *workerCo
 
 		RequiredMCPSettleTimeout: cfg.Runner.RequiredMCPSettleTimeout,
 	}, nil
+}
+
+func materializeAgenticKitGoober(set *instance.ConfigSet, env apiv1.InvocationEnvelope, spec apiv1.GooberSpec) apiv1.GooberSpec {
+	for i := range set.Workflows {
+		candidate := &set.Workflows[i]
+		if candidate.Name == env.WorkflowID && candidate.Spec.Gaggle == env.Gaggle {
+			return workflow.MaterializeGooberForDefinition(workflow.Definition{
+				Name: candidate.Name, DSLVersion: candidate.DSLVersion, Spec: candidate.Spec,
+			}, spec)
+		}
+	}
+	return spec
 }

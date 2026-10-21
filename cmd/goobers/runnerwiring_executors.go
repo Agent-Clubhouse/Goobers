@@ -569,6 +569,8 @@ type agenticExecutorInput struct {
 	SecretRegistrar  runner.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
 	ChildWorkflows   harness.ChildWorkflowAccessProvider
+	MCPServers       []apiv1.MCPServer
+	MCPServersSet    bool
 
 	// Local runner only; worker pods do not inherit daemon-host paths.
 	GuardedCredentialPaths []string
@@ -578,6 +580,9 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 	spec, ok := input.Goobers[input.GooberName]
 	if !ok {
 		return nil, fmt.Errorf("goober %q not found in config", input.GooberName)
+	}
+	if input.MCPServersSet {
+		spec.MCPServers = append([]apiv1.MCPServer(nil), input.MCPServers...)
 	}
 	harnessName := spec.Harness
 	if harnessName == "" {

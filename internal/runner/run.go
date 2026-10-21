@@ -478,6 +478,9 @@ type Config struct {
 	// NewAgentic constructs a named goober's executor (invoke.Goober) for this
 	// run. Required if any workflow has an agentic task or agentic gate.
 	NewAgentic NewAgenticFunc
+	// NewAgenticWithMCPServers is the version-aware production constructor.
+	// When set, it takes precedence over NewAgentic.
+	NewAgenticWithMCPServers NewAgenticWithMCPServersFunc
 	// Automated evaluates automated gates (internal/gate, #20) — stateless,
 	// shared across every run. Required if any workflow has an
 	// evaluator=automated gate. gate.NewAutomatedEvaluator() (the default
@@ -1336,14 +1339,21 @@ func (e *executors) deterministic() (invoke.Deterministic, error) {
 	return det, nil
 }
 
-func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
+func (e *executors) agentic(gooberName string, machine *workflow.Machine) (invoke.Goober, error) {
 	if ag, ok := e.agents[gooberName]; ok {
 		return ag, nil
 	}
-	if e.cfg.NewAgentic == nil {
+	if e.cfg.NewAgentic == nil && e.cfg.NewAgenticWithMCPServers == nil {
 		return nil, fmt.Errorf("runner: no NewAgentic configured for goober %q", gooberName)
 	}
-	ag, err := e.cfg.NewAgentic(gooberName, e.rec, e.reg)
+	var ag invoke.Goober
+	var err error
+	if e.cfg.NewAgenticWithMCPServers != nil {
+		spec, _ := machine.Goober(gooberName)
+		ag, err = e.cfg.NewAgenticWithMCPServers(gooberName, spec.MCPServers, e.rec, e.reg)
+	} else {
+		ag, err = e.cfg.NewAgentic(gooberName, e.rec, e.reg)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("runner: construct agentic executor for goober %q: %w", gooberName, err)
 	}
@@ -4106,7 +4116,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		return result, mutations, nil, err
 	case apiv1.TaskAgentic:
-		ag, err := ex.agentic(t.Goober)
+		ag, err := ex.agentic(t.Goober, in.Machine)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
@@ -4782,7 +4792,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		// constructing one entirely rather than resolving credentials and
 		// wiring a Goober that Evaluate is guaranteed not to invoke.
 		if cachedVerdict == nil {
-			ag, aerr := ex.agentic(gooberName)
+			ag, aerr := ex.agentic(gooberName, in.Machine)
 			if aerr != nil {
 				err := fmt.Errorf("runner: gate %q: %w", g.Name, aerr)
 				span.Fail(err)

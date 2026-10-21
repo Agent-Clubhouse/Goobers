@@ -81,6 +81,33 @@ type Machine struct {
 	digest           string
 	artifactBindings map[string]map[string]ArtifactBinding
 	slotEnvelopes    map[string]map[string]string
+	goobers          map[string]apiv1.GooberSpec
+}
+
+// SetGoobers stores the compiler-materialized goober declarations for this
+// pinned definition.
+func (m *Machine) SetGoobers(goobers map[string]apiv1.GooberSpec) {
+	m.goobers = cloneGoobers(goobers)
+}
+
+// Goober returns one compiler-materialized goober declaration.
+func (m *Machine) Goober(name string) (apiv1.GooberSpec, bool) {
+	spec, ok := m.goobers[name]
+	if !ok {
+		return apiv1.GooberSpec{}, false
+	}
+	return *spec.DeepCopy(), true
+}
+
+func cloneGoobers(source map[string]apiv1.GooberSpec) map[string]apiv1.GooberSpec {
+	if source == nil {
+		return nil
+	}
+	out := make(map[string]apiv1.GooberSpec, len(source))
+	for name, spec := range source {
+		out[name] = *spec.DeepCopy()
+	}
+	return out
 }
 
 // ArtifactBinding is the compiler-lowered DSL 3.1 semantic artifact edge for

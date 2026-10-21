@@ -383,6 +383,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
+		MCPServerFailures:      codexMCPServerFailures(req, result.Stderr),
 	}
 	out.Metrics = parsed.metrics
 	out.RenderedPrompt = []byte(prompt)

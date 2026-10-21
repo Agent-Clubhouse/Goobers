@@ -115,7 +115,12 @@ func (r *copilotControlledRunner) run(ctx context.Context, req ProcessRequest) (
 	if !r.ready {
 		err := r.open(r.runCtx, req)
 		if err == nil {
-			r.readiness, err = probeRequiredMCPSession(ctx, r.session, r.settleTimeout)
+			err = probeRequiredDeclaredMCPSession(ctx, r.session, r.request, r.settleTimeout)
+		}
+		if err == nil {
+			if r.request.GoobersIORegistered || len(r.request.MCPServers) == 0 {
+				r.readiness, err = probeRequiredMCPSession(ctx, r.session, r.settleTimeout)
+			}
 		}
 		if err := readinessReportedError(r.request, r.readiness, err); err != nil {
 			return ProcessResult{ExitCode: -1}, err

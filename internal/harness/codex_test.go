@@ -259,7 +259,7 @@ func TestCodexAdapterMaterializesScopedMCPConfig(t *testing.T) {
 }
 
 func TestCodexGoobersIOOverrideUsesBareServerName(t *testing.T) {
-	overrides := appendCodexStdioOverrides(nil, goobersIOServerName, "goobers", nil, nil, nil)
+	overrides := appendCodexStdioOverrides(nil, goobersIOServerName, "goobers", nil, nil, nil, true)
 	commandOverride := `mcp_servers.goobers-io.command="goobers"`
 	if !slices.Contains(overrides, commandOverride) {
 		t.Fatalf("overrides = %v, want %q", overrides, commandOverride)

@@ -525,6 +525,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `goober.spec.harnessOptions` | 3.1 | ga | preview | dev |
 | `goober.spec.instructions` | 3.1 | ga | preview | dev |
 | `goober.spec.mcpServers` | 3.1 | ga | preview | dev |
+| `goober.spec.mcpServers.required` | 3.1 | preview | preview | v0.6.0 |
 | `goober.spec.model` | 3.1 | ga | preview | dev |
 | `goober.spec.policyActions` | 3.1 | ga | preview | dev |
 | `goober.spec.role` | 3.1 | ga | preview | dev |
@@ -684,6 +685,6 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 3.0 -> 3.1
 
-- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`, `workflow.spec.maps`, `workflow.spec.maps.bindings`, `workflow.spec.maps.failurePolicy`, `workflow.spec.maps.itemTimeoutSeconds`, `workflow.spec.maps.join`, `workflow.spec.maps.maxConcurrent`, `workflow.spec.maps.onFailure`, `workflow.spec.maps.source`, `workflow.spec.maps.task`, `workflow.spec.parallels.branches.optional`, `workflow.spec.parallels.selection`, `workflow.spec.parallels.selection.source`
+- Added: `goober.spec.mcpServers.required`, `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`, `workflow.spec.maps`, `workflow.spec.maps.bindings`, `workflow.spec.maps.failurePolicy`, `workflow.spec.maps.itemTimeoutSeconds`, `workflow.spec.maps.join`, `workflow.spec.maps.maxConcurrent`, `workflow.spec.maps.onFailure`, `workflow.spec.maps.source`, `workflow.spec.maps.task`, `workflow.spec.parallels.branches.optional`, `workflow.spec.parallels.selection`, `workflow.spec.parallels.selection.source`
 - Removed: none
 - Level changes: none

@@ -1152,7 +1152,7 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			var creds *credentials.Set
 			if tc.externalMCP {
 				envelope = testEnvelope(workspace, append([]string{"agent:model"}, tc.capabilities...)...)
-				mcpServers = []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
+				mcpServers = []apiv1.MCPServer{{Name: "context", Required: mcpRequiredFlag(false), Command: "context-server"}}
 				creds = mcpTestCredentials(t, "agent:model", "model-token")
 			}
 

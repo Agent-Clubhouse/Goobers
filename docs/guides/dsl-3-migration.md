@@ -163,3 +163,18 @@ the workflow. Existing positional artifacts remain supported; the migrator does
 not infer named artifact slots or consumer bindings from output names. New 3.1
 features are opt-ins. Apply the preview acknowledgement rule above when required
 by the binary's lifecycle policy.
+
+DSL 3.1 also makes external MCP startup policy uniform across harnesses.
+`mcpServers[].required` is available only at this pin, and omission means
+required: a failed registration or startup stops the stage before its model
+turn. Set `required: false` for a best-effort server whose failure should be a
+journal warning. DSL 2.0 and 3.0 reject the explicit field and preserve their
+historical harness-specific omitted-field behavior. Set `dslVersion: "3.1"` to
+opt into uniform MCP requiredness; migration does not silently change older
+pins.
+
+Claude Code does not emit its `system/init` MCP status until after the prompt
+has been submitted. For a required server failure, Goobers aborts as soon as
+that init status arrives, before accepting an assistant or tool event; the
+prompt may already have been submitted when the abort fires. No separate MCP
+server or tool probe is launched.

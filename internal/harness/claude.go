@@ -547,7 +547,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	}
 	defer agentTelemetry.finish(&out, &runErr)
 
-	runner := withUnobservableMCP(c.runner(), req)
+	runner := withUnobservableMCP(&claudeRequiredMCPRunner{base: c.runner(), request: req}, req)
 	started := time.Now()
 	initialCapture := &claudeTerminalCapture{}
 	captures := []*claudeTerminalCapture{initialCapture}
