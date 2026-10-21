@@ -35,6 +35,7 @@ var dependencyAcquisitionDecisions = map[string]dependencyAcquisition{
 	"mkdir":          {reason: "local coreutils operation"},
 	"mktemp":         {reason: "local coreutils operation"},
 	"mvn":            {kind: "maven-packages", reason: "Java fixture executes Maven verify"},
+	"node":           {reason: "preinstalled interpreter; deterministic Copilot SDK fixture uses only Node.js built-ins and the local MCP server"},
 	"powershell.exe": {reason: "preinstalled Windows PowerShell 5.1; Windows-only image fixtures use local files and offline metadata"},
 	"ps":             {reason: "local process inspection"},
 	"python3":        {reason: "interpreter only; the python-service fixture's pytest set is provisioned before the tier (python-packages), never by the test"},

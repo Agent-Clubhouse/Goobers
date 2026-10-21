@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"gopkg.in/yaml.v3"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationCodexParentAuthorsChildThroughRealWorkers(t *testing.T) {
@@ -35,7 +36,7 @@ func qualificationParentHarness(t *testing.T) string {
 	switch value := os.Getenv("GOOBERS_PARENT_QUALIFICATION_HARNESS"); value {
 	case "", "claude-code":
 		return "claude-code"
-	case "codex":
+	case "codex", "copilot":
 		return value
 	default:
 		t.Fatal("unsupported qualification harness")
@@ -47,11 +48,20 @@ func installQualificationParentProbe(t *testing.T, bin string) {
 	t.Helper()
 	command := "claude"
 	key := "sk-ant-qualification-model-only"
-	if qualificationParentHarness(t) == "codex" {
+	switch qualificationParentHarness(t) {
+	case "codex":
 		command, key = "codex", "sk-qualification-model-only"
+	case "copilot":
+		command, key = "copilot", "qualification-copilot-model-token"
 	}
 	// Only preflight may execute on the host. Inference must reach the pod.
 	probe := "#!/bin/sh\ncase \"$*\" in\n --version) echo '2.1.0 (qualification preflight)' ;;\n 'auth status') echo '{\"loggedIn\":true}' ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
+	if command == "copilot" {
+		// Copilot's native authentication check is a fixed prompt. The fixture
+		// answers only that exact preflight, including the export opt-out and
+		// name-kill deny flags; arbitrary host inference fails.
+		probe = "#!/bin/sh\ncase \"$*\" in\n --version) echo 'GitHub Copilot CLI 1.0.98 (qualification preflight)' ;;\n --help) echo 'Usage: copilot [OPTIONS] [COMMAND]\nOptions:\n      --allow-all-tools\n      --log-level <level>\n      --log-dir <directory>\n      --session-id <id>\n      --no-remote-export' ;;\n '-p Reply with exactly: ok --allow-all-tools --available-tools= --no-remote-export --deny-tool=shell(pkill) --deny-tool=shell(killall) --deny-tool=shell(/usr/bin/pkill) --deny-tool=shell(/usr/bin/killall) --deny-tool=shell(/bin/pkill) --deny-tool=shell(/bin/killall) --deny-tool=shell(/usr/bin/env pkill) --deny-tool=shell(/usr/bin/env killall)') echo ok ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
+	}
 	if err := os.WriteFile(filepath.Join(bin, command), []byte(probe), 0700); err != nil {
 		t.Fatal(err)
 	}

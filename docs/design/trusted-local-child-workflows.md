@@ -1,6 +1,9 @@
 # Design: trusted-local child execution
 
-> Status: draft — execution extension; implementation and qualification pending
+> Status: implemented — macOS/Linux preview; Windows strict custody refused
+> Delivered-by: #7663
+> Scope-delta: Windows runtime custody remains unqualified and refused; live harness qualification is separate.
+> Verified: cf1da99bc858edde5284a2233acb4e88ccf03556 (2026-10-20)
 
 Agent-authored DSL 3.1 children must work on a daemon host without Temporal,
 pods, or distributed runners. Local and distributed execution share admission,
@@ -12,6 +15,10 @@ an admitted attempt executes; it must not change the child's authority.
 `trusted-local` names a daemon-owned execution provider, not a new DSL field or
 an additional instance flag. Select it when the resolved instance runner
 inventory contains only self placement and engine projection is disabled.
+The existing workflow annotation
+`metadata.annotations.goobers.dev/allow-preview-features: "true"` is the explicit
+opt-in; child execution remains off without it. See the
+[operational guide](../guides/trusted-local-child-workflows.md).
 An explicit remote placement still fails ordinary placement admission. A
 configured distributed runner that is offline does not enable local fallback.
 Instances with distributed runners retain the contained worker provider.
@@ -115,9 +122,11 @@ The parent observes the same result and disposition contract in either mode.
 
 ## Delivery and validation
 
-Land this design note first for review. Implementation then connects the local
-parent lifecycle and child factory, including the credential boundary, default
-serialization and workspace custody, with focused hermetic tests.
+[#7663](https://github.com/Agent-Clubhouse/Goobers/pull/7663) delivered the local
+parent lifecycle and child factory, including credential binding, default
+serialization and workspace custody. Hermetic production-composition journeys
+passed on macOS and in hosted Linux CI. These use fake model/forge adapters;
+live harness releases and models require separate qualification.
 
 Tests must exercise the production composition with fake model/forge adapters:
 self-only selection, no fallback from remote placement, accepted child execution,

@@ -1,11 +1,12 @@
 # Contained child worker transport
 
-This guide covers the distributed provider. The proposed
-[trusted-local provider](../design/trusted-local-child-workflows.md) executes
+This guide covers the distributed provider. The preview
+[trusted-local provider](trusted-local-child-workflows.md) executes
 children on a self-only daemon host without Temporal or pods, under the same
 result and custody contract and the local OS account's trust boundary. It is
 selected from instance configuration, never as a fallback for failed distributed
-placement. Implementation and local qualification are pending.
+placement. It is available on macOS/Linux with the existing workflow preview
+annotation; Windows strict custody remains refused.
 
 ## Availability
 
@@ -363,6 +364,47 @@ placement tests include Copilot. The hermetic
 transport cancellation and recovery of an uncertain worker, including dirty Git
 state, transcript custody and usage retention. The Kubernetes journeys above
 remain separate from this adapter qualification.
+
+`TestIntegrationCopilotParentSDKAuthoringJourney` runs three fresh sessions
+through the actual Copilot adapter and SDK, using
+`cmd/goobers/testdata/qualification-copilot.cjs` as the headless CLI/model
+substitute. Readiness and model turns share one real stdio mcpio subprocess per
+session. Native permission requests gate every child tool call. The shared
+Claude/Codex journey authors the source, validates and starts it, yields, resolves
+the exact returned result on resumption, yields again, and completes only after
+acknowledgement. The test checks stable source/identity, completed-session usage
+and final response completion. Its daemon HTTP responses and backend merge are simulated;
+it does not prove durable scheduling or physical worker custody. The separate
+cancellation-accounting fix landed in
+[#7656](https://github.com/Agent-Clubhouse/Goobers/pull/7656); this journey checks
+completed-session usage, not that cancellation path.
+
+Run this deterministic test with Node.js installed; it needs no model token,
+Docker daemon, Kubernetes cluster or Temporal service:
+
+```sh
+go test -race -tags=integration -timeout=30m ./internal/harness \
+  -run '^TestIntegrationCopilotParentSDKAuthoringJourney$'
+```
+
+The corresponding contained-pod journeys reuse the Codex qualification harness.
+Install `qualification-copilot.cjs` as executable `/usr/local/bin/copilot` in the
+worker image, with `qualification-claude.cjs` beside it under that exact filename
+(the Copilot fixture imports the shared journey). The host fixture permits only
+version, public help and the exact native authentication preflight; inference must reach the
+worker. With the disposable cluster/image/Temporal settings described above:
+
+```sh
+go test -race -tags=integration ./cmd/goobers -count=1 -timeout=25m -v \
+  -run '^(TestIntegrationCopilotParentAuthorsChildThroughRealWorkers|TestIntegrationCopilotParentCancellationStopsAuthoredChild|TestIntegrationContainedParentSurvivesDaemonProcessLossCopilot)$'
+```
+
+**Qualification GAP:** these Copilot contained-pod journeys are compiled but have
+not been executed against a live disposable cluster. Their merge, active-child
+cancellation and daemon-loss recovery claims require that run. The deterministic
+SDK fixture does not qualify a live Copilot CLI release or model. The
+[trusted-local composition](trusted-local-child-workflows.md) has landed, but
+this SDK-only test does not qualify a Copilot-specific full-daemon journey.
 
 An optional installed-CLI check creates parent and ordinary SDK sessions against
 the built Goobers stdio server, verifies their actual MCP inventories, and closes

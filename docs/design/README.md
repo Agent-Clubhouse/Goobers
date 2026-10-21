@@ -14,9 +14,9 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 16 |
+| `draft` | 15 |
 | `approved` | 25 |
-| `implemented` | 29 |
+| `implemented` | 30 |
 | `superseded` | 4 |
 | `historical` | 6 |
 | **Total** | **80** |
@@ -84,7 +84,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |
 | [Decision: dedicated workflows own repository and test-suite quality](test-suite-quality-workflow.md) | `implemented` | — | — | #1568, #1489 | — | — | — |
 | [Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels](trust-boundary-hardening.md) | `approved` | — | — | — | — | — | — |
-| [Design: trusted-local child execution](trusted-local-child-workflows.md) | `draft` | — | — | — | — | — | — |
+| [Design: trusted-local child execution](trusted-local-child-workflows.md) | `implemented` | — | — | #7663 | — | — | cf1da99bc858edde5284a2233acb4e88ccf03556 (2026-10-20) |
 | [Design: Tutor v2 — version-aware, instance-scoped process self-improvement](tutor-redesign.md) | `implemented` | — | — | #1192, #1193, #1194, #1213, #1214, #1215, #1216, #1217, #1218, #1219 | — | — | — |
 | [Design: Unattended operation — an instance that survives a week without an operator](unattended-operation.md) | `draft` | — | — | — | — | — | — |
 | [Unified index-backed run reads](unified-index-backed-run-reads.md) | `superseded` | — | — | — | — | [`portal-read-architecture.md`](portal-read-architecture.md) | — |
