@@ -108,7 +108,7 @@ func releasePullRequestClaimsForRun(l instance.Layout, log *journal.InstanceLog,
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
 	}
-	return ledger.Locked(claimContext(), claimLockOperationPRRelease, func(tx claimsclient.Ledger) error {
+	return claimsclient.Sequence(claimContext(), ledger, claimLockOperationPRRelease, func(tx claimsclient.Ledger) error {
 		entries, err := tx.ForRunAll(claimContext(), runID)
 		if err != nil {
 			return fmt.Errorf("read this run's claims: %w", err)
@@ -170,7 +170,7 @@ func claimPullRequestInOrder(
 	defer func() { _ = annotations.Close() }()
 
 	var selected *providers.PullRequestSummary
-	err = ledger.Locked(claimContext(), claimLockOperationPRAcquire, func(tx claimsclient.Ledger) error {
+	err = claimsclient.Sequence(claimContext(), ledger, claimLockOperationPRAcquire, func(tx claimsclient.Ledger) error {
 		for _, candidate := range candidates {
 			// The claim namespace must carry the repository's actual
 			// provider (#3649): hardcoding github let an ADO or Gitea

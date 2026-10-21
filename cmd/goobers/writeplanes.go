@@ -125,30 +125,19 @@ func (s *daemonClaimService) Acquire(ctx context.Context, request httpapi.ClaimR
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
-	var response httpapi.ClaimResponse
-	err = s.withLedger(claimLockOperationAPIAcquire, request, func(ledger *localscheduler.ClaimLedger) error {
-		client, err := s.coordinatedLedger(ledger)
-		if err != nil {
-			return err
-		}
-		ok, holder, err := client.ClaimScoped(ctx, claimKey(request), request.RunID, request.Workflow, lease)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			response = httpapi.ClaimResponse{Ok: false, Holder: holder}
-			s.journalRefusal(request, holder)
-			return nil
-		}
-		entry, held := ledger.LookupScoped(claimKey(request))
-		if !held || entry.RunID != request.RunID {
-			return fmt.Errorf("acquired claim is no longer held")
-		}
-		expires := entry.ExpiresAt
-		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
-		return nil
-	})
-	return response, err
+	client, err := s.coordinatedLedger(claimLockOperationAPIAcquire, request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	ok, holder, err := client.ClaimScoped(ctx, claimKey(request), request.RunID, request.Workflow, lease)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if !ok {
+		s.journalRefusal(request, holder)
+		return httpapi.ClaimResponse{Ok: false, Holder: holder}, nil
+	}
+	return s.currentAdmissionResponse(ctx, client, request)
 }
 
 // Renew extends the requesting run's own lease. Ok=false reports a claim
@@ -160,11 +149,11 @@ func (s *daemonClaimService) Renew(ctx context.Context, request httpapi.ClaimReq
 		return httpapi.ClaimResponse{}, err
 	}
 	var response httpapi.ClaimResponse
+	var shared *localscheduler.ClaimEntry
 	err = s.withLedger(claimLockOperationAPIRenew, request, func(ledger *localscheduler.ClaimLedger) error {
 		if entry, held := ledger.LookupScoped(claimKey(request)); held && !entry.SharedDeadline.IsZero() {
-			var err error
-			response, err = s.renewSharedClaim(ctx, ledger, request, entry, lease)
-			return err
+			shared = &entry
+			return nil
 		}
 		ok, err := ledger.RenewEntry(localscheduler.ClaimEntry{
 			Gaggle:     request.Gaggle,
@@ -189,6 +178,9 @@ func (s *daemonClaimService) Renew(ctx context.Context, request httpapi.ClaimReq
 		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
 		return nil
 	})
+	if err == nil && shared != nil {
+		return s.renewSharedClaim(ctx, request, *shared, lease)
+	}
 	return response, err
 }
 
@@ -213,25 +205,30 @@ func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpa
 			"gaggle and provider must be given together for a release of every claim the run holds", nil)
 	}
 	var released []httpapi.ClaimEntry
-	err := s.withLedger(claimLockOperationAPIRelease, request, func(ledger *localscheduler.ClaimLedger) error {
-		client, err := s.coordinatedLedger(ledger)
-		if err != nil {
-			return err
+	client, err := s.coordinatedLedger(claimLockOperationAPIRelease, request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	entries, err := client.ForRunAll(ctx, request.RunID)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	for _, entry := range entries {
+		if entry.IsPublicationClaim() {
+			continue
 		}
-		for _, entry := range ledger.ForRunAll(request.RunID) {
-			if entry.IsPublicationClaim() {
-				continue
-			}
-			if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
-				continue
-			}
-			if err := client.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), request.RunID, request.Reason); err != nil {
-				return err
-			}
+		if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
+			continue
+		}
+		didRelease, err := client.ReleaseExpected(ctx, entry, request.Reason)
+		if err != nil {
+			return httpapi.ClaimResponse{}, err
+		}
+		if didRelease {
 			released = append(released, claimEntryWire(entry))
 		}
-		return nil
-	})
+	}
+
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
@@ -337,22 +334,23 @@ func plainPathElement(value string) bool {
 func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 	verification := entry.Verification.Report()
 	return httpapi.ClaimEntry{
-		Verification:   httpapi.ClaimVerification{State: verification.State, ObservedAt: verification.ObservedAt, ProviderRunID: verification.ProviderRunID},
-		ItemID:         entry.ItemID,
-		Gaggle:         entry.Gaggle,
-		Provider:       entry.Provider,
-		ExternalID:     entry.ExternalID,
-		RunID:          entry.RunID,
-		Workflow:       entry.Workflow,
-		ClaimedAt:      entry.ClaimedAt,
-		RenewedAt:      entry.RenewedAt,
-		ExpiresAt:      entry.ExpiresAt,
-		ReleasePending: entry.ReleasePending,
-		SharedDeadline: entry.SharedDeadline,
-		SharedRevoked:  entry.SharedRevoked,
-		SharedOwner:    entry.SharedOwner,
-		ReleasedAt:     entry.ReleasedAt,
-		ReleaseReason:  entry.ReleaseReason,
+		Verification:           httpapi.ClaimVerification{State: verification.State, ObservedAt: verification.ObservedAt, ProviderRunID: verification.ProviderRunID},
+		ItemID:                 entry.ItemID,
+		Gaggle:                 entry.Gaggle,
+		Provider:               entry.Provider,
+		ExternalID:             entry.ExternalID,
+		RunID:                  entry.RunID,
+		Workflow:               entry.Workflow,
+		ClaimedAt:              entry.ClaimedAt,
+		RenewedAt:              entry.RenewedAt,
+		ExpiresAt:              entry.ExpiresAt,
+		ReleasePending:         entry.ReleasePending,
+		SharedAdmissionPending: entry.SharedAdmissionPending,
+		SharedDeadline:         entry.SharedDeadline,
+		SharedRevoked:          entry.SharedRevoked,
+		SharedOwner:            entry.SharedOwner,
+		ReleasedAt:             entry.ReleasedAt,
+		ReleaseReason:          entry.ReleaseReason,
 	}
 }
 
@@ -425,19 +423,14 @@ func (s *daemonClaimService) Settle(ctx context.Context, request httpapi.ClaimRe
 }
 
 func (s *daemonClaimService) release(ctx context.Context, operation string, request httpapi.ClaimRequest, reason claimrelease.Reason) (httpapi.ClaimResponse, error) {
-	var response httpapi.ClaimResponse
-	err := s.withLedger(operation, request, func(ledger *localscheduler.ClaimLedger) error {
-		client, err := s.coordinatedLedger(ledger)
-		if err != nil {
-			return err
-		}
-		if err := client.ReleaseScoped(ctx, claimKey(request), request.RunID, reason); err != nil {
-			return err
-		}
-		response = httpapi.ClaimResponse{Ok: true}
-		return nil
-	})
-	return response, err
+	client, err := s.coordinatedLedger(operation, request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if err := client.ReleaseScoped(ctx, claimKey(request), request.RunID, reason); err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	return httpapi.ClaimResponse{Ok: true}, nil
 }
 
 // journalRefusal records the losing side of a claim race. Best-effort like

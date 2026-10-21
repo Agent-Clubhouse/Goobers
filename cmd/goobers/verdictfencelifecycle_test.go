@@ -81,7 +81,7 @@ func TestReviewPublicationQuarantineNotExtendedByLiveRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = renewCoordinatedLiveClaims(t.Context(), plane.layout, durable, map[string]bool{"first": true}, time.Hour, nil)
+	_, err = renewCoordinatedLiveClaims(t.Context(), plane.layout, durable.Snapshot(), map[string]bool{"first": true}, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

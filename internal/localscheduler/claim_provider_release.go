@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"errors"
+	"time"
 
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/journal"
@@ -23,6 +24,10 @@ func claimEntryStorageKey(entry ClaimEntry) (string, error) {
 // A crashed attempt leaves custody in claims.json; the next lock holder retries
 // cleanup before admitting another owner, even if the execution lease expired.
 func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
+	return l.beginProviderRelease(expected, false, time.Time{})
+}
+
+func (l *ClaimLedger) beginProviderRelease(expected ClaimEntry, shared bool, expiredAt time.Time) (bool, error) {
 	if expected.IsPublicationClaim() {
 		return false, errors.New("publication custody cannot use provider cleanup")
 	}
@@ -33,10 +38,16 @@ func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	current, held := l.entries[key]
-	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) {
+	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || current.SharedOwner != expected.SharedOwner {
 		return false, nil
 	}
-	if !current.SharedDeadline.IsZero() {
+	// A same-owner renewal preserves the incarnation but changes its deadline.
+	// Check eligibility atomically with reservation while the caller holds both
+	// the transition lock and the claims lock. Pending release then blocks renewal.
+	if !expiredAt.IsZero() && current.ExpiresAt.After(expiredAt) {
+		return false, nil
+	}
+	if !current.SharedDeadline.IsZero() != shared {
 		return false, errors.New("shared claims require coordinated release")
 	}
 	if current.ReleasePending {
@@ -44,6 +55,7 @@ func (l *ClaimLedger) BeginProviderRelease(expected ClaimEntry) (bool, error) {
 	}
 	updated := current
 	updated.ReleasePending = true
+	updated.SharedAdmissionPending = false
 	previous, hadHistory := l.historyEntry(current.RunID, key)
 	l.entries[key] = updated
 	l.recordHistory(key, updated)
@@ -66,7 +78,7 @@ func (l *ClaimLedger) FinishProviderRelease(expected ClaimEntry, reason claimrel
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	current, held := l.entries[key]
-	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || !current.ReleasePending {
+	if !held || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || current.SharedOwner != expected.SharedOwner || !current.ReleasePending {
 		return false, nil
 	}
 	if current.IsPublicationClaim() {
@@ -83,6 +95,12 @@ func (l *ClaimLedger) FinishProviderRelease(expected ClaimEntry, reason claimrel
 		l.restoreHistory(current.RunID, key, previous, hadHistory)
 		return false, err
 	}
-	l.journalRelease(journal.EventClaimReleased, released, reason, nil)
+	event := journal.EventClaimReleased
+	var details map[string]any
+	if reason.Disposition == claimrelease.ForceReleased {
+		event = journal.EventClaimForceReleased
+		details = map[string]any{"actor": reason.Actor}
+	}
+	l.journalRelease(event, released, reason, details)
 	return true, nil
 }

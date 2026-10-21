@@ -101,7 +101,7 @@ func TestReconciliationSharedLeaseCannotReleaseOrdinaryClaim(t *testing.T) {
 	resolver := stageClaimResolver{pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
 		return store, nil
 	}}}
-	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	file, err := fileClaimLedgerWithResolver(layout, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestPinnedResolverCoordinatesFileClaimAndTerminalRelease(t *testing.T) {
 		}
 		return store, nil
 	}}
-	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	file, err := fileClaimLedgerWithResolver(layout, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
