@@ -862,11 +862,25 @@ func withClaimLockThreshold(lockPath, operation string, slowThreshold time.Durat
 }
 
 func withClaimLockForRun(lockPath, operation, gaggle, runID string, fn func() error) error {
+	return withClaimLockForRunContext(context.Background(), lockPath, operation, gaggle, runID, fn)
+}
+
+func withClaimLockForRunContext(ctx context.Context, lockPath, operation, gaggle, runID string, fn func() error) error {
 	timeout, err := claimsLockTimeoutForPath(lockPath)
 	if err != nil {
 		return err
 	}
-	return withClaimLockBounds(lockPath, operation, timeout, claimLockSlowThreshold, claimLockEventContext{
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		margin := min(remaining/10, 250*time.Millisecond)
+		if bounded := remaining - margin; bounded < timeout {
+			timeout = bounded
+		}
+	}
+	if timeout <= 0 {
+		return ctx.Err()
+	}
+	return withClaimLockBoundsContext(ctx, lockPath, operation, timeout, claimLockSlowThreshold, claimLockEventContext{
 		Gaggle: gaggle,
 		RunID:  runID,
 	}, fn)
@@ -885,6 +899,10 @@ func claimsLockTimeoutForPath(lockPath string) (time.Duration, error) {
 }
 
 func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time.Duration, eventContext claimLockEventContext, fn func() error) error {
+	return withClaimLockBoundsContext(context.Background(), lockPath, operation, timeout, slowThreshold, eventContext, fn)
+}
+
+func withClaimLockBoundsContext(ctx context.Context, lockPath, operation string, timeout, slowThreshold time.Duration, eventContext claimLockEventContext, fn func() error) error {
 	if operation == "" {
 		return errors.New("claim lock operation is required")
 	}
@@ -893,7 +911,7 @@ func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time
 	}
 
 	waitStarted := time.Now()
-	held, err := acquireClaimLock(lockPath, operation, timeout, waitStarted)
+	held, err := acquireClaimLockContext(ctx, lockPath, operation, timeout, waitStarted)
 	if err != nil {
 		var timeoutErr *claimsLockTimeoutError
 		if !errors.As(err, &timeoutErr) {
@@ -924,6 +942,10 @@ func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time
 }
 
 func acquireClaimLock(lockPath, operation string, timeout time.Duration, started time.Time) (*lock.Handle, error) {
+	return acquireClaimLockContext(context.Background(), lockPath, operation, timeout, started)
+}
+
+func acquireClaimLockContext(ctx context.Context, lockPath, operation string, timeout time.Duration, started time.Time) (*lock.Handle, error) {
 	retryInterval := claimLockRetryInterval
 	if timeout < retryInterval {
 		retryInterval = timeout / 10
@@ -952,6 +974,8 @@ func acquireClaimLock(lockPath, operation string, timeout time.Duration, started
 			}
 		}
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case <-timer.C:
 			return nil, &claimsLockTimeoutError{
 				Operation:    operation,

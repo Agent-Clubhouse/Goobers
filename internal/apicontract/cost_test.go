@@ -69,10 +69,38 @@ func TestEveryRouteIsClassified(t *testing.T) {
 			}
 			continue
 		}
+		// CLI interventions wait for durable engine HITL delivery and use
+		// a dedicated client timeout above InterventionBudget.
+		switch route.ID {
+		case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
+			continue
+		}
 		if route.Budget >= clientAbort {
 			t.Errorf("route %s has a %s budget, at or above the client's %s abort; the client "+
 				"would give up first and the user would see a generic network error instead "+
 				"of a 503 with Retry-After", route.ID, route.Budget, clientAbort)
+		}
+	}
+}
+
+func TestInterventionBudgetContainsEngineHITLDelivery(t *testing.T) {
+	const hitlUpdateTimeout = 60 * time.Second // internal/engine hitlUpdateTimeout
+	for _, id := range []RouteID{
+		RouteApproveStage,
+		RouteOverrideStage,
+		RouteRerunStage,
+		RouteResolveEscalation,
+	} {
+		route, ok := V1Route(id)
+		if !ok {
+			t.Fatalf("%s route is not in the V1 contract", id)
+		}
+		if route.Budget != InterventionBudget {
+			t.Errorf("%s budget = %s, want InterventionBudget (%s)", id, route.Budget, InterventionBudget)
+		}
+		if route.Budget <= hitlUpdateTimeout {
+			t.Errorf("%s budget %s does not contain an engine HITL delivery (%s ceiling)",
+				id, route.Budget, hitlUpdateTimeout)
 		}
 	}
 }

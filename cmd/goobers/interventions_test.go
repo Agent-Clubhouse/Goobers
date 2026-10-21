@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -889,6 +891,82 @@ func TestRunInterventionRegistersLiveOwnerForCancellation(t *testing.T) {
 	}
 }
 
+func TestRunInterventionClaimLockContentionReturnsTypedErrorBeforeBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		run   func(*runInterventionService, context.Context, context.Context, httpapi.InterventionRequest) (httpapi.InterventionResult, error)
+		input httpapi.InterventionRequest
+	}{
+		{
+			name: "approve", run: (*runInterventionService).AcceptApprove,
+			input: httpapi.InterventionRequest{Stage: "review", Actor: "operator", Decision: "pass"},
+		},
+		{
+			name: "rerun-stage", run: (*runInterventionService).AcceptRerunStage,
+			input: httpapi.InterventionRequest{Stage: "implement", Actor: "operator", InstructionAddendum: "preserve the commit"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runID := "run-lock-budget-" + tc.name
+			service, runDir := newInterventionServiceTestRun(t, interventionTestMachine(t, apiv1.EvaluatorAgentic), runID, []journal.Event{
+				{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+				{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+				{Type: journal.EventGateStarted, Gate: "review"},
+				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+				{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+			})
+			lockPath := filepath.Join(service.layout.SchedulerDir(), claimLockFileName)
+			holder, err := lock.TryAcquire(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = holder.Release() }()
+
+			input := tc.input
+			input.RunID = runID
+			input.IdempotencyKey = "same-request"
+			admission, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			_, err = tc.run(service, admission, context.Background(), input)
+			var interventionErr *httpapi.InterventionError
+			if !errors.As(err, &interventionErr) {
+				t.Fatalf("error = %v, want InterventionError", err)
+			}
+			if interventionErr.Status != http.StatusServiceUnavailable || interventionErr.Code != claimsLockTimeoutCode {
+				t.Fatalf("error = %+v, want 503 %s", interventionErr, claimsLockTimeoutCode)
+			}
+			if elapsed := time.Since(started); elapsed >= 500*time.Millisecond || admission.Err() != nil {
+				t.Fatalf("typed response missed admission budget after %s: %v", elapsed, admission.Err())
+			}
+			reader, err := journal.OpenRead(runDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == "intervention.idempotency" {
+					t.Fatalf("intervention marker recorded despite failed admission: %+v", event)
+				}
+			}
+			if service.interventionActive(runID) {
+				t.Fatal("failed admission retained the active intervention")
+			}
+			if err := holder.Release(); err != nil {
+				t.Fatal(err)
+			}
+			service.wg = &sync.WaitGroup{}
+			t.Cleanup(service.wg.Wait)
+			if _, err := tc.run(service, context.Background(), context.Background(), input); err != nil {
+				t.Fatalf("retry after releasing claim lock: %v", err)
+			}
+		})
+	}
+}
+
 func TestRunInterventionReacquiresClaimsAndAdmissionUntilTerminal(t *testing.T) {
 	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
 	deterministic := &releasableInterventionDeterministic{
@@ -982,7 +1060,7 @@ func TestRunInterventionProtectsReacquiredClaimsBeforeJournalResume(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := service.beginExecution(resolved, true)
+	lease, err := service.beginExecution(context.Background(), resolved, true)
 	if err != nil {
 		t.Fatal(err)
 	}

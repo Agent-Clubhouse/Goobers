@@ -44,6 +44,62 @@ type recordingDeliverer struct {
 	delivers int
 }
 
+type blockingHITLDeliverer struct {
+	started chan context.Context
+}
+
+func (d *blockingHITLDeliverer) Deliver(ctx context.Context, _ engine.HITLIntent) (engine.HITLAck, error) {
+	d.started <- ctx
+	select {
+	case <-ctx.Done():
+		return engine.HITLAck{}, ctx.Err()
+	case <-time.After(time.Second):
+		return engine.HITLAck{}, errors.New("HITL delivery did not observe admission cancellation")
+	}
+}
+
+func TestEngineHITLUsesAdmissionContext(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		run   func(*runInterventionService, context.Context, context.Context, httpapi.InterventionRequest) (httpapi.InterventionResult, error)
+		input httpapi.InterventionRequest
+	}{
+		{
+			name: "approve", run: (*runInterventionService).AcceptApprove,
+			input: httpapi.InterventionRequest{Stage: "review", Decision: "pass"},
+		},
+		{
+			name: "override", run: (*runInterventionService).AcceptOverride,
+			input: httpapi.InterventionRequest{Stage: "review", Decision: "pass", Rationale: "reviewed"},
+		},
+		{
+			name: "rerun", run: (*runInterventionService).AcceptRerunStage,
+			input: httpapi.InterventionRequest{Stage: "implement", InstructionAddendum: "add tests"},
+		},
+		{
+			name: "deny", run: (*runInterventionService).AcceptDenyEscalation,
+			input: httpapi.InterventionRequest{Stage: "review", Rationale: "denied"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deliverer := &blockingHITLDeliverer{started: make(chan context.Context, 1)}
+			runID := "engine-hitl-budget-" + tc.name
+			service, _ := engineHITLFixture(t, runID, deliverer)
+			admission, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			input := tc.input
+			input.RunID, input.Actor, input.IdempotencyKey = runID, "operator", "request-budget"
+			_, err := tc.run(service, admission, context.Background(), input)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error = %v, want admission deadline", err)
+			}
+			if delivered := <-deliverer.started; delivered != admission {
+				t.Fatal("engine HITL delivery did not receive the admission context")
+			}
+		})
+	}
+}
+
 func (d *recordingDeliverer) Deliver(_ context.Context, intent engine.HITLIntent) (engine.HITLAck, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

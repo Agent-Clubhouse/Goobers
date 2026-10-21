@@ -86,11 +86,13 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 			// shared CostBlob transfer-bound ceiling (apicontract.BlobBudget).
 			// Recovery delivery likewise uses a dedicated bounded archive
 			// transport, not the portal's 10s JSON client.
+			// CLI interventions use a dedicated timeout above their HITL budget.
 			if route.ID != apicontract.RouteRunArtifact && route.ID != apicontract.RouteRunTranscript &&
 				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteCredentialRefresh &&
 				route.ID != apicontract.RouteBlobGet &&
 				route.ID != apicontract.RouteRunRecovery &&
 				route.ID != apicontract.RouteRunRecoveryPublish &&
+				!isCLIInterventionRoute(route.ID) &&
 				budget >= clientAbortBackstop {
 				t.Errorf("%s budget %s is not strictly below the client's %s abort; the client would "+
 					"give up first and the server would keep working",
@@ -103,6 +105,18 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 // clientAbortBackstop is the portal's client-side abort. Server budgets sit
 // below it so it is a backstop rather than the only bound.
 const clientAbortBackstop = 10 * time.Second
+
+func isCLIInterventionRoute(id apicontract.RouteID) bool {
+	switch id {
+	case apicontract.RouteApproveStage,
+		apicontract.RouteOverrideStage,
+		apicontract.RouteRerunStage,
+		apicontract.RouteResolveEscalation:
+		return true
+	default:
+		return false
+	}
+}
 
 // TestBudgetDeadlineReachesTheHandler proves the deadline is actually installed
 // on the request context a handler sees, rather than merely computed.

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/user"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -20,6 +21,8 @@ import (
 )
 
 const maxInterventionResponseBody = 1 << 20
+
+const interventionClientTimeout = apicontract.InterventionBudget + 5*time.Second
 
 const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]\n\n" +
 	"Approve a paused human gate or an escalated human/reviewer gate. The daemon\n" +
@@ -251,7 +254,7 @@ func callDaemonMutationAPIWithKey(
 	}
 
 	// Do not redirect a mutation to a daemon whose identity was not displayed.
-	client := &http.Client{Timeout: remoteTriggerTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+	client := &http.Client{Timeout: daemonMutationClientTimeout(routeID), CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 	response, err := client.Do(request)
@@ -271,6 +274,18 @@ func callDaemonMutationAPIWithKey(
 		return nil, fmt.Errorf("decode daemon %s result: %w", routeID, err)
 	}
 	return nil, nil
+}
+
+func daemonMutationClientTimeout(routeID apicontract.RouteID) time.Duration {
+	switch routeID {
+	case apicontract.RouteApproveStage,
+		apicontract.RouteOverrideStage,
+		apicontract.RouteRerunStage,
+		apicontract.RouteResolveEscalation:
+		return interventionClientTimeout
+	default:
+		return remoteTriggerTimeout
+	}
 }
 
 func newInterventionIdempotencyKey() (string, error) {
