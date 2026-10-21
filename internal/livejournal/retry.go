@@ -24,4 +24,4 @@ type RetryPolicy = retryutil.ClientPolicy
 // force (e.g. the pod's 30s-per-heartbeat or 15s blob-write-through budgets)
 // wins regardless, since context.WithTimeout always honors the earlier of
 // the two.
-const defaultEmitRetryDeadline = 60 * time.Second
+const defaultEmitRetryDeadline = 240 * time.Second

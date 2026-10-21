@@ -17,9 +17,8 @@ import (
 
 func fastRetry() RetryConfig {
 	return RetryConfig{
-		MaxElapsed:  5 * time.Second,
-		MaxAttempts: 6,
-		Backoff:     retryutil.Policy{Base: time.Millisecond, Max: 4 * time.Millisecond},
+		MaxElapsed: 5 * time.Second,
+		Backoff:    retryutil.Policy{Base: time.Millisecond, Max: 4 * time.Millisecond},
 	}
 }
 
@@ -109,7 +108,7 @@ func TestDoesNotRetryPermanentErrors(t *testing.T) {
 		code   string
 	}{
 		{400, "invalid_request"}, {401, "unauthenticated"}, {403, "forbidden"}, {404, "not_found"},
-		{409, "conflict"}, {412, "precondition"}, {500, "read_error"}, {503, "claims_unavailable"},
+		{409, "conflict"}, {412, "precondition"}, {500, "read_error"},
 	} {
 		var calls atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -156,14 +155,15 @@ func TestExhaustedStatusReturnsLastResponseWithBody(t *testing.T) {
 		envelope(w, 503, "class_saturated")
 	}))
 	defer server.Close()
-	client := newTestClient(t, server.URL, nil, fastRetry())
+	clock := newRetryFakeClock()
+	client := newTestClient(t, server.URL, nil, clock.config(5*time.Second, time.Second))
 	response, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if response.StatusCode != 503 || calls.Load() != 6 || !strings.Contains(string(raw), "class_saturated") {
+	if response.StatusCode != 503 || calls.Load() < 2 || !strings.Contains(string(raw), "class_saturated") {
 		t.Fatalf("status=%d calls=%d body=%s", response.StatusCode, calls.Load(), raw)
 	}
 }
@@ -173,7 +173,7 @@ func TestRetryRespectsContextDeadline(t *testing.T) {
 		envelope(w, 503, "class_saturated")
 	}))
 	defer server.Close()
-	cfg := RetryConfig{MaxElapsed: time.Minute, MaxAttempts: 1000, Backoff: retryutil.Policy{Base: 200 * time.Millisecond, Max: 200 * time.Millisecond}}
+	cfg := RetryConfig{MaxElapsed: time.Minute, Backoff: retryutil.Policy{Base: 200 * time.Millisecond, Max: 200 * time.Millisecond}}
 	client := newTestClient(t, server.URL, nil, cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
@@ -184,26 +184,6 @@ func TestRetryRespectsContextDeadline(t *testing.T) {
 	}
 	if err == nil {
 		_ = response.Body.Close()
-	}
-}
-
-func TestRetryStopsAtElapsedBudget(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		envelope(w, 503, "class_saturated")
-	}))
-	defer server.Close()
-	cfg := RetryConfig{MaxElapsed: 100 * time.Millisecond, MaxAttempts: 1000, Backoff: retryutil.Policy{Base: 20 * time.Millisecond, Max: 20 * time.Millisecond}}
-	client := newTestClient(t, server.URL, nil, cfg)
-	start := time.Now()
-	response, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = response.Body.Close()
-	if elapsed := time.Since(start); elapsed > time.Second || calls.Load() < 2 || calls.Load() > 10 {
-		t.Fatalf("elapsed=%v calls=%d", elapsed, calls.Load())
 	}
 }
 
@@ -255,6 +235,7 @@ func (s *scriptedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func TestTransportErrorClassification(t *testing.T) {
 	dial := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+	timeout := &net.DNSError{IsTimeout: true}
 	for _, tc := range []struct {
 		name       string
 		err        error
@@ -268,6 +249,7 @@ func TestTransportErrorClassification(t *testing.T) {
 		{"unexpected eof", io.ErrUnexpectedEOF, 2, 1},
 		{"conn reset", errors.New("read tcp: connection reset by peer"), 2, 1},
 		{"dial refused", dial, 2, 2},
+		{"timeout", timeout, 2, 1},
 		{"canceled", context.Canceled, 1, 1},
 		{"other", errors.New("x509: certificate signed by unknown authority"), 1, 1},
 	} {
@@ -304,12 +286,134 @@ func TestReplaySafeMutationRetriesAmbiguousTransportError(t *testing.T) {
 }
 
 func TestExhaustedTransportErrorNamesAttempts(t *testing.T) {
-	transport := &scriptedTransport{errs: []error{io.EOF, io.EOF, io.EOF, io.EOF, io.EOF, io.EOF, io.EOF}}
-	client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, fastRetry())
+	errs := make([]error, 100)
+	for i := range errs {
+		errs[i] = io.EOF
+	}
+	transport := &scriptedTransport{errs: errs}
+	clock := newRetryFakeClock()
+	client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(5*time.Second, time.Second))
 	_, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, true)
 	var requestErr *RequestError
-	if !errors.As(err, &requestErr) || !errors.Is(err, io.EOF) || !strings.Contains(err.Error(), "6 attempt") {
+	if !errors.As(err, &requestErr) || !errors.Is(err, io.EOF) || !strings.Contains(err.Error(), "attempt") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStatusAndSafetyClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		code       string
+		replaySafe bool
+		wantCalls  int32
+	}{
+		{"bare 502 unsafe", 502, "", false, 1},
+		{"bare 502 safe", 502, "", true, 2},
+		{"bare 503 unsafe", 503, "", false, 2},
+		{"bare 503 safe", 503, "", true, 2},
+		{"coded 503 unsafe", 503, "claims_unavailable", false, 1},
+		{"coded 503 safe", 503, "claims_unavailable", true, 2},
+		{"bare 504 unsafe", 504, "", false, 1},
+		{"bare 504 safe", 504, "", true, 2},
+		{"400 unsafe", 400, "invalid_request", false, 1},
+		{"400 safe", 400, "invalid_request", true, 1},
+		{"401 safe", 401, "unauthenticated", true, 1},
+		{"404 safe", 404, "not_found", true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if calls.Add(1) == 1 {
+					if tc.code == "" {
+						w.WriteHeader(tc.status)
+					} else {
+						envelope(w, tc.status, tc.code)
+					}
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			clock := newRetryFakeClock()
+			client := newTestClient(t, server.URL, nil, clock.config(time.Minute, time.Second))
+			response, err := client.DoRetrying(context.Background(), http.MethodPost, "/x", nil, nil, tc.replaySafe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = response.Body.Close()
+			if got := calls.Load(); got != tc.wantCalls {
+				t.Fatalf("calls = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestRetryBudgetIsTimeBoundedNotAttemptBounded(t *testing.T) {
+	if DefaultRetryMaxElapsed != 240*time.Second {
+		t.Fatalf("default retry window = %v, want 240s", DefaultRetryMaxElapsed)
+	}
+
+	t.Run("more than eight attempts may succeed", func(t *testing.T) {
+		errs := make([]error, 12)
+		for i := range errs {
+			errs[i] = io.EOF
+		}
+		transport := &scriptedTransport{errs: errs}
+		clock := newRetryFakeClock()
+		client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(time.Minute, time.Millisecond))
+		response, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if got := transport.calls.Load(); got != 13 {
+			t.Fatalf("calls = %d, want 13", got)
+		}
+	})
+
+	t.Run("elapsed window stops retries", func(t *testing.T) {
+		errs := make([]error, 100)
+		for i := range errs {
+			errs[i] = io.EOF
+		}
+		transport := &scriptedTransport{errs: errs}
+		clock := newRetryFakeClock()
+		const window = 5 * time.Second
+		client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(window, time.Second))
+		_, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, false)
+		if err == nil {
+			t.Fatal("expected retry exhaustion")
+		}
+		if clock.elapsed >= window {
+			t.Fatalf("fake clock advanced beyond window: %v", clock.elapsed)
+		}
+		if got := transport.calls.Load(); got < 2 || got >= int32(len(errs)) {
+			t.Fatalf("calls = %d, want time-bounded retry count", got)
+		}
+	})
+}
+
+type retryFakeClock struct {
+	now     time.Time
+	elapsed time.Duration
+}
+
+func newRetryFakeClock() *retryFakeClock {
+	return &retryFakeClock{now: time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)}
+}
+
+func (c *retryFakeClock) config(window, delay time.Duration) RetryConfig {
+	return RetryConfig{
+		MaxElapsed: window,
+		Backoff:    retryutil.Policy{Base: delay, Max: delay},
+		now: func() time.Time {
+			return c.now.Add(c.elapsed)
+		},
+		wait: func(_ context.Context, d time.Duration) bool {
+			c.elapsed += d
+			return true
+		},
 	}
 }
 

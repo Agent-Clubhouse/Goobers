@@ -40,8 +40,7 @@ import (
 // Default retry bounds. The window is wall-clock from the first attempt and
 // is further bounded by the caller's context, so a stage deadline always wins.
 const (
-	DefaultRetryMaxElapsed = 45 * time.Second
-	DefaultRetryMaxTries   = 8
+	DefaultRetryMaxElapsed = 240 * time.Second
 	DefaultRetryBase       = 250 * time.Millisecond
 	DefaultRetryMaxDelay   = 5 * time.Second
 	maxRetryAfter          = 5 * time.Second
@@ -53,18 +52,15 @@ type RetryConfig struct {
 	// MaxElapsed is the wall-clock window after the first attempt begins in
 	// which a further attempt may start.
 	MaxElapsed time.Duration
-	// MaxAttempts caps total attempts, including the first.
-	MaxAttempts int
 	// Backoff paces attempts; zero Base/Max take the defaults.
 	Backoff retryutil.Policy
+	now     func() time.Time
+	wait    func(context.Context, time.Duration) bool
 }
 
 func (r RetryConfig) normalized() RetryConfig {
 	if r.MaxElapsed <= 0 {
 		r.MaxElapsed = DefaultRetryMaxElapsed
-	}
-	if r.MaxAttempts <= 0 {
-		r.MaxAttempts = DefaultRetryMaxTries
 	}
 	if r.Backoff.Base <= 0 {
 		r.Backoff.Base = DefaultRetryBase
@@ -72,7 +68,24 @@ func (r RetryConfig) normalized() RetryConfig {
 	if r.Backoff.Max <= 0 {
 		r.Backoff.Max = DefaultRetryMaxDelay
 	}
+	if r.now == nil {
+		r.now = time.Now
+	}
+	if r.wait == nil {
+		r.wait = waitForRetry
+	}
 	return r
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 type transience int
@@ -94,7 +107,7 @@ const (
 func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byte, headers http.Header, replaySafe bool) (*http.Response, error) {
 	cfg := c.retry.normalized()
 	replayAmbiguous := replaySafe || method == http.MethodGet || method == http.MethodHead
-	start := time.Now()
+	start := cfg.now()
 	for attempt := 0; ; attempt++ {
 		var reader io.Reader
 		if body != nil {
@@ -108,7 +121,7 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 			if errors.As(err, &requestErr) && requestErr.Op == "do" {
 				kind = classifyTransportError(requestErr.Err)
 			}
-		} else if response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusTooManyRequests {
+		} else if retryableStatusCandidate(response.StatusCode) {
 			raw, readErr := ReadBounded(response.Body, maxStatusBodyBytes)
 			_ = response.Body.Close()
 			if readErr != nil {
@@ -125,20 +138,23 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 		if retryAfter > delay {
 			delay = retryAfter
 		}
-		if ctx.Err() != nil || attempt+1 >= cfg.MaxAttempts || time.Since(start)+delay >= cfg.MaxElapsed {
+		if ctx.Err() != nil || cfg.now().Sub(start)+delay >= cfg.MaxElapsed {
 			return exhausted(response, err, attempt+1)
 		}
 		if response != nil {
 			_ = response.Body.Close()
 		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !cfg.wait(ctx, delay) {
 			return exhausted(response, err, attempt+1)
-		case <-timer.C:
 		}
 	}
+}
+
+func retryableStatusCandidate(status int) bool {
+	return status == http.StatusTooManyRequests ||
+		status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
 }
 
 // exhausted reports the last failure. A status response is returned as is (its
@@ -195,8 +211,14 @@ func classifyStatus(status int, raw []byte) transience {
 		return refusedEarly
 	case status == http.StatusServiceUnavailable && (code == "class_saturated" || code == "recovering"):
 		return refusedEarly
+	case status == http.StatusServiceUnavailable && code == "":
+		return refusedEarly
 	case status == http.StatusServiceUnavailable && code == "request_budget_exceeded":
 		// The handler ran long enough to hit its budget; it may still commit.
+		return ambiguous
+	case status == http.StatusServiceUnavailable:
+		return ambiguous
+	case (status == http.StatusBadGateway || status == http.StatusGatewayTimeout) && code == "":
 		return ambiguous
 	}
 	return notTransient
@@ -204,13 +226,12 @@ func classifyStatus(status int, raw []byte) transience {
 
 // classifyTransportError decides whether a transport failure is transient.
 func classifyTransportError(err error) transience {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || errors.Is(err, context.Canceled) {
 		return notTransient
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		// A timed-out attempt already spent its budget; do not spend another.
-		return notTransient
+		return ambiguous
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && opErr.Op == "dial" {

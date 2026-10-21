@@ -36,7 +36,7 @@ const defaultBlobTimeout = 60 * time.Second
 // RetryDeadline of its own. A caller with a tighter context deadline already
 // in force (e.g. dispatchexec.go's 15s write-through batch budget) is
 // unaffected: context.WithTimeout always honors the earlier of the two.
-const defaultBlobRetryDeadline = 60 * time.Second
+const defaultBlobRetryDeadline = 240 * time.Second
 
 // BlobClient is the network blob plane client (decision 010): a
 // blobstore.Store implementation that fetches and puts sha256 digests over

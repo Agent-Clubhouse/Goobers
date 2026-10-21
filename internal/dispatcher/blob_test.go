@@ -19,6 +19,12 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 )
 
+func TestDefaultBlobRetryDeadlineCoversFailoverWindow(t *testing.T) {
+	if defaultBlobRetryDeadline != 240*time.Second {
+		t.Fatalf("default blob retry deadline = %v, want 240s", defaultBlobRetryDeadline)
+	}
+}
+
 // fakeBlobEndpoint is an in-memory daemon-fronted blob endpoint speaking the
 // BlobPathPrefix digest contract, requiring the stage-scoped bearer.
 func fakeBlobEndpoint(t *testing.T, token string) (*httptest.Server, *sync.Map) {
