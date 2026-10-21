@@ -131,6 +131,65 @@ func TestQueueConcurrentReplayAndCancelledWait(t *testing.T) {
 	}
 }
 
+func TestPublishQueuesUnrelatedTargetWhileReplayIsBusy(t *testing.T) {
+	q := Queue{Dir: t.TempDir()}
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- q.Publish(context.Background(), Effect{Kind: WorkFailure, ItemID: "1", RunID: "r1"}, func(context.Context, Effect) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	if err := q.Publish(context.Background(), Effect{Kind: WorkFailure, ItemID: "2", RunID: "r2"}, func(context.Context, Effect) error {
+		t.Fatal("busy publisher performed provider delivery")
+		return nil
+	}); err != nil {
+		t.Fatalf("durably queued unrelated report returned a failure: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	delivered := false
+	if err := q.Reconcile(context.Background(), 2, func(_ context.Context, e Effect) error {
+		delivered = delivered || e.ItemID == "2"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !delivered {
+		t.Fatal("queued unrelated report was not replayed")
+	}
+}
+
+func TestReconcileRecordsRepeatedReplayLockSkips(t *testing.T) {
+	var events []journal.Event
+	q := Queue{Dir: t.TempDir(), Log: func(event journal.Event) error {
+		events = append(events, event)
+		return nil
+	}}
+	held, entered, err := q.enterReplay()
+	if err != nil || !entered {
+		t.Fatalf("enter replay: entered=%v err=%v", entered, err)
+	}
+	defer func() { _ = held.Release() }()
+	for range 3 {
+		if err := q.Reconcile(context.Background(), 1, func(context.Context, Effect) error {
+			t.Fatal("contending reconcile delivered")
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(events) != 1 || events[0].Runner["kind"] != "terminal_report_replay_skipped" ||
+		events[0].Runner["holderPid"] != os.Getpid() || events[0].Runner["holderHost"] == "" {
+		t.Fatalf("replay skip diagnostic = %+v", events)
+	}
+}
+
 func TestQueuePersistsBeforeCallingProviderAndRetainsOnLogFailure(t *testing.T) {
 	dir := t.TempDir()
 	q := Queue{Dir: filepath.Join(dir, "queue"), Log: func(journal.Event) error { return errors.New("log unavailable") }}
