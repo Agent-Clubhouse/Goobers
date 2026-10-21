@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
@@ -25,18 +26,26 @@ type mergeFlockState struct {
 	reservations int
 }
 
+// A daemon crash releases the kernel flock before its durable plane leases.
+// Startup restores the flock before serving the claims plane. Until that
+// succeeds, the daemon stays unavailable rather than admitting a local merge;
+// an already-running pod may continue until a renewal is definitively refused,
+// because transport errors during the restart are treated as transient.
 func newMergeFlockState(path string) *mergeFlockState {
 	return &mergeFlockState{path: path}
 }
 
 func isMergeLockRequest(request httpapi.ClaimRequest) bool {
-	return strings.HasPrefix(request.ItemID, claimsclient.MergeLockItemPrefix)
+	return strings.HasPrefix(request.ItemID, claimsclient.MergeLockItemPrefix) &&
+		!localscheduler.IsPublicationClaimKey(request.ItemID)
 }
 
 func liveMergeLeaseCount(entries []localscheduler.ClaimEntry, now time.Time) int {
 	count := 0
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.ExternalID, claimsclient.MergeLockItemPrefix) && entry.ExpiresAt.After(now) {
+		if !entry.IsPublicationClaim() &&
+			strings.HasPrefix(entry.ExternalID, claimsclient.MergeLockItemPrefix) &&
+			entry.ExpiresAt.After(now) {
 			count++
 		}
 	}
@@ -80,23 +89,31 @@ func (s *mergeFlockState) reconcile(entries []localscheduler.ClaimEntry) {
 	s.releaseIfIdle()
 }
 
-func (s *mergeFlockState) restore(entries []localscheduler.ClaimEntry) error {
+func (s *mergeFlockState) restore(entries []localscheduler.ClaimEntry, timeout time.Duration) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.liveLeases = liveMergeLeaseCount(entries, time.Now())
 	if s.liveLeases == 0 {
 		s.releaseIfIdle()
+		s.mu.Unlock()
 		return nil
 	}
 	if s.handle != nil {
+		s.mu.Unlock()
 		return nil
 	}
-	handle, err := platformlock.TryAcquire(s.path)
+	s.mu.Unlock()
+
+	handle, err := acquireClaimLock(s.path, claimLockOperationAPIMerge, timeout, time.Now())
 	if err != nil {
 		return err
 	}
-	_ = handle.Announce(claimLockOperationAPIMerge)
-	s.handle = handle
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handle == nil && s.liveLeases > 0 {
+		s.handle = handle
+		return nil
+	}
+	_ = handle.Release()
 	return nil
 }
 
@@ -136,7 +153,11 @@ func (s *daemonClaimService) initializeMergeLock() error {
 	if err != nil {
 		return err
 	}
-	if err := s.mergeFlock.restore(entries); err != nil {
+	timeout, timeoutErr := claimsLockTimeoutForPath(s.mergeFlock.path)
+	if timeoutErr != nil || timeout <= 0 {
+		timeout = instance.DefaultClaimsLockTimeout
+	}
+	if err := s.mergeFlock.restore(entries, timeout); err != nil {
 		if errors.Is(err, platformlock.ErrHeld) {
 			return errors.New("acquire merge exclusion for live plane leases: merge.lock is held by a local merge")
 		}
@@ -159,12 +180,9 @@ func (s *daemonClaimService) acquireMergeLock(
 	}
 	defer s.mergeFlock.finishReservation()
 	var response httpapi.ClaimResponse
-	var snapshot []localscheduler.ClaimEntry
-	observed := false
 	err = s.withLedger(claimLockOperationAPIAcquire, request, func(ledger *localscheduler.ClaimLedger) error {
 		defer func() {
-			snapshot = ledger.Snapshot()
-			observed = true
+			s.mergeFlock.reconcile(ledger.Snapshot())
 		}()
 		client, err := s.coordinatedLedger(ledger)
 		if err != nil {
@@ -187,9 +205,6 @@ func (s *daemonClaimService) acquireMergeLock(
 		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
 		return nil
 	})
-	if observed {
-		s.mergeFlock.reconcile(snapshot)
-	}
 	return response, err
 }
 
@@ -207,12 +222,9 @@ func (s *daemonClaimService) renewMergeLock(
 	}
 	defer s.mergeFlock.finishReservation()
 	var response httpapi.ClaimResponse
-	var snapshot []localscheduler.ClaimEntry
-	observed := false
 	err = s.withLedger(claimLockOperationAPIRenew, request, func(ledger *localscheduler.ClaimLedger) error {
 		defer func() {
-			snapshot = ledger.Snapshot()
-			observed = true
+			s.mergeFlock.reconcile(ledger.Snapshot())
 		}()
 		entry, held := ledger.LookupScoped(claimKey(request))
 		if !held || entry.RunID != request.RunID || !entry.ExpiresAt.After(time.Now()) {
@@ -220,6 +232,11 @@ func (s *daemonClaimService) renewMergeLock(
 				response.Holder = entry.RunID
 			}
 			return nil
+		}
+		if !entry.SharedDeadline.IsZero() {
+			var renewErr error
+			response, renewErr = s.renewSharedClaim(ctx, ledger, request, entry, lease)
+			return renewErr
 		}
 		ok, err := ledger.RenewEntry(entry, lease)
 		if err != nil || !ok {
@@ -233,9 +250,6 @@ func (s *daemonClaimService) renewMergeLock(
 		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
 		return nil
 	})
-	if observed {
-		s.mergeFlock.reconcile(snapshot)
-	}
 	return response, err
 }
 
@@ -244,4 +258,11 @@ func (s *daemonClaimService) registerMergeLedgerObserver() func() {
 		filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName),
 		s.mergeFlock.reconcile,
 	)
+}
+
+func (s *daemonClaimService) refreshMergeFlock() error {
+	return s.withLedger(claimLockOperationAPIMerge, httpapi.ClaimRequest{}, func(ledger *localscheduler.ClaimLedger) error {
+		s.mergeFlock.reconcile(ledger.Snapshot())
+		return nil
+	})
 }

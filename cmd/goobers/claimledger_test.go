@@ -33,6 +33,7 @@ type claimsPlane struct {
 	server   *httptest.Server
 	layout   instance.Layout
 	registry *podauth.Registry
+	service  *daemonClaimService
 }
 
 func newClaimsPlane(t *testing.T) *claimsPlane {
@@ -81,7 +82,7 @@ func newClaimsPlane(t *testing.T) *claimsPlane {
 	}
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return &claimsPlane{server: server, layout: layout, registry: registry}
+	return &claimsPlane{server: server, layout: layout, registry: registry, service: service}
 }
 
 // admitRun creates runID's journal under gaggle on the daemon (the run.yaml

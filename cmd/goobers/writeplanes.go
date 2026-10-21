@@ -65,10 +65,17 @@ func newDaemonClaimService(
 	recover func(now time.Time) ([]localscheduler.ClaimEntry, error),
 ) *daemonClaimService {
 	service := &daemonClaimService{
-		layout: layout, log: log, recover: recover,
+		layout: layout, log: log,
 		mergeFlock: newMergeFlockState(filepath.Join(layout.SchedulerDir(), mergeLockFileName)),
 	}
 	service.stopMergeHook = service.registerMergeLedgerObserver()
+	if recover != nil {
+		service.recover = func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+			released, recoverErr := recover(now)
+			refreshErr := service.refreshMergeFlock()
+			return released, errors.Join(recoverErr, refreshErr)
+		}
+	}
 	return service
 }
 

@@ -378,12 +378,15 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 		if entry.IsPublicationClaim() {
 			continue
 		}
-		if !entry.SharedDeadline.IsZero() {
-			return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before reclaim")
-		}
 		itemID := entry.ExternalID
 		if itemID == "" {
 			itemID = entry.ItemID
+		}
+		if strings.HasPrefix(itemID, MergeLockItemIDPrefix) {
+			continue
+		}
+		if !entry.SharedDeadline.IsZero() {
+			return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before reclaim")
 		}
 		if itemID == "" {
 			return false, "", errors.New("localscheduler: reclaim entry requires an item ID")

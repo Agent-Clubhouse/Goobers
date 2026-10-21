@@ -1148,6 +1148,7 @@ func (u *upSession) configureAPI() int {
 		claimPlane.close()
 		return reportDaemonStartupError(u.stderr, "restore merge exclusion", err)
 	}
+	u.recoverExpiredClaims = claimPlane.recover
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
 	claimPlane.markerRelease = u.releaseProviderClaimMarker
 	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(u.engineClient.Temporal(), surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
