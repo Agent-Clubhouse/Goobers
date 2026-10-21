@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -86,6 +88,14 @@ func TestClassifyDispatchFailureTypesEveryKnownCause(t *testing.T) {
 				t.Fatalf("classifyDispatchFailure = (%q, %q), want (%q, %q)", code, class, tt.wantCode, tt.wantClass)
 			}
 		})
+	}
+}
+
+func TestPlaneExhaustionIsInfraEvenAtStageDeadline(t *testing.T) {
+	err := invoke.Timeout(fmt.Errorf("stage deadline: %w: %w", context.DeadlineExceeded, planehttp.ErrBudgetExhausted))
+	code, class := classifyDispatchFailure(err)
+	if code != telemetry.ErrCodeInfraFailure || class != telemetry.ErrorClassInfra {
+		t.Fatalf("classifyDispatchFailure = (%q, %q), want plane exhaustion infra", code, class)
 	}
 }
 

@@ -260,7 +260,6 @@ func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string, reason 
 func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) ([]Entry, error) {
 	// Not replay-safe after an ambiguous failure: the reply lists what THIS call
 	// released, and a replay of a call that did commit answers an empty list.
-	// It is still retried when the daemon refused it before a handler ran.
 	var response claimResponse
 	if err := h.postRelease(ctx, claimRequest{RunID: runID, Reason: reason.Normalize()}, &response, false); err != nil {
 		return nil, err

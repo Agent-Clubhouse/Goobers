@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/temporaltest"
@@ -28,6 +30,7 @@ func TestDispatchFailureHealthClassification(t *testing.T) {
 		class    string
 	}{
 		{"recovered", []error{invoke.InfrastructureFailure(errors.New("pod vanished"))}, false, 2, "infra"},
+		{"plane deadline", []error{fmt.Errorf("%w: %w", context.DeadlineExceeded, planehttp.ErrBudgetExhausted)}, false, 2, "infra"},
 		{"exhausted", persistentFailures(invoke.InfrastructureFailure(errors.New("pod vanished")), 100), true, int(runner.DefaultMaxInfrastructureAttempts), "infra"},
 		{"policy", []error{errors.New("GoobersInfrastructureFailure is only text")}, true, 1, "executor"},
 	} {

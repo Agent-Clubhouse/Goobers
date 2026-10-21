@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/retryutil"
 )
 
@@ -100,7 +101,7 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 		deadline = defaultEmitRetryDeadline
 	}
 	var out EmitResponse
-	err = retryutil.Until(ctx, deadline, e.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
+	err = retryutil.UntilWithRetryMargin(ctx, deadline, planehttp.RetryDeadlineMargin, e.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return false, fmt.Errorf("livejournal: build emit request: %w", err)
@@ -144,6 +145,9 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 		return false, nil
 	})
 	if err != nil {
+		if errors.Is(err, retryutil.ErrDeadlineExceeded) {
+			return EmitResponse{}, fmt.Errorf("%w: %w", planehttp.ErrBudgetExhausted, err)
+		}
 		return EmitResponse{}, err
 	}
 	return out, nil

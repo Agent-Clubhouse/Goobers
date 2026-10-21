@@ -60,6 +60,7 @@ func TestJitteredExponentialNonpositiveBaseUsesMax(t *testing.T) {
 		{name: "zero base later attempt", attempt: 3, upper: true, want: 100 * time.Second},
 		{name: "negative base later attempt", base: -time.Second, attempt: 3, want: 50 * time.Second},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := JitteredExponential(Policy{
@@ -77,6 +78,27 @@ func TestJitteredExponentialNonpositiveBaseUsesMax(t *testing.T) {
 			}, tt.attempt)
 			if got != tt.want {
 				t.Fatalf("JitteredExponential = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestJitteredExponentialFullJitter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rand int64
+		want time.Duration
+	}{
+		{name: "zero floor"},
+		{name: "ceiling", rand: int64(4 * time.Second), want: 4 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := JitteredExponential(Policy{
+				Base: time.Second, Max: 10 * time.Second, FullJitter: true,
+				randInt64N: func(int64) int64 { return tc.rand },
+			}, 2)
+			if got != tc.want {
+				t.Fatalf("JitteredExponential = %s, want %s", got, tc.want)
 			}
 		})
 	}

@@ -153,7 +153,7 @@ func TestHTTPErrorEnvelope(t *testing.T) {
 
 func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
 	}))
 	t.Cleanup(server.Close)
@@ -163,7 +163,7 @@ func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
 	}
 	_, _, err = client.ClaimScoped(t.Context(), Key{Gaggle: "g", Provider: "p", ExternalID: "1"}, "run-1", "w", time.Minute)
 	var planeErr *Error
-	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_500" || planeErr.Message != strings.Repeat("x", 400)+"…" {
 		t.Fatalf("error = %#v", planeErr)
 	}
 }
