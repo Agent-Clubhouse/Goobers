@@ -157,68 +157,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *updateMoves {
-		current, err := readBaseline(resolved)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for move update: %v\n", err)
-			return 1
-		}
-		committed, err := readCommittedBaseline(*root, resolved)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for move update: %v\n", err)
-			return 1
-		}
-		if committed == nil {
-			_, _ = fmt.Fprintln(stderr, "complexitygate: move update requires a committed baseline at HEAD")
-			return 1
-		}
-		moves, err := relocatePureMoves(*root, functions, committed, &current)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: update moves: %v\n", err)
-			return 1
-		}
-		seed := mapsClone(bodyLengthSeedCeilings)
-		for oldKey, newKey := range moves {
-			if ceiling, ok := seed[oldKey]; ok {
-				delete(seed, oldKey)
-				seed[newKey] = ceiling
-			}
-		}
-		if problems, _ := evaluateWithBodySeed(functions, current, limits, seed); len(problems) > 0 {
-			for _, problem := range problems {
-				_, _ = fmt.Fprintln(stderr, problem)
-			}
-			return 1
-		}
-		if err := writeResolvedBaseline(resolved, functions, limits, current, "make complexity-update"); err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: write moved baseline: %v\n", err)
-			return 1
-		}
-		_, _ = fmt.Fprintf(stdout, "complexitygate: moved byte-identical baseline rows in %s\n", *baselinePath)
-		return 0
+		return runMoveUpdate(*root, resolved, *baselinePath, functions, limits, stdout, stderr)
 	}
 	if *update {
-		var candidate *baseline
-		parsed, err := readBaseline(resolved)
-		switch {
-		case err == nil:
-			candidate = &parsed
-		case !errors.Is(err, os.ErrNotExist):
-			_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for update: %v\n", err)
-			return 1
-		}
-		previous, err := readCommittedBaseline(*root, resolved)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for update: %v\n", err)
-			return 1
-		}
-		if err := writeBaseline(resolved, functions, limits, previous, candidate); err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: write baseline: %v\n", err)
-			return 1
-		}
-		_, _ = fmt.Fprintf(stdout, "complexitygate: wrote %s\n", *baselinePath)
-		return 0
+		return runUpdate(*root, resolved, *baselinePath, functions, limits, stdout, stderr)
 	}
+	return runEnforce(*root, resolved, functions, limits, stdout, stderr)
+}
 
+func runEnforce(root, resolved string, functions []function, limits thresholds, stdout, stderr io.Writer) int {
 	base, err := readBaseline(resolved)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline: %v\n", err)
@@ -228,7 +175,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline: missing %s directive\n", bodyLengthCapDirective)
 		return 1
 	}
-	committed, err := readCommittedBaseline(*root, resolved)
+	committed, err := readCommittedBaseline(root, resolved)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline: %v\n", err)
 		return 1
@@ -261,6 +208,70 @@ func run(args []string, stdout, stderr io.Writer) int {
 		countAtLeast(functions, limits.hardCap), limits.hardCap,
 		countBodyLengthAtLeast(functions, limits.body), limits.body, len(base.BodyLengths),
 	)
+	return 0
+}
+
+func runMoveUpdate(root, resolved, displayPath string, functions []function, limits thresholds, stdout, stderr io.Writer) int {
+	current, err := readBaseline(resolved)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for move update: %v\n", err)
+		return 1
+	}
+	committed, err := readCommittedBaseline(root, resolved)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for move update: %v\n", err)
+		return 1
+	}
+	if committed == nil {
+		_, _ = fmt.Fprintln(stderr, "complexitygate: move update requires a committed baseline at HEAD")
+		return 1
+	}
+	moves, err := relocatePureMoves(root, functions, committed, &current)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: update moves: %v\n", err)
+		return 1
+	}
+	seed := mapsClone(bodyLengthSeedCeilings)
+	for oldKey, newKey := range moves {
+		if ceiling, ok := seed[oldKey]; ok {
+			delete(seed, oldKey)
+			seed[newKey] = ceiling
+		}
+	}
+	if problems, _ := evaluateWithBodySeed(functions, current, limits, seed); len(problems) > 0 {
+		for _, problem := range problems {
+			_, _ = fmt.Fprintln(stderr, problem)
+		}
+		return 1
+	}
+	if err := writeResolvedBaseline(resolved, functions, limits, current, "make complexity-update"); err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: write moved baseline: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "complexitygate: moved byte-identical baseline rows in %s\n", displayPath)
+	return 0
+}
+
+func runUpdate(root, resolved, displayPath string, functions []function, limits thresholds, stdout, stderr io.Writer) int {
+	var candidate *baseline
+	parsed, err := readBaseline(resolved)
+	switch {
+	case err == nil:
+		candidate = &parsed
+	case !errors.Is(err, os.ErrNotExist):
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for update: %v\n", err)
+		return 1
+	}
+	previous, err := readCommittedBaseline(root, resolved)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for update: %v\n", err)
+		return 1
+	}
+	if err := writeBaseline(resolved, functions, limits, previous, candidate); err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: write baseline: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "complexitygate: wrote %s\n", displayPath)
 	return 0
 }
 
