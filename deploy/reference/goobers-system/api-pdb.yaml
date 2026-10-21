@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: goobers-api
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-api
+    app.kubernetes.io/component: api
+spec:
+  # The singleton must remain evictable during node maintenance.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goobers-api
