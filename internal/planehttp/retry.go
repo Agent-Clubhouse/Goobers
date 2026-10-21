@@ -51,14 +51,6 @@ const (
 // ErrBudgetExhausted marks a plane failure that consumed its retry window.
 var ErrBudgetExhausted = errors.New("planehttp: retry budget exhausted")
 
-// RemainingRetryBudget reserves the stage deadline margin from a retry ceiling.
-func RemainingRetryBudget(ctx context.Context, ceiling time.Duration) time.Duration {
-	if deadline, ok := ctx.Deadline(); ok {
-		return min(ceiling, time.Until(deadline)-RetryDeadlineMargin)
-	}
-	return ceiling
-}
-
 // RetryConfig bounds transient retries. Zero fields take the defaults.
 type RetryConfig struct {
 	// MaxElapsed is the wall-clock window after the first attempt begins in
@@ -128,21 +120,18 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 	cfg := c.retry.normalized()
 	replayAmbiguous := replaySafe || method == http.MethodGet || method == http.MethodHead
 	start := cfg.now()
-	budget := cfg.MaxElapsed
+	retryUntil := start.Add(cfg.MaxElapsed)
 	if deadline, ok := ctx.Deadline(); ok {
-		budget = min(budget, deadline.Sub(start)-RetryDeadlineMargin)
+		if candidate := deadline.Add(-RetryDeadlineMargin); candidate.After(start) && candidate.Before(retryUntil) {
+			retryUntil = candidate
+		}
 	}
-	if budget <= 0 {
-		return nil, fmt.Errorf("%w before first attempt: no time remains before the stage deadline margin", ErrBudgetExhausted)
-	}
-	retryCtx, cancel := context.WithTimeout(ctx, budget)
-	defer cancel()
 	for attempt := 0; ; attempt++ {
 		var reader io.Reader
 		if body != nil {
 			reader = bytes.NewReader(body)
 		}
-		response, err := c.DoRaw(retryCtx, method, path, reader, headers)
+		response, err := c.DoRaw(ctx, method, path, reader, headers)
 		kind := notTransient
 		var retryAfter time.Duration
 		if err != nil {
@@ -174,13 +163,31 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 		if retryAfter > delay {
 			delay = retryAfter
 		}
-		if retryCtx.Err() != nil || cfg.now().Sub(start)+delay >= budget {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			return nil, ctx.Err()
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if attempt == 0 {
+				return response, err
+			}
+			return exhausted(response, err, attempt+1)
+		}
+		if !retryUntil.After(start) {
+			return response, err
+		}
+		if !cfg.now().Add(delay).Before(retryUntil) {
 			return exhausted(response, err, attempt+1)
 		}
 		if response != nil {
 			_ = response.Body.Close()
 		}
-		if !cfg.wait(retryCtx, delay) {
+		if !cfg.wait(ctx, delay) {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return nil, ctx.Err()
+			}
 			return exhausted(response, err, attempt+1)
 		}
 	}

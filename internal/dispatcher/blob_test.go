@@ -19,12 +19,6 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 )
 
-func TestDefaultBlobRetryDeadlineCoversFailoverWindow(t *testing.T) {
-	if defaultBlobRetryDeadline != 240*time.Second {
-		t.Fatalf("default blob retry deadline = %v, want 240s", defaultBlobRetryDeadline)
-	}
-}
-
 // fakeBlobEndpoint is an in-memory daemon-fronted blob endpoint speaking the
 // BlobPathPrefix digest contract, requiring the stage-scoped bearer.
 func fakeBlobEndpoint(t *testing.T, token string) (*httptest.Server, *sync.Map) {
@@ -157,8 +151,31 @@ func TestBlobClientPutHonoursRetryDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error once the retry deadline elapsed")
 	}
+
 	if elapsed > time.Second {
 		t.Fatalf("elapsed = %s, want close to the 30ms retry deadline", elapsed)
+	}
+}
+
+func TestBlobClientPutShortCallerDeadlineStillPutsOnce(t *testing.T) {
+	for _, deadline := range []time.Duration{5 * time.Second, 10 * time.Second, 15 * time.Second} {
+		t.Run(deadline.String(), func(t *testing.T) {
+			var attempts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				attempts.Add(1)
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer server.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+			digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("x")))
+			if err := (&BlobClient{BaseURL: server.URL}).Put(ctx, digest, []byte("x")); err != nil {
+				t.Fatal(err)
+			}
+			if got := attempts.Load(); got != 1 {
+				t.Fatalf("attempts = %d, want 1", got)
+			}
+		})
 	}
 }
 

@@ -167,8 +167,7 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 	if deadline <= 0 {
 		deadline = defaultBlobRetryDeadline
 	}
-	deadline = planehttp.RemainingRetryBudget(ctx, deadline)
-	err := retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
+	err := retryutil.UntilWithRetryMargin(ctx, deadline, planehttp.RetryDeadlineMargin, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		err := c.PutOnce(ctx, digest, data)
 		var status *BlobStatusError
 		if errors.As(err, &status) {

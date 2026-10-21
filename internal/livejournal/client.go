@@ -100,9 +100,8 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 	if deadline <= 0 {
 		deadline = defaultEmitRetryDeadline
 	}
-	deadline = planehttp.RemainingRetryBudget(ctx, deadline)
 	var out EmitResponse
-	err = retryutil.Until(ctx, deadline, e.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
+	err = retryutil.UntilWithRetryMargin(ctx, deadline, planehttp.RetryDeadlineMargin, e.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return false, fmt.Errorf("livejournal: build emit request: %w", err)

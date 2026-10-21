@@ -102,6 +102,61 @@ func Until(ctx context.Context, deadline time.Duration, p Policy, attempt func(c
 	}
 }
 
+// UntilWithRetryMargin always makes the first attempt under ctx, then reserves
+// margin from the caller deadline when deciding whether another attempt fits.
+func UntilWithRetryMargin(ctx context.Context, deadline, margin time.Duration, p Policy, attempt func(context.Context) (retryable bool, err error)) error {
+	start := time.Now()
+	retryUntil := start.Add(deadline)
+	stageLimited := false
+	if callerDeadline, ok := ctx.Deadline(); ok {
+		candidate := callerDeadline.Add(-margin)
+		if candidate.After(start) && candidate.Before(retryUntil) {
+			retryUntil = candidate
+			stageLimited = true
+		}
+	}
+	var previousErr error
+	for n := 0; ; n++ {
+		retryable, err := attempt(ctx)
+		if err == nil {
+			return nil
+		}
+		if previousErr != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			err = errors.Join(previousErr, err)
+		}
+		if !retryable {
+			return err
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return ctx.Err()
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if n == 0 {
+				return err
+			}
+			return retryDeadlineError(ctx.Err(), n+1, err)
+		}
+		delay := JitteredExponential(p, n)
+		if !retryUntil.After(start) || !time.Now().Add(delay).Before(retryUntil) {
+			if stageLimited {
+				return err
+			}
+			return fmt.Errorf("%w after %d attempt(s): %w", ErrDeadlineExceeded, n+1, err)
+		}
+		previousErr = err
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return ctx.Err()
+			}
+			return retryDeadlineError(ctx.Err(), n+1, err)
+		case <-timer.C:
+		}
+	}
+}
+
 func retryDeadlineError(ctxErr error, attempts int, err error) error {
 	if errors.Is(ctxErr, context.DeadlineExceeded) {
 		return fmt.Errorf("%w after %d attempt(s): %w", ErrDeadlineExceeded, attempts, err)

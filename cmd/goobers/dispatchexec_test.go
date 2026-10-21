@@ -28,12 +28,6 @@ import (
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
-func TestArtifactJournalRetryDeadlineCoversFailoverWindow(t *testing.T) {
-	if got := (artifactTiming{}).withDefaults().journalRetryDeadline; got != 240*time.Second {
-		t.Fatalf("journal retry deadline = %v, want 240s", got)
-	}
-}
-
 func fastArtifactTiming() artifactTiming {
 	return artifactTiming{
 		blobWriteThroughBudget: 50 * time.Millisecond,

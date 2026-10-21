@@ -134,8 +134,30 @@ func TestHTTPEmitterDoesNotRetry4xx(t *testing.T) {
 	if _, err := e.Emit(context.Background(), EmitRequest{RunID: "run-1"}); err == nil {
 		t.Fatal("expected an error on a 401 response")
 	}
+
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("server saw %d attempts, want exactly 1 (no retry on a 4xx)", got)
+	}
+}
+
+func TestHTTPEmitterShortCallerDeadlineStillEmitsOnce(t *testing.T) {
+	for _, deadline := range []time.Duration{5 * time.Second, 10 * time.Second, 15 * time.Second} {
+		t.Run(deadline.String(), func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				attempts.Add(1)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+			if _, err := (&HTTPEmitter{BaseURL: srv.URL}).Emit(ctx, EmitRequest{RunID: "run-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := attempts.Load(); got != 1 {
+				t.Fatalf("attempts = %d, want 1", got)
+			}
+		})
 	}
 }
 

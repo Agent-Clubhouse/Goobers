@@ -66,15 +66,11 @@ func TestSaturationIsRetriedForEveryRoute(t *testing.T) {
 	}
 }
 
-func TestStreamResetRetriedForReplaySafeRoutes(t *testing.T) {
+func TestStreamResetRetriedOnlyForReplaySafeRoutes(t *testing.T) {
 	ctx := context.Background()
 	safe := map[string]func(*HTTP) error{
 		"acquire": func(h *HTTP) error { _, _, err := h.ClaimScoped(ctx, retryKey, "run-1", "wf", time.Minute); return err },
 		"release": func(h *HTTP) error { return h.ReleaseScoped(ctx, retryKey, "run-1", claimrelease.Completed.Reason()) },
-		"release-all": func(h *HTTP) error {
-			_, err := h.ReleaseAllForRun(ctx, "run-1", claimrelease.Completed.Reason())
-			return err
-		},
 		"list":    func(h *HTTP) error { _, err := h.ForRunAll(ctx, "run-1"); return err },
 		"recover": func(h *HTTP) error { _, err := h.RecoverStale(ctx); return err },
 	}
@@ -86,6 +82,13 @@ func TestStreamResetRetriedForReplaySafeRoutes(t *testing.T) {
 		if calls.Load() != 2 {
 			t.Fatalf("%s: calls = %d, want 2", name, calls.Load())
 		}
+	}
+	client, calls := flakyPlane(t, 1, "reset")
+	if _, err := client.ReleaseAllForRun(ctx, "run-1", claimrelease.Completed.Reason()); err == nil || !strings.Contains(err.Error(), "INTERNAL_ERROR") {
+		t.Fatalf("release-all after an ambiguous reset must surface it, err = %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("release-all replayed after an ambiguous failure: calls = %d", calls.Load())
 	}
 }
 

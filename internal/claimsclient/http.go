@@ -2,7 +2,6 @@ package claimsclient
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,23 +157,8 @@ func newHTTP(cfg HTTPConfig, anonymous bool) (*HTTP, error) {
 // change the outcome; see the per-route notes at each call site. Calls refused
 // before a handler ran (admission, recovery) are always replayed.
 func (h *HTTP) post(ctx context.Context, path string, body, target any, replaySafe bool) error {
-	return h.postWithHeaders(ctx, path, body, target, nil, replaySafe)
-}
-
-func (h *HTTP) postKeyed(ctx context.Context, path string, body, target any) error {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("claimsclient: encode request key: %w", err)
-	}
-	key := sha256.Sum256(append(append([]byte(path), 0), raw...))
-	headers := make(http.Header)
-	headers.Set("Idempotency-Key", fmt.Sprintf("claims-%x", key))
-	return h.postWithHeaders(ctx, path, body, target, headers, true)
-}
-
-func (h *HTTP) postWithHeaders(ctx context.Context, path string, body, target any, headers http.Header, replaySafe bool) error {
 	endpoint := h.cfg.BaseURL + path
-	response, err := h.plane.DoJSONRetrying(ctx, http.MethodPost, path, body, headers, replaySafe)
+	response, err := h.plane.DoJSONRetrying(ctx, http.MethodPost, path, body, nil, replaySafe)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "encode" {
@@ -274,26 +258,13 @@ func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string, reason 
 
 // ReleaseAllForRun implements Ledger over claims/release with itemId omitted.
 func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) ([]Entry, error) {
-	// The stable key makes an ambiguous replay return the first call's report
-	// rather than applying a second release that would answer an empty list.
+	// Not replay-safe after an ambiguous failure: the reply lists what THIS call
+	// released, and a replay of a call that did commit answers an empty list.
 	var response claimResponse
-	if err := h.postReleaseKeyed(ctx, claimRequest{RunID: runID, Reason: reason.Normalize()}, &response); err != nil {
+	if err := h.postRelease(ctx, claimRequest{RunID: runID, Reason: reason.Normalize()}, &response, false); err != nil {
 		return nil, err
 	}
 	return response.Released, nil
-}
-
-func (h *HTTP) postReleaseKeyed(ctx context.Context, request claimRequest, response *claimResponse) error {
-	err := h.postKeyed(ctx, apicontract.ClaimReleasePath, request, response)
-	var planeErr *Error
-	if err == nil || request.Reason.IsZero() || !errors.As(err, &planeErr) ||
-		planeErr.Status != http.StatusBadRequest || !strings.Contains(planeErr.Message, `unknown field "reason"`) {
-		return err
-	}
-	_, _ = fmt.Fprintf(releaseFallbackLog, "warning: claims plane predates release reasons; releasing %s for run %s without recording its %s reason\n",
-		releaseTarget(request), request.RunID, request.Reason.Disposition)
-	request.Reason = claimrelease.Reason{}
-	return h.postKeyed(ctx, apicontract.ClaimReleasePath, request, response)
 }
 
 // releaseFallbackLog receives the warning postRelease writes when it drops a

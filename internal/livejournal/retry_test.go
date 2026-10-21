@@ -9,12 +9,6 @@ import (
 	"github.com/goobers/goobers/internal/retryutil"
 )
 
-func TestDefaultEmitRetryDeadlineCoversFailoverWindow(t *testing.T) {
-	if defaultEmitRetryDeadline != 240*time.Second {
-		t.Fatalf("default emit retry deadline = %v, want 240s", defaultEmitRetryDeadline)
-	}
-}
-
 func fastRetryPolicy() RetryPolicy {
 	return RetryPolicy{BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
 }

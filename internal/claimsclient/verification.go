@@ -31,13 +31,13 @@ func (h *HTTP) RecordClaimVerification(ctx context.Context, entry Entry, observa
 	if err := scopedKey(KeyForEntry(entry)); err != nil {
 		return false, err
 	}
-	// The stable key makes an ambiguous replay return the first call's answer
-	// rather than treating the already-recorded observation as stale.
+	// Not replay-safe after an ambiguous failure: a committed observation is
+	// stale on replay and answers ok=false.
 	var response claimResponse
-	err := h.postKeyed(ctx, apicontract.ClaimVerifyPath, claimVerificationRequest{
+	err := h.post(ctx, apicontract.ClaimVerifyPath, claimVerificationRequest{
 		RunID: h.cfg.RunID, Gaggle: entry.Gaggle, Provider: entry.Provider,
 		ItemID: entry.ExternalID, OwnerRunID: entry.RunID, ClaimedAt: entry.ClaimedAt, Observation: observation,
-	}, &response)
+	}, &response, false)
 	return response.Ok, err
 }
 

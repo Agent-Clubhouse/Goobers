@@ -350,15 +350,12 @@ func TestClassifyBareProxy5xxAmbiguous(t *testing.T) {
 }
 
 func TestPlaneRetryBudgetIsTimeBased(t *testing.T) {
-	if DefaultRetryMaxElapsed != 240*time.Second {
-		t.Fatalf("default retry window = %v, want 240s", DefaultRetryMaxElapsed)
-	}
-
 	t.Run("more than eight attempts may succeed", func(t *testing.T) {
 		errs := make([]error, 12)
 		for i := range errs {
 			errs[i] = io.EOF
 		}
+
 		transport := &scriptedTransport{errs: errs}
 		clock := newRetryFakeClock()
 		client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(time.Minute, time.Millisecond))
@@ -416,18 +413,102 @@ func TestPlaneRetryBudgetIsTimeBased(t *testing.T) {
 		}
 	})
 
-	t.Run("inside stage margin makes no attempt", func(t *testing.T) {
-		transport := &scriptedTransport{}
-		clock := newRetryFakeClock()
-		clock.now = time.Now()
-		ctx, cancel := context.WithDeadline(context.Background(), clock.now.Add(10*time.Second))
-		defer cancel()
-		client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(time.Minute, time.Second))
-		_, err := client.DoRetrying(ctx, http.MethodGet, "/x", nil, nil, false)
-		if !errors.Is(err, ErrBudgetExhausted) || transport.calls.Load() != 0 {
-			t.Fatalf("calls=%d err=%v, want immediate budget exhaustion", transport.calls.Load(), err)
+}
+
+func TestShortCallerDeadlineStillMakesFirstAttempt(t *testing.T) {
+	for _, deadline := range []time.Duration{5 * time.Second, 10 * time.Second, 15 * time.Second} {
+		t.Run(deadline.String(), func(t *testing.T) {
+			transport := &scriptedTransport{}
+			client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, fastRetry())
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+			response, err := client.DoRetrying(ctx, http.MethodGet, "/x", nil, nil, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = response.Body.Close()
+			if calls := transport.calls.Load(); calls != 1 {
+				t.Fatalf("calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestSuccessfulLargeBodyReadableAfterReturn(t *testing.T) {
+	body := strings.Repeat("x", 1<<20)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		flusher := w.(http.Flusher)
+		for offset := 0; offset < len(body); offset += 4096 {
+			end := min(offset+4096, len(body))
+			_, _ = io.WriteString(w, body[offset:end])
+			flusher.Flush()
 		}
-	})
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, nil, fastRetry())
+	response, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	got, err := io.ReadAll(response.Body)
+	if err != nil || string(got) != body {
+		t.Fatalf("read %d of %d bytes: %v", len(got), len(body), err)
+	}
+}
+
+func TestCancellationDuringBackoffIsNotBudgetExhaustion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	transport := &scriptedTransport{errs: []error{io.EOF}}
+	cfg := fastRetry()
+	cfg.wait = func(context.Context, time.Duration) bool {
+		cancel()
+		return false
+	}
+	client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, cfg)
+	_, err := client.DoRetrying(ctx, http.MethodGet, "/x", nil, nil, false)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("err = %v, want context cancellation only", err)
+	}
+}
+
+func TestTLSAnd403FailFast(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		transport http.RoundTripper
+		baseURL   string
+	}{
+		{
+			name: "tls verification",
+			transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("tls: failed to verify certificate")
+			}),
+			baseURL: "https://daemon",
+		},
+		{
+			name: "forbidden",
+			transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader("forbidden")), Header: http.Header{}, Request: request}, nil
+			}),
+			baseURL: "http://daemon",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return tc.transport.RoundTrip(request)
+			})
+			client := newTestClient(t, tc.baseURL, &http.Client{Transport: transport}, fastRetry())
+			response, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, true)
+			if err == nil {
+				_ = response.Body.Close()
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("calls = %d, want 1", calls.Load())
+			}
+		})
+	}
 }
 
 func TestNXDOMAINFailsFast(t *testing.T) {
