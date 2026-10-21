@@ -186,3 +186,17 @@ not support `maxRepasses` or `runsOn`, and they cannot appear inside a parallel
 branch. Current compilers reject timeout behavior until the target runner
 supports it; validate against the target release before declaring
 `timeoutSeconds` or `onTimeout`.
+
+### Operator intervention timeouts
+
+For engine-driven runs, approve, override, rerun-stage, and escalation resolution
+wait for a durable HITL decision. The server allows 65 seconds, containing the
+engine's 60-second update limit; the corresponding CLI calls allow 70 seconds.
+Ordinary API mutation timeouts are unchanged. Claim reacquisition observes the
+request context and returns `claims_lock_timeout` when the claims lock remains
+busy before the request budget expires.
+
+After an intervention timeout, do not immediately retry: a submitted Temporal
+update may still complete. Wait at least 70 seconds, then inspect
+`goobers status <instance-root>` or the run journal. Retry only if the run still
+reports `waiting_for_gate` and no approval/resume record exists.

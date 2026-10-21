@@ -9,11 +9,35 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func TestDaemonMutationClientTimeoutContainsInterventionBudget(t *testing.T) {
+	if interventionClientTimeout != 70*time.Second {
+		t.Fatalf("intervention client timeout = %s, want 70s", interventionClientTimeout)
+	}
+	for _, id := range []apicontract.RouteID{
+		apicontract.RouteApproveStage,
+		apicontract.RouteOverrideStage,
+		apicontract.RouteRerunStage,
+		apicontract.RouteResolveEscalation,
+	} {
+		route, ok := apicontract.V1Route(id)
+		if !ok {
+			t.Fatalf("route %s is not registered", id)
+		}
+		if timeout := daemonMutationClientTimeout(id); timeout != interventionClientTimeout || timeout <= route.Budget {
+			t.Errorf("%s client timeout = %s, want %s above route budget %s", id, timeout, interventionClientTimeout, route.Budget)
+		}
+	}
+	if timeout := daemonMutationClientTimeout(apicontract.RouteCancelRun); timeout != remoteTriggerTimeout {
+		t.Errorf("ordinary mutation timeout = %s, want %s", timeout, remoteTriggerTimeout)
+	}
+}
 
 func interventionCLIFixture(t *testing.T, handler http.HandlerFunc) (string, *httptest.Server) {
 	t.Helper()

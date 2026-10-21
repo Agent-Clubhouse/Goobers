@@ -66,7 +66,7 @@ const (
 	// unshippable in this declared version fails on that PR, not at tag
 	// time. Reviewed and bumped like any other change; documented in
 	// docs/guides/releases.md.
-	NextPlannedRelease = "v0.5.0"
+	NextPlannedRelease = "v0.5.1"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.
@@ -325,7 +325,7 @@ type Platform struct {
 // mirrors the `go` directive in go.mod (the language version the module targets);
 // TestMinGoVersionMatchesGoMod guards the two against drift so the declared
 // surface can never quietly diverge from what the module actually compiles with.
-const minGoVersion = "1.26.6"
+const minGoVersion = "1.26.10"
 
 // platforms is the declared OS/arch support matrix. Linux and macOS are release
 // gates (primary CI + the self-host runner + developer machines); Windows is

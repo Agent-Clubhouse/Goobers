@@ -27,7 +27,7 @@
 # Bump trigger: a change to the `go` directive in go.mod — never a calendar.
 # `go run ./test/gotoolchain` (the go-toolchain merge-gate check) fails while
 # the two disagree, so the bump has to land in the same diff.
-ARG GO_IMAGE=docker.io/library/golang:1.26.6@sha256:0d1d3a794be25f809dd2cb3160d8c73276c4056a9f8242a138e908ddeee7b6b6
+ARG GO_IMAGE=docker.io/library/golang:1.26.10@sha256:3745f1aa11822297b79113f5e84ce2bffeb039734571c39855809cfe9e5d7be6
 ARG PORTAL_NODE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
 ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 ARG COPILOT_VERSION=1.0.83

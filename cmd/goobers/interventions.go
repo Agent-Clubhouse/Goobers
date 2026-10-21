@@ -173,7 +173,7 @@ func (s *runInterventionService) approve(admission, execution context.Context, i
 	// daemon's journal snapshot for a runner-written marker would be both
 	// wrong and racy against the workflow's own writer.
 	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionApprove, resolved, input)
+		return s.deliverHITL(admission, hitlActionApprove, resolved, input)
 	}
 	if result, replayed, err := replayIntervention(resolved, "approve", input); replayed || err != nil {
 		return result, err
@@ -271,7 +271,7 @@ func (s *runInterventionService) override(admission, execution context.Context, 
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionOverride, resolved, input)
+		return s.deliverHITL(admission, hitlActionOverride, resolved, input)
 	}
 	if result, replayed, err := replayIntervention(resolved, "override", input); replayed || err != nil {
 		return result, err
@@ -331,7 +331,7 @@ func (s *runInterventionService) rerunStage(admission, execution context.Context
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionRerun, resolved, input)
+		return s.deliverHITL(admission, hitlActionRerun, resolved, input)
 	}
 	if result, replayed, err := replayIntervention(resolved, "rerun", input); replayed || err != nil {
 		return result, err
@@ -415,7 +415,7 @@ func (s *runInterventionService) AcceptDenyEscalation(admission, execution conte
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionDeny, resolved, input)
+		return s.deliverHITL(admission, hitlActionDeny, resolved, input)
 	}
 	return s.denyEscalation(resolved, input)
 }
@@ -709,7 +709,7 @@ func (s *runInterventionService) execute(
 	if background && input.IdempotencyKey == "" {
 		return runner.Result{}, interventionBadRequest("idempotency_key_required", "Idempotency-Key is required")
 	}
-	lease, err := s.beginExecution(resolved, reacquireClaims)
+	lease, err := s.beginExecution(admission, resolved, reacquireClaims)
 	if err != nil {
 		return runner.Result{}, err
 	}
@@ -771,7 +771,7 @@ func (s *runInterventionService) finishExecution(
 	return result, runErr
 }
 
-func (s *runInterventionService) beginExecution(resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
+func (s *runInterventionService) beginExecution(admission context.Context, resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
 	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
 	if !exclusive {
 		return nil, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
@@ -803,7 +803,7 @@ func (s *runInterventionService) beginExecution(resolved resolvedInterventionRun
 	lease.releaseAdmission = release
 
 	if reacquireClaims {
-		if err := s.reacquireClaims(resolved); err != nil {
+		if err := s.reacquireClaims(admission, resolved); err != nil {
 			lease.Close()
 			return nil, err
 		}
@@ -893,7 +893,7 @@ func (l *interventionExecutionLease) releaseReacquiredClaims() error {
 	return releaseClaimsForRun(l.service.layout, l.service.instanceLog, l.resolved.runID)
 }
 
-func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRun) error {
+func (s *runInterventionService) reacquireClaims(ctx context.Context, resolved resolvedInterventionRun) error {
 	claims, err := s.claimHistory(resolved)
 	if err != nil {
 		return httpapi.NewInterventionError(
@@ -903,7 +903,7 @@ func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRu
 	var acquired bool
 	var holder string
 	lockPath := filepath.Join(s.layout.SchedulerDir(), claimLockFileName)
-	err = withClaimLockForRun(lockPath, claimLockOperationIntervention, resolved.gaggle, resolved.runID, func() error {
+	err = withClaimLockForRunContext(ctx, lockPath, claimLockOperationIntervention, resolved.gaggle, resolved.runID, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName),
 			localscheduler.WithInstanceLog(s.instanceLog),
@@ -915,6 +915,17 @@ func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRu
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return httpapi.NewInterventionError(
+				http.StatusServiceUnavailable, "request_budget_exceeded", "the intervention was not accepted within the request budget", err,
+			)
+		}
+		var timeoutErr *claimsLockTimeoutError
+		if errors.As(err, &timeoutErr) {
+			return httpapi.NewInterventionError(
+				http.StatusServiceUnavailable, claimsLockTimeoutCode, "run claims are busy; retry the intervention", err,
+			)
+		}
 		return httpapi.NewInterventionError(
 			http.StatusInternalServerError, "claim_reacquire_failed", "run claims could not be reacquired", err,
 		)
