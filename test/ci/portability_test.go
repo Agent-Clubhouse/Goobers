@@ -587,7 +587,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "temporal-cli", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		header := strings.SplitN(section, "\n    steps:", 2)[0]
 		if section == "" {
@@ -641,7 +641,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
+		"needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, temporal-cli, unit, unit-linux-coverage, shipped, windows-smoke]",
 		"issues: write",
 		"github.rest.issues.create",
 		// goobers:approved and goobers:cloud are load-bearing, not decoration:
@@ -654,7 +654,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 		}
 	}
 	assertVersionedActionPin(t, escalation, "actions/github-script")
-	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "temporal-cli", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)

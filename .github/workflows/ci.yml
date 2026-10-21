@@ -128,6 +128,7 @@ permissions:
 env:
   # Pin lint to the version the Makefile/ADO pipeline targeted (schema v2 config).
   GOLANGCI_LINT_VERSION: v2.12.2
+  TEMPORAL_CLI_VERSION: v1.8.2
 
   # The declared dependency set the integration tier provisions (#3322). It is
   # declared and fixed, so its .deb payloads are cached and the mirrors are only
@@ -799,12 +800,44 @@ jobs:
   # (the largest single tests and per-job setup become the floor).
   # Full git history is required — the DSL SemVer-compatibility tests read the
   # latest reachable tag.
+  temporal-cli:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-temporal-cli
+      cancel-in-progress: true
+    name: acquire Temporal CLI
+    needs: [scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Cache Temporal CLI
+        id: temporal-cli-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+
+      - name: Download Temporal CLI
+        if: ${{ steps.temporal-cli-cache.outputs.cache-hit != 'true' }}
+        run: go run ./internal/temporalcli/cmd/download -output "${RUNNER_TEMP}/temporal-cli/temporal"
+
   unit:
     concurrency:
       group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-unit-${{ matrix.shard }}
       cancel-in-progress: true
     name: unit race shard ${{ matrix.shard }} (linux)
-    needs: [scope]
+    needs: [scope, temporal-cli]
     if: ${{ needs.scope.outputs.profile == 'full' }}
     # Not gated on preflight: the shards are the long pole, and waiting for
     # preflight added its ~4.4 min to every run's wall clock. A preflight
@@ -820,6 +853,8 @@ jobs:
         shard: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      GOOBERS_TEMPORAL_CLI: ${{ runner.temp }}/temporal-cli/temporal
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -832,6 +867,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Restore Temporal CLI
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
 
       - name: Download modules
         timeout-minutes: 12
@@ -987,10 +1028,12 @@ jobs:
       group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-unit-linux-coverage
       cancel-in-progress: true
     name: unit coverage gate (linux)
-    needs: [preflight, scope]
+    needs: [preflight, scope, temporal-cli]
     if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      GOOBERS_TEMPORAL_CLI: ${{ runner.temp }}/temporal-cli/temporal
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -1003,6 +1046,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Restore Temporal CLI
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
 
       - name: Download modules
         timeout-minutes: 12
@@ -2806,7 +2855,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
+    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, temporal-cli, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -2838,6 +2887,7 @@ jobs:
             needs.checks.result == 'failure' ||
             needs.deploy-reference.result == 'failure' ||
             needs.lint.result == 'failure' ||
+            needs.temporal-cli.result == 'failure' ||
             needs.unit.result == 'failure' ||
             needs.unit-linux-coverage.result == 'failure' ||
             needs.darwin-build.result == 'failure' ||
@@ -2901,6 +2951,7 @@ jobs:
             needs.checks.result == 'success' &&
             needs.deploy-reference.result == 'success' &&
             needs.lint.result == 'success' &&
+            needs.temporal-cli.result == 'success' &&
             needs.unit.result == 'success' &&
             needs.unit-linux-coverage.result == 'success' &&
             needs.darwin-build.result == 'success' &&

@@ -3,22 +3,25 @@ package temporaltest
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"go.temporal.io/sdk/testsuite"
+
+	"github.com/goobers/goobers/internal/temporalcli"
 )
 
 // CLIEnvVar is the environment variable StartDevServer reads to decide how to
 // acquire the Temporal CLI binary. See StartDevServer for the two modes.
-const CLIEnvVar = "GOOBERS_TEMPORAL_CLI"
+const CLIEnvVar = temporalcli.EnvVar
 
 // CLIVersion pins the Temporal CLI the cached download fetches. "default" on
 // temporal.download floats to the newest release: v1.9.1 (Server 1.32.0),
 // published 2026-09-14, rejects this suite's schedule reconciliation with
 // "Not enough time to schedule next run", failing every PR's CI without a
 // code change. Bump deliberately, alongside the linux-ci image pin.
-const CLIVersion = "v1.8.2"
+const CLIVersion = temporalcli.Version
 
 // StartDevServer starts a Temporal CLI dev server, centralizing how the
 // engine and bootstrap suites that need a real dev server (Schedules and
@@ -29,11 +32,9 @@ const CLIVersion = "v1.8.2"
 // DevServerOptions.ExistingPath — an offline path that works in an
 // egress-controlled environment and, as a side effect, pins the dev-server
 // version instead of floating on whatever "default" currently resolves to on
-// temporal.download. If CLIEnvVar is unset, the CLI is fetched and cached via
-// DevServerOptions.CachedDownload{Version: CLIVersion}, a pinned release rather
-// than the floating "default". Either way, StartDevServer logs which
-// mode it used through t, so a run's test output shows whether it acquired
-// the CLI online or offline.
+// temporal.download. If CLIEnvVar is unset, the pinned CLI is fetched with
+// bounded retry into the system temporary directory. Either way,
+// StartDevServer logs which mode it used through t.
 //
 // opts is passed through to the SDK as-is except for the two acquisition
 // fields (ExistingPath and CachedDownload), which StartDevServer overwrites
@@ -41,27 +42,33 @@ const CLIVersion = "v1.8.2"
 func StartDevServer(ctx context.Context, t testing.TB, opts testsuite.DevServerOptions) (*testsuite.DevServer, error) {
 	t.Helper()
 
-	existingPath, cached, mode := resolveDevServerAcquisition(os.Getenv(CLIEnvVar))
+	existingPath, mode := resolveDevServerAcquisition(os.Getenv(CLIEnvVar))
+	if existingPath == "" {
+		existingPath = filepath.Join(os.TempDir(), "temporal-cli-"+CLIVersion)
+		if err := temporalcli.Download(ctx, existingPath); err != nil {
+			return nil, err
+		}
+		mode = "starting Temporal dev server via retrying cached download (version=" + CLIVersion + ")"
+	}
 	opts.ExistingPath = existingPath
-	opts.CachedDownload = cached
+	opts.CachedDownload = testsuite.CachedDownload{}
 	t.Logf("temporaltest: %s", mode)
 
 	return testsuite.StartDevServer(ctx, opts)
 }
 
 // resolveDevServerAcquisition decides how to acquire the Temporal CLI binary
-// given the raw value of CLIEnvVar, returning the ExistingPath/CachedDownload
-// pair StartDevServer should set on DevServerOptions plus a human-readable
-// description of the mode for logging.
+// given the raw value of CLIEnvVar, returning the path to use, if any, plus a
+// human-readable description of the mode for logging.
 //
 // Split out from StartDevServer so the decision — the part #3393 is actually
 // about — is testable without spawning a real dev server process or touching
 // the network.
-func resolveDevServerAcquisition(rawEnv string) (existingPath string, cached testsuite.CachedDownload, mode string) {
+func resolveDevServerAcquisition(rawEnv string) (existingPath, mode string) {
 	if path := strings.TrimSpace(rawEnv); path != "" {
-		return path, testsuite.CachedDownload{}, "starting Temporal dev server from existing CLI (" + CLIEnvVar + "=" + path + ")"
+		return path, "starting Temporal dev server from existing CLI (" + CLIEnvVar + "=" + path + ")"
 	}
-	return "", testsuite.CachedDownload{Version: CLIVersion},
+	return "",
 		"starting Temporal dev server via cached download (version=" + CLIVersion + "); set " + CLIEnvVar +
 			" to a pre-existing Temporal CLI binary to run offline"
 }
