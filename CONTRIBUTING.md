@@ -706,6 +706,11 @@ not obvious, and reference issues (`Closes #123`). Keep unrelated changes out of
 
 ### cmd/goobers growth baseline
 
+Control-plane extraction PRs follow the stricter
+[move-safe gate rules](docs/guides/control-plane-extraction-gates.md) for
+deadcode identities, complexity rows, coverage, and non-transferable command
+growth credit.
+
 `make cmdgoobers-growth` checks physical lines and file count of direct non-test
 Go files in `cmd/goobers`, including all build tags, comments, and blank lines.
 Decreases pass without editing the baseline; run `make cmdgoobers-growth-update`
