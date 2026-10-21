@@ -314,3 +314,74 @@ func TestLegacyPublicationClaimDoesNotCountAsMergeLease(t *testing.T) {
 		t.Fatal("legacy publication custody routed through merge exclusion")
 	}
 }
+
+func TestFileMergeWaitsForPlaneLeaseAfterDaemonCrash(t *testing.T) {
+	plane := newClaimsPlane(t)
+	request := httpapi.ClaimRequest{
+		Gaggle: "g", Provider: "github",
+		ItemID: claimsclient.MergeLockKey("g", "github", "acme", "web").ExternalID,
+		RunID:  "run-plane", Workflow: "merge-review", LeaseSeconds: 600,
+	}
+	if response, err := plane.service.Acquire(t.Context(), request); err != nil || !response.Ok {
+		t.Fatalf("plane merge acquire: %+v %v", response, err)
+	}
+	plane.service.close()
+
+	claimsLockPath := filepath.Join(plane.layout.SchedulerDir(), claimLockFileName)
+	mergeLockPath := filepath.Join(plane.layout.SchedulerDir(), mergeLockFileName)
+	checked := make(chan struct{})
+	var checkedOnce sync.Once
+	local, err := claimsclient.NewFile(claimsclient.FileConfig{
+		LedgerPath: filepath.Join(plane.layout.SchedulerDir(), claimLedgerFileName),
+		Lock: func(operation string, fn func() error) error {
+			checkedOnce.Do(func() { close(checked) })
+			return withClaimLock(claimsLockPath, operation, fn)
+		},
+		MergeLock: func(fn func() error) error {
+			return withFileLock(mergeLockPath, fn)
+		},
+		MergeLockPoll: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- local.MergeLock(t.Context(), claimsclient.MergeLock{
+			Key: requestClaimKey(request), RunID: "run-file", Workflow: "merge-review",
+		}, func(context.Context) error {
+			close(entered)
+			return nil
+		})
+	}()
+	<-checked
+	select {
+	case <-entered:
+		t.Fatal("file merge entered while the crashed daemon's plane lease remained live")
+	default:
+	}
+	if err := withClaimLock(claimsLockPath, "test.release-crashed-plane-lease", func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(plane.layout.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return err
+		}
+		return ledger.ReleaseScoped(claimKey(request), request.RunID, claimrelease.Completed.Reason())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("file merge did not enter after the surviving plane lease was released")
+	}
+}
+
+func requestClaimKey(request httpapi.ClaimRequest) claimsclient.Key {
+	return claimsclient.Key{
+		Gaggle: request.Gaggle, Provider: request.Provider, ExternalID: request.ItemID,
+	}
+}

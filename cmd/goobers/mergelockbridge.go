@@ -170,7 +170,7 @@ func (s *daemonClaimService) acquireMergeLock(
 	ctx context.Context,
 	request httpapi.ClaimRequest,
 	lease time.Duration,
-) (httpapi.ClaimResponse, error) {
+) (response httpapi.ClaimResponse, err error) {
 	held, err := s.mergeFlock.reserve()
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
@@ -179,40 +179,27 @@ func (s *daemonClaimService) acquireMergeLock(
 		return httpapi.ClaimResponse{Ok: false, Holder: "local merge-pr"}, nil
 	}
 	defer s.mergeFlock.finishReservation()
-	var response httpapi.ClaimResponse
-	err = s.withLedger(claimLockOperationAPIAcquire, request, func(ledger *localscheduler.ClaimLedger) error {
-		defer func() {
-			s.mergeFlock.reconcile(ledger.Snapshot())
-		}()
-		client, err := s.coordinatedLedger(ledger)
-		if err != nil {
-			return err
-		}
-		ok, holder, err := client.ClaimScoped(ctx, claimKey(request), request.RunID, request.Workflow, lease)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			response = httpapi.ClaimResponse{Ok: false, Holder: holder}
-			s.journalRefusal(request, holder)
-			return nil
-		}
-		entry, held := ledger.LookupScoped(claimKey(request))
-		if !held || entry.RunID != request.RunID {
-			return errors.New("acquired merge claim is no longer held")
-		}
-		expires := entry.ExpiresAt
-		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
-		return nil
-	})
-	return response, err
+	defer func() { err = errors.Join(err, s.refreshMergeFlock()) }()
+	client, err := s.coordinatedLedger(claimLockOperationAPIAcquire, request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	ok, holder, err := client.ClaimScoped(ctx, claimKey(request), request.RunID, request.Workflow, lease)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if !ok {
+		s.journalRefusal(request, holder)
+		return httpapi.ClaimResponse{Ok: false, Holder: holder}, nil
+	}
+	return s.currentAdmissionResponse(ctx, client, request)
 }
 
 func (s *daemonClaimService) renewMergeLock(
 	ctx context.Context,
 	request httpapi.ClaimRequest,
 	lease time.Duration,
-) (httpapi.ClaimResponse, error) {
+) (response httpapi.ClaimResponse, err error) {
 	held, err := s.mergeFlock.reserve()
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
@@ -221,36 +208,39 @@ func (s *daemonClaimService) renewMergeLock(
 		return httpapi.ClaimResponse{Ok: false, Holder: "local merge-pr"}, nil
 	}
 	defer s.mergeFlock.finishReservation()
-	var response httpapi.ClaimResponse
+	defer func() { err = errors.Join(err, s.refreshMergeFlock()) }()
+	var entry localscheduler.ClaimEntry
+	var found bool
 	err = s.withLedger(claimLockOperationAPIRenew, request, func(ledger *localscheduler.ClaimLedger) error {
-		defer func() {
-			s.mergeFlock.reconcile(ledger.Snapshot())
-		}()
-		entry, held := ledger.LookupScoped(claimKey(request))
-		if !held || entry.RunID != request.RunID || !entry.ExpiresAt.After(time.Now()) {
-			if held {
-				response.Holder = entry.RunID
-			}
+		defer s.mergeFlock.reconcile(ledger.Snapshot())
+		entry, found = ledger.LookupScoped(claimKey(request))
+		if !found || entry.RunID != request.RunID || !entry.ExpiresAt.After(time.Now()) {
 			return nil
 		}
-		if !entry.SharedDeadline.IsZero() {
-			var renewErr error
-			response, renewErr = s.renewSharedClaim(ctx, ledger, request, entry, lease)
-			return renewErr
-		}
-		ok, err := ledger.RenewEntry(entry, lease)
-		if err != nil || !ok {
-			return err
-		}
-		current, held := ledger.LookupScoped(claimKey(request))
-		if !held || current.RunID != request.RunID {
-			return errors.New("renewed merge claim is no longer held")
-		}
-		expires := current.ExpiresAt
-		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
 		return nil
 	})
-	return response, err
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if !found || entry.RunID != request.RunID || !entry.ExpiresAt.After(time.Now()) {
+		holder := ""
+		if found {
+			holder = entry.RunID
+		}
+		return httpapi.ClaimResponse{Ok: false, Holder: holder}, nil
+	}
+	client, err := s.coordinatedLedger(claimLockOperationAPIRenew, request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	ok, err := client.RenewExpected(ctx, entry, lease)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if !ok {
+		return httpapi.ClaimResponse{Ok: false, Holder: entry.RunID}, nil
+	}
+	return s.currentAdmissionResponse(ctx, client, request)
 }
 
 func (s *daemonClaimService) registerMergeLedgerObserver() func() {

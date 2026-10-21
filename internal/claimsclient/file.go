@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/claimrelease"
@@ -23,6 +24,9 @@ type FileConfig struct {
 	// MergeLock is the instance-wide merge flock (cmd/goobers's withFileLock
 	// over merge.lock). Nil refuses MergeLock.
 	MergeLock func(fn func() error) error
+	// MergeLockPoll controls how often a local merge retries after the durable
+	// ledger reports a live plane merge lease. Zero uses the default.
+	MergeLockPoll time.Duration
 	// ProviderReleaseLock serializes cleanup attempts for one item, separately
 	// from the claims lock. It must be cross-process and held across I/O.
 	ProviderReleaseLock func(Key, func() error) error
@@ -59,7 +63,12 @@ const (
 	fileOperationClaim      = "claims.client.claim"
 	fileOperationRelease    = "claims.client.release"
 	fileOperationReleaseAll = "claims.client.release-all"
+	fileOperationMergeCheck = "claims.client.merge-check"
 )
+
+const defaultFileMergeLockPoll = 2 * time.Second
+
+var errFileMergeLeaseHeld = errors.New("claimsclient: live plane merge lease")
 
 // File is the file-ledger backend.
 type File struct {
@@ -76,6 +85,9 @@ func NewFile(cfg FileConfig) (*File, error) {
 		cfg.Open = func(path string, opts ...localscheduler.LedgerOption) (FileLedger, error) {
 			return localscheduler.OpenClaimLedger(path, opts...)
 		}
+	}
+	if cfg.MergeLockPoll <= 0 {
+		cfg.MergeLockPoll = defaultFileMergeLockPoll
 	}
 	return &File{cfg: cfg}, nil
 }
@@ -194,16 +206,68 @@ func (f *File) ListNamespace(ctx context.Context, gaggle, provider string) (List
 	return session.ListNamespace(ctx, gaggle, provider)
 }
 
-// MergeLock implements Ledger over the instance-wide merge flock. The key is
-// deliberately unused: the flock is one per instance (#719's shape), and the
-// per-repository lease is the plane's refinement, not the file's. There is no
-// renewal race to fail closed on here — the flock is held for fn's whole
-// duration, not leased and polled — so fn simply gets ctx back unchanged.
+// MergeLock implements Ledger over the instance-wide merge flock. After taking
+// that flock it reads the durable claim ledger under claims.lock, preserving
+// merge.lock -> claims.lock ordering. This second check keeps a local merge out
+// while an unexpired plane lease survives a daemon crash, when the daemon-owned
+// flock handle has disappeared but the delegated merge window remains live.
 func (f *File) MergeLock(ctx context.Context, _ MergeLock, fn func(context.Context) error) error {
 	if f.cfg.MergeLock == nil {
 		return errors.New("claimsclient: file backend has no merge lock configured")
 	}
-	return f.cfg.MergeLock(func() error { return fn(ctx) })
+	holder := ""
+	for {
+		err := f.cfg.MergeLock(func() error {
+			var checkErr error
+			holder, checkErr = f.livePlaneMergeLease()
+			if checkErr != nil {
+				return checkErr
+			}
+			if holder != "" {
+				return errFileMergeLeaseHeld
+			}
+			return fn(ctx)
+		})
+		if !errors.Is(err, errFileMergeLeaseHeld) {
+			return err
+		}
+		timer := time.NewTimer(f.cfg.MergeLockPoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("acquire file merge lock: live plane lease held by run %s: %w", holder, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func (f *File) livePlaneMergeLease() (string, error) {
+	holder := ""
+	check := func() error {
+		session, err := f.open()
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		for _, entry := range session.ledger.Snapshot() {
+			if entry.IsPublicationClaim() || !entry.ExpiresAt.After(now) {
+				continue
+			}
+			externalID := entry.ExternalID
+			if externalID == "" {
+				externalID = entry.ItemID
+			}
+			if strings.HasPrefix(externalID, MergeLockItemPrefix) {
+				holder = entry.RunID
+				return nil
+			}
+		}
+		return nil
+	}
+	if f.cfg.Lock == nil {
+		return holder, check()
+	}
+	return holder, f.cfg.Lock(fileOperationMergeCheck, check)
 }
 
 // fileSession is one open ledger inside a held critical section. Its
