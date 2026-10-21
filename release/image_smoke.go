@@ -55,22 +55,10 @@ goobers run demo $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image mock demo execution failed' }
 `
 
-// The Workflow annotation is the supported, explicit preview opt-in. It is
-// applied only to this fresh fixture; fix migrates the workflow mechanically.
-// Same split as the stage probe. #5068's acknowledgement logic is unchanged;
-// only the target directory is parameterised and the sandboxed run separated
-// so CI can execute the half that failed the rc.5 release.
+// Exercise stable DSL 3.0 without a preview acknowledgement. Keep the
+// preparation separately executable so ordinary CI checks the shipped probe.
 const linuxImageDSL3Prepare = `demo="${GOOBERS_DSL3_SMOKE_DIR:-/tmp/dsl3-demo}"
 goobers init --allow-ephemeral --demo --insecure "$demo"
-workflow="$demo"/config/gaggles/demo/workflows/demo.yaml
-preview_workflow="$demo"/config/gaggles/demo/workflows/demo-preview.yaml
-while IFS= read -r line; do
-  printf '%s\n' "$line"
-  if [ "$line" = 'metadata:' ]; then
-    printf '  annotations:\n    goobers.dev/allow-preview-features: "true"\n'
-  fi
-done < "$workflow" > "$preview_workflow"
-mv "$preview_workflow" "$workflow"
 goobers fix --to 3.0 --write "$demo"
 goobers validate "$demo"
 `
@@ -82,11 +70,6 @@ const windowsImageDSL3Smoke = `$ErrorActionPreference = 'Stop'
 $demo = Join-Path $env:TEMP 'goobers-image-dsl3-smoke'
 goobers init --allow-ephemeral --demo --insecure $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image DSL 3.0 demo initialization failed' }
-$workflow = Join-Path $demo 'config\gaggles\demo\workflows\demo.yaml'
-$text = [IO.File]::ReadAllText($workflow)
-$annotation = 'metadata:' + [Environment]::NewLine + '  annotations:' + [Environment]::NewLine + '    goobers.dev/allow-preview-features: "true"'
-$text = [regex]::Replace($text, '(?m)^metadata:\r?$', $annotation)
-[IO.File]::WriteAllText($workflow, $text, (New-Object Text.UTF8Encoding($false)))
 goobers fix --to 3.0 --write $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image DSL 3.0 migration failed' }
 goobers validate $demo
@@ -136,7 +119,7 @@ func verifyImageDSL3Smoke(description dockerImageDescription) (*imageDSL3SmokeEv
 	if err := validateImageDSL3SmokeOutput(output); err != nil {
 		return nil, fmt.Errorf("image %s DSL 3.0 smoke failed: %w\n%s", description.ID, err, output)
 	}
-	return &imageDSL3SmokeEvidence{Scope: "packaged CLI migration from DSL 2.0 to explicitly opted-in DSL 3.0 preview, validation and four-stage trusted mock completion in a fresh network-disabled container; no authenticated harness, native per-stage sandbox, distributed placement or support promotion proof", Entrypoint: entrypoint, Arguments: command, Output: output}, nil
+	return &imageDSL3SmokeEvidence{Scope: "packaged CLI migration from DSL 2.0 to supported DSL 3.0, validation and four-stage trusted mock completion in a fresh network-disabled container; no authenticated harness, native per-stage sandbox, distributed placement or support promotion proof", Entrypoint: entrypoint, Arguments: command, Output: output}, nil
 }
 
 func validateImageDSL3SmokeOutput(output string) error {
@@ -147,7 +130,7 @@ func validateImageDSL3SmokeOutput(output string) error {
 		if strings.HasPrefix(line, "FIX Workflow/demo (") && strings.HasSuffix(line, "): migrated to dslVersion 3.0 (written)") {
 			migrated = true
 		}
-		if line == "DSLVERSION Workflow/demo: 3.0 (preview)" {
+		if line == "DSLVERSION Workflow/demo: 3.0 (supported)" {
 			preview = true
 		}
 		if line == "finished: phase=completed" {
@@ -160,7 +143,7 @@ func validateImageDSL3SmokeOutput(output string) error {
 		}
 	}
 	if !migrated || !preview || !completed || len(stages) != 4 {
-		return fmt.Errorf("require written migration, DSL 3.0 preview validation, completed phase and success for all four demo stages")
+		return fmt.Errorf("require written migration, DSL 3.0 supported validation, completed phase and success for all four demo stages")
 	}
 	return nil
 }

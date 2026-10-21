@@ -17,7 +17,7 @@ import (
 func finalArchiveFixture(t *testing.T, target Target, data []byte) string {
 	t.Helper()
 	directory := t.TempDir()
-	name := target.archiveName("v0.4.0-rc.1")
+	name := target.archiveName("v0.6.0-rc.1")
 	if err := os.WriteFile(filepath.Join(directory, name), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +51,11 @@ func TestFinalArchiveBinaryPreservesFinalSignedBytesAndProvenance(t *testing.T) 
 			payload := append([]byte("MZ\x00opaque executable\x00"), bytes.Repeat([]byte{0xff, 0x00, 0x80, 0x42}, 257)...)
 			data := finalArchiveBytes(t, target, []archiveEntry{{name: target.binaryName(), mode: 0755, data: payload}, {name: "docs/readme.md", mode: 0644, data: []byte("documentation")}})
 			directory := finalArchiveFixture(t, target, data)
-			got, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target)
+			got, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(got.Data, payload) || got.ArchiveName != target.archiveName("v0.4.0-rc.1") || got.ArchiveSHA256 != fmt.Sprintf("%x", sha256.Sum256(data)) {
+			if !bytes.Equal(got.Data, payload) || got.ArchiveName != target.archiveName("v0.6.0-rc.1") || got.ArchiveSHA256 != fmt.Sprintf("%x", sha256.Sum256(data)) {
 				t.Fatalf("final artifact bytes or provenance changed: %+v", got)
 			}
 		})
@@ -86,7 +86,7 @@ func TestFinalArchiveRejectsUnsafeOrAmbiguousEntries(t *testing.T) {
 					entries = append([]archiveEntry{{name: target.binaryName(), mode: 0755, data: []byte("binary")}}, entries...)
 				}
 				directory := finalArchiveFixture(t, target, finalArchiveBytes(t, target, entries))
-				if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil {
+				if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil {
 					t.Fatal("unsafe archive accepted")
 				}
 			})
@@ -97,11 +97,11 @@ func TestFinalArchiveRejectsUnsafeOrAmbiguousEntries(t *testing.T) {
 func TestFinalArchiveChecksumIsVerifiedBeforeParsing(t *testing.T) {
 	target := Target{"linux", "amd64"}
 	directory := finalArchiveFixture(t, target, []byte("not a valid archive"))
-	name := target.archiveName("v0.4.0-rc.1")
+	name := target.archiveName("v0.6.0-rc.1")
 	if err := os.WriteFile(filepath.Join(directory, name), []byte("tampered"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil || !strings.Contains(err.Error(), "SHA256 mismatch") {
+	if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil || !strings.Contains(err.Error(), "SHA256 mismatch") {
 		t.Fatalf("archive parsed before checksum validation: %v", err)
 	}
 }
@@ -174,7 +174,7 @@ func TestFinalArchiveZIPDOSExecutableAndCorruptNonbinaryPayload(t *testing.T) {
 	target := Target{"windows", "amd64"}
 	data := buffer.Bytes()
 	directory := finalArchiveFixture(t, target, data)
-	if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err != nil {
+	if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err != nil {
 		t.Fatalf("DOS .exe refused: %v", err)
 	}
 	corrupt := bytes.Clone(data)
@@ -184,7 +184,7 @@ func TestFinalArchiveZIPDOSExecutableAndCorruptNonbinaryPayload(t *testing.T) {
 	}
 	corrupt[position] ^= 1
 	directory = finalArchiveFixture(t, target, corrupt)
-	if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil {
+	if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil {
 		t.Fatal("corrupt nonbinary ZIP payload ignored")
 	}
 }
@@ -211,7 +211,7 @@ func TestFinalArchiveRejectsLinksAndDevices(t *testing.T) {
 		}
 		target := Target{"linux", "amd64"}
 		directory := finalArchiveFixture(t, target, buffer.Bytes())
-		if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil {
+		if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil {
 			t.Fatalf("tar entry type %d accepted", kind)
 		}
 	}
@@ -232,7 +232,7 @@ func TestFinalArchiveRejectsLinksAndDevices(t *testing.T) {
 		}
 		target := Target{"windows", "amd64"}
 		directory := finalArchiveFixture(t, target, buffer.Bytes())
-		if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil {
+		if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil {
 			t.Fatalf("ZIP special mode %v accepted", mode)
 		}
 	}
@@ -245,7 +245,7 @@ func TestFinalArchiveRejectsMalformedTrailersAndExpansionBombHeaders(t *testing.
 	corrupt[len(corrupt)-8] ^= 1
 	for _, data := range [][]byte{[]byte("malformed"), good[:len(good)-1], corrupt, append(bytes.Clone(good), good...), append(bytes.Clone(good), 0)} {
 		directory := finalArchiveFixture(t, target, data)
-		if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil {
+		if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil {
 			t.Fatal("malformed gzip trailer accepted")
 		}
 	}
@@ -259,7 +259,7 @@ func TestFinalArchiveRejectsMalformedTrailersAndExpansionBombHeaders(t *testing.
 	binary.LittleEndian.PutUint32(bomb[central+24:central+28], uint32(imageArtifactExpandedLimit+1))
 	for _, data := range [][]byte{good[:len(good)-1], append(bytes.Clone(good), 0), bomb} {
 		directory := finalArchiveFixture(t, windows, data)
-		if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", windows); err == nil {
+		if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", windows); err == nil {
 			t.Fatal("malformed or oversized ZIP accepted")
 		}
 	}
@@ -282,7 +282,7 @@ func TestFinalArchiveRejectsMalformedTrailersAndExpansionBombHeaders(t *testing.
 func TestFinalArchiveRefusesOversizedCompressedInputBeforeReading(t *testing.T) {
 	directory := t.TempDir()
 	target := Target{"linux", "amd64"}
-	name := target.archiveName("v0.4.0-rc.1")
+	name := target.archiveName("v0.6.0-rc.1")
 	file, err := os.Create(filepath.Join(directory, name))
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +298,7 @@ func TestFinalArchiveRefusesOversizedCompressedInputBeforeReading(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(directory, "SHA256SUMS"), []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readFinalArchiveBinary(directory, "v0.4.0-rc.1", target); err == nil || !strings.Contains(err.Error(), "bounded regular") {
+	if _, err := readFinalArchiveBinary(directory, "v0.6.0-rc.1", target); err == nil || !strings.Contains(err.Error(), "bounded regular") {
 		t.Fatalf("oversized compressed archive was read: %v", err)
 	}
 }

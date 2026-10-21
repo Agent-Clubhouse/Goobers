@@ -190,17 +190,17 @@ func TestCheckSupportMatrixForRelease(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cannot ship in v0.1.0") {
 		t.Fatalf("checkSupportMatrixForRelease(v0.1.0) = %v, want a release-level refusal", err)
 	}
-	for _, version := range []string{"dev", "v0.4.0-beta.2", "v0.4.0-beta.2-11-g9bcc47a2e", "9bcc47a2e", ""} {
+	for _, version := range []string{"dev", "v0.6.0-beta.2", "v0.4.0-beta.2-11-g9bcc47a2e", "9bcc47a2e", ""} {
 		if err := checkSupportMatrixForRelease(version); err != nil {
 			t.Errorf("checkSupportMatrixForRelease(%q) = %v, want nil for a non-final version", version, err)
 		}
 	}
-	for _, version := range []string{"v0.1.0-rc.1", "v0.1.0-beta.2"} {
+	for _, version := range []string{"v0.1.0-rc.1", "v0.1.0-beta.2", "v0.4.0", "v0.4.0-rc.1", "v0.5.0"} {
 		if err := checkSupportMatrixForRelease(version); err == nil {
 			t.Errorf("checkSupportMatrixForRelease(%q) bypassed the release-level refusal", version)
 		}
 	}
-	for _, version := range []string{"v0.4.0", "v0.4.0-rc.1"} {
+	for _, version := range []string{"v0.6.0", "v0.6.0-rc.1"} {
 		if err := checkSupportMatrixForRelease(version); err != nil {
 			t.Errorf("current release line %s cannot ship: %v", version, err)
 		}

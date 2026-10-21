@@ -2,8 +2,8 @@ package validate
 
 // dsl30_test.go exercises the DSL 3.0 validation surface end to end through
 // ValidateDir (dsl-3.0.md §5, issue #3505): the CAP004/CAP005 vocabulary
-// errors, the WF022 repo-handoff analysis, the DVL010/DVL011 preview gate on
-// the 3.0 version pin itself (§9 item 3), and the version-router refusal of
+// errors, the WF022 repo-handoff analysis, stable 3.0 admission and the DVL010/DVL011 preview gate on
+// the 3.1 version pin, and the version-router refusal of
 // 3.0-only fields on a 2.0 document.
 
 import (
@@ -119,29 +119,28 @@ spec:
         command: ["make", "ci"]
 `
 
-func TestValidateDSL30PreviewGate(t *testing.T) {
-	// Without the instance opt-in the 3.0 pin is refused — DVL011, closed by
-	// default (§9 item 3's DVL path; DVL010/011 machinery gates the preview
-	// entry the support matrix carries for 3.0).
-	report := validateDSL30(t, dsl30Config(false, dsl30ImplicitChainWorkflow))
-	if len(issuesWithCode(report, ErrorPreviewDSLVersionBlocked)) == 0 {
-		t.Fatalf("issues = %+v, want a DVL011 error for an un-opted-in 3.0 pin", report.Issues)
+func TestValidateDSL30SupportedWithoutOptIn(t *testing.T) {
+	for _, optIn := range []bool{false, true} {
+		report := validateDSL30(t, dsl30Config(optIn, dsl30ImplicitChainWorkflow))
+		if len(issuesWithCode(report, ErrorPreviewDSLVersionBlocked)) != 0 || len(issuesWithCode(report, WarningPreviewDSLVersionOptedIn)) != 0 {
+			t.Fatalf("stable 3.0 must not require or report preview opt-in: %+v", report.Issues)
+		}
+		handoffs := issuesWithCode(report, errorRepoHandoff)
+		if len(handoffs) != 1 || !strings.Contains(handoffs[0].Message, `task "local-ci" runs on the repo workspace after producer(s) "implement" but declares no repoFrom`) {
+			t.Fatalf("issues = %+v, want unchanged WF022 handoff refusal", report.Issues)
+		}
 	}
+}
 
-	// With the opt-in the pin itself is only the DVL010 advisory…
-	report = validateDSL30(t, dsl30Config(true, dsl30ImplicitChainWorkflow))
-	if len(issuesWithCode(report, ErrorPreviewDSLVersionBlocked)) != 0 {
-		t.Fatalf("issues = %+v, want no DVL011 after the opt-in", report.Issues)
-	}
-	if len(issuesWithCode(report, WarningPreviewDSLVersionOptedIn)) == 0 {
-		t.Fatalf("issues = %+v, want the DVL010 advisory", report.Issues)
-	}
-	// …and the implicit repo chain is the remaining error: WF022 (§9 item 7,
-	// compile half).
-	handoffs := issuesWithCode(report, errorRepoHandoff)
-	if len(handoffs) != 1 ||
-		!strings.Contains(handoffs[0].Message, `task "local-ci" runs on the repo workspace after producer(s) "implement" but declares no repoFrom`) {
-		t.Fatalf("issues = %+v, want exactly one WF022 undeclared-chain error", report.Issues)
+func TestValidateDSL31StillRequiresPreviewOptIn(t *testing.T) {
+	workflow := strings.Replace(dsl30ImplicitChainWorkflow, `dslVersion: "3.0"`, `dslVersion: "3.1"`, 1)
+	for _, optIn := range []bool{false, true} {
+		report := validateDSL30(t, dsl30Config(optIn, workflow))
+		blocked := len(issuesWithCode(report, ErrorPreviewDSLVersionBlocked)) > 0
+		advisory := len(issuesWithCode(report, WarningPreviewDSLVersionOptedIn)) > 0
+		if blocked == optIn || advisory != optIn {
+			t.Fatalf("3.1 optIn=%v: blocked=%v advisory=%v: %+v", optIn, blocked, advisory, report.Issues)
+		}
 	}
 }
 

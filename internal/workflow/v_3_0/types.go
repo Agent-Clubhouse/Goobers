@@ -5,7 +5,9 @@
 // frozen 2.0 interpreter (internal/workflow/v_2_0) per dsl-3.0.md §8/D18.
 //
 // This package owns every version-observable rule from parsed API fields to a
-// compiled machine. It is copied forward when a new DSL interpreter is cut.
+// compiled machine. DSL 3.0 is frozen as of v0.6.0; changes require a
+// reviewed contract-preserving PATCH_LOG.json entry. New language semantics
+// belong in the copied-forward v_3_1 interpreter.
 //
 // Naming (dsl-3.0.md open point 1): version-literal — directory v_3_0,
 // package v30. The relative names v_current/v_next stop meaning anything the

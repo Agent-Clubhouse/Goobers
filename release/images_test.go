@@ -60,7 +60,7 @@ func useImageTestBinaries(t *testing.T) {
 
 func imageTestArgs(root string) []string {
 	return []string{
-		"-version", "v0.4.0-rc.1", "-commit", "0123456789abcdef0123456789abcdef01234567", "-date", "2026-09-07T12:00:00Z",
+		"-version", "v0.6.0-rc.1", "-commit", "0123456789abcdef0123456789abcdef01234567", "-date", "2026-09-07T12:00:00Z",
 		"-first-feature-snapshot", "-targets", "linux/amd64,linux/arm64", "-checksums=false",
 		"-output", filepath.Join(root, "assets"), "-image-contexts", filepath.Join(root, "images"),
 	}
@@ -75,7 +75,7 @@ func TestReleaseImageContextsMatchArchiveInputs(t *testing.T) {
 	for _, arch := range []string{"amd64", "arm64"} {
 		t.Run(arch, func(t *testing.T) {
 			context := filepath.Join(root, "images", "linux-"+arch)
-			archive := filepath.Join(root, "assets", "goobers_v0.4.0-rc.1_linux_"+arch+".tar.gz")
+			archive := filepath.Join(root, "assets", "goobers_v0.6.0-rc.1_linux_"+arch+".tar.gz")
 			binary, err := os.ReadFile(filepath.Join(context, "goobers"))
 			if err != nil {
 				t.Fatal(err)
@@ -94,7 +94,7 @@ func TestReleaseImageContextsMatchArchiveInputs(t *testing.T) {
 			if err := json.Unmarshal(metadata, &got); err != nil {
 				t.Fatal(err)
 			}
-			want := imageContextMetadata{1, "goobers-base-build-inputs", "v0.4.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z", "linux/" + arch}
+			want := imageContextMetadata{1, "goobers-base-build-inputs", "v0.6.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z", "linux/" + arch}
 			if got != want {
 				t.Fatalf("metadata = %+v, want %+v", got, want)
 			}
@@ -140,7 +140,7 @@ func assertImageBinaryBuildInputs(t *testing.T, path, arch string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stamp := range []string{"v0.4.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z"} {
+	for _, stamp := range []string{"v0.6.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "2026-09-07T12:00:00Z"} {
 		if !bytes.Contains(data, []byte(stamp)) {
 			t.Fatalf("%s missing linked build stamp %s", path, stamp)
 		}

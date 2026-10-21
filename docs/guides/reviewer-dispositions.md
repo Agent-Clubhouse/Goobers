@@ -30,7 +30,7 @@ operator run summaries surface the marker.
 
 ## Workflow opt-in
 
-DSL 3.0 is preview. An agentic gate declares a `defer` branch to opt into the
+DSL 3.0 is supported as of v0.6.0. An agentic gate declares a `defer` branch to opt into the
 expanded reviewer vocabulary. The runner derives the prompt capability from
 that branch, not task inputs. Declaring both `defer` and `escalate` also opts
 the gate into typed runner-generated empty-diff, unchanged-repass, and

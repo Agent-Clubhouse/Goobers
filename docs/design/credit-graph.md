@@ -24,7 +24,7 @@ For an operator walkthrough of enabling Backprop, reading attribution and
 fault-audit findings, and verifying fixes, see the
 [Backprop user guide](../guides/backprop.md).
 
-Backprop is opt-in per workflow on DSL 3.0 and 3.1 (preview):
+Backprop is opt-in per workflow on DSL 3.0 (supported as of v0.6.0) and 3.1 (preview):
 
 ```yaml
 dslVersion: "3.0"

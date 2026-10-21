@@ -13,7 +13,7 @@ import (
 )
 
 func importTestArgs(root, targets string) []string {
-	return []string{"-version", "v0.4.0-rc.1", "-commit", "0123456789ab", "-date", "2026-09-07T12:00:00Z", "-targets", targets, "-image-artifacts", filepath.Join(root, "assets"), "-image-inputs", filepath.Join(root, "original"), "-image-contexts", filepath.Join(root, "imported")}
+	return []string{"-version", "v0.6.0-rc.1", "-commit", "0123456789ab", "-date", "2026-09-07T12:00:00Z", "-targets", targets, "-image-artifacts", filepath.Join(root, "assets"), "-image-inputs", filepath.Join(root, "original"), "-image-contexts", filepath.Join(root, "imported")}
 }
 
 func TestImageImportFlagsRequireExplicitIdentityAndRefuseReleaseMutation(t *testing.T) {
@@ -167,7 +167,7 @@ func TestImageImportPreservesFinalBytesWithoutBuildOrSourceMutation(t *testing.T
 			if err := json.Unmarshal(proof, &provenance); err != nil {
 				t.Fatal(err)
 			}
-			if provenance.ArchiveName != target.archiveName("v0.4.0-rc.1") || provenance.ArchiveSHA256 == "" || len(provenance.OriginalContextChecksums) == 0 {
+			if provenance.ArchiveName != target.archiveName("v0.6.0-rc.1") || provenance.ArchiveSHA256 == "" || len(provenance.OriginalContextChecksums) == 0 {
 				t.Fatalf("missing import evidence: %+v", provenance)
 			}
 			manifest, err := readImageArtifactManifest(imported)
@@ -227,7 +227,7 @@ func TestImageImportDiscardsEarlierPlatformWhenLaterInputFails(t *testing.T) {
 	var archives []string
 	for _, target := range targets {
 		prepareImportFixture(t, root, target)
-		archives = append(archives, filepath.Join(root, "assets", target.archiveName("v0.4.0-rc.1")))
+		archives = append(archives, filepath.Join(root, "assets", target.archiveName("v0.6.0-rc.1")))
 	}
 	manifest, err := checksumsManifest(archives)
 	if err != nil {

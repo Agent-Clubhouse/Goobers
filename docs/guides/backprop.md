@@ -51,10 +51,11 @@ These gaps are tracked under the Backprop scopes epic
 
 ## Enable Backprop for a workflow
 
-Backprop requires `dslVersion` `"3.0"` or `"3.1"`. Both are **preview** DSL
-versions, so the workflow must also carry its own preview acknowledgement;
-without it validation refuses the pin (`DVL011`). Add both to the workflow
-definition (other fields elided):
+Backprop requires `dslVersion` `"3.0"` or `"3.1"`. DSL 3.0 is supported as of
+v0.6.0 and needs no version-level preview acknowledgement. DSL 3.1 remains
+preview: workflows pinned to 3.1 must carry the annotation
+`goobers.dev/allow-preview-features: "true"` or validation refuses the pin
+(`DVL011`). For stable 3.0 (other fields elided):
 
 ```yaml
 apiVersion: goobers.dev/v1alpha1
@@ -62,8 +63,6 @@ kind: Workflow
 dslVersion: "3.0"
 metadata:
   name: implementation
-  annotations:
-    goobers.dev/allow-preview-features: "true"
 spec:
   backprop:
     enabled: true
