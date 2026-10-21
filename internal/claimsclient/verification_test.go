@@ -105,7 +105,7 @@ func TestClaimVerificationHTTPAttributionAndFilePersistence(t *testing.T) {
 	if ok, err := client.RecordClaimVerification(ctx, entry, observation); err != nil || !ok {
 		t.Fatalf("HTTP record: %v %v", ok, err)
 	}
-	if requests := plane.recorded(); len(requests) != 1 || requests[0].bearer != "claims-token" {
+	if requests := plane.recorded(); len(requests) != 1 || requests[0].bearer != "claims-token" || requests[0].requestKey == "" {
 		t.Fatalf("missing bearer: %+v", requests)
 	}
 	if ok, err := file.RecordClaimVerification(ctx, entry, observation); err != nil || !ok {

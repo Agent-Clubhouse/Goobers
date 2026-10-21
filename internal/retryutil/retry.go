@@ -9,10 +9,16 @@ import (
 	"time"
 )
 
+// ErrDeadlineExceeded marks a retry loop stopped by its elapsed-time bound.
+var ErrDeadlineExceeded = errors.New("retry deadline exceeded")
+
 // Policy controls exponential retry pacing.
 type Policy struct {
 	Base time.Duration
 	Max  time.Duration
+
+	// FullJitter samples from zero through the capped exponential delay.
+	FullJitter bool
 
 	// SymmetricJitter selects a ±25% window around the capped exponential
 	// delay instead of the default half-to-full window. Samples above Max
@@ -38,7 +44,10 @@ func JitteredExponential(p Policy, attempt int) time.Duration {
 	}
 	floor := ceiling / 2
 	width := ceiling - floor
-	if p.SymmetricJitter {
+	if p.FullJitter {
+		floor = 0
+		width = ceiling
+	} else if p.SymmetricJitter {
 		quarter := ceiling / 4
 		floor = ceiling - quarter
 		width = 2 * quarter
@@ -59,6 +68,9 @@ func JitteredExponential(p Policy, attempt int) time.Duration {
 // deadline elapses, waiting according to p between retryable failures.
 // The deadline bounds the whole loop; an earlier deadline on ctx takes precedence.
 func Until(ctx context.Context, deadline time.Duration, p Policy, attempt func(context.Context) (retryable bool, err error)) error {
+	if deadline <= 0 {
+		return fmt.Errorf("%w before first attempt", ErrDeadlineExceeded)
+	}
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
@@ -77,15 +89,22 @@ func Until(ctx context.Context, deadline time.Duration, p Policy, attempt func(c
 			return err
 		}
 		if ctx.Err() != nil {
-			return fmt.Errorf("retry deadline exceeded after %d attempt(s): %w", n+1, err)
+			return retryDeadlineError(ctx.Err(), n+1, err)
 		}
 		previousErr = err
 		timer := time.NewTimer(JitteredExponential(p, n))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("retry deadline exceeded after %d attempt(s): %w", n+1, err)
+			return retryDeadlineError(ctx.Err(), n+1, err)
 		case <-timer.C:
 		}
 	}
+}
+
+func retryDeadlineError(ctxErr error, attempts int, err error) error {
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		return fmt.Errorf("%w after %d attempt(s): %w", ErrDeadlineExceeded, attempts, err)
+	}
+	return fmt.Errorf("retry canceled after %d attempt(s): %w", attempts, err)
 }

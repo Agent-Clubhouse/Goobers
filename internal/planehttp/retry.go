@@ -43,9 +43,21 @@ const (
 	DefaultRetryMaxElapsed = 240 * time.Second
 	DefaultRetryBase       = 250 * time.Millisecond
 	DefaultRetryMaxDelay   = 5 * time.Second
-	maxRetryAfter          = 5 * time.Second
-	maxStatusBodyBytes     = 64 << 10
+	RetryDeadlineMargin    = 15 * time.Second
+	maxRetryAfter          = 15 * time.Second
+	maxStatusBodyBytes     = 4 << 20
 )
+
+// ErrBudgetExhausted marks a plane failure that consumed its retry window.
+var ErrBudgetExhausted = errors.New("planehttp: retry budget exhausted")
+
+// RemainingRetryBudget reserves the stage deadline margin from a retry ceiling.
+func RemainingRetryBudget(ctx context.Context, ceiling time.Duration) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return min(ceiling, time.Until(deadline)-RetryDeadlineMargin)
+	}
+	return ceiling
+}
 
 // RetryConfig bounds transient retries. Zero fields take the defaults.
 type RetryConfig struct {
@@ -67,6 +79,9 @@ func (r RetryConfig) normalized() RetryConfig {
 	}
 	if r.Backoff.Max <= 0 {
 		r.Backoff.Max = DefaultRetryMaxDelay
+	}
+	if !r.Backoff.SymmetricJitter {
+		r.Backoff.FullJitter = true
 	}
 	if r.now == nil {
 		r.now = time.Now
@@ -90,6 +105,11 @@ func waitForRetry(ctx context.Context, delay time.Duration) bool {
 
 type transience int
 
+type prefixedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
 const (
 	notTransient transience = iota
 	// refusedEarly: the daemon provably did not process the request.
@@ -108,12 +128,21 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 	cfg := c.retry.normalized()
 	replayAmbiguous := replaySafe || method == http.MethodGet || method == http.MethodHead
 	start := cfg.now()
+	budget := cfg.MaxElapsed
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = min(budget, deadline.Sub(start)-RetryDeadlineMargin)
+	}
+	if budget <= 0 {
+		return nil, fmt.Errorf("%w before first attempt: no time remains before the stage deadline margin", ErrBudgetExhausted)
+	}
+	retryCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	for attempt := 0; ; attempt++ {
 		var reader io.Reader
 		if body != nil {
 			reader = bytes.NewReader(body)
 		}
-		response, err := c.DoRaw(ctx, method, path, reader, headers)
+		response, err := c.DoRaw(retryCtx, method, path, reader, headers)
 		kind := notTransient
 		var retryAfter time.Duration
 		if err != nil {
@@ -122,15 +151,22 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 				kind = classifyTransportError(requestErr.Err)
 			}
 		} else if retryableStatusCandidate(response.StatusCode) {
-			raw, readErr := ReadBounded(response.Body, maxStatusBodyBytes)
-			_ = response.Body.Close()
+			originalBody := response.Body
+			raw, readErr := io.ReadAll(io.LimitReader(originalBody, maxStatusBodyBytes+1))
 			if readErr != nil {
+				_ = originalBody.Close()
 				return nil, &RequestError{Op: "read", Endpoint: c.baseURL + path, Err: readErr}
 			}
-			response.Body = io.NopCloser(bytes.NewReader(raw))
+			if len(raw) > maxStatusBodyBytes {
+				response.Body = &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(raw), originalBody), Closer: originalBody}
+			} else {
+				_ = originalBody.Close()
+				response.Body = io.NopCloser(bytes.NewReader(raw))
+			}
 			kind = classifyStatus(response.StatusCode, raw)
 			retryAfter = parseRetryAfter(response.Header.Get("Retry-After"))
 		}
+
 		if kind == notTransient || (kind == ambiguous && !replayAmbiguous) {
 			return response, err
 		}
@@ -138,13 +174,13 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 		if retryAfter > delay {
 			delay = retryAfter
 		}
-		if ctx.Err() != nil || cfg.now().Sub(start)+delay >= cfg.MaxElapsed {
+		if retryCtx.Err() != nil || cfg.now().Sub(start)+delay >= budget {
 			return exhausted(response, err, attempt+1)
 		}
 		if response != nil {
 			_ = response.Body.Close()
 		}
-		if !cfg.wait(ctx, delay) {
+		if !cfg.wait(retryCtx, delay) {
 			return exhausted(response, err, attempt+1)
 		}
 	}
@@ -157,19 +193,19 @@ func retryableStatusCandidate(status int) bool {
 		status == http.StatusGatewayTimeout
 }
 
-// exhausted reports the last failure. A status response is returned as is (its
-// body was buffered) so the caller decodes its typed refusal; a transport error
-// is annotated with the attempt count.
+// exhausted marks the last transient failure with the attempt count.
 func exhausted(response *http.Response, err error, attempts int) (*http.Response, error) {
 	if response != nil {
-		return response, nil
+		status := response.Status
+		_ = response.Body.Close()
+		return nil, fmt.Errorf("%w after %d attempt(s): endpoint answered %s", ErrBudgetExhausted, attempts, status)
 	}
 	var requestErr *RequestError
 	if errors.As(err, &requestErr) {
 		return nil, &RequestError{Op: requestErr.Op, Endpoint: requestErr.Endpoint,
-			Err: fmt.Errorf("%w (gave up after %d attempt(s) on a transient failure)", requestErr.Err, attempts)}
+			Err: fmt.Errorf("%w after %d attempt(s): %w", ErrBudgetExhausted, attempts, requestErr.Err)}
 	}
-	return nil, err
+	return nil, fmt.Errorf("%w after %d attempt(s): %w", ErrBudgetExhausted, attempts, err)
 }
 
 // DoJSONRetrying is DoJSON with the retry of DoRetrying.
@@ -211,14 +247,10 @@ func classifyStatus(status int, raw []byte) transience {
 		return refusedEarly
 	case status == http.StatusServiceUnavailable && (code == "class_saturated" || code == "recovering"):
 		return refusedEarly
-	case status == http.StatusServiceUnavailable && code == "":
-		return refusedEarly
 	case status == http.StatusServiceUnavailable && code == "request_budget_exceeded":
 		// The handler ran long enough to hit its budget; it may still commit.
 		return ambiguous
-	case status == http.StatusServiceUnavailable:
-		return ambiguous
-	case (status == http.StatusBadGateway || status == http.StatusGatewayTimeout) && code == "":
+	case (status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout) && code == "":
 		return ambiguous
 	}
 	return notTransient
@@ -229,13 +261,17 @@ func classifyTransportError(err error) transience {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return notTransient
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return ambiguous
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && (dnsErr.IsNotFound || strings.Contains(dnsErr.Err, "no such host")) {
+		return notTransient
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && opErr.Op == "dial" {
 		return refusedEarly
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return ambiguous
 	}
 	message := err.Error()
 	// The stdlib bundles its own HTTP/2, whose StreamError is not the x/net

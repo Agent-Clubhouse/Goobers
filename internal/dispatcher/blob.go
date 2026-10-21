@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/daemonclient"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/retryutil"
 )
 
@@ -166,7 +167,8 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 	if deadline <= 0 {
 		deadline = defaultBlobRetryDeadline
 	}
-	return retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
+	deadline = planehttp.RemainingRetryBudget(ctx, deadline)
+	err := retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		err := c.PutOnce(ctx, digest, data)
 		var status *BlobStatusError
 		if errors.As(err, &status) {
@@ -175,6 +177,10 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 		var transport *BlobTransportError
 		return errors.As(err, &transport), err
 	})
+	if errors.Is(err, retryutil.ErrDeadlineExceeded) {
+		return fmt.Errorf("%w: %w", planehttp.ErrBudgetExhausted, err)
+	}
+	return err
 }
 
 // BlobStatusError is a blob endpoint's non-success HTTP answer, carrying the

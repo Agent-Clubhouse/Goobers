@@ -28,6 +28,7 @@ type fakePlaneRequest struct {
 	path        string
 	bearer      string
 	contentType string
+	requestKey  string
 	body        map[string]any
 }
 
@@ -42,6 +43,7 @@ func (p *fakePlane) handler(w http.ResponseWriter, r *http.Request) {
 		path:        r.URL.Path,
 		bearer:      strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
 		contentType: r.Header.Get("Content-Type"),
+		requestKey:  r.Header.Get("Idempotency-Key"),
 		body:        body,
 	})
 	p.mu.Unlock()
@@ -49,6 +51,28 @@ func (p *fakePlane) handler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func TestReleaseWithReportReplaySafeWithKey(t *testing.T) {
+	var calls int
+	plane, client := newFakePlane(t, func(path string, _ map[string]any) (int, any) {
+		if path != apicontract.ClaimReleasePath {
+			t.Fatalf("path = %s", path)
+		}
+		calls++
+		if calls == 1 {
+			return http.StatusBadGateway, map[string]any{}
+		}
+		return http.StatusOK, map[string]any{"ok": true, "released": []Entry{{ItemID: "7", RunID: "run-1"}}}
+	})
+	released, err := client.ReleaseAllForRun(context.Background(), "run-1", claimrelease.Reason{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := plane.recorded()
+	if len(released) != 1 || len(requests) != 2 || requests[0].requestKey == "" || requests[0].requestKey != requests[1].requestKey {
+		t.Fatalf("released=%+v requests=%+v", released, requests)
+	}
 }
 
 func (p *fakePlane) recorded() []fakePlaneRequest {
@@ -153,7 +177,7 @@ func TestHTTPErrorEnvelope(t *testing.T) {
 
 func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
 	}))
 	t.Cleanup(server.Close)
@@ -163,7 +187,7 @@ func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
 	}
 	_, _, err = client.ClaimScoped(t.Context(), Key{Gaggle: "g", Provider: "p", ExternalID: "1"}, "run-1", "w", time.Minute)
 	var planeErr *Error
-	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_500" || planeErr.Message != strings.Repeat("x", 400)+"…" {
 		t.Fatalf("error = %#v", planeErr)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/runner"
 )
 
@@ -383,6 +384,9 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
+	if errors.Is(err, planehttp.ErrBudgetExhausted) {
+		return journal.AttemptInfra, nil
+	}
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		switch timeoutErr.TimeoutType() {

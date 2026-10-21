@@ -158,13 +158,11 @@ func TestExhaustedStatusReturnsLastResponseWithBody(t *testing.T) {
 	clock := newRetryFakeClock()
 	client := newTestClient(t, server.URL, nil, clock.config(5*time.Second, time.Second))
 	response, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, true)
-	if err != nil {
-		t.Fatal(err)
+	if response != nil || !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("response=%v err=%v, want budget exhaustion", response, err)
 	}
-	raw, _ := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if response.StatusCode != 503 || calls.Load() < 2 || !strings.Contains(string(raw), "class_saturated") {
-		t.Fatalf("status=%d calls=%d body=%s", response.StatusCode, calls.Load(), raw)
+	if calls.Load() < 2 || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("calls=%d err=%v", calls.Load(), err)
 	}
 }
 
@@ -236,6 +234,7 @@ func (s *scriptedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestTransportErrorClassification(t *testing.T) {
 	dial := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
 	timeout := &net.DNSError{IsTimeout: true}
+	dialTimeout := &net.OpError{Op: "dial", Err: timeout}
 	for _, tc := range []struct {
 		name       string
 		err        error
@@ -249,6 +248,7 @@ func TestTransportErrorClassification(t *testing.T) {
 		{"unexpected eof", io.ErrUnexpectedEOF, 2, 1},
 		{"conn reset", errors.New("read tcp: connection reset by peer"), 2, 1},
 		{"dial refused", dial, 2, 2},
+		{"dial timeout", dialTimeout, 2, 2},
 		{"timeout", timeout, 2, 1},
 		{"canceled", context.Canceled, 1, 1},
 		{"other", errors.New("x509: certificate signed by unknown authority"), 1, 1},
@@ -295,12 +295,12 @@ func TestExhaustedTransportErrorNamesAttempts(t *testing.T) {
 	client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(5*time.Second, time.Second))
 	_, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, true)
 	var requestErr *RequestError
-	if !errors.As(err, &requestErr) || !errors.Is(err, io.EOF) || !strings.Contains(err.Error(), "attempt") {
+	if !errors.As(err, &requestErr) || !errors.Is(err, ErrBudgetExhausted) || !errors.Is(err, io.EOF) || !strings.Contains(err.Error(), "attempt") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestStatusAndSafetyClassification(t *testing.T) {
+func TestClassifyBareProxy5xxAmbiguous(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		status     int
@@ -310,10 +310,10 @@ func TestStatusAndSafetyClassification(t *testing.T) {
 	}{
 		{"bare 502 unsafe", 502, "", false, 1},
 		{"bare 502 safe", 502, "", true, 2},
-		{"bare 503 unsafe", 503, "", false, 2},
+		{"bare 503 unsafe", 503, "", false, 1},
 		{"bare 503 safe", 503, "", true, 2},
 		{"coded 503 unsafe", 503, "claims_unavailable", false, 1},
-		{"coded 503 safe", 503, "claims_unavailable", true, 2},
+		{"coded 503 safe", 503, "claims_unavailable", true, 1},
 		{"bare 504 unsafe", 504, "", false, 1},
 		{"bare 504 safe", 504, "", true, 2},
 		{"400 unsafe", 400, "invalid_request", false, 1},
@@ -349,7 +349,7 @@ func TestStatusAndSafetyClassification(t *testing.T) {
 	}
 }
 
-func TestRetryBudgetIsTimeBoundedNotAttemptBounded(t *testing.T) {
+func TestPlaneRetryBudgetIsTimeBased(t *testing.T) {
 	if DefaultRetryMaxElapsed != 240*time.Second {
 		t.Fatalf("default retry window = %v, want 240s", DefaultRetryMaxElapsed)
 	}
@@ -385,6 +385,9 @@ func TestRetryBudgetIsTimeBoundedNotAttemptBounded(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected retry exhaustion")
 		}
+		if !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+		}
 		if clock.elapsed >= window {
 			t.Fatalf("fake clock advanced beyond window: %v", clock.elapsed)
 		}
@@ -392,6 +395,53 @@ func TestRetryBudgetIsTimeBoundedNotAttemptBounded(t *testing.T) {
 			t.Fatalf("calls = %d, want time-bounded retry count", got)
 		}
 	})
+
+	t.Run("stage deadline reserves margin", func(t *testing.T) {
+		errs := make([]error, 100)
+		for i := range errs {
+			errs[i] = io.EOF
+		}
+		transport := &scriptedTransport{errs: errs}
+		clock := newRetryFakeClock()
+		clock.now = time.Now()
+		ctx, cancel := context.WithDeadline(context.Background(), clock.now.Add(45*time.Second))
+		defer cancel()
+		client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(time.Minute, 10*time.Second))
+		_, err := client.DoRetrying(ctx, http.MethodGet, "/x", nil, nil, false)
+		if !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+		}
+		if clock.elapsed >= 30*time.Second {
+			t.Fatalf("elapsed = %v, want retry to reserve the 15s stage margin", clock.elapsed)
+		}
+	})
+
+	t.Run("inside stage margin makes no attempt", func(t *testing.T) {
+		transport := &scriptedTransport{}
+		clock := newRetryFakeClock()
+		clock.now = time.Now()
+		ctx, cancel := context.WithDeadline(context.Background(), clock.now.Add(10*time.Second))
+		defer cancel()
+		client := newTestClient(t, "http://daemon", &http.Client{Transport: transport}, clock.config(time.Minute, time.Second))
+		_, err := client.DoRetrying(ctx, http.MethodGet, "/x", nil, nil, false)
+		if !errors.Is(err, ErrBudgetExhausted) || transport.calls.Load() != 0 {
+			t.Fatalf("calls=%d err=%v, want immediate budget exhaustion", transport.calls.Load(), err)
+		}
+	})
+}
+
+func TestNXDOMAINFailsFast(t *testing.T) {
+	nxdomain := &net.DNSError{Err: "no such host", Name: "daemon.invalid", IsNotFound: true}
+	transport := &scriptedTransport{errs: []error{&net.OpError{Op: "dial", Err: nxdomain}}}
+	clock := newRetryFakeClock()
+	client := newTestClient(t, "http://daemon.invalid", &http.Client{Transport: transport}, clock.config(time.Minute, time.Second))
+	_, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, false)
+	if err == nil || errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("err = %v, want permanent NXDOMAIN", err)
+	}
+	if calls := transport.calls.Load(); calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
 }
 
 type retryFakeClock struct {
