@@ -36,12 +36,9 @@ func TestResolveDevServerAcquisition(t *testing.T) {
 		t.Errorf("missing configured path mode = %q, want explicit fallback log", acquisition.mode)
 	}
 
-	nonExecutable := filepath.Join(t.TempDir(), "temporal")
-	if err := os.WriteFile(nonExecutable, []byte("test"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := resolveDevServerAcquisition(nonExecutable); err == nil || !strings.Contains(err.Error(), "not executable") {
-		t.Fatalf("non-executable configured path error = %v, want clear executable error", err)
+	directory := t.TempDir()
+	if _, err := resolveDevServerAcquisition(directory); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("directory configured path error = %v, want clear regular-file error", err)
 	}
 }
 
