@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -88,6 +89,50 @@ func mintTestGrant(t *testing.T, service *daemonCredentialService, grant podauth
 		t.Fatal(err)
 	}
 	return token
+}
+
+func TestCredentialGrantKeyIsSharedAndDomainSeparated(t *testing.T) {
+	keyA := filepath.Join(t.TempDir(), "pod-a.key")
+	keyB := filepath.Join(t.TempDir(), "pod-b.key")
+	rawA := []byte(strings.Repeat("a", 32))
+	if err := os.WriteFile(keyA, rawA, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyB, []byte(strings.Repeat("b", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := newStageGrantIssuerForKeyFile("http://daemon-a", keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newStageGrantIssuerForKeyFile("http://daemon-b", keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	different, err := newStageGrantIssuerForKeyFile("http://daemon-c", keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := first.key.MintCredentialGrant(podauth.CredentialGrant{
+		RunID: "run-shared", Stage: "build", Attempt: 1, Capabilities: []string{"repo:push"},
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.key.VerifyCredentialGrant(token); err != nil {
+		t.Fatalf("grant minted by first daemon did not validate in second daemon: %v", err)
+	}
+	if _, err := different.key.VerifyCredentialGrant(token); err == nil {
+		t.Fatal("grant validated with a different pod-token key file")
+	}
+	rawPodTokenKey, err := podauth.NewSignedKey(rawA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawPodTokenKey.VerifyCredentialGrant(token); err == nil {
+		t.Fatal("raw pod-token key validated a domain-separated credential grant")
+	}
 }
 
 func TestCredentialRefreshReResolvesTheGrantedCapabilityAndJournalsIt(t *testing.T) {
