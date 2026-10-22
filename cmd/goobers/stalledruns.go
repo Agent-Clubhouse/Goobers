@@ -54,17 +54,6 @@ type stalledSweepDeps struct {
 	// (#5891). maxRunDuration counts active execution time, and silence while
 	// the host slept is not a stall, so both checks exclude these intervals.
 	HostSuspensions *hostsuspend.Ledger
-	// CloseEngineRun writes the terminal of an engine run whose workflow the
-	// sweep terminated (#5407) through the live journal plane. nil leaves such
-	// a run unterminated and reported, since nothing else will close it.
-	CloseEngineRun func(ctx context.Context, identity journal.RunIdentity, cause string, at time.Time) error
-}
-
-func (d *stalledSweepDeps) closeEngineRun() func(context.Context, journal.RunIdentity, string, time.Time) error {
-	if d == nil {
-		return nil
-	}
-	return d.CloseEngineRun
 }
 
 func (d *stalledSweepDeps) hostSuspensions() []hostsuspend.Window {
@@ -389,7 +378,6 @@ func sweepStalledRuns(
 	l instance.Layout,
 	runners *daemonRunnerRegistry,
 	fallback *runner.Runner,
-	guards *engineRunGuards,
 	log *journal.InstanceLog,
 	deps *stalledSweepDeps,
 	notify runner.TerminalNotifier,
@@ -410,7 +398,6 @@ func sweepStalledRuns(
 	// scheduler journal when persisted (#1166, #1414).
 	var sweepErrs []error
 	terminalizers := make(map[string]*runner.Runner)
-	cancels := &engineCancelHistory{log: log}
 	suspended := deps.hostSuspensions()
 	for _, runDir := range candidates {
 		runsDir := filepath.Dir(runDir)
@@ -495,9 +482,6 @@ func sweepStalledRuns(
 		// server-side terminate one stall timeout after it was first
 		// requested; see settleStalledEngineRun.
 		if identity.EngineDriven() {
-			if err := settleStalledEngineRun(ctx, guards, log, deps, cancels, release, identity, events, now, suspended, runTimeout, runMaxDuration, durationExceeded); err != nil {
-				sweepErrs = append(sweepErrs, err)
-			}
 			continue
 		}
 

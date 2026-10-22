@@ -111,12 +111,6 @@ type config struct {
 // Option configures a Run at creation/open.
 type Option func(*config)
 
-// WithoutCommittedEventExport suppresses live export for historical
-// reconstruction. It does not change journal files or the root's live sink.
-func WithoutCommittedEventExport() Option {
-	return func(c *config) { c.disableCommittedExport = true }
-}
-
 // WithScrubber sets the boundary scrubber applied to every event, snapshot, and
 // artifact before write and before digesting. Defaults to the pattern net; pass
 // a registry-backed chain (see DefaultScrubber) to redact resolver-issued

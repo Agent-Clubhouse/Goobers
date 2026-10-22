@@ -43,7 +43,6 @@ func overlayFeatureDrivers(configured map[string]map[string]bool, drivers map[lo
 		}
 		if _, known := features["runner.local"]; !known {
 			features["runner.local"] = false
-			features["runner.engine"] = false
 		}
 		if id == "" {
 			unknown[identity.Gaggle] = true
@@ -52,7 +51,7 @@ func overlayFeatureDrivers(configured map[string]map[string]bool, drivers map[lo
 		}
 	}
 	for gaggle := range unknown {
-		for _, id := range []string{"runner.local", "runner.engine"} {
+		for _, id := range []string{"runner.local"} {
 			if !configured[gaggle][id] {
 				delete(configured[gaggle], id)
 			}

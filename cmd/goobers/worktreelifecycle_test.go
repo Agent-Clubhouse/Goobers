@@ -137,11 +137,11 @@ func TestDaemonDrainServesDelegatedClaimRecovery(t *testing.T) {
 		t.Fatal("daemon did not start")
 	}
 
-	requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "drain-claim-recovery")
+	requestID, err := writeTriggerRequestContextOptions(context.Background(), l.SchedulerDir(), "", "drain-claim-recovery", false)
 	if err != nil {
 		t.Fatalf("write trigger request: %v", err)
 	}
-	runID, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
+	runID, err := pollTriggerResponseForTest(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("trigger run: %v", err)
 	}
@@ -260,11 +260,11 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			t.Fatalf("cycle %d daemon did not start", i)
 		}
 
-		requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "acceptance")
+		requestID, err := writeTriggerRequestContextOptions(context.Background(), l.SchedulerDir(), "", "acceptance", false)
 		if err != nil {
 			t.Fatalf("cycle %d write trigger request: %v", i, err)
 		}
-		runID, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
+		runID, err := pollTriggerResponseForTest(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
 		if err != nil {
 			t.Fatalf("cycle %d trigger run: %v", i, err)
 		}

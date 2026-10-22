@@ -505,18 +505,6 @@ func init() {
 				withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
 		).withSynopsis(synopsisByID["temporal"]).withHelp("operate Temporal payload services", temporalHelp).
 			withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
-		command("engine-start", apicontract.ActionDaemonLifecycle, runEngineStart).
-			withSynopsis(synopsisByID["engine-start"]).
-			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).
-			withExamples("goobers engine-start default-implement"),
-		command("engine-queues", apicontract.ActionReadOnlyNavigation, runEngineQueues).
-			withSynopsis(synopsisByID["engine-queues"]).
-			withHelp("report which workers poll this instance's engine and dispatch task queues (experimental)", engineQueuesHelp).
-			withExamples("goobers engine-queues", "goobers engine-queues --json"),
-		command("engine-project", apicontract.ActionDaemonLifecycle, runEngineProject).
-			withSynopsis(synopsisByID["engine-project"]).
-			withHelp("write a completed engine run's journal into the instance (experimental)", engineProjectHelp).
-			withExamples("goobers engine-project --gaggle example <run-id>"),
 		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
 			withSynopsis(synopsisByID["worker"]).
 			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).

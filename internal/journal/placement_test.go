@@ -2,7 +2,6 @@ package journal
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -76,54 +75,5 @@ func TestPlacementFromEventLenient(t *testing.T) {
 	}
 	if got.QueuedAt != nil || got.PodStartedAt != nil {
 		t.Fatalf("minimal placement carries timestamps %v/%v, want none (a self attempt never queued)", got.QueuedAt, got.PodStartedAt)
-	}
-}
-
-// TestConformanceViewUnchangedByPlacementEvents is the acceptance proof for
-// architecture §11 item 2's runner.* half: a run WITH placement provenance has
-// an IDENTICAL conformance view to the same run without it — the A2 diff
-// excludes runner.* entirely, so mode-3 provenance can never split the
-// conformance surface (D14).
-func TestConformanceViewUnchangedByPlacementEvents(t *testing.T) {
-	queuedAt := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
-	base := []Event{
-		{Schema: EventSchema, Seq: 1, Type: EventRunStarted},
-		{Schema: EventSchema, Seq: 2, Type: EventStageStarted, Stage: "implement", Attempt: 1},
-		{Schema: EventSchema, Seq: 3, Type: EventStageFinished, Stage: "implement", Attempt: 1, Status: "success"},
-		{Schema: EventSchema, Seq: 4, Type: EventGateEvaluated, Gate: "review", Verdict: "pass", Target: TargetComplete},
-		{Schema: EventSchema, Seq: 5, Type: EventRunFinished, Status: "completed"},
-	}
-	withPlacement := make([]Event, 0, len(base)+2)
-	for _, event := range base {
-		withPlacement = append(withPlacement, event)
-		if event.Type == EventStageStarted {
-			placement := PlacementEvent(event.Stage, event.Attempt, event.AttemptClass, Placement{
-				Runner:       "linux-large",
-				Node:         "aks-linux-0001",
-				OS:           "linux",
-				Image:        "ghcr.io/goobers/goobers-base:v0.2.0",
-				Pod:          "goobers-stage-implement-4x2vq",
-				QueuedAt:     &queuedAt,
-				PodStartedAt: &queuedAt,
-			})
-			placement.Schema = EventSchema
-			withPlacement = append(withPlacement, placement)
-		}
-	}
-	if len(withPlacement) == len(base) {
-		t.Fatal("fixture emitted no placement events")
-	}
-
-	if !reflect.DeepEqual(ConformanceView(base), ConformanceView(withPlacement)) {
-		t.Fatalf("conformance view differs with placement events present:\nwithout: %v\nwith:    %v",
-			ConformanceView(base), ConformanceView(withPlacement))
-	}
-	if !reflect.DeepEqual(ConformanceBranches(base), ConformanceBranches(withPlacement)) {
-		t.Fatal("per-branch conformance view differs with placement events present")
-	}
-	for _, event := range withPlacement {
-		if event.Type == EventRunnerPlacement && event.IsConformanceNormative() {
-			t.Fatal("runner.placement reports conformance-normative; it must always be excluded (D14)")
-		}
 	}
 }

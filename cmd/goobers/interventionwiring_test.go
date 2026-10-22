@@ -2,7 +2,7 @@ package main
 
 // interventionwiring_test.go drives internal/intervention through the
 // daemon's real collaborators: the claim ledger and its history, the run-owner
-// registry, the owned-run locator and the engine-driven refusal. The service's
+// registry and the owned-run locator. The service's
 // own behaviour is tested in internal/intervention.
 
 import (
@@ -15,7 +15,6 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimrelease"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -37,11 +36,6 @@ func interventionTestMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workf
 func interventionTestMachineNamed(t *testing.T, name string, evaluator apiv1.EvaluatorKind, approvers []string) *workflow.Machine {
 	t.Helper()
 	return interventionTestMachineWithPassTarget(t, name, evaluator, approvers, "finish")
-}
-
-func interventionTerminalTestMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workflow.Machine {
-	t.Helper()
-	return interventionTestMachineWithPassTarget(t, "terminal-intervention", evaluator, nil, workflow.TerminalComplete)
 }
 
 func interventionTestMachineWithPassTarget(
@@ -150,17 +144,6 @@ type interventionWiringFixture struct {
 	scheduler      *localscheduler.Scheduler
 	runnerRegistry *daemonRunnerRegistry
 	definitions    *interventionDefinitionRegistry
-}
-
-func newInterventionServiceTestRun(
-	t *testing.T,
-	machine *workflow.Machine,
-	runID string,
-	events []journal.Event,
-) (*intervention.Service, string) {
-	t.Helper()
-	fixture := newInterventionWiringFixture(t, machine, runID, events, interventionDeterministic{}, nil)
-	return fixture.service, fixture.runDir
 }
 
 // newInterventionWiringFixture builds the service the way up.go does, over a
@@ -706,51 +689,6 @@ func TestRunInterventionUsesDurableClaimHistoryWhenInstanceJournalMissesAcquisit
 	var interventionErr *httpapi.InterventionError
 	if !errors.As(err, &interventionErr) || interventionErr.Code != "claim_unavailable" {
 		t.Fatalf("Override error = %#v, want claim_unavailable", err)
-	}
-}
-
-// lastIntentDeliverer stands in for the Temporal update client and keeps the
-// last operator intent the service delivered.
-type lastIntentDeliverer struct {
-	intents []engine.HITLIntent
-}
-
-func (d *lastIntentDeliverer) Deliver(_ context.Context, intent engine.HITLIntent) (engine.HITLAck, error) {
-	d.intents = append(d.intents, intent)
-	return engine.HITLAck{Resumed: true, ResumeState: "implement"}, nil
-}
-
-// TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection proves the
-// intervention service uses the shared owned-run resolver (#4858). The
-// authoritative scoped journal is escalated and carries generation one; the
-// independent legacy projection is deliberately left running, making the
-// selected generation a direct assertion that resolution preferred scoped.
-func TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection(t *testing.T) {
-	deliverer := &lastIntentDeliverer{}
-	const runID = "engine-hitl-dual-projection"
-	machine := interventionTerminalTestMachine(t, apiv1.EvaluatorAgentic)
-	fixture := newInterventionWiringFixture(t, machine, runID, []journal.Event{
-		{Type: journal.EventGateStarted, Gate: "review"},
-		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: "escalate"},
-		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
-	}, interventionDeterministic{}, nil)
-	markRunYAMLEngineDriven(t, fixture.runDir)
-	fixture.service.AttachHITLDeliverer(deliverer)
-	definitions := fixture.definitions.Snapshot()
-	definitions.legacyRunner = definitions.runners["example"]
-	fixture.definitions.Replace(definitions)
-	createDriverRun(t, fixture.layout.RunsDir(), runID, "terminal-intervention", "example", journal.DriverEngine, time.Now(), nil)
-
-	if _, err := fixture.service.Approve(context.Background(), httpapi.InterventionRequest{
-		RunID: runID, Stage: "review", Actor: "ops", Decision: "pass", IdempotencyKey: "dual-projection-key",
-	}); err != nil {
-		t.Fatalf("approve dual-projected engine run: %v", err)
-	}
-	if len(deliverer.intents) == 0 {
-		t.Fatal("no operator intent was delivered to the engine")
-	}
-	if intent := deliverer.intents[len(deliverer.intents)-1]; intent.ExpectedTerminalGeneration != 1 {
-		t.Fatalf("terminal generation = %d, want scoped journal generation 1", intent.ExpectedTerminalGeneration)
 	}
 }
 

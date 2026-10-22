@@ -69,27 +69,9 @@ func assertSealedConverter(t *testing.T, dc converter.DataConverter) {
 		t.Fatal("configured client would write plaintext")
 	}
 }
-func TestTemporalCodecDaemonAndWorkerWiring(t *testing.T) {
+func TestTemporalCodecWorkerWiring(t *testing.T) {
 	root := initDemo(t)
-	cfg := configureTestTemporalCodec(t, root)
-	previous := dialDaemonEngine
-	t.Cleanup(func() { dialDaemonEngine = previous })
-	var captured converter.DataConverter
-	dialDaemonEngine = func(_, _ string, _ *temporaldial.TLS, dc ...converter.DataConverter) (client.Client, error) {
-		if len(dc) != 1 {
-			t.Fatal("missing daemon converter")
-		}
-		captured = dc[0]
-		return nil, nil
-	}
-	daemon, err := newDaemonEngineClient(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertSealedConverter(t, captured)
-	if daemon.dataConverter != captured {
-		t.Fatal("memo readers use different converter")
-	}
+	configureTestTemporalCodec(t, root)
 	got := captureWorkerHost(t)
 	var stdout, stderr bytes.Buffer
 	code := runWorker([]string{"--instance", root, "--work-root", filepath.Join(t.TempDir(), "work"), "--blob-store", filepath.Join(t.TempDir(), "blobs"), "--config-reload-interval", "0"}, &stdout, &stderr)
@@ -98,34 +80,7 @@ func TestTemporalCodecDaemonAndWorkerWiring(t *testing.T) {
 	}
 	assertSealedConverter(t, got.DataConverter)
 }
-func TestTemporalCodecProjectAndQueuesWiring(t *testing.T) {
-	root := initDemo(t)
-	configureTestTemporalCodec(t, root)
-	project, queues := dialEngineProject, dialEngineQueues
-	t.Cleanup(func() { dialEngineProject, dialEngineQueues = project, queues })
-	calls := 0
-	stop := errors.New("stop after options")
-	dialEngineProject = func(_ context.Context, opts client.Options) (engineProjectClient, error) {
-		calls++
-		assertSealedConverter(t, opts.DataConverter)
-		return nil, stop
-	}
-	dialEngineQueues = func(_ context.Context, opts client.Options) (engineQueuesClient, error) {
-		calls++
-		assertSealedConverter(t, opts.DataConverter)
-		return nil, stop
-	}
-	var stdout, stderr bytes.Buffer
-	if code := runEngineProject([]string{"--gaggle", "demo", "run-id", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("project=%d: %s", code, stderr.String())
-	}
-	if code := runEngineQueues([]string{root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("queues=%d: %s", code, stderr.String())
-	}
-	if calls != 2 {
-		t.Fatalf("dialed %d commands: %s", calls, stderr.String())
-	}
-}
+
 func TestDoctorTemporalCodecAndServerRefusal(t *testing.T) {
 	root := initDemo(t)
 	var stdout, stderr bytes.Buffer

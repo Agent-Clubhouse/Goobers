@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,10 +13,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -1082,69 +1079,6 @@ func TestNoUnpushedDiffRecordsNothing(t *testing.T) {
 // the sidecar's schema, or drops the item ids, this fails where the byte-level
 // tests would not: discovery would simply return nothing, silently, in
 // production.
-func TestPriorEngineRunsUnpushedWorkIsDiscoverable(t *testing.T) {
-	const patch = "diff --git a/impl.go b/impl.go\n+// the work the pod was about to lose\n"
-	ws := testWorkspaces(t)
-	ws.scriptDiff("implement", []byte(patch))
-	inv := &fakeInvoker{
-		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "done"}, nil
-		},
-	}
-	in := runInput("linear", linearSpec())
-	// The claimed item is what makes the work DISCOVERABLE rather than merely
-	// recorded: the reader matches stranded diffs to the items the asking run
-	// currently holds, so a sidecar with no item ids is invisible to it.
-	in.Item = &apiv1.BacklogItem{ID: "42", Provider: "github", URL: "https://example.test/items/42"}
-	env := laneEnv(t, inv, ws)
-	env.ExecuteWorkflow(Run, in)
-	if res := laneResult(t, env); res.Status != StatusCompleted {
-		t.Fatalf("status = %q, want completed", res.Status)
-	}
-
-	// Projected exactly as the daemon projects a finished engine run — the
-	// same function, into a real instance layout, with no test-only shaping.
-	root := t.TempDir()
-	layout := instance.NewLayout(root).ForGaggle("web")
-	if _, err := ProjectRun(layout.RunsDir(), laneJournal(t, env)); err != nil {
-		t.Fatalf("ProjectRun: %v", err)
-	}
-
-	reader := journalclient.NewFileCrossRun(instance.NewLayout(root))
-	reader.Warn = func(msg string) { t.Logf("cross-run reader: %s", msg) }
-	work, err := reader.UnpushedWork(context.Background(), journalclient.UnpushedWorkRequest{
-		RunID:   "run-resuming",
-		Gaggle:  "web",
-		ItemIDs: []string{"42"},
-	})
-	if err != nil {
-		t.Fatalf("UnpushedWork: %v", err)
-	}
-	if work == nil {
-		t.Fatal("the cross-run reader found no stranded work in a projected ENGINE run — " +
-			"the patch is captured but gather-implement-context cannot offer it, which is the " +
-			"whole point of #3366")
-	}
-	if work.RunID != in.RunID {
-		t.Errorf("discovered runId = %q, want %q", work.RunID, in.RunID)
-	}
-	if work.Stage != "implement" {
-		t.Errorf("discovered stage = %q, want implement", work.Stage)
-	}
-	if work.Diff != patch {
-		t.Errorf("discovered diff = %q, want the captured patch %q", work.Diff, patch)
-	}
-	if work.Branch == "" || work.BaseRef == "" || work.DiffDigest == "" {
-		t.Errorf("discovered work = %+v, want branch/base/digest populated — a resuming stage "+
-			"needs to know what the patch was cut against", work)
-	}
-}
-
-// --- #813 base-sync conflict ------------------------------------------------
-
-// TestBaseSyncConflictRoutesAsBusinessFailureWithDetail: a genuine base merge
-// conflict is a routable stage failure carrying the conflicting FILES, not a
-// dispatch error burning the retry budget.
 func TestBaseSyncConflictRoutesAsBusinessFailureWithDetail(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
@@ -1255,63 +1189,6 @@ func TestTransientProvisionErrorIsRetryable(t *testing.T) {
 // name its episodes differently from the local runner for the same repass, and
 // the conformance diff would be the first thing to notice — after the episodes
 // had already been written under the wrong names.
-func TestProjectedEventSeqMatchesProjection(t *testing.T) {
-	ws := testWorkspaces(t)
-	reviews, attempts := 0, 0
-	inv := &fakeInvoker{
-		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-			attempts++
-			ws.scriptDiff("review", []byte(fmt.Sprintf("attempt %d\n", attempts)))
-			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
-		},
-		review: func(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-			reviews++
-			if reviews == 1 {
-				return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "again"}, nil
-			}
-			return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
-		},
-	}
-	env := laneEnv(t, inv, ws)
-	env.ExecuteWorkflow(Run, runInput("gated", laneSpec()))
-
-	proj := laneJournal(t, env)
-	derived, _, err := projectedEvents(proj)
-	if err != nil {
-		t.Fatalf("projectedEvents: %v", err)
-	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
-	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
-	}
-	actual := readJournalEvents(t, dir)
-	// run.started is op 0's projection and is present on both sides, so the
-	// two sequences must line up one for one.
-	if len(derived) != len(actual) {
-		t.Fatalf("derived %d events, projection wrote %d", len(derived), len(actual))
-	}
-	for i := range derived {
-		if derived[i].Seq != actual[i].Seq {
-			t.Fatalf("event %d: derived seq %d, projected seq %d", i, derived[i].Seq, actual[i].Seq)
-		}
-		if derived[i].Type != actual[i].Type {
-			t.Fatalf("event %d (seq %d): derived type %q, projected type %q",
-				i, derived[i].Seq, derived[i].Type, actual[i].Type)
-		}
-		if derived[i].Name != actual[i].Name {
-			t.Fatalf("event %d (seq %d): derived name %q, projected name %q",
-				i, derived[i].Seq, derived[i].Name, actual[i].Name)
-		}
-	}
-	if uint64(len(actual)) != actual[len(actual)-1].Seq {
-		t.Fatalf("journal is not numbered from 1 in write order: last seq %d over %d events",
-			actual[len(actual)-1].Seq, len(actual))
-	}
-}
-
-// TestGateEvidenceSkipsNonAgenticGates pins the scope of the whole port: none
-// of it applies to an automated gate, which has no reviewer to short-circuit
-// and no diff to judge.
 func TestGateEvidenceSkipsNonAgenticGates(t *testing.T) {
 	machine, err := wf.Compile(wf.Definition{Name: "auto", Version: 1, Spec: laneSpec()}, wf.WithPreviewFeatures(true))
 	if err != nil {

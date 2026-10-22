@@ -25,19 +25,18 @@ func TestContainedParentCoordinatorKeepsOrdinaryPlacementEnforcement(t *testing.
 			}
 			identity := localscheduler.WorkflowIdentity{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow}
 			machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{identity: machine}
-			selections, err := engineSelections(f.cfg, f.applied, machines)
+			selected, err := containedParentSelection(f.cfg, f.applied, machine)
 			if err != nil {
 				t.Fatal(err)
 			}
-			selected := selections[identity]
-			if selected.UseEngine || len(selected.ContainedParentStages) != 1 || !selected.ContainedParentStages["plan"] {
+			if len(selected.containedParentStages) != 1 || !selected.containedParentStages["plan"] {
 				t.Fatal("parent coordinator not selected", selected)
 			}
-			caps := selected.schedulerSelfCapabilities([]string{"isolated-parent"})
+			caps := selected.parentCoordinatorHostCapabilities([]string{"isolated-parent"})
 			if slices.Contains(caps, "isolated-parent") != ordinary {
 				t.Fatal("ordinary host capability changed", caps)
 			}
-			decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, selections)
+			decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, map[localscheduler.WorkflowIdentity]localPlacement{identity: selected})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,14 +57,11 @@ func TestContainedParentCoordinatorRequiresAuthenticatedPlacement(t *testing.T) 
 	f.cfg.API.PodTokenKeyFile = ""
 	identity := localscheduler.WorkflowIdentity{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow}
 	machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{identity: machine}
-	selections, err := engineSelections(f.cfg, f.applied, machines)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(selections[identity].ContainedParentStages) != 0 {
+	selected, err := containedParentSelection(f.cfg, f.applied, machine)
+	if err == nil || len(selected.containedParentStages) != 0 {
 		t.Fatal("unsigned parent transport admitted")
 	}
-	decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, selections)
+	decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

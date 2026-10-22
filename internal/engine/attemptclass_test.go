@@ -111,28 +111,6 @@ func TestDispatchOnePreservesSuppliedAndLegacyAttemptLineage(t *testing.T) {
 	}
 }
 
-func TestRemoteReviewerRetryAndRepassTransportAttemptLineage(t *testing.T) {
-	in := placedGateInput("lineage-review")
-	in.Placements = []PinnedPlacement{remoteGatePin()}
-	in.MaxRepasses = 2
-	in.Spec.Gates[0].Agentic.Retry = &apiv1.RetryPolicy{MaxAttempts: 2}
-	store := surrenderStore(t)
-	putSurrendered(t, store, in.RunID, "review", 2, reviewSurrender(apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "retry the subject"}))
-	putSurrendered(t, store, in.RunID, "review", 3, reviewSurrender(apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "done"}))
-	d := &lineageDispatcher{succeedingStageDispatcher(), []error{dispatcher.ErrSurrenderUnconfirmed}}
-	// Gate placement is Linux; the fake's reported runner must name that pin.
-	d.report.Runner = "linux-agentic"
-	det := &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
-	}}
-	executeForProjection(t, in, &Activities{Goober: refusingReviewer(t), Det: det, Workspaces: testWorkspaces(t), Dispatcher: d, Surrenders: store}, false)
-	attempts, _ := d.recorded()
-	assertDispatchedClasses(t, attempts, []journal.AttemptClass{"", journal.AttemptInfra, ""})
-	if got := []int{attempts[0].Number, attempts[1].Number, attempts[2].Number}; !reflect.DeepEqual(got, []int{1, 2, 1}) {
-		t.Fatalf("logical attempt numbers=%v", got)
-	}
-}
-
 func assertDispatchedClasses(t *testing.T, attempts []dispatcher.Attempt, want []journal.AttemptClass) {
 	t.Helper()
 	var got []journal.AttemptClass

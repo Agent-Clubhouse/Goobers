@@ -202,38 +202,5 @@ func TestRecoverLeavesSequentialRunSingleCursor(t *testing.T) {
 
 // The completeness record is normative and its encoding must be stable and in
 // declaration order — sorting it would destroy the ordering that assigns ids.
-func TestConformanceProjectsCompletenessInDeclarationOrder(t *testing.T) {
-	e := Event{
-		Schema: EventSchema, Seq: 1, Type: EventParallelFinished, Parallel: "fan",
-		Completeness: []BranchOutcome{
-			{Branch: 2, Name: "perf", Status: BranchFailed, Artifacts: 0},
-			{Branch: 1, Name: "security", Status: BranchSucceeded, Artifacts: 3},
-		},
-	}
-	got := projectNormative(e).Completeness
-	want := "2:perf:failed:0,1:security:succeeded:3"
-	if got != want {
-		t.Errorf("completeness = %q, want %q (record order preserved, not sorted)", got, want)
-	}
-}
-
 // Grouping by branch is the comparison surface for a forking run: absolute seq
 // is not comparable across branches, but within-branch order is total.
-func TestConformanceBranchesGroupsByBranch(t *testing.T) {
-	events := []Event{
-		{Schema: EventSchema, Seq: 1, Type: EventParallelStarted, Parallel: "fan"},
-		branchEvent(2, EventStageStarted, 1, "fan", "a", "a1"),
-		branchEvent(3, EventStageStarted, 2, "fan", "b", "b1"),
-		branchEvent(4, EventStageFinished, 1, "fan", "a", "a1"),
-	}
-	byBranch := ConformanceBranches(events)
-	if len(byBranch[1]) != 2 {
-		t.Errorf("branch 1 events = %d, want 2", len(byBranch[1]))
-	}
-	if len(byBranch[2]) != 1 {
-		t.Errorf("branch 2 events = %d, want 1", len(byBranch[2]))
-	}
-	if len(byBranch[0]) != 1 {
-		t.Errorf("root branch events = %d, want 1 (parallel.started)", len(byBranch[0]))
-	}
-}

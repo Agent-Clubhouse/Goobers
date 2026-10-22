@@ -104,10 +104,9 @@ func interventionServiceConfig(
 			found, err := locateOwnedRun(layout, gaggles, runID, includeLegacy)
 			return found.dir, found.gaggle, err
 		},
-		Claims:              interventionClaims{layout: layout, instanceLog: instanceLog},
-		EngineDrivenRefusal: engineDrivenRefusal,
-		WaitGroup:           wg,
-		ErrorLog:            errorLog,
+		Claims:    interventionClaims{layout: layout, instanceLog: instanceLog},
+		WaitGroup: wg,
+		ErrorLog:  errorLog,
 	}
 }
 
