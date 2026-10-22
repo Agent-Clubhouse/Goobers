@@ -122,7 +122,7 @@ type ClaimLedger struct {
 	entries map[string]ClaimEntry
 	history map[string]map[string]ClaimEntry
 	now     func() time.Time
-	log     *journal.InstanceLog // optional; nil-safe
+	log     journal.InstanceStore // optional; nil-safe
 }
 
 const (
@@ -151,7 +151,7 @@ func WithLedgerClock(now func() time.Time) LedgerOption {
 // WithInstanceLog journals claim.acquired/claim.released transitions to the
 // instance journal (§4/§6). Optional — a ledger with no log still functions,
 // it just isn't observable via `cat scheduler/events.jsonl`.
-func WithInstanceLog(log *journal.InstanceLog) LedgerOption {
+func WithInstanceLog(log journal.InstanceStore) LedgerOption {
 	return func(l *ClaimLedger) { l.log = log }
 }
 
