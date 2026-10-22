@@ -222,6 +222,15 @@ type EmitResponse struct {
 // Option configures a Writer.
 type Option func(*Writer)
 
+// WithBackend installs the journal storage backend used by owned run handles.
+func WithBackend(backend journal.Backend) Option {
+	return func(w *Writer) {
+		if backend != nil {
+			w.backend = backend
+		}
+	}
+}
+
 // WithSpanSource lets the writer adopt span ops by digest. A source that can
 // also Put — the daemon's blob store — additionally becomes the sink every
 // committed artifact is written through to (#5550; see artifactSink).
@@ -315,6 +324,7 @@ type Writer struct {
 	eventObserver   func(runID string, ev journal.Event)
 	scrubber        journal.Scrubber
 	now             func() time.Time
+	backend         journal.Backend
 	// instanceLog is the daemon's instance log, the destination of
 	// OpInstanceAnnotation. Nil in every non-daemon assembly of this writer,
 	// which makes that op kind refuse rather than silently no-op.
@@ -339,6 +349,7 @@ type liveRun struct {
 	gaggle               string
 	dir                  string
 	jr                   *journal.Run
+	owner                journal.OwnerToken
 	// clock is nil for an adopted run: the handle belongs to another driver
 	// and was constructed with that driver's clock, which this writer cannot
 	// (and must not) reach into. See Adopt.
@@ -457,6 +468,7 @@ func NewWriter(runsDir func(gaggle string) (string, bool), opts ...Option) (*Wri
 		return nil, errors.New("livejournal: runs-directory resolver is required")
 	}
 	w := &Writer{runsDir: runsDir, now: time.Now, open: make(map[string]*liveRun), reserved: make(map[string]chan struct{})}
+	WithBackend(journal.NewFileBackend())(w)
 	for _, opt := range opts {
 		opt(w)
 	}
@@ -820,7 +832,7 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 			return resp, fmt.Errorf("livejournal: apply op %d for run %s: %w", i, req.RunID, err)
 		}
 		if req.Ops[i].ChildStageStart != nil {
-			receipt, err := run.childOriginReceipt(req.RunID, req.Ops[i])
+			receipt, err := w.childOriginReceipt(run, req.RunID, req.Ops[i])
 			if err != nil {
 				w.invalidateChildAppend(req.RunID, run)
 				return EmitResponse{}, err
@@ -871,7 +883,7 @@ func (w *Writer) finishRun(runID string, run *liveRun, resp *EmitResponse) {
 	if run.jr != nil {
 		resp.Seq = run.jr.Seq()
 		if run.terminal() {
-			_ = run.jr.Close()
+			_ = w.retire(run)
 			run.jr = nil
 			w.forget(runID)
 			resp.Terminal = true
@@ -936,6 +948,30 @@ func (w *Writer) forget(runID string) {
 	w.mu.Lock()
 	delete(w.open, runID)
 	w.mu.Unlock()
+}
+
+func (w *Writer) retire(run *liveRun) error {
+	if run == nil || run.jr == nil {
+		return nil
+	}
+	if run.adopted {
+		return nil
+	}
+	return w.backend.Retire(run.jr, run.owner)
+}
+
+func (w *Writer) appendRun(run *liveRun, event journal.Event) error {
+	if run.adopted {
+		return run.jr.Append(event)
+	}
+	return w.backend.AppendBatch(run.jr, run.owner, []journal.Event{event})
+}
+
+func (w *Writer) appendInstance(event journal.Event) error {
+	if log, ok := w.instanceLog.(*journal.InstanceLog); ok {
+		return w.backend.InstanceAppend(log, event)
+	}
+	return w.instanceLog.Append(event)
 }
 
 // create scaffolds the run journal at first emit. The batch's first op must
@@ -1004,12 +1040,12 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 	if w.scrubber != nil {
 		opts = append(opts, journal.WithScrubber(w.scrubber))
 	}
-	jr, err := journal.Create(runsDir, id, inputs, opts...)
+	jr, owner, err := w.backend.CreateRun(runsDir, id, inputs, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("livejournal: create run journal for %s: %w", req.RunID, err)
 	}
 	return &liveRun{
-		gaggle: req.Gaggle, dir: dir, jr: jr, clock: clock,
+		gaggle: req.Gaggle, dir: dir, jr: jr, owner: owner, clock: clock,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
 	}, nil
@@ -1057,7 +1093,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 	if w.scrubber != nil {
 		opts = append(opts, journal.WithScrubber(w.scrubber))
 	}
-	jr, report, err := journal.Recover(dir, opts...)
+	jr, owner, report, err := w.backend.RecoverRun(dir, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("livejournal: reopen journal for %s: %w", req.RunID, err)
 	}
@@ -1073,7 +1109,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		// written nothing. jr stays nil on the returned run — duplicates
 		// dedupe against keys; a genuinely new op is refused with ErrTerminal
 		// in applyOp.
-		if err := jr.Close(); err != nil {
+		if err := w.backend.Retire(jr, owner); err != nil {
 			return nil, fmt.Errorf("livejournal: release terminal journal for %s: %w", req.RunID, err)
 		}
 		return run, nil
@@ -1092,6 +1128,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 	// returns.
 	clock.set(newestTimestamped(report.Events))
 	run.jr = jr
+	run.owner = owner
 	run.clock = clock
 	return run, nil
 }
@@ -1165,7 +1202,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.TerminalCause = &cause
 		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
-		if err := run.appendEventWithChildOrigin(op, &ev); err != nil {
+		if err := w.appendEventWithChildOrigin(run, op, &ev); err != nil {
 			return false, err
 		}
 		if ev.Type == journal.EventRunFinished {
@@ -1190,11 +1227,12 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			// emit or dropping the span silently (the projection's own rule,
 			// internal/engine/projection.go adoptSpan).
 			spanErr := fmt.Errorf("span %q (%s): %w", s.Name, s.Ref.Digest, err)
-			appendErr := run.jr.Append(journal.Event{
+			event := journal.Event{
 				Type: journal.EventError, Branch: requestBranch(ctx), Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
 				Error:  journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
 				Runner: map[string]any{EmitKeyRunnerField: op.Key},
-			})
+			}
+			appendErr := w.appendRun(run, event)
 			if appendErr != nil {
 				return false, appendErr
 			}
@@ -1238,7 +1276,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.Time = w.now()
 		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
-		if err := w.instanceLog.Append(ev); err != nil {
+		if err := w.appendInstance(ev); err != nil {
 			return false, err
 		}
 		// Marked applied at the run journal's CURRENT sequence: nothing was
@@ -1322,7 +1360,7 @@ func (w *Writer) CloseIdle(olderThan time.Duration) []string {
 	for id, run := range candidates {
 		run.mu.Lock()
 		if run.lastEmit.Before(cutoff) && run.jr != nil {
-			_ = run.jr.Close()
+			_ = w.retire(run)
 			run.jr = nil
 			w.forget(id)
 			closed = append(closed, id)
@@ -1352,7 +1390,7 @@ func (w *Writer) Close() {
 	for _, run := range owned {
 		run.mu.Lock()
 		if run.jr != nil {
-			_ = run.jr.Close()
+			_ = w.retire(run)
 			run.jr = nil
 		}
 		run.mu.Unlock()

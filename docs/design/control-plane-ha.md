@@ -614,6 +614,17 @@ COMMIT;
 <a id="journal-write-path"></a>
 ### 11.3 Journal write path [APPROVED] (HA-P3-09)
 
+**P1 storage seam (HA-P1-10).** Shared writers target
+`internal/journal.Backend`: create/recover returns an owner token, and every
+append batch, idempotent append, notification-delivery claim, checkpoint, blob
+record and retirement presents that token. Instance annotations use the same
+backend. `FileBackend` delegates to today's `Run` and `InstanceLog`, preserving
+the existing bytes, scrub-before-digest rule, fsync boundaries, atomic rename
+and lifetime flock. The local runner remains directly file-bound; only
+`livejournal` and the Temporal history projection use the seam. The later PG
+backend replaces the owner token with the fenced run-owner epoch and preserves
+the same conformance suite.
+
 ```sql
 CREATE TABLE journal.run (instance_id text, run_id text, gaggle text NOT NULL, workflow text NOT NULL,
   run_yaml bytea NOT NULL, created_at timestamptz NOT NULL, retired_at timestamptz,

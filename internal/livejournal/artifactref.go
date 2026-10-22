@@ -60,7 +60,19 @@ func (w *Writer) recordArtifact(ctx context.Context, run *liveRun, a *ArtifactOp
 		if err != nil {
 			return journal.Ref{}, err
 		}
-		return run.jr.RecordBranchExpectedArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
+		if run.adopted {
+			return run.jr.RecordBranchExpectedArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
+		}
+		return w.backend.RecordBlob(run.jr, run.owner, journal.BlobRecord{
+			Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: requestBranch(ctx), Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity, Runner: meta},
+			Data:  data, Expected: a.Ref,
+		})
+	}
+	if !run.adopted {
+		return w.backend.RecordBlob(run.jr, run.owner, journal.BlobRecord{
+			Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: requestBranch(ctx), Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity, Runner: meta},
+			Data:  a.Data,
+		})
 	}
 	if a.Stage != "" || requestBranch(ctx) != 0 {
 		return run.jr.RecordBranchStageArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)

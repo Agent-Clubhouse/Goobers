@@ -78,6 +78,16 @@ type ProjectOption func(*projectConfig)
 type projectConfig struct {
 	spanSource SpanSource
 	replaceRun func(string, string, func() (bool, error)) (bool, error)
+	backend    journal.Backend
+}
+
+// WithJournalBackend targets projection writes at backend.
+func WithJournalBackend(backend journal.Backend) ProjectOption {
+	return func(c *projectConfig) {
+		if backend != nil {
+			c.backend = backend
+		}
+	}
 }
 
 // WithSpanSource configures ProjectRun to adopt recorded spans (harness
@@ -135,6 +145,7 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 		return "", err
 	}
 	cfg := &projectConfig{replaceRun: journal.ReplaceRun}
+	WithJournalBackend(journal.NewFileBackend())(cfg)
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -238,14 +249,14 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 
 	clock := &projectionClock{}
 	clock.set(proj.Ops[0].Time)
-	jr, err := journal.Create(
+	jr, owner, err := cfg.backend.CreateRun(
 		runsDir, id, inputs, journal.WithClock(clock.now), journal.WithInputIntegrity(inputIntegrity),
 		journal.WithoutCommittedEventExport(),
 	)
 	if err != nil {
 		return "", fmt.Errorf("engine: create projected journal for run %q: %w", id.RunID, err)
 	}
-	defer func() { _ = jr.Close() }()
+	defer func() { _ = cfg.backend.Retire(jr, owner) }()
 
 	// journal.Create already appended the opening run.started (op 0);
 	// validateProjection pinned its shape. Replay the rest.
@@ -260,12 +271,10 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 				integrity = apiv1.IntegrityDerived
 			}
 			var ref journal.Ref
-			var recErr error
-			if a.Stage != "" {
-				ref, recErr = jr.RecordBranchStageArtifactWithIntegrity(a.Branch, a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity)
-			} else {
-				ref, recErr = jr.RecordBranchArtifactWithIntegrity(a.Branch, a.Name, a.Data, integrity)
-			}
+			ref, recErr := cfg.backend.RecordBlob(jr, owner, journal.BlobRecord{
+				Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: a.Branch, Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity},
+				Data:  a.Data,
+			})
 			if recErr != nil {
 				return "", fmt.Errorf("engine: project artifact %q (op %d): %w", a.Name, i+1, recErr)
 			}
@@ -275,7 +284,7 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 			if s == nil {
 				return "", fmt.Errorf("%w: span op %d carries no payload", ErrUnprojectable, i+1)
 			}
-			if err := adoptSpan(jr, cfg.spanSource, *s); err != nil {
+			if err := adoptSpan(cfg.backend, jr, owner, cfg.spanSource, *s); err != nil {
 				return "", fmt.Errorf("engine: project span %q (op %d): %w", s.Name, i+1, err)
 			}
 		case opAppend:
@@ -290,12 +299,12 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 				}
 				ev.Ref = &ref
 			}
-			if err := jr.Append(ev); err != nil {
+			if err := cfg.backend.AppendBatch(jr, owner, []journal.Event{ev}); err != nil {
 				return "", fmt.Errorf("engine: project event %s (op %d): %w", ev.Type, i+1, err)
 			}
 		}
 	}
-	if err := jr.Close(); err != nil {
+	if err := cfg.backend.Retire(jr, owner); err != nil {
 		return "", fmt.Errorf("engine: close projected journal for run %q: %w", id.RunID, err)
 	}
 	return jr.Dir(), nil
@@ -317,14 +326,14 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 // failing the whole run's projection or dropping it silently — keeps the run
 // itself projectable and visible in every product surface (the #2895
 // problem this must not reintroduce) while still surfacing the gap (#2907).
-func adoptSpan(jr *journal.Run, src SpanSource, op JournalSpanOp) error {
+func adoptSpan(backend journal.Backend, jr *journal.Run, owner journal.OwnerToken, src SpanSource, op JournalSpanOp) error {
 	data, err := fetchSpan(src, op.Ref.Digest)
 	if err != nil {
 		spanErr := fmt.Errorf("span %q (%s): %w", op.Name, op.Ref.Digest, err)
-		return jr.Append(journal.Event{
+		return backend.AppendBatch(jr, owner, []journal.Event{{
 			Type: journal.EventError, Branch: op.Branch, Stage: op.Stage, Attempt: op.Attempt, AttemptClass: op.Class,
 			Error: journal.ErrorDetailFor(spanUnavailableErrorCode, spanErr),
-		})
+		}})
 	}
 	_, err = jr.RecordBranchSpanWithSchema(op.Branch, op.Stage, op.Name, op.DataSchema, data)
 	return err

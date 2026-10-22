@@ -79,9 +79,9 @@ func (run *liveRun) rememberChildStart(key string, event journal.Event) {
 
 // appendEventWithChildOrigin preserves committed append identity before the
 // caller notifies observers. Caller holds run.mu and has attached the emit key.
-func (run *liveRun) appendEventWithChildOrigin(op Op, event *journal.Event) error {
+func (w *Writer) appendEventWithChildOrigin(run *liveRun, op Op, event *journal.Event) error {
 	if op.ChildStageStart == nil {
-		if err := run.jr.Append(*event); err != nil {
+		if err := w.appendRun(run, *event); err != nil {
 			return err
 		}
 		run.keys[op.Key] = run.jr.Seq()
@@ -102,12 +102,18 @@ func (run *liveRun) appendEventWithChildOrigin(op Op, event *journal.Event) erro
 	return nil
 }
 
-func (run *liveRun) childOriginReceipt(runID string, op Op) (ChildOriginReceipt, error) {
+func (w *Writer) childOriginReceipt(run *liveRun, runID string, op Op) (ChildOriginReceipt, error) {
 	// Recovery can retain a complete append whose checkpoint failed. Never
 	// expose its receipt until the checkpoint has also succeeded, even after
 	// a process restart or an idle close discarded the in-memory error state.
 	if run.jr != nil {
-		if err := run.jr.Checkpoint(); err != nil {
+		var err error
+		if run.adopted {
+			err = run.jr.Checkpoint()
+		} else {
+			err = w.backend.Checkpoint(run.jr, run.owner)
+		}
+		if err != nil {
 			return ChildOriginReceipt{}, err
 		}
 	}
@@ -133,7 +139,7 @@ func (w *Writer) invalidateChildAppend(runID string, run *liveRun) {
 		return
 	}
 	if run.jr != nil {
-		_ = run.jr.Close()
+		_ = w.retire(run)
 		run.jr = nil
 	}
 	// Clear terminal dedup too, so already-acquired stale references must

@@ -37,6 +37,7 @@ type Run struct {
 	scrubber         Scrubber
 	now              func() time.Time
 	observer         func(runID string, seq uint64)
+	backendOwner     OwnerToken
 	pendingObserver  *appendObserver
 	observerStartSeq uint64
 	commits          *commitTarget
@@ -591,6 +592,16 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 // assigned by the journal — any values set by the caller are overwritten.
 func (r *Run) Append(ev Event) error {
 	return r.appendPrepared(ev, nil)
+}
+
+// AppendBatch appends events under one writer mutex and owner incarnation.
+func (r *Run) AppendBatch(events []Event) error {
+	for _, event := range events {
+		if err := r.Append(event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // appendPrepared binds sequence-dependent runner metadata while holding the
