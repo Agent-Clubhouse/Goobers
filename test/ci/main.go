@@ -120,6 +120,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "diagnose" {
 		return runDiagnose(args[1:], stdout, stderr, os.Getenv, time.Now)
 	}
+	if len(args) == 2 && args[0] == "portal-audit" {
+		return runPortalAudit(args[1], stdout, stderr, runNPMAudit, time.Sleep)
+	}
 	fast := false
 	group := ""
 	makeCommand := ""
@@ -136,7 +139,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case len(args) == 2 && args[0] == "full" && strings.TrimSpace(args[1]) != "":
 		makeCommand = args[1]
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | group NAME | full MAKE_COMMAND | diagnose]")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | group NAME | full MAKE_COMMAND | diagnose | portal-audit NPM]")
 		return 2
 	}
 
@@ -958,8 +961,8 @@ func portalPreparationChecks(tools toolchain) []check {
 		},
 		{
 			label:        "portal-audit",
-			command:      tools.npmCommand,
-			args:         []string{"--prefix", "portal", "audit", "--audit-level=low"},
+			command:      tools.goCommand,
+			args:         []string{"run", "./test/ci", "portal-audit", tools.npmCommand},
 			windowsBatch: true,
 			group:        groupChecks,
 		},

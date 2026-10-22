@@ -122,6 +122,7 @@
       "Makefile#linux-node-validation:[4]:go-modules",
       "Makefile#linux-node-validation:[5]:go-modules",
       "Makefile#linux-node-validation:[6]:go-modules",
+      "Makefile#portal-audit::go-modules",
       "Makefile#sandbox-check::go-modules",
       "Makefile#schema-description-coverage::go-modules",
       "Makefile#stress::go-modules",
@@ -155,6 +156,7 @@
       "no-phone-home:go-modules",
       "npm-registry:go-modules",
       "portal-contract-generate:go-modules",
+      "portal-audit:go-modules",
       "portal-embed-vet:go-modules",
       "portal-embed-test:go-modules",
       "runtime-acquisitions:go-modules",
@@ -209,7 +211,7 @@
     "from": [
       "Configured npm registry audit endpoint"
     ],
-    "offline": "no-offline-path: the mandatory portal-audit gate needs a reachable advisory service; warmed package caches do not replace it.",
+    "offline": "no-offline-path: warmed package caches do not replace advisory data. Required CI retries bounded 5xx/network failures and reports UNAVAILABLE with a warning when the service remains down; a successful advisory response containing findings still fails.",
     "sites": [
       "Makefile#portal-audit::npm-advisories",
       "portal-audit:npm-advisories"
