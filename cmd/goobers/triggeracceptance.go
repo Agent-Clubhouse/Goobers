@@ -85,6 +85,3 @@ func (s *durableTriggerService) SweepChildren(ctx context.Context) error {
 func (s *durableTriggerService) ReconcileChildren(ctx context.Context) error {
 	return s.reconcileChildren(ctx)
 }
-func (s *durableTriggerService) SweepDirectEngine(ctx context.Context) error {
-	return s.DurableTriggerService.SweepDirectEngine(ctx)
-}

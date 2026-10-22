@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/childworkflow"
-	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -59,8 +58,6 @@ func (s *durableTriggerService) ReconcileAccepted(ctx context.Context, record tr
 	switch kind {
 	case childworkflow.ChildStartKind:
 		return nil, s.reconcileChildReceipt(ctx, record)
-	case enginestartintent.Kind:
-		return nil, nil
 	case startintent.Kind:
 		if s.ordinary == nil {
 			return nil, errors.New("ordinary start custody unavailable")

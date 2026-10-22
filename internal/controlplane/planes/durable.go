@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/childworkflow"
-	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -26,18 +25,14 @@ const defaultChildPruneBudget = 250 * time.Millisecond
 // DurableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type DurableTriggerService struct {
-	directEngine interface {
-		Dispatch(context.Context, triggerqueue.Record) error
-	}
-	directEngineCursor string
-	queue              *triggerqueue.Store
-	dispatch           *TriggerService
-	backend            DurableTriggerBackend
-	sweepGuard         drainGuard
-	reconcileCursor    string
-	bootUncertain      map[string]bool
-	auditLog           *journal.InstanceLog
-	observe            func(context.Context, triggerqueue.Record) (bool, error)
+	queue           *triggerqueue.Store
+	dispatch        *TriggerService
+	backend         DurableTriggerBackend
+	sweepGuard      drainGuard
+	reconcileCursor string
+	bootUncertain   map[string]bool
+	auditLog        *journal.InstanceLog
+	observe         func(context.Context, triggerqueue.Record) (bool, error)
 	// pruneBudget bounds each sweep's child-retention pass so it cannot stall dispatch;
 	// zero means defaultChildPruneBudget.
 	pruneBudget time.Duration
@@ -51,7 +46,7 @@ type acceptedTriggerPayload struct {
 	PodRunID  string                 `json:"podRunId"`
 }
 
-// DurableTriggerBackend supplies host-owned ordinary, child, and direct-engine seams.
+// DurableTriggerBackend supplies host-owned ordinary and child seams.
 type DurableTriggerBackend interface {
 	AcceptOrdinary(context.Context, httpapi.TriggerRequest) (httpapi.TriggerResponse, bool, error)
 	DrainOrdinary(context.Context, triggerqueue.Record) error
@@ -59,7 +54,6 @@ type DurableTriggerBackend interface {
 	HasChildren() bool
 	SweepChildren(context.Context) error
 	ReconcileChildren(context.Context) error
-	SweepDirectEngine(context.Context) error
 	CanReconcileAccepted() bool
 	ReconcileAccepted(context.Context, triggerqueue.Record, string) (*bool, error)
 }
@@ -119,46 +113,6 @@ func (s *DurableTriggerService) SetPruneBudget(budget time.Duration) { s.pruneBu
 
 // Close closes the accepted-trigger store.
 func (s *DurableTriggerService) Close() error { return s.queue.Close() }
-
-// AttachDirectEngine attaches direct-engine dispatch.
-func (s *DurableTriggerService) AttachDirectEngine(service interface {
-	Dispatch(context.Context, triggerqueue.Record) error
-}) {
-	s.directEngine = service
-}
-
-// ResetDirectEngineCursor restarts direct-engine observation.
-func (s *DurableTriggerService) ResetDirectEngineCursor() { s.directEngineCursor = "" }
-
-func (s *DurableTriggerService) drainDirectEngine(ctx context.Context, record triggerqueue.Record) error {
-	if s.directEngine == nil {
-		return nil
-	}
-	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	err := s.directEngine.Dispatch(bounded, record)
-	if errors.Is(err, enginestartintent.ErrUncertain) || errors.Is(err, triggerqueue.ErrTransition) {
-		return nil
-	}
-	return err
-}
-
-// SweepDirectEngine observes at most one retained direct-engine receipt.
-func (s *DurableTriggerService) SweepDirectEngine(ctx context.Context) error {
-	if s.directEngine == nil {
-		return nil
-	}
-	page, err := s.queue.DirectEnginePage(ctx, s.directEngineCursor)
-	if err != nil {
-		return err
-	}
-	if len(page) == 0 {
-		s.directEngineCursor = ""
-		return nil
-	}
-	s.directEngineCursor = page[0].ID
-	return s.drainDirectEngine(ctx, page[0])
-}
 
 // Trigger durably accepts one trigger request.
 func (s *DurableTriggerService) Trigger(ctx context.Context, request httpapi.TriggerRequest) (httpapi.TriggerResponse, error) {
@@ -247,7 +201,7 @@ func (s *DurableTriggerService) Drain(ctx context.Context) error {
 	pruneCtx, cancelPrune := context.WithTimeout(ctx, budget)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.Now(), 100)
 	cancelPrune()
-	pruneErr = errors.Join(pruneErr, s.backend.SweepChildren(ctx), s.backend.SweepDirectEngine(ctx))
+	pruneErr = errors.Join(pruneErr, s.backend.SweepChildren(ctx))
 	if s.dispatch.Triggerer() == nil && !s.backend.HasChildren() {
 		return pruneErr
 	}
@@ -292,9 +246,6 @@ func (s *DurableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// an envelope also contains an ordinary request. Retain durable custody.
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.backend.DrainChild(ctx, record)
-	}
-	if header.Kind == enginestartintent.Kind {
-		return nil // The independently bounded direct-engine sweep owns these.
 	}
 	if header.Kind == startintent.Kind {
 		return s.backend.DrainOrdinary(ctx, record)

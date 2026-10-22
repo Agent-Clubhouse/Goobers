@@ -20,7 +20,6 @@ func (durableBackendStub) DrainChild(context.Context, triggerqueue.Record) error
 func (durableBackendStub) HasChildren() bool                                        { return false }
 func (durableBackendStub) SweepChildren(context.Context) error                      { return nil }
 func (durableBackendStub) ReconcileChildren(context.Context) error                  { return nil }
-func (durableBackendStub) SweepDirectEngine(context.Context) error                  { return nil }
 func (durableBackendStub) CanReconcileAccepted() bool                               { return false }
 func (durableBackendStub) ReconcileAccepted(context.Context, triggerqueue.Record, string) (*bool, error) {
 	return nil, nil
