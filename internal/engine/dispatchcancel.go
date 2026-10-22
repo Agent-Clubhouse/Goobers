@@ -154,6 +154,16 @@ func unconfirmedDispatchFailure(ctx context.Context, err error, report dispatche
 const failureTypeWorkerLost = "GoobersWorkerLost"
 const failureTypeWorkerHandoff = "GoobersWorkerHandoff"
 
+var errHandoffWorkerLost = errors.New("engine: dispatch handoff lost worker custody")
+
+type handoffWorkerLossError struct{ cause error }
+
+func (e *handoffWorkerLossError) Error() string {
+	return fmt.Sprintf("%s: %v", errHandoffWorkerLost, e.cause)
+}
+
+func (e *handoffWorkerLossError) Unwrap() error { return errHandoffWorkerLost }
+
 // Only a server-delivered cancellation carries a Temporal CanceledError cause.
 // Direct non-Temporal callers own their context, so any cancel is requested.
 func cancellationRequested(ctx context.Context) bool {
@@ -170,6 +180,17 @@ func dispatchControlPathLost(cause, err error) error {
 func dispatchWorkerHandoff(custody dispatcher.PodCustody) error {
 	return temporal.NewApplicationErrorWithOptions("worker-handoff", failureTypeWorkerHandoff, temporal.ApplicationErrorOptions{
 		Details: []interface{}{custody},
+	})
+}
+
+func dispatchHandoffWorkerLoss(err error) error {
+	return &handoffWorkerLossError{cause: err}
+}
+
+func dispatchHandoffWorkerLossApplication(err error) error {
+	message := err.Error()
+	return temporal.NewApplicationErrorWithOptions(message, FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
+		Cause: temporal.NewApplicationError(message, failureTypeWorkerLost),
 	})
 }
 

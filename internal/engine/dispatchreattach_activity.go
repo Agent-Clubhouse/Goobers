@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sync/atomic"
 
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/worker"
+
 	"github.com/goobers/goobers/internal/dispatcher"
 )
 
@@ -19,9 +22,28 @@ func dispatchCustodyContext(ctx context.Context, input DispatchStageInput) (cont
 		custody.Store(&copy)
 	})
 	ctx = dispatcher.WithWorkerHandoffDecision(ctx, func() bool {
-		return ctx.Err() != nil && !cancellationRequested(ctx)
+		return workerHandoffWithCustody(ctx, &custody)
 	})
 	return ctx, &custody, heartbeatDispatchCustody(ctx, custody.Load)
+}
+
+func workerHandoffWithCustody(ctx context.Context, custody *atomic.Pointer[dispatcher.PodCustody]) bool {
+	return custody != nil && custody.Load() != nil && workerShutdownRequested(ctx)
+}
+
+func workerShutdownRequested(ctx context.Context) bool {
+	if errors.Is(context.Cause(ctx), worker.ErrWorkerShutdown) {
+		return true
+	}
+	if !activity.IsActivity(ctx) {
+		return false
+	}
+	select {
+	case <-activity.GetWorkerStopChannel(ctx):
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Activities) dispatchOrAdopt(ctx context.Context, attempt dispatcher.Attempt, input DispatchStageInput) (dispatcher.Report, error) {

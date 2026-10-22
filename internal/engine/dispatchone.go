@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -110,6 +111,9 @@ func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResu
 	in.OwningWorkflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	result, err := executeDispatchActivity(ctx, in)
 	if err != nil {
+		if errors.Is(err, errHandoffWorkerLost) {
+			err = dispatchHandoffWorkerLossApplication(err)
+		}
 		// Returned bare: the caller classifies it with
 		// ClassifyDispatchFailure, and wrapping would hide the
 		// *temporal.ApplicationError type that classification reads.

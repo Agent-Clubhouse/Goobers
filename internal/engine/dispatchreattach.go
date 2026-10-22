@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -18,14 +19,10 @@ const (
 	failureTypeHandoffExhausted = "GoobersHandoffExhausted"
 )
 
-type dispatchAttemptDeadlineKey struct{}
+type dispatchAttemptStartedKey struct{}
 
-func withDispatchAttemptDeadline(ctx workflow.Context, started time.Time, limits *apiv1.Limits) workflow.Context {
-	var effective apiv1.Limits
-	if limits != nil {
-		effective = *limits
-	}
-	return workflow.WithValue(ctx, dispatchAttemptDeadlineKey{}, started.Add(dispatchAttemptDuration(effective)))
+func withDispatchAttemptStarted(ctx workflow.Context, started time.Time) workflow.Context {
+	return workflow.WithValue(ctx, dispatchAttemptStartedKey{}, started)
 }
 
 func dispatchAttemptDuration(limits apiv1.Limits) time.Duration {
@@ -41,22 +38,26 @@ func executeDispatchActivity(ctx workflow.Context, input DispatchStageInput) (Di
 		err := workflow.ExecuteActivity(ctx, ActDispatchStage, input).Get(ctx, &result)
 		return result, err
 	}
-	deadline, _ := ctx.Value(dispatchAttemptDeadlineKey{}).(time.Time)
-	if deadline.IsZero() {
-		deadline = workflow.Now(ctx).Add(dispatchAttemptDuration(input.Envelope.Limits))
+	started, _ := ctx.Value(dispatchAttemptStartedKey{}).(time.Time)
+	if started.IsZero() {
+		started = workflow.Now(ctx)
 	}
-	var custody *dispatcher.PodCustody
-	for handoffs := 0; ; handoffs++ {
+	deadline := started.Add(dispatchAttemptDuration(input.Envelope.Limits))
+	custody := input.Custody
+	handoffs := 0
+	if custody != nil {
+		handoffs = 1
+	}
+	for ; ; handoffs++ {
 		remaining := deadline.Sub(workflow.Now(ctx))
-		if remaining <= 0 {
-			return DispatchStageResult{}, temporal.NewApplicationError(
-				"engine: stage attempt deadline expired during worker handoff", FailureTypeStage)
+		if remaining+stageTimeoutGrace <= 0 {
+			timeout := temporal.NewApplicationError("engine: stage attempt deadline and grace expired during worker handoff", FailureTypeStage)
+			return DispatchStageResult{}, dispatchHandoffWorkerLoss(timeout)
 		}
 		if handoffs > maxDispatchHandoffs {
 			message := fmt.Sprintf("engine: worker handoff limit %d exhausted", maxDispatchHandoffs)
-			return DispatchStageResult{}, temporal.NewApplicationErrorWithOptions(message, FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
-				Cause: temporal.NewApplicationError(message, failureTypeHandoffExhausted),
-			})
+			exhausted := temporal.NewApplicationError(message, failureTypeHandoffExhausted)
+			return DispatchStageResult{}, dispatchHandoffWorkerLoss(exhausted)
 		}
 		attemptCtx := ctx
 		if handoffs > 0 {
@@ -67,6 +68,9 @@ func executeDispatchActivity(ctx workflow.Context, input DispatchStageInput) (Di
 		err := workflow.ExecuteActivity(attemptCtx, ActDispatchStage, input).Get(attemptCtx, &result)
 		next, handoff := dispatchHandoffCustody(err)
 		if !handoff {
+			if custody != nil && err != nil {
+				return result, dispatchHandoffWorkerLoss(err)
+			}
 			return result, err
 		}
 		custody = next
@@ -80,6 +84,19 @@ func dispatchReattachActivityContext(ctx workflow.Context, remaining time.Durati
 }
 
 func dispatchHandoffCustody(err error) (*dispatcher.PodCustody, bool) {
+	var timeout *temporal.TimeoutError
+	if errors.As(err, &timeout) && timeout.TimeoutType() == enumspb.TIMEOUT_TYPE_HEARTBEAT && timeout.HasLastHeartbeatDetails() {
+		var details dispatchHeartbeatDetails
+		if timeout.LastHeartbeatDetails(&details) == nil && details.UID != "" && details.Custody {
+			return &dispatcher.PodCustody{
+				Namespace: details.Namespace,
+				Pod:       details.Pod,
+				UID:       details.UID,
+				Attempt:   details.Attempt,
+				Custody:   true,
+			}, true
+		}
+	}
 	for current := err; current != nil; current = errors.Unwrap(current) {
 		var appErr *temporal.ApplicationError
 		if !errors.As(current, &appErr) {
