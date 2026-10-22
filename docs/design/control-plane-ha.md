@@ -622,8 +622,10 @@ or span record, child-start bind, transcript write and retirement presents that
 token. Instance annotations use an independently fenced instance handle. A file
 append batch has **ordered-prefix** durability: each event is independently
 fsynced and checkpointed in argument order; after an error or crash, recovery
-may expose a prefix, never a reordered batch or a later event without its
-predecessors. `FileBackend` delegates to today's `Run` and `InstanceLog`, preserving
+may expose a possibly empty prefix, never a reordered batch or a later event
+without its predecessors. Validation failures commit nothing. `AppendBatch`
+returns the durable prefix length so callers resume a retry after that prefix.
+`FileBackend` delegates to today's `Run` and `InstanceLog`, preserving
 the existing bytes, scrub-before-digest rule, fsync boundaries, atomic rename
 and lifetime flock. The local runner remains directly file-bound; only
 `livejournal` and the Temporal history projection use the seam. The later PG

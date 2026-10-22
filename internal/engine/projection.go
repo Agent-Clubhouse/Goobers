@@ -311,7 +311,7 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 				}
 				ev.Ref = &ref
 			}
-			if err := backend.AppendBatch(context.Background(), handle, owner, []journal.Event{ev}); err != nil {
+			if _, err := backend.AppendBatch(context.Background(), handle, owner, []journal.Event{ev}); err != nil {
 				return "", fmt.Errorf("engine: project event %s (op %d): %w", ev.Type, i+1, err)
 			}
 		}
@@ -342,10 +342,11 @@ func adoptSpan(backend journal.Backend, handle journal.RunHandle, owner journal.
 	data, err := fetchSpan(src, op.Ref.Digest)
 	if err != nil {
 		spanErr := fmt.Errorf("span %q (%s): %w", op.Name, op.Ref.Digest, err)
-		return backend.AppendBatch(context.Background(), handle, owner, []journal.Event{{
+		_, appendErr := backend.AppendBatch(context.Background(), handle, owner, []journal.Event{{
 			Type: journal.EventError, Branch: op.Branch, Stage: op.Stage, Attempt: op.Attempt, AttemptClass: op.Class,
 			Error: journal.ErrorDetailFor(spanUnavailableErrorCode, spanErr),
 		}})
+		return appendErr
 	}
 	_, err = backend.RecordSpan(context.Background(), handle, owner, journal.SpanRecord{
 		Branch: op.Branch, Stage: op.Stage, Name: op.Name, DataSchema: op.DataSchema, Data: data,

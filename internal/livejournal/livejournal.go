@@ -988,7 +988,8 @@ func (w *Writer) appendRun(run *liveRun, event journal.Event) error {
 	if run.adopted {
 		return run.jr.Append(event)
 	}
-	return w.backend.AppendBatch(context.Background(), run.handle, run.owner, []journal.Event{event})
+	_, err := w.backend.AppendBatch(context.Background(), run.handle, run.owner, []journal.Event{event})
+	return err
 }
 
 func (w *Writer) appendInstance(event journal.Event) error {

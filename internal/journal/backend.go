@@ -81,14 +81,15 @@ type InstanceAppender interface{ Append(Event) error }
 
 // Backend is the shared journal write contract.
 //
-// AppendBatch has ordered-prefix semantics: events commit in argument order;
-// on an error, a prefix may be durable, but a later event is never committed
-// without every earlier event. Recovery exposes exactly that prefix.
+// AppendBatch has ordered-prefix semantics: a possibly empty prefix commits in
+// argument order; a later event is never committed without every earlier
+// event. Validation failures commit nothing. The returned count is the durable
+// prefix length callers use to resume a retry.
 type Backend interface {
 	CreateRun(context.Context, CreateRunRequest) (RunHandle, OwnerToken, error)
 	RecoverRun(context.Context, RunKey, RunWriterOptions) (RunHandle, OwnerToken, RecoverReport, error)
 	RunStatus(context.Context, RunHandle) (RunStatus, error)
-	AppendBatch(context.Context, RunHandle, OwnerToken, []Event) error
+	AppendBatch(context.Context, RunHandle, OwnerToken, []Event) (int, error)
 	AppendIfAbsent(context.Context, RunHandle, OwnerToken, Event, func(Event) bool) (bool, error)
 	ClaimNotificationDelivery(context.Context, RunHandle, OwnerToken, apiv1.NotificationReceipt) (*apiv1.NotificationReceipt, error)
 	Checkpoint(context.Context, RunHandle, OwnerToken) error
@@ -160,7 +161,11 @@ func (b *fileBackend) CreateRun(_ context.Context, request CreateRunRequest) (Ru
 	return b.keepRun(run, RunKey{Gaggle: request.Identity.Gaggle, RunID: request.Identity.RunID})
 }
 
-func (b *fileBackend) RecoverRun(_ context.Context, key RunKey, options RunWriterOptions) (RunHandle, OwnerToken, RecoverReport, error) {
+func (b *fileBackend) RecoverRun(ctx context.Context, key RunKey, options RunWriterOptions) (RunHandle, OwnerToken, RecoverReport, error) {
+	return b.recoverRun(ctx, key, options)
+}
+
+func (b *fileBackend) recoverRun(ctx context.Context, key RunKey, options RunWriterOptions) (RunHandle, OwnerToken, RecoverReport, error) {
 	b.mu.Lock()
 	_, owned := b.live[key]
 	b.mu.Unlock()
@@ -171,32 +176,44 @@ func (b *fileBackend) RecoverRun(_ context.Context, key RunKey, options RunWrite
 	if err != nil {
 		return "", "", RecoverReport{}, err
 	}
-	run, report, err := Recover(filepath.Join(root, key.RunID), fileRunOptions(options)...)
-	if err != nil {
-		return "", "", report, err
+	dir := filepath.Join(root, key.RunID)
+	for {
+		run, report, err := TryRecover(dir, fileRunOptions(options)...)
+		if err == nil {
+			handle, owner, keepErr := b.keepRun(run, key)
+			return handle, owner, report, keepErr
+		}
+		if !errors.Is(err, ErrRecoveryBusy) {
+			return "", "", report, err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", "", report, errors.Join(ErrRunOwned, ctx.Err())
+		case <-timer.C:
+		}
 	}
-	handle, owner, err := b.keepRun(run, key)
-	return handle, owner, report, err
 }
 
 func (b *fileBackend) RunStatus(_ context.Context, handle RunHandle) (RunStatus, error) {
-	run, _, err := b.run(handle, "")
+	run, _, err := b.readRun(handle)
 	if err != nil {
 		return RunStatus{}, err
 	}
 	return RunStatus{Seq: run.Seq(), Phase: run.Phase(), Closed: run.Closed()}, nil
 }
 
-func (b *fileBackend) AppendBatch(_ context.Context, handle RunHandle, owner OwnerToken, events []Event) error {
-	run, _, err := b.run(handle, owner)
+func (b *fileBackend) AppendBatch(_ context.Context, handle RunHandle, owner OwnerToken, events []Event) (int, error) {
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return run.appendBatch(events)
 }
 
 func (b *fileBackend) AppendIfAbsent(_ context.Context, handle RunHandle, owner OwnerToken, event Event, match func(Event) bool) (bool, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return false, err
 	}
@@ -204,7 +221,7 @@ func (b *fileBackend) AppendIfAbsent(_ context.Context, handle RunHandle, owner 
 }
 
 func (b *fileBackend) ClaimNotificationDelivery(_ context.Context, handle RunHandle, owner OwnerToken, receipt apiv1.NotificationReceipt) (*apiv1.NotificationReceipt, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +229,7 @@ func (b *fileBackend) ClaimNotificationDelivery(_ context.Context, handle RunHan
 }
 
 func (b *fileBackend) Checkpoint(_ context.Context, handle RunHandle, owner OwnerToken) error {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return err
 	}
@@ -220,7 +237,7 @@ func (b *fileBackend) Checkpoint(_ context.Context, handle RunHandle, owner Owne
 }
 
 func (b *fileBackend) RecordBlob(_ context.Context, handle RunHandle, owner OwnerToken, record BlobRecord) (Ref, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return Ref{}, err
 	}
@@ -236,7 +253,7 @@ func (b *fileBackend) RecordBlob(_ context.Context, handle RunHandle, owner Owne
 }
 
 func (b *fileBackend) ReadBlob(_ context.Context, handle RunHandle, ref Ref) ([]byte, error) {
-	run, _, err := b.run(handle, "")
+	run, _, err := b.readRun(handle)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +265,7 @@ func (b *fileBackend) ReadBlob(_ context.Context, handle RunHandle, ref Ref) ([]
 }
 
 func (b *fileBackend) RecordSpan(_ context.Context, handle RunHandle, owner OwnerToken, record SpanRecord) (Ref, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return Ref{}, err
 	}
@@ -256,7 +273,7 @@ func (b *fileBackend) RecordSpan(_ context.Context, handle RunHandle, owner Owne
 }
 
 func (b *fileBackend) AppendChildStageStarted(_ context.Context, handle RunHandle, owner OwnerToken, record ChildStageStartRecord) (uint64, *apiv1.ChildWorkflowOrigin, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -264,7 +281,7 @@ func (b *fileBackend) AppendChildStageStarted(_ context.Context, handle RunHandl
 }
 
 func (b *fileBackend) BeginTranscript(_ context.Context, handle RunHandle, owner OwnerToken, branch int, stage, name string) (ExpectedTranscriptCheckpointSession, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +289,7 @@ func (b *fileBackend) BeginTranscript(_ context.Context, handle RunHandle, owner
 }
 
 func (b *fileBackend) RepairAppendBoundary(_ context.Context, handle RunHandle, owner OwnerToken) error {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return err
 	}
@@ -280,7 +297,7 @@ func (b *fileBackend) RepairAppendBoundary(_ context.Context, handle RunHandle, 
 }
 
 func (b *fileBackend) AcceptOperatorMessage(_ context.Context, handle RunHandle, owner OwnerToken, request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
@@ -288,7 +305,7 @@ func (b *fileBackend) AcceptOperatorMessage(_ context.Context, handle RunHandle,
 }
 
 func (b *fileBackend) RejectOperatorMessage(_ context.Context, handle RunHandle, owner OwnerToken, request apiv1.OperatorMessageRequest, code, detail string) (apiv1.OperatorMessageRecord, bool, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
@@ -296,7 +313,7 @@ func (b *fileBackend) RejectOperatorMessage(_ context.Context, handle RunHandle,
 }
 
 func (b *fileBackend) AcknowledgeOperatorMessage(_ context.Context, handle RunHandle, owner OwnerToken, ack apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, err
 	}
@@ -304,7 +321,7 @@ func (b *fileBackend) AcknowledgeOperatorMessage(_ context.Context, handle RunHa
 }
 
 func (b *fileBackend) CompleteOperatorMessage(_ context.Context, handle RunHandle, owner OwnerToken, outcome apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error) {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, err
 	}
@@ -312,7 +329,7 @@ func (b *fileBackend) CompleteOperatorMessage(_ context.Context, handle RunHandl
 }
 
 func (b *fileBackend) Retire(_ context.Context, handle RunHandle, owner OwnerToken) error {
-	run, _, err := b.run(handle, owner)
+	run, _, err := b.writeRun(handle, owner)
 	if err != nil {
 		return err
 	}
@@ -388,20 +405,31 @@ func (b *fileBackend) keepRun(run *Run, key RunKey) (RunHandle, OwnerToken, erro
 	return handle, owner, nil
 }
 
-func (b *fileBackend) run(handle RunHandle, owner OwnerToken) (*Run, OwnerToken, error) {
+func (b *fileBackend) readRun(handle RunHandle) (*Run, OwnerToken, error) {
 	b.mu.Lock()
 	current, ok := b.runs[handle]
 	b.mu.Unlock()
 	if !ok {
 		return nil, "", fmtClosed()
 	}
-	if owner != "" && current.owner != owner {
-		return nil, "", errors.New("journal: stale or invalid owner token")
-	}
 	if current.run.Closed() {
 		return nil, "", fmtClosed()
 	}
 	return current.run, current.owner, nil
+}
+
+func (b *fileBackend) writeRun(handle RunHandle, owner OwnerToken) (*Run, OwnerToken, error) {
+	if owner == "" {
+		return nil, "", errors.New("journal: owner token is required")
+	}
+	run, current, err := b.readRun(handle)
+	if err != nil {
+		return nil, "", err
+	}
+	if current != owner {
+		return nil, "", errors.New("journal: stale or invalid owner token")
+	}
+	return run, current, nil
 }
 
 func (b *fileBackend) runsDir(gaggle string) (string, error) {

@@ -20,7 +20,7 @@ func (b *recordingJournalBackend) CreateRun(ctx context.Context, request journal
 	return b.Backend.CreateRun(ctx, request)
 }
 
-func (b *recordingJournalBackend) AppendBatch(ctx context.Context, run journal.RunHandle, owner journal.OwnerToken, events []journal.Event) error {
+func (b *recordingJournalBackend) AppendBatch(ctx context.Context, run journal.RunHandle, owner journal.OwnerToken, events []journal.Event) (int, error) {
 	b.appends += len(events)
 	return b.Backend.AppendBatch(ctx, run, owner, events)
 }

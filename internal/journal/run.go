@@ -595,7 +595,7 @@ func (r *Run) Append(ev Event) error {
 
 // appendBatch commits an ordered prefix; each event keeps the historical
 // append+checkpoint durability boundary.
-func (r *Run) appendBatch(events []Event) error {
+func (r *Run) appendBatch(events []Event) (int, error) {
 	r.mu.Lock()
 	var observedSeq uint64
 	defer func() {
@@ -605,19 +605,33 @@ func (r *Run) appendBatch(events []Event) error {
 		}
 	}()
 	if r.closed {
-		return ErrClosed
+		return 0, ErrClosed
 	}
+	for i, event := range events {
+		event.Seq = r.seq + uint64(i) + 1
+		event.Schema = EventSchema
+		event.Time = r.now()
+		line, err := marshalEvent(event)
+		if err != nil {
+			return 0, err
+		}
+		if len(r.scrubber.Scrub(line))+1 > maxEventBytes {
+			return 0, fmt.Errorf("journal: event exceeds %d-byte limit", maxEventBytes)
+		}
+	}
+	committed := 0
 	for _, event := range events {
 		if err := r.append(event); err != nil {
-			return err
+			return committed, err
 		}
+		committed++
 		r.applyLifecycle(event)
 		if err := r.checkpoint(); err != nil {
-			return err
+			return committed, err
 		}
 		observedSeq = r.seq
 	}
-	return nil
+	return committed, nil
 }
 
 // appendPrepared binds sequence-dependent runner metadata while holding the

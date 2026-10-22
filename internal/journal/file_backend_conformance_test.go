@@ -9,11 +9,12 @@ import (
 
 func fileBackendFactory(t *testing.T) backendFactory {
 	t.Helper()
-	return func() journal.Backend {
+	return func() backendStore {
 		root := t.TempDir()
-		return journal.NewFileBackend(journal.FileBackendConfig{
+		config := journal.FileBackendConfig{
 			RunsDir: filepath.Join(root, "runs"), SchedulerDir: filepath.Join(root, "scheduler"),
-		})
+		}
+		return backendStore{Open: func() journal.Backend { return journal.NewFileBackend(config) }}
 	}
 }
 
