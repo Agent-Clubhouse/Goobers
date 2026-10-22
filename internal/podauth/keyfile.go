@@ -3,6 +3,7 @@ package podauth
 import (
 	"bytes"
 	"crypto/hkdf"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -13,6 +14,19 @@ import (
 // CredentialGrantKeyDomain separates derived grant-signing material from the
 // raw pod-token signing key.
 const CredentialGrantKeyDomain = "goobers/credential-refresh-grant/v1"
+
+// CredentialGrantSigningKey returns a process-local random key when path is
+// empty, or a domain-separated key derived from the shared key file.
+func CredentialGrantSigningKey(path string) (*SignedKey, error) {
+	if strings.TrimSpace(path) == "" {
+		raw := make([]byte, sha256.Size)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, fmt.Errorf("podauth: generate credential grant key: %w", err)
+		}
+		return NewSignedKey(raw)
+	}
+	return LoadDerivedSignedKeyFile(path, CredentialGrantKeyDomain)
+}
 
 // LoadSignedKeyFile loads trimmed signing material from path.
 func LoadSignedKeyFile(path string) (*SignedKey, error) {
