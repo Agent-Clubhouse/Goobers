@@ -189,7 +189,7 @@ func TestWorkerReadinessFailsWhenUnrouted(t *testing.T) {
 	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
 		return workerrouting.Routing{
 			WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
-				CurrentVersion: deploymentVersion("v1"),
+				CurrentVersion: deploymentVersion("v2"),
 			},
 		}, nil
 	}
@@ -202,6 +202,24 @@ func TestWorkerReadinessFailsWhenUnrouted(t *testing.T) {
 	}
 
 	h.pollersStarted.Store(true)
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{}, nil
+	}
+	h.checkRoutingOnce(context.Background(), nil, "")
+	response = httptest.NewRecorder()
+	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz = %d, want %d while the build is unregistered", response.Code, http.StatusServiceUnavailable)
+	}
+
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{
+			WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+				CurrentVersion: deploymentVersion("v1"),
+			},
+		}, nil
+	}
+	h.checkRoutingOnce(context.Background(), nil, "unregistered")
 	response = httptest.NewRecorder()
 	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if response.Code != http.StatusServiceUnavailable {
@@ -220,6 +238,36 @@ func TestWorkerReadinessFailsWhenUnrouted(t *testing.T) {
 	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /readyz = %d, want %d after routing reaches this build", response.Code, http.StatusOK)
+	}
+	if strings.Contains(response.Body.String(), `"draining":true`) {
+		t.Fatalf("GET /readyz body = %s, want current build not draining", response.Body.String())
+	}
+}
+
+func TestWorkerReadinessKeepsDrainingVersionReady(t *testing.T) {
+	h := newTestHost(t, Config{
+		TaskQueues:   []string{"goobers-engine"},
+		BuildVersion: "v1",
+		Versioning:   true,
+	}, &fakeFleet{})
+	h.pollersStarted.Store(true)
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{
+			WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+				CurrentVersion: deploymentVersion("v2"),
+			},
+			Draining: map[string]bool{"v1": true},
+		}, nil
+	}
+
+	h.checkRoutingOnce(context.Background(), nil, "")
+	response := httptest.NewRecorder()
+	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /readyz = %d, want %d for draining build with pinned work", response.Code, http.StatusOK)
+	}
+	if !strings.Contains(response.Body.String(), `"draining":true`) {
+		t.Fatalf("GET /readyz body = %s, want draining=true", response.Body.String())
 	}
 }
 

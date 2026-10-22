@@ -113,6 +113,7 @@ type Host struct {
 	childSettlementTimeout time.Duration
 	pollersStarted         atomic.Bool
 	routed                 atomic.Bool
+	draining               atomic.Bool
 }
 
 // New validates cfg and builds a Host.
@@ -335,11 +336,12 @@ func (h *Host) serveLiveness(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Host) serveReadiness(w http.ResponseWriter, _ *http.Request) {
 	ready := h.pollersStarted.Load() && h.routed.Load()
+	draining := h.draining.Load()
 	w.Header().Set("Content-Type", "application/json")
 	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	_, _ = fmt.Fprintf(w, `{"ready":%t}`, ready)
+	_, _ = fmt.Fprintf(w, `{"ready":%t,"draining":%t}`, ready, draining)
 }
 
 // activityTracker counts in-flight activity executions across every worker in
