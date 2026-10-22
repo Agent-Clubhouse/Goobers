@@ -21,6 +21,7 @@ const (
 	webhookReadTimeout   = 10 * time.Second
 )
 
+// WebhookServerConfig supplies the webhook plane's explicit dependencies.
 type WebhookServerConfig struct {
 	Address        string
 	Config         *instance.Config
@@ -34,6 +35,7 @@ type WebhookServerConfig struct {
 	ReconcileHook  func(context.Context)
 }
 
+// HasWebhookTriggers reports whether any workflow accepts webhook events.
 func HasWebhookTriggers(set *instance.ConfigSet) bool {
 	for i := range set.Workflows {
 		for _, trigger := range set.Workflows[i].Spec.Triggers {
@@ -45,15 +47,18 @@ func HasWebhookTriggers(set *instance.ConfigSet) bool {
 	return false
 }
 
+// WebhookListenerEnabled reports whether configuration requires a listener.
 func WebhookListenerEnabled(set *instance.ConfigSet, cfg *instance.Config) bool {
 	hasGitSource := cfg.WorkflowSource != nil && cfg.WorkflowSource.Kind == instance.WorkflowSourceKindGit
 	return (HasWebhookTriggers(set) || hasGitSource) && cfg.WebhookSecretConfigured()
 }
 
+// WebhookListenerTopologyChanged reports whether a reload would add or remove the listener.
 func WebhookListenerTopologyChanged(current, next *instance.ConfigSet, cfg *instance.Config) bool {
 	return WebhookListenerEnabled(current, cfg) != WebhookListenerEnabled(next, cfg)
 }
 
+// WebhookConfigurationWarning describes a trigger configuration disabled by a missing secret.
 func WebhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) string {
 	if HasWebhookTriggers(set) && !cfg.WebhookSecretConfigured() {
 		return "warning: webhook triggers are configured but instance webhook.secret is not; the webhook listener is disabled"
@@ -61,6 +66,7 @@ func WebhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) 
 	return ""
 }
 
+// BuildWebhookServer constructs the webhook listener when configuration enables it.
 func BuildWebhookServer(ctx context.Context, cfg WebhookServerConfig) (*httpapi.Server, error) {
 	hasGitSource := cfg.Config.WorkflowSource != nil && cfg.Config.WorkflowSource.Kind == instance.WorkflowSourceKindGit
 	if !WebhookListenerEnabled(cfg.Definitions, cfg.Config) {

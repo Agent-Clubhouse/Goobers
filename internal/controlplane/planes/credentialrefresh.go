@@ -20,6 +20,7 @@ const (
 	grantRefreshInterval = 20 * time.Second
 )
 
+// StageGrantIssuer mints and admits scoped credential-refresh grants.
 type StageGrantIssuer struct {
 	key      *podauth.SignedKey
 	endpoint string
@@ -35,6 +36,7 @@ type grantBucket struct {
 	expiresAt time.Time
 }
 
+// NewStageGrantIssuer creates an issuer with an injected signing key.
 func NewStageGrantIssuer(key *podauth.SignedKey, endpoint string) (*StageGrantIssuer, error) {
 	if key == nil {
 		return nil, errors.New("credential grant signing key is required")
@@ -42,6 +44,7 @@ func NewStageGrantIssuer(key *podauth.SignedKey, endpoint string) (*StageGrantIs
 	return &StageGrantIssuer{key: key, endpoint: endpoint, now: time.Now, revoked: map[string]time.Time{}, buckets: map[[sha256.Size]byte]*grantBucket{}}, nil
 }
 
+// LocalCredentialEndpoint converts a daemon listen address into a local stage URL.
 func LocalCredentialEndpoint(listenAddress string, tls bool) (string, error) {
 	host, port, err := net.SplitHostPort(listenAddress)
 	if err != nil {
@@ -57,9 +60,13 @@ func LocalCredentialEndpoint(listenAddress string, tls bool) (string, error) {
 	return scheme + "://" + net.JoinHostPort(host, port), nil
 }
 
+// Key returns the grant signing and verification key.
 func (g *StageGrantIssuer) Key() *podauth.SignedKey { return g.key }
-func (g *StageGrantIssuer) Endpoint() string        { return g.endpoint }
 
+// Endpoint returns the credential-refresh endpoint delivered with grants.
+func (g *StageGrantIssuer) Endpoint() string { return g.endpoint }
+
+// MintStageGrant mints a revocable grant for one local stage attempt.
 func (g *StageGrantIssuer) MintStageGrant(runID, stage string, attempt int32, capabilities []string, ttl time.Duration, shared *journal.RegistryScrubber) (executor.StageCredentialGrant, error) {
 	token, grant, err := g.key.MintCredentialGrant(podauth.CredentialGrant{RunID: runID, Stage: stage, Attempt: attempt, Capabilities: capabilities}, ttl)
 	if err != nil {
@@ -70,6 +77,7 @@ func (g *StageGrantIssuer) MintStageGrant(runID, stage string, attempt int32, ca
 	return executor.StageCredentialGrant{Endpoint: g.endpoint, Token: token, Revoke: func() { once.Do(func() { g.revoke(grant.ID, grant.ExpiresAt) }) }}, nil
 }
 
+// MintPodGrant mints the grant delivered with a deterministic pod-stage resolve.
 func (g *StageGrantIssuer) MintPodGrant(request httpapi.CredentialResolveRequest, capabilities []string, ttl time.Duration, shared *journal.RegistryScrubber) *httpapi.CredentialGrantDelivery {
 	token, grant, err := g.key.MintCredentialGrant(podauth.CredentialGrant{
 		RunID: request.RunID, Stage: request.Stage, Attempt: request.Attempt, Capabilities: capabilities,
@@ -81,6 +89,7 @@ func (g *StageGrantIssuer) MintPodGrant(request httpapi.CredentialResolveRequest
 	return &httpapi.CredentialGrantDelivery{Token: token, ExpiresAt: grant.ExpiresAt}
 }
 
+// Admit verifies, authorizes, and rate-limits one credential refresh.
 func (g *StageGrantIssuer) Admit(token, capabilityName string) (podauth.CredentialGrant, error) {
 	if g == nil {
 		return podauth.CredentialGrant{}, credentialPlaneError(http.StatusServiceUnavailable, "credentials_unavailable", "mid-stage credential refresh is not enabled on this daemon")
