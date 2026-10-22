@@ -29,6 +29,13 @@ Phase 1 does not enable human restart of a sealed child: retain its result and
 expose the unsupported operation explicitly. The existing execution-epoch
 contract remains reserved for a separately qualified restart adapter.
 
+The approved [HA engine-parity decision](decisions/ha-engine-parity.md) broadens
+the R9 reversal to all eight refused feature categories and amends delivery
+order: standalone parallels, selection, and maps now precede child workflows,
+based on shipped usage. The phase numbering in this draft still describes
+composition dependencies within the child-workflow design; it no longer sets
+the programme-wide P4 implementation order.
+
 The [agent-authored child contract](agent-authored-child-workflows.md) governs
 authority, workspace custody, result disposition, and one unfinished child per
 stage occurrence. The [fan-out contract](plan-driven-dynamic-fan-out.md), especially
