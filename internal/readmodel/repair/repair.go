@@ -38,7 +38,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -101,6 +100,7 @@ type Options struct {
 	BatchSize int
 	Logger    *slog.Logger
 	Now       func() time.Time
+	Journal   journal.ReaderBackend
 }
 
 const (
@@ -480,7 +480,11 @@ func (s *Sweeper) refreshStaleRunning(ctx context.Context, dir, runID string, ro
 	if row.Phase != journal.PhaseRunning {
 		return nil
 	}
-	reader, err := journal.OpenRead(dir)
+	backend := s.options.Journal
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{filepath.Dir(dir)}})
+	}
+	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: runID})
 	if err != nil {
 		// Unreadable is not a disagreement. The reverse walk owns rows whose
 		// journal has gone missing; anything else is for the next cycle.
@@ -581,7 +585,11 @@ func (s *Sweeper) sweepReverse(
 
 // project reads a run directory into a projection. Never takes a journal lock.
 func (s *Sweeper) project(dir string) (readmodel.Projection, bool, error) {
-	reader, err := journal.OpenRead(dir)
+	backend := s.options.Journal
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{filepath.Dir(dir)}})
+	}
+	reader, err := backend.OpenRun(context.Background(), journal.RunRef{ID: filepath.Base(dir)})
 	if err != nil {
 		return readmodel.Projection{}, false, nil
 	}
@@ -639,22 +647,17 @@ func (s *Sweeper) runsDirs(ctx context.Context) ([]string, error) {
 // specified across platforms, and a walk that resumed "after X" in an unsorted
 // listing could skip entries indefinitely.
 func (s *Sweeper) readBatch(root, after string, limit int) ([]string, error) {
-	entries, err := os.ReadDir(root)
+	backend := s.options.Journal
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{root}})
+	}
+	refs, err := backend.ListRuns(context.Background(), journal.RunFilter{After: after, Limit: limit})
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("repair: read %s: %w", root, err)
 	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() > after {
-			names = append(names, entry.Name())
-		}
-	}
-	sort.Strings(names)
-	if len(names) > limit {
-		names = names[:limit]
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		names = append(names, ref.ID)
 	}
 	return names, nil
 }

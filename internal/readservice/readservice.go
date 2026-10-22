@@ -159,7 +159,9 @@ type LocalSources struct {
 	// is the whole point of the interface split — reconcileIndex writing to
 	// disk from the HTTP list path is how all 40,665 run directories on the
 	// live instance came to hold a .lock file.
-	ReadModel      readmodel.Reader
+	ReadModel readmodel.Reader
+	// Journal is the authoritative run and instance read backend.
+	Journal        journal.ReaderBackend
 	RetentionStats func() readmodel.RetentionStats
 	// InstanceLogStats is present only in the live daemon. Dropped appends are
 	// process-lifetime state because the failing journal cannot persist its own
@@ -252,6 +254,23 @@ type Local struct {
 	schedulerProjector     atomic.Pointer[schedulerStateProjector]
 }
 
+func (s *Local) journalReader() journal.ReaderBackend {
+	if s.sources.Journal != nil {
+		return s.sources.Journal
+	}
+	return fileJournalReader(s.sources.Layout)
+}
+
+func fileJournalReader(layout instance.Layout) journal.ReaderBackend {
+	return journal.NewFileReaderBackend(journal.FileReaderBackendConfig{
+		ResolveRun: func(_ context.Context, runID string) (string, error) {
+			return layout.FindRunDir(runID)
+		},
+		ResolveRoots: layout.RunDirsContext,
+		SchedulerDir: layout.SchedulerDir(),
+	})
+}
+
 type definitionSnapshot struct {
 	set       *instance.ConfigSet
 	loadedAt  time.Time
@@ -268,6 +287,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 	}
 	if sources.FleetAssociation == nil {
 		sources.FleetAssociation = defaultFleetAssociation
+	}
+	if sources.Journal == nil {
+		sources.Journal = fileJournalReader(sources.Layout)
 	}
 	now := time.Now
 	snapshot, err := newDefinitionSnapshot(sources.Definitions, sources.Validation, now())
@@ -290,6 +312,7 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 		// every list while enabled, including closed-set refusals.
 		readModelReads: sources.ReadModel != nil,
 	}
+	local.instanceLog.backend = sources.Journal
 	local.definitions.Store(snapshot)
 	return local, nil
 }

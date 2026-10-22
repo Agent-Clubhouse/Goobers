@@ -607,7 +607,7 @@ type runCursor struct {
 }
 
 type runRead struct {
-	reader   *journal.Reader
+	reader   journal.RunReader
 	identity journal.RunIdentity
 	records  []journal.EventRecord
 }
@@ -1184,44 +1184,31 @@ func (s *Local) runSummariesForStage(
 	skipUnreadable bool,
 	attemptStage string,
 ) ([]RunSummary, error) {
-	runDirs, err := s.sources.Layout.RunDirs()
-	if err != nil {
-		return nil, err
-	}
-
 	observedAt := s.now().UTC()
 	var summaries []RunSummary
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
+	refs, err := s.journalReader().ListRuns(ctx, journal.RunFilter{})
+	if err != nil {
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		run, err := s.openRun(ref.ID)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if skipUnreadable || errors.Is(err, ErrNotFound) {
 				continue
 			}
-			return nil, fmt.Errorf("read runs directory: %w", err)
+			return nil, err
 		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if !entry.IsDir() {
+		summary, err := summarizeRunForStage(run, observedAt, attemptStage)
+		if err != nil {
+			if skipUnreadable {
 				continue
 			}
-			run, err := s.openRun(entry.Name())
-			if err != nil {
-				if skipUnreadable || errors.Is(err, ErrNotFound) {
-					continue
-				}
-				return nil, err
-			}
-			summary, err := summarizeRunForStage(run, observedAt, attemptStage)
-			if err != nil {
-				if skipUnreadable {
-					continue
-				}
-				return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
-			}
-			summaries = append(summaries, summary)
+			return nil, fmt.Errorf("summarize run %q: %w", ref.ID, err)
 		}
+		summaries = append(summaries, summary)
 	}
 
 	sort.Slice(summaries, func(i, j int) bool {
@@ -1246,27 +1233,13 @@ func (s *Local) RunIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	runDirs, err := s.sources.Layout.RunDirs()
+	refs, err := s.journalReader().ListRuns(ctx, journal.RunFilter{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read runs directory: %w", err)
 	}
-	var ids []string
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("read runs directory: %w", err)
-		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
-				ids = append(ids, entry.Name())
-			}
-		}
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
 	}
 	sort.Strings(ids)
 	return ids, nil
@@ -1700,24 +1673,7 @@ func (s *Local) openRun(runID string) (runRead, error) {
 	if !apiv1.ValidRunID(runID) {
 		return runRead{}, fmt.Errorf("%w: invalid run id", ErrInvalidArgument)
 	}
-	dir, err := s.sources.Layout.FindRunDir(runID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-		}
-		return runRead{}, err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-		}
-		return runRead{}, fmt.Errorf("inspect run %q: %w", runID, err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-	}
-	reader, err := journal.OpenRead(dir)
+	reader, err := s.journalReader().OpenRun(context.Background(), journal.RunRef{ID: runID})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
@@ -2593,7 +2549,7 @@ func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {
 	return count, nil
 }
 
-func lastNeedsChangesReason(reader *journal.Reader, records []journal.EventRecord, gate string) (string, error) {
+func lastNeedsChangesReason(reader journal.RunReader, records []journal.EventRecord, gate string) (string, error) {
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
 		if !event.KnownSchema() ||

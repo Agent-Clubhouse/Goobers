@@ -632,6 +632,14 @@ and lifetime flock. The local runner remains directly file-bound; only
 backend replaces the owner token with the fenced run-owner epoch and preserves
 the same conformance suite.
 
+**P1 read seam (HA-P1-11).** Shared read paths target
+`internal/journal.ReaderBackend`: bounded event reads after a sequence, filtered
+run listing, incremental instance-log reads, and typed run handles for
+identity/checkpoint/blob access. `FileReaderBackend` preserves schema migration,
+torn-tail tolerance, digest verification and lexical discovery. Readservice,
+the read-model projector and its repair sweep use the seam; CLI-only
+instance-root readers remain directly file-bound.
+
 ```sql
 CREATE TABLE journal.run (instance_id text, run_id text, gaggle text NOT NULL, workflow text NOT NULL,
   run_yaml bytea NOT NULL, created_at timestamptz NOT NULL, retired_at timestamptz,
