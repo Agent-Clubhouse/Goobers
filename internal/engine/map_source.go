@@ -45,7 +45,7 @@ type FreezeMapRosterResult struct {
 // its roster, and stores the normalized roster under its content digest.
 func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInput) (FreezeMapRosterResult, error) {
 	if in.RunID == "" || in.MapName == "" || in.Definition.Name != in.MapName {
-		return FreezeMapRosterResult{}, invalidMapRosterActivity(
+		return FreezeMapRosterResult{}, invalidFanOutActivity(
 			fmt.Errorf("run ID and map name are required, and definition name must match map name"),
 		)
 	}
@@ -58,10 +58,10 @@ func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInpu
 	}
 	blob, data, digest, err := fanout.FreezeRosterBlob(in.Definition, in.Source, sourceData)
 	if err != nil {
-		return FreezeMapRosterResult{}, invalidMapRosterActivity(err)
+		return FreezeMapRosterResult{}, invalidFanOutActivity(err)
 	}
 	if _, err := fanout.DecodeRosterBlob(data, digest, in.Definition); err != nil {
-		return FreezeMapRosterResult{}, invalidMapRosterActivity(err)
+		return FreezeMapRosterResult{}, invalidFanOutActivity(err)
 	}
 	if err := a.FanOutBlobs.Put(ctx, digest, data); err != nil {
 		return FreezeMapRosterResult{}, fmt.Errorf("store map %q frozen roster %s: %w", in.MapName, digest, err)
@@ -76,6 +76,6 @@ func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInpu
 	}, nil
 }
 
-func invalidMapRosterActivity(err error) error {
-	return temporal.NewNonRetryableApplicationError(err.Error(), "map_roster_invalid", err)
+func invalidFanOutActivity(err error) error {
+	return temporal.NewNonRetryableApplicationError(err.Error(), "fanout_source_invalid", err)
 }
