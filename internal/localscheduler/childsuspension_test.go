@@ -105,7 +105,7 @@ func TestChildWaitRefusesMultipleOwnersAndDisabledResume(t *testing.T) {
 func TestChildWaitReconciledOwnershipCleanup(t *testing.T) {
 	parent, request := childAdmissionFixture()
 	s, _ := newTestScheduler(t, []WorkflowEntry{parent})
-	s.reconciledRuns[request.ParentRunID] = reconciledRun{identity: request.Parent, workflow: parent.Workflow}
+	s.reconciledRuns[request.ParentRunID] = ReconciledRun{Identity: request.Parent, Workflow: parent.Workflow}
 	if ok, _ := s.conditions.ReserveContinuation(request.Parent, parent.Readiness); !ok {
 		t.Fatal("fixture capacity")
 	}

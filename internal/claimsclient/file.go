@@ -45,15 +45,7 @@ type FileConfig struct {
 // FileLedger is the slice of *localscheduler.ClaimLedger the file backend
 // operates on — seam-shaped so tests can wrap the real ledger.
 type FileLedger interface {
-	RecordClaimVerification(Entry, localscheduler.ClaimVerification) (bool, error)
-	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
-	ClaimScoped(key Key, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
-	Release(itemID, runID string, reason claimrelease.Reason) error
-	ReleaseScoped(key Key, runID string, reason claimrelease.Reason) error
-	ReleaseEntry(entry Entry, runID string, reason claimrelease.Reason) error
-	ForRunAll(runID string) []Entry
-	Snapshot() []Entry
-	HistorySnapshot() []Entry
+	localscheduler.ClaimStore
 }
 
 // Default operation labels for a bare mutating primitive called outside
