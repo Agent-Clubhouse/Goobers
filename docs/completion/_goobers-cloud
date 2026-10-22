@@ -1,0 +1,2 @@
+#compdef goobers-cloud
+_arguments '1:command:(api completion controller help migrate worker)'

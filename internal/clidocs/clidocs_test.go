@@ -23,6 +23,10 @@ func TestCommandNaming(t *testing.T) {
 	if nested.ManFile() != "goobers-run-abort.1" {
 		t.Errorf("ManFile = %q", nested.ManFile())
 	}
+	cloud := Command{Binary: "goobers-cloud", Path: []string{"worker"}}
+	if cloud.FullName() != "goobers-cloud worker" || cloud.ManFile() != "goobers-cloud-worker.1" {
+		t.Errorf("cloud naming = %q/%q", cloud.FullName(), cloud.ManFile())
+	}
 }
 
 func TestManPageRoffEscaping(t *testing.T) {
