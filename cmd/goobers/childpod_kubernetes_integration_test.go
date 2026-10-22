@@ -136,7 +136,7 @@ func testRealKubernetesChild(t *testing.T, cancelParent, loseWorker bool) {
 		return httpapi.ClaimListResponse{ClaimVisibility: "local", ObservedAt: time.Now()}, nil
 	})
 	opts := s.installChildPodPlane(transport, plane, journals, observe, nil)
-	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.key)), httpapi.WithChildWorkflowService(s.children.HTTPService()))
+	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.Key())), httpapi.WithChildWorkflowService(s.children.HTTPService()))
 	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
 	if err != nil {
 		t.Fatal(err)

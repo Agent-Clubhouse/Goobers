@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
@@ -129,7 +130,7 @@ type daemonCredentialService struct {
 	// grants signs and admits stage credential-refresh grants (Goobers#6120,
 	// credentialrefresh.go). Nil disables mid-stage refresh: no grant is
 	// minted and the refresh route answers 503.
-	grants        *stageGrantIssuer
+	grants        *planes.StageGrantIssuer
 	children      *childworkflow.Runtime
 	childQueue    *triggerqueue.Store
 	childDispatch *daemonTriggerService

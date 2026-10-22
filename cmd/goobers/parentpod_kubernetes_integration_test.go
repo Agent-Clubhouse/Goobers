@@ -165,7 +165,7 @@ func qualifyContainedParentJourney(t *testing.T, action string, provider ...stri
 		return httpapi.ClaimListResponse{ClaimVisibility: "local", ObservedAt: time.Now()}, nil
 	})
 	opts := s.installChildPodPlane(transport, plane, journals, observe, nil)
-	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.key)), httpapi.WithChildWorkflowService(s.children.HTTPService()))
+	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.Key())), httpapi.WithChildWorkflowService(s.children.HTTPService()))
 	reads, err := readservice.NewLocal(readservice.LocalSources{Layout: f.layout, Config: f.cfg, Definitions: f.applied, ChildHistory: triggers.queue.Children}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)

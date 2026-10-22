@@ -86,7 +86,7 @@ func pushBranchEnvelope(runID string, attempt int32) apiv1.InvocationEnvelope {
 
 func mintTestGrant(t *testing.T, service *daemonCredentialService, grant podauth.CredentialGrant, ttl time.Duration) string {
 	t.Helper()
-	token, _, err := service.grants.key.MintCredentialGrant(grant, ttl)
+	token, _, err := service.grants.Key().MintCredentialGrant(grant, ttl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,8 +262,7 @@ func TestCredentialRefreshNegativeCases(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-
-				token, _, err := other.key.MintCredentialGrant(podauth.CredentialGrant{RunID: runID, Stage: "push-branch", Capabilities: []string{"repo:push"}}, time.Hour)
+				token, _, err := other.Key().MintCredentialGrant(podauth.CredentialGrant{RunID: runID, Stage: "push-branch", Capabilities: []string{"repo:push"}}, time.Hour)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -315,7 +314,7 @@ func TestCredentialRefreshNegativeCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service, minted, runID := newRefreshFixture(t, "http://127.0.0.1:1")
 			clock := now
-			service.grants.key.WithClock(func() time.Time { return clock })
+			service.grants.Key().WithClock(func() time.Time { return clock })
 			token := tc.grant(t, service, runID)
 			clock = clock.Add(tc.advance)
 			_, err := service.Refresh(context.Background(), token, httpapi.CredentialRefreshRequest{Capability: tc.ask})
@@ -370,7 +369,7 @@ func TestCredentialPlaneMintsAPodGrantOnlyForDeterministicExpiringStages(t *test
 	if response.Grant == nil {
 		t.Fatal("deterministic pod stage got no grant")
 	}
-	claims, err := service.grants.key.VerifyCredentialGrant(response.Grant.Token)
+	claims, err := service.grants.Key().VerifyCredentialGrant(response.Grant.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
