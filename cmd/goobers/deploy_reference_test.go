@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -48,7 +49,8 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 			binary:  "goobers",
 			command: "worker",
 			validateArgs: func(args []string) error {
-				return validateManifestArgs(args, registeredCommandFlagSet(t, "worker"), []string{"instance"}, 0)
+				return validateManifestArgs(args, registeredCommandFlagSet(t, "worker"),
+					[]string{"config-endpoint", "config-key-file", "blob-endpoint", "daemon-api"}, 0)
 			},
 		},
 	}
@@ -112,11 +114,11 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 		t.Fatalf("examined %d of %d contracted Deployments (%v); every CLI contract must be checked against a shipped manifest", len(examined), len(contracts), slices.Sorted(maps.Keys(examined)))
 	}
 
-	workerFlags := registeredCommandFlagSet(t, "worker")
-	if err := validateManifestArgs([]string{"--task-queue", "default"}, workerFlags, []string{"instance"}, 0); err == nil {
-		t.Error("worker args without --instance were accepted")
+	var stdout, stderr bytes.Buffer
+	if code := runWorker([]string{"--config-endpoint", "https://daemon.example"}, &stdout, &stderr); code != 2 {
+		t.Error("worker config endpoint without a key was accepted")
 	}
-	workerFlags = registeredCommandFlagSet(t, "worker")
+	workerFlags := registeredCommandFlagSet(t, "worker")
 	if err := validateManifestArgs([]string{"--instance", "/instance", "--not-a-worker-flag"}, workerFlags, []string{"instance"}, 0); err == nil {
 		t.Error("unknown worker flag was accepted")
 	}
@@ -288,7 +290,7 @@ func TestDeployReferenceAPIProbes(t *testing.T) {
 	}
 }
 
-func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) {
+func TestDeployReferenceWorkerUsesNoSharedVolumeSeeder(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -299,29 +301,13 @@ func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) 
 	}
 
 	initContainers := deployment.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 1 {
-		t.Fatalf("got %d init containers, want 1", len(initContainers))
+	if len(initContainers) != 0 {
+		t.Fatalf("worker retained %d boot-time config seeder(s)", len(initContainers))
 	}
-	seed := initContainers[0]
-	if seed.Name != "seed-instance-root" {
-		t.Fatalf("init container name = %q, want %q", seed.Name, "seed-instance-root")
-	}
-	if seed.SecurityContext == nil {
-		t.Fatal("init container has no security context")
-	}
-	if seed.SecurityContext.AllowPrivilegeEscalation == nil || *seed.SecurityContext.AllowPrivilegeEscalation {
-		t.Error("init container allowPrivilegeEscalation = true, want false")
-	}
-	if seed.SecurityContext.ReadOnlyRootFilesystem == nil || !*seed.SecurityContext.ReadOnlyRootFilesystem {
-		t.Error("init container readOnlyRootFilesystem = false, want true")
-	}
-	if seed.SecurityContext.Capabilities == nil || !slices.Equal(seed.SecurityContext.Capabilities.Drop, []corev1.Capability{"ALL"}) {
-		t.Errorf("init container capabilities.drop = %v, want [ALL]", seed.SecurityContext.Capabilities)
-	}
-	if deployment.Spec.Template.Spec.SecurityContext == nil ||
-		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile == nil ||
-		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Error("init container does not inherit a RuntimeDefault seccomp profile")
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			t.Fatalf("worker retained shared PVC %q", volume.PersistentVolumeClaim.ClaimName)
+		}
 	}
 }
 

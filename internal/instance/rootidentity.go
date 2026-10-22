@@ -62,6 +62,32 @@ func EnsureRootIdentity(ctx context.Context, root string) (string, error) {
 	return ensureRootIdentity(ctx, root, true)
 }
 
+// InstallRootIdentity installs an externally authoritative identity into a
+// private empty root. It never invents or replaces an identity.
+func InstallRootIdentity(ctx context.Context, root, id string) error {
+	if !ValidIdentity(id) {
+		return errors.New("invalid authoritative instance identity")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	handle, err := acquireRootIdentityLock(ctx, filepath.Join(root, RootIdentityFileName+".lock"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = handle.Release() }()
+	existing, err := ReadRootIdentity(root)
+	switch {
+	case err == nil && existing == id:
+		return nil
+	case err == nil:
+		return errors.New("worker root belongs to a different instance")
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	return journal.WriteFileAtomic(filepath.Join(root, RootIdentityFileName), []byte(id+"\n"), 0o644)
+}
+
 func ensureRootIdentity(ctx context.Context, root string, requireConfig bool) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
