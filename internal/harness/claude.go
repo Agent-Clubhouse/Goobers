@@ -549,7 +549,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 
 	runner := withUnobservableMCP(&claudeRequiredMCPRunner{base: c.runner(), request: req}, req)
 	started := time.Now()
-	initialCapture := &claudeTerminalCapture{}
+	initialCapture := &claudeTerminalCapture{usageSink: req.UsageSink}
 	captures := []*claudeTerminalCapture{initialCapture}
 	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:                      argv,
@@ -592,7 +592,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 				prompts = append(prompts, recoveryPrompt)
 				recoveryArgv := append([]string(nil), argv...)
 				recoveryArgv[sessionSelectorArg] = "--resume"
-				recoveryCapture := &claudeTerminalCapture{}
+				recoveryCapture := &claudeTerminalCapture{usageSink: req.UsageSink}
 				captures = append(captures, recoveryCapture)
 				recovery, recoveryErr := runClaudeCompletionRepair(
 					ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, recoveryCapture, agentTelemetry,
