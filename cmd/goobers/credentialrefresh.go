@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -74,22 +73,6 @@ type grantBucket struct {
 	tokens    float64
 	last      time.Time
 	expiresAt time.Time
-}
-
-func newStageGrantIssuer(endpoint string) (*stageGrantIssuer, error) {
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("generate credential grant key: %w", err)
-	}
-	key, err := podauth.NewSignedKey(secret)
-	if err != nil {
-		return nil, err
-	}
-	return &stageGrantIssuer{
-		key: key, endpoint: endpoint, now: time.Now,
-		revoked: map[string]time.Time{},
-		buckets: map[[sha256.Size]byte]*grantBucket{},
-	}, nil
 }
 
 // withStageGrants enables mid-stage credential refresh on this daemon's

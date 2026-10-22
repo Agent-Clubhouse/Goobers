@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -68,7 +69,7 @@ func newRefreshFixture(t *testing.T, endpoint string) (*daemonCredentialService,
 		)
 		return resolver, []credentials.Grant{{Capability: "repo:push", Ref: "repo-ref"}, {Capability: "github:issues:write", Ref: "issues-ref"}}, err
 	}
-	issuer, err := newStageGrantIssuer(endpoint)
+	issuer, err := newTestStageGrantIssuer(endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +91,17 @@ func mintTestGrant(t *testing.T, service *daemonCredentialService, grant podauth
 		t.Fatal(err)
 	}
 	return token
+}
+
+func newTestStageGrantIssuer(endpoint string) (*stageGrantIssuer, error) {
+	key, err := podauth.CredentialGrantSigningKey("")
+	if err != nil {
+		return nil, err
+	}
+	return &stageGrantIssuer{
+		key: key, endpoint: endpoint, now: time.Now,
+		revoked: map[string]time.Time{}, buckets: map[[sha256.Size]byte]*grantBucket{},
+	}, nil
 }
 
 func TestCredentialGrantKeyIsSharedAndDomainSeparated(t *testing.T) {
@@ -237,10 +249,11 @@ func TestCredentialRefreshNegativeCases(t *testing.T) {
 		{
 			name: "another daemon's grant",
 			grant: func(t *testing.T, _ *daemonCredentialService, runID string) string {
-				other, err := newStageGrantIssuer("http://127.0.0.1:2")
+				other, err := newTestStageGrantIssuer("http://127.0.0.1:2")
 				if err != nil {
 					t.Fatal(err)
 				}
+
 				token, _, err := other.key.MintCredentialGrant(podauth.CredentialGrant{RunID: runID, Stage: "push-branch", Capabilities: []string{"repo:push"}}, time.Hour)
 				if err != nil {
 					t.Fatal(err)
