@@ -3,11 +3,6 @@ name: HA nightly kind
 on:
   schedule:
     - cron: "23 6 * * *"
-  # Bootstrap validation for this workflow's delivery branch. It never runs on
-  # pull_request or main pushes and can be removed after the workflow is live.
-  push:
-    branches:
-      - ha-p2-02-kind-nightly
   workflow_dispatch:
     inputs:
       inject_failure:

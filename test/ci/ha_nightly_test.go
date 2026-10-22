@@ -42,9 +42,6 @@ func TestHANightlyStaysOffPullRequestGate(t *testing.T) {
 	if !schedule || !dispatch {
 		t.Fatalf("HA nightly triggers: schedule=%v workflow_dispatch=%v", schedule, dispatch)
 	}
-	if !strings.Contains(string(data), "branches:\n      - ha-p2-02-kind-nightly") {
-		t.Fatal("HA nightly bootstrap push trigger must remain restricted to its delivery branch")
-	}
 	job := workflow.Jobs["smoke"]
 	if job.RunsOn != "ubuntu-24.04" || job.TimeoutMinutes != 90 {
 		t.Fatalf("smoke runner/timeout = %q/%d, want ubuntu-24.04/90", job.RunsOn, job.TimeoutMinutes)
