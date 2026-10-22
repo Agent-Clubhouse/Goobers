@@ -246,6 +246,8 @@ complete -c goobers -n '__fish_seen_subcommand_from worker' -l task-queue -r -d 
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-hostport -r -d 'Temporal frontend host and port'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-namespace -r -d 'Temporal namespace'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l drain-timeout -r -d 'Graceful-drain timeout'
+complete -c goobers -n '__fish_seen_subcommand_from worker' -l health-addr -r -d 'Address serving worker liveness and readiness probes'
+complete -c goobers -n '__fish_seen_subcommand_from worker' -l max-concurrent-activities -r -d 'Maximum concurrent activity executions'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l work-root -r -d 'Stage workspace root'
 complete -c goobers -n '__fish_seen_subcommand_from config-seed' -l mirror -r -d 'Read-only rendered config mirror path'
 complete -c goobers -n '__fish_seen_subcommand_from config-seed' -l instance -r -d 'Private worker instance path'

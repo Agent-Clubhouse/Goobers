@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -44,9 +46,14 @@ const DefaultDrainTimeout = 30 * time.Second
 // It applies only to child dispatch/reconciliation still alive after SDK Stop.
 const ChildSettlementTimeout = 5 * time.Minute
 
+// DefaultMaxConcurrentActivities preserves the Temporal SDK default while
+// making the worker's activity capacity explicit and operator-configurable.
+const DefaultMaxConcurrentActivities = 1000
+
 const (
 	placementBuildEnv  = "GOOBERS_RUNNER_BUILD"
 	placementWorkerEnv = "GOOBERS_RUNNER_WORKER"
+	healthShutdownWait = 5 * time.Second
 )
 
 // Config describes one worker process.
@@ -62,6 +69,11 @@ type Config struct {
 	// TaskQueues are the queues this process serves — one Temporal worker per
 	// queue, all registering the identical engine workflow/activity set.
 	TaskQueues []string
+	// HealthAddr serves process liveness and worker readiness when non-empty.
+	HealthAddr string
+	// MaxConcurrentActivities is the per-process activity execution capacity.
+	// Zero applies DefaultMaxConcurrentActivities.
+	MaxConcurrentActivities int
 	// DrainTimeout bounds graceful drain (worker.Options.WorkerStopTimeout).
 	// Zero applies DefaultDrainTimeout.
 	DrainTimeout time.Duration
@@ -99,6 +111,9 @@ type Host struct {
 	routingDelay           time.Duration
 	routingInterval        time.Duration
 	childSettlementTimeout time.Duration
+	pollersStarted         atomic.Bool
+	routed                 atomic.Bool
+	draining               atomic.Bool
 }
 
 // New validates cfg and builds a Host.
@@ -114,10 +129,17 @@ func New(cfg Config) (*Host, error) {
 	if cfg.DrainTimeout <= 0 {
 		cfg.DrainTimeout = DefaultDrainTimeout
 	}
+	if cfg.MaxConcurrentActivities < 0 {
+		return nil, errors.New("workerhost: max concurrent activities must be positive")
+	}
+	if cfg.MaxConcurrentActivities == 0 {
+		cfg.MaxConcurrentActivities = DefaultMaxConcurrentActivities
+	}
 	h := &Host{cfg: cfg, tracker: &activityTracker{
 		buildID: cfg.BuildVersion,
 		worker:  Identity(cfg.BuildVersion),
 	}}
+	h.routed.Store(!h.versioned())
 	h.dial = func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error) {
 		return bootstrap.DialTemporal(hostPort, namespace, tls, cfg.DataConverter)
 	}
@@ -147,10 +169,11 @@ func Identity(buildVersion string) string {
 // workerOptions builds the one options set every queue's worker runs under.
 func (h *Host) workerOptions() worker.Options {
 	opts := worker.Options{
-		Identity:                     Identity(h.cfg.BuildVersion),
-		WorkerStopTimeout:            h.cfg.DrainTimeout,
-		MaxHeartbeatThrottleInterval: engine.DispatchHeartbeatThrottleInterval,
-		Interceptors:                 []interceptor.WorkerInterceptor{h.tracker},
+		Identity:                           Identity(h.cfg.BuildVersion),
+		WorkerStopTimeout:                  h.cfg.DrainTimeout,
+		MaxConcurrentActivityExecutionSize: h.cfg.MaxConcurrentActivities,
+		MaxHeartbeatThrottleInterval:       engine.DispatchHeartbeatThrottleInterval,
+		Interceptors:                       []interceptor.WorkerInterceptor{h.tracker},
 	}
 	if !h.versioned() {
 		return opts
@@ -177,6 +200,14 @@ func (h *Host) versioned() bool {
 // a clean drain and ErrAbandonedWork when work was cut short. Child dispatch
 // cleanup gets up to ChildSettlementTimeout after the SDK drain expires.
 func (h *Host) Run(ctx context.Context) error {
+	healthServer, healthErr, err := h.startHealthServer()
+	if err != nil {
+		return err
+	}
+	if healthServer != nil {
+		defer h.stopHealthServer(healthServer)
+	}
+
 	c, err := h.dial(h.cfg.HostPort, h.cfg.Namespace, h.cfg.TLS)
 	if err != nil {
 		return fmt.Errorf("workerhost: dial temporal %s (namespace %s): %w", h.cfg.HostPort, h.cfg.Namespace, err)
@@ -229,22 +260,88 @@ func (h *Host) Run(ctx context.Context) error {
 		}
 		started = append(started, w)
 	}
+	h.pollersStarted.Store(true)
+	defer h.pollersStarted.Store(false)
 
 	// #5950: a routing mismatch leaves every poll succeeding with nothing to
 	// do, so report it rather than let the engine stall silently.
+	routingCtx, stopRouting := context.WithCancel(ctx)
+	defer stopRouting()
 	routingDone := make(chan struct{})
 	go func() {
 		defer close(routingDone)
-		h.checkRoutingLoop(ctx, c)
+		h.checkRoutingLoop(routingCtx, c)
 	}()
 
-	<-ctx.Done()
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case err := <-healthErr:
+		runErr = err
+		stopRouting()
+	}
+	h.pollersStarted.Store(false)
 	<-routingDone
 	stopAll()
+	if runErr != nil {
+		return runErr
+	}
 	if n := h.tracker.inFlight(); n > 0 {
 		return fmt.Errorf("%w: %d abandoned", ErrAbandonedWork, n)
 	}
 	return nil
+}
+
+func (h *Host) startHealthServer() (*http.Server, <-chan error, error) {
+	if h.cfg.HealthAddr == "" {
+		return nil, nil, nil
+	}
+	listener, err := net.Listen("tcp", h.cfg.HealthAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("workerhost: listen for health checks on %s: %w", h.cfg.HealthAddr, err)
+	}
+	server := &http.Server{
+		Handler:           h.healthHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	errs := make(chan error, 1)
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- fmt.Errorf("workerhost: serve health checks: %w", err)
+		}
+	}()
+	return server, errs, nil
+}
+
+func (h *Host) stopHealthServer(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), healthShutdownWait)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		h.logf("goobers worker: error: stop health server: %v", err)
+	}
+}
+
+func (h *Host) healthHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", h.serveLiveness)
+	mux.HandleFunc("/readyz", h.serveReadiness)
+	return mux
+}
+
+func (h *Host) serveLiveness(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"healthy":true}`))
+}
+
+func (h *Host) serveReadiness(w http.ResponseWriter, _ *http.Request) {
+	ready := h.pollersStarted.Load() && h.routed.Load()
+	draining := h.draining.Load()
+	w.Header().Set("Content-Type", "application/json")
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_, _ = fmt.Fprintf(w, `{"ready":%t,"draining":%t}`, ready, draining)
 }
 
 // activityTracker counts in-flight activity executions across every worker in

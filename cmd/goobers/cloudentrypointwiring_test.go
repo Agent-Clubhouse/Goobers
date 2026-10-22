@@ -97,6 +97,8 @@ func TestRunWorkerWiresResolvedRuntimeIntoTheWorkerHost(t *testing.T) {
 		"--temporal-hostport", "temporal.goobers.svc:7233",
 		"--temporal-namespace", "goobers-cloud",
 		"--drain-timeout", "7s",
+		"--health-addr", "127.0.0.1:8081",
+		"--max-concurrent-activities", "7",
 		"--config-reload-interval", "0",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -114,6 +116,9 @@ func TestRunWorkerWiresResolvedRuntimeIntoTheWorkerHost(t *testing.T) {
 	}
 	if got.DrainTimeout.String() != "7s" {
 		t.Errorf("drain timeout = %s, want 7s", got.DrainTimeout)
+	}
+	if got.HealthAddr != "127.0.0.1:8081" || got.MaxConcurrentActivities != 7 {
+		t.Errorf("health/concurrency = %q/%d, want 127.0.0.1:8081/7", got.HealthAddr, got.MaxConcurrentActivities)
 	}
 
 	// --work-root: the runtime claimed THIS root, so a second worker pointed
