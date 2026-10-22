@@ -69,6 +69,17 @@
       "recoverySafe": false
     },
     {
+      "id": "configSnapshot",
+      "method": "GET",
+      "path": "/api/v1/config/snapshot",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workerConfigDivergence",
       "method": "POST",
       "path": "/api/v1/worker/config-divergence",

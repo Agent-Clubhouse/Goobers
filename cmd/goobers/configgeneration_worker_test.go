@@ -2,16 +2,20 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/instance"
 )
 
-func TestFreshWorkerRestoresAdmittedGenerationFromPrivateSharedStore(t *testing.T) {
+func TestFreshWorkerRestoresAdmittedGenerationFromConfigPlane(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
 	assetPath := filepath.Join(layout.ConfigDir(), "gaggles", pinGaggle, "goobers", pinGoober, "assets", "identity.txt")
@@ -52,6 +56,23 @@ func TestFreshWorkerRestoresAdmittedGenerationFromPrivateSharedStore(t *testing.
 	if seams.snapshot.Load() != nil || len(seams.history) != 0 {
 		t.Fatal("worker unexpectedly has admission history")
 	}
+	generationBlobs, err := blobstore.NewDir(filepath.Join(layout.BlobStoreDir(), "config-generations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		digest := request.URL.Query().Get("digest")
+		data, err := generationBlobs.Get(request.Context(), digest)
+		if err != nil {
+			http.NotFound(w, request)
+			return
+		}
+		w.Header().Set(apicontract.DigestHeader, digest)
+		_, _ = w.Write(data)
+	}))
+	t.Cleanup(server.Close)
+	client := configmirror.Client{BaseURL: server.URL, HTTP: server.Client()}
+	seams.configPlane = &client
 	env := apiv1.InvocationEnvelope{RunID: "recoverable-run", TaskID: "recoverable-run:implement", WorkflowID: pinWorkflow, Gaggle: pinGaggle, Goober: pinGoober, GooberDigest: pin, InstanceID: owner, ConfigGeneration: generation}
 	writer := agenticKitWriter{instanceRoot: workerRoot, seams: seams}
 	kit, err := writer.buildKitContext(t.Context(), env, "invoke")

@@ -77,13 +77,18 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             disables reload and freezes the worker on\n" +
 	"                             its boot-time tree (default 10s; requires\n" +
 	"                             --instance)\n" +
+	"  --config-endpoint <url>    daemon configuration plane; fetches sanitized\n" +
+	"                             instance config by digest and updates it live\n" +
+	"  --config-key-file <path>   shared signing key used only to mint worker\n" +
+	"                             config-plane credentials\n" +
 	"  --config-history-depth <n>\n" +
 	"                             how many superseded config trees to retain\n" +
 	"                             so an in-flight run pinned to one is still\n" +
 	"                             served the goober kit it was admitted\n" +
 	"                             against across a reload; 0 disables\n" +
 	"                             retention and refuses every superseded pin\n" +
-	"                             (default 3; requires --instance)\n" +
+	"                             (default 3; requires --instance or\n" +
+	"                             --config-endpoint)\n" +
 	"  --dispatch-namespace <ns>  enables mode-3 stage dispatch: wires the\n" +
 	"                             dispatcher behind the stage-dispatch seam and\n" +
 	"                             serves the per-(gaggle x runner) dispatch\n" +
@@ -107,7 +112,9 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
-	"With --instance, the worker re-reads its config tree on\n" +
+	"With --instance, the worker re-reads its local config tree; with\n" +
+	"--config-endpoint, it fetches changed snapshots by digest. On either path,\n" +
+	"the worker checks on\n" +
 	"--config-reload-interval and atomically replaces the gaggle, credential,\n" +
 	"and agentic-kit seams whose config changed, so a definitions edit reaches\n" +
 	"the NEXT stage this worker serves without a pod restart. An attempt\n" +
@@ -185,6 +192,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
 	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "enables the dispatcher-backed stage-dispatch seam; each stage pod routes to its own gaggle's declared isolation.namespace (#4897), not to this value")
 	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
+	configEndpoint := fs.String("config-endpoint", "", "daemon worker-configuration plane")
+	configKeyFile := fs.String("config-key-file", workerEnvOr("GOOBERS_WORKER_CONFIG_KEY_FILE", ""), "shared signing key for worker configuration fetches")
 	configHistoryDepth := fs.Int("config-history-depth", workerConfigHistoryDepth, "how many superseded config trees to retain so an in-flight run pinned to one is still served its own kit; 0 disables retention")
 	blobProbeWait := fs.Duration("blob-probe-wait", workerEnvDuration("GOOBERS_WORKER_BLOB_PROBE_WAIT", workerblob.DefaultReadyWait), "how long the startup blob-plane probe waits for a not-yet-ready daemon (503/unreachable) before exiting; a starting daemon's advertised startup budget and progress extend it, up to 6h; real mismatches fail immediately")
 	fs.Usage = helpUsage(stderr, "worker")
@@ -203,7 +212,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --max-concurrent-activities must be positive\n")
 		return 2
 	}
-	resolvedEndpoint, modeErr := workerblob.Resolve(*blobRoot, *blobEndpoint, os.Getenv("GOOBERS_BLOB_ENDPOINT"), *instanceRoot != "")
+	root := resolvedWorkerRoot(*workRoot)
+	configPlane, configCode := prepareWorkerConfigPlaneCLI(*configEndpoint, *configKeyFile, root, instanceRoot, stderr)
+	if configCode != 0 {
+		return configCode
+	}
+	resolvedEndpoint, modeErr := workerblob.Resolve(*blobRoot, *blobEndpoint, os.Getenv("GOOBERS_BLOB_ENDPOINT"), *instanceRoot != "" || *configEndpoint != "")
 	if modeErr != nil {
 		pf(stderr, "error: %v\n", modeErr)
 		return 2
@@ -241,10 +255,6 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	root := *workRoot
-	if root == "" {
-		root = defaultWorkerRoot(os.TempDir())
-	}
 	engineRuntime, err := workerEngineDeps(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -283,7 +293,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: %v\n", serr)
 			return 1
 		}
-		builtSeams.historyDepth = *configHistoryDepth
+		configureWorkerConfigSeams(builtSeams, *configHistoryDepth, configPlane)
 		seams = builtSeams
 		wireWorkerRuntimeSeams(&engineRuntime.deps, seams, filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
@@ -292,14 +302,11 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// as long as the pod lives, while the daemon syncs its own tree live —
 		// the divergence that cost a run's worktree checkout in Infra LEDGER
 		// I-51. Watching keeps the two convergent without a restart.
-		if *configReloadInterval > 0 {
-			watcher := startWorkerConfigWatcher(context.Background(), seams, *configReloadInterval)
+		watcher, message := startWorkerConfigUpdates(seams, configPlane, root, *configReloadInterval)
+		if watcher != nil {
 			defer watcher.Stop()
-			pf(stdout, "goobers worker: config reload every %s from %s; retaining %d superseded config tree(s) for in-flight goober-digest pins\n",
-				*configReloadInterval, *instanceRoot, *configHistoryDepth)
-		} else {
-			pf(stdout, "goobers worker: config reload disabled; seams stay pinned to the boot-time config tree\n")
 		}
+		pf(stdout, "%s\n", message)
 	}
 
 	if *daemonAPI != "" {

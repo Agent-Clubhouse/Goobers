@@ -34,11 +34,7 @@ func (w *workerSeams) snapshotForInvocation(ctx context.Context, env apiv1.Invoc
 	if !instance.ValidIdentity(env.InstanceID) {
 		return nil, nil, fmt.Errorf("worker: pinned config generation requires a valid instance identity")
 	}
-	store, err := w.executionArchiveStore()
-	if err != nil {
-		return nil, nil, err
-	}
-	data, err := store.GetBounded(ctx, env.ConfigGeneration, configgeneration.MaxArchiveBytes)
+	data, err := w.configGenerationArchive(ctx, env.ConfigGeneration)
 	if err != nil {
 		return nil, nil, fmt.Errorf("worker: load pinned config generation: %w", err)
 	}
@@ -77,6 +73,17 @@ func (w *workerSeams) snapshotForInvocation(ctx context.Context, env apiv1.Invoc
 		}
 	}
 	return snapshot, release, nil
+}
+
+func (w *workerSeams) configGenerationArchive(ctx context.Context, digest string) ([]byte, error) {
+	if w.configPlane != nil {
+		return w.configPlane.GetBounded(ctx, digest, configgeneration.MaxArchiveBytes)
+	}
+	store, err := w.executionArchiveStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.GetBounded(ctx, digest, configgeneration.MaxArchiveBytes)
 }
 
 func (w *workerSeams) forInvocationGaggle(ctx context.Context, env apiv1.InvocationEnvelope, agentic bool) (*gaggleSeams, func(), error) {
