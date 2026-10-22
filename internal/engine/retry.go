@@ -170,7 +170,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
-			activityResult, err = dispatch(ctx, int(attempt), class)
+			dispatchCtx := withDispatchAttemptDeadline(ctx, startedAt, t.Limits)
+			activityResult, err = dispatch(dispatchCtx, int(attempt), class)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {

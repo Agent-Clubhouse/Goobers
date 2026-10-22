@@ -47,6 +47,29 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 type dispatchHeartbeatDetails struct {
 	Sequence    uint64    `json:"sequence"`
 	GeneratedAt time.Time `json:"generatedAt"`
+	Namespace   string    `json:"namespace,omitempty"`
+	Pod         string    `json:"pod,omitempty"`
+	UID         string    `json:"uid,omitempty"`
+	Attempt     int       `json:"attempt,omitempty"`
+	Custody     bool      `json:"custody,omitempty"`
+}
+
+func heartbeatDispatchCustody(ctx context.Context, current func() *dispatcher.PodCustody) func() {
+	var sequence uint64
+	return heartbeatDispatchDetails(ctx, func() any {
+		sequence++
+		details := dispatchHeartbeatDetails{Sequence: sequence, GeneratedAt: time.Now().UTC()}
+		if current != nil {
+			if custody := current(); custody != nil {
+				details.Namespace = custody.Namespace
+				details.Pod = custody.Pod
+				details.UID = custody.UID
+				details.Attempt = custody.Attempt
+				details.Custody = custody.Custody
+			}
+		}
+		return details
+	})
 }
 
 // Temporal delivers activity cancellation through heartbeat replies. Keep
@@ -129,6 +152,7 @@ func unconfirmedDispatchFailure(ctx context.Context, err error, report dispatche
 // failureTypeWorkerLost marks an attempt whose activity lost its worker or
 // heartbeat path. Like a heartbeat timeout, the pod may have run to effect.
 const failureTypeWorkerLost = "GoobersWorkerLost"
+const failureTypeWorkerHandoff = "GoobersWorkerHandoff"
 
 // Only a server-delivered cancellation carries a Temporal CanceledError cause.
 // Direct non-Temporal callers own their context, so any cancel is requested.
@@ -140,6 +164,12 @@ func dispatchControlPathLost(cause, err error) error {
 	message := fmt.Sprintf("engine: dispatch control path lost (%v): %v", cause, err)
 	return temporal.NewApplicationErrorWithOptions(message, FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
 		Cause: temporal.NewApplicationError(message, failureTypeWorkerLost),
+	})
+}
+
+func dispatchWorkerHandoff(custody dispatcher.PodCustody) error {
+	return temporal.NewApplicationErrorWithOptions("worker-handoff", failureTypeWorkerHandoff, temporal.ApplicationErrorOptions{
+		Details: []interface{}{custody},
 	})
 }
 
