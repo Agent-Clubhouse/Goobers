@@ -91,3 +91,37 @@ func (c *CopilotAdapter) preflightPublicCapabilities(ctx context.Context) (Readi
 	}
 	return probeRequiredCLIFlags(ctx, c.runner(), command, "copilot", []string{"--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), copilotRequiredPublicOptions)
 }
+
+// probeVersion keeps version availability evidence separate from capability and
+// authentication checks; it preserves the bounded stdout-only version probe.
+func (c *CopilotAdapter) probeVersion(ctx context.Context) (string, []string, error) {
+	bin := c.Command[0]
+	args := c.VersionArgs
+	if len(args) == 0 {
+		args = []string{"--version"}
+	}
+	// Explicit baseEnv(), not the ProcessRequest zero value — since #122,
+	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
+	// default-deny), so the version-check subprocess needs this passed
+	// explicitly the same way Run's credentialEnv does.
+	versionCommand := append(append([]string(nil), resolveHarnessCommand(c.Command)...), args...)
+	versionProbe := fmt.Sprintf("harness: copilot-cli: %q", versionCommand)
+	versionStdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
+	res, err := c.runner().Run(ctx, ProcessRequest{
+		Command:            versionCommand,
+		Env:                baseEnv(c.ExtraEnvAllowlist, c.EnvUnset),
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+		StdoutCapture:      versionStdout,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return "", nil, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
+	}
+	if versionStdout.Truncated() {
+		return "", nil, fmt.Errorf("harness: copilot-cli: version stdout exceeded the diagnostic output bound")
+	}
+	version := firstOutputLine(versionStdout.Bytes())
+	if version == "" {
+		return "", nil, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
+	}
+	return version, args, nil
+}
