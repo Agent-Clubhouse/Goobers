@@ -2,12 +2,15 @@ package podauth
 
 import (
 	"bytes"
+	"encoding/base64"
 	"io"
 	"log"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +23,16 @@ import (
 // This test only addresses the mutation plane; accidental read-plane use must
 // not silently succeed through a fake response.
 type checkpointUnusedReader struct{ readservice.Reader }
+
+type countingRoundTripper struct {
+	base  http.RoundTripper
+	calls atomic.Int64
+}
+
+func (t *countingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.calls.Add(1)
+	return t.base.RoundTrip(request)
+}
 
 func TestSignedJournalTokenPublishesDurableTranscriptWithoutBlobPlane(t *testing.T) {
 	t.Setenv("GOOBERS_DISABLE_FSYNC", "0")
@@ -34,7 +47,7 @@ func TestSignedJournalTokenPublishesDurableTranscriptWithoutBlobPlane(t *testing
 		t.Fatal(err)
 	}
 	writer, err := livejournal.NewWriter(func(gaggle string) (string, bool) { return runs, gaggle == "web" },
-		livejournal.WithScrubber(journal.NewPatternScrubber()))
+		livejournal.WithScrubber(journal.NewRegistryScrubber()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,10 +64,13 @@ func TestSignedJournalTokenPublishesDurableTranscriptWithoutBlobPlane(t *testing
 	}
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	emitter := &livejournal.HTTPEmitter{BaseURL: server.URL, Token: token}
+	client := server.Client()
+	counter := &countingRoundTripper{base: client.Transport}
+	client.Transport = counter
+	emitter := &livejournal.HTTPEmitter{BaseURL: server.URL, Token: token, Client: client}
 	transport := livejournal.TranscriptTransport{RunID: runID, Gaggle: "web", Emitter: emitter}
-	registry, scrubber := journal.DefaultScrubber()
-	registry.Register([]byte("private-credential"))
+	scrubber := journal.NewRegistryScrubber()
+	scrubber.Register([]byte("private-credential"))
 	session, err := transport.OpenTranscriptCheckpoint("build", "copilot-cli.transcript", scrubber)
 	if err != nil {
 		t.Fatal(err)
@@ -99,10 +115,17 @@ func TestSignedJournalTokenPublishesDurableTranscriptWithoutBlobPlane(t *testing
 	}
 	// Base64 encoding exceeds the ordinary 4 MiB batch cap. No blob service or
 	// blob scope is configured: these bytes must use the bounded inline path.
-	final := []byte(strings.Repeat("finished\n", 500000))
+	final := []byte(strings.Repeat("finished\n", 350000))
+	if encoded := base64.StdEncoding.EncodedLen(len(final)); encoded <= 4<<20 {
+		t.Fatalf("fixture encodes to %d bytes, want more than the ordinary 4 MiB batch cap", encoded)
+	}
+	beforeFinal := counter.calls.Load()
 	ref, err := session.RecordFinal("", final)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if calls := counter.calls.Load() - beforeFinal; calls != 1 {
+		t.Fatalf("final transcript used %d HTTP attempts, want one successful request with no retry/backoff", calls)
 	}
 	writer.Close()
 	recovered, _, err := journal.Recover(filepath.Join(runs, runID))
