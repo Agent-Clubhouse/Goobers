@@ -223,7 +223,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		if err = scoped.Put(ctx, digest, carrier); err != nil {
 			return engine.ChildDispatchResult{}, err
 		}
-		surrendered := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
+		surrendered := dispatcher.SurrenderedResult{ContractVersion: dispatcher.CurrentSurrenderContract, RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
 		data, _ := json.Marshal(surrendered)
 		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: planeDeadline}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			return engine.ChildDispatchResult{}, err
