@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 const budgetExceededErrorCode = "budget-exceeded"
@@ -205,6 +206,51 @@ const BudgetExceededErrorCode = budgetExceededErrorCode
 // to trusted adapter usage. Its zero value is ready for one task dispatch loop.
 // It contains only deterministic state and may also be used by Temporal replay.
 type StageUsageBudget struct{ totals *stageUsageTotals }
+
+// Allowance returns the deterministic remaining budget for the next remote
+// attempt. Nil fields are unlimited; explicit zero means exhausted.
+func (b *StageUsageBudget) Allowance(limits apiv1.Limits) usageallowance.Allowance {
+	var allowance usageallowance.Allowance
+	if limits.MaxTokens > 0 {
+		remaining := limits.MaxTokens
+		if b.totals != nil {
+			input := b.totals.metrics[telemetry.AttrGenAIUsageInputTokens]
+			output := b.totals.metrics[telemetry.AttrGenAIUsageOutputTokens]
+			if !validTokenUsage(input) || !validTokenUsage(output) || math.IsInf(input+output, 0) {
+				remaining = 0
+			} else {
+				used := input + output
+				if used >= float64(remaining) {
+					remaining = 0
+				} else {
+					remaining -= int64(used)
+				}
+			}
+		}
+		allowance.MaxTokens = &remaining
+	}
+	if limits.MaxCostUSD > 0 {
+		remaining := limits.MaxCostUSD
+		limit, valid := decimalFloat64(limits.MaxCostUSD)
+		if !valid {
+			remaining = 0
+		} else if b.totals != nil {
+			switch {
+			case b.totals.invalidCost:
+				remaining = 0
+			case b.totals.costUSD != nil:
+				left := new(big.Rat).Sub(limit, b.totals.costUSD)
+				if left.Sign() <= 0 {
+					remaining = 0
+				} else {
+					remaining, _ = left.Float64()
+				}
+			}
+		}
+		allowance.MaxCostUSD = &remaining
+	}
+	return allowance
+}
 
 // Apply charges this attempt, then checks configured limits. An error before
 // the adapter reported usage is not evidence that the adapter consumed budget.

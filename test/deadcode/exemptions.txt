@@ -110,6 +110,7 @@ github.com/goobers/goobers/internal/workflow/v_3_0.CheckGaggleFeatureSupport # 3
 github.com/goobers/goobers/internal/workflow/v_3_0.LookupFeature # 3.0-interpreter feature lookup retained as part of the independently versioned interpreter API (#3505).
 github.com/goobers/goobers/internal/workflow/v_3_0.newFeatureRegistryAgainstReleased # 3.0-interpreter feature-registry evolution guard exercised by the release-baseline tests (#3505, mirrors the v_2_0 entry).
 github.com/goobers/goobers/internal/workflow/v_3_0.validateFeatureRegistryEvolution # 3.0-interpreter feature-registry evolution validator exercised by the release-baseline tests (#3505, mirrors the v_2_0 entry).
+github.com/goobers/goobers/internal/runner.StageUsageBudget.Allowance # Approved #7761 foundation consumed by the retry/dispatch integration immediately after #7782; retained now so allowance arithmetic and wire contracts can land without editing the owned retry lane. expires=2026-11-01
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
