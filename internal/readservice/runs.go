@@ -616,72 +616,12 @@ type runRead struct {
 // tie-breaker.
 func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions) (RunList, error) {
 	if options.LatestPerWorkflow {
-		if options.Stage != "" ||
-			options.Outcome != "" ||
-			options.StagePopulation != "" ||
-			options.Phase != "" ||
-			options.Trigger != "" ||
-			!options.Since.IsZero() ||
-			!options.Until.IsZero() ||
-			options.Limit != 0 ||
-			options.Cursor != "" {
-			return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
-		}
-		// The read-model aggregate answers the whole page — outcomes AND activity
-		// — in one indexed query with zero journal opens (#1891). It replaces the
-		// window function, the backwards terminal walk, and the separate activity
-		// call below, so it returns directly rather than falling through to them.
-		if s.readModelReads {
-			return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
-		}
-		var (
-			result RunList
-			err    error
-		)
-		if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
-			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
-		} else {
-			result, err = s.listLatestWorkflowOutcomesScanning(ctx, options)
-		}
-		if err != nil {
-			return RunList{}, err
-		}
-		result.WorkflowActivity, err = s.workflowRunActivity(ctx, options)
-		if err != nil {
-			return RunList{}, err
-		}
-		return result, nil
+		return s.listLatestWorkflowOutcomes(ctx, options)
 	}
 
-	limit := options.Limit
-	if limit == 0 {
-		limit = defaultRunLimit
-	}
-	if limit < 1 || limit > maxRunLimit {
-		return RunList{}, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidArgument, maxRunLimit)
-	}
-	if options.Phase != "" && !canonicalPhase(options.Phase) {
-		return RunList{}, fmt.Errorf("%w: unknown phase %q", ErrInvalidArgument, options.Phase)
-	}
-	if options.Trigger != "" && !canonicalTrigger(options.Trigger) {
-		return RunList{}, fmt.Errorf("%w: unknown trigger %q", ErrInvalidArgument, options.Trigger)
-	}
-	if options.Outcome != "" && !canonicalOutcome(options.Outcome) {
-		return RunList{}, fmt.Errorf("%w: unknown outcome %q", ErrInvalidArgument, options.Outcome)
-	}
-	if options.StagePopulation != "" && !canonicalStagePopulation(options.StagePopulation) {
-		return RunList{}, fmt.Errorf("%w: unknown stage population %q", ErrInvalidArgument, options.StagePopulation)
-	}
-	if options.StagePopulation != "" &&
-		!telemetryStagePopulation(options.StagePopulation) &&
-		options.Stage == "" {
-		return RunList{}, fmt.Errorf("%w: stage population requires a stage", ErrInvalidArgument)
-	}
-	if telemetryStagePopulation(options.StagePopulation) && s.sources.Telemetry == nil {
-		return RunList{}, ErrTelemetryUnavailable
-	}
-	if !options.Since.IsZero() && !options.Until.IsZero() && options.Since.After(options.Until) {
-		return RunList{}, fmt.Errorf("%w: since must not be after until", ErrInvalidArgument)
+	limit, err := s.validateRunListOptions(options)
+	if err != nil {
+		return RunList{}, err
 	}
 
 	var cursor *runCursor
@@ -734,6 +674,57 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 		return RunList{}, fmt.Errorf("%w (mode %s)", ErrBoundedReadUnavailable, s.ReadMode())
 	}
 	return s.listRunsScanning(ctx, options, cursor, limit)
+}
+
+func (s *Local) listLatestWorkflowOutcomes(ctx context.Context, options RunListOptions) (RunList, error) {
+	if options.Stage != "" || options.Outcome != "" || options.StagePopulation != "" ||
+		options.Phase != "" || options.Trigger != "" || !options.Since.IsZero() ||
+		!options.Until.IsZero() || options.Limit != 0 || options.Cursor != "" {
+		return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
+	}
+	if s.readModelReads {
+		return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
+	}
+	var (
+		result RunList
+		err    error
+	)
+	if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
+		result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
+	} else {
+		result, err = s.listLatestWorkflowOutcomesScanning(ctx, options)
+	}
+	if err != nil {
+		return RunList{}, err
+	}
+	result.WorkflowActivity, err = s.workflowRunActivity(ctx, options)
+	return result, err
+}
+
+func (s *Local) validateRunListOptions(options RunListOptions) (int, error) {
+	limit := options.Limit
+	if limit == 0 {
+		limit = defaultRunLimit
+	}
+	switch {
+	case limit < 1 || limit > maxRunLimit:
+		return 0, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidArgument, maxRunLimit)
+	case options.Phase != "" && !canonicalPhase(options.Phase):
+		return 0, fmt.Errorf("%w: unknown phase %q", ErrInvalidArgument, options.Phase)
+	case options.Trigger != "" && !canonicalTrigger(options.Trigger):
+		return 0, fmt.Errorf("%w: unknown trigger %q", ErrInvalidArgument, options.Trigger)
+	case options.Outcome != "" && !canonicalOutcome(options.Outcome):
+		return 0, fmt.Errorf("%w: unknown outcome %q", ErrInvalidArgument, options.Outcome)
+	case options.StagePopulation != "" && !canonicalStagePopulation(options.StagePopulation):
+		return 0, fmt.Errorf("%w: unknown stage population %q", ErrInvalidArgument, options.StagePopulation)
+	case options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation) && options.Stage == "":
+		return 0, fmt.Errorf("%w: stage population requires a stage", ErrInvalidArgument)
+	case telemetryStagePopulation(options.StagePopulation) && s.sources.Telemetry == nil:
+		return 0, ErrTelemetryUnavailable
+	case !options.Since.IsZero() && !options.Until.IsZero() && options.Since.After(options.Until):
+		return 0, fmt.Errorf("%w: since must not be after until", ErrInvalidArgument)
+	}
+	return limit, nil
 }
 
 func (s *Local) listLatestWorkflowOutcomesScanning(ctx context.Context, options RunListOptions) (RunList, error) {
@@ -884,15 +875,10 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 	if telemetryStagePopulation(journalPopulation) {
 		journalPopulation = ""
 	}
+	if !runMatchesIdentity(summary, options) {
+		return false
+	}
 	switch {
-	case !options.ShowNoWork && summary.NoWork:
-		return false
-	case options.Gaggle != "" && summary.Gaggle != options.Gaggle:
-		return false
-	case options.Workflow != "" && summary.Workflow != options.Workflow:
-		return false
-	case options.Stage != "" && !slices.Contains(summary.Stages, options.Stage):
-		return false
 	case (options.Outcome != "" ||
 		(options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation))) &&
 		!summary.Terminal:
@@ -913,6 +899,13 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		return false
 	}
 	return true
+}
+
+func runMatchesIdentity(summary RunSummary, options RunListOptions) bool {
+	return (options.ShowNoWork || !summary.NoWork) &&
+		(options.Gaggle == "" || summary.Gaggle == options.Gaggle) &&
+		(options.Workflow == "" || summary.Workflow == options.Workflow) &&
+		(options.Stage == "" || slices.Contains(summary.Stages, options.Stage))
 }
 
 // candidateRunStatuses translates options.Phase / options.Outcome into the
@@ -1779,251 +1772,285 @@ func summarizeRunForStage(
 	observedAt time.Time,
 	attemptStage string,
 ) (RunSummary, error) {
-	phase := journal.PhaseRunning
-	var finishedAt *time.Time
-	var observations runOperationalObservations
-	var lastSeq uint64
-	var lastActivityAt time.Time
-	currentStage := ""
-	operator := OperatorRunSummary{
-		Trajectory:        "terminal",
-		Liveness:          "no-heartbeat",
-		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
-		PotentialBlockers: []string{},
+	fold := newRunSummaryFold(run)
+	if err := fold.applyRecords(run); err != nil {
+		return RunSummary{}, err
+	}
+	if err := fold.finalizePhase(run); err != nil {
+		return RunSummary{}, err
+	}
+	fold.finalizeOperator(observedAt)
+	return fold.summary(run, observedAt, attemptStage)
+}
+
+type runSummaryFold struct {
+	phase                 journal.RunPhase
+	finishedAt            *time.Time
+	observations          runOperationalObservations
+	lastSeq               uint64
+	lastActivityAt        time.Time
+	currentStage          string
+	operator              OperatorRunSummary
+	lastHeartbeat         time.Time
+	latestErrorAt         *time.Time
+	reviewAt              *time.Time
+	reviewProblem         string
+	providerClaimRecorded bool
+	claimedIssueFound     bool
+	seenStages            map[string]struct{}
+	lastStageStatus       map[string]string
+	repasses              int
+	retries               int
+	policyRetries         int
+	infraRetries          int
+}
+
+func newRunSummaryFold(run runRead) *runSummaryFold {
+	fold := &runSummaryFold{
+		phase: journal.PhaseRunning,
+		operator: OperatorRunSummary{
+			Trajectory: "terminal", Liveness: "no-heartbeat",
+			Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+			PotentialBlockers: []string{},
+		},
+		seenStages:      make(map[string]struct{}),
+		lastStageStatus: make(map[string]string),
 	}
 	if run.identity.Trigger.Kind == journal.TriggerItem && run.identity.Trigger.Ref != "" {
-		operator.Issue = &OperatorIssue{Number: run.identity.Trigger.Ref}
+		fold.operator.Issue = &OperatorIssue{Number: run.identity.Trigger.Ref}
 	}
-	var lastHeartbeat time.Time
-	var latestErrorAt, reviewAt *time.Time
-	var reviewProblem string
-	providerClaimRecorded := false
-	claimedIssueFound := false
-	seenStages := make(map[string]struct{})
-	lastStageStatus := make(map[string]string)
-	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
+	fold.repasses, fold.retries, fold.policyRetries, fold.infraRetries = countStageAttempts(run.records)
+	return fold
+}
 
+func (f *runSummaryFold) applyRecords(run runRead) error {
 	for _, record := range run.records {
 		event := record.Event
-		if event.Seq > lastSeq {
-			lastSeq = event.Seq
-			// Seq is structural (journal.MonotonicSeq) and always advances on
-			// the newest event regardless of its Time, but lastActivityAt only
-			// advances when that event actually carries one: an unstamped
-			// event (#3774 — a pod-side writer defect, now fixed at the
-			// source but still possible from an older journal) must not
-			// clobber a real, previously-observed lastActivityAt with the
-			// zero time, which is exactly the value runIsStale treats as
-			// undeterminable rather than as fresh activity. Mirrors
-			// readmodel.ProjectRun's identical guard so GetRun and ListRuns
-			// agree on this field for the same run.
+		if event.Seq > f.lastSeq {
+			f.lastSeq = event.Seq
 			if !event.Time.IsZero() {
-				lastActivityAt = event.Time
+				f.lastActivityAt = event.Time
 			}
 		}
 		if !event.KnownSchema() {
 			continue
 		}
-		observations.after(event)
+		f.observations.after(event)
 		if event.Stage != "" {
-			seenStages[event.Stage] = struct{}{}
+			f.seenStages[event.Stage] = struct{}{}
 		}
 		if event.Gate != "" {
-			seenStages[event.Gate] = struct{}{}
+			f.seenStages[event.Gate] = struct{}{}
 		}
 		if event.Error != nil {
 			detail := *event.Error
-			operator.LatestError = &detail
-			latestErrorAt = eventTimePointer(event)
+			f.operator.LatestError = &detail
+			f.latestErrorAt = eventTimePointer(event)
 		}
-		switch event.Type {
-		case journal.EventStageHeartbeat:
-			if event.Time.After(lastHeartbeat) {
-				lastHeartbeat = event.Time
-			}
-		case journal.EventRunnerAnnotation:
-			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
-				currentStage = queue
-			}
-			if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
-				currentStage = suggestion
-			}
-		case journal.EventRunResumed, journal.EventGateOverridden:
-			phase = journal.PhaseRunning
-			finishedAt = nil
-			currentStage = event.Target
-		case journal.EventStageStarted:
-			currentStage = event.Stage
-		case journal.EventStageFinished:
-			if currentStage == event.Stage {
-				currentStage = ""
-			}
-			lastStageStatus[event.Stage] = event.Status
-			claimedIssueFound = projectOperatorStageOutputs(&operator, event, claimedIssueFound)
-		case journal.EventGateStarted:
-			currentStage = event.Gate
-		case journal.EventGateEvaluated:
-			if currentStage == event.Gate {
-				currentStage = ""
-			}
-			if event.Gate != "review" {
-				continue
-			}
-			review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
-			reviewAt, reviewProblem = eventTimePointer(event), "" // only the latest review counts (#5404)
-			if event.Ref != nil {
-				data, err := run.reader.ArtifactBytes(*event.Ref)
-				if err != nil {
-					reviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
-				} else {
-					var verdict apiv1.Verdict
-					if err := json.Unmarshal(data, &verdict); err != nil {
-						reviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
-					} else {
-						populateOperatorReview(review, verdict)
-					}
-				}
-			}
-			operator.Review = review
-		case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
-			if !event.IsReferenceTouch() {
-				continue
-			}
-			switch event.ExternalRef.Kind {
-			case "issue":
-				if operator.Issue == nil {
-					operator.Issue = &OperatorIssue{}
-				}
-				if !claimedIssueFound {
-					operator.Issue.Number = event.ExternalRef.ID
-				}
-				operation, _ := event.Runner["operation"].(string)
-				providerClaimRecorded = providerClaimRecorded || operation == "claim"
-			case "pr":
-				ref := *event.ExternalRef
-				operator.PullRequest = &ref
-			}
-		case journal.EventStageRerunRequested:
-			phase = journal.PhaseRunning
-			finishedAt = nil
-			currentStage = event.Stage
-		case journal.EventRunFinished:
-			if !canonicalPhase(journal.RunPhase(event.Status)) || event.Status == string(journal.PhaseRunning) {
-				return RunSummary{}, fmt.Errorf("unsupported terminal phase %q", event.Status)
-			}
-			phase = journal.RunPhase(event.Status)
-			finished := event.Time
-			finishedAt = &finished
-			if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
-				currentStage = ""
-			}
+		if err := f.applyEvent(run, event); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// PhaseFromEvents is the journal's authoritative reconstruction rule. Keep
-	// the summary fold responsible for presentation fields, but do not duplicate
-	// terminal-state semantics here: older runs may end at an executed terminal
-	// gate when cleanup fails before run.finished is appended.
-	reconstructed := journal.PhaseFromEvents(recordEvents(run.records))
-	if phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
-		phase = reconstructed
-		finishedAt = terminalGateTime(run.records, reconstructed)
-		if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
-			currentStage = ""
+func (f *runSummaryFold) applyEvent(run runRead, event journal.Event) error {
+	switch event.Type {
+	case journal.EventStageHeartbeat:
+		if event.Time.After(f.lastHeartbeat) {
+			f.lastHeartbeat = event.Time
 		}
+	case journal.EventRunnerAnnotation:
+		f.applyRunnerAnnotation(event)
+	case journal.EventRunResumed, journal.EventGateOverridden:
+		f.phase, f.finishedAt, f.currentStage = journal.PhaseRunning, nil, event.Target
+	case journal.EventStageStarted:
+		f.currentStage = event.Stage
+	case journal.EventStageFinished:
+		f.applyStageFinished(event)
+	case journal.EventGateStarted:
+		f.currentStage = event.Gate
+	case journal.EventGateEvaluated:
+		return f.applyGateEvaluated(run, event)
+	case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
+		f.applyReferenceTouch(event)
+	case journal.EventStageRerunRequested:
+		f.phase, f.finishedAt, f.currentStage = journal.PhaseRunning, nil, event.Stage
+	case journal.EventRunFinished:
+		return f.applyRunFinished(event)
 	}
+	return nil
+}
 
-	if phase == journal.PhaseRunning {
-		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
-			currentStage = state.MachineState
-		}
-		if graph, status, err := pinnedGraph(run); err != nil {
-			return RunSummary{}, err
-		} else if status == "pinned" {
-			for _, node := range graph.Nodes {
-				if operatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
-					operator.PROpenerStage = node.ID
-					break
-				}
-			}
-		}
+func (f *runSummaryFold) applyRunnerAnnotation(event journal.Event) {
+	if queue, ok := readmodel.RunnerQueueStatus(event); ok {
+		f.currentStage = queue
 	}
-	operator.CurrentStage = currentStage
-	operator.Trajectory = operatorTrajectory(currentStage, phase)
-	if !lastHeartbeat.IsZero() {
-		heartbeat := lastHeartbeat
-		operator.LastHeartbeatAt = &heartbeat
-		age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
-		operator.HeartbeatAgeMillis = &age
+	if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
+		f.currentStage = suggestion
 	}
-	if phase != journal.PhaseRunning {
-		operator.Liveness = "terminal"
+}
+
+func (f *runSummaryFold) applyStageFinished(event journal.Event) {
+	if f.currentStage == event.Stage {
+		f.currentStage = ""
 	}
-	if providerClaimRecorded {
-		operator.Claim.ProviderMarker = "recorded"
+	f.lastStageStatus[event.Stage] = event.Status
+	f.claimedIssueFound = projectOperatorStageOutputs(&f.operator, event, f.claimedIssueFound)
+}
+
+func (f *runSummaryFold) applyGateEvaluated(run runRead, event journal.Event) error {
+	if f.currentStage == event.Gate {
+		f.currentStage = ""
 	}
-	if operator.PullRequest != nil {
-		operator.PROpenerStage = ""
+	if event.Gate != "review" {
+		return nil
 	}
-	if phase == journal.PhaseRunning {
-		if currentStage == "" {
-			operator.NextTransition = "start the next workflow stage"
+	review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
+	f.reviewAt, f.reviewProblem = eventTimePointer(event), ""
+	if event.Ref != nil {
+		data, err := run.reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			f.reviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
 		} else {
-			operator.NextTransition = "finish " + currentStage
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(data, &verdict); err != nil {
+				f.reviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
+			} else {
+				populateOperatorReview(review, verdict)
+			}
 		}
 	}
-	operator.addRecordedBlockers(reviewProblem, reviewAt, latestErrorAt, observedAt)
+	f.operator.Review = review
+	return nil
+}
+
+func (f *runSummaryFold) applyReferenceTouch(event journal.Event) {
+	if !event.IsReferenceTouch() {
+		return
+	}
+	switch event.ExternalRef.Kind {
+	case "issue":
+		if f.operator.Issue == nil {
+			f.operator.Issue = &OperatorIssue{}
+		}
+		if !f.claimedIssueFound {
+			f.operator.Issue.Number = event.ExternalRef.ID
+		}
+		operation, _ := event.Runner["operation"].(string)
+		f.providerClaimRecorded = f.providerClaimRecorded || operation == "claim"
+	case "pr":
+		ref := *event.ExternalRef
+		f.operator.PullRequest = &ref
+	}
+}
+
+func (f *runSummaryFold) applyRunFinished(event journal.Event) error {
+	if !canonicalPhase(journal.RunPhase(event.Status)) || event.Status == string(journal.PhaseRunning) {
+		return fmt.Errorf("unsupported terminal phase %q", event.Status)
+	}
+	f.phase = journal.RunPhase(event.Status)
+	finished := event.Time
+	f.finishedAt = &finished
+	f.clearCurrentStage()
+	return nil
+}
+
+func (f *runSummaryFold) clearCurrentStage() {
+	if !strings.HasPrefix(f.currentStage, "Workspace reset suggested:") {
+		f.currentStage = ""
+	}
+}
+
+func (f *runSummaryFold) finalizePhase(run runRead) error {
+	reconstructed := journal.PhaseFromEvents(recordEvents(run.records))
+	if f.phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
+		f.phase = reconstructed
+		f.finishedAt = terminalGateTime(run.records, reconstructed)
+		f.clearCurrentStage()
+	}
+	if f.phase != journal.PhaseRunning {
+		return nil
+	}
+	if state, err := run.reader.State(); err == nil && state.LastSeq >= f.lastSeq && state.MachineState != "" {
+		f.currentStage = state.MachineState
+	}
+	graph, status, err := pinnedGraph(run)
+	if err != nil {
+		return err
+	}
+	if status == "pinned" {
+		for _, node := range graph.Nodes {
+			if operatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
+				f.operator.PROpenerStage = node.ID
+				break
+			}
+		}
+	}
+	return nil
+}
+
+func (f *runSummaryFold) finalizeOperator(observedAt time.Time) {
+	f.operator.CurrentStage = f.currentStage
+	f.operator.Trajectory = operatorTrajectory(f.currentStage, f.phase)
+	if !f.lastHeartbeat.IsZero() {
+		heartbeat := f.lastHeartbeat
+		f.operator.LastHeartbeatAt = &heartbeat
+		age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
+		f.operator.HeartbeatAgeMillis = &age
+	}
+	if f.phase != journal.PhaseRunning {
+		f.operator.Liveness = "terminal"
+	}
+	if f.providerClaimRecorded {
+		f.operator.Claim.ProviderMarker = "recorded"
+	}
+	if f.operator.PullRequest != nil {
+		f.operator.PROpenerStage = ""
+	}
+	if f.phase == journal.PhaseRunning {
+		if f.currentStage == "" {
+			f.operator.NextTransition = "start the next workflow stage"
+		} else {
+			f.operator.NextTransition = "finish " + f.currentStage
+		}
+	}
+	f.operator.addRecordedBlockers(f.reviewProblem, f.reviewAt, f.latestErrorAt, observedAt)
+}
+
+func (f *runSummaryFold) summary(run runRead, observedAt time.Time, attemptStage string) (RunSummary, error) {
 	durationEnd := observedAt
-	if finishedAt != nil {
-		durationEnd = *finishedAt
+	if f.finishedAt != nil {
+		durationEnd = *f.finishedAt
 	}
 	var duration int64
 	if !durationEnd.Before(run.identity.StartedAt) {
 		duration = durationEnd.Sub(run.identity.StartedAt).Milliseconds()
 	}
-	stages := make([]string, 0, len(seenStages))
-	for stage := range seenStages {
+	stages := make([]string, 0, len(f.seenStages))
+	for stage := range f.seenStages {
 		stages = append(stages, stage)
 	}
 	sort.Strings(stages)
-	noWork := isNoWorkTick(phase, lastStageStatus)
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
 		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
 	}
-	terminalReason, err := terminalReasonFor(phase, run.records)
+	terminalReason, err := terminalReasonFor(f.phase, run.records)
 	if err != nil {
 		return RunSummary{}, err
 	}
-
 	return withRunActivity(withRunIdentity(RunSummary{
-		ID:               run.identity.RunID,
-		Workflow:         run.identity.Workflow,
-		WorkflowVersion:  run.identity.WorkflowVersion,
-		WorkflowDigest:   run.identity.WorkflowDigest,
-		Gaggle:           run.identity.Gaggle,
-		Trigger:          run.identity.Trigger,
-		Phase:            phase,
-		Terminal:         phase != journal.PhaseRunning,
-		CurrentStage:     currentStage,
-		StartedAt:        run.identity.StartedAt,
-		FinishedAt:       finishedAt,
-		DurationMillis:   duration,
-		LastActivityAt:   lastActivityAt,
-		LastSeq:          lastSeq,
-		RepassCount:      repasses,
-		RetryCount:       retries,
-		PolicyRetryCount: policyRetries,
-		InfraRetryCount:  infraRetries,
-		NoWork:           noWork,
-		TerminalReason:   terminalReason,
-		Operator:         operator,
-		EngineFallback:   observations.engineFallback,
-		RequiredMCP:      observations.requiredMCP,
-		RetryBackoff:     observations.retryBackoff,
-		Stages:           stages,
-		stageAttempts:    stageAttempts,
-	}, run), observations), nil
+		ID: run.identity.RunID, Workflow: run.identity.Workflow, WorkflowVersion: run.identity.WorkflowVersion,
+		WorkflowDigest: run.identity.WorkflowDigest, Gaggle: run.identity.Gaggle, Trigger: run.identity.Trigger,
+		Phase: f.phase, Terminal: f.phase != journal.PhaseRunning, CurrentStage: f.currentStage,
+		StartedAt: run.identity.StartedAt, FinishedAt: f.finishedAt, DurationMillis: duration,
+		LastActivityAt: f.lastActivityAt, LastSeq: f.lastSeq, RepassCount: f.repasses, RetryCount: f.retries,
+		PolicyRetryCount: f.policyRetries, InfraRetryCount: f.infraRetries,
+		NoWork: isNoWorkTick(f.phase, f.lastStageStatus), TerminalReason: terminalReason, Operator: f.operator,
+		EngineFallback: f.observations.engineFallback, RequiredMCP: f.observations.requiredMCP,
+		RetryBackoff: f.observations.retryBackoff, Stages: stages, stageAttempts: stageAttempts,
+	}, run), f.observations), nil
 }
 
 func projectOperatorStageOutputs(operator *OperatorRunSummary, event journal.Event, claimedIssueFound bool) bool {
@@ -2980,87 +3007,116 @@ func collectStageAttempts(
 		// permanently "running" — the DASH-20 regression. run.finished carries
 		// no stage, so it must be handled before the per-stage filter.
 		if event.Type == journal.EventRunFinished {
-			finished := event.Time
-			for st := range byStage {
-				for i := range byStage[st] {
-					if byStage[st][i].FinishedSeq != 0 {
-						continue
-					}
-					attempt := &byStage[st][i]
-					attempt.Status = string(apiv1.ResultFailure)
-					attempt.FinishedSeq = event.Seq
-					attempt.FinishedAt = &finished
-					if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
-						attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
-					}
-				}
-			}
+			closeOpenStageAttempts(byStage, event)
 			continue
 		}
 		if event.Stage == "" || (stage != "" && event.Stage != stage) {
 			continue
 		}
 		attempts := byStage[event.Stage]
-		switch event.Type {
-		case journal.EventStageRerunRequested:
-			visit := visits[event.Stage]
-			visit.humanRequested = true
-			visits[event.Stage] = visit
-		case journal.EventStageStarted, journal.EventReviewerStarted:
-			if event.Type == journal.EventReviewerStarted {
-				closeInterruptedReviewerAttempts(attempts, event)
-			}
-			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
-		case journal.EventRunnerPlacement:
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
-				if placement, ok := journal.PlacementFromEvent(event); ok {
-					attempts[i].Placement = &placement
-				}
-			}
-		case journal.EventArtifactRecorded:
-			if event.Ref == nil {
-				continue
-			}
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
-				if metadata, ok := artifacts.bySeq[event.Seq]; ok {
-					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
-				}
-			}
-		case journal.EventError:
-			if event.Error == nil || event.Error.Code != "executor_error" {
-				continue
-			}
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
-			if i < 0 {
-				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
-				i = len(attempts) - 1
-			}
-			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
-		case journal.EventStageFinished, journal.EventReviewerFinished:
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
-			if i < 0 {
-				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
-				i = len(attempts) - 1
-			}
-			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
-			for _, ref := range event.Artifacts {
-				if metadata, ok := artifacts.match(
-					ref.Digest,
-					event.Stage,
-					event.Attempt,
-					event.AttemptClass,
-					event.Branch,
-					attempts[i].StartedSeq,
-					event.Seq,
-				); ok &&
-					!containsArtifact(attempts[i].Artifacts, metadata.RecordedSeq, metadata.Digest) {
-					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
-				}
-			}
-		}
+		attempts = applyStageAttemptEvent(runID, attempts, visits, artifacts, event)
 		byStage[event.Stage] = attempts
 	}
 	return byStage
+}
+
+func closeOpenStageAttempts(byStage map[string][]StageAttempt, event journal.Event) {
+	finished := event.Time
+	for stage := range byStage {
+		for i := range byStage[stage] {
+			attempt := &byStage[stage][i]
+			if attempt.FinishedSeq != 0 {
+				continue
+			}
+			attempt.Status = string(apiv1.ResultFailure)
+			attempt.FinishedSeq = event.Seq
+			attempt.FinishedAt = &finished
+			if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
+				attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
+			}
+		}
+	}
+}
+
+func applyStageAttemptEvent(
+	runID string,
+	attempts []StageAttempt,
+	visits map[string]stageVisitState,
+	artifacts artifactIndex,
+	event journal.Event,
+) []StageAttempt {
+	switch event.Type {
+	case journal.EventStageRerunRequested:
+		visit := visits[event.Stage]
+		visit.humanRequested = true
+		visits[event.Stage] = visit
+	case journal.EventStageStarted, journal.EventReviewerStarted:
+		if event.Type == journal.EventReviewerStarted {
+			closeInterruptedReviewerAttempts(attempts, event)
+		}
+		attempts = append(attempts, newStageAttempt(runID, event, visits, true))
+	case journal.EventRunnerPlacement:
+		applyAttemptPlacement(attempts, event)
+	case journal.EventArtifactRecorded:
+		applyAttemptArtifact(attempts, artifacts, event)
+	case journal.EventError:
+		if event.Error != nil && event.Error.Code == "executor_error" {
+			attempts = finishStageAttempt(runID, attempts, visits, artifacts, event, true)
+		}
+	case journal.EventStageFinished, journal.EventReviewerFinished:
+		attempts = finishStageAttempt(runID, attempts, visits, artifacts, event, false)
+	}
+	return attempts
+}
+
+func applyAttemptPlacement(attempts []StageAttempt, event journal.Event) {
+	i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
+	if i < 0 {
+		return
+	}
+	if placement, ok := journal.PlacementFromEvent(event); ok {
+		attempts[i].Placement = &placement
+	}
+}
+
+func applyAttemptArtifact(attempts []StageAttempt, artifacts artifactIndex, event journal.Event) {
+	if event.Ref == nil {
+		return
+	}
+	i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
+	if metadata, ok := artifacts.bySeq[event.Seq]; i >= 0 && ok {
+		attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
+	}
+}
+
+func finishStageAttempt(
+	runID string,
+	attempts []StageAttempt,
+	visits map[string]stageVisitState,
+	artifacts artifactIndex,
+	event journal.Event,
+	executorError bool,
+) []StageAttempt {
+	i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
+	if i < 0 {
+		attempts = append(attempts, newStageAttempt(runID, event, visits, false))
+		i = len(attempts) - 1
+	}
+	if executorError {
+		finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
+		return attempts
+	}
+	finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
+	for _, ref := range event.Artifacts {
+		metadata, ok := artifacts.match(
+			ref.Digest, event.Stage, event.Attempt, event.AttemptClass,
+			event.Branch, attempts[i].StartedSeq, event.Seq,
+		)
+		if ok && !containsArtifact(attempts[i].Artifacts, metadata.RecordedSeq, metadata.Digest) {
+			attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
+		}
+	}
+	return attempts
 }
 
 type stageVisitState struct {

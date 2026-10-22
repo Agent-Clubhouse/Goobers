@@ -621,17 +621,8 @@ func trendStatsRequest(req TelemetryStatsRequest) rollup.StatsRequest {
 
 // TelemetryStats returns workflow and stage aggregates in stable name order.
 func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (TelemetryStatsResult, error) {
-	if err := validateWindow(req.Since, req.Until); err != nil {
+	if err := validateTelemetryStatsRequest(req); err != nil {
 		return TelemetryStatsResult{}, err
-	}
-	if err := validateOptionalTrendWindow(req.TrendSince, req.TrendUntil, "trend"); err != nil {
-		return TelemetryStatsResult{}, err
-	}
-	if err := validateOptionalTrendWindow(req.TrendPreviousSince, req.TrendPreviousUntil, "trend previous"); err != nil {
-		return TelemetryStatsResult{}, err
-	}
-	if req.Branch != nil && *req.Branch < 0 {
-		return TelemetryStatsResult{}, fmt.Errorf("%w: branch must be non-negative", ErrInvalidTelemetryRequest)
 	}
 	if err := ctx.Err(); err != nil {
 		return TelemetryStatsResult{}, err
@@ -644,6 +635,34 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		return TelemetryStatsResult{}, err
 	}
 
+	result := projectTelemetryStats(stats, req.AttributionObservations)
+	trends, err := s.projectTelemetryTrends(ctx, req, &result)
+	if err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	if err := s.projectPreviousTelemetryTrend(ctx, req, trends, &result); err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	return result, nil
+}
+
+func validateTelemetryStatsRequest(req TelemetryStatsRequest) error {
+	if err := validateWindow(req.Since, req.Until); err != nil {
+		return err
+	}
+	if err := validateOptionalTrendWindow(req.TrendSince, req.TrendUntil, "trend"); err != nil {
+		return err
+	}
+	if err := validateOptionalTrendWindow(req.TrendPreviousSince, req.TrendPreviousUntil, "trend previous"); err != nil {
+		return err
+	}
+	if req.Branch != nil && *req.Branch < 0 {
+		return fmt.Errorf("%w: branch must be non-negative", ErrInvalidTelemetryRequest)
+	}
+	return nil
+}
+
+func projectTelemetryStats(stats rollup.StatsResult, observations []creditgraph.AttributionObservation) TelemetryStatsResult {
 	result := TelemetryStatsResult{
 		Gaggles:            make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
 		Runs:               make([]TelemetryRunStats, 0, len(stats.Runs)),
@@ -651,7 +670,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		Usage:              make([]TelemetryUsageStats, 0, len(stats.Usage)),
 		Models:             make([]TelemetryModelStats, 0, len(stats.Models)),
 		CreditAssignment:   []NodeCredit{},
-		AttributionCohorts: AggregateAttributionObservations(req.AttributionObservations),
+		AttributionCohorts: AggregateAttributionObservations(observations),
 		Curation: TelemetryCurationStats{
 			EverRecorded: stats.Curation.EverRecorded,
 			Runs:         stats.Curation.Runs,
@@ -691,48 +710,10 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.ReadyPool.BounceRate = float64Pointer(stats.ReadyPool.BounceRate)
 	}
 	for _, stat := range stats.Gaggles {
-		item := TelemetryGaggleStats{
-			Gaggle:          stat.Gaggle,
-			TotalRuns:       stat.TotalRuns,
-			CompletedRuns:   stat.CompletedRuns,
-			FailedRuns:      stat.FailedRuns,
-			InfraFailedRuns: stat.InfraFailedRuns,
-			OtherRuns:       stat.OtherRuns,
-		}
-		// The rate is absent, not zero, when nothing reached a verdict about
-		// the work — an all-infra-fault window makes no claim either way.
-		if stat.CompletedRuns+stat.FailedRuns-stat.InfraFailedRuns > 0 {
-			item.SuccessRate = float64Pointer(stat.SuccessRate)
-		}
-		if stat.HasDuration {
-			item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
-			item.MinDurationMs = int64Pointer(stat.MinDurationMs)
-			item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
-		}
-		result.Gaggles = append(result.Gaggles, item)
+		result.Gaggles = append(result.Gaggles, projectTelemetryGaggle(stat))
 	}
 	for _, stat := range stats.Runs {
-		item := TelemetryRunStats{
-			Gaggle:           stat.Gaggle,
-			Workflow:         stat.Workflow,
-			Model:            stat.Model,
-			HarnessVersion:   stat.HarnessVersion,
-			TotalRuns:        stat.TotalRuns,
-			CompletedRuns:    stat.CompletedRuns,
-			FailedRuns:       stat.FailedRuns,
-			InfraFailedRuns:  stat.InfraFailedRuns,
-			OtherRuns:        stat.OtherRuns,
-			StuckAbortedRuns: stat.StuckAbortedRuns,
-		}
-		if stat.CompletedRuns+stat.FailedRuns-stat.InfraFailedRuns > 0 {
-			item.SuccessRate = float64Pointer(stat.SuccessRate)
-		}
-		if stat.HasDuration {
-			item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
-			item.MinDurationMs = int64Pointer(stat.MinDurationMs)
-			item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
-		}
-		result.Runs = append(result.Runs, item)
+		result.Runs = append(result.Runs, projectTelemetryRun(stat))
 	}
 	for _, stat := range stats.Stages {
 		result.Stages = append(result.Stages, projectTelemetryStage(stat))
@@ -741,101 +722,157 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.Usage = append(result.Usage, projectTelemetryUsage(stat))
 	}
 	for _, stat := range stats.Models {
-		item := TelemetryModelStats{
-			Model:                 stat.Model,
-			UsageSamples:          stat.UsageSamples,
-			InputTokenSamples:     stat.InputTokenSamples,
-			OutputTokenSamples:    stat.OutputTokenSamples,
-			PremiumRequestSamples: stat.PremiumRequestSamples,
-			CostSamples:           stat.CostSamples,
-		}
-		if stat.HasInputTokens {
-			item.InputTokens = int64Pointer(stat.InputTokens)
-		}
-		if stat.HasOutputTokens {
-			item.OutputTokens = int64Pointer(stat.OutputTokens)
-		}
-		if stat.HasPremiumRequests {
-			item.CopilotPremiumRequests = float64Pointer(stat.CopilotPremiumRequests)
-		}
-		if stat.HasCost {
-			item.CostAIC = costAICPointer(stat.CostUSD)
-		}
-		result.Models = append(result.Models, item)
+		result.Models = append(result.Models, projectTelemetryModel(stat))
 	}
-	var trends []rollup.TrendResult
-	if req.TrendBuckets > 0 {
-		if req.TrendSince.IsZero() || req.TrendUntil.IsZero() {
-			return TelemetryStatsResult{}, fmt.Errorf("%w: invalid trend window", ErrInvalidTelemetryRequest)
+	return result
+}
+
+func projectTelemetryGaggle(stat rollup.GaggleStats) TelemetryGaggleStats {
+	item := TelemetryGaggleStats{
+		Gaggle: stat.Gaggle, TotalRuns: stat.TotalRuns, CompletedRuns: stat.CompletedRuns,
+		FailedRuns: stat.FailedRuns, InfraFailedRuns: stat.InfraFailedRuns, OtherRuns: stat.OtherRuns,
+	}
+	if stat.CompletedRuns+stat.FailedRuns-stat.InfraFailedRuns > 0 {
+		item.SuccessRate = float64Pointer(stat.SuccessRate)
+	}
+	if stat.HasDuration {
+		item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
+		item.MinDurationMs = int64Pointer(stat.MinDurationMs)
+		item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
+	}
+	return item
+}
+
+func projectTelemetryRun(stat rollup.RunStats) TelemetryRunStats {
+	item := TelemetryRunStats{
+		Gaggle: stat.Gaggle, Workflow: stat.Workflow, Model: stat.Model, HarnessVersion: stat.HarnessVersion,
+		TotalRuns: stat.TotalRuns, CompletedRuns: stat.CompletedRuns, FailedRuns: stat.FailedRuns,
+		InfraFailedRuns: stat.InfraFailedRuns, OtherRuns: stat.OtherRuns, StuckAbortedRuns: stat.StuckAbortedRuns,
+	}
+	if stat.CompletedRuns+stat.FailedRuns-stat.InfraFailedRuns > 0 {
+		item.SuccessRate = float64Pointer(stat.SuccessRate)
+	}
+	if stat.HasDuration {
+		item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
+		item.MinDurationMs = int64Pointer(stat.MinDurationMs)
+		item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
+	}
+	return item
+}
+
+func projectTelemetryModel(stat rollup.ModelStats) TelemetryModelStats {
+	item := TelemetryModelStats{
+		Model: stat.Model, UsageSamples: stat.UsageSamples, InputTokenSamples: stat.InputTokenSamples,
+		OutputTokenSamples: stat.OutputTokenSamples, PremiumRequestSamples: stat.PremiumRequestSamples,
+		CostSamples: stat.CostSamples,
+	}
+	if stat.HasInputTokens {
+		item.InputTokens = int64Pointer(stat.InputTokens)
+	}
+	if stat.HasOutputTokens {
+		item.OutputTokens = int64Pointer(stat.OutputTokens)
+	}
+	if stat.HasPremiumRequests {
+		item.CopilotPremiumRequests = float64Pointer(stat.CopilotPremiumRequests)
+	}
+	if stat.HasCost {
+		item.CostAIC = costAICPointer(stat.CostUSD)
+	}
+	return item
+}
+
+func (s *Telemetry) projectTelemetryTrends(
+	ctx context.Context,
+	req TelemetryStatsRequest,
+	result *TelemetryStatsResult,
+) ([]rollup.TrendResult, error) {
+	if req.TrendBuckets == 0 {
+		return nil, nil
+	}
+	windows, err := telemetryTrendWindows(req, result)
+	if err != nil {
+		return nil, err
+	}
+	trends, err := s.store.TrendStats(ctx, rollup.TrendRequest{Stats: trendStatsRequest(req), Windows: windows})
+	if err != nil {
+		return nil, err
+	}
+	if len(trends) != len(windows) {
+		return nil, fmt.Errorf("telemetry: trend store returned %d windows, want %d", len(trends), len(windows))
+	}
+	for index := range result.Trend {
+		for _, stat := range trends[index].Usage {
+			result.Trend[index].Usage = append(result.Trend[index].Usage, projectTelemetryUsage(stat))
 		}
-		total := req.TrendUntil.Sub(req.TrendSince)
-		buckets := time.Duration(req.TrendBuckets)
-		if total < buckets {
-			return TelemetryStatsResult{}, fmt.Errorf("%w: trend window is too short for requested buckets", ErrInvalidTelemetryRequest)
+	}
+	return trends, nil
+}
+
+func telemetryTrendWindows(req TelemetryStatsRequest, result *TelemetryStatsResult) ([]rollup.TrendWindow, error) {
+	if req.TrendSince.IsZero() || req.TrendUntil.IsZero() {
+		return nil, fmt.Errorf("%w: invalid trend window", ErrInvalidTelemetryRequest)
+	}
+	total := req.TrendUntil.Sub(req.TrendSince)
+	buckets := time.Duration(req.TrendBuckets)
+	if total < buckets {
+		return nil, fmt.Errorf("%w: trend window is too short for requested buckets", ErrInvalidTelemetryRequest)
+	}
+	result.Trend = make([]TelemetryTrendBucket, 0, req.TrendBuckets)
+	windows := make([]rollup.TrendWindow, 0, req.TrendBuckets+1)
+	boundary := func(index int) time.Duration {
+		i := time.Duration(index)
+		return total/buckets*i + total%buckets*i/buckets
+	}
+	for index := 0; index < req.TrendBuckets; index++ {
+		since, until := req.TrendSince.Add(boundary(index)), req.TrendSince.Add(boundary(index+1))
+		if index == req.TrendBuckets-1 {
+			until = req.TrendUntil
 		}
-		result.Trend = make([]TelemetryTrendBucket, 0, req.TrendBuckets)
-		windows := make([]rollup.TrendWindow, 0, req.TrendBuckets+1)
-		boundary := func(index int) time.Duration {
-			i := time.Duration(index)
-			return total/buckets*i + total%buckets*i/buckets
-		}
-		for index := 0; index < req.TrendBuckets; index++ {
-			since := req.TrendSince.Add(boundary(index))
-			until := req.TrendSince.Add(boundary(index + 1))
-			if index == req.TrendBuckets-1 {
-				until = req.TrendUntil
-			}
-			windows = append(windows, rollup.TrendWindow{Since: since, Until: until})
-			result.Trend = append(result.Trend, TelemetryTrendBucket{
-				Since: since.UTC().Format(time.RFC3339Nano),
-				Until: until.UTC().Format(time.RFC3339Nano),
-				Usage: []TelemetryUsageStats{},
-			})
-		}
-		if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
-			windows = append(windows, rollup.TrendWindow{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil})
-		}
-		var err error
-		trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
-			Stats:   trendStatsRequest(req),
-			Windows: windows,
+		windows = append(windows, rollup.TrendWindow{Since: since, Until: until})
+		result.Trend = append(result.Trend, TelemetryTrendBucket{
+			Since: since.UTC().Format(time.RFC3339Nano), Until: until.UTC().Format(time.RFC3339Nano),
+			Usage: []TelemetryUsageStats{},
 		})
-		if err != nil {
-			return TelemetryStatsResult{}, err
-		}
-		if len(trends) != len(windows) {
-			return TelemetryStatsResult{}, fmt.Errorf("telemetry: trend store returned %d windows, want %d", len(trends), len(windows))
-		}
-		for index := range result.Trend {
-			for _, stat := range trends[index].Usage {
-				result.Trend[index].Usage = append(result.Trend[index].Usage, projectTelemetryUsage(stat))
-			}
-		}
 	}
 	if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
-		if len(trends) == 0 {
-			var err error
-			trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
-				Stats:   trendStatsRequest(req),
-				Windows: []rollup.TrendWindow{{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil}},
-			})
-			if err != nil {
-				return TelemetryStatsResult{}, err
-			}
-			if len(trends) != 1 {
-				return TelemetryStatsResult{}, fmt.Errorf("telemetry: trend store returned %d previous windows, want 1", len(trends))
-			}
+		windows = append(windows, rollup.TrendWindow{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil})
+	}
+	return windows, nil
+}
+
+func (s *Telemetry) projectPreviousTelemetryTrend(
+	ctx context.Context,
+	req TelemetryStatsRequest,
+	trends []rollup.TrendResult,
+	result *TelemetryStatsResult,
+) error {
+	if req.TrendPreviousSince.IsZero() && req.TrendPreviousUntil.IsZero() {
+		return nil
+	}
+	if len(trends) == 0 {
+		var err error
+		trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
+			Stats: trendStatsRequest(req),
+			Windows: []rollup.TrendWindow{{
+				Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil,
+			}},
+		})
+		if err != nil {
+			return err
 		}
-		result.TrendPrevious = &TelemetryTrendBucket{
-			Since: req.TrendPreviousSince.UTC().Format(time.RFC3339Nano),
-			Until: req.TrendPreviousUntil.UTC().Format(time.RFC3339Nano),
-			Usage: []TelemetryUsageStats{},
-		}
-		for _, stat := range trends[len(trends)-1].Usage {
-			result.TrendPrevious.Usage = append(result.TrendPrevious.Usage, projectTelemetryUsage(stat))
+		if len(trends) != 1 {
+			return fmt.Errorf("telemetry: trend store returned %d previous windows, want 1", len(trends))
 		}
 	}
-	return result, nil
+	result.TrendPrevious = &TelemetryTrendBucket{
+		Since: req.TrendPreviousSince.UTC().Format(time.RFC3339Nano),
+		Until: req.TrendPreviousUntil.UTC().Format(time.RFC3339Nano),
+		Usage: []TelemetryUsageStats{},
+	}
+	for _, stat := range trends[len(trends)-1].Usage {
+		result.TrendPrevious.Usage = append(result.TrendPrevious.Usage, projectTelemetryUsage(stat))
+	}
+	return nil
 }
 
 func validateOptionalTrendWindow(since, until time.Time, name string) error {
@@ -1222,71 +1259,105 @@ func (s *Local) definitionsForQuery() *instance.ConfigSet {
 // actually observed across runs. The declared workflow is a DAG, while repass
 // and cross-run review/CI transitions are allowed to form SCCs.
 func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsRequest, declared *workflow.Graph) (readmodel.AnalyticsGraph, error) {
-	graph := readmodel.AnalyticsGraph{}
-	if declared != nil {
-		for _, node := range declared.Nodes {
-			graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node.ID})
-		}
-		for _, edge := range declared.Edges {
-			if edge.Target != "" && edge.Terminal == "" {
-				graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: edge.Source, Target: edge.Target})
-			}
-		}
-	}
+	builder := newAnalyticsGraphBuilder(declared)
 	ids, err := s.runtimeAnalyticsRunIDs(ctx, req)
 	if err != nil {
 		return readmodel.AnalyticsGraph{}, err
 	}
-	known := make(map[string]bool, len(graph.Nodes))
-	for _, node := range graph.Nodes {
-		known[node.ID] = true
+	runs, err := s.analyticsRuns(ctx, req, ids, builder)
+	if err != nil {
+		return readmodel.AnalyticsGraph{}, err
 	}
-	edges := make(map[string]bool, len(graph.Edges))
-	for _, edge := range graph.Edges {
-		edges[edge.Source+"\x00"+edge.Target] = true
+	sort.SliceStable(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].ID < runs[j].ID
+		}
+		return runs[i].StartedAt.Before(runs[j].StartedAt)
+	})
+	addCrossRunAnalyticsEdges(runs, builder)
+	return builder.graph, nil
+}
+
+type analyticsGraphBuilder struct {
+	graph readmodel.AnalyticsGraph
+	known map[string]bool
+	edges map[string]bool
+}
+
+func newAnalyticsGraphBuilder(declared *workflow.Graph) *analyticsGraphBuilder {
+	builder := &analyticsGraphBuilder{known: make(map[string]bool), edges: make(map[string]bool)}
+	if declared != nil {
+		for _, node := range declared.Nodes {
+			builder.addNode(node.ID)
+		}
+		for _, edge := range declared.Edges {
+			if edge.Target != "" && edge.Terminal == "" {
+				builder.addEdge(edge.Source, edge.Target)
+			}
+		}
 	}
-	type runtimeRun struct {
-		detail RunDetail
+	return builder
+}
+
+func (b *analyticsGraphBuilder) addNode(id string) {
+	if b.known[id] {
+		return
 	}
-	runs := make([]runtimeRun, 0, len(ids))
+	b.known[id] = true
+	b.graph.Nodes = append(b.graph.Nodes, readmodel.AnalyticsNode{ID: id})
+}
+
+func (b *analyticsGraphBuilder) addEdge(source, target string) {
+	key := source + "\x00" + target
+	if b.edges[key] {
+		return
+	}
+	b.edges[key] = true
+	b.graph.Edges = append(b.graph.Edges, readmodel.AnalyticsEdge{Source: source, Target: target})
+}
+
+func (s *Local) analyticsRuns(
+	ctx context.Context,
+	req TelemetryStatsRequest,
+	ids []string,
+	builder *analyticsGraphBuilder,
+) ([]RunDetail, error) {
+	runs := make([]RunDetail, 0, len(ids))
 	for _, id := range ids {
 		detail, err := s.getRunUnannotated(ctx, id)
 		if err != nil {
-			return readmodel.AnalyticsGraph{}, fmt.Errorf("read analytics run %q: %w", id, err)
+			return nil, fmt.Errorf("read analytics run %q: %w", id, err)
 		}
-		if detail.Gaggle != req.Gaggle || detail.Workflow != req.Workflow ||
-			(!req.Since.IsZero() && detail.StartedAt.Before(req.Since)) ||
-			(!req.Until.IsZero() && !detail.StartedAt.Before(req.Until)) {
+		if !analyticsRunMatches(detail, req) {
 			continue
 		}
-		runs = append(runs, runtimeRun{detail: detail})
-		for _, transition := range detail.Transitions {
-			if transition.Source == "" || transition.Target == "" || transition.Terminal ||
-				transition.Target == workflow.TargetAbort || transition.Target == workflow.TargetEscalate {
-				continue
-			}
-			for _, node := range []string{transition.Source, transition.Target} {
-				if !known[node] {
-					known[node] = true
-					graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node})
-				}
-			}
-			key := transition.Source + "\x00" + transition.Target
-			if !edges[key] {
-				edges[key] = true
-				graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: transition.Source, Target: transition.Target})
-			}
-		}
+		runs = append(runs, detail)
+		addRunAnalyticsEdges(detail, builder)
 	}
-	sort.SliceStable(runs, func(i, j int) bool {
-		if runs[i].detail.StartedAt.Equal(runs[j].detail.StartedAt) {
-			return runs[i].detail.ID < runs[j].detail.ID
+	return runs, nil
+}
+
+func analyticsRunMatches(detail RunDetail, req TelemetryStatsRequest) bool {
+	return detail.Gaggle == req.Gaggle && detail.Workflow == req.Workflow &&
+		(req.Since.IsZero() || !detail.StartedAt.Before(req.Since)) &&
+		(req.Until.IsZero() || detail.StartedAt.Before(req.Until))
+}
+
+func addRunAnalyticsEdges(detail RunDetail, builder *analyticsGraphBuilder) {
+	for _, transition := range detail.Transitions {
+		if transition.Source == "" || transition.Target == "" || transition.Terminal ||
+			transition.Target == workflow.TargetAbort || transition.Target == workflow.TargetEscalate {
+			continue
 		}
-		return runs[i].detail.StartedAt.Before(runs[j].detail.StartedAt)
-	})
+		builder.addNode(transition.Source)
+		builder.addNode(transition.Target)
+		builder.addEdge(transition.Source, transition.Target)
+	}
+}
+
+func addCrossRunAnalyticsEdges(runs []RunDetail, builder *analyticsGraphBuilder) {
 	previousByIssue := make(map[string]RunDetail)
-	for _, run := range runs {
-		current := run.detail
+	for _, current := range runs {
 		if current.Operator.Issue == nil || current.Operator.Issue.Number == "" {
 			continue
 		}
@@ -1307,19 +1378,10 @@ func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsReq
 			workflow.IsReservedTarget(source) || workflow.IsReservedTarget(target) {
 			continue
 		}
-		for _, node := range []string{source, target} {
-			if !known[node] {
-				known[node] = true
-				graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node})
-			}
-		}
-		key := source + "\x00" + target
-		if !edges[key] {
-			edges[key] = true
-			graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: source, Target: target})
-		}
+		builder.addNode(source)
+		builder.addNode(target)
+		builder.addEdge(source, target)
 	}
-	return graph, nil
 }
 
 func (s *Local) runtimeAnalyticsRunIDs(ctx context.Context, req TelemetryStatsRequest) ([]string, error) {
