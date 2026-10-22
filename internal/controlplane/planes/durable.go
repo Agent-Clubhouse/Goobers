@@ -75,11 +75,23 @@ func NewDurableTriggerService(path string, dispatch *TriggerService, backend Dur
 	if err != nil {
 		return nil, err
 	}
+	service, err := NewDurableTriggerServiceWithQueue(queue, dispatch, backend)
+	if err != nil {
+		_ = queue.Close()
+		return nil, err
+	}
+	return service, nil
+}
+
+// NewDurableTriggerServiceWithQueue attaches to an already-open trigger queue.
+func NewDurableTriggerServiceWithQueue(queue *triggerqueue.Store, dispatch *TriggerService, backend DurableTriggerBackend) (*DurableTriggerService, error) {
+	if queue == nil {
+		return nil, errors.New("durable trigger queue is required")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	uncertain, err := queue.UncertainIDs(ctx)
 	if err != nil {
-		_ = queue.Close()
 		return nil, err
 	}
 	return &DurableTriggerService{queue: queue, dispatch: dispatch, backend: backend, bootUncertain: uncertain}, nil
