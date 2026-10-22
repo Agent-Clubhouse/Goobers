@@ -181,7 +181,7 @@ func TestChildLauncherRechecksCurrentPolicyAndDoesNotSpendCapacityWhenRefused(t 
 func TestChildLauncherParentCapacityDefersBeforeRunner(t *testing.T) {
 	f := actualChildLaunchFixture(t)
 	e := f.submission.Envelope
-	sched := f.launcher.dispatch.sched.Load()
+	sched := f.launcher.dispatch.Scheduler()
 	release, ok, reason := sched.ReserveContinuation(e.ParentRunID, e.Gaggle, e.ParentWorkflow)
 	if !ok {
 		t.Fatal(reason)

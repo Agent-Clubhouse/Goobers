@@ -52,7 +52,7 @@ func (s *durableTriggerService) reconcileChildReceipt(ctx context.Context, recor
 		return err
 	}
 	if !observed && s.bootUncertain[record.ID] {
-		if err = s.queue.RequeueChild(ctx, ref.Child.Identity, "no execution observed after restart", s.dispatch.now()); err != nil {
+		if err = s.queue.RequeueChild(ctx, ref.Child.Identity, "no execution observed after restart", s.dispatch.Now()); err != nil {
 			return err
 		}
 		delete(s.bootUncertain, record.ID)
@@ -71,7 +71,7 @@ func (s *durableTriggerService) recordChildRunning(ctx context.Context, child tr
 	if child.State != triggerqueue.ChildQueued {
 		return nil
 	}
-	return s.queue.SetChildState(ctx, child.Identity, triggerqueue.ChildStateUpdate{Expected: child.State, State: triggerqueue.ChildRunning}, s.dispatch.now())
+	return s.queue.SetChildState(ctx, child.Identity, triggerqueue.ChildStateUpdate{Expected: child.State, State: triggerqueue.ChildRunning}, s.dispatch.Now())
 }
 
 // This bounded sweep also visits Dispatched starts: execution reconciliation
@@ -163,5 +163,5 @@ func (s *durableTriggerService) recordChildResult(ctx context.Context, ref child
 	if result.State == ref.Child.State && !result.State.Terminal() {
 		return nil
 	}
-	return s.queue.SetChildState(ctx, ref.Child.Identity, triggerqueue.ChildStateUpdate{Expected: ref.Child.State, State: result.State, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, s.dispatch.now())
+	return s.queue.SetChildState(ctx, ref.Child.Identity, triggerqueue.ChildStateUpdate{Expected: ref.Child.State, State: result.State, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, s.dispatch.Now())
 }

@@ -398,7 +398,7 @@ func TestTriggerPlaneConcurrentDuplicateDeliveriesMintOnce(t *testing.T) {
 	defer releaseBarrier()
 
 	service := newDaemonTriggerService()
-	service.dispatch = barrier
+	service.AttachDispatcher(barrier)
 	ctx := context.Background()
 	request := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "delivery-race"}
 
@@ -450,9 +450,9 @@ func TestTriggerPlaneConcurrentDuplicateDeliveriesMintOnce(t *testing.T) {
 func TestTriggerPlaneRefusesNewDispatchUntilSchedulerReady(t *testing.T) {
 	stub := &stubTriggerer{}
 	service := newDaemonTriggerService()
-	service.dispatch = stub
+	service.AttachDispatcher(stub)
 	schedulerReady := false
-	service.withSchedulerReadyGate(func() bool { return schedulerReady })
+	service.WithSchedulerReadyGate(func() bool { return schedulerReady })
 	ctx := context.Background()
 
 	request := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "resume-window"}
@@ -487,7 +487,7 @@ func TestTriggerPlaneRefusesNewDispatchUntilSchedulerReady(t *testing.T) {
 func TestTriggerPlaneNilSchedulerReadyGateAdmitsAsBefore(t *testing.T) {
 	stub := &stubTriggerer{}
 	service := newDaemonTriggerService()
-	service.dispatch = stub
+	service.AttachDispatcher(stub)
 	if _, err := service.Trigger(context.Background(), httpapi.TriggerRequest{Workflow: "implementation", RequestID: "no-gate"}); err != nil {
 		t.Fatalf("Trigger with no scheduler-ready gate wired: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestTriggerPlaneNilSchedulerReadyGateAdmitsAsBefore(t *testing.T) {
 func TestTriggerPlaneDedupesRedeliveredRequests(t *testing.T) {
 	stub := &stubTriggerer{}
 	service := newDaemonTriggerService()
-	service.dispatch = stub
+	service.AttachDispatcher(stub)
 	ctx := context.Background()
 
 	request := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "delivery-1"}
@@ -538,8 +538,8 @@ func TestTriggerPlaneRejectsReboundRequestIdentity(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			stub := &stubTriggerer{}
 			service := newDaemonTriggerService()
-			service.dispatch = stub
-			service.contains = func(string, string) bool { return true }
+			service.AttachDispatcher(stub)
+			service.WithGaggleContainment(func(string, string) bool { return true })
 			original := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "delivery", Actor: "operator-a"}
 			if _, err := service.Trigger(context.Background(), original); err != nil {
 				t.Fatal(err)
@@ -578,30 +578,30 @@ func TestTriggerPlaneCapacityNeverEvictsInFlightReservation(t *testing.T) {
 		return httpapi.TriggerRequest{Workflow: "implementation", RequestID: id}
 	}
 	for i := range maxTriggerDedupeRecords {
-		if _, duplicate, err := service.reserve(request(strconv.Itoa(i))); err != nil || duplicate {
+		if _, duplicate, err := service.Reserve(request(strconv.Itoa(i))); err != nil || duplicate {
 			t.Fatalf("reserve %d: duplicate=%t err=%v", i, duplicate, err)
 		}
 	}
-	if _, _, err := service.reserve(request("overflow")); err == nil {
+	if _, _, err := service.Reserve(request("overflow")); err == nil {
 		t.Fatal("full queue accepted another in-flight request")
 	}
-	if _, duplicate, err := service.reserve(request("0")); err != nil || !duplicate {
+	if _, duplicate, err := service.Reserve(request("0")); err != nil || !duplicate {
 		t.Fatalf("oldest active reservation evicted: %t %v", duplicate, err)
 	}
 	// A successful priority dispatch can legitimately have no immediate run
 	// ID. It is completed nonetheless, unlike an in-flight reservation.
-	service.completeReservation("1", "")
-	service.releaseReservation("1")
-	if _, duplicate, err := service.reserve(request("1")); err != nil || !duplicate {
+	service.CompleteReservation("1", "")
+	service.ReleaseReservation("1")
+	if _, duplicate, err := service.Reserve(request("1")); err != nil || !duplicate {
 		t.Fatal("completed empty response was confused with failed admission")
 	}
-	if _, duplicate, err := service.reserve(request("overflow")); err != nil || duplicate {
+	if _, duplicate, err := service.Reserve(request("overflow")); err != nil || duplicate {
 		t.Fatalf("completed entry did not free bounded capacity: %t %v", duplicate, err)
 	}
-	if len(service.seen) != maxTriggerDedupeRecords || len(service.order) != maxTriggerDedupeRecords {
+	if seen, ordered := service.ReservationCount(); seen != maxTriggerDedupeRecords || ordered != maxTriggerDedupeRecords {
 		t.Fatal("reservation storage exceeded its bound")
 	}
-	if _, duplicate, err := service.reserve(request("0")); err != nil || !duplicate {
+	if _, duplicate, err := service.Reserve(request("0")); err != nil || !duplicate {
 		t.Fatal("capacity reclamation evicted an active request")
 	}
 }
@@ -609,7 +609,7 @@ func TestTriggerPlaneCapacityNeverEvictsInFlightReservation(t *testing.T) {
 func TestTriggerPlanePassesForceOnlyToManualDispatch(t *testing.T) {
 	stub := &stubTriggerer{}
 	service := newDaemonTriggerService()
-	service.dispatch = stub
+	service.AttachDispatcher(stub)
 
 	response, err := service.Trigger(context.Background(), httpapi.TriggerRequest{
 		Workflow: "implementation",
@@ -639,7 +639,7 @@ func TestTriggerPlanePassesForceOnlyToManualDispatch(t *testing.T) {
 func TestTriggerPlaneMapsSchedulerRefusals(t *testing.T) {
 	stub := &stubTriggerer{}
 	service := newDaemonTriggerService()
-	service.dispatch = stub
+	service.AttachDispatcher(stub)
 	ctx := context.Background()
 
 	tests := []struct {

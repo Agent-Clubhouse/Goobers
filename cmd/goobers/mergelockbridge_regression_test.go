@@ -161,7 +161,7 @@ func TestMergeAcquireDoesNotStallUnrelatedReleaseAll(t *testing.T) {
 	if err != nil || response.Ok || response.Holder != "local merge-pr" {
 		t.Fatalf("plane acquire under local holder = %+v, %v", response, err)
 	}
-	if _, err := plane.service.releaseAllForRun(t.Context(), httpapi.ClaimRequest{
+	if _, err := plane.service.ReleaseAllForRun(t.Context(), httpapi.ClaimRequest{
 		Gaggle: "g", Provider: "github", RunID: "run-x", Reason: claimrelease.Completed.Reason(),
 	}); err != nil {
 		t.Fatal(err)

@@ -39,7 +39,7 @@ func (s *durableTriggerService) transferDelegated(ctx context.Context, dir, id, 
 	if req.Priority {
 		request.SourceRun = req.SourceRun
 	}
-	deadline := s.dispatch.now().Add(acceptedTriggerQueueLifetime())
+	deadline := s.dispatch.Now().Add(acceptedTriggerQueueLifetime())
 	if !req.AcceptedAt.IsZero() {
 		deadline = req.AcceptedAt.Add(acceptedTriggerQueueLifetime())
 	}
