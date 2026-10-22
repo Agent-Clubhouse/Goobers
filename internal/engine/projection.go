@@ -145,9 +145,14 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 		return "", err
 	}
 	cfg := &projectConfig{replaceRun: journal.ReplaceRun}
-	WithJournalBackend(journal.NewFileBackend())(cfg)
 	for _, opt := range opts {
 		opt(cfg)
+	}
+	if cfg.backend != nil {
+		if _, err := writeProjectedRun("", proj, cfg); err != nil {
+			return "", err
+		}
+		return proj.Identity.RunID, nil
 	}
 
 	finalDir := filepath.Join(runsDir, proj.Identity.RunID)
@@ -249,14 +254,21 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 
 	clock := &projectionClock{}
 	clock.set(proj.Ops[0].Time)
-	jr, owner, err := cfg.backend.CreateRun(
-		runsDir, id, inputs, journal.WithClock(clock.now), journal.WithInputIntegrity(inputIntegrity),
-		journal.WithoutCommittedEventExport(),
-	)
+	backend := cfg.backend
+	if backend == nil {
+		WithJournalBackend(journal.NewFileBackend(journal.FileBackendConfig{RunsDir: runsDir}))(cfg)
+		backend = cfg.backend
+	}
+	handle, owner, err := backend.CreateRun(context.Background(), journal.CreateRunRequest{
+		Identity: id, Inputs: inputs,
+		Options: journal.RunWriterOptions{
+			Clock: clock.now, InputIntegrity: inputIntegrity, DisableCommittedExport: true,
+		},
+	})
 	if err != nil {
 		return "", fmt.Errorf("engine: create projected journal for run %q: %w", id.RunID, err)
 	}
-	defer func() { _ = cfg.backend.Retire(jr, owner) }()
+	defer func() { _ = backend.Retire(context.Background(), handle, owner) }()
 
 	// journal.Create already appended the opening run.started (op 0);
 	// validateProjection pinned its shape. Replay the rest.
@@ -271,7 +283,7 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 				integrity = apiv1.IntegrityDerived
 			}
 			var ref journal.Ref
-			ref, recErr := cfg.backend.RecordBlob(jr, owner, journal.BlobRecord{
+			ref, recErr := backend.RecordBlob(context.Background(), handle, owner, journal.BlobRecord{
 				Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: a.Branch, Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity},
 				Data:  a.Data,
 			})
@@ -284,7 +296,7 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 			if s == nil {
 				return "", fmt.Errorf("%w: span op %d carries no payload", ErrUnprojectable, i+1)
 			}
-			if err := adoptSpan(cfg.backend, jr, owner, cfg.spanSource, *s); err != nil {
+			if err := adoptSpan(backend, handle, owner, cfg.spanSource, *s); err != nil {
 				return "", fmt.Errorf("engine: project span %q (op %d): %w", s.Name, i+1, err)
 			}
 		case opAppend:
@@ -299,15 +311,15 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 				}
 				ev.Ref = &ref
 			}
-			if err := cfg.backend.AppendBatch(jr, owner, []journal.Event{ev}); err != nil {
+			if err := backend.AppendBatch(context.Background(), handle, owner, []journal.Event{ev}); err != nil {
 				return "", fmt.Errorf("engine: project event %s (op %d): %w", ev.Type, i+1, err)
 			}
 		}
 	}
-	if err := cfg.backend.Retire(jr, owner); err != nil {
+	if err := backend.Retire(context.Background(), handle, owner); err != nil {
 		return "", fmt.Errorf("engine: close projected journal for run %q: %w", id.RunID, err)
 	}
-	return jr.Dir(), nil
+	return filepath.Join(runsDir, id.RunID), nil
 }
 
 // adoptSpan writes op into jr: fetched-and-recorded as span.recorded when src
@@ -326,16 +338,18 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 // failing the whole run's projection or dropping it silently — keeps the run
 // itself projectable and visible in every product surface (the #2895
 // problem this must not reintroduce) while still surfacing the gap (#2907).
-func adoptSpan(backend journal.Backend, jr *journal.Run, owner journal.OwnerToken, src SpanSource, op JournalSpanOp) error {
+func adoptSpan(backend journal.Backend, handle journal.RunHandle, owner journal.OwnerToken, src SpanSource, op JournalSpanOp) error {
 	data, err := fetchSpan(src, op.Ref.Digest)
 	if err != nil {
 		spanErr := fmt.Errorf("span %q (%s): %w", op.Name, op.Ref.Digest, err)
-		return backend.AppendBatch(jr, owner, []journal.Event{{
+		return backend.AppendBatch(context.Background(), handle, owner, []journal.Event{{
 			Type: journal.EventError, Branch: op.Branch, Stage: op.Stage, Attempt: op.Attempt, AttemptClass: op.Class,
 			Error: journal.ErrorDetailFor(spanUnavailableErrorCode, spanErr),
 		}})
 	}
-	_, err = jr.RecordBranchSpanWithSchema(op.Branch, op.Stage, op.Name, op.DataSchema, data)
+	_, err = backend.RecordSpan(context.Background(), handle, owner, journal.SpanRecord{
+		Branch: op.Branch, Stage: op.Stage, Name: op.Name, DataSchema: op.DataSchema, Data: data,
+	})
 	return err
 }
 

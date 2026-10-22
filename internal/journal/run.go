@@ -37,7 +37,6 @@ type Run struct {
 	scrubber         Scrubber
 	now              func() time.Time
 	observer         func(runID string, seq uint64)
-	backendOwner     OwnerToken
 	pendingObserver  *appendObserver
 	observerStartSeq uint64
 	commits          *commitTarget
@@ -594,12 +593,29 @@ func (r *Run) Append(ev Event) error {
 	return r.appendPrepared(ev, nil)
 }
 
-// AppendBatch appends events under one writer mutex and owner incarnation.
-func (r *Run) AppendBatch(events []Event) error {
+// appendBatch commits an ordered prefix; each event keeps the historical
+// append+checkpoint durability boundary.
+func (r *Run) appendBatch(events []Event) error {
+	r.mu.Lock()
+	var observedSeq uint64
+	defer func() {
+		r.mu.Unlock()
+		if observedSeq != 0 && r.observer != nil {
+			r.observer(r.id.RunID, observedSeq)
+		}
+	}()
+	if r.closed {
+		return ErrClosed
+	}
 	for _, event := range events {
-		if err := r.Append(event); err != nil {
+		if err := r.append(event); err != nil {
 			return err
 		}
+		r.applyLifecycle(event)
+		if err := r.checkpoint(); err != nil {
+			return err
+		}
+		observedSeq = r.seq
 	}
 	return nil
 }
@@ -634,6 +650,15 @@ func (r *Run) appendPrepared(ev Event, prepare func(*Event, uint64) error) error
 	// run.finished or intervention event. Reason mirrors the terminal event's own
 	// Error.Message, if any (#520) — empty for an ordinary business-outcome
 	// terminal that carries no error, and cleared when a run resumes.
+	r.applyLifecycle(ev)
+	if err := r.checkpoint(); err != nil {
+		return err
+	}
+	observedSeq = r.seq
+	return nil
+}
+
+func (r *Run) applyLifecycle(ev Event) {
 	switch ev.Type {
 	case EventRunResumed, EventGateOverridden:
 		r.phase = PhaseRunning
@@ -651,11 +676,6 @@ func (r *Run) appendPrepared(ev Event, prepare func(*Event, uint64) error) error
 		r.machineState = ev.Stage
 		r.reason = ""
 	}
-	if err := r.checkpoint(); err != nil {
-		return err
-	}
-	observedSeq = r.seq
-	return nil
 }
 
 // AppendIfAbsent appends ev while holding the journal lock only when no

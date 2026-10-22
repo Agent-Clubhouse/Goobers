@@ -1,6 +1,7 @@
 package livejournal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -84,10 +85,21 @@ func (w *Writer) appendEventWithChildOrigin(run *liveRun, op Op, event *journal.
 		if err := w.appendRun(run, *event); err != nil {
 			return err
 		}
-		run.keys[op.Key] = run.jr.Seq()
+		run.keys[op.Key] = w.seq(run)
 		return nil
 	}
-	seq, origin, err := run.jr.AppendChildStageStarted(*event, op.ChildStageStart.Continuation)
+	var (
+		seq    uint64
+		origin *apiv1.ChildWorkflowOrigin
+		err    error
+	)
+	if run.adopted {
+		seq, origin, err = run.jr.AppendChildStageStarted(*event, op.ChildStageStart.Continuation)
+	} else {
+		seq, origin, err = w.backend.AppendChildStageStarted(context.Background(), run.handle, run.owner, journal.ChildStageStartRecord{
+			Event: *event, Continuation: op.ChildStageStart.Continuation,
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -106,12 +118,12 @@ func (w *Writer) childOriginReceipt(run *liveRun, runID string, op Op) (ChildOri
 	// Recovery can retain a complete append whose checkpoint failed. Never
 	// expose its receipt until the checkpoint has also succeeded, even after
 	// a process restart or an idle close discarded the in-memory error state.
-	if run.jr != nil {
+	if w.hasRun(run) {
 		var err error
 		if run.adopted {
 			err = run.jr.Checkpoint()
 		} else {
-			err = w.backend.Checkpoint(run.jr, run.owner)
+			err = w.backend.Checkpoint(context.Background(), run.handle, run.owner)
 		}
 		if err != nil {
 			return ChildOriginReceipt{}, err
@@ -138,9 +150,9 @@ func (w *Writer) invalidateChildAppend(runID string, run *liveRun) {
 		run.childAppendUncertain = true
 		return
 	}
-	if run.jr != nil {
+	if w.hasRun(run) {
 		_ = w.retire(run)
-		run.jr = nil
+		w.clearRun(run)
 	}
 	// Clear terminal dedup too, so already-acquired stale references must
 	// reacquire instead of serving receipts from the uncertain cache.
@@ -152,11 +164,22 @@ func (w *Writer) invalidateChildAppend(runID string, run *liveRun) {
 // reconcileChildAppend repairs the borrowed handle without releasing its
 // owner's lock. Nothing can use cached dedup or return receipts until both
 // the append boundary and checkpoint are repaired and the durable keys read.
-func (run *liveRun) reconcileChildAppend() error {
-	if err := run.jr.RepairAppendBoundary(); err != nil {
+func (w *Writer) reconcileChildAppend(run *liveRun) error {
+	var err error
+	if run.adopted {
+		err = run.jr.RepairAppendBoundary()
+	} else {
+		err = w.backend.RepairAppendBoundary(context.Background(), run.handle, run.owner)
+	}
+	if err != nil {
 		return err
 	}
-	if err := run.jr.Checkpoint(); err != nil {
+	if run.adopted {
+		err = run.jr.Checkpoint()
+	} else {
+		err = w.backend.Checkpoint(context.Background(), run.handle, run.owner)
+	}
+	if err != nil {
 		return err
 	}
 	reader, err := journal.OpenReadOnly(run.dir)

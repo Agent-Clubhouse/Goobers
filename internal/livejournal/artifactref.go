@@ -43,7 +43,7 @@ func (w *Writer) applyArtifact(ctx context.Context, run *liveRun, op Op) (bool, 
 	if err != nil {
 		return false, err
 	}
-	run.keys[op.Key] = run.jr.Seq()
+	run.keys[op.Key] = w.seq(run)
 	run.artifactRefs[artifactBranchKey(requestBranch(ctx), a.Name)] = ref
 	run.rememberArtifactKey(op.Key, ref)
 	// Committed above whatever happens here: a failed write-through fails the
@@ -63,13 +63,13 @@ func (w *Writer) recordArtifact(ctx context.Context, run *liveRun, a *ArtifactOp
 		if run.adopted {
 			return run.jr.RecordBranchExpectedArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
 		}
-		return w.backend.RecordBlob(run.jr, run.owner, journal.BlobRecord{
+		return w.backend.RecordBlob(ctx, run.handle, run.owner, journal.BlobRecord{
 			Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: requestBranch(ctx), Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity, Runner: meta},
 			Data:  data, Expected: a.Ref,
 		})
 	}
 	if !run.adopted {
-		return w.backend.RecordBlob(run.jr, run.owner, journal.BlobRecord{
+		return w.backend.RecordBlob(ctx, run.handle, run.owner, journal.BlobRecord{
 			Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: requestBranch(ctx), Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity, Runner: meta},
 			Data:  a.Data,
 		})
