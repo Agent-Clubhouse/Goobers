@@ -128,6 +128,18 @@ github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # 
 # Quarantined, reserved, and extension seams required by the architecture.
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
+github.com/goobers/goobers/internal/engine.HITLRefusalCode # Test-only workflow protocol refusal classifier retained by engine replay and validation tests. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
+github.com/goobers/goobers/internal/journal.ConformanceView # Test-only local runner and DSL migration journal invariant; move to a journal test-helper package. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.projectNormative # Test-only implementation of the local journal conformance invariant. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeWorkspaceRevision # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeArtifactRefs # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeOutputs # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeCompleteness # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeSelection # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeMapRoster # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.isContextManifestArtifact # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.NormativeEvent.String # Test-only local journal conformance diagnostic renderer. expires=2026-12-01
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from _test.go files: cmd/goobers's live-daemon abort-delegation tests (#2270) and the journal-plane adoption tests that shrink the 30s bound instead of waiting it out (#3828).
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
@@ -135,7 +147,6 @@ github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
-github.com/goobers/goobers/internal/temporaltest.ProjectionQuerier.QueryWorkflow # Adapts the test environment to engine's projectionQuerier shape so ProjectCompletedRun* can run hermetically (#2903); used by test/e2e's engine-start/engine-project round trip.
 github.com/goobers/goobers/internal/testgit.Command # Isolated git command constructor used across repository fixture tests (#1811).
 github.com/goobers/goobers/internal/testgit.AmbientCommand # Explicit ambient git command constructor used by environment-boundary tests (#1811).
 

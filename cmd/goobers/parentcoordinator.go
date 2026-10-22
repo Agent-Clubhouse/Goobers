@@ -13,13 +13,14 @@ import (
 type localPlacement struct {
 	containedParentStages  map[string]bool
 	parentHostCapabilities []string
+	refusal                string
 }
 
 func localPlacements(
 	cfg *instance.Config,
 	set *instance.ConfigSet,
 	machines map[localscheduler.WorkflowIdentity]*workflow.Machine,
-) (map[localscheduler.WorkflowIdentity]localPlacement, error) {
+) map[localscheduler.WorkflowIdentity]localPlacement {
 	placements := make(map[localscheduler.WorkflowIdentity]localPlacement, len(machines))
 	for identity, machine := range machines {
 		if machine == nil || !hasChildParent(machine.Def.Spec) {
@@ -27,11 +28,11 @@ func localPlacements(
 		}
 		placement, err := containedParentSelection(cfg, set, machine)
 		if err != nil {
-			return nil, err
+			placement.refusal = err.Error()
 		}
 		placements[identity] = placement
 	}
-	return placements, nil
+	return placements
 }
 
 // Parent coordination runs the workflow driver locally while the existing

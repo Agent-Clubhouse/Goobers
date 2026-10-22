@@ -882,12 +882,23 @@ func (u *upSession) prepare() int {
 	return u.startServices()
 }
 
+func engineMovedWarning(cfg *instance.Config) string {
+	if cfg == nil || !cfg.EngineProjectionEnabled() {
+		return ""
+	}
+	return "warning: engine: is no longer executed by goobers; run the control plane with goobers-cloud"
+}
+
 func (u *upSession) startServices() int {
 	var err error
+	if warning := engineMovedWarning(u.setup.Config); warning != "" {
+		pln(u.stderr, warning)
+	}
 	printValidationWarnings(u.stdout, u.setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(u.setup.Definitions, u.setup.Config); warning != "" {
 		pln(u.stdout, warning)
 	}
+
 	if err := handleSpansOnlyRunCleanup(u.l, *u.cleanupSpansOnlyRuns, u.stdout); err != nil {
 		pf(u.stderr, "error: clean up spans-only run directories: %v\n", err)
 		return 1

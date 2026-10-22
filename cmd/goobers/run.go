@@ -293,8 +293,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	// run's stale-looking lease, so renewal must run before any
 	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
 	// recover-at-setup behavior.
-	claimRecovery := newOneShotClaimRecovery(l)
-	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -326,10 +325,6 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 			}
 		}
 	}()
-	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 
 	matches := 0
 	gaggle := target.Gaggle

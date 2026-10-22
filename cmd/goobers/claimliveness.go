@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"strings"
-	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -92,73 +90,6 @@ func rebuildClaimRenewalSet(ctx context.Context, l instance.Layout, probe locals
 	}
 	gate.MarkRenewalRebuilt()
 	return probeErr, nil
-}
-
-// oneShotClaimRecovery is DS6 for the standalone `goobers run`/`goobers
-// signal` paths (#3512 review, finding 2). Those paths hold the instance
-// lock, which means the daemon is DOWN — precisely when claim renewals have
-// stopped — so on an engine-configured instance the setup-time reap at
-// buildSchedulerSetup's nil-gate default would fire in exactly the window
-// where a live distributed run's lease looks expired. A gate alone is not
-// enough: ClaimLedger.Claim treats an expired lease as claimable, so the
-// triggered run's own backlog-query could still claim over it. The one-shot
-// sequence is therefore gate (defer the setup reap) + liveness probe + a
-// RENEWAL pass (pushing live holders' ExpiresAt forward) + only then the
-// gated reap — the same machinery the daemon startup uses, before any
-// scheduling/claiming proceeds.
-//
-// A pure mode-1 instance (no `engine:`) gets a nil *oneShotClaimRecovery:
-// no gate, no probe, and the recover-at-setup behavior byte-identical to
-// today's.
-type oneShotClaimRecovery struct {
-	gate *localscheduler.RecoveryGate
-}
-
-// newOneShotClaimRecovery peeks the instance config to decide the shape. An
-// unreadable config yields nil — buildSchedulerSetup will surface the real
-// load error itself.
-func newOneShotClaimRecovery(_ instance.Layout) *oneShotClaimRecovery {
-	return nil
-}
-
-// setupOptions returns the scheduler-setup options deferring the setup-time
-// reap; empty on a mode-1 (nil) recovery.
-func (r *oneShotClaimRecovery) setupOptions() []schedulerSetupOption {
-	if r == nil {
-		return nil
-	}
-	return []schedulerSetupOption{withClaimRecoveryGate(r.gate)}
-}
-
-// finish rebuilds the renewal set from ledger + liveness and then runs the
-// reap the gate deferred. It must run BEFORE the caller schedules or claims
-// anything. A failure is returned as an error the caller must treat as fatal:
-// proceeding without the renewal pass is exactly the reap-a-live-run (or
-// claim-over-a-live-lease) window this type exists to close. A probe
-// degradation alone is NOT fatal — those holders were renewed fail-live — and
-// is reported as a warning on stderr.
-func (r *oneShotClaimRecovery) finish(ctx context.Context, l instance.Layout, setup *schedulerSetup, stderr io.Writer) error {
-	if r == nil {
-		return nil
-	}
-	// nil shared client: a one-shot invocation holds the instance lock, so no
-	// daemon is up to own one — engineLivenessProbe dials and closes its own.
-	probe, closeProbe, err := buildClaimLivenessProbe(setup.RunnerRegistry.RunIDs)
-	if err != nil {
-		return fmt.Errorf("build claim liveness probe: %w", err)
-	}
-	defer closeProbe()
-	probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, probe, r.gate)
-	if renewErr != nil {
-		return fmt.Errorf("rebuild claim renewal set (required before a standalone trigger may recover claims): %w", renewErr)
-	}
-	if probeErr != nil {
-		pf(stderr, "warning: claim liveness probe degraded (renewed fail-live): %v\n", probeErr)
-	}
-	if _, err := recoverClaims(l, setup.InstanceLog, time.Now(), nil, r.gate); err != nil && !isJournaledClaimsLockTimeout(err) {
-		return fmt.Errorf("recover expired claims: %w", err)
-	}
-	return nil
 }
 
 func rebuildStartupClaimRenewalSet(ctx context.Context, l instance.Layout, steady localscheduler.RunLivenessProbe, gate *localscheduler.RecoveryGate) (probeErr, renewErr error) {

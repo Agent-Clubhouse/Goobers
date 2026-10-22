@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,24 @@ import (
 func interventionTestMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workflow.Machine {
 	t.Helper()
 	return interventionTestMachineNamed(t, "intervention", evaluator, nil)
+}
+
+func TestInterventionConfigurationRefusesLeftoverEngineRuns(t *testing.T) {
+	cfg := interventionServiceConfig(
+		instance.Layout{},
+		newInterventionDefinitionRegistry(interventionDefinitionSet{}),
+		newDaemonRunnerRegistry(),
+		nil,
+		nil,
+		nil,
+	)
+	if cfg.EngineDrivenRefusal == nil {
+		t.Fatal("engine-driven refusal is not configured")
+	}
+	err := cfg.EngineDrivenRefusal("legacy-run", "approve")
+	if err == nil || !strings.Contains(err.Error(), "goobers-cloud") {
+		t.Fatalf("engine-driven refusal = %v", err)
+	}
 }
 
 func interventionTestMachineNamed(t *testing.T, name string, evaluator apiv1.EvaluatorKind, approvers []string) *workflow.Machine {

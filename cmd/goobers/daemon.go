@@ -672,10 +672,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 
 	gagglesByName, authGates := indexedGaggles(input.Definitions), newProviderAuthGates(credResolver, input.SharedRegistry, generation)
 
-	placements, err := localPlacements(input.Config, input.Definitions, machines)
-	if err != nil {
-		return nil, err
-	}
+	placements := localPlacements(input.Config, input.Definitions, machines)
 
 	// Checkpoint 3 (#2860, dsl-3.0.md §5): solve every workflow against the
 	// declared inventory; an unsatisfiable RUNNER-DRIVEN workflow is marked
@@ -1701,6 +1698,23 @@ func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*
 	return current, "current-config"
 }
 
+func releaseLegacyEngineRun(log *journal.InstanceLog, identity journal.RunIdentity, release func(string, string)) {
+	if release != nil {
+		release(identity.RunID, identity.Workflow)
+	}
+	if log == nil {
+		return
+	}
+	log.AppendBestEffort(journal.Event{
+		Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"reason": "engine_moved_to_goobers_cloud",
+			"action": "released_local_slot",
+		},
+	})
+}
+
 func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup, progress resumeProgressFunc, recoveryRunDirs ...[]string) (outcome resumeOutcome, err error) {
 	candidates, err := recoveryRunCandidates(ctx, l, recoveryRunDirs...)
 	if err != nil {
@@ -1772,18 +1786,13 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			}
 		}
 
-		// Engine-driven runs are re-attached, never resumed. Every WF-016
-		// check Runner.Resume applies passes on an engine-authored
-		// journal — the pinned definition, digest and inputs are all
-		// there — so without this branch a goobers-api restart during an
-		// engine run walks it a SECOND time in-process while the worker
-		// keeps walking it on Temporal: two drivers, two open-pr /
-		// push-branch / merge-pr attempts, one journal. The daemon's job
-		// here is not to drive the run but to stop pretending it can.
+		// Legacy engine runs are no longer driven by goobers. Release the
+		// reconstructed local concurrency slot and leave the journal untouched.
 		if id.EngineDriven() {
 			outcome.Warned = append(outcome.Warned, id.RunID)
 			outcome.updateBlockingCandidate("skipped", "engine execution removed from goobers")
 			outcome.report(progress)
+			releaseLegacyEngineRun(log, id, release)
 			continue
 		}
 
@@ -1791,6 +1800,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			outcome.updateBlockingCandidate("resolving-generation", "resolve execution generation")
 			outcome.report(progress)
 		}
+
 		runtime, available, err := resolveInterruptedRuntime(ctx, id, interruptedRuntimeInput{
 			runner: rn, registry: runnerRegistry, machines: machines, gooberDigests: gooberDigests,
 			repoRefs: repoRefs, log: log, release: release,

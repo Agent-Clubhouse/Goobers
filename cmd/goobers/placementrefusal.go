@@ -70,6 +70,11 @@ func placementRefusals(
 	decisions := placementDecisions{
 		Refusals: make(map[localscheduler.WorkflowIdentity]string),
 	}
+	for identity, placement := range placements {
+		if placement.refusal != "" {
+			decisions.Refusals[identity] = placement.refusal
+		}
+	}
 	if cfg == nil || (len(cfg.Runners) == 0 && !cfg.HasIsolationMandates() && !cfg.SelfExecutionDenied()) {
 		return decisions, nil
 	}
@@ -79,6 +84,9 @@ func placementRefusals(
 		gaggleSpecs[set.Gaggles[i].Name] = set.Gaggles[i].Spec
 	}
 	for identity, machine := range machines {
+		if placements[identity].refusal != "" {
+			continue
+		}
 		requirements, err := workflow.IsolationStagePlacements(machine.Def, gaggleSpecs[identity.Gaggle], goobers, inventory.ClassMandates, inventory.SelfExecutionDenied)
 		if err != nil {
 			// The machine compiled, so its interpreter resolves; surface the

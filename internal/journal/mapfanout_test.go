@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -108,8 +109,81 @@ func TestMapEventsMatchSchemaAndRequireRoster(t *testing.T) {
 // The map fields join the conformance set: each one distinguishes two
 // otherwise identical events, while the roster source's storage metadata stays
 // excluded exactly as Ref's is.
+func TestConformanceViewProjectsMapFields(t *testing.T) {
+	events := testMapEvents()
+	base := ConformanceView(events)
+	mutations := map[string]func([]Event){
+		"roster item":   func(e []Event) { e[0].MapRoster.Items[1].Item = json.RawMessage(`{"shard":"z"}`) },
+		"roster digest": func(e []Event) { e[0].MapRoster.Items[0].Digest = testDigestB },
+		"roster order": func(e []Event) {
+			e[0].MapRoster.Items[0], e[0].MapRoster.Items[1] = e[0].MapRoster.Items[1], e[0].MapRoster.Items[0]
+		},
+		"source digest":        func(e []Event) { e[0].MapRoster.Source.Digest = testDigestA },
+		"source integrity":     func(e []Event) { e[0].MapRoster.Source.Integrity = apiv1.IntegrityTrusted },
+		"source attempt":       func(e []Event) { e[0].MapRoster.Source.Attempt = 2 },
+		"failure policy":       func(e []Event) { e[0].MapRoster.FailurePolicy = apiv1.BranchFailFast },
+		"item timeout":         func(e []Event) { e[0].MapRoster.ItemTimeoutSeconds = 61 },
+		"concurrency bound":    func(e []Event) { e[0].MapRoster.MaxConcurrent = 3 },
+		"branch item identity": func(e []Event) { e[1].MapItemIdentity = "b" },
+		"branch item digest":   func(e []Event) { e[2].MapItemDigest = testDigestB },
+		"completeness digest":  func(e []Event) { e[3].Completeness[1].MapItemDigest = testDigestA },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			mutated := testMapEvents()
+			mutate(mutated)
+			view := ConformanceView(mutated)
+			same := true
+			for i := range base {
+				same = same && base[i] == view[i] && base[i].String() == view[i].String()
+			}
+			if same {
+				t.Fatalf("ConformanceView did not distinguish a %s-only diff", name)
+			}
+		})
+	}
+	for name, mutate := range map[string]func([]Event){
+		"source visit":      func(e []Event) { e[0].MapRoster.Source.Visit = 9 },
+		"source path":       func(e []Event) { e[0].MapRoster.Source.Path = "artifacts/elsewhere" },
+		"source size":       func(e []Event) { e[0].MapRoster.Source.Size = 1 },
+		"source media type": func(e []Event) { e[0].MapRoster.Source.MediaType = "" },
+		"item spelling":     func(e []Event) { e[0].MapRoster.Items[0].Item = json.RawMessage(`{ "shard" : "a" }`) },
+	} {
+		t.Run("excluded "+name, func(t *testing.T) {
+			mutated := testMapEvents()
+			mutate(mutated)
+			view := ConformanceView(mutated)
+			for i := range base {
+				if base[i] != view[i] {
+					t.Fatalf("a %s-only diff changed the conformance view:\n%s\n%s", name, base[i], view[i])
+				}
+			}
+		})
+	}
+}
+
 // A static parallel's completeness record keeps its historical encoding: the
 // map fields only append when present.
+func TestConformanceStaticCompletenessEncodingUnchanged(t *testing.T) {
+	got := encodeCompleteness([]BranchOutcome{{Branch: 1, Name: "a", Status: BranchSucceeded, Artifacts: 2}})
+	if got != "1:a:succeeded:2" {
+		t.Fatalf("static completeness = %q", got)
+	}
+	ne := projectNormative(Event{Type: EventParallelStarted, Parallel: "fan"})
+	if ne.MapRoster != "" || ne.MapItemIdentity != "" || ne.MapItemDigest != "" {
+		t.Fatalf("static parallel projected map fields: %+v", ne)
+	}
+	// Map columns render only on map events, so every other event keeps its
+	// exact rendering.
+	if strings.Contains(ne.String(), "mapRoster") || strings.Contains(ne.String(), "mapItem") {
+		t.Fatalf("String() renders map columns for a static event: %s", ne.String())
+	}
+	mapped := projectNormative(testMapEvents()[0]).String()
+	if !strings.Contains(mapped, "|mapRoster={") {
+		t.Fatalf("String() omits the roster of a map.started: %s", mapped)
+	}
+}
+
 // Checkpoint cursors inside a live map visit carry each item's identity and
 // digest; map.finished returns the run to a single cursor.
 func TestReconstructBranchCursorsMapVisit(t *testing.T) {
