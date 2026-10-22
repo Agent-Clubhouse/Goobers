@@ -19,7 +19,7 @@ var acquisitionCommands = map[string]*regexp.Regexp{
 	"kubernetes-schemas":      regexp.MustCompile(`(?:\bkubeconform(?:@[^\s]+)?|\$\(KUBECONFORM\))\s+`),
 	"go-modules":              regexp.MustCompile(`(?:\bgo|\$\(GO\))\s+(?:run|test|build|vet|mod|install)\b`),
 	"npm-packages":            regexp.MustCompile(`(?:\bnpm|\$\(NPM\))[^\n]*(?:\bci\b|\binstall\b|\bexec\b)`),
-	"npm-advisories":          regexp.MustCompile(`(?:\bnpm|\$\(NPM\))[^\n]*\saudit(?:\s|$)`),
+	"npm-advisories":          regexp.MustCompile(`(?:(?:\bnpm|\$\(NPM\))[^\n]*\saudit(?:\s|$)|\btest/ci\s+portal-audit\b)`),
 	"playwright-browsers":     regexp.MustCompile(`\bplaywright\s+install\b`),
 	"browser-system-packages": regexp.MustCompile(`\bplaywright\s+(?:install-deps\b|install\b[^\n]*--with-deps)`),
 	"apt-packages":            regexp.MustCompile(`\bapt-get\b`),
