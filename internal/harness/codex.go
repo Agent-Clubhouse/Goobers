@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -598,6 +599,7 @@ func runCodexInvocation(
 	// event before its terminal usage snapshot can be observed.
 	stdout := newCodexJSONLCapture(max(req.MaxTranscriptBytes, DefaultMaxTranscriptBytes))
 	stdout.transcript = transcript
+	stdout.usageSink = req.UsageSink
 	transcript.beginTurn(prompt)
 	result, err := runner.Run(ctx, ProcessRequest{
 		Command:                      argv,
@@ -754,6 +756,7 @@ type codexJSONLCapture struct {
 	parsed     codexParseResult
 	err        error
 	wrote      bool
+	usageSink  func(map[string]float64)
 }
 
 func newCodexJSONLCapture(limit int64) *codexJSONLCapture {
@@ -860,5 +863,14 @@ func (c *codexJSONLCapture) parseEvent(raw []byte) error {
 	if c.transcript != nil {
 		c.transcript.observe(raw)
 	}
-	return parseCodexEvent(raw, &c.parsed)
+	if err := parseCodexEvent(raw, &c.parsed); err != nil {
+		return err
+	}
+	var event struct {
+		Type string `json:"type"`
+	}
+	if c.usageSink != nil && json.Unmarshal(raw, &event) == nil && event.Type == "turn.completed" {
+		c.usageSink(maps.Clone(c.parsed.metrics))
+	}
+	return nil
 }

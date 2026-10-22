@@ -107,6 +107,10 @@ type RunRequest struct {
 	PublicationSchemas []mcpio.PublicationSchema `json:"-"`
 	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
 	MCPReadinessSink func(MCPReadiness) error
+	// UsageSink receives adapter-observed cumulative usage snapshots while the
+	// harness is running. It is host-injected and never serialized or rendered
+	// to the model. Adapters must not populate it from model-authored result data.
+	UsageSink func(map[string]float64) `json:"-"`
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.

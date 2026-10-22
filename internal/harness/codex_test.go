@@ -485,6 +485,7 @@ func TestCodexJSONLCaptureBoundsOneEventWithoutBoundingTheStream(t *testing.T) {
 		if _, err := capture.Write([]byte(`{"type":"turn.started"}` + "\n")); err != nil {
 			t.Fatal(err)
 		}
+
 	}
 	if _, err := capture.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}` + "\n")); err != nil {
 		t.Fatal(err)
@@ -501,6 +502,21 @@ func TestCodexJSONLCaptureBoundsOneEventWithoutBoundingTheStream(t *testing.T) {
 	_, _ = oversized.Write([]byte(`{"type":"item.completed","item":{"text":"this event is deliberately too large"}}`))
 	if _, err := oversized.result(); err == nil || !strings.Contains(err.Error(), "exceeded 32 bytes") {
 		t.Fatalf("oversized result error = %v", err)
+	}
+}
+
+func TestCodexJSONLCaptureReportsIncrementalUsage(t *testing.T) {
+	capture := newCodexJSONLCapture(DefaultMaxTranscriptBytes)
+	var observed map[string]float64
+	capture.usageSink = func(metrics map[string]float64) { observed = metrics }
+	if _, err := capture.Write([]byte(
+		`{"type":"turn.completed","usage":{"input_tokens":8,"output_tokens":3}}` + "\n",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 8 ||
+		observed[telemetry.AttrGenAIUsageOutputTokens] != 3 {
+		t.Fatalf("observed usage = %v", observed)
 	}
 }
 

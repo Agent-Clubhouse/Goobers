@@ -94,6 +94,7 @@ type claudeTerminalCapture struct {
 	line       []byte
 	overflowed bool
 	result     []byte
+	usageSink  func(map[string]float64)
 }
 
 func (c *claudeTerminalCapture) Write(p []byte) (int, error) {
@@ -135,13 +136,31 @@ func (c *claudeTerminalCapture) captureResult(line []byte) {
 		return
 	}
 	line = bytes.TrimSpace(line)
-	var event struct {
-		Type string `json:"type"`
-	}
+	var event claudeStreamMessage
 	if len(line) == 0 || json.Unmarshal(line, &event) != nil || event.Type != "result" {
 		return
 	}
 	c.result = append(c.result[:0], line...)
+	if c.usageSink != nil {
+		c.usageSink(claudeResultUsageMetrics(event))
+	}
+}
+
+func claudeResultUsageMetrics(event claudeStreamMessage) map[string]float64 {
+	aggregate := claudeUsageAccumulator{}
+	modelTotals := claudeUsageAccumulator{}
+	for _, usage := range event.ModelUsage {
+		accumulateClaudeUsage(&modelTotals, usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadInputTokens, usage.CacheCreationInputTokens, nil)
+	}
+	if modelTotals.hasTokens() {
+		accumulateClaudeUsageTotals(&aggregate, modelTotals)
+	} else {
+		accumulateClaudeUsage(&aggregate, event.Usage.InputTokens, event.Usage.OutputTokens,
+			event.Usage.CacheReadInputTokens, event.Usage.CacheCreationInputTokens, nil)
+	}
+	accumulateClaudeUsage(&aggregate, nil, nil, nil, nil, event.TotalCostUSD)
+	return claudeMetrics(aggregate)
 }
 
 func (c *claudeTerminalCapture) Result() []byte {

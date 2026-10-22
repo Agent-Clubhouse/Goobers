@@ -397,6 +397,9 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 }
 
 func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	if req.UsageSink != nil {
+		req.UsageSink(f.metrics)
+	}
 	out, err := f.FakeAdapter.Run(ctx, req)
 	out.Metrics = f.metrics
 	return out, err
