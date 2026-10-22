@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/attemptidentity"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
@@ -94,6 +95,11 @@ type Activities struct {
 	// blob store into one that rejects every legitimate blocked result, and
 	// a run that cannot verify a claim is in no position to refuse it.
 	Spans SpanSource
+	// MapRosters reads journal-bound source artifacts and stores normalized,
+	// content-addressed roster blobs for FreezeMapRoster. It remains nil until
+	// the map controller is wired; reaching the activity without it fails
+	// closed rather than recording an unfrozen roster.
+	MapRosters blobstore.Store
 	// Dispatcher is the mode-3 substrate seam (#3588, dispatchstage.go):
 	// *dispatcher.Dispatcher in production, a fake in tests. Required only by
 	// DispatchStage; a run with no pinned non-self placement never reaches
