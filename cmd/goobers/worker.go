@@ -175,6 +175,16 @@ func configuredWorkerHost(hostPort, namespace, healthAddr string, maxConcurrentA
 	})
 }
 
+func resolveWorkerBlobEndpointCLI(directory string, endpoint *string, instanceBacked bool, stderr io.Writer) int {
+	resolved, err := workerblob.Resolve(directory, *endpoint, os.Getenv("GOOBERS_BLOB_ENDPOINT"), instanceBacked)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	*endpoint = resolved
+	return 0
+}
+
 func runWorker(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -217,12 +227,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	if configCode != 0 {
 		return configCode
 	}
-	resolvedEndpoint, modeErr := workerblob.Resolve(*blobRoot, *blobEndpoint, os.Getenv("GOOBERS_BLOB_ENDPOINT"), *instanceRoot != "" || *configEndpoint != "")
-	if modeErr != nil {
-		pf(stderr, "error: %v\n", modeErr)
-		return 2
+	if code := resolveWorkerBlobEndpointCLI(*blobRoot, blobEndpoint, *instanceRoot != "" || *configEndpoint != "", stderr); code != 0 {
+		return code
 	}
-	*blobEndpoint = resolvedEndpoint
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
 	var recurringStageSweeper stageOrphanSweeper
