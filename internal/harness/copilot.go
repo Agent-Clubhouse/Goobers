@@ -660,9 +660,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
 	c.verifyLauncherUsageOutput(ctx, version, args)
-	if len(authCheckArgs) == 0 && c.ModelCredential == nil && ambientCopilotToken() == "" {
-		warnCopilotStoredAuth()
-	}
+	c.warnUnprobedStoredAuth(authCheckArgs)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
@@ -1213,35 +1211,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err != nil {
 		return Outcome{}, err
 	}
-	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
-	// into the workspace, with the exception of raw debug logs, which get an
-	// invocation-private external directory and a narrow writable grant below.
-	// The remaining runtime state follows ADR-0001. The overrides
-	// happen before the session-id block below so the native transcript path
-	// derives from the confined COPILOT_HOME.
-	var confinement *copilotConfinement
-	if req.Sandbox != nil {
-		confinement, err = prepareCopilotConfinement(req.Workspace)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
-		}
-		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
-		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
-	}
-	if err := seedTrustedLocalCopilotAuthentication(ctx, env); err != nil {
+	env, confinement, cleanupRuntime, err := c.prepareStageRuntime(ctx, req, env)
+	if err != nil {
 		return Outcome{}, err
 	}
-	// A resolved model credential lets the stage discard ambient CLI state
-	// without migrating renewable login files. Stored-login compatibility
-	// keeps the existing home only when no enforced isolation applies.
-	if len(req.MCPServers) == 0 && c.hasCopilotModelCredential(env) {
-		var cleanupRuntime func()
-		env, cleanupRuntime, err = prepareCopilotStageHome(req.Workspace, env)
-		if err != nil {
-			return Outcome{}, err
-		}
-		defer cleanupRuntime()
-	}
+	defer cleanupRuntime()
 	if len(req.MCPServers) > 0 {
 		env, err = prepareCopilotMCP(ctx, req, env)
 		if err != nil {

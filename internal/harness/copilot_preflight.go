@@ -217,3 +217,9 @@ func copilotAuthProbeLooksLikeCredentialFailure(transcript []byte) bool {
 func warnCopilotStoredAuth() {
 	_, _ = fmt.Fprintln(os.Stderr, "warning: harness: copilot-cli: no scoped agent:model credential; preserving the existing Copilot login home with reduced configuration isolation. Configure agent:model with an environment or keychain tokenRef for isolated stages. Enforced sandbox and declared-MCP stages never fall back to this home.")
 }
+
+func (c *CopilotAdapter) warnUnprobedStoredAuth(authCheckArgs []string) {
+	if len(authCheckArgs) == 0 && c.ModelCredential == nil && ambientCopilotToken() == "" {
+		warnCopilotStoredAuth()
+	}
+}

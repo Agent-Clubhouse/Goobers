@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,4 +48,40 @@ func prepareCopilotStageHome(workspace string, env []string) ([]string, func(), 
 		return nil, nil, fmt.Errorf("harness: copilot-cli: prepare private runtime home: %w", err)
 	}
 	return isolatedCopilotHomeEnv(env, home), func() { _ = os.RemoveAll(home) }, nil
+}
+
+// prepareStageRuntime binds sandbox paths and credentialed CLI state before
+// session capture paths are derived. The caller retains the home through repair
+// and telemetry collection, then invokes cleanup on every exit path.
+func (c *CopilotAdapter) prepareStageRuntime(ctx context.Context, req RunRequest, env []string) ([]string, *copilotConfinement, func(), error) {
+	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
+	// into the workspace, with the exception of raw debug logs, which get an
+	// invocation-private external directory and a narrow writable grant below.
+	// The remaining runtime state follows ADR-0001. The overrides
+	// happen before the session-id block below so the native transcript path
+	// derives from the confined COPILOT_HOME.
+	var confinement *copilotConfinement
+	var err error
+	cleanup := func() {}
+	if req.Sandbox != nil {
+		confinement, err = prepareCopilotConfinement(req.Workspace)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
+		}
+		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
+		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
+	}
+	if err := seedTrustedLocalCopilotAuthentication(ctx, env); err != nil {
+		return nil, nil, nil, err
+	}
+	// A resolved model credential lets the stage discard ambient CLI state
+	// without migrating renewable login files. Stored-login compatibility
+	// keeps the existing home only when no enforced isolation applies.
+	if len(req.MCPServers) == 0 && c.hasCopilotModelCredential(env) {
+		env, cleanup, err = prepareCopilotStageHome(req.Workspace, env)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return env, confinement, cleanup, nil
 }
