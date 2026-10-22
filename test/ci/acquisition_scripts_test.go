@@ -117,6 +117,9 @@ func provisioningAcquisitionSites(root string) ([]string, error) {
 				return nil, err
 			}
 			sites = append(sites, found...)
+			for service := range job.Services {
+				sites = append(sites, ".github/workflows/"+workflowFile+"#"+name+"/service "+service+":service-containers")
+			}
 		}
 	}
 	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))

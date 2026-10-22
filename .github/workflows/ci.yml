@@ -14,7 +14,7 @@ name: CI
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
-# dedicated jobs: scope, cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
+# dedicated jobs: scope, cloud-pg, cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
 #   windows-smoke
 #
@@ -148,6 +148,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       profile: ${{ steps.classify.outputs.profile }}
+      cloud: ${{ steps.classify.outputs.cloud }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -202,8 +203,8 @@ jobs:
         id: classify
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.event.merge_group.base_sha || inputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha || github.event.merge_group.head_sha || inputs.head_sha }}
         run: go run ./test/cipolicy classify >> "$GITHUB_OUTPUT"
 
   # DELETED in #3152's wake — e2e, envtest, and coverage were three separate
@@ -831,6 +832,104 @@ jobs:
       - name: Download Temporal CLI
         if: ${{ steps.temporal-cli-cache.outputs.cache-hit != 'true' }}
         run: go run ./internal/temporalcli/cmd/download -output "${RUNNER_TEMP}/temporal-cli/temporal"
+
+  cloud-pg:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-cloud-pg
+      cancel-in-progress: true
+    name: cloud PostgreSQL and Azurite integration
+    needs: [scope, temporal-cli]
+    if: ${{ needs.scope.outputs.cloud == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_DB: goobers
+          POSTGRES_USER: goobers
+          POSTGRES_PASSWORD: goobers-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goobers -d goobers"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+        env:
+          AZURITE_ACCOUNTS: devstoreaccount1:Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
+        ports:
+          - 10000:10000
+    steps:
+      - name: Restart Azurite with telemetry disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          service_id="$(docker ps --quiet --filter publish=10000)"
+          if [ -z "$service_id" ]; then
+            echo "::error::Azurite service container was not started"
+            exit 1
+          fi
+          docker rm --force "$service_id"
+          docker run --detach --rm --name goobers-cloud-azurite-ci --network host \
+            --env AZURITE_ACCOUNTS='devstoreaccount1:Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh' \
+            mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5 \
+            azurite --blobHost 127.0.0.1 --disableTelemetry --skipApiVersionCheck
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Restore Temporal CLI
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+          fail-on-cache-miss: true
+
+      - name: Export Temporal CLI path
+        run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
+
+      - name: Run cloud integration smoke
+        env:
+          TESTDEP_STRICT: "1"
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+          GOOBERS_TEST_AZURITE_ACCOUNT: devstoreaccount1
+          GOOBERS_TEST_AZURITE_KEY: Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
+          GOOBERS_TEST_AZURITE_URL: http://127.0.0.1:10000/devstoreaccount1
+        run: go test -tags=integration,cloudpg -timeout 12m -count=1 ./internal/cloud/...
+
+      - name: Stop Azurite
+        if: always()
+        continue-on-error: true
+        run: docker rm --force goobers-cloud-azurite-ci
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   unit:
     concurrency:
@@ -2354,6 +2453,21 @@ jobs:
           path: ${{ runner.temp }}/goobers-ci-diagnostics
           if-no-files-found: warn
 
+  cancel-on-cloud-pg-failure:
+    name: cancel run on failure (cloud-pg)
+    needs: [cloud-pg]
+    if: ${{ !cancelled() && needs.cloud-pg.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() && github.event_name != 'push' }}
@@ -2380,7 +2494,7 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [scope, cloud-pg, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -2862,7 +2976,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, temporal-cli, unit, unit-linux-coverage, shipped, windows-smoke]
+    needs: [scope, cloud-pg, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, temporal-cli, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -2889,6 +3003,7 @@ jobs:
           ${{
             steps.latest-main.outputs.result == 'true' && (
             needs.scope.result == 'failure' ||
+            needs.cloud-pg.result == 'failure' ||
             needs.cmdgoobers-growth.result == 'failure' ||
             needs.preflight.result == 'failure' ||
             needs.checks.result == 'failure' ||
@@ -2953,6 +3068,8 @@ jobs:
           ${{
             steps.latest-main.outputs.result == 'true' &&
             needs.scope.result == 'success' &&
+            ((needs.scope.outputs.cloud == 'true' && needs.cloud-pg.result == 'success') ||
+             (needs.scope.outputs.cloud == 'false' && needs.cloud-pg.result == 'skipped')) &&
             needs.cmdgoobers-growth.result == 'success' &&
             needs.preflight.result == 'success' &&
             needs.checks.result == 'success' &&
