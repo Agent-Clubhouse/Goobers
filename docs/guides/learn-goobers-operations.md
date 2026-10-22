@@ -212,6 +212,17 @@ Use [Release installation and verification](releases.md) and review
 stored data. A run already in progress remains bound to its pinned workflow
 definition; avoid removing a binary or harness needed to finish it.
 
+### Copilot CLI minimum
+
+Use **Copilot CLI 1.0.52 or newer**. Goobers appends `--sync-session=off`
+on CLI 1.0.103 and newer, or `--no-remote-export` on older releases, to
+Copilot session invocations; CLIs below 1.0.52 fail harness preflight because they
+cannot honor that flag. Upgrade with `copilot update`, then run
+`goobers validate --check-harness <instance-path>` under the service account.
+Custom forwarding launchers must pass the appended flag through. See
+[the launcher contract](harness-launcher-contract.md#session-export-is-always-disabled)
+and [the v0.5 change](https://github.com/Agent-Clubhouse/Goobers/pull/5992).
+
 ## Extend the Instance
 
 ### Add a workflow
