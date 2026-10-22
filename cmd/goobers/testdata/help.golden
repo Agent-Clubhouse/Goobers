@@ -3714,6 +3714,11 @@ Flags:
                              with env override)
   --drain-timeout <dur>      graceful-drain bound after a shutdown signal
                              (default 30s)
+  --health-addr <host:port>  serve process liveness at /healthz and worker
+                             readiness at /readyz (disabled by default)
+  --max-concurrent-activities <n>
+                             maximum activities executed concurrently by
+                             this worker process (default 1000)
   --work-root <dir>          root for stage workspaces (default: a
                              goobers-worker dir under the OS temp dir)
   --daemon-api <url>         daemon write API base URL; wires live journal

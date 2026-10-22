@@ -56,6 +56,7 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 		return reported
 	}
 	finding := workerrouting.Check(h.versioned(), h.cfg.BuildVersion, routing, err)
+	h.routed.Store(finding.Problem == "" && !finding.Draining)
 	switch {
 	case finding.Problem != "":
 		h.logf("goobers worker: error: %s", finding.Problem)

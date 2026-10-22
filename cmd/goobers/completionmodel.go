@@ -348,6 +348,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
+		{name: "health-addr", takesArg: true, desc: "Address serving worker liveness and readiness probes"},
+		{name: "max-concurrent-activities", takesArg: true, desc: "Maximum concurrent activity executions"},
 		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 	},
 	"config-seed": {

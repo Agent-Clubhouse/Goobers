@@ -86,6 +86,9 @@ func TestNewRequiresTaskQueues(t *testing.T) {
 	if _, err := New(Config{TaskQueues: []string{"a", ""}}); err == nil {
 		t.Fatal("New accepted an empty task queue name")
 	}
+	if _, err := New(Config{TaskQueues: []string{"a"}, MaxConcurrentActivities: -1}); err == nil {
+		t.Fatal("New accepted negative activity concurrency")
+	}
 }
 
 // TestRunServesEveryQueueAndDrains covers the core worker mechanics (#632):
@@ -175,9 +178,22 @@ func TestRunServesEveryQueueAndDrains(t *testing.T) {
 		if w.opts.MaxHeartbeatThrottleInterval != 8*time.Second {
 			t.Errorf("queue %q heartbeat throttle = %v, want 8s cancellation cadence", w.queue, w.opts.MaxHeartbeatThrottleInterval)
 		}
+		if w.opts.MaxConcurrentActivityExecutionSize != DefaultMaxConcurrentActivities {
+			t.Errorf("queue %q max concurrent activities = %d, want %d", w.queue, w.opts.MaxConcurrentActivityExecutionSize, DefaultMaxConcurrentActivities)
+		}
 		if len(w.opts.Interceptors) != 1 {
 			t.Errorf("interceptors = %d, want the in-flight tracker", len(w.opts.Interceptors))
 		}
+	}
+}
+
+func TestWorkerOptionsSetConfiguredActivityConcurrency(t *testing.T) {
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}, MaxConcurrentActivities: 7})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := h.workerOptions().MaxConcurrentActivityExecutionSize; got != 7 {
+		t.Fatalf("MaxConcurrentActivityExecutionSize = %d, want 7", got)
 	}
 }
 

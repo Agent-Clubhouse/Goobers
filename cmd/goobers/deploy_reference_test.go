@@ -156,6 +156,43 @@ func TestDeployReferenceWorkerProvidesWritableHarnessHome(t *testing.T) {
 	}
 }
 
+func TestDeployReferenceWorkerHealthAndConcurrency(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if len(deployment.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(deployment.Spec.Template.Spec.Containers))
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assertProbe := func(name string, probe *corev1.Probe, path string) {
+		t.Helper()
+		if probe == nil || probe.HTTPGet == nil {
+			t.Fatalf("%s is not an HTTP probe", name)
+		}
+		if probe.HTTPGet.Path != path || probe.HTTPGet.Port.StrVal != "health" {
+			t.Errorf("%s = %s on %v, want %s on health", name, probe.HTTPGet.Path, probe.HTTPGet.Port, path)
+		}
+	}
+	assertProbe("startupProbe", container.StartupProbe, "/healthz")
+	assertProbe("readinessProbe", container.ReadinessProbe, "/readyz")
+	assertProbe("livenessProbe", container.LivenessProbe, "/healthz")
+
+	args := container.Args
+	healthIndex := slices.Index(args, "--health-addr")
+	if healthIndex < 0 || healthIndex+1 >= len(args) || args[healthIndex+1] != ":8081" {
+		t.Errorf("worker args %v do not expose health on :8081", args)
+	}
+	concurrencyIndex := slices.Index(args, "--max-concurrent-activities")
+	if concurrencyIndex < 0 || concurrencyIndex+1 >= len(args) || args[concurrencyIndex+1] != "4" {
+		t.Errorf("worker args %v do not size activity concurrency to 4", args)
+	}
+}
+
 func TestDeployReferenceBlobPlaneServicePortMatchesDefaultEndpoint(t *testing.T) {
 	wantPort := int32(netpolrender.DefaultBlobEndpoint().Port)
 
