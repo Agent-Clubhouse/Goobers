@@ -9,7 +9,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configgeneration"
-	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -36,12 +35,7 @@ func testQueuedChildFactory(t *testing.T, f childKitFixture, worker *factoryWork
 		Gaggle: f.child.Identity.Gaggle, Workflow: f.writer.identity.Child.ParentWorkflow, RepoRef: f.parent.applied.Gaggles[0].Spec.Project,
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1, MaxRunsPerHour: 3},
 	}}, s.log))
-	triggers := &durableTriggerService{queue: s.childQueue, dispatch: dispatch}
-	core, err := planes.NewDurableTriggerServiceWithQueue(s.childQueue, dispatch, triggers)
-	if err != nil {
-		t.Fatal(err)
-	}
-	triggers.DurableTriggerService = core
+	triggers := durableTriggerServiceForQueue(t, s.childQueue, dispatch)
 	triggers.observeChild = acceptedChildObserver(s.layout)
 	build := func(layout instance.Layout, generation string, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
 		return buildSchedulerDefinitions(schedulerDefinitionsInput{Layout: layout, Config: s.config, Definitions: set, Validation: report,
