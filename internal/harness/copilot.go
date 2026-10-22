@@ -1161,8 +1161,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// bounded by CreateProcess (32,767), cmd.exe (8,191) or ARG_MAX. The
 	// command resolves as a stdio client because npm's PowerShell shim
 	// buffers and re-encodes stdin through $input.
-	// Normalize the prefix before recording the prompt position used by
-	// controlled sessions; removing flags later must not shift that index.
 	baseCommand := withoutCopilotSessionExportControls(resolveStdioHarnessCommand(c.Command))
 	if completionInResponse {
 		configuredArgs := append(append([]string(nil), baseCommand[1:]...), extra...)

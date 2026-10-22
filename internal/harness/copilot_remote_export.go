@@ -45,6 +45,8 @@ func withCopilotNoRemoteExport(argv []string, reported string) []string {
 	return append(withoutCopilotSessionExportControls(argv), copilotSessionExportFlag(reported))
 }
 
+// Normalize the launcher prefix before recording a controlled session's
+// prompt position so removing export flags cannot shift that index.
 func withoutCopilotSessionExportControls(argv []string) []string {
 	filtered := make([]string, 0, len(argv)+1)
 	for i := 0; i < len(argv); i++ {
