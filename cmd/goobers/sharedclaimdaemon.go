@@ -31,7 +31,7 @@ func (s *daemonClaimService) coordinatedLedger(operation string, request httpapi
 // Probe snapshots are hints only. RenewExpected compares the exact persisted
 // incarnation again under the claims lock and cannot resurrect a release.
 func renewCoordinatedLiveClaims(ctx context.Context, layout instance.Layout, entries []localscheduler.ClaimEntry, live map[string]bool, lease time.Duration, resolver claimsclient.SharedClaimResolver) ([]localscheduler.ClaimEntry, error) {
-	service := &daemonClaimService{layout: layout, shared: resolver}
+	service := newBareDaemonClaimService(layout, nil, resolver)
 	client, err := service.coordinatedLedger(claimLockOperationRenewal, httpapi.ClaimRequest{})
 	if err != nil {
 		return nil, err

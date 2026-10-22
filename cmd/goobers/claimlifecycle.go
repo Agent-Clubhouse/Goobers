@@ -245,7 +245,7 @@ func recoverClaimsWithResolver(
 	if err != nil {
 		return released, err
 	}
-	service := &daemonClaimService{layout: l, shared: resolver, log: log}
+	service := newBareDaemonClaimService(l, log, resolver)
 	client, err := service.coordinatedLedger(claimLockOperationRecovery, httpapi.ClaimRequest{})
 	if err != nil {
 		return released, err

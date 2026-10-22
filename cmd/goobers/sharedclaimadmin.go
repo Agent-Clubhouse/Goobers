@@ -13,7 +13,7 @@ import (
 // Called outside the claims lock. Revocation itself precedes provider setup or
 // waiting for a pending transition; only its exact persisted owner is cleaned.
 func forceReleaseClaim(ctx context.Context, layout instance.Layout, log *journal.InstanceLog, resolver claimsclient.SharedClaimResolver, entry localscheduler.ClaimEntry, actor string) error {
-	service := &daemonClaimService{layout: layout, log: log, shared: resolver}
+	service := newBareDaemonClaimService(layout, log, resolver)
 	client, err := service.coordinatedLedger(claimLockOperationAdminRelease, httpapi.ClaimRequest{RunID: entry.RunID, Gaggle: entry.Gaggle})
 	if err != nil {
 		return err

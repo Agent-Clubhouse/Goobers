@@ -646,13 +646,6 @@ func (s *TriggerService) SchedulerReady() bool {
 	return s.schedulerReady == nil || s.schedulerReady()
 }
 
-// ReservationCount reports bounded dedupe storage sizes.
-func (s *TriggerService) ReservationCount() (seen, ordered int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.seen), len(s.order)
-}
-
 // LifecycleContext returns the attached daemon context, falling back to the
 // caller's when the plane was never attached.
 func (s *TriggerService) LifecycleContext(requestCtx context.Context) context.Context {
@@ -746,7 +739,7 @@ func (s *TriggerService) dispatchTrigger(ctx context.Context, dispatch WorkflowT
 	requestID := strings.TrimSpace(request.RequestID)
 	request.RequestID = requestID
 	if requestID != "" {
-		if runID, duplicate, err := s.Reserve(request); err != nil {
+		if runID, duplicate, err := s.reserve(request); err != nil {
 			return httpapi.TriggerResponse{}, err
 		} else if duplicate {
 			return httpapi.TriggerResponse{RunID: runID, Duplicate: true}, nil
@@ -788,23 +781,23 @@ func (s *TriggerService) dispatchTrigger(ctx context.Context, dispatch WorkflowT
 	}
 	if err != nil {
 		if requestID != "" {
-			s.ReleaseReservation(requestID)
+			s.releaseReservation(requestID)
 		}
 		return httpapi.TriggerResponse{}, triggerPlaneError(err)
 	}
 	if requestID != "" {
-		s.CompleteReservation(requestID, runID)
+		s.completeReservation(requestID, runID)
 	}
 	return httpapi.TriggerResponse{RunID: runID}, nil
 }
 
-// Reserve atomically claims requestID for the calling delivery. The winner
+// reserve atomically claims requestID for the calling delivery. The winner
 // (duplicate=false) must completeReservation with the minted run, or
 // releaseReservation on mint failure so the delivery stays retryable. A
 // duplicate reports the recorded run — empty while the winning delivery is
 // still minting, which is still authoritatively "this delivery was already
 // accepted".
-func (s *TriggerService) Reserve(request httpapi.TriggerRequest) (runID string, duplicate bool, err error) {
+func (s *TriggerService) reserve(request httpapi.TriggerRequest) (runID string, duplicate bool, err error) {
 	requestID := request.RequestID
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -838,9 +831,9 @@ func (s *TriggerService) makeReservationSpace() bool {
 	return false
 }
 
-// CompleteReservation fixes the minted run onto the reservation (unless the
+// completeReservation fixes the minted run onto the reservation (unless the
 // bounded record already evicted it).
-func (s *TriggerService) CompleteReservation(requestID, runID string) {
+func (s *TriggerService) completeReservation(requestID, runID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if reservation, exists := s.seen[requestID]; exists {
@@ -850,10 +843,10 @@ func (s *TriggerService) CompleteReservation(requestID, runID string) {
 	}
 }
 
-// ReleaseReservation drops a reservation whose mint failed, keeping the
+// releaseReservation drops a reservation whose mint failed, keeping the
 // RequestID retryable. Only an unfulfilled reservation is dropped: a recorded
 // mint (or an entry the bounded record replaced) is left alone.
-func (s *TriggerService) ReleaseReservation(requestID string) {
+func (s *TriggerService) releaseReservation(requestID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if reservation, exists := s.seen[requestID]; !exists || reservation.completed {

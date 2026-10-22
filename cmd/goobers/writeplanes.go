@@ -54,6 +54,12 @@ func newDaemonClaimService(layout instance.Layout, log *journal.InstanceLog, rec
 	return service
 }
 
+func newBareDaemonClaimService(layout instance.Layout, log *journal.InstanceLog, shared claimsclient.SharedClaimResolver) *daemonClaimService {
+	service := &daemonClaimService{layout: layout, log: log, shared: shared}
+	service.ClaimService = planes.NewClaimService(service, log, nil)
+	return service
+}
+
 func (s *daemonClaimService) close() {
 	if s.stopMergeHook != nil {
 		s.stopMergeHook()

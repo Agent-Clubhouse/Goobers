@@ -1,4 +1,4 @@
-package main
+package planes
 
 import (
 	"context"
@@ -14,13 +14,99 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/claimrelease"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
-func newClaimServiceFixture(t *testing.T) (*daemonClaimService, instance.Layout) {
+const testDefaultClaimLease = 30 * time.Minute
+
+type testClaimBackend struct {
+	layout instance.Layout
+	log    *journal.InstanceLog
+	mu     sync.Mutex
+}
+
+func (b *testClaimBackend) ledgerPath() string {
+	return filepath.Join(b.layout.SchedulerDir(), testClaimLedgerFile)
+}
+func (b *testClaimBackend) options() []localscheduler.LedgerOption {
+	if b.log == nil {
+		return nil
+	}
+	return []localscheduler.LedgerOption{localscheduler.WithInstanceLog(b.log)}
+}
+func (b *testClaimBackend) DefaultClaimLease() time.Duration { return testDefaultClaimLease }
+func (b *testClaimBackend) IsMergeLockRequest(httpapi.ClaimRequest) bool {
+	return false
+}
+func (b *testClaimBackend) IsJournaledClaimsLockTimeout(error) bool { return false }
+func (b *testClaimBackend) WithLedger(_ string, _ httpapi.ClaimRequest, fn func(*localscheduler.ClaimLedger) error) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ledger, err := localscheduler.OpenClaimLedger(b.ledgerPath(), b.options()...)
+	if err != nil {
+		return err
+	}
+	return fn(ledger)
+}
+func (b *testClaimBackend) CoordinatedLedger(_ string, _ httpapi.ClaimRequest) (*claimsclient.File, error) {
+	return claimsclient.NewFile(claimsclient.FileConfig{
+		LedgerPath: b.ledgerPath(), Options: b.options(),
+		Lock: func(_ string, fn func() error) error {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			return fn()
+		},
+	})
+}
+func (b *testClaimBackend) AcquireMergeLock(context.Context, httpapi.ClaimRequest, time.Duration) (httpapi.ClaimResponse, error) {
+	return httpapi.ClaimResponse{}, errors.New("merge lock is not configured in the plane fixture")
+}
+func (b *testClaimBackend) RenewMergeLock(context.Context, httpapi.ClaimRequest, time.Duration) (httpapi.ClaimResponse, error) {
+	return httpapi.ClaimResponse{}, errors.New("merge lock is not configured in the plane fixture")
+}
+func (b *testClaimBackend) RenewSharedClaim(context.Context, httpapi.ClaimRequest, localscheduler.ClaimEntry, time.Duration) (httpapi.ClaimResponse, error) {
+	return httpapi.ClaimResponse{}, errors.New("shared claims are not configured in the plane fixture")
+}
+func (b *testClaimBackend) CurrentAdmissionResponse(ctx context.Context, client *claimsclient.File, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	listing, err := client.ListNamespace(ctx, request.Gaggle, request.Provider)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	entry, held := listing.Lookup(ClaimKey(request))
+	if !held || entry.RunID != request.RunID || entry.ReleasePending || entry.SharedAdmissionPending {
+		return httpapi.ClaimResponse{Ok: false, Holder: entry.RunID}, nil
+	}
+	return httpapi.ClaimResponse{Ok: true, ExpiresAt: &entry.ExpiresAt}, nil
+}
+func (b *testClaimBackend) ReleaseProviderClaim(context.Context, httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	return httpapi.ClaimResponse{}, errors.New("provider cleanup is not configured in the plane fixture")
+}
+func (b *testClaimBackend) ExecutionClaimVisibility(context.Context, string) (string, error) {
+	return "", errors.New("execution visibility is not configured in the plane fixture")
+}
+func (b *testClaimBackend) ExecutionClaimSnapshot(context.Context, string, string) (httpapi.ClaimListResponse, error) {
+	return httpapi.ClaimListResponse{}, errors.New("execution snapshots are not configured in the plane fixture")
+}
+func (b *testClaimBackend) RunBelongsToGaggle(gaggle, runID string) bool {
+	if !PlainPathElement(gaggle) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(b.layout.ForGaggle(gaggle).RunsDir(), runID, "run.yaml"))
+	return err == nil
+}
+
+type testClaimService struct {
+	*ClaimService
+	backend *testClaimBackend
+}
+
+func (s *testClaimService) ledgerPath() string { return s.backend.ledgerPath() }
+
+func newClaimServiceFixture(t *testing.T) (*testClaimService, instance.Layout) {
 	t.Helper()
 	layout := instance.NewLayout(t.TempDir())
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
@@ -31,13 +117,8 @@ func newClaimServiceFixture(t *testing.T) (*daemonClaimService, instance.Layout)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = instanceLog.Close() })
-	service := newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(layout, instanceLog, now, nil, nil)
-	})
-	if err := service.initializeMergeLock(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(service.close)
+	backend := &testClaimBackend{layout: layout, log: instanceLog}
+	service := &testClaimService{ClaimService: NewClaimService(backend, instanceLog, nil), backend: backend}
 	return service, layout
 }
 
@@ -271,9 +352,9 @@ func TestClaimsPlaneLeaseBounds(t *testing.T) {
 	service, _ := newClaimServiceFixture(t)
 	ctx := context.Background()
 
-	// The API cap tracks the effective default lease: 4× DefaultClaimLease.
-	if want := int(4 * DefaultClaimLease / time.Second); httpapi.MaxClaimLeaseSeconds != want {
-		t.Fatalf("MaxClaimLeaseSeconds = %d, want %d (4× DefaultClaimLease)", httpapi.MaxClaimLeaseSeconds, want)
+	// The API cap tracks the effective default lease: 4× testDefaultClaimLease.
+	if want := int(4 * testDefaultClaimLease / time.Second); httpapi.MaxClaimLeaseSeconds != want {
+		t.Fatalf("MaxClaimLeaseSeconds = %d, want %d (4× testDefaultClaimLease)", httpapi.MaxClaimLeaseSeconds, want)
 	}
 
 	// At the cap: accepted, and the expiry honors the requested lease.
@@ -309,7 +390,7 @@ func TestClaimsPlaneLeaseBounds(t *testing.T) {
 		}
 	}
 
-	// The default path is unchanged: zero takes DefaultClaimLease.
+	// The default path is unchanged: zero takes testDefaultClaimLease.
 	def := claimPlaneRequest("run-default")
 	def.ItemID = "43"
 	before = time.Now()
@@ -317,8 +398,8 @@ func TestClaimsPlaneLeaseBounds(t *testing.T) {
 	if err != nil || !response.Ok || response.ExpiresAt == nil {
 		t.Fatalf("default acquire = %+v, err = %v", response, err)
 	}
-	if d := response.ExpiresAt.Sub(before); d < DefaultClaimLease-time.Minute || d > DefaultClaimLease+time.Minute {
-		t.Fatalf("default lease = %v, want ~%v", d, DefaultClaimLease)
+	if d := response.ExpiresAt.Sub(before); d < testDefaultClaimLease-time.Minute || d > testDefaultClaimLease+time.Minute {
+		t.Fatalf("default lease = %v, want ~%v", d, testDefaultClaimLease)
 	}
 }
 
@@ -397,7 +478,7 @@ func TestTriggerPlaneConcurrentDuplicateDeliveriesMintOnce(t *testing.T) {
 	releaseBarrier := func() { releaseOnce.Do(func() { close(barrier.release) }) }
 	defer releaseBarrier()
 
-	service := newDaemonTriggerService()
+	service := NewTriggerService()
 	service.AttachDispatcher(barrier)
 	ctx := context.Background()
 	request := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "delivery-race"}
@@ -449,7 +530,7 @@ func TestTriggerPlaneConcurrentDuplicateDeliveriesMintOnce(t *testing.T) {
 // same request retried once ready mints normally.
 func TestTriggerPlaneRefusesNewDispatchUntilSchedulerReady(t *testing.T) {
 	stub := &stubTriggerer{}
-	service := newDaemonTriggerService()
+	service := NewTriggerService()
 	service.AttachDispatcher(stub)
 	schedulerReady := false
 	service.WithSchedulerReadyGate(func() bool { return schedulerReady })
@@ -486,7 +567,7 @@ func TestTriggerPlaneRefusesNewDispatchUntilSchedulerReady(t *testing.T) {
 // exactly as it always did.
 func TestTriggerPlaneNilSchedulerReadyGateAdmitsAsBefore(t *testing.T) {
 	stub := &stubTriggerer{}
-	service := newDaemonTriggerService()
+	service := NewTriggerService()
 	service.AttachDispatcher(stub)
 	if _, err := service.Trigger(context.Background(), httpapi.TriggerRequest{Workflow: "implementation", RequestID: "no-gate"}); err != nil {
 		t.Fatalf("Trigger with no scheduler-ready gate wired: %v", err)
@@ -498,7 +579,7 @@ func TestTriggerPlaneNilSchedulerReadyGateAdmitsAsBefore(t *testing.T) {
 // a second one, and a failed delivery does not poison its RequestID.
 func TestTriggerPlaneDedupesRedeliveredRequests(t *testing.T) {
 	stub := &stubTriggerer{}
-	service := newDaemonTriggerService()
+	service := NewTriggerService()
 	service.AttachDispatcher(stub)
 	ctx := context.Background()
 
@@ -537,7 +618,7 @@ func TestTriggerPlaneRejectsReboundRequestIdentity(t *testing.T) {
 	for _, field := range []string{"workflow", "gaggle", "force", "source", "actor", "pod"} {
 		t.Run(field, func(t *testing.T) {
 			stub := &stubTriggerer{}
-			service := newDaemonTriggerService()
+			service := NewTriggerService()
 			service.AttachDispatcher(stub)
 			service.WithGaggleContainment(func(string, string) bool { return true })
 			original := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "delivery", Actor: "operator-a"}
@@ -573,42 +654,42 @@ func TestTriggerPlaneRejectsReboundRequestIdentity(t *testing.T) {
 }
 
 func TestTriggerPlaneCapacityNeverEvictsInFlightReservation(t *testing.T) {
-	service := newDaemonTriggerService()
+	service := NewTriggerService()
 	request := func(id string) httpapi.TriggerRequest {
 		return httpapi.TriggerRequest{Workflow: "implementation", RequestID: id}
 	}
-	for i := range maxTriggerDedupeRecords {
-		if _, duplicate, err := service.Reserve(request(strconv.Itoa(i))); err != nil || duplicate {
+	for i := range MaxTriggerDedupeRecords {
+		if _, duplicate, err := service.reserve(request(strconv.Itoa(i))); err != nil || duplicate {
 			t.Fatalf("reserve %d: duplicate=%t err=%v", i, duplicate, err)
 		}
 	}
-	if _, _, err := service.Reserve(request("overflow")); err == nil {
+	if _, _, err := service.reserve(request("overflow")); err == nil {
 		t.Fatal("full queue accepted another in-flight request")
 	}
-	if _, duplicate, err := service.Reserve(request("0")); err != nil || !duplicate {
+	if _, duplicate, err := service.reserve(request("0")); err != nil || !duplicate {
 		t.Fatalf("oldest active reservation evicted: %t %v", duplicate, err)
 	}
 	// A successful priority dispatch can legitimately have no immediate run
 	// ID. It is completed nonetheless, unlike an in-flight reservation.
-	service.CompleteReservation("1", "")
-	service.ReleaseReservation("1")
-	if _, duplicate, err := service.Reserve(request("1")); err != nil || !duplicate {
+	service.completeReservation("1", "")
+	service.releaseReservation("1")
+	if _, duplicate, err := service.reserve(request("1")); err != nil || !duplicate {
 		t.Fatal("completed empty response was confused with failed admission")
 	}
-	if _, duplicate, err := service.Reserve(request("overflow")); err != nil || duplicate {
+	if _, duplicate, err := service.reserve(request("overflow")); err != nil || duplicate {
 		t.Fatalf("completed entry did not free bounded capacity: %t %v", duplicate, err)
 	}
-	if seen, ordered := service.ReservationCount(); seen != maxTriggerDedupeRecords || ordered != maxTriggerDedupeRecords {
+	if len(service.seen) != MaxTriggerDedupeRecords || len(service.order) != MaxTriggerDedupeRecords {
 		t.Fatal("reservation storage exceeded its bound")
 	}
-	if _, duplicate, err := service.Reserve(request("0")); err != nil || !duplicate {
+	if _, duplicate, err := service.reserve(request("0")); err != nil || !duplicate {
 		t.Fatal("capacity reclamation evicted an active request")
 	}
 }
 
 func TestTriggerPlanePassesForceOnlyToManualDispatch(t *testing.T) {
 	stub := &stubTriggerer{}
-	service := newDaemonTriggerService()
+	service := NewTriggerService()
 	service.AttachDispatcher(stub)
 
 	response, err := service.Trigger(context.Background(), httpapi.TriggerRequest{
@@ -638,7 +719,7 @@ func TestTriggerPlanePassesForceOnlyToManualDispatch(t *testing.T) {
 
 func TestTriggerPlaneMapsSchedulerRefusals(t *testing.T) {
 	stub := &stubTriggerer{}
-	service := newDaemonTriggerService()
+	service := NewTriggerService()
 	service.AttachDispatcher(stub)
 	ctx := context.Background()
 
@@ -689,7 +770,7 @@ func TestTriggerPlaneMapsSchedulerRefusals(t *testing.T) {
 func TestClaimsPlaneListScopesAndContainment(t *testing.T) {
 	service, layout := newClaimServiceFixture(t)
 	ctx := context.Background()
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), testClaimLedgerFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +910,7 @@ func TestClaimsPlaneReleaseAllForRun(t *testing.T) {
 		t.Fatal("half a namespace was accepted")
 	}
 
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), testClaimLedgerFile))
 	if err != nil {
 		t.Fatal(err)
 	}

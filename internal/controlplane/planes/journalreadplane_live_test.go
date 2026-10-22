@@ -1,4 +1,4 @@
-package main
+package planes
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
@@ -100,8 +100,8 @@ func TestDaemonEscalationCandidatesUsesLiveReadModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = spy
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(spy)
 	ask := journalclient.EscalationCandidatesRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}
 	response, err := service.EscalationCandidates(context.Background(), ask)
 	if err != nil {
@@ -129,8 +129,8 @@ func TestDaemonEscalationCandidatesUsesLiveReadModel(t *testing.T) {
 // candidates, in the same order.
 func TestDaemonEscalationCandidatesParityWithFileCrossRun(t *testing.T) {
 	layout := seedLiveEscalationFixture(t)
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = liveEscalationReads(t, layout)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(liveEscalationReads(t, layout))
 	ask := journalclient.EscalationCandidatesRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}
 
 	live, err := service.EscalationCandidates(context.Background(), ask)
@@ -155,7 +155,7 @@ func TestDaemonEscalationCandidatesParityWithFileCrossRun(t *testing.T) {
 
 func TestDaemonEscalationCandidatesRefusesWithoutLiveReads(t *testing.T) {
 	layout := seedLiveEscalationFixture(t)
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	if _, err := service.EscalationCandidates(context.Background(), journalclient.EscalationCandidatesRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}); err == nil {
 		t.Fatal("daemon served escalation candidates without a live read model (silent offline fallback)")
 	}
@@ -226,9 +226,9 @@ func seedConflictFixture(t *testing.T) instance.Layout {
 func TestDaemonConflictTouchesUsesLiveReadModel(t *testing.T) {
 	layout := seedConflictFixture(t)
 	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = spy
-	service.definitions = crossRunTestDefinitions(t)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(spy)
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	since := time.Now().UTC().Add(-24 * time.Hour)
 	ask := journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}
 
@@ -277,9 +277,9 @@ func TestDaemonUnpushedWorkUsesLiveReadModel(t *testing.T) {
 	claimItemForRun(t, layout, "42", "asking-run")
 
 	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = spy
-	service.definitions = crossRunTestDefinitions(t)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(spy)
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	ask := journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}
 
 	for _, window := range []time.Duration{-96 * time.Hour, -24 * time.Hour, time.Hour} {
@@ -343,8 +343,8 @@ func TestDaemonWindowedRoutesRefuseWithoutLiveReadsOrWindow(t *testing.T) {
 	layout := seedConflictFixture(t)
 	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior", "42", "diff", false)
 	claimItemForRun(t, layout, "42", "asking-run")
-	service := newDaemonRunJournalService(layout, nil)
-	service.definitions = crossRunTestDefinitions(t)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	since := time.Now().Add(-time.Hour)
 
 	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
@@ -353,15 +353,15 @@ func TestDaemonWindowedRoutesRefuseWithoutLiveReadsOrWindow(t *testing.T) {
 	if _, err := service.UnpushedWork(context.Background(), journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
 		t.Fatal("unpushed work served without a live read model (silent offline fallback)")
 	}
-	service.reads = liveEscalationReads(t, layout)
-	service.definitions = nil
+	service.AttachReads(liveEscalationReads(t, layout))
+	service.AttachWorkflowResolver(nil)
 	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
 		t.Fatal("conflict touches served without workflow definitions (unfiltered scan)")
 	}
 	if _, err := service.UnpushedWork(context.Background(), journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
 		t.Fatal("unpushed work served without workflow definitions (unfiltered scan)")
 	}
-	service.definitions = crossRunTestDefinitions(t)
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}); err == nil {
 		t.Fatal("an unbounded conflict-history read was served")
 	}
@@ -380,7 +380,7 @@ func TestDaemonRunPhaseAndBranchOwnershipReadOnlyTheTargetJournal(t *testing.T) 
 	seedBranchOwningRun(t, layout, crossRunTestGaggle, "owner", "implementation", "goobers/implementation/owner")
 	seedBranchOwningRun(t, layout, crossRunTestGaggle, "bystander", "implementation", "goobers/implementation/bystander")
 	corruptJournal(t, layout, crossRunTestGaggle, "bystander")
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	ctx := context.Background()
 	file := journalclient.NewFileCrossRun(layout)
 
@@ -407,16 +407,28 @@ func TestDaemonRunPhaseAndBranchOwnershipReadOnlyTheTargetJournal(t *testing.T) 
 	}
 }
 
+func nonRetryableEscalationEvents(code, message string) []journal.Event {
+	return []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+			Status: string(apiv1.ResultFailure),
+			Error:  &journal.ErrorDetail{Code: code, Message: message},
+		},
+	}
+}
+
 // crossRunTestDefinitions is the daemon's definition registry for the windowed
 // routes' workflow filter (#6968): "implementation" can both strand a diff
 // (writable agentic task) and record a base-sync conflict (syncBase task);
 // "remediation" can only strand a diff; "merge-review" and "researcher" can
 // neither (an agentic gate and a read-only agentic task).
-func crossRunTestDefinitions(t *testing.T) *interventionDefinitionRegistry {
+func crossRunTestDefinitions(t *testing.T) func(string, func(apiv1.WorkflowSpec) bool) ([]string, error) {
 	t.Helper()
 	agentic := func(name string, mode apiv1.WorkspaceMode, next string) apiv1.Task {
 		return apiv1.Task{Name: name, Type: apiv1.TaskAgentic, Goober: "dev", Goal: name, Workspace: mode, Next: next}
 	}
+
 	deterministic := func(name string, syncBase bool) apiv1.Task {
 		return apiv1.Task{
 			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
@@ -435,17 +447,19 @@ func crossRunTestDefinitions(t *testing.T) *interventionDefinitionRegistry {
 			}},
 		},
 	}
-	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(specs))
-	for name, spec := range specs {
-		spec.Gaggle = crossRunTestGaggle
-		spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}
-		machine, err := workflow.Compile(workflow.Definition{Name: name, Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
-		if err != nil {
-			t.Fatalf("compile %s: %v", name, err)
+	return func(gaggle string, can func(apiv1.WorkflowSpec) bool) ([]string, error) {
+		if gaggle != crossRunTestGaggle {
+			return nil, nil
 		}
-		machines[localscheduler.WorkflowIdentity{Gaggle: crossRunTestGaggle, Workflow: name}] = machine
+		var names []string
+		for name, spec := range specs {
+			if can(spec) {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		return names, nil
 	}
-	return newInterventionDefinitionRegistry(interventionDefinitionSet{machines: machines})
 }
 
 // seedBystanderRuns writes a schema-valid, projectable run of workflow whose
@@ -486,9 +500,9 @@ func TestDaemonWindowedRoutesConsiderOnlyContributingWorkflows(t *testing.T) {
 	}
 
 	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = spy
-	service.definitions = crossRunTestDefinitions(t)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(spy)
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	for _, id := range bystanders {
 		corruptJournal(t, layout, crossRunTestGaggle, id)
 	}
@@ -524,9 +538,9 @@ func TestDaemonWindowedRoutesParityWithBystanderWorkflows(t *testing.T) {
 	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-1", "42", "diff for item 42", false)
 	seedBystanderRuns(t, layout, "merge-review", 25)
 	claimItemForRun(t, layout, "42", "asking-run")
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = liveEscalationReads(t, layout)
-	service.definitions = crossRunTestDefinitions(t)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(liveEscalationReads(t, layout))
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	file := journalclient.NewFileCrossRun(layout)
 	ctx := context.Background()
 	for _, window := range []time.Duration{-96 * time.Hour, -24 * time.Hour, time.Hour} {

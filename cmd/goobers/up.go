@@ -1155,7 +1155,7 @@ func (u *upSession) configureAPI() int {
 	// Local parent admission requires the existing explicit workflow preview opt-in.
 	u.credentialPlane.installTrustedLocalChildren(u.liveJournals)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
-	journalService.reads = u.reads
+	journalService.AttachReads(u.reads)
 	journalService.definitions = u.setup.Interventions
 	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
