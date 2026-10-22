@@ -58,7 +58,7 @@ func TestDurableTriggerReconcilesPublishedRunAfterLostDispatchAcknowledgment(t *
 			s = acceptedService(t, path, dispatch)
 			s.observe = acceptedTriggerObserver(layout)
 			recorder := &dispatchContextRecorder{}
-			dispatch.dispatch = recorder
+			dispatch.AttachDispatcher(recorder)
 			if err := s.Drain(t.Context()); err != nil {
 				t.Fatal(err)
 			}

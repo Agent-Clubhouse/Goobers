@@ -24,7 +24,7 @@ func TestDurableTriggerDrainPrunesChildCustodyWithoutScheduler(t *testing.T) {
 	s.pruneBudget = time.Minute
 	acceptedAt := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	now := acceptedAt
-	dispatch.now = func() time.Time { return now }
+	dispatch.SetClock(func() time.Time { return now })
 	var children []triggerqueue.ChildRecord
 	for n := range 105 {
 		identity := triggerqueue.ChildIdentity{

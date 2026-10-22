@@ -173,8 +173,8 @@ func TestDelegatedTransferPinsDeadlinesAndSelectors(t *testing.T) {
 			dir := t.TempDir()
 			service := acceptedService(t, filepath.Join(t.TempDir(), "queue.db"), newDaemonTriggerService())
 			now := time.Now().UTC()
-			service.dispatch.now = func() time.Time { return now }
-			service.ordinary = &startintent.Service{Queue: service.queue, Now: service.dispatch.now, Capture: func(context.Context, startintent.Request) (startintent.Target, func(), error) {
+			service.dispatch.SetClock(func() time.Time { return now })
+			service.ordinary = &startintent.Service{Queue: service.queue, Now: service.dispatch.Clock(), Capture: func(context.Context, startintent.Request) (startintent.Target, func(), error) {
 				return startintent.Target{Workflow: "work", Gaggle: "own", ConfigGeneration: "captured", WorkflowDigest: "workflow", GooberDigest: "goober"}, func() {}, nil
 			}}
 			req := triggerRequest{Workflow: "work", Gaggle: "own", CreatedAt: now}

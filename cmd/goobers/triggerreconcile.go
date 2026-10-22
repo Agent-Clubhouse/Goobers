@@ -77,7 +77,7 @@ func (s *durableTriggerService) reconcileObservation(ctx context.Context, record
 	var err error
 	switch {
 	case observed:
-		err = s.queue.Finish(ctx, record.ID, triggerqueue.Dispatched, strings.TrimPrefix(record.ID, "trigger-"), "", s.dispatch.now())
+		err = s.queue.Finish(ctx, record.ID, triggerqueue.Dispatched, strings.TrimPrefix(record.ID, "trigger-"), "", s.dispatch.Now())
 	case s.bootUncertain[record.ID]:
 		// The daemon owns up.lock and captured this set before its first drain.
 		// Both starter backends publish a journal before accepted execution;

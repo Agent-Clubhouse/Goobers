@@ -253,6 +253,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/controlplane/planes",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted request-plane behavior remains covered by the Linux race shards and cmd/goobers parity tests; no Windows-specific seam is introduced."
+    },
+    {
       "package": "internal/credentialoverride",
       "coverage": "none",
       "category": "not-selected",
