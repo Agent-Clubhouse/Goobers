@@ -54,6 +54,21 @@ themselves, so no cell can drift from the YAML.
 
 <!-- END GENERATED WORKFLOW INVENTORY -->
 
+## CI branch coverage
+
+`ci.yml` validates pull requests targeting `main` or any `release/**` branch,
+including nested release branch names, and runs landed-commit validation on
+pushes to those branches. Merge queues use the same branch filters.
+`ci-retarget.yml` dispatches fresh merge validation when a pull request is
+retargeted onto either branch family; title/body-only edits do not restart CI.
+Default-branch cache warmers and main-failure incident tracking remain main-only.
+
+Workflow triggers do not enforce merge protection. Each release branch must
+contain these workflow changes (backport them to existing release branches),
+and repository branch rulesets must require
+`make ci (fmt-check · vet · build · test · lint)` for `refs/heads/release/**/*`
+as well as `refs/heads/main`.
+
 ## Enabling a dormant workflow
 
 1. Confirm the blocking issue is closed and its prerequisites exist (fixtures,

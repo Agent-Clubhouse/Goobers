@@ -58,10 +58,10 @@ name: CI
 # Other pull requests, merge groups, and manual dispatches run the complete matrix.
 # For a frozen candidate, dispatch on a dedicated, never-updated validation
 # branch; its ref-scoped concurrency cannot be cancelled by pushes to main.
-# A push to main also validates the exact landed SHA with checks, lint, the Linux
-# race shards, the
-# darwin cross-compile gate, shipped-workflow contracts, and the Windows gate.
-# Failures on the landed tree are automatically escalated as critical issues.
+# A push to main or release/** also validates the exact landed SHA with checks,
+# lint, the Linux race shards, the darwin cross-compile gate, shipped-workflow
+# contracts, and the Windows gate.
+# Failures on main's landed tree are automatically escalated as critical issues.
 #
 # Every workflow in this directory — including the dormant ones, whose
 # schedules are commented out and which therefore enforce nothing — is
@@ -70,8 +70,8 @@ name: CI
 on:
   workflow_dispatch:
     # Set together, and only, by ci-retarget.yml when a pull request is
-    # retargeted onto main (#6360, #7017): every job then checks out GitHub's
-    # merge of the PR head onto its new base (merge_sha), base-aware checks
+    # retargeted onto main or release/** (#6360, #7017): every job checks out
+    # GitHub's merge of the PR head onto its new base (merge_sha), base-aware checks
     # read base_sha/head_sha, and validation jobs share the PR's cancellation
     # groups.
     # scope verifies the four values before anything relies on them. Left
@@ -98,9 +98,9 @@ on:
         type: string
         default: ''
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     # No `edited`: any CI run, even one whose jobs all skip, adds a newer CI
     # check suite to the head SHA, and a PR whose newest CI suite came from a
     # title/body edit stays BLOCKED despite a green required check (#7017;
@@ -111,7 +111,7 @@ on:
     # in design-delivery.yml. Pinned by TestCIRetargetValidatesNewMergeNotMetadataEdits.
     types: [opened, synchronize, reopened]
   merge_group:
-    branches: [main]
+    branches: [main, 'release/**']
 
 # Least privilege: CI only needs to read the checkout.
 permissions:
@@ -157,9 +157,10 @@ jobs:
           persist-credentials: false
 
       # A retarget dispatch must validate exactly the PR head merged onto a
-      # main commit: the checks attach to the dispatched commit, so it must be
-      # head_sha, and merge_sha must be the two-parent merge of base_sha and
-      # head_sha. The values are all empty (plain dispatch) or all checked.
+      # main or release-branch commit: the checks attach to the dispatched
+      # commit, so it must be head_sha, and merge_sha must be the two-parent
+      # merge of base_sha and head_sha. The values are all empty (plain dispatch)
+      # or all checked.
       - name: Verify retarget dispatch inputs
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -186,8 +187,9 @@ jobs:
             echo "::error::merge_sha $MERGE_SHA is not the checked-out merge of $BASE_SHA and $HEAD_SHA"
             exit 1
           fi
-          if ! git merge-base --is-ancestor "$BASE_SHA" refs/remotes/origin/main; then
-            echo "::error::base_sha $BASE_SHA is not a commit of main"
+          bases="$(git for-each-ref --contains="$BASE_SHA" --format='%(refname)' refs/remotes/origin/main refs/remotes/origin/release/)"
+          if [ -z "$bases" ]; then
+            echo "::error::base_sha $BASE_SHA is not a commit of main or a release branch"
             exit 1
           fi
 
@@ -1621,7 +1623,7 @@ jobs:
       group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-dependency-cache-warm
       cancel-in-progress: true
     name: warm declared-dependency apt cache
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
@@ -1819,7 +1821,7 @@ jobs:
       group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-race-build-cache-warm
       cancel-in-progress: true
     name: warm race build cache
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
@@ -2861,7 +2863,7 @@ jobs:
   # reporting whether main is red right now (#4228).
   escalate-main-failure:
     name: escalate failed main validation
-    if: ${{ always() && github.event_name == 'push' }}
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, temporal-cli, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60

@@ -1,7 +1,7 @@
 name: CI base retarget
 
 # Validates a pull request against its new base when it is retargeted onto
-# main (#6360), without CI ever triggering on `edited` (#7017).
+# main or release/** (#6360), without CI ever triggering on `edited` (#7017).
 #
 # A retarget is a `pull_request: edited` event with `changes.base`. ci.yml does
 # not trigger on `edited`: every CI run, even one whose jobs all skip, adds a
@@ -27,7 +27,7 @@ name: CI base retarget
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     types: [edited]
 
 permissions:
@@ -67,10 +67,13 @@ jobs:
           # poll until it is the merge of the current base and head.
           while :; do
             pr=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")
-            if [ "$(jq -r .base.ref <<<"$pr")" != main ]; then
-              echo "pull request no longer targets main; nothing to validate"
-              exit 0
-            fi
+            case "$(jq -r .base.ref <<<"$pr")" in
+              main|release/?*) ;;
+              *)
+                echo "pull request no longer targets main or a release branch; nothing to validate"
+                exit 0
+                ;;
+            esac
             base=$(jq -r .base.sha <<<"$pr")
             head=$(jq -r .head.sha <<<"$pr")
             merge=$(jq -r '.merge_commit_sha // ""' <<<"$pr")

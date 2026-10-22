@@ -119,6 +119,72 @@ func TestCIRetargetValidatesNewMergeNotMetadataEdits(t *testing.T) {
 	}
 }
 
+func TestCIBranchCoverage(t *testing.T) {
+	t.Parallel()
+	ci := loadCIWorkflow(t)
+	retarget := loadWorkflowFile(t, "ci-retarget.yml")
+	for _, workflow := range []struct {
+		name   string
+		config ciWorkflow
+		events []string
+	}{
+		{"ci.yml", ci, []string{"push", "pull_request", "merge_group"}},
+		{"ci-retarget.yml", retarget, []string{"pull_request"}},
+	} {
+		for _, event := range workflow.events {
+			var trigger struct {
+				Branches []string `yaml:"branches"`
+			}
+			node, ok := workflow.config.On[event]
+			if !ok {
+				t.Fatalf("%s lacks %s trigger", workflow.name, event)
+			}
+			if err := node.Decode(&trigger); err != nil {
+				t.Fatalf("decode %s %s: %v", workflow.name, event, err)
+			}
+			if !slices.Equal(trigger.Branches, []string{"main", "release/**"}) {
+				t.Errorf("%s %s branches = %v, want main and release/** (including nested release branches)", workflow.name, event, trigger.Branches)
+			}
+		}
+	}
+	for _, branch := range []string{"main", "release/v0.5", "release/maintenance/v0.5"} {
+		t.Run(branch, func(t *testing.T) {
+			for _, fx := range ciEventFixtures() {
+				if fx.event != "pull_request" {
+					continue
+				}
+				fx.payload["pull_request"].(map[string]any)["base"].(map[string]any)["ref"] = branch
+				ctx := map[string]any{"github": map[string]any{
+					"event_name": fx.event, "event": fx.payload, "workflow": "CI",
+					"ref": "refs/pull/1/merge",
+				}}
+				if fx.ci {
+					assertFullGateRun(t, ci, ctx, "")
+				}
+			}
+			for _, event := range []string{"push", "merge_group"} {
+				ctx := map[string]any{"github": map[string]any{
+					"event_name": event, "ref": "refs/heads/" + branch,
+				}}
+				ran := simulateCIJobs(t, ci, ctx)
+				for _, id := range []string{"scope", "preflight", "checks", "lint", "unit", "darwin-build", "shipped", "windows-smoke"} {
+					if !ran[id] {
+						t.Errorf("%s on %s skips validation job %s", event, branch, id)
+					}
+				}
+				if event == "merge_group" && !ran["required-ci"] {
+					t.Error("merge queue must report the required CI gate")
+				}
+				for _, id := range []string{"dependency-cache-warm", raceCacheWarmJob, "escalate-main-failure"} {
+					if want := event == "push" && branch == "main"; ran[id] != want {
+						t.Errorf("%s on %s runs main-only job %s = %v, want %v", event, branch, id, ran[id], want)
+					}
+				}
+			}
+		})
+	}
+}
+
 // assertFullGateRun checks that ctx's ci.yml jobs join the PR's cancelling
 // groups, run every required job under the pinned name, and
 // checks out wantRef ("" is the event's own commit) in every job it runs.
@@ -160,7 +226,8 @@ func assertRetargetRunReadsNewBase(t *testing.T, w ciWorkflow, ctx map[string]an
 		`"$HEAD_SHA" != "$GITHUB_SHA"`,
 		`"$(git rev-parse HEAD)" != "$MERGE_SHA"`,
 		`"$(git rev-list --parents -n 1 "$MERGE_SHA")" != "$MERGE_SHA $BASE_SHA $HEAD_SHA"`,
-		`git merge-base --is-ancestor "$BASE_SHA" refs/remotes/origin/main`,
+		`git for-each-ref --contains="$BASE_SHA" --format='%(refname)' refs/remotes/origin/main refs/remotes/origin/release/`,
+		`if [ -z "$bases" ]; then`,
 	} {
 		if !strings.Contains(verify.Run, want) {
 			t.Errorf("retarget input verification lacks %s", want)
@@ -253,6 +320,7 @@ func assertRetargetWorkflow(t *testing.T, w ciWorkflow) ciJob {
 	}
 	for _, want := range []string{
 		`"$HEAD_REPO" != "$GH_REPO"`,
+		`main|release/?*) ;;`,
 		`= "$base $head" ]`,
 		`gh workflow run ci.yml --ref "$HEAD_REF"`,
 		`-f pr_number="$PR_NUMBER" -f base_sha="$base" -f head_sha="$head" -f merge_sha="$merge"`,

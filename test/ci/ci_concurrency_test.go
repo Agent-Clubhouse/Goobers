@@ -134,7 +134,7 @@ func TestMainEscalationRetainsLatestCommitSignal(t *testing.T) {
 				isLatest = "true"
 			}
 			ctx := map[string]any{
-				"github": map[string]any{"event_name": "push"}, "needs": needs,
+				"github": map[string]any{"event_name": "push", "ref": "refs/heads/main"}, "needs": needs,
 				"steps": map[string]any{"latest-main": map[string]any{"outputs": map[string]any{"result": isLatest}}},
 			}
 			if !truthy(evalExpr(t, trimExpr(job.If), ctx, result == "success")) {
