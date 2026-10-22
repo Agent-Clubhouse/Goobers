@@ -13,6 +13,7 @@ import (
 )
 
 func TestClientFetchesConfigByDigest(t *testing.T) {
+	const instanceID = "0123456789abcdef0123456789abcdef"
 	root := t.TempDir()
 	config := filepath.Join(root, "config")
 	writeTestFile(t, filepath.Join(config, "manifest.yaml"), "generation: one")
@@ -27,26 +28,27 @@ func TestClientFetchesConfigByDigest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		requested := request.URL.Query().Get("digest")
 		if requested == "" {
-			_, _ = fmt.Fprintf(w, `{"digest":%q}`, plane.Current())
+			_, _ = fmt.Fprintf(w, `{"digest":%q,"instanceID":%q}`, plane.Current(), instanceID)
 			return
 		}
-		file, err := plane.Open(requested)
+		file, size, err := plane.Open(requested)
 		if err != nil {
 			http.NotFound(w, request)
 			return
 		}
 		defer func() { _ = file.Close() }()
 		w.Header().Set(apicontract.DigestHeader, requested)
+		w.Header().Set("Content-Length", fmt.Sprint(size))
 		_, _ = io.Copy(w, file)
 	}))
 	t.Cleanup(server.Close)
 
 	client := Client{BaseURL: server.URL, HTTP: server.Client()}
 	current, err := client.Current(t.Context())
-	if err != nil || current != digest {
+	if err != nil || current.Digest != digest || current.InstanceID != instanceID {
 		t.Fatalf("Current = %q, %v", current, err)
 	}
-	directory, err := client.Materialize(t.Context(), filepath.Join(root, "cache"), current, func(path string) error {
+	directory, err := client.Materialize(t.Context(), filepath.Join(root, "cache"), current.Digest, func(path string) error {
 		_, err := os.Stat(filepath.Join(path, "config", "manifest.yaml"))
 		return err
 	})

@@ -82,6 +82,8 @@ type workerSeams struct {
 	// FAILS CLOSED with a named refusal rather than silently resolving the
 	// current tree. Guarded by mu.
 	history []*workerConfigSnapshot
+	// retired holds evicted snapshots still leased by an in-flight kit build.
+	retired []*workerConfigSnapshot
 	// historyDepth bounds history. Zero disables retention entirely, which
 	// makes any pin the current tree cannot satisfy an immediate refusal.
 	historyDepth int
@@ -113,6 +115,7 @@ type workerSeams struct {
 // cache in place, which is what lets an in-flight attempt keep the kit it was
 // handed while the next attempt gets the new tree.
 type workerConfigSnapshot struct {
+	users         atomic.Int64
 	configDir     string
 	generation    string
 	digest        string

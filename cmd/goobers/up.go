@@ -1214,9 +1214,7 @@ func (u *upSession) configureAPI() int {
 	// pods at all can always answer which gaggle one of its own runs is in.
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(u.l)))
 	// Publish the applied config tree and sanitized worker snapshot.
-	if err := u.configureWorkerConfigPlane(); err != nil {
-		return reportDaemonStartupError(u.stderr, "publish initial worker configuration", err)
-	}
+	u.configureWorkerConfigPlane()
 	if u.apiHandlerOpts, err = appendWorkerDivergenceHandlerOption(u.apiHandlerOpts, u.setup); err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize worker config-divergence reporting", err)
 	}

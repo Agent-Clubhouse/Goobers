@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -12,8 +13,8 @@ import (
 
 // ConfigSnapshotService serves sanitized worker configuration by digest.
 type ConfigSnapshotService interface {
-	Current() string
-	Open(string) (io.ReadCloser, error)
+	Current() apicontract.ConfigSnapshotCurrent
+	Open(string) (io.ReadCloser, int64, error)
 }
 
 // WithConfigSnapshotService enables the worker-only configuration plane.
@@ -40,15 +41,15 @@ func registerConfigSnapshotRoute(router *Router, service ConfigSnapshotService) 
 		}
 		digest := strings.TrimSpace(request.URL.Query().Get("digest"))
 		if digest == "" {
-			digest = service.Current()
-			if digest == "" {
+			current := service.Current()
+			if current.Digest == "" || current.InstanceID == "" {
 				writeError(w, http.StatusServiceUnavailable, "config_snapshot_unavailable", "worker configuration is not published yet")
 				return
 			}
-			writeJSON(w, http.StatusOK, ConfigDigest{Digest: digest})
+			writeJSON(w, http.StatusOK, current)
 			return
 		}
-		file, err := service.Open(digest)
+		file, size, err := service.Open(digest)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "config_snapshot_not_found", "worker configuration snapshot was not found")
 			return
@@ -56,6 +57,7 @@ func registerConfigSnapshotRoute(router *Router, service ConfigSnapshotService) 
 		defer func() { _ = file.Close() }()
 		w.Header().Set("Content-Type", "application/zip")
 		w.Header().Set(apicontract.DigestHeader, digest)
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(w, &contextReader{ctx: request.Context(), reader: file})
 	})

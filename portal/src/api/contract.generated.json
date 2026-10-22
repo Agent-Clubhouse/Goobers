@@ -74,8 +74,8 @@
       "path": "/api/v1/config/snapshot",
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
-      "cost": "bounded",
-      "budgetMs": 8000,
+      "cost": "blob",
+      "budgetMs": 60000,
       "streaming": false,
       "recoverySafe": false
     },

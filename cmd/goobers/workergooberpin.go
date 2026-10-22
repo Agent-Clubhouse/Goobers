@@ -347,8 +347,10 @@ func loadSnapshotGooberInputs(configDir string, set *instance.ConfigSet) (map[st
 // one no attempt should still be arriving for. The evicted tree's kits become
 // unreachable and are collected; a pin for one refuses by name.
 func (w *workerSeams) retainSupersededLocked(superseded *workerConfigSnapshot) {
+	previous := append([]*workerConfigSnapshot(nil), w.history...)
 	if superseded == nil || w.historyDepth <= 0 {
 		w.history = nil
+		w.retainActiveRetiredLocked(append(previous, superseded))
 		return
 	}
 	retained := make([]*workerConfigSnapshot, 0, w.historyDepth)
@@ -366,6 +368,24 @@ func (w *workerSeams) retainSupersededLocked(superseded *workerConfigSnapshot) {
 		retained = append(retained, entry)
 	}
 	w.history = retained
+	evicted := append(previous, superseded)
+	w.retainActiveRetiredLocked(evicted)
+}
+
+func (w *workerSeams) retainActiveRetiredLocked(candidates []*workerConfigSnapshot) {
+	active := w.retired[:0]
+	for _, snapshot := range w.retired {
+		if snapshot.users.Load() > 0 {
+			active = append(active, snapshot)
+		}
+	}
+	for _, snapshot := range candidates {
+		if snapshot == nil || snapshot.users.Load() == 0 || slices.Contains(w.history, snapshot) || slices.Contains(active, snapshot) {
+			continue
+		}
+		active = append(active, snapshot)
+	}
+	w.retired = active
 }
 
 // forPinnedGaggle resolves the seams an attempt pinned to gooberDigest is
@@ -472,15 +492,15 @@ func (w *workerSeams) seamsFromLocked(snapshot *workerConfigSnapshot, gaggle str
 // resolution forPinnedGaggle performs, for the callers that need the TREE
 // rather than the built executors (the mode-3 agentic kit writer, which
 // publishes one goober's instructions to a stage pod).
-func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerConfigSnapshot, error) {
+func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerConfigSnapshot, func(), error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	current, err := w.currentSnapshotLocked()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if pin == "" {
-		return current, nil
+		return acquireWorkerSnapshot(current)
 	}
 	candidates := make([]*workerConfigSnapshot, 0, 1+len(w.history))
 	candidates = append(candidates, current)
@@ -501,8 +521,16 @@ func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerC
 		}
 		if digest == pin {
 			w.clearGooberPinRefusalLocked(gaggle, workflowName)
-			return snapshot, nil
+			return acquireWorkerSnapshot(snapshot)
 		}
 	}
-	return nil, w.refuseGooberPinLocked(gaggle, workflowName, pin, served, unverifiable)
+	return nil, nil, w.refuseGooberPinLocked(gaggle, workflowName, pin, served, unverifiable)
+}
+
+func acquireWorkerSnapshot(snapshot *workerConfigSnapshot) (*workerConfigSnapshot, func(), error) {
+	snapshot.users.Add(1)
+	var once sync.Once
+	return snapshot, func() {
+		once.Do(func() { snapshot.users.Add(-1) })
+	}, nil
 }

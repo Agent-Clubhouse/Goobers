@@ -43,7 +43,7 @@ func NewPlane(root string) (*Plane, error) {
 	data, err := os.ReadFile(filepath.Join(root, planePointerName))
 	if err == nil {
 		digest := strings.TrimSpace(string(data))
-		file, err := p.Open(digest)
+		file, _, err := p.Open(digest)
 		if err != nil {
 			return nil, fmt.Errorf("open current config snapshot: %w", err)
 		}
@@ -112,34 +112,21 @@ func (p *Plane) PublishValidated(ctx context.Context, configDir string, instance
 }
 
 // Open opens one exact snapshot after validating its digest spelling and file.
-func (p *Plane) Open(digest string) (io.ReadCloser, error) {
+func (p *Plane) Open(digest string) (io.ReadCloser, int64, error) {
 	path, err := p.path(digest)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	file, err := safeopen.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxSnapshotBytes+(64<<20) {
 		_ = file.Close()
-		return nil, errors.New("invalid config snapshot file")
+		return nil, 0, errors.New("invalid config snapshot file")
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, io.LimitReader(file, MaxSnapshotBytes+(64<<20)+1)); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	if "sha256:"+hex.EncodeToString(hash.Sum(nil)) != digest {
-		_ = file.Close()
-		return nil, errors.New("config snapshot digest verification failed")
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return file, nil
+	return file, info.Size(), nil
 }
 
 // ExtractFile validates and extracts a downloaded snapshot.

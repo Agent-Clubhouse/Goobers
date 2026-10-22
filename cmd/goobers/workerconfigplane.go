@@ -10,17 +10,21 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/retryutil"
 	"github.com/goobers/goobers/internal/workerblob"
 )
 
 type workerConfigPlaneSetup struct {
-	client configmirror.Client
-	root   string
-	digest string
+	client       configmirror.Client
+	root         string
+	snapshotRoot string
+	digest       string
+	instanceID   string
 }
 
 type workerConfigPlaneUsageError struct{ error }
@@ -37,11 +41,15 @@ func prepareWorkerConfigPlane(endpoint, keyFile, workRoot string) (workerConfigP
 		return workerConfigPlaneSetup{}, workerConfigPlaneUsageError{err}
 	}
 	client := configmirror.Client{BaseURL: endpoint, TokenSource: tokenSource}
-	root, digest, err := fetchInitialWorkerConfig(context.Background(), client, filepath.Join(workRoot, "config-snapshots"))
+	snapshotRoot, current, err := fetchInitialWorkerConfig(context.Background(), client, filepath.Join(workRoot, "config-snapshots"))
 	if err != nil {
 		return workerConfigPlaneSetup{}, fmt.Errorf("fetch worker config: %w", err)
 	}
-	return workerConfigPlaneSetup{client: client, root: root, digest: digest}, nil
+	root, err := prepareStableWorkerRoot(context.Background(), workRoot, snapshotRoot, current.InstanceID)
+	if err != nil {
+		return workerConfigPlaneSetup{}, fmt.Errorf("prepare stable worker root: %w", err)
+	}
+	return workerConfigPlaneSetup{client: client, root: root, snapshotRoot: snapshotRoot, digest: current.Digest, instanceID: current.InstanceID}, nil
 }
 
 func prepareWorkerConfigPlaneCLI(endpoint, keyFile, workRoot string, instanceRoot *string, stderr io.Writer) (workerConfigPlaneSetup, int) {
@@ -94,21 +102,37 @@ func workerConfigPlaneTokenSource(keyFile string) (func() (string, error), error
 	}, nil
 }
 
-func fetchInitialWorkerConfig(ctx context.Context, client configmirror.Client, cacheRoot string) (string, string, error) {
-	var root, digest string
+func fetchInitialWorkerConfig(ctx context.Context, client configmirror.Client, cacheRoot string) (string, apicontract.ConfigSnapshotCurrent, error) {
+	var root string
+	var current apicontract.ConfigSnapshotCurrent
 	err := retryutil.Until(ctx, workerblob.DefaultReadyWait, retryutil.Policy{Base: 500 * time.Millisecond, Max: 15 * time.Second}, func(ctx context.Context) (bool, error) {
 		var err error
-		digest, err = client.Current(ctx)
+		current, err = client.Current(ctx)
 		if err != nil {
 			return configmirror.Retryable(err), err
 		}
-		root, err = client.Materialize(ctx, cacheRoot, digest, validateSeededWorkerConfig)
+		root, err = client.Materialize(ctx, cacheRoot, current.Digest, validateSeededWorkerConfig)
 		return configmirror.Retryable(err), err
 	})
-	return root, digest, err
+	return root, current, err
 }
 
-func startWorkerConfigPlaneWatcher(parent context.Context, seams *workerSeams, client configmirror.Client, cacheRoot, current string, interval time.Duration) *workerConfigPlaneWatcher {
+func prepareStableWorkerRoot(ctx context.Context, workRoot, snapshotRoot, instanceID string) (string, error) {
+	root := filepath.Join(workRoot, "instance")
+	if err := instance.InstallRootIdentity(ctx, root, instanceID); err != nil {
+		return "", err
+	}
+	document, err := os.ReadFile(instance.NewLayout(snapshotRoot).ConfigFile())
+	if err != nil {
+		return "", err
+	}
+	if err := durability.WriteFileAtomic(instance.NewLayout(root).ConfigFile(), document, 0o600); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func startWorkerConfigPlaneWatcher(parent context.Context, seams *workerSeams, client configmirror.Client, cacheRoot, current, instanceID string, interval time.Duration) *workerConfigPlaneWatcher {
 	ctx, cancel := context.WithCancel(parent)
 	watcher := &workerConfigPlaneWatcher{cancel: cancel, done: make(chan struct{})}
 	go func() {
@@ -121,26 +145,30 @@ func startWorkerConfigPlaneWatcher(parent context.Context, seams *workerSeams, c
 				return
 			case <-ticker.C:
 			}
-			digest, err := client.Current(ctx)
+			next, err := client.Current(ctx)
 			if err != nil {
 				seams.log("worker config plane: current digest unavailable: %v", err)
 				continue
 			}
-			if digest == current {
+			if next.InstanceID != instanceID {
+				seams.log("worker config plane: refusing instance identity change from %s to %s", instanceID, next.InstanceID)
 				continue
 			}
-			root, err := client.Materialize(ctx, cacheRoot, digest, validateSeededWorkerConfig)
+			if next.Digest == current {
+				continue
+			}
+			root, err := client.Materialize(ctx, cacheRoot, next.Digest, validateSeededWorkerConfig)
 			if err != nil {
-				seams.log("worker config plane: fetch %s: %v", digest, err)
+				seams.log("worker config plane: fetch %s: %v", next.Digest, err)
 				continue
 			}
 			outcome, err := seams.reloadFromLayout(instance.NewLayout(root))
 			if err != nil {
-				seams.log("worker config plane: reject %s: %v", digest, err)
+				seams.log("worker config plane: reject %s: %v", next.Digest, err)
 				continue
 			}
-			current = digest
-			seams.log("worker config plane: applied %s (tree %s); retaining %d superseded tree(s)", digest, outcome.Digest, len(outcome.RetainedDigests))
+			current = next.Digest
+			seams.log("worker config plane: applied %s (tree %s); retaining %d superseded tree(s)", next.Digest, outcome.Digest, len(outcome.RetainedDigests))
 			if err := pruneWorkerConfigCache(cacheRoot, seams.retainedConfigRoots()); err != nil {
 				seams.log("worker config plane: prune cache: %v", err)
 			}
@@ -159,11 +187,22 @@ func (w *workerConfigPlaneWatcher) Stop() {
 
 type workerConfigUpdateWatcher interface{ Stop() }
 
-func configureWorkerConfigSeams(seams *workerSeams, historyDepth int, plane workerConfigPlaneSetup) {
+func configureWorkerConfigSeams(seams *workerSeams, historyDepth int, plane workerConfigPlaneSetup) error {
 	seams.historyDepth = historyDepth
 	if plane.root != "" {
 		seams.configPlane = &plane.client
+		_, err := seams.reloadFromLayout(instance.NewLayout(plane.snapshotRoot))
+		return err
 	}
+	return nil
+}
+
+func configureWorkerConfigSeamsCLI(seams *workerSeams, historyDepth int, plane workerConfigPlaneSetup, stderr io.Writer) int {
+	if err := configureWorkerConfigSeams(seams, historyDepth, plane); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: initialize worker config snapshot: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func startWorkerConfigUpdates(seams *workerSeams, plane workerConfigPlaneSetup, workRoot string, interval time.Duration) (workerConfigUpdateWatcher, string) {
@@ -171,7 +210,7 @@ func startWorkerConfigUpdates(seams *workerSeams, plane workerConfigPlaneSetup, 
 		return nil, "goobers worker: config reload disabled; seams stay pinned to the boot-time config tree"
 	}
 	if plane.root != "" {
-		watcher := startWorkerConfigPlaneWatcher(context.Background(), seams, plane.client, filepath.Join(workRoot, "config-snapshots"), plane.digest, interval)
+		watcher := startWorkerConfigPlaneWatcher(context.Background(), seams, plane.client, filepath.Join(workRoot, "config-snapshots"), plane.digest, plane.instanceID, interval)
 		return watcher, fmt.Sprintf("goobers worker: config plane refresh every %s; retaining %d superseded config tree(s)", interval, seams.historyDepth)
 	}
 	watcher := startWorkerConfigWatcher(context.Background(), seams, interval)
@@ -182,11 +221,15 @@ func startWorkerConfigUpdates(seams *workerSeams, plane workerConfigPlaneSetup, 
 func (w *workerSeams) retainedConfigRoots() map[string]bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	roots := make(map[string]bool, len(w.history)+1)
+	w.retainActiveRetiredLocked(nil)
+	roots := make(map[string]bool, len(w.history)+len(w.retired)+1)
 	if current := w.snapshot.Load(); current != nil {
 		roots[filepath.Dir(current.configDir)] = true
 	}
 	for _, snapshot := range w.history {
+		roots[filepath.Dir(snapshot.configDir)] = true
+	}
+	for _, snapshot := range w.retired {
 		roots[filepath.Dir(snapshot.configDir)] = true
 	}
 	return roots

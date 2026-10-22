@@ -14,6 +14,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/configmirror"
@@ -23,49 +24,49 @@ import (
 type daemonWorkerConfigService struct {
 	snapshots   *configmirror.Plane
 	generations *blobstore.Dir
+	instanceID  string
 }
 
-func (s daemonWorkerConfigService) Current() string { return s.snapshots.Current() }
+func (s daemonWorkerConfigService) Current() apicontract.ConfigSnapshotCurrent {
+	return apicontract.ConfigSnapshotCurrent{Digest: s.snapshots.Current(), InstanceID: s.instanceID}
+}
 
-func (s daemonWorkerConfigService) Open(digest string) (io.ReadCloser, error) {
-	file, err := s.snapshots.Open(digest)
+func (s daemonWorkerConfigService) Open(digest string) (io.ReadCloser, int64, error) {
+	file, size, err := s.snapshots.Open(digest)
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
-		return file, err
+		return file, size, err
 	}
 	data, err := s.generations.GetBounded(context.Background(), digest, configgeneration.MaxArchiveBytes)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return io.NopCloser(bytes.NewReader(data)), nil
+	return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 }
 
-func (u *upSession) configureWorkerConfigPlane() error {
+func (u *upSession) configureWorkerConfigPlane() {
 	u.configDigests = newConfigDigestPublisher(u.setup.ConfigDigest)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithConfigDigest(u.configDigests.Get))
 	if strings.TrimSpace(u.setup.Config.API.PodTokenKeyFile) == "" {
-		return nil
+		return
 	}
 	plane, err := configmirror.NewPlane(filepath.Join(u.l.SchedulerDir(), "worker-config-plane"))
 	if err != nil {
-		return err
+		log.Printf("worker config plane unavailable (will retry after restart): %v", err)
+		return
 	}
-	reloader := &configReloader{
-		layout:          u.l,
-		setup:           u.setup,
-		appliedDigest:   u.setup.ConfigDigest,
-		configSnapshots: plane,
-	}
-	if err := reloader.publishConfigMirror(u.ctx); err != nil {
-		return err
-	}
-	u.configSnapshots = plane
 	generations, err := blobstore.NewDir(filepath.Join(u.l.BlobStoreDir(), "config-generations"))
 	if err != nil {
-		return err
+		log.Printf("worker config generation plane unavailable (will retry after restart): %v", err)
+		return
 	}
-	service := daemonWorkerConfigService{snapshots: plane, generations: generations}
+	instanceID, err := u.l.ReadIdentity()
+	if err != nil {
+		log.Printf("worker config plane identity unavailable (will retry after restart): %v", err)
+		return
+	}
+	u.configSnapshots = plane
+	service := daemonWorkerConfigService{snapshots: plane, generations: generations, instanceID: instanceID}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithConfigSnapshotService(service))
-	return nil
 }
 
 // publishConfigMirror runs under the reload mutex. Comparing the extracted

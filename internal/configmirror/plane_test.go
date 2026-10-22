@@ -28,11 +28,11 @@ func TestPlanePublishesDigestAndRetainsThreeSupersededSnapshots(t *testing.T) {
 			t.Fatalf("current = %q, want %q", plane.Current(), digest)
 		}
 	}
-	if _, err := plane.Open(digests[0]); !os.IsNotExist(err) {
+	if _, _, err := plane.Open(digests[0]); !os.IsNotExist(err) {
 		t.Fatalf("oldest snapshot retained: %v", err)
 	}
 	for _, digest := range digests[1:] {
-		file, err := plane.Open(digest)
+		file, _, err := plane.Open(digest)
 		if err != nil {
 			t.Fatalf("open retained %s: %v", digest, err)
 		}

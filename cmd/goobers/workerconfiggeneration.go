@@ -28,8 +28,7 @@ func (w *workerSeams) executionArchiveStore() (*blobstore.Dir, error) {
 
 func (w *workerSeams) snapshotForInvocation(ctx context.Context, env apiv1.InvocationEnvelope) (*workerConfigSnapshot, func(), error) {
 	if env.ConfigGeneration == "" {
-		snapshot, err := w.snapshotForPin(env.Gaggle, env.WorkflowID, env.GooberDigest)
-		return snapshot, func() {}, err
+		return w.snapshotForPin(env.Gaggle, env.WorkflowID, env.GooberDigest)
 	}
 	if !instance.ValidIdentity(env.InstanceID) {
 		return nil, nil, fmt.Errorf("worker: pinned config generation requires a valid instance identity")
@@ -44,6 +43,10 @@ func (w *workerSeams) snapshotForInvocation(ctx context.Context, env apiv1.Invoc
 	}
 	if archive.InstanceID != env.InstanceID {
 		return nil, nil, fmt.Errorf("worker: config generation belongs to a different instance")
+	}
+	rootIdentity, err := instance.ReadRootIdentity(w.root)
+	if err != nil || rootIdentity != archive.InstanceID {
+		return nil, nil, fmt.Errorf("worker: config generation does not match stable worker identity")
 	}
 	cache := configgeneration.Store{Root: filepath.Join(w.root, "worker-config-generations"), LocalCache: true}
 	directory, lease, err := cache.KeepAndAcquire(ctx, data, env.ConfigGeneration, nil)

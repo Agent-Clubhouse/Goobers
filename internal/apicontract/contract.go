@@ -289,6 +289,13 @@ const DigestHeader = "X-Goobers-Digest"
 // RouteID is the stable cross-adapter identity of a versioned route.
 type RouteID string
 
+// ConfigSnapshotCurrent identifies the sanitized worker snapshot currently in
+// force and the durable instance identity every worker replica must share.
+type ConfigSnapshotCurrent struct {
+	Digest     string `json:"digest"`
+	InstanceID string `json:"instanceID"`
+}
+
 // Stable V1 route IDs.
 const (
 	RouteDiscovery                RouteID = "discovery"
@@ -548,7 +555,7 @@ var v1Routes = []Route{
 	// recovery completes) the way every other read route here does.
 	{ID: RouteInstanceReadiness, Method: http.MethodGet, Path: InstanceReadinessPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteConfigSnapshot, Method: http.MethodGet, Path: ConfigSnapshotPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteConfigSnapshot, Method: http.MethodGet, Path: ConfigSnapshotPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	// A worker's divergence report is a machine-to-daemon journal seam, not an
 	// operator mutation that every product surface must expose. Class it with
 	// the journal emit plane and pool its append with mutations.

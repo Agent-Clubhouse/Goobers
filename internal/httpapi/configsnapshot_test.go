@@ -16,13 +16,15 @@ type configSnapshotFixture struct {
 	data   []byte
 }
 
-func (f configSnapshotFixture) Current() string { return f.digest }
+func (f configSnapshotFixture) Current() apicontract.ConfigSnapshotCurrent {
+	return apicontract.ConfigSnapshotCurrent{Digest: f.digest, InstanceID: "0123456789abcdef0123456789abcdef"}
+}
 
-func (f configSnapshotFixture) Open(digest string) (io.ReadCloser, error) {
+func (f configSnapshotFixture) Open(digest string) (io.ReadCloser, int64, error) {
 	if digest != f.digest {
-		return nil, io.EOF
+		return nil, 0, io.EOF
 	}
-	return io.NopCloser(bytes.NewReader(f.data)), nil
+	return io.NopCloser(bytes.NewReader(f.data)), int64(len(f.data)), nil
 }
 
 func TestConfigSnapshotPlaneRequiresWorkerAndServesExactDigest(t *testing.T) {

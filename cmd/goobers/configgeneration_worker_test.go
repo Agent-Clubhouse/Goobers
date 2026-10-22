@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,6 +48,12 @@ func TestFreshWorkerRestoresAdmittedGenerationFromConfigPlane(t *testing.T) {
 		t.Fatalf("full fleet configuration exposed through artifact store: %v", err)
 	}
 	workerRoot := initDemo(t)
+	if err := os.Remove(filepath.Join(workerRoot, instance.RootIdentityFileName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.InstallRootIdentity(t.Context(), workerRoot, owner); err != nil {
+		t.Fatal(err)
+	}
 	editInstructions(t, workerRoot, "different worker-mounted generation")
 	writeFixture(t, filepath.Join(instance.NewLayout(workerRoot).ConfigDir(), "gaggles", pinGaggle, "goobers", pinGoober, "assets", "identity.txt"), "changed-asset")
 	seams, err := newWorkerSeams(workerRoot, shared)

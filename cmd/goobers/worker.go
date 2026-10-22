@@ -293,7 +293,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: %v\n", serr)
 			return 1
 		}
-		configureWorkerConfigSeams(builtSeams, *configHistoryDepth, configPlane)
+		if code := configureWorkerConfigSeamsCLI(builtSeams, *configHistoryDepth, configPlane, stderr); code != 0 {
+			return code
+		}
 		seams = builtSeams
 		wireWorkerRuntimeSeams(&engineRuntime.deps, seams, filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)

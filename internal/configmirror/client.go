@@ -36,6 +36,9 @@ func (e *ResponseError) Error() string { return "config plane endpoint answered 
 
 // Retryable reports a restart/failover response or transport failure.
 func Retryable(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
 	var response *ResponseError
 	if errors.As(err, &response) {
 		return response.StatusCode == http.StatusBadGateway ||
@@ -47,26 +50,24 @@ func Retryable(err error) bool {
 }
 
 // Current reads the content digest the daemon currently publishes.
-func (c Client) Current(ctx context.Context) (string, error) {
+func (c Client) Current(ctx context.Context) (apicontract.ConfigSnapshotCurrent, error) {
 	response, err := c.do(ctx, "")
 	if err != nil {
-		return "", err
+		return apicontract.ConfigSnapshotCurrent{}, err
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return "", &ResponseError{StatusCode: response.StatusCode, Status: response.Status}
+		return apicontract.ConfigSnapshotCurrent{}, &ResponseError{StatusCode: response.StatusCode, Status: response.Status}
 	}
-	var result struct {
-		Digest string `json:"digest"`
-	}
+	var result apicontract.ConfigSnapshotCurrent
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 4097))
 	if err := decoder.Decode(&result); err != nil {
-		return "", err
+		return apicontract.ConfigSnapshotCurrent{}, err
 	}
-	if _, err := planeDigestName(result.Digest); err != nil {
-		return "", err
+	if _, err := planeDigestName(result.Digest); err != nil || len(result.InstanceID) != 32 {
+		return apicontract.ConfigSnapshotCurrent{}, errors.New("config plane returned invalid current metadata")
 	}
-	return result.Digest, nil
+	return result, nil
 }
 
 // Materialize fetches and validates digest into a private immutable cache.
