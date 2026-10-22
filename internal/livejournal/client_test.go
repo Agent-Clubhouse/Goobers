@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -174,9 +178,53 @@ func TestHTTPEmitterHonoursRetryDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error once the retry deadline elapsed")
 	}
+
 	if elapsed > time.Second {
 		t.Fatalf("elapsed = %s, want close to the 30ms retry deadline", elapsed)
 	}
+}
+
+func TestHTTPEmitterUsesWholeOperationDeadlineAfterServerBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		started := time.Now()
+		var attempts int
+		client := &http.Client{Transport: emitRoundTripper(func(request *http.Request) (*http.Response, error) {
+			attempts++
+			status, body := http.StatusServiceUnavailable, `{"error":{"code":"request_budget_exceeded","message":"still committing"}}`
+			if time.Since(started) >= 20*time.Second {
+				status, body = http.StatusOK, `{}`
+			}
+			return &http.Response{
+				StatusCode: status,
+				Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		})}
+		emitter := &HTTPEmitter{
+			BaseURL: "http://journal.test",
+			Client:  client,
+			RetryPolicy: RetryPolicy{
+				BaseDelay: time.Second,
+				MaxDelay:  time.Second,
+			},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := emitter.Emit(ctx, EmitRequest{RunID: "run-1"}); err != nil {
+			t.Fatal(err)
+		}
+		if attempts < 2 || time.Since(started) < 20*time.Second {
+			t.Fatalf("attempts=%d elapsed=%s, want retries beyond the former 15s cutoff", attempts, time.Since(started))
+		}
+	})
+}
+
+type emitRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f emitRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 // The regression test #4260 calls for: kill the connection mid-emit (the

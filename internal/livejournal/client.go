@@ -101,7 +101,11 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 		deadline = defaultEmitRetryDeadline
 	}
 	var out EmitResponse
-	err = retryutil.UntilWithRetryMargin(ctx, deadline, planehttp.RetryDeadlineMargin, e.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
+	// Emit receives operation-scoped contexts (transcript finalization,
+	// heartbeat publication), not the stage deadline itself. Applying the
+	// stage margin here cuts a 30s operation off at 15s and can abandon a
+	// journal handler that is still durably committing its idempotent batch.
+	err = retryutil.Until(ctx, deadline, e.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return false, fmt.Errorf("livejournal: build emit request: %w", err)
