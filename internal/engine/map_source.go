@@ -49,10 +49,10 @@ func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInpu
 			fmt.Errorf("run ID and map name are required, and definition name must match map name"),
 		)
 	}
-	if a.MapRosters == nil {
+	if a.FanOutBlobs == nil {
 		return FreezeMapRosterResult{}, classifySeamError(ErrNotConfigured)
 	}
-	sourceData, err := a.MapRosters.Get(ctx, in.Source.Digest)
+	sourceData, err := a.FanOutBlobs.Get(ctx, in.Source.Digest)
 	if err != nil {
 		return FreezeMapRosterResult{}, fmt.Errorf("read map %q source %s: %w", in.MapName, in.Source.Digest, err)
 	}
@@ -63,7 +63,7 @@ func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInpu
 	if _, err := fanout.DecodeRosterBlob(data, digest, in.Definition); err != nil {
 		return FreezeMapRosterResult{}, invalidMapRosterActivity(err)
 	}
-	if err := a.MapRosters.Put(ctx, digest, data); err != nil {
+	if err := a.FanOutBlobs.Put(ctx, digest, data); err != nil {
 		return FreezeMapRosterResult{}, fmt.Errorf("store map %q frozen roster %s: %w", in.MapName, digest, err)
 	}
 	items := make([]MapRosterItem, len(blob.Roster.Items))

@@ -24,7 +24,7 @@ import (
 
 func TestMapRosterFrozen(t *testing.T) {
 	store, input, sourceData := mapRosterActivityFixture(t)
-	activities := &Activities{MapRosters: store}
+	activities := &Activities{FanOutBlobs: store}
 	got, err := activities.FreezeMapRoster(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestMapRosterFrozen(t *testing.T) {
 func TestFreezeMapRosterFailsClosed(t *testing.T) {
 	store, input, _ := mapRosterActivityFixture(t)
 	tests := map[string]func(*Activities, *FreezeMapRosterInput){
-		"no store":      func(a *Activities, _ *FreezeMapRosterInput) { a.MapRosters = nil },
+		"no store":      func(a *Activities, _ *FreezeMapRosterInput) { a.FanOutBlobs = nil },
 		"no run":        func(_ *Activities, in *FreezeMapRosterInput) { in.RunID = "" },
 		"map mismatch":  func(_ *Activities, in *FreezeMapRosterInput) { in.MapName = "other" },
 		"source digest": func(_ *Activities, in *FreezeMapRosterInput) { in.Source.Digest = journal.Digest([]byte("forged")) },
@@ -74,7 +74,7 @@ func TestFreezeMapRosterFailsClosed(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			activities := &Activities{MapRosters: store}
+			activities := &Activities{FanOutBlobs: store}
 			gotInput := input
 			mutate(activities, &gotInput)
 			if _, err := activities.FreezeMapRoster(context.Background(), gotInput); err == nil {
@@ -102,7 +102,7 @@ func TestFreezeMapRosterHistoryReplaysAtEveryWorkflowTaskStart(t *testing.T) {
 	const queue = "map-roster-freeze-replay"
 	worker := temporalworker.New(server.Client(), queue, temporalworker.Options{})
 	worker.RegisterWorkflow(freezeMapRosterProbe)
-	worker.RegisterActivity(&Activities{MapRosters: store})
+	worker.RegisterActivity(&Activities{FanOutBlobs: store})
 	if err := worker.Start(); err != nil {
 		t.Fatal(err)
 	}
