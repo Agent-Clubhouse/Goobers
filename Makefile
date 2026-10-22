@@ -123,6 +123,7 @@ manifests-check: manifests
 .PHONY: docs
 docs:
 	$(GO) run ./cmd/goobers __generate-docs docs
+	$(GO) run ./cmd/goobers-cloud __generate-docs docs
 	$(GO) run ./test/designstatus -write
 	$(GO) run ./test/markdownlinks -write
 

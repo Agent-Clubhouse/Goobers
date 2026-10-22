@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLOUD WORKER" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers-cloud worker \- Run a Temporal engine worker.
+.SH SYNOPSIS
+\fBgoobers-cloud worker\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers-cloud worker [OPTIONS]
+
+Run the shared Temporal engine worker host.
+
+Options:
+  --temporal-hostport HOST:PORT  Temporal frontend address (default localhost:7233)
+  --temporal-namespace NAME      Temporal namespace (default default)
+  --task-queue NAME              Task queue to serve (repeatable; default goobers)
+  --health-addr ADDRESS          Serve /healthz and /readyz on this address
+  --drain-timeout DURATION       Graceful drain bound (default 30s)
+  --max-concurrent-activities N  Activity concurrency (default 1000)
+.fi
+.SH EXAMPLES
+.nf
+goobers-cloud worker --task-queue goobers
+.fi
+.SH SEE ALSO
+\fBgoobers-cloud\fR(1)
