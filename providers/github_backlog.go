@@ -16,9 +16,24 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return nil, err
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
+	endpoint, values, pageSize, err := p.githubWorkItemListRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	if req.Page > 0 || req.Cursor != "" || req.PageInfo != nil {
+		return p.listWorkItemsPage(ctx, req, endpoint, values, pageSize)
+	}
+	endpoint, err = addQuery(endpoint, values)
+	if err != nil {
+		return nil, err
+	}
+	return p.listAllWorkItems(ctx, req, endpoint)
+}
+
+func (p *GitHubProvider) githubWorkItemListRequest(req ListWorkItemsRequest) (string, url.Values, int, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
+	if err != nil {
+		return "", nil, 0, err
 	}
 	values := url.Values{"state": []string{"all"}}
 	if req.State != "" {
@@ -57,90 +72,73 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		}
 		values.Set("per_page", strconv.Itoa(pageSize))
 	}
-	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
-	if callerPaged {
-		// Page/Cursor means the caller drives pagination itself: honor it as a
-		// single-page read (its own per_page, no Link following).
-		page := req.Page
-		offset := 0
-		if page < 1 {
-			page = 1
-		} else {
-			offset = (page - 1) * pageSize
-		}
-		skipped := 0
-		if req.Cursor != "" {
-			offset, err = strconv.Atoi(req.Cursor)
-			if err != nil || offset < 0 {
-				return nil, fmt.Errorf("invalid GitHub work-item cursor %q", req.Cursor)
-			}
-			// Resume at an arbitrary offset by reading the FULL-WIDTH page
-			// that contains it and dropping the records before it, rather
-			// than shrinking per_page until it divides the offset evenly
-			// (#4036). That shrink made the resumed window's width a
-			// property of the offset's factorization: offset 158 read a
-			// 79-record page, and a prime offset collapsed per_page to 1 —
-			// so a scan budgeted for backlogScanCeiling candidates examined
-			// a small fraction of them and then, because the short page was
-			// not itself capped, reported the result set exhausted. Full
-			// pages keep "one page = up to per_page candidates" true for
-			// every offset, which is what the caller's page budget assumes.
-			page = offset/pageSize + 1
-			skipped = offset % pageSize
-		}
-		values.Set("per_page", strconv.Itoa(pageSize))
-		values.Set("page", strconv.Itoa(page))
-		endpoint, err = addQuery(endpoint, values)
-		if err != nil {
-			return nil, err
-		}
-		var issues []githubIssue
-		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
-			return nil, err
-		}
-		// fetched is the raw page width, which is what says whether GitHub
-		// itself capped this read; issues is narrowed to the candidates at or
-		// after the resume offset, which is what this call actually inspects.
-		fetched := len(issues)
-		if skipped > 0 {
-			issues = issues[min(skipped, fetched):]
-		}
-		budgetCapped := req.MaxCandidates > 0 && len(issues) > req.MaxCandidates
-		if budgetCapped {
-			issues = issues[:req.MaxCandidates]
-		}
-		items, scanned, err := issuesToWorkItems(issues, req)
-		if err != nil {
-			return nil, err
-		}
-		if req.PageInfo != nil {
-			// HasNext/NextCursor track the MATCH stream, not the candidate
-			// stream (#2067's third acceptance criterion): issuesToWorkItems
-			// can stop scanning before scanned reaches len(issues) once
-			// Limit real matches are in hand, leaving fetched-but-unscanned
-			// issues behind — and even scanning every fetched issue without
-			// reaching Limit matches still leaves more to look at when the
-			// fetch itself hit pageSize (GitHub may hold further candidates
-			// beyond what this round asked for) — measured on the raw page
-			// width, before the resume offset's leading records were
-			// dropped, since those were still fetched.
-			scannedEverything := scanned == len(issues)
-			fetchWasCapped := fetched == pageSize
-			req.PageInfo.CandidateCount = len(issues)
-			req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, true)
-			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped || budgetCapped
-			req.PageInfo.NextCursor = ""
-			if req.PageInfo.HasNext {
-				req.PageInfo.NextCursor = strconv.Itoa(offset + scanned)
-			}
-		}
-		return items, nil
-	}
+	return endpoint, values, pageSize, nil
+}
 
+func githubWorkItemPagePosition(req ListWorkItemsRequest, pageSize int) (page, offset, skipped int, err error) {
+	page = req.Page
+	if page < 1 {
+		page = 1
+	} else {
+		offset = (page - 1) * pageSize
+	}
+	if req.Cursor == "" {
+		return page, offset, 0, nil
+	}
+	offset, err = strconv.Atoi(req.Cursor)
+	if err != nil || offset < 0 {
+		return 0, 0, 0, fmt.Errorf("invalid GitHub work-item cursor %q", req.Cursor)
+	}
+	return offset/pageSize + 1, offset, offset % pageSize, nil
+}
+
+func (p *GitHubProvider) listWorkItemsPage(
+	ctx context.Context, req ListWorkItemsRequest, endpoint string, values url.Values, pageSize int,
+) ([]WorkItem, error) {
+	page, offset, skipped, err := githubWorkItemPagePosition(req, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	values.Set("per_page", strconv.Itoa(pageSize))
+	values.Set("page", strconv.Itoa(page))
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
 		return nil, err
 	}
+	var issues []githubIssue
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
+		return nil, err
+	}
+	fetched := len(issues)
+	issues = issues[min(skipped, fetched):]
+	budgetCapped := req.MaxCandidates > 0 && len(issues) > req.MaxCandidates
+	if budgetCapped {
+		issues = issues[:req.MaxCandidates]
+	}
+	items, scanned, err := issuesToWorkItems(issues, req)
+	if err != nil {
+		return nil, err
+	}
+	updateGitHubWorkItemPageInfo(req, len(issues), fetched, pageSize, offset, scanned, budgetCapped)
+	return items, nil
+}
+
+func updateGitHubWorkItemPageInfo(
+	req ListWorkItemsRequest, candidateCount, fetched, pageSize, offset, scanned int, budgetCapped bool,
+) {
+	if req.PageInfo == nil {
+		return
+	}
+	req.PageInfo.CandidateCount = candidateCount
+	req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, true)
+	req.PageInfo.HasNext = scanned != candidateCount || fetched == pageSize || budgetCapped
+	req.PageInfo.NextCursor = ""
+	if req.PageInfo.HasNext {
+		req.PageInfo.NextCursor = strconv.Itoa(offset + scanned)
+	}
+}
+
+func (p *GitHubProvider) listAllWorkItems(ctx context.Context, req ListWorkItemsRequest, endpoint string) ([]WorkItem, error) {
 	// Preserve the legacy contract for ordinary calls: Limit counts returned
 	// issues, not raw records from GitHub's mixed issues-and-pull-requests API.
 	// Callers that need a bounded raw scan opt into the PageInfo/Cursor path

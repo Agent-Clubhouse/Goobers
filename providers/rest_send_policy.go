@@ -45,80 +45,125 @@ func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endp
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
 	}
-	var rateLimitWaited time.Duration
-	var rateLimitRetries, transientRetries int
-	authRetried := false
+	state := restSendState{maxRateLimitWait: maxWait}
 	for {
-		req, err := newJSONRequest(ctx, method, endpoint, body)
+		req, err := preparePolicyRequest(ctx, policy, method, endpoint, body)
 		if err != nil {
 			return nil, err
-		}
-		if err := policy.decorate(ctx, req); err != nil {
-			return nil, err
-		}
-		if policy.beforeSend != nil {
-			if err := policy.beforeSend(ctx); err != nil {
-				return nil, err
-			}
 		}
 		featureusage.RecordProviderHTTP(policy.providerHTTPName)
 		resp, err := httpClientOrDefault(policy.client).Do(req)
 		if err != nil {
-			if !isRequestAdmissionError(err) && policy.retryable && transientRetries < policy.maxTransientRetries {
-				if serr := policy.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
-					return nil, serr
-				}
-				transientRetries++
+			retry, err := retryPolicyTransportError(ctx, policy, &state, err)
+			if retry {
 				continue
 			}
-			return nil, fmt.Errorf("send request: %w", err)
+			return nil, err
 		}
-		if policy.normalizeResponse != nil {
-			policy.normalizeResponse(resp)
-		}
-		if policy.observeResponse != nil {
-			policy.observeResponse(ctx, resp)
-		}
-		if resp.StatusCode == http.StatusUnauthorized && !authRetried &&
+		observePolicyResponse(ctx, policy, resp)
+		if resp.StatusCode == http.StatusUnauthorized && !state.authRetried &&
 			policy.refreshRejectedAuth != nil && policy.refreshRejectedAuth() {
 			_ = resp.Body.Close()
-			authRetried = true
+			state.authRetried = true
 			continue
 		}
 		if policy.validateResponse != nil {
-			if err := policy.validateResponse(resp, authRetried); err != nil {
+			if err := policy.validateResponse(resp, state.authRetried); err != nil {
 				return nil, err
 			}
 		}
 		if policy.isRateLimited(resp) {
-			wait, ev := policy.planRateLimit(resp, endpoint, rateLimitRetries)
-			if rateLimitRetries >= policy.maxRateLimitRetries || wait > maxWait-rateLimitWaited ||
-				rateLimitWaitOutlivesDeadline(ctx, wait) {
-				ev.Outcome = RateLimitOutcomeExhausted
-				finalResp, finalErr := policy.handleExhaustedRateLimit(resp, ev)
-				policy.observeRateLimit(ctx, ev)
-				return finalResp, finalErr
+			finalResp, retry, err := handlePolicyRateLimit(ctx, policy, endpoint, resp, &state)
+			if retry {
+				continue
 			}
-			_ = resp.Body.Close()
-			if err := policy.sleep(ctx, wait); err != nil {
-				ev.Outcome = RateLimitOutcomeCanceled
-				policy.observeRateLimit(ctx, ev)
-				return nil, err
-			}
-			ev.Outcome = RateLimitOutcomeRetry
-			policy.observeRateLimit(ctx, ev)
-			rateLimitWaited += wait
-			rateLimitRetries++
-			continue
+			return finalResp, err
 		}
-		if resp.StatusCode >= 500 && policy.retryable && transientRetries < policy.maxTransientRetries {
+		if resp.StatusCode >= 500 && policy.retryable && state.transientRetries < policy.maxTransientRetries {
 			_ = resp.Body.Close()
-			if err := policy.sleep(ctx, backoffDuration(transientRetries)); err != nil {
+			if err := policy.sleep(ctx, backoffDuration(state.transientRetries)); err != nil {
 				return nil, err
 			}
-			transientRetries++
+			state.transientRetries++
 			continue
 		}
 		return resp, nil
 	}
+}
+
+type restSendState struct {
+	maxRateLimitWait time.Duration
+	rateLimitWaited  time.Duration
+	rateLimitRetries int
+	transientRetries int
+	authRetried      bool
+}
+
+func preparePolicyRequest(
+	ctx context.Context, policy restSendPolicy, method, endpoint string, body interface{},
+) (*http.Request, error) {
+	req, err := newJSONRequest(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	if err := policy.decorate(ctx, req); err != nil {
+		return nil, err
+	}
+	if policy.beforeSend != nil {
+		if err := policy.beforeSend(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return req, nil
+}
+
+func retryPolicyTransportError(
+	ctx context.Context, policy restSendPolicy, state *restSendState, sendErr error,
+) (bool, error) {
+	if isRequestAdmissionError(sendErr) || !policy.retryable || state.transientRetries >= policy.maxTransientRetries {
+		return false, fmt.Errorf("send request: %w", sendErr)
+	}
+	if err := policy.sleep(ctx, backoffDuration(state.transientRetries)); err != nil {
+		return false, err
+	}
+	state.transientRetries++
+	return true, nil
+}
+
+func observePolicyResponse(ctx context.Context, policy restSendPolicy, resp *http.Response) {
+	if policy.normalizeResponse != nil {
+		policy.normalizeResponse(resp)
+	}
+	if policy.observeResponse != nil {
+		policy.observeResponse(ctx, resp)
+	}
+}
+
+func handlePolicyRateLimit(
+	ctx context.Context,
+	policy restSendPolicy,
+	endpoint string,
+	resp *http.Response,
+	state *restSendState,
+) (*http.Response, bool, error) {
+	wait, event := policy.planRateLimit(resp, endpoint, state.rateLimitRetries)
+	if state.rateLimitRetries >= policy.maxRateLimitRetries ||
+		wait > state.maxRateLimitWait-state.rateLimitWaited ||
+		rateLimitWaitOutlivesDeadline(ctx, wait) {
+		event.Outcome = RateLimitOutcomeExhausted
+		finalResp, err := policy.handleExhaustedRateLimit(resp, event)
+		policy.observeRateLimit(ctx, event)
+		return finalResp, false, err
+	}
+	_ = resp.Body.Close()
+	if err := policy.sleep(ctx, wait); err != nil {
+		event.Outcome = RateLimitOutcomeCanceled
+		policy.observeRateLimit(ctx, event)
+		return nil, false, err
+	}
+	event.Outcome = RateLimitOutcomeRetry
+	policy.observeRateLimit(ctx, event)
+	state.rateLimitWaited += wait
+	state.rateLimitRetries++
+	return nil, true, nil
 }
