@@ -18,6 +18,17 @@ func fileReaderBackendFactory(t *testing.T) readerBackendFactory {
 		}
 		writer := journal.NewFileBackend(config)
 		ctx := context.Background()
+		for _, runID := range []string{"run-alpha", "run-zeta"} {
+			empty, emptyOwner, err := writer.CreateRun(ctx, journal.CreateRunRequest{
+				Identity: journal.RunIdentity{RunID: runID, Gaggle: "g", Workflow: "implementation"},
+			})
+			if err != nil {
+				return nil, err
+			}
+			if err := writer.Retire(ctx, empty, emptyOwner); err != nil {
+				return nil, err
+			}
+		}
 		handle, owner, err := writer.CreateRun(ctx, journal.CreateRunRequest{
 			Identity: journal.RunIdentity{RunID: "run-reader", Gaggle: "g", Workflow: "implementation"},
 		})
@@ -45,6 +56,9 @@ func fileReaderBackendFactory(t *testing.T) readerBackendFactory {
 			return nil, err
 		}
 		if err := writer.InstanceAppend(ctx, instance, instanceOwner, journal.Event{Type: journal.EventDaemonStarted}); err != nil {
+			return nil, err
+		}
+		if err := writer.InstanceAppend(ctx, instance, instanceOwner, journal.Event{Type: journal.EventRunnerAnnotation, Name: "second"}); err != nil {
 			return nil, err
 		}
 		if err := writer.RetireInstance(ctx, instance, instanceOwner); err != nil {
