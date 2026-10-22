@@ -24,7 +24,7 @@ func fileReaderBackendFactory(t *testing.T) readerBackendFactory {
 		if err != nil {
 			return nil, err
 		}
-		if err := writer.AppendBatch(ctx, handle, owner, []journal.Event{
+		if _, err := writer.AppendBatch(ctx, handle, owner, []journal.Event{
 			{Type: journal.EventRunnerAnnotation, Name: "first"},
 		}); err != nil {
 			return nil, err

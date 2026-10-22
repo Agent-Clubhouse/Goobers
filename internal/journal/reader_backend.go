@@ -24,7 +24,6 @@ type RunFilter struct {
 
 // RunReader is the typed read surface used by shared control-plane readers.
 type RunReader interface {
-	Dir() string
 	Schema() SchemaInfo
 	Identity() (RunIdentity, error)
 	State() (State, error)
