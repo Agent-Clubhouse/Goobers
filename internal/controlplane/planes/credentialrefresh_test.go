@@ -1,6 +1,7 @@
 package planes
 
 import (
+	"crypto/sha256"
 	"errors"
 	"net/http"
 	"strings"
@@ -106,6 +107,51 @@ func TestStageGrantIssuerRejectsUnavailableAndForeignGrants(t *testing.T) {
 	}
 	if _, err := second.Admit(token, "repo:push"); !hasIntervention(err, http.StatusUnauthorized, "credential_grant_invalid") {
 		t.Fatalf("foreign grant error = %v", err)
+	}
+}
+
+func TestStageGrantIssuerMintsPodGrantAndPrunesExpiredState(t *testing.T) {
+	issuer, err := NewStageGrantIssuer("http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
+	issuer.now = func() time.Time { return now }
+	issuer.Key().WithClock(func() time.Time { return now })
+	registry := journal.NewRegistryScrubber()
+	request := httpapi.CredentialResolveRequest{RunID: "run-1", Stage: "build", Attempt: 4}
+	delivery := issuer.MintPodGrant(request, []string{"repo:push"}, time.Minute, registry)
+	if delivery == nil {
+		t.Fatal("pod grant was not minted")
+	}
+	grant, err := issuer.Key().VerifyCredentialGrant(delivery.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.RunID != request.RunID || grant.Stage != request.Stage || grant.Attempt != request.Attempt || !grant.Allows("repo:push") {
+		t.Fatalf("pod grant = %+v", grant)
+	}
+	if !strings.Contains(string(registry.Scrub([]byte(delivery.Token))), journal.Redacted) {
+		t.Fatal("pod grant was not registered with the scrubber")
+	}
+	if _, err := issuer.Admit(delivery.Token, "repo:push"); err != nil {
+		t.Fatal(err)
+	}
+	issuer.revoke(grant.ID, grant.ExpiresAt)
+	digest := sha256.Sum256([]byte(delivery.Token))
+	if _, ok := issuer.buckets[digest]; !ok {
+		t.Fatal("admitted token has no rate-limit bucket")
+	}
+	now = now.Add(2 * time.Minute)
+	if _, err := issuer.Admit(delivery.Token, "repo:push"); !hasIntervention(err, http.StatusUnauthorized, "credential_grant_expired") {
+		t.Fatalf("expired grant error = %v", err)
+	}
+	issuer.allow("current-token", now.Add(time.Hour))
+	if _, ok := issuer.revoked[grant.ID]; ok {
+		t.Fatal("expired revocation was not pruned")
+	}
+	if _, ok := issuer.buckets[digest]; ok {
+		t.Fatal("expired rate-limit bucket was not pruned")
 	}
 }
 
