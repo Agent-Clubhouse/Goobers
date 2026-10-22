@@ -100,7 +100,7 @@ func TestRaceBuildCacheIsWrittenOnlyByTheMainWarmJob(t *testing.T) {
 	t.Parallel()
 	workflow := loadCIWorkflow(t)
 	warm := workflow.Jobs[raceCacheWarmJob]
-	if warm.If != "${{ github.event_name == 'push' }}" {
+	if warm.If != "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" {
 		t.Errorf("%s condition = %q; it must run only on pushes to main, where the entry is visible to every pull request", raceCacheWarmJob, warm.If)
 	}
 	if !warm.ContinueOnError {
