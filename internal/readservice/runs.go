@@ -682,6 +682,10 @@ func (s *Local) listLatestWorkflowOutcomes(ctx context.Context, options RunListO
 		!options.Until.IsZero() || options.Limit != 0 || options.Cursor != "" {
 		return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
 	}
+	// The read-model aggregate answers the whole page — outcomes AND activity
+	// — in one indexed query with zero journal opens (#1891). It replaces the
+	// window function, backwards terminal walk, and separate activity call, so
+	// return directly rather than falling through to them.
 	if s.readModelReads {
 		return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
 	}
@@ -1828,6 +1832,10 @@ func (f *runSummaryFold) applyRecords(run runRead) error {
 		event := record.Event
 		if event.Seq > f.lastSeq {
 			f.lastSeq = event.Seq
+			// Seq always advances on the newest event, but lastActivityAt only
+			// advances for a timestamped event. An unstamped event (#3774) must
+			// not clobber real activity with zero time; this mirrors
+			// readmodel.ProjectRun so GetRun and ListRuns agree.
 			if !event.Time.IsZero() {
 				f.lastActivityAt = event.Time
 			}
@@ -1907,7 +1915,7 @@ func (f *runSummaryFold) applyGateEvaluated(run runRead, event journal.Event) er
 		return nil
 	}
 	review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
-	f.reviewAt, f.reviewProblem = eventTimePointer(event), ""
+	f.reviewAt, f.reviewProblem = eventTimePointer(event), "" // only the latest review counts (#5404)
 	if event.Ref != nil {
 		data, err := run.reader.ArtifactBytes(*event.Ref)
 		if err != nil {
@@ -1963,6 +1971,10 @@ func (f *runSummaryFold) clearCurrentStage() {
 }
 
 func (f *runSummaryFold) finalizePhase(run runRead) error {
+	// PhaseFromEvents is the journal's authoritative reconstruction rule. Keep
+	// the summary fold responsible for presentation fields, but do not duplicate
+	// terminal-state semantics here: older runs may end at an executed terminal
+	// gate when cleanup fails before run.finished is appended.
 	reconstructed := journal.PhaseFromEvents(recordEvents(run.records))
 	if f.phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
 		f.phase = reconstructed

@@ -732,6 +732,8 @@ func projectTelemetryGaggle(stat rollup.GaggleStats) TelemetryGaggleStats {
 		Gaggle: stat.Gaggle, TotalRuns: stat.TotalRuns, CompletedRuns: stat.CompletedRuns,
 		FailedRuns: stat.FailedRuns, InfraFailedRuns: stat.InfraFailedRuns, OtherRuns: stat.OtherRuns,
 	}
+	// The rate is absent, not zero, when nothing reached a verdict about the
+	// work — an all-infra-fault window makes no claim either way.
 	if stat.CompletedRuns+stat.FailedRuns-stat.InfraFailedRuns > 0 {
 		item.SuccessRate = float64Pointer(stat.SuccessRate)
 	}
@@ -786,7 +788,7 @@ func (s *Telemetry) projectTelemetryTrends(
 	req TelemetryStatsRequest,
 	result *TelemetryStatsResult,
 ) ([]rollup.TrendResult, error) {
-	if req.TrendBuckets == 0 {
+	if req.TrendBuckets <= 0 {
 		return nil, nil
 	}
 	windows, err := telemetryTrendWindows(req, result)

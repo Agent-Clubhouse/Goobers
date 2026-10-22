@@ -1005,6 +1005,23 @@ func TestTelemetryStatsRejectsTrendRangeTooShortForBuckets(t *testing.T) {
 	if !errors.Is(err, ErrInvalidTelemetryRequest) {
 		t.Fatalf("short trend range error = %v, want invalid request", err)
 	}
+
+}
+
+func TestTelemetryStatsNegativeTrendBucketsSkipTrend(t *testing.T) {
+	store := &fakeTelemetryStore{}
+	service := &Telemetry{store: store}
+	result, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
+		TrendSince:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		TrendUntil:   time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC),
+		TrendBuckets: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Trend) != 0 || len(store.trendReq.Windows) != 0 {
+		t.Fatalf("negative bucket count projected trends: result=%+v request=%+v", result.Trend, store.trendReq)
+	}
 }
 
 func TestTelemetryStatsRejectsIncompletePreviousTrendWindow(t *testing.T) {
