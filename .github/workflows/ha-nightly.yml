@@ -1,0 +1,121 @@
+name: HA nightly kind
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  # Bootstrap validation for this workflow's delivery branch. It never runs on
+  # pull_request or main pushes and can be removed after the workflow is live.
+  push:
+    branches:
+      - ha-p2-02-kind-nightly
+  workflow_dispatch:
+    inputs:
+      inject_failure:
+        description: Exercise scheduled-failure alarm handling after a successful smoke
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ha-nightly-kind
+  cancel-in-progress: false
+
+env:
+  HA_NIGHTLY_OWNER_ROTATION: control-plane-ha-maintainers
+  KIND_VERSION: v0.30.0
+  KIND_SHA256: 517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889
+  HELM_VERSION: v3.18.4
+  HELM_SHA256: f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1
+  CALICO_VERSION: v3.30.3
+  CALICO_SHA256: 9382d2b27a76f40c170454b408653e6d71e2205ef0aef069e942bb690e7381d0
+  CNPG_VERSION: v1.27.0
+  CNPG_SHA256: 7be449085a4c5941ff05d2c4aca47d4f1c4c87698181fe2c19c47a9f6a43b268
+  TEMPORAL_CHART_VERSION: 0.62.0
+  TEMPORAL_CHART_SHA256: c2f01baeef60ed96335948640a8ac30fb49a10b906e20c259b92f81f2cba5c04
+  TOXIPROXY_VERSION: v2.13.0
+  TOXIPROXY_SHA256: bf529e8bb9a05cd293f45a3f1d0aa66ff9469680dcdca7e0ebeae21f1b83de89
+
+jobs:
+  smoke:
+    name: kind reference smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Acquire pinned nightly tools and manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ha-nightly/bin" "$RUNNER_TEMP/ha-nightly/assets"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64" \
+            --output "$RUNNER_TEMP/ha-nightly/bin/kind"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/helm.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/calico.yaml"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/${CNPG_VERSION}/releases/cnpg-${CNPG_VERSION#v}.yaml" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/cnpg.yaml"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-${TEMPORAL_CHART_VERSION}/temporal-${TEMPORAL_CHART_VERSION}.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/Shopify/toxiproxy/releases/download/${TOXIPROXY_VERSION}/toxiproxy-server-linux-amd64" \
+            --output "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server"
+          printf '%s  %s\n' \
+            "$KIND_SHA256" "$RUNNER_TEMP/ha-nightly/bin/kind" \
+            "$HELM_SHA256" "$RUNNER_TEMP/ha-nightly/assets/helm.tgz" \
+            "$CALICO_SHA256" "$RUNNER_TEMP/ha-nightly/assets/calico.yaml" \
+            "$CNPG_SHA256" "$RUNNER_TEMP/ha-nightly/assets/cnpg.yaml" \
+            "$TEMPORAL_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal.tgz" \
+            "$TOXIPROXY_SHA256" "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/ha-nightly/assets/helm.tgz" -C "$RUNNER_TEMP/ha-nightly/assets"
+          install -m 0755 "$RUNNER_TEMP/ha-nightly/assets/linux-amd64/helm" "$RUNNER_TEMP/ha-nightly/bin/helm"
+          chmod 0755 "$RUNNER_TEMP/ha-nightly/bin/kind" "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server"
+          echo "$RUNNER_TEMP/ha-nightly/bin" >> "$GITHUB_PATH"
+
+      - name: Build reference image
+        run: make image IMAGE=goobers:ha-nightly
+
+      - name: Run kind environment smoke
+        env:
+          HA_ASSET_DIR: ${{ runner.temp }}/ha-nightly/assets
+          HA_BIN_DIR: ${{ runner.temp }}/ha-nightly/bin
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: go run ./test/ha/kind/cmd/nightly run
+
+      - name: Inject alarm-drill failure
+        if: ${{ inputs.inject_failure }}
+        run: |
+          echo "::error title=HA nightly alarm drill::intentional failure after successful smoke"
+          exit 1
+
+      - name: Collect evidence
+        if: ${{ always() }}
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: go run ./test/ha/kind/cmd/nightly collect
+
+      - name: Upload evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ha-nightly-kind-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ha-nightly/evidence/
+          if-no-files-found: error
+          retention-days: 30
