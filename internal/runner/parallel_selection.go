@@ -1,17 +1,13 @@
 package runner
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
-	apischemas "github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
-	"github.com/goobers/goobers/internal/handoffcheck"
+	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -29,9 +25,6 @@ const FanOutSourceInvalidCode = "fanout_source_invalid"
 // WorkflowIntegrityCode is the typed refusal for a journal whose recorded
 // fan-out state is missing, extra, duplicated or self-contradictory.
 const WorkflowIntegrityCode = "workflow_integrity"
-
-// maxSelectionReasonBytes bounds one selection reason (design §5.1).
-const maxSelectionReasonBytes = 512
 
 // FanOutSourceError is a fan-out source that failed to freeze (§4.2 steps
 // 1–3). It carries FanOutSourceInvalidCode.
@@ -71,15 +64,6 @@ func (e *WorkflowIntegrityError) Error() string {
 // StageErrorCode classifies the refusal as WorkflowIntegrityCode.
 func (e *WorkflowIntegrityError) StageErrorCode() string { return WorkflowIntegrityCode }
 
-// selectionDocument is the closed fanout-selection envelope.
-type selectionDocument struct {
-	SchemaVersion int `json:"schemaVersion"`
-	Branches      []struct {
-		Name   string `json:"name"`
-		Reason string `json:"reason,omitempty"`
-	} `json:"branches"`
-}
-
 // freezeParallelSelection resolves and validates a selective parallel's
 // source document and returns its normalized selection. It returns nil for a
 // parallel without selection, which then journals exactly what it always has.
@@ -96,68 +80,22 @@ func (r *Runner) freezeParallelSelection(ctx context.Context, jr *journal.Run, m
 	if err != nil {
 		return nil, &FanOutSourceError{State: p.Name, Source: source, Err: err}
 	}
-	if payload.Binding.Artifact.MediaType != "application/json" {
-		return nil, refuse("media type %q is not application/json", payload.Binding.Artifact.MediaType)
+	ref := journal.FanOutSourceRef{
+		Task: source.Task, Slot: source.Slot,
+		Visit: payload.Binding.Visit, Attempt: int(payload.Binding.Attempt),
+		Digest: payload.Binding.Artifact.Digest, Integrity: payload.Binding.Artifact.Integrity,
+		Path: payload.Binding.Artifact.Path, Size: payload.Binding.Artifact.Size,
+		MediaType: payload.Binding.Artifact.MediaType,
 	}
-	envelope, err := hostEnvelopeSchema(apischemas.FanOutSelection)
+	selection, err := fanout.FreezeSelection(p, ref, payload.Bytes, fanout.MaxSourceBytes)
 	if err != nil {
-		return nil, refuse("load selection envelope: %v", err)
-	}
-	if verdict := envelope.Check(payload.Bytes); !verdict.Valid {
-		return nil, refuse("document violates %s: %s", apischemas.FanOutSelection, summarizeIssues(verdict.Issues))
-	}
-	var doc selectionDocument
-	decoder := json.NewDecoder(bytes.NewReader(payload.Bytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&doc); err != nil {
-		return nil, refuse("decode selection document: %v", err)
-	}
-	chosen := make(map[string]string, len(doc.Branches))
-	declared := make(map[string]bool, len(p.Branches))
-	for _, branch := range p.Branches {
-		declared[branch.Name] = true
-	}
-	for _, entry := range doc.Branches {
-		if !declared[entry.Name] {
-			return nil, refuse("names unknown branch %q", entry.Name)
+		var sourceErr *fanout.SourceError
+		if errors.As(err, &sourceErr) {
+			return nil, refuse("%s", sourceErr.Detail)
 		}
-		if _, dup := chosen[entry.Name]; dup {
-			return nil, refuse("names branch %q more than once", entry.Name)
-		}
-		if len(entry.Reason) > maxSelectionReasonBytes {
-			return nil, refuse("reason for branch %q exceeds %d bytes", entry.Name, maxSelectionReasonBytes)
-		}
-		chosen[entry.Name] = entry.Reason
+		return nil, refuse("%v", err)
 	}
-	integrity := payload.Binding.Artifact.Integrity
-	if !integrity.Valid() {
-		integrity = apiv1.IntegrityDerived
-	}
-	selection := &journal.ParallelSelection{
-		Source: journal.SelectionSource{
-			Task: source.Task, Slot: source.Slot,
-			Visit: payload.Binding.Visit, Attempt: payload.Binding.Attempt,
-		},
-		SourceDigest: payload.Binding.Artifact.Digest,
-		Integrity:    integrity,
-		Selected:     []string{},
-	}
-	// Normalize: only optional branches, in branch-id order. Naming a
-	// non-optional branch is allowed and has no effect (§5.1).
-	for _, branch := range p.Branches {
-		reason, ok := chosen[branch.Name]
-		if !branch.Optional || !ok {
-			continue
-		}
-		selection.Selected = append(selection.Selected, branch.Name)
-		if reason != "" {
-			if selection.Reasons == nil {
-				selection.Reasons = map[string]string{}
-			}
-			selection.Reasons[branch.Name] = reason
-		}
-	}
-	return selection, nil
+	return &selection, nil
 }
 
 // resolveSelectionSource reads the source slot from the producer's most
@@ -214,22 +152,6 @@ func latestProducerAttempt(events []journal.Event, task string) (journal.Event, 
 		}
 	}
 	return journal.Event{}, false
-}
-
-func summarizeIssues(issues []handoffcheck.Issue) string {
-	parts := make([]string, 0, len(issues))
-	for i, issue := range issues {
-		if i == 3 {
-			parts = append(parts, fmt.Sprintf("and %d more", len(issues)-i))
-			break
-		}
-		path := issue.Path
-		if path == "" {
-			path = "/"
-		}
-		parts = append(parts, path+": "+issue.Message)
-	}
-	return strings.Join(parts, "; ")
 }
 
 // skippedBranchReason is the reason recorded for a branch the selection did
