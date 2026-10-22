@@ -949,6 +949,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/temporalcli",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Portable Temporal CLI download retry and archive extraction tests run in Linux unit shards; no Windows-specific seam."
+    },
+    {
       "package": "internal/temporalcodec",
       "coverage": "none",
       "category": "not-selected",
