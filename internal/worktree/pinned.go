@@ -540,6 +540,7 @@ func (m *Manager) preflightPinnedPathLength(ctx context.Context, repoDir, pinDir
 
 func ensurePinnedWorkspace(ctx context.Context, root, repoDir, pinDir, repoURL string) (bool, error) {
 	if _, err := os.Stat(pinDir); err == nil {
+		// Self-heal a pin created before the managed-config policy existed.
 		if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
 			return false, err
 		}
@@ -550,6 +551,10 @@ func ensurePinnedWorkspace(ctx context.Context, root, repoDir, pinDir, repoURL s
 	if err := runGit(ctx, root, "clone", "--no-checkout", repoDir, pinDir); err != nil {
 		return false, fmt.Errorf("worktree: materialize pinned workspace: %w", err)
 	}
+	// Unlike a linked `git worktree add` tree, `git clone` does not inherit
+	// repoDir's managed config. In particular core.longpaths is unset, so the
+	// next remote rename can rewrite refs beyond Windows MAX_PATH. Apply the
+	// managed config before any other operation in the cloned tree.
 	if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
 		return false, err
 	}

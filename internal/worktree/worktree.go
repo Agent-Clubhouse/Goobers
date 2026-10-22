@@ -369,6 +369,9 @@ func (m *Manager) materializeCreatedWorktree(
 	sparse, partialMirror, existingBranch bool,
 ) (string, error) {
 	if partialMirror {
+		// Materializing from a blobless promisor mirror can fetch missing blobs
+		// mid-checkout (#646), so this nominally local operation needs the
+		// credential environment and transient remote-failure classification.
 		if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, args...); err != nil {
 			return "", fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 		}
@@ -379,6 +382,8 @@ func (m *Manager) materializeCreatedWorktree(
 	if err != nil {
 		return "", fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, err)
 	}
+	// The run branch now exists; a later stage that finds it missing reports
+	// it as lost instead of recreating it (#4479).
 	if err := m.recordRunBranchEstablished(key, opts); err != nil {
 		return "", err
 	}
@@ -399,10 +404,14 @@ func (m *Manager) materializeCreatedWorktree(
 }
 
 func (m *Manager) materializeSparseCheckout(ctx context.Context, opts CreateOptions, path, checkoutTarget string, partialMirror bool) error {
+	// Cone mode only, per the design (#649): directory prefixes rather than
+	// full gitignore-style sparse-checkout patterns.
 	setArgs := append([]string{"sparse-checkout", "set", "--cone"}, opts.Sparse...)
 	if err := runGit(ctx, path, setArgs...); err != nil {
 		return fmt.Errorf("worktree: configure sparse checkout for run %s: %w", opts.RunID, err)
 	}
+	// --no-checkout left the working directory empty; this explicit checkout
+	// materializes only the declared cones plus root-level files.
 	checkoutArgs := []string{"checkout", checkoutTarget}
 	if partialMirror {
 		if err := m.runRemoteGit(ctx, opts.RepoURL, path, checkoutArgs...); err != nil {
@@ -418,6 +427,8 @@ func (m *Manager) syncCreatedWorktreeBase(ctx context.Context, opts CreateOption
 	mergeArgs := []string{"merge", "--ff", "--no-edit", opts.BaseRef}
 	var mergeErr error
 	if partialMirror {
+		// The base merge can materialize blobs absent from the promisor mirror,
+		// so it needs the same credential environment as checkout (#646).
 		mergeErr = m.runRemoteGit(ctx, opts.RepoURL, path, mergeArgs...)
 	} else {
 		mergeErr = runGit(ctx, path, mergeArgs...)
@@ -1109,8 +1120,8 @@ func (m *Manager) prepareWorktreeAdd(ctx context.Context, key, repoDir, path str
 	sparse := len(opts.Sparse) > 0
 	args := []string{"worktree", "add"}
 	if sparse {
-		// Skip materializing the full tree here; sparse-checkout is configured
-		// before the explicit checkout that populates only the declared cones.
+		// Skip materializing the full tree here; cone-mode sparse-checkout is
+		// configured before the explicit checkout (#649).
 		args = append(args, "--no-checkout")
 	}
 	checkoutTarget := opts.BaseRef
