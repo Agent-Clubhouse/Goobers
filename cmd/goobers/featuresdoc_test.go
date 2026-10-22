@@ -301,14 +301,16 @@ type featureReportRow struct {
 	Feature        string
 	DSLVersion     string
 	FeatureSupport string
+	RunnerSupport  string
+	EngineSupport  string
 	VersionSupport string
 	Since          string
 }
 
 func parseFeatureDocRows(t *testing.T, doc string) []featureReportRow {
 	t.Helper()
-	const header = "| Feature | DSL version | Feature support | Version support | Since app version |"
-	const separator = "| --- | --- | --- | --- | --- |"
+	const header = "| Feature | DSL version | Feature support | Runner | Engine | Version support | Since app version |"
+	const separator = "| --- | --- | --- | --- | --- | --- | --- |"
 	lines := strings.Split(doc, "\n")
 	headerIndex := -1
 	for i, line := range lines {
@@ -330,10 +332,10 @@ func parseFeatureDocRows(t *testing.T, doc string) []featureReportRow {
 			break
 		}
 		cells := strings.Split(line, "|")
-		if len(cells) != 7 || strings.TrimSpace(cells[0]) != "" || strings.TrimSpace(cells[6]) != "" {
+		if len(cells) != 9 || strings.TrimSpace(cells[0]) != "" || strings.TrimSpace(cells[8]) != "" {
 			t.Fatalf("invalid generated doc row %q", line)
 		}
-		for i := 1; i <= 5; i++ {
+		for i := 1; i <= 7; i++ {
 			cells[i] = strings.TrimSpace(cells[i])
 		}
 		featureCell := cells[1]
@@ -345,8 +347,10 @@ func parseFeatureDocRows(t *testing.T, doc string) []featureReportRow {
 			Feature:        feature,
 			DSLVersion:     cells[2],
 			FeatureSupport: cells[3],
-			VersionSupport: cells[4],
-			Since:          cells[5],
+			RunnerSupport:  cells[4],
+			EngineSupport:  cells[5],
+			VersionSupport: cells[6],
+			Since:          cells[7],
 		})
 	}
 	return rows
@@ -358,7 +362,7 @@ func parseFeatureReportRows(t *testing.T, report string) []featureReportRow {
 	if len(lines) < 3 {
 		t.Fatalf("features output is incomplete:\n%s", report)
 	}
-	wantHeader := []string{"FEATURE", "DSL", "VERSION", "FEATURE", "SUPPORT", "VERSION", "SUPPORT", "SINCE"}
+	wantHeader := []string{"FEATURE", "DSL", "VERSION", "FEATURE", "SUPPORT", "RUNNER", "ENGINE", "VERSION", "SUPPORT", "SINCE"}
 	if got := strings.Fields(lines[0]); strings.Join(got, "\t") != strings.Join(wantHeader, "\t") {
 		t.Fatalf("unexpected features header %q", lines[0])
 	}
@@ -377,15 +381,17 @@ func parseFeatureReportRows(t *testing.T, report string) []featureReportRow {
 	rows := make([]featureReportRow, 0, separator-1)
 	for _, line := range lines[1:separator] {
 		fields := strings.Fields(line)
-		if len(fields) != 5 {
+		if len(fields) != 7 {
 			t.Fatalf("invalid features row %q", line)
 		}
 		rows = append(rows, featureReportRow{
 			Feature:        fields[0],
 			DSLVersion:     fields[1],
 			FeatureSupport: fields[2],
-			VersionSupport: fields[3],
-			Since:          fields[4],
+			RunnerSupport:  fields[3],
+			EngineSupport:  fields[4],
+			VersionSupport: fields[5],
+			Since:          fields[6],
 		})
 	}
 	if got, want := strings.TrimSpace(lines[len(lines)-1]), fmt.Sprintf("%d feature/version row(s)", len(rows)); got != want {
