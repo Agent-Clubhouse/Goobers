@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/providers"
@@ -66,7 +69,7 @@ func newRefreshFixture(t *testing.T, endpoint string) (*daemonCredentialService,
 		)
 		return resolver, []credentials.Grant{{Capability: "repo:push", Ref: "repo-ref"}, {Capability: "github:issues:write", Ref: "issues-ref"}}, err
 	}
-	issuer, err := newStageGrantIssuer(endpoint)
+	issuer, err := newTestStageGrantIssuer(endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +91,94 @@ func mintTestGrant(t *testing.T, service *daemonCredentialService, grant podauth
 		t.Fatal(err)
 	}
 	return token
+}
+
+func newTestStageGrantIssuer(endpoint string) (*stageGrantIssuer, error) {
+	key, err := podauth.CredentialGrantSigningKey("")
+	if err != nil {
+		return nil, err
+	}
+	return &stageGrantIssuer{
+		key: key, endpoint: endpoint, now: time.Now,
+		revoked: map[string]time.Time{}, buckets: map[[sha256.Size]byte]*grantBucket{},
+	}, nil
+}
+
+func TestCredentialGrantKeyIsSharedAndDomainSeparated(t *testing.T) {
+	keyA := filepath.Join(t.TempDir(), "pod-a.key")
+	keyB := filepath.Join(t.TempDir(), "pod-b.key")
+	rawA := []byte(strings.Repeat("a", 32))
+	if err := os.WriteFile(keyA, rawA, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(keyB, []byte(strings.Repeat("b", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := podauth.CredentialGrantSigningKey(keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := podauth.CredentialGrantSigningKey(keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	different, err := podauth.CredentialGrantSigningKey(keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := first.MintCredentialGrant(podauth.CredentialGrant{
+		RunID: "run-shared", Stage: "build", Attempt: 1, Capabilities: []string{"repo:push"},
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.VerifyCredentialGrant(token); err != nil {
+		t.Fatalf("grant minted by first daemon did not validate in second daemon: %v", err)
+	}
+	if _, err := different.VerifyCredentialGrant(token); err == nil {
+		t.Fatal("grant validated with a different pod-token key file")
+	}
+	rawPodTokenKey, err := podauth.NewSignedKey(rawA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawPodTokenKey.VerifyCredentialGrant(token); err == nil {
+		t.Fatal("raw pod-token key validated a domain-separated credential grant")
+	}
+}
+
+func TestCredentialGrantSurvivesRestart(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "pod.key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("s", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := &instance.Config{API: instance.APIConfig{PodTokenKeyFile: keyPath}}
+	firstRoot, secondRoot := t.TempDir(), t.TempDir()
+	first := (&daemonCredentialService{
+		config: config,
+		shared: journal.NewRegistryScrubber(),
+	}).withStageGrants(firstRoot, "127.0.0.1:8080", false)
+	second := (&daemonCredentialService{
+		config: config,
+		shared: journal.NewRegistryScrubber(),
+	}).withStageGrants(secondRoot, "127.0.0.1:8080", false)
+	t.Cleanup(func() {
+		unregisterDaemonStageGrants(firstRoot, first)
+		unregisterDaemonStageGrants(secondRoot, second)
+	})
+	grant, err := first.MintStageGrant(
+		runnerStageEnvelope("run-restart", "build", 1),
+		[]string{"repo:push"},
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted, err := second.admitGrant(grant.Token, "repo:push"); err != nil || admitted.RunID != "run-restart" {
+		t.Fatalf("fresh daemon rejected pre-restart grant: %+v, %v", admitted, err)
+	}
 }
 
 func TestCredentialRefreshReResolvesTheGrantedCapabilityAndJournalsIt(t *testing.T) {
@@ -158,10 +249,11 @@ func TestCredentialRefreshNegativeCases(t *testing.T) {
 		{
 			name: "another daemon's grant",
 			grant: func(t *testing.T, _ *daemonCredentialService, runID string) string {
-				other, err := newStageGrantIssuer("http://127.0.0.1:2")
+				other, err := newTestStageGrantIssuer("http://127.0.0.1:2")
 				if err != nil {
 					t.Fatal(err)
 				}
+
 				token, _, err := other.key.MintCredentialGrant(podauth.CredentialGrant{RunID: runID, Stage: "push-branch", Capabilities: []string{"repo:push"}}, time.Hour)
 				if err != nil {
 					t.Fatal(err)
