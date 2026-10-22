@@ -113,6 +113,9 @@ func (p *ADOProvider) adoWorkItemListQuery(
 		return "", "", "", err
 	}
 	if req.UpdatedSince != nil {
+		// WIQL compares date literals at day granularity unless the query
+		// opts into time precision, which would drop UpdatedSince's
+		// time-of-day (#6877).
 		endpoint, err = addQuery(endpoint, url.Values{"timePrecision": []string{"true"}})
 		if err != nil {
 			return "", "", "", err
@@ -130,6 +133,8 @@ func adoWorkItemCandidateLimit(req ListWorkItemsRequest, requestedState string, 
 		candidateLimit = max(req.Limit, candidateScanCeiling)
 	}
 	if boundedScan && req.MaxCandidates > 0 && (candidateLimit <= 0 || candidateLimit > req.MaxCandidates) {
+		// The raw-candidate budget cut this page short. Keep the cap on what
+		// WIQL fetches, not only on the matches returned after hydration.
 		candidateLimit = req.MaxCandidates
 	}
 	return candidateLimit
@@ -146,11 +151,27 @@ func updateADOWorkItemPageInfo(
 	if req.PageInfo == nil {
 		return
 	}
+	// CandidateCount is how many candidates were actually INSPECTED
+	// this round (lastScanned+1), not how many were fetched (len(refs))
+	// — an early break once Limit real matches are in hand can leave
+	// fetched-but-never-looked-at candidates behind, and counting those
+	// as "consumed" overstates the caller's own scan-budget spend
+	// (cmd/goobers/backlogquery.go's listBacklogScanWindow decrements
+	// its outer limit by CandidateCount), starving later pages of
+	// budget for work this round never actually did.
 	req.PageInfo.CandidateCount = lastScanned + 1
 	req.PageInfo.QueryNarrowed = adoQueryNarrowed(req, requestedState, fellBack)
 	req.PageInfo.QueryNarrowingFallback = fellBack
 	scannedEverything := lastScanned == len(refs)-1
 	fetchWasCapped := candidateLimit > 0 && len(refs) == candidateLimit
+	// HasNext/NextCursor track the MATCH stream, not the candidate
+	// stream (#2067's third acceptance criterion): stopping early
+	// because Limit matches are already in hand leaves fetched-but-
+	// unscanned candidates behind (scannedEverything=false), and even
+	// having scanned every fetched candidate without reaching Limit
+	// matches still leaves more to look at when the fetch itself hit
+	// candidateLimit (fetchWasCapped) — ADO may hold further
+	// candidates beyond what this round asked for.
 	req.PageInfo.HasNext = boundedScan && candidateLimit > 0 && (!scannedEverything || fetchWasCapped)
 	req.PageInfo.NextCursor = ""
 	if req.PageInfo.HasNext && lastScanned >= 0 {
