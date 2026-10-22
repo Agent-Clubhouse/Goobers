@@ -21,7 +21,7 @@ func TestDurableTriggerDrainPrunesChildCustodyWithoutScheduler(t *testing.T) {
 	s := acceptedService(t, path, dispatch)
 	// The production budget is a latency bound, not part of this contract; a
 	// race-instrumented runner can need longer than it to prune a full batch.
-	s.pruneBudget = time.Minute
+	s.SetPruneBudget(time.Minute)
 	acceptedAt := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	now := acceptedAt
 	dispatch.SetClock(func() time.Time { return now })

@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/cancelreceipt"
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -214,7 +215,7 @@ func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)
 
 func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
 	if s.receipts != nil {
-		return s.cancelWithReceipt(ctx, input)
+		return planes.NewCancelReceiptService(s.receipts, s.cancelOnce).Cancel(ctx, input)
 	}
 	return s.cancelOnce(ctx, input)
 }

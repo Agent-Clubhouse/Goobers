@@ -51,14 +51,14 @@ func (s *durableTriggerService) reconcileChildReceipt(ctx context.Context, recor
 	if err != nil {
 		return err
 	}
-	if !observed && s.bootUncertain[record.ID] {
+	if !observed && s.BootUncertain(record.ID) {
 		if err = s.queue.RequeueChild(ctx, ref.Child.Identity, "no execution observed after restart", s.dispatch.Now()); err != nil {
 			return err
 		}
-		delete(s.bootUncertain, record.ID)
+		s.ClearBootUncertain(record.ID)
 		return nil
 	}
-	if err = s.reconcileObservation(ctx, record, observed); err != nil {
+	if err = s.ReconcileObservation(ctx, record, observed); err != nil {
 		return err
 	}
 	if observed {
@@ -133,7 +133,7 @@ func (s *durableTriggerService) observeChildExecution(ctx context.Context, recor
 			return fmt.Errorf("rejected child %s has an execution journal", record.ID)
 		}
 		if record.State == triggerqueue.Dispatching {
-			if err = s.reconcileObservation(ctx, record, true); err != nil {
+			if err = s.ReconcileObservation(ctx, record, true); err != nil {
 				return err
 			}
 		}

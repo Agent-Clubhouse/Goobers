@@ -33,8 +33,8 @@ func TestDurableTriggerReconcilesPublishedRunAfterLostDispatchAcknowledgment(t *
 					t.Fatal(err)
 				}
 			}
-			s.observe = acceptedTriggerObserver(layout)
-			if err := s.reconcileObserved(t.Context()); err != nil {
+			s.SetObserver(acceptedTriggerObserver(layout))
+			if err := s.ReconcileObserved(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			before, err := s.queue.Get(t.Context(), accepted.AcceptanceID, request.Actor)
@@ -56,7 +56,7 @@ func TestDurableTriggerReconcilesPublishedRunAfterLostDispatchAcknowledgment(t *
 				t.Fatal(err)
 			}
 			s = acceptedService(t, path, dispatch)
-			s.observe = acceptedTriggerObserver(layout)
+			s.SetObserver(acceptedTriggerObserver(layout))
 			recorder := &dispatchContextRecorder{}
 			dispatch.AttachDispatcher(recorder)
 			if err := s.Drain(t.Context()); err != nil {
@@ -98,7 +98,7 @@ func TestDurableTriggerRetriesAbsentPriorProcessDispatchOnlyOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 			s = acceptedService(t, path, dispatch)
-			s.observe = acceptedTriggerObserver(layout)
+			s.SetObserver(acceptedTriggerObserver(layout))
 			starter := &acceptedRunIDStarter{ids: make(chan string, 2)}
 			scheduler := localscheduler.New([]localscheduler.WorkflowEntry{{Workflow: "impl", Gaggle: "own", Starter: starter}}, nil)
 			dispatch.AttachScheduler(scheduler)
@@ -122,7 +122,7 @@ func TestDurableTriggerRetriesAbsentPriorProcessDispatchOnlyOnce(t *testing.T) {
 				}
 				scheduler.Wait()
 			}
-			if len(starter.ids) != 0 || len(s.bootUncertain) != 0 {
+			if len(starter.ids) != 0 || s.BootUncertainCount() != 0 {
 				t.Fatal("current-process dispatch replayed or retained boot eligibility")
 			}
 		})

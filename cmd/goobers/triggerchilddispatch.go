@@ -124,10 +124,10 @@ func (s *durableTriggerService) drainChild(ctx context.Context, record triggerqu
 }
 
 func (s *durableTriggerService) auditChildDispatch(record triggerqueue.Record, ref childExecutionRef) error {
-	if s.auditLog == nil {
+	if s.AuditLog() == nil {
 		return nil
 	}
-	return s.auditLog.Append(journal.Event{Type: journal.EventRunnerAnnotation, Actor: record.Actor, Workflow: ref.Envelope.Workflow, Gaggle: ref.Envelope.Gaggle, RunID: ref.Child.RunID, Reason: "accepted child dispatch requested", Runner: map[string]any{
+	return s.AuditLog().Append(journal.Event{Type: journal.EventRunnerAnnotation, Actor: record.Actor, Workflow: ref.Envelope.Workflow, Gaggle: ref.Envelope.Gaggle, RunID: ref.Child.RunID, Reason: "accepted child dispatch requested", Runner: map[string]any{
 		"note": "child.dispatch.requested", "acceptanceId": record.ID, "parentRunId": ref.Envelope.ParentRunID, "stageOccurrence": ref.Envelope.StageOccurrence, "sourceDigest": ref.Envelope.SourceDigest,
 	}})
 }
