@@ -69,6 +69,80 @@ func TestSurrenderDirRoundTripByAttemptIdentity(t *testing.T) {
 	}
 }
 
+func TestSurrenderContractAcceptsCurrentAndPreviousVersions(t *testing.T) {
+	base := func() SurrenderedResult {
+		return SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*SurrenderedResult)
+		wantErr bool
+	}{
+		{name: "omitted v1"},
+		{name: "explicit v1", mutate: func(result *SurrenderedResult) {
+			result.ContractVersion = SurrenderContractV1
+		}},
+		{name: "v2 usage", mutate: func(result *SurrenderedResult) {
+			result.ContractVersion = SurrenderContractV2
+			result.ObservedUsageReported = true
+			result.ObservedUsage = map[string]float64{"gen_ai.usage.input_tokens": 7}
+		}},
+		{name: "v1 usage refused", wantErr: true, mutate: func(result *SurrenderedResult) {
+			result.ContractVersion = SurrenderContractV1
+			result.ObservedUsageReported = true
+			result.ObservedUsage = map[string]float64{"gen_ai.usage.input_tokens": 7}
+		}},
+		{name: "future version refused", wantErr: true, mutate: func(result *SurrenderedResult) {
+			result.ContractVersion = CurrentSurrenderContract + 1
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := base()
+			if test.mutate != nil {
+				test.mutate(&result)
+			}
+			err := result.Validate()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestOldWorkerIgnoresUsageField(t *testing.T) {
+	current := SurrenderedResult{
+		ContractVersion:       SurrenderContractV2,
+		ObservedUsageReported: true,
+		ObservedUsage:         map[string]float64{"gen_ai.usage.input_tokens": 17},
+		Result: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultSuccess,
+			Metrics: map[string]float64{"model_authored": 999},
+		},
+	}
+	data, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldWorker struct {
+		Result apiv1.ResultEnvelope `json:"result"`
+	}
+	if err := json.Unmarshal(data, &oldWorker); err != nil {
+		t.Fatal(err)
+	}
+	if oldWorker.Result.Status != apiv1.ResultSuccess ||
+		oldWorker.Result.Metrics["model_authored"] != 999 {
+		t.Fatalf("old worker result = %+v", oldWorker.Result)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["observedUsage"]; !ok {
+		t.Fatal("v2 wire omitted observedUsage, so the old-reader test exercised nothing")
+	}
+}
+
 // An absent surrender is the distinguished ErrNoSurrender — the signal the
 // engine classifies as an infra-attempt data-plane fault, distinct from an
 // unreadable plane.
