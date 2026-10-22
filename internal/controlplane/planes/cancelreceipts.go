@@ -11,6 +11,13 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 )
 
+// Cancellation receipt error codes are shared by the producer and retrying client.
+const (
+	CancelRequestConflictCode    = "cancel_request_conflict"
+	CancelOutcomeUnknownCode     = "cancel_outcome_unknown"
+	CancelReceiptUnavailableCode = "cancel_receipt_unavailable"
+)
+
 // CancelReceiptService makes run cancellation idempotent through durable receipts.
 type CancelReceiptService struct {
 	receipts *cancelreceipt.Store
@@ -33,14 +40,14 @@ func (s *CancelReceiptService) Cancel(ctx context.Context, input httpapi.CancelR
 	}
 	receipt, fresh, err := s.receipts.Begin(ctx, input.IdempotencyKey, input.Actor, payload, time.Now())
 	if errors.Is(err, cancelreceipt.ErrConflict) {
-		return httpapi.CancelRunResult{}, httpapi.NewInterventionError(http.StatusConflict, "cancel_request_conflict", "request key belongs to another cancellation", nil)
+		return httpapi.CancelRunResult{}, httpapi.NewInterventionError(http.StatusConflict, CancelRequestConflictCode, "request key belongs to another cancellation", nil)
 	}
 	if err != nil {
 		return httpapi.CancelRunResult{}, cancelReceiptUnavailable(err)
 	}
 	if !fresh {
 		if !receipt.Complete {
-			return httpapi.CancelRunResult{}, httpapi.NewInterventionError(http.StatusConflict, "cancel_outcome_unknown", "cancellation is in progress or its outcome is uncertain; retry the same key or inspect the run before requesting another cancellation", nil)
+			return httpapi.CancelRunResult{}, httpapi.NewInterventionError(http.StatusConflict, CancelOutcomeUnknownCode, "cancellation is in progress or its outcome is uncertain; retry the same key or inspect the run before requesting another cancellation", nil)
 		}
 		var result httpapi.CancelRunResult
 		if err := json.Unmarshal(receipt.Result, &result); err != nil {
@@ -65,5 +72,5 @@ func (s *CancelReceiptService) Cancel(ctx context.Context, input httpapi.CancelR
 }
 
 func cancelReceiptUnavailable(err error) error {
-	return httpapi.NewInterventionError(http.StatusServiceUnavailable, "cancel_receipt_unavailable", "cancellation outcome could not be acknowledged; retry the same key to reconcile", err)
+	return httpapi.NewInterventionError(http.StatusServiceUnavailable, CancelReceiptUnavailableCode, "cancellation outcome could not be acknowledged; retry the same key to reconcile", err)
 }

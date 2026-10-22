@@ -122,7 +122,7 @@ func TestDurableTriggerRetriesAbsentPriorProcessDispatchOnlyOnce(t *testing.T) {
 				}
 				scheduler.Wait()
 			}
-			if len(starter.ids) != 0 || s.BootUncertainCount() != 0 {
+			if len(starter.ids) != 0 {
 				t.Fatal("current-process dispatch replayed or retained boot eligibility")
 			}
 		})

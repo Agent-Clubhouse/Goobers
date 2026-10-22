@@ -82,6 +82,3 @@ func (s *DurableTriggerService) BootUncertain(id string) bool { return s.bootUnc
 
 // ClearBootUncertain removes one reconciled boot-time uncertainty.
 func (s *DurableTriggerService) ClearBootUncertain(id string) { delete(s.bootUncertain, id) }
-
-// BootUncertainCount reports unreconciled boot-time acceptances.
-func (s *DurableTriggerService) BootUncertainCount() int { return len(s.bootUncertain) }

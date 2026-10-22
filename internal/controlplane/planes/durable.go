@@ -38,9 +38,9 @@ type DurableTriggerService struct {
 	pruneBudget time.Duration
 }
 
-// The wire request deliberately excludes authority fields. Persist them in a
+// AcceptedTriggerPayload deliberately excludes authority fields. Persist them in a
 // separate envelope so reopening the queue cannot turn a pod into an operator.
-type acceptedTriggerPayload struct {
+type AcceptedTriggerPayload struct {
 	Request   httpapi.TriggerRequest `json:"request"`
 	PodScoped bool                   `json:"podScoped"`
 	PodRunID  string                 `json:"podRunId"`
@@ -108,9 +108,6 @@ func (s *DurableTriggerService) SetObserver(observe func(context.Context, trigge
 	s.observe = observe
 }
 
-// SetPruneBudget overrides one child-retention sweep budget.
-func (s *DurableTriggerService) SetPruneBudget(budget time.Duration) { s.pruneBudget = budget }
-
 // Close closes the accepted-trigger store.
 func (s *DurableTriggerService) Close() error { return s.queue.Close() }
 
@@ -126,7 +123,7 @@ func (s *DurableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if response, handled, err := s.backend.AcceptOrdinary(ctx, request); handled {
 		return response, err
 	}
-	payload, err := json.Marshal(acceptedTriggerPayload{Request: request, PodScoped: request.PodScoped, PodRunID: request.PodRunID})
+	payload, err := json.Marshal(AcceptedTriggerPayload{Request: request, PodScoped: request.PodScoped, PodRunID: request.PodRunID})
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
 	}
@@ -159,7 +156,7 @@ func (s *DurableTriggerService) TriggerStatus(ctx context.Context, request httpa
 	if err != nil {
 		return httpapi.TriggerStatusResponse{}, err
 	}
-	var payload acceptedTriggerPayload
+	var payload AcceptedTriggerPayload
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return httpapi.TriggerStatusResponse{}, err
 	}
@@ -256,7 +253,7 @@ func (s *DurableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	if s.dispatch.Triggerer() == nil {
 		return nil
 	}
-	var payload acceptedTriggerPayload
+	var payload AcceptedTriggerPayload
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)
 	}

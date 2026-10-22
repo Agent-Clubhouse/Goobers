@@ -357,8 +357,8 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 // cancelReceiptUnavailableCode means the daemon could not record the outcome
 // it reached and asks for a replay under the same key.
 const (
-	cancelOutcomeUnknownCode     = "cancel_outcome_unknown"
-	cancelReceiptUnavailableCode = "cancel_receipt_unavailable"
+	cancelOutcomeUnknownCode     = planes.CancelOutcomeUnknownCode
+	cancelReceiptUnavailableCode = planes.CancelReceiptUnavailableCode
 )
 
 // cancelReconcileWindow bounds how long `run cancel` keeps re-asking the daemon

@@ -13,11 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
-type acceptedTriggerPayload struct {
-	Request   httpapi.TriggerRequest `json:"request"`
-	PodScoped bool                   `json:"podScoped"`
-	PodRunID  string                 `json:"podRunId"`
-}
+type acceptedTriggerPayload = planes.AcceptedTriggerPayload
 
 type durableTriggerService struct {
 	*planes.DurableTriggerService

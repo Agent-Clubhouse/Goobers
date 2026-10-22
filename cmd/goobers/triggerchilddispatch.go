@@ -53,11 +53,15 @@ type childStartDeferred struct{ Reason string }
 func (e *childStartDeferred) Error() string { return e.Reason }
 
 func (s *durableTriggerService) childReference(ctx context.Context, record triggerqueue.Record) (childExecutionRef, error) {
+	return childReference(ctx, s.queue, record)
+}
+
+func childReference(ctx context.Context, queue *triggerqueue.Store, record triggerqueue.Record) (childExecutionRef, error) {
 	e, err := childworkflow.DecodeStartEnvelope(record.Payload)
 	if err != nil {
 		return childExecutionRef{}, err
 	}
-	c, err := s.queue.GetChild(ctx, e.Identity())
+	c, err := queue.GetChild(ctx, e.Identity())
 	if err != nil {
 		return childExecutionRef{}, err
 	}
