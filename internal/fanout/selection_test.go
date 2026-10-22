@@ -12,7 +12,7 @@ func TestFreezeSelectionNormalizesOptionalBranchesInDeclarationOrder(t *testing.
 	def, source := selectionFixture()
 	data := []byte(`{"schemaVersion":1,"branches":[{"name":"optional-b","reason":"needed"},{"name":"required","reason":"ignored"},{"name":"optional-a"}]}`)
 	source.Digest, source.Size = journal.Digest(data), int64(len(data))
-	got, err := FreezeSelection(def, source, data)
+	got, err := FreezeSelection(def, source, data, MaxSourceBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +39,11 @@ func TestFreezeSelectionRejectsInvalidSourceOrDocument(t *testing.T) {
 		"no declaration": {data: valid, mutate: func(def *apiv1.Parallel, _ *journal.FanOutSourceRef) { def.Selection = nil }},
 		"source":         {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) { source.Task = "other" }},
 		"visit":          {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) { source.Visit = 0 }},
-		"media type":     {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) { source.MediaType = "text/plain" }},
-		"size":           {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) { source.Size++ }},
+		"attempt overflow": {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) {
+			source.Attempt = int(^uint32(0)>>1) + 1
+		}},
+		"media type": {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) { source.MediaType = "text/plain" }},
+		"size":       {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) { source.Size++ }},
 		"digest": {data: valid, mutate: func(_ *apiv1.Parallel, source *journal.FanOutSourceRef) {
 			source.Digest = journal.Digest([]byte("other"))
 		}},
@@ -57,7 +60,7 @@ func TestFreezeSelectionRejectsInvalidSourceOrDocument(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(&gotDef, &gotSource)
 			}
-			if _, err := FreezeSelection(gotDef, gotSource, data); err == nil {
+			if _, err := FreezeSelection(gotDef, gotSource, data, MaxSourceBytes); err == nil {
 				t.Fatal("FreezeSelection accepted invalid input")
 			}
 		})
@@ -68,7 +71,7 @@ func TestFreezeSelectionDefaultsUnknownIntegrityToDerived(t *testing.T) {
 	def, source := selectionFixture()
 	data := []byte(`{"schemaVersion":1,"branches":[]}`)
 	source.Digest, source.Size, source.Integrity = journal.Digest(data), int64(len(data)), ""
-	got, err := FreezeSelection(def, source, data)
+	got, err := FreezeSelection(def, source, data, MaxSourceBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	temporalworker "go.temporal.io/sdk/worker"
@@ -83,6 +84,20 @@ func TestFreezeParallelSelectionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestFreezeParallelSelectionChecksSlotLimitBeforeBlobRead(t *testing.T) {
+	store, input := selectionActivityFixture(t)
+	counting := &countingBlobStore{Store: store}
+	input.MaxSourceBytes = input.Source.Size - 1
+	if _, err := (&Activities{FanOutBlobs: counting}).FreezeParallelSelection(
+		context.Background(), input,
+	); err == nil {
+		t.Fatal("FreezeParallelSelection accepted a source above the slot limit")
+	}
+	if counting.gets != 0 {
+		t.Fatalf("blob store read %d time(s) before rejecting the slot limit", counting.gets)
+	}
+}
+
 func TestFreezeParallelSelectionHistoryReplaysAtEveryWorkflowTaskStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -98,6 +113,12 @@ func TestFreezeParallelSelectionHistoryReplaysAtEveryWorkflowTaskStart(t *testin
 		}
 	})
 	store, input := selectionActivityFixture(t)
+	expected, err := (&Activities{FanOutBlobs: store}).FreezeParallelSelection(
+		context.Background(), input,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const queue = "parallel-selection-freeze-replay"
 	worker := temporalworker.New(server.Client(), queue, temporalworker.Options{})
 	worker.RegisterWorkflow(freezeParallelSelectionProbe)
@@ -117,7 +138,14 @@ func TestFreezeParallelSelectionHistoryReplaysAtEveryWorkflowTaskStart(t *testin
 	if err := run.Get(ctx, &result); err != nil {
 		t.Fatal(err)
 	}
+	if !reflect.DeepEqual(result, expected) {
+		t.Fatalf("workflow result = %+v, want direct activity result %+v", result, expected)
+	}
 	history := readSelectionFreezeHistory(t, ctx, server.Client(), run)
+	recorded := selectionActivityResultFromHistory(t, history)
+	if !reflect.DeepEqual(recorded, expected) {
+		t.Fatalf("recorded activity result = %+v, want %+v", recorded, expected)
+	}
 	replaySelectionFreezeHistory(t, history, "full")
 	prefixes := 0
 	for i, event := range history.Events {
@@ -132,6 +160,26 @@ func TestFreezeParallelSelectionHistoryReplaysAtEveryWorkflowTaskStart(t *testin
 	if prefixes < 2 {
 		t.Fatalf("history has %d workflow-task-start prefixes, want at least activity schedule and completion", prefixes)
 	}
+}
+
+func selectionActivityResultFromHistory(
+	t *testing.T,
+	history *historypb.History,
+) FreezeParallelSelectionResult {
+	t.Helper()
+	for _, event := range history.Events {
+		attributes := event.GetActivityTaskCompletedEventAttributes()
+		if attributes == nil {
+			continue
+		}
+		var result FreezeParallelSelectionResult
+		if err := converter.GetDefaultDataConverter().FromPayloads(attributes.Result, &result); err != nil {
+			t.Fatalf("decode recorded activity result: %v", err)
+		}
+		return result
+	}
+	t.Fatal("history contains no completed activity result")
+	return FreezeParallelSelectionResult{}
 }
 
 func freezeParallelSelectionProbe(
@@ -204,7 +252,7 @@ func selectionActivityFixture(t *testing.T) (*blobstore.Dir, FreezeParallelSelec
 	}
 	return store, FreezeParallelSelectionInput{
 		RunID: "selection-freeze-run", ParallelName: definition.Name,
-		Definition: definition, Source: source,
+		Definition: definition, Source: source, MaxSourceBytes: fanout.MaxSourceBytes,
 	}
 }
 

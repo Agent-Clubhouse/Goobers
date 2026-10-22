@@ -45,12 +45,15 @@ type FreezeMapRosterResult struct {
 // its roster, and stores the normalized roster under its content digest.
 func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInput) (FreezeMapRosterResult, error) {
 	if in.RunID == "" || in.MapName == "" || in.Definition.Name != in.MapName {
-		return FreezeMapRosterResult{}, invalidFanOutActivity(
+		return FreezeMapRosterResult{}, invalidFanOutCallerActivity(
 			fmt.Errorf("run ID and map name are required, and definition name must match map name"),
 		)
 	}
 	if a.FanOutBlobs == nil {
 		return FreezeMapRosterResult{}, classifySeamError(ErrNotConfigured)
+	}
+	if err := fanout.ValidateSourceBlobRef(in.Source, fanout.MaxSourceBytes); err != nil {
+		return FreezeMapRosterResult{}, invalidFanOutSourceActivity(err)
 	}
 	sourceData, err := a.FanOutBlobs.Get(ctx, in.Source.Digest)
 	if err != nil {
@@ -58,10 +61,10 @@ func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInpu
 	}
 	blob, data, digest, err := fanout.FreezeRosterBlob(in.Definition, in.Source, sourceData)
 	if err != nil {
-		return FreezeMapRosterResult{}, invalidFanOutActivity(err)
+		return FreezeMapRosterResult{}, invalidFanOutSourceActivity(err)
 	}
 	if _, err := fanout.DecodeRosterBlob(data, digest, in.Definition); err != nil {
-		return FreezeMapRosterResult{}, invalidFanOutActivity(err)
+		return FreezeMapRosterResult{}, invalidFanOutSourceActivity(err)
 	}
 	if err := a.FanOutBlobs.Put(ctx, digest, data); err != nil {
 		return FreezeMapRosterResult{}, fmt.Errorf("store map %q frozen roster %s: %w", in.MapName, digest, err)
@@ -76,6 +79,10 @@ func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInpu
 	}, nil
 }
 
-func invalidFanOutActivity(err error) error {
-	return temporal.NewNonRetryableApplicationError(err.Error(), "fanout_source_invalid", err)
+func invalidFanOutCallerActivity(err error) error {
+	return temporal.NewNonRetryableApplicationError(err.Error(), "fanout_caller_invalid", err)
+}
+
+func invalidFanOutSourceActivity(err error) error {
+	return temporal.NewNonRetryableApplicationError(err.Error(), fanout.CodeSourceInvalid, err)
 }

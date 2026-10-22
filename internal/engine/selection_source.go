@@ -16,10 +16,11 @@ const ActFreezeParallelSelection = "FreezeParallelSelection"
 // FreezeParallelSelectionInput binds a selective parallel to the exact
 // producer attempt and source artifact selected by deterministic history.
 type FreezeParallelSelectionInput struct {
-	RunID        string                  `json:"runId"`
-	ParallelName string                  `json:"parallelName"`
-	Definition   apiv1.Parallel          `json:"definition"`
-	Source       journal.FanOutSourceRef `json:"source"`
+	RunID          string                  `json:"runId"`
+	ParallelName   string                  `json:"parallelName"`
+	Definition     apiv1.Parallel          `json:"definition"`
+	Source         journal.FanOutSourceRef `json:"source"`
+	MaxSourceBytes int64                   `json:"maxSourceBytes"`
 }
 
 // FreezeParallelSelectionResult is recorded directly in Temporal history.
@@ -36,12 +37,20 @@ func (a *Activities) FreezeParallelSelection(
 	in FreezeParallelSelectionInput,
 ) (FreezeParallelSelectionResult, error) {
 	if in.RunID == "" || in.ParallelName == "" || in.Definition.Name != in.ParallelName {
-		return FreezeParallelSelectionResult{}, invalidFanOutActivity(
+		return FreezeParallelSelectionResult{}, invalidFanOutCallerActivity(
 			fmt.Errorf("run ID and parallel name are required, and definition name must match parallel name"),
+		)
+	}
+	if in.MaxSourceBytes <= 0 || in.MaxSourceBytes > fanout.MaxSourceBytes {
+		return FreezeParallelSelectionResult{}, invalidFanOutCallerActivity(
+			fmt.Errorf("source byte limit %d is outside 1..%d", in.MaxSourceBytes, fanout.MaxSourceBytes),
 		)
 	}
 	if a.FanOutBlobs == nil {
 		return FreezeParallelSelectionResult{}, classifySeamError(ErrNotConfigured)
+	}
+	if err := fanout.ValidateSourceBlobRef(in.Source, in.MaxSourceBytes); err != nil {
+		return FreezeParallelSelectionResult{}, invalidFanOutSourceActivity(err)
 	}
 	sourceData, err := a.FanOutBlobs.Get(ctx, in.Source.Digest)
 	if err != nil {
@@ -49,9 +58,11 @@ func (a *Activities) FreezeParallelSelection(
 			"read parallel %q selection source %s: %w", in.ParallelName, in.Source.Digest, err,
 		)
 	}
-	selection, err := fanout.FreezeSelection(in.Definition, in.Source, sourceData)
+	selection, err := fanout.FreezeSelection(
+		in.Definition, in.Source, sourceData, in.MaxSourceBytes,
+	)
 	if err != nil {
-		return FreezeParallelSelectionResult{}, invalidFanOutActivity(err)
+		return FreezeParallelSelectionResult{}, invalidFanOutSourceActivity(err)
 	}
 	return FreezeParallelSelectionResult{
 		ParallelName: in.ParallelName,

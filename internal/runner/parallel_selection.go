@@ -87,8 +87,12 @@ func (r *Runner) freezeParallelSelection(ctx context.Context, jr *journal.Run, m
 		Path: payload.Binding.Artifact.Path, Size: payload.Binding.Artifact.Size,
 		MediaType: payload.Binding.Artifact.MediaType,
 	}
-	selection, err := fanout.FreezeSelection(p, ref, payload.Bytes)
+	selection, err := fanout.FreezeSelection(p, ref, payload.Bytes, fanout.MaxSourceBytes)
 	if err != nil {
+		var sourceErr *fanout.SourceError
+		if errors.As(err, &sourceErr) {
+			return nil, refuse("%s", sourceErr.Detail)
+		}
 		return nil, refuse("%v", err)
 	}
 	return &selection, nil

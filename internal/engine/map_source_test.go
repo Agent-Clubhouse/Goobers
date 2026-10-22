@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"io"
 	"reflect"
 	"testing"
@@ -79,6 +80,62 @@ func TestFreezeMapRosterFailsClosed(t *testing.T) {
 			mutate(activities, &gotInput)
 			if _, err := activities.FreezeMapRoster(context.Background(), gotInput); err == nil {
 				t.Fatal("FreezeMapRoster accepted invalid input")
+			}
+		})
+	}
+}
+
+func TestFreezeMapRosterChecksReferenceBeforeBlobRead(t *testing.T) {
+	store, input, _ := mapRosterActivityFixture(t)
+	tests := map[string]func(*FreezeMapRosterInput){
+		"oversize": func(input *FreezeMapRosterInput) {
+			input.Source.Size = fanout.MaxSourceBytes + 1
+		},
+		"malformed digest": func(input *FreezeMapRosterInput) {
+			input.Source.Digest = "sha256:not-a-digest"
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			counting := &countingBlobStore{Store: store}
+			gotInput := input
+			mutate(&gotInput)
+			if _, err := (&Activities{FanOutBlobs: counting}).FreezeMapRoster(
+				context.Background(), gotInput,
+			); err == nil {
+				t.Fatal("FreezeMapRoster accepted invalid source reference")
+			}
+			if counting.gets != 0 {
+				t.Fatalf("blob store read %d time(s) before rejecting source reference", counting.gets)
+			}
+		})
+	}
+}
+
+func TestFreezeMapRosterSeparatesCallerAndSourceErrors(t *testing.T) {
+	store, input, _ := mapRosterActivityFixture(t)
+	tests := []struct {
+		name     string
+		mutate   func(*FreezeMapRosterInput)
+		wantType string
+	}{
+		{
+			name: "caller", wantType: "fanout_caller_invalid",
+			mutate: func(input *FreezeMapRosterInput) { input.RunID = "" },
+		},
+		{
+			name: "source", wantType: fanout.CodeSourceInvalid,
+			mutate: func(input *FreezeMapRosterInput) { input.Source.Size++ },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotInput := input
+			test.mutate(&gotInput)
+			_, err := (&Activities{FanOutBlobs: store}).FreezeMapRoster(context.Background(), gotInput)
+			var application *temporal.ApplicationError
+			if !errors.As(err, &application) || application.Type() != test.wantType {
+				t.Fatalf("error = %T %v, want application type %q", err, err, test.wantType)
 			}
 		})
 	}
@@ -209,4 +266,14 @@ func mustMapItemDigest(t *testing.T, identity, item string) string {
 		t.Fatal(err)
 	}
 	return digest
+}
+
+type countingBlobStore struct {
+	blobstore.Store
+	gets int
+}
+
+func (s *countingBlobStore) Get(ctx context.Context, digest string) ([]byte, error) {
+	s.gets++
+	return s.Store.Get(ctx, digest)
 }
