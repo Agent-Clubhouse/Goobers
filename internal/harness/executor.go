@@ -656,7 +656,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
 		ChildWorkflows:           childAccess,
-		UsageSink:                agentUsageSink(ctx),
+		UsageSink:                invoke.AgentUsageStream(ctx),
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {
@@ -850,10 +850,6 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	out.uncommitted = postcondition.inspect(ctx, e, env.TaskID, out.Payload)
 	return out, transcript, nil, nil
-}
-
-func agentUsageSink(ctx context.Context) func(map[string]float64) {
-	return func(metrics map[string]float64) { invoke.ReportAgentUsage(ctx, metrics) }
 }
 
 // journalMCPServerFailures annotates a registered MCP server the harness

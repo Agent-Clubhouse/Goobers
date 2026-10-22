@@ -42,14 +42,17 @@ func (u *supervisedObservedUsage) report(metrics map[string]float64) {
 	}
 	u.mu.Lock()
 	u.reported = true
-	if u.exceeded != nil {
-		exceeded := u.exceeded
-		u.mu.Unlock()
-		u.cancel(exceeded)
-		return
+	if u.metrics == nil {
+		u.metrics = make(map[string]float64)
 	}
-	u.metrics = snapshot
-	u.exceeded = supervisorUsageLimitError(u.limits, snapshot)
+	for name, value := range snapshot {
+		if previous, ok := u.metrics[name]; !ok || value > previous {
+			u.metrics[name] = value
+		}
+	}
+	if u.exceeded == nil {
+		u.exceeded = supervisorUsageLimitError(u.limits, u.metrics)
+	}
 	exceeded := u.exceeded
 	u.mu.Unlock()
 	if exceeded != nil {

@@ -96,6 +96,7 @@ func TestSupervisorBudgetCancellationIsNonRetryable(t *testing.T) {
 		},
 		Verdict: &apiv1.Verdict{Decision: apiv1.VerdictPass},
 	}
+
 	settleSupervisedUsage(&outcome, supervisor)
 	if outcome.Verdict != nil || outcome.Result.Status != apiv1.ResultFailure ||
 		outcome.Result.Error == nil || outcome.Result.Error.Code != runner.BudgetExceededErrorCode ||
@@ -104,5 +105,46 @@ func TestSupervisorBudgetCancellationIsNonRetryable(t *testing.T) {
 	}
 	if outcome.ObservedUsage[telemetry.AttrUsageCostUSD] != 0.2 {
 		t.Fatalf("trusted observed usage = %v", outcome.ObservedUsage)
+	}
+}
+
+func TestSupervisorUsageSnapshotsAreMonotonic(t *testing.T) {
+	_, supervisor := newSupervisedUsageContext(
+		context.Background(), apiv1.Limits{MaxTokens: 100},
+	)
+	supervisor.report(map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  60,
+		telemetry.AttrGenAIUsageOutputTokens: 30,
+	})
+	supervisor.report(map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  5,
+		telemetry.AttrGenAIUsageOutputTokens: 5,
+	})
+	supervisor.report(map[string]float64{})
+	metrics, _ := supervisor.snapshot()
+	if metrics[telemetry.AttrGenAIUsageInputTokens] != 60 ||
+		metrics[telemetry.AttrGenAIUsageOutputTokens] != 30 {
+		t.Fatalf("decreasing/empty reports lowered usage: %v", metrics)
+	}
+
+	supervisor.report(map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  80,
+		telemetry.AttrGenAIUsageOutputTokens: 30,
+	})
+	var firstCause *supervisorBudgetExceededError
+	if !errors.As(supervisor.budgetCause(), &firstCause) {
+		t.Fatalf("first cap crossing cause = %T %v", supervisor.budgetCause(), supervisor.budgetCause())
+	}
+	supervisor.report(map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  800,
+		telemetry.AttrGenAIUsageOutputTokens: 300,
+	})
+	metrics, _ = supervisor.snapshot()
+	if metrics[telemetry.AttrGenAIUsageInputTokens] != 800 ||
+		metrics[telemetry.AttrGenAIUsageOutputTokens] != 300 {
+		t.Fatalf("post-cap final report did not raise surrendered usage: %v", metrics)
+	}
+	if got := supervisor.budgetCause(); got == nil || got.Error() != firstCause.Error() {
+		t.Fatalf("post-cap report replaced the first crossing cause: %v", got)
 	}
 }

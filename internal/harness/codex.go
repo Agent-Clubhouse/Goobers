@@ -830,6 +830,11 @@ func (c *codexJSONLCapture) result() (codexParseResult, error) {
 }
 
 func parseCodexEvent(raw []byte, result *codexParseResult) error {
+	_, err := parseCodexEventType(raw, result)
+	return err
+}
+
+func parseCodexEventType(raw []byte, result *codexParseResult) (string, error) {
 	var event struct {
 		Type     string `json:"type"`
 		Message  string `json:"message"`
@@ -840,7 +845,7 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		Usage codexUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		return err
+		return "", err
 	}
 	switch event.Type {
 	case "thread.started":
@@ -856,20 +861,18 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 	case "error":
 		result.failed = event.Message
 	}
-	return nil
+	return event.Type, nil
 }
 
 func (c *codexJSONLCapture) parseEvent(raw []byte) error {
 	if c.transcript != nil {
 		c.transcript.observe(raw)
 	}
-	if err := parseCodexEvent(raw, &c.parsed); err != nil {
+	eventType, err := parseCodexEventType(raw, &c.parsed)
+	if err != nil {
 		return err
 	}
-	var event struct {
-		Type string `json:"type"`
-	}
-	if c.usageSink != nil && json.Unmarshal(raw, &event) == nil && event.Type == "turn.completed" {
+	if c.usageSink != nil && eventType == "turn.completed" {
 		c.usageSink(maps.Clone(c.parsed.metrics))
 	}
 	return nil

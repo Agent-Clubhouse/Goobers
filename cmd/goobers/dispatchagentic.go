@@ -53,6 +53,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	}
 	ctx, usage := newSupervisedUsageContext(ctx, kit.Envelope.Limits)
 	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
+	ctx = invoke.WithAgentUsageStream(ctx, usage.report)
 	defer func() { settleSupervisedUsage(&out, usage) }()
 	// fail shapes every refusal past this point. For a REVIEW the class
 	// matters in a way it does not for an invocation: a task's surrendered

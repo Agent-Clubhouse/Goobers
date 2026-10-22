@@ -136,12 +136,18 @@ func (c *claudeTerminalCapture) captureResult(line []byte) {
 		return
 	}
 	line = bytes.TrimSpace(line)
-	var event claudeStreamMessage
-	if len(line) == 0 || json.Unmarshal(line, &event) != nil || event.Type != "result" {
+	var header struct {
+		Type string `json:"type"`
+	}
+	if len(line) == 0 || json.Unmarshal(line, &header) != nil || header.Type != "result" {
 		return
 	}
 	c.result = append(c.result[:0], line...)
 	if c.usageSink != nil {
+		var event claudeStreamMessage
+		if json.Unmarshal(line, &event) != nil {
+			return
+		}
 		c.usageSink(claudeResultUsageMetrics(event))
 	}
 }
