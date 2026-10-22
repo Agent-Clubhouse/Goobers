@@ -44,6 +44,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	toxiproxyURL, err := requiredEnv("TOXIPROXY_API_URL")
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(evidence, 0o755); err != nil {
 		return err
 	}
@@ -71,13 +75,13 @@ func run() error {
 			return err
 		}
 	}
-	if err := toxiproxySmoke(ctx, env, bin, evidence); err != nil {
+	if err := toxiproxySmoke(ctx, env, bin, evidence, toxiproxyURL); err != nil {
 		return err
 	}
 	return verifyAndSummarize(ctx, env, evidence)
 }
 
-func toxiproxySmoke(ctx context.Context, env []string, bin, evidence string) error {
+func toxiproxySmoke(ctx context.Context, env []string, bin, evidence, endpoint string) error {
 	logFile, err := os.Create(filepath.Join(evidence, "toxiproxy.log"))
 	if err != nil {
 		return err
@@ -94,7 +98,7 @@ func toxiproxySmoke(ctx context.Context, env []string, bin, evidence string) err
 	}()
 	client := http.Client{Timeout: 2 * time.Second}
 	for range 30 {
-		response, requestErr := client.Get("http://127.0.0.1:8474/version")
+		response, requestErr := client.Get(endpoint)
 		if requestErr == nil && response.StatusCode == http.StatusOK {
 			body, readErr := io.ReadAll(response.Body)
 			_ = response.Body.Close()
