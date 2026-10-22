@@ -676,7 +676,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			// The fallback probe is a real prompt session, so it gets the same
 			// export opt-out as a stage. A v2 launcher's declared probe starts no
 			// agent session and receives its arguments exactly as declared.
-			authCommand = withCopilotNoRemoteExport(authCommand)
+			authCommand = withCopilotNoRemoteExport(authCommand, version)
 		}
 		sessionTranscript := ""
 		sessionCleanup := func() {}
@@ -1024,7 +1024,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		argv = append(argv, "--reasoning-effort", value)
 	}
 	argv = append(argv, extra...)
-	argv = withCopilotNoRemoteExport(argv)
+	argv = withCopilotNoRemoteExport(argv, req.HarnessVersion)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
 			argv = append(argv, "--add-github-mcp-toolset=issues")
