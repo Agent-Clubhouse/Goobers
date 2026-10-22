@@ -16,7 +16,7 @@ func fileReaderBackendFactory(t *testing.T) readerBackendFactory {
 		config := journal.FileBackendConfig{
 			RunsDir: filepath.Join(root, "runs"), SchedulerDir: filepath.Join(root, "scheduler"),
 		}
-		writer := journal.NewFileBackend(config)
+		writer := newCleanupBackend(t, journal.NewFileBackend(config))
 		ctx := context.Background()
 		for _, runID := range []string{"run-alpha", "run-zeta"} {
 			empty, emptyOwner, err := writer.CreateRun(ctx, journal.CreateRunRequest{
