@@ -692,7 +692,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			// The fallback probe is a real prompt session, so it gets the same
 			// export opt-out as a stage. A v2 launcher's declared probe starts no
 			// agent session and receives its arguments exactly as declared.
-			authCommand = withCopilotNoRemoteExport(authCommand)
+			authCommand = withCopilotNoRemoteExport(authCommand, version)
 			authCommand = withCopilotHostSafety(authCommand)
 		}
 		sessionTranscript := ""
@@ -1161,7 +1161,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// bounded by CreateProcess (32,767), cmd.exe (8,191) or ARG_MAX. The
 	// command resolves as a stdio client because npm's PowerShell shim
 	// buffers and re-encodes stdin through $input.
-	baseCommand := resolveStdioHarnessCommand(c.Command)
+	// Normalize the prefix before recording the prompt position used by
+	// controlled sessions; removing flags later must not shift that index.
+	baseCommand := withoutCopilotSessionExportControls(resolveStdioHarnessCommand(c.Command))
 	if completionInResponse {
 		configuredArgs := append(append([]string(nil), baseCommand[1:]...), extra...)
 		if conflict := copilotConstraintConflict(configuredArgs); conflict != "" {
@@ -1181,7 +1183,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		argv = append(argv, "--reasoning-effort", value)
 	}
 	argv = append(argv, extra...)
-	argv = withCopilotNoRemoteExport(argv)
+	argv = withCopilotNoRemoteExport(argv, req.HarnessVersion)
 	argv = withCopilotHostSafety(argv)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
