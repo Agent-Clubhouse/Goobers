@@ -1,10 +1,12 @@
-package main
+package planes
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 // and not in its gaggle?
 
 const crossRunTestGaggle = "acme-web"
+const testClaimLedgerFile = "claims.json"
 
 func crossRunTestLayout(t *testing.T) instance.Layout {
 	t.Helper()
@@ -32,6 +35,23 @@ func crossRunTestLayout(t *testing.T) instance.Layout {
 		t.Fatal(err)
 	}
 	return layout
+}
+
+func newTestRunJournalService(layout instance.Layout, _ *journal.InstanceLog) *RunJournalService {
+	return NewRunJournalService(layout, func(_ string, runID string) ([]string, error) {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), testClaimLedgerFile))
+		if err != nil {
+			return nil, fmt.Errorf("open claim ledger: %w", err)
+		}
+		var ids []string
+		for _, entry := range ledger.ForRunAll(runID) {
+			if entry.ItemID != "" {
+				ids = append(ids, entry.ItemID)
+			}
+		}
+		sort.Strings(ids)
+		return ids, nil
+	})
 }
 
 // seedCrossRunRun writes a run journal with a run.yaml beside it, which is
@@ -67,7 +87,7 @@ func TestDaemonRunPhaseRefusesRunsOutsideTheAskingRunsGaggle(t *testing.T) {
 	seedCrossRunRun(t, layout, crossRunTestGaggle, "sibling-run", journal.PhaseFailed)
 	seedCrossRunRun(t, layout, "other-gaggle", "foreign-run", journal.PhaseFailed)
 
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	ctx := context.Background()
 
 	response, err := service.RunPhase(ctx, journalclient.RunPhaseRequest{
@@ -112,7 +132,7 @@ func TestDaemonRunPhaseRefusesRunsOutsideTheAskingRunsGaggle(t *testing.T) {
 func TestDaemonCrossRunRoutesRefuseUnsafeGaggleSegments(t *testing.T) {
 	layout := crossRunTestLayout(t)
 	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseCompleted)
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	ctx := context.Background()
 
 	for _, gaggle := range []string{"../other", "a/b", "..", "", "."} {
@@ -153,9 +173,9 @@ func TestDaemonUnpushedWorkDerivesItemsFromTheLedger(t *testing.T) {
 	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-run", "42", "diff for item 42", false)
 	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "someone-elses-run", "99", "diff for item 99", false)
 
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = liveEscalationReads(t, layout)
-	service.definitions = crossRunTestDefinitions(t)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(liveEscalationReads(t, layout))
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	ctx := context.Background()
 	since := time.Now().UTC().Add(-24 * time.Hour)
 
@@ -199,9 +219,9 @@ func TestDaemonConflictTouchesStaysInsideTheGaggle(t *testing.T) {
 	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflicted-run", "internal/mine.go", false)
 	seedConflictRunWith(t, layout, "other-gaggle", "foreign-conflicted-run", "internal/theirs.go", false)
 
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = liveEscalationReads(t, layout)
-	service.definitions = crossRunTestDefinitions(t)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(liveEscalationReads(t, layout))
+	service.AttachWorkflowResolver(crossRunTestDefinitions(t))
 	response, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{
 		RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: time.Now().UTC().Add(-24 * time.Hour),
 	})
@@ -303,8 +323,8 @@ func TestDaemonEscalationCandidatesStaysInsideTheGaggle(t *testing.T) {
 	seedEscalatedRun(t, layout, crossRunTestGaggle, "escalated-mine", "501")
 	seedEscalatedRun(t, layout, "other-gaggle", "escalated-theirs", "999")
 
-	service := newDaemonRunJournalService(layout, nil)
-	service.reads = liveEscalationReads(t, layout)
+	service := newTestRunJournalService(layout, nil)
+	service.AttachReads(liveEscalationReads(t, layout))
 	response, err := service.EscalationCandidates(context.Background(), journalclient.EscalationCandidatesRequest{
 		RunID: "asking-run", Gaggle: crossRunTestGaggle,
 	})
@@ -328,7 +348,7 @@ func TestDaemonEscalationCandidatesRefusesAskingRunOutsideItsGaggle(t *testing.T
 	layout := crossRunTestLayout(t)
 	seedEscalatedRun(t, layout, crossRunTestGaggle, "escalated-mine", "501")
 
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	_, err := service.EscalationCandidates(context.Background(), journalclient.EscalationCandidatesRequest{
 		RunID: "impostor-run", Gaggle: crossRunTestGaggle,
 	})
@@ -345,7 +365,7 @@ func TestDaemonBranchOwnershipConfirmsARealOwner(t *testing.T) {
 	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
 	seedBranchOwningRun(t, layout, crossRunTestGaggle, "owning-run", "implementation", "goobers/implementation/owning-run")
 
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	response, err := service.BranchOwnership(context.Background(), journalclient.BranchOwnershipRequest{
 		RunID: "asking-run", Gaggle: crossRunTestGaggle,
 		TargetRunID: "owning-run", Workflow: "implementation", Branch: "goobers/implementation/owning-run",
@@ -378,7 +398,7 @@ func TestDaemonBranchOwnershipRequiresExactBranchRunIdentity(t *testing.T) {
 	// that branch — so only the identity check separates it.
 	seedBranchOwningRun(t, layout, crossRunTestGaggle, "owning-run", "implementation", "goobers/docs-updater/owning-run")
 
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	ctx := context.Background()
 
 	// The workflow the branch names is not the owning run's workflow.
@@ -423,7 +443,7 @@ func TestDaemonBranchOwnershipRefusesRunsOutsideTheAskingRunsGaggle(t *testing.T
 	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
 	seedBranchOwningRun(t, layout, "other-gaggle", "foreign-owner", "implementation", "goobers/implementation/foreign-owner")
 
-	service := newDaemonRunJournalService(layout, nil)
+	service := newTestRunJournalService(layout, nil)
 	ctx := context.Background()
 
 	// The target run belongs to a different gaggle than the one claimed.
@@ -446,7 +466,7 @@ func TestDaemonBranchOwnershipRefusesRunsOutsideTheAskingRunsGaggle(t *testing.T
 // TestDaemonRunJournalServiceSatisfiesThePlaneInterface keeps the wiring
 // honest: the daemon implementation is what the route calls.
 func TestDaemonRunJournalServiceSatisfiesThePlaneInterface(t *testing.T) {
-	var _ httpapi.RunJournalService = newDaemonRunJournalService(crossRunTestLayout(t), nil)
+	var _ httpapi.RunJournalService = newTestRunJournalService(crossRunTestLayout(t), nil)
 }
 
 // --- seeding helpers --------------------------------------------------------
@@ -456,7 +476,7 @@ func claimItemForRun(t *testing.T, layout instance.Layout, itemID, runID string)
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), testClaimLedgerFile))
 	if err != nil {
 		t.Fatalf("open ledger: %v", err)
 	}

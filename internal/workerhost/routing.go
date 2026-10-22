@@ -56,6 +56,10 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 		return reported
 	}
 	finding := workerrouting.Check(h.versioned(), h.cfg.BuildVersion, routing, err)
+	h.routed.Store(finding.Problem == "")
+	h.draining.Store(finding.Draining)
+	// TODO(#7747): scale down drained versions only after their pinned
+	// executions finish; readiness must keep them protected by the PDB.
 	switch {
 	case finding.Problem != "":
 		h.logf("goobers worker: error: %s", finding.Problem)

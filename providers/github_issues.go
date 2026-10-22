@@ -420,87 +420,101 @@ func (p *GitHubProvider) scanWorkItemLabelTransitions(
 	if err != nil {
 		return LabelTransitionScanResult{}, err
 	}
-	var result LabelTransitionScanResult
 	// GitHub serves repository issue events newest-first, so a cursor lets the
 	// walk stop at the first already-seen event. That ordering is not a
 	// documented contract, so it is *detected* per page rather than assumed:
 	// against an oldest-first server the walk simply reads on to the end, which
 	// is exactly today's cost, and never drops a transition.
-	descending, orderKnown := false, false
+	state := githubLabelTransitionScanState{
+		label: label, itemID: itemID, scan: scan,
+	}
 	if err := p.getAllPagesWithContext(ctx, endpoint, func(page []byte, meta pageContext) error {
-		result.Pages++
-		if limit, remaining, ok := quotaFromHeaders(meta.Header); ok {
-			result.QuotaLimit, result.QuotaRemaining, result.QuotaKnown = limit, remaining, true
-		}
-		var events []githubIssueEvent
-		if err := json.Unmarshal(page, &events); err != nil {
-			return fmt.Errorf("decode issue events page: %w", err)
-		}
-		if !orderKnown && len(events) > 1 {
-			descending, orderKnown = events[0].ID > events[len(events)-1].ID, true
-		}
-		reachedCursor := false
-		for _, event := range events {
-			if event.ID > result.HighEventID {
-				result.HighEventID = event.ID
-			}
-			if scan.AfterEventID > 0 && event.ID <= scan.AfterEventID {
-				reachedCursor = true
-				continue
-			}
-			if event.Label == nil || event.Label.Name != label ||
-				(itemID == "" && event.Issue.PullRequest != nil) {
-				continue
-			}
-			added := false
-			switch event.Event {
-			case "labeled":
-				added = true
-			case "unlabeled":
-			default:
-				continue
-			}
-			eventItemID := itemID
-			if eventItemID == "" {
-				eventItemID = strconv.Itoa(event.Issue.Number)
-			}
-			result.Transitions = append(result.Transitions, WorkItemLabelTransition{
-				EventID:    event.ID,
-				ItemID:     eventItemID,
-				Label:      label,
-				Added:      added,
-				OccurredAt: event.CreatedAt,
-			})
-		}
-		if reachedCursor {
-			result.ReachedCursor = true
-			if descending {
-				return errStopPaging
-			}
-		}
-		if !meta.HasNext {
-			return nil
-		}
-		if scan.MaxPages > 0 && result.Pages >= scan.MaxPages {
-			result.Truncated, result.StopReason = true, LabelTransitionScanStopPageBudget
-			return errStopPaging
-		}
-		if scan.MinQuotaFraction > 0 && result.QuotaKnown &&
-			float64(result.QuotaRemaining) < scan.MinQuotaFraction*float64(result.QuotaLimit) {
-			result.Truncated, result.StopReason = true, LabelTransitionScanStopQuotaFloor
-			return errStopPaging
-		}
-		return nil
+		return state.consumePage(page, meta)
 	}); err != nil {
 		return LabelTransitionScanResult{}, err
 	}
-	sort.Slice(result.Transitions, func(i, j int) bool {
-		if result.Transitions[i].OccurredAt.Equal(result.Transitions[j].OccurredAt) {
-			return result.Transitions[i].EventID < result.Transitions[j].EventID
+	sort.Slice(state.result.Transitions, func(i, j int) bool {
+		if state.result.Transitions[i].OccurredAt.Equal(state.result.Transitions[j].OccurredAt) {
+			return state.result.Transitions[i].EventID < state.result.Transitions[j].EventID
 		}
-		return result.Transitions[i].OccurredAt.Before(result.Transitions[j].OccurredAt)
+		return state.result.Transitions[i].OccurredAt.Before(state.result.Transitions[j].OccurredAt)
 	})
-	return result, nil
+	return state.result, nil
+}
+
+type githubLabelTransitionScanState struct {
+	label      string
+	itemID     string
+	scan       LabelTransitionScan
+	result     LabelTransitionScanResult
+	descending bool
+	orderKnown bool
+}
+
+func (s *githubLabelTransitionScanState) consumePage(page []byte, meta pageContext) error {
+	s.result.Pages++
+	if limit, remaining, ok := quotaFromHeaders(meta.Header); ok {
+		s.result.QuotaLimit, s.result.QuotaRemaining, s.result.QuotaKnown = limit, remaining, true
+	}
+	var events []githubIssueEvent
+	if err := json.Unmarshal(page, &events); err != nil {
+		return fmt.Errorf("decode issue events page: %w", err)
+	}
+	if !s.orderKnown && len(events) > 1 {
+		s.descending, s.orderKnown = events[0].ID > events[len(events)-1].ID, true
+	}
+	reachedCursor := false
+	for _, event := range events {
+		reachedCursor = s.consumeEvent(event) || reachedCursor
+	}
+	if reachedCursor {
+		s.result.ReachedCursor = true
+		if s.descending {
+			return errStopPaging
+		}
+	}
+	return s.pageStop(meta)
+}
+
+func (s *githubLabelTransitionScanState) consumeEvent(event githubIssueEvent) bool {
+	if event.ID > s.result.HighEventID {
+		s.result.HighEventID = event.ID
+	}
+	if s.scan.AfterEventID > 0 && event.ID <= s.scan.AfterEventID {
+		return true
+	}
+	if event.Label == nil || event.Label.Name != s.label ||
+		(s.itemID == "" && event.Issue.PullRequest != nil) {
+		return false
+	}
+	added := event.Event == "labeled"
+	if !added && event.Event != "unlabeled" {
+		return false
+	}
+	itemID := s.itemID
+	if itemID == "" {
+		itemID = strconv.Itoa(event.Issue.Number)
+	}
+	s.result.Transitions = append(s.result.Transitions, WorkItemLabelTransition{
+		EventID: event.ID, ItemID: itemID, Label: s.label, Added: added, OccurredAt: event.CreatedAt,
+	})
+	return false
+}
+
+func (s *githubLabelTransitionScanState) pageStop(meta pageContext) error {
+	if !meta.HasNext {
+		return nil
+	}
+	if s.scan.MaxPages > 0 && s.result.Pages >= s.scan.MaxPages {
+		s.result.Truncated, s.result.StopReason = true, LabelTransitionScanStopPageBudget
+		return errStopPaging
+	}
+	if s.scan.MinQuotaFraction > 0 && s.result.QuotaKnown &&
+		float64(s.result.QuotaRemaining) < s.scan.MinQuotaFraction*float64(s.result.QuotaLimit) {
+		s.result.Truncated, s.result.StopReason = true, LabelTransitionScanStopQuotaFloor
+		return errStopPaging
+	}
+	return nil
 }
 
 // UpdateWorkItem applies title/body edits, assignee changes, label add/remove,

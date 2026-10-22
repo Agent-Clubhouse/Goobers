@@ -99,7 +99,7 @@ func newDurableTriggerService(path string, dispatch *daemonTriggerService) (*dur
 }
 
 func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.TriggerRequest) (httpapi.TriggerResponse, error) {
-	if err := s.dispatch.validateTriggerAuthority(request); err != nil {
+	if err := s.dispatch.ValidateTriggerAuthority(request); err != nil {
 		return httpapi.TriggerResponse{}, err
 	}
 	request.RequestID = strings.TrimSpace(request.RequestID)
@@ -113,8 +113,8 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
 	}
-	record, duplicate, err := s.queue.AcceptAdmitted(ctx, request.RequestID, request.Actor, payload, s.dispatch.now(), func() error {
-		return s.dispatch.validateTriggerTarget(request)
+	record, duplicate, err := s.queue.AcceptAdmitted(ctx, request.RequestID, request.Actor, payload, s.dispatch.Now(), func() error {
+		return s.dispatch.ValidateTriggerTarget(request)
 	})
 	var refusal *httpapi.InterventionError
 	if errors.As(err, &refusal) {
@@ -181,13 +181,13 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 		budget = defaultChildPruneBudget
 	}
 	pruneCtx, cancelPrune := context.WithTimeout(ctx, budget)
-	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
+	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.Now(), 100)
 	cancelPrune()
 	if s.childFamilies != nil {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}
 	pruneErr = errors.Join(pruneErr, s.sweepDirectEngine(ctx))
-	if s.dispatch.triggerer() == nil && s.children == nil {
+	if s.dispatch.Triggerer() == nil && s.children == nil {
 		return pruneErr
 	}
 	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
@@ -241,7 +241,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	if header.Kind != "" {
 		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)
 	}
-	if s.dispatch.triggerer() == nil {
+	if s.dispatch.Triggerer() == nil {
 		return nil
 	}
 	var payload acceptedTriggerPayload
@@ -275,7 +275,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 				return s.queue.Requeue(ctx, record.ID, reason)
 			}
 		}
-		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", reason, s.dispatch.now())
+		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", reason, s.dispatch.Now())
 	}
 	return s.queue.RecordDispatch(ctx, record.ID, response.RunID)
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -175,5 +177,121 @@ func TestRoutingCheckQuietWhileDraining(t *testing.T) {
 	lines := sink.snapshot()
 	if len(lines) != 1 || !strings.Contains(lines[0], "it is draining") || strings.Contains(lines[0], "error") {
 		t.Fatalf("logged %q, want one draining note after the earlier mismatch", lines)
+	}
+}
+
+func TestWorkerReadinessFailsWhenUnrouted(t *testing.T) {
+	h := newTestHost(t, Config{
+		TaskQueues:   []string{"goobers-engine"},
+		BuildVersion: "v2",
+		Versioning:   true,
+	}, &fakeFleet{})
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{
+			WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+				CurrentVersion: deploymentVersion("v2"),
+			},
+		}, nil
+	}
+
+	h.checkRoutingOnce(context.Background(), nil, "")
+	response := httptest.NewRecorder()
+	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz = %d, want %d before pollers start", response.Code, http.StatusServiceUnavailable)
+	}
+
+	h.pollersStarted.Store(true)
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{}, nil
+	}
+	h.checkRoutingOnce(context.Background(), nil, "")
+	response = httptest.NewRecorder()
+	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz = %d, want %d while the build is unregistered", response.Code, http.StatusServiceUnavailable)
+	}
+
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{
+			WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+				CurrentVersion: deploymentVersion("v1"),
+			},
+		}, nil
+	}
+	h.checkRoutingOnce(context.Background(), nil, "unregistered")
+	response = httptest.NewRecorder()
+	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz = %d, want %d while current routes to another build", response.Code, http.StatusServiceUnavailable)
+	}
+
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{
+			WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+				CurrentVersion: deploymentVersion("v2"),
+			},
+		}, nil
+	}
+	h.checkRoutingOnce(context.Background(), nil, "unrouted")
+	response = httptest.NewRecorder()
+	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /readyz = %d, want %d after routing reaches this build", response.Code, http.StatusOK)
+	}
+	if strings.Contains(response.Body.String(), `"draining":true`) {
+		t.Fatalf("GET /readyz body = %s, want current build not draining", response.Body.String())
+	}
+}
+
+func TestWorkerReadinessKeepsDrainingVersionReady(t *testing.T) {
+	h := newTestHost(t, Config{
+		TaskQueues:   []string{"goobers-engine"},
+		BuildVersion: "v1",
+		Versioning:   true,
+	}, &fakeFleet{})
+	h.pollersStarted.Store(true)
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{
+			WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+				CurrentVersion: deploymentVersion("v2"),
+			},
+			Draining: map[string]bool{"v1": true},
+		}, nil
+	}
+
+	h.checkRoutingOnce(context.Background(), nil, "")
+	response := httptest.NewRecorder()
+	h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /readyz = %d, want %d for draining build with pinned work", response.Code, http.StatusOK)
+	}
+	if !strings.Contains(response.Body.String(), `"draining":true`) {
+		t.Fatalf("GET /readyz body = %s, want draining=true", response.Body.String())
+	}
+}
+
+func TestWorkerLivenessIgnoresTemporalOutage(t *testing.T) {
+	h := newTestHost(t, Config{
+		TaskQueues:   []string{"goobers-engine"},
+		BuildVersion: "v2",
+		Versioning:   true,
+	}, &fakeFleet{})
+	h.pollersStarted.Store(true)
+	h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+		return workerrouting.Routing{}, errors.New("temporal unavailable")
+	}
+	h.checkRoutingOnce(context.Background(), nil, "")
+
+	handler := h.healthHandler()
+	liveness := httptest.NewRecorder()
+	handler.ServeHTTP(liveness, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if liveness.Code != http.StatusOK {
+		t.Fatalf("GET /healthz = %d, want %d during Temporal outage", liveness.Code, http.StatusOK)
+	}
+	readiness := httptest.NewRecorder()
+	handler.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz = %d, want %d when version routing cannot be verified", readiness.Code, http.StatusServiceUnavailable)
 	}
 }

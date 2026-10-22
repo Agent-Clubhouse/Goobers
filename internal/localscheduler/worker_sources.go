@@ -125,7 +125,7 @@ func (s *Scheduler) activeWorkerIDs(identity WorkflowIdentity) []string {
 		}
 	}
 	for id, run := range s.reconciledRuns {
-		if run.identity == identity && !run.suspended {
+		if run.Identity == identity && !run.Suspended {
 			ids = append(ids, id)
 		}
 	}

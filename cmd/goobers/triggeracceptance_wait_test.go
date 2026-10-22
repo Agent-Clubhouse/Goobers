@@ -21,7 +21,7 @@ func TestDurableTriggerWaitsThroughBudgetResetAndStoreReopen(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "accepted.db")
 			dispatch := newDaemonTriggerService()
 			now := time.Now().UTC().Truncate(time.Second)
-			dispatch.now = func() time.Time { return now }
+			dispatch.SetClock(func() time.Time { return now })
 			starter := &acceptedRunIDStarter{ids: make(chan string, 2)}
 			readiness := apiv1.ReadinessConditions{MaxRunsPerHour: 1}
 			wait, reason := time.Hour, localscheduler.ReasonBudget

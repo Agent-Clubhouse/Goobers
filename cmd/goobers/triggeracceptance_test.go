@@ -165,7 +165,7 @@ func TestDurableTriggerAcceptsDuringStartupAndOutlivesRequest(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "accepted.db")
 			dispatch := newDaemonTriggerService()
 			now := time.Now().UTC()
-			dispatch.now = func() time.Time { return now }
+			dispatch.SetClock(func() time.Time { return now })
 			s := acceptedService(t, path, dispatch)
 			request := httpapi.TriggerRequest{Workflow: "impl", RequestID: "delivery", Actor: "operator"}
 			ctx, cancel := context.WithCancel(t.Context())
@@ -185,7 +185,7 @@ func TestDurableTriggerAcceptsDuringStartupAndOutlivesRequest(t *testing.T) {
 			}
 			s = acceptedService(t, path, dispatch)
 			recorder := &dispatchContextRecorder{}
-			dispatch.dispatch = recorder
+			dispatch.AttachDispatcher(recorder)
 			dispatch.AttachDispatchContext(t.Context())
 			if err := s.Drain(t.Context()); err != nil {
 				t.Fatal(err)
@@ -211,7 +211,7 @@ func TestDurableTriggerAcceptsDuringStartupAndOutlivesRequest(t *testing.T) {
 
 func TestDurableTriggerPreservesPodAuthorityAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "accepted.db")
-	dispatch := newDaemonTriggerService().withGaggleContainment(func(gaggle, run string) bool { return gaggle == "own" && run == "pod-run" })
+	dispatch := newDaemonTriggerService().WithGaggleContainment(func(gaggle, run string) bool { return gaggle == "own" && run == "pod-run" })
 	s := acceptedService(t, path, dispatch)
 	request := httpapi.TriggerRequest{Workflow: "impl", Gaggle: "own", RequestID: "delivery", Actor: "pod:pod-run", PodScoped: true, PodRunID: "pod-run"}
 	response, err := s.Trigger(t.Context(), request)
@@ -223,9 +223,9 @@ func TestDurableTriggerPreservesPodAuthorityAcrossRestart(t *testing.T) {
 	}
 	// Authority changed while down. A lost json:"-" field would bypass this
 	// check and accidentally dispatch the queued pod request as an operator.
-	dispatch = newDaemonTriggerService().withGaggleContainment(func(string, string) bool { return false })
+	dispatch = newDaemonTriggerService().WithGaggleContainment(func(string, string) bool { return false })
 	recorder := &dispatchContextRecorder{}
-	dispatch.dispatch = recorder
+	dispatch.AttachDispatcher(recorder)
 	s = acceptedService(t, path, dispatch)
 	if err := s.Drain(t.Context()); err != nil {
 		t.Fatal(err)
@@ -243,7 +243,7 @@ func TestDurableTriggerPreservesPodAuthorityAcrossRestart(t *testing.T) {
 func TestDurableTriggerReturnsAcceptanceWhileDispatchIsBlocked(t *testing.T) {
 	dispatch := newDaemonTriggerService()
 	barrier := &barrierTriggerer{entered: make(chan struct{}), release: make(chan struct{})}
-	dispatch.dispatch = barrier
+	dispatch.AttachDispatcher(barrier)
 	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
 	request := httpapi.TriggerRequest{Workflow: "impl", RequestID: "delivery", Actor: "operator"}
 	original, err := s.Trigger(t.Context(), request)
@@ -267,7 +267,7 @@ func TestDurableTriggerReturnsAcceptanceWhileDispatchIsBlocked(t *testing.T) {
 }
 
 func TestDurableTriggerStatusBindsActorAndPodIdentity(t *testing.T) {
-	dispatch := newDaemonTriggerService().withGaggleContainment(func(string, string) bool { return true })
+	dispatch := newDaemonTriggerService().WithGaggleContainment(func(string, string) bool { return true })
 	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
 	request := httpapi.TriggerRequest{Workflow: "impl", Gaggle: "own", RequestID: "delivery", Actor: "pod:run-1", PodScoped: true, PodRunID: "run-1"}
 	accepted, err := s.Trigger(t.Context(), request)
@@ -303,7 +303,7 @@ func TestDurableTriggerRefusesUnknownWorkflowBeforeAcceptance(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			dispatch := newDaemonTriggerService()
 			if phase == "startup catalog" {
-				dispatch.withStartupCatalog(entries)
+				dispatch.WithStartupCatalog(entries)
 			} else {
 				dispatch.AttachScheduler(localscheduler.New(entries, nil))
 			}
@@ -345,7 +345,7 @@ func TestDurableTriggerRefusesUnknownWorkflowBeforeAcceptance(t *testing.T) {
 // acceptance-time check never breaks idempotency: a redelivery of a trigger
 // accepted before a reload removed its workflow answers the original record.
 func TestDurableTriggerReplaysAcceptanceAfterCatalogShrinks(t *testing.T) {
-	dispatch := newDaemonTriggerService().withStartupCatalog([]localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "impl"}})
+	dispatch := newDaemonTriggerService().WithStartupCatalog([]localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "impl"}})
 	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
 	request := httpapi.TriggerRequest{Workflow: "impl", RequestID: "delivery", Actor: "operator"}
 	original, err := s.Trigger(t.Context(), request)
@@ -363,7 +363,7 @@ func TestDurableTriggerReplaysAcceptanceAfterCatalogShrinks(t *testing.T) {
 // answered with other gaggles' catalogs.
 func TestDurableTriggerUnknownGaggleRefusalStaysPodScoped(t *testing.T) {
 	entries := []localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "impl"}}
-	dispatch := newDaemonTriggerService().withStartupCatalog(entries).withGaggleContainment(func(string, string) bool { return true })
+	dispatch := newDaemonTriggerService().WithStartupCatalog(entries).WithGaggleContainment(func(string, string) bool { return true })
 	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
 	for _, pod := range []bool{false, true} {
 		request := httpapi.TriggerRequest{Workflow: "impl", Gaggle: "ghost", RequestID: fmt.Sprint("delivery-", pod), Actor: "operator"}

@@ -15,7 +15,7 @@ import (
 func TestDurableTriggerCancelledWaitDoesNotInterruptActiveDrain(t *testing.T) {
 	dispatch := newDaemonTriggerService()
 	barrier := &barrierTriggerer{entered: make(chan struct{}), release: make(chan struct{})}
-	dispatch.dispatch = barrier
+	dispatch.AttachDispatcher(barrier)
 	service := acceptedService(t, filepath.Join(t.TempDir(), "queue.db"), dispatch)
 	accepted, err := service.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "worker", RequestID: "first", Actor: "operator"})
 	if err != nil {

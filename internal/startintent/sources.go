@@ -19,7 +19,7 @@ import (
 // pins. Acquire must not acquire the applied catalog or scheduler locks: the
 // caller holds tickMu and may hold admissionMu while accepting worker starts.
 type Sources struct {
-	Queue   *triggerqueue.Store
+	Queue   triggerqueue.SchedulerPolicyStore
 	Acquire func(context.Context, Target) (func(), error)
 	Build   func(context.Context, Target) (Prepared, error)
 }

@@ -54,7 +54,7 @@ func TestChildWaitRestartPreservesParentOwnerWithoutChargingItsCapacity(t *testi
 			if got := s.conditions.ActiveWorkflow(request.Parent); got != 1 {
 				t.Fatalf("parked parent still holds slot: %d", got)
 			}
-			if !s.reconciledRuns[request.ParentRunID].suspended {
+			if !s.reconciledRuns[request.ParentRunID].Suspended {
 				t.Fatal("lost durable suspended owner")
 			}
 			wait, err := s.SuspendChildParent(t.Context(), request.ParentRunID)

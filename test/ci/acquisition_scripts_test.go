@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ var acquisitionCommands = map[string]*regexp.Regexp{
 	"kubernetes-schemas":      regexp.MustCompile(`(?:\bkubeconform(?:@[^\s]+)?|\$\(KUBECONFORM\))\s+`),
 	"go-modules":              regexp.MustCompile(`(?:\bgo|\$\(GO\))\s+(?:run|test|build|vet|mod|install)\b`),
 	"npm-packages":            regexp.MustCompile(`(?:\bnpm|\$\(NPM\))[^\n]*(?:\bci\b|\binstall\b|\bexec\b)`),
-	"npm-advisories":          regexp.MustCompile(`(?:\bnpm|\$\(NPM\))[^\n]*\saudit(?:\s|$)`),
+	"npm-advisories":          regexp.MustCompile(`(?:(?:\bnpm|\$\(NPM\))[^\n]*\saudit(?:\s|$)|\btest/ci\s+portal-audit\b)`),
 	"playwright-browsers":     regexp.MustCompile(`\bplaywright\s+install\b`),
 	"browser-system-packages": regexp.MustCompile(`\bplaywright\s+(?:install-deps\b|install\b[^\n]*--with-deps)`),
 	"apt-packages":            regexp.MustCompile(`\bapt-get\b`),
@@ -95,22 +96,28 @@ func unquotedShellOperator(line string) bool {
 }
 
 func provisioningAcquisitionSites(root string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(root, ".github/workflows/ci.yml"))
-	if err != nil {
-		return nil, err
-	}
-	var workflow ciWorkflow
-	if err := yaml.Unmarshal(data, &workflow); err != nil {
-		return nil, err
-	}
 	var sites []string
 	visited := make(map[string]bool)
-	for name, job := range workflow.Jobs {
-		found, err := stepAcquisitionSites(root, ".github/workflows/ci.yml#"+name, job.Steps, visited)
+	for _, workflowFile := range []string{"ci.yml", "ha-nightly.yml"} {
+		path := filepath.Join(root, ".github", "workflows", workflowFile)
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) && workflowFile != "ci.yml" {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-		sites = append(sites, found...)
+		var workflow ciWorkflow
+		if err := yaml.Unmarshal(data, &workflow); err != nil {
+			return nil, err
+		}
+		for name, job := range workflow.Jobs {
+			found, err := stepAcquisitionSites(root, ".github/workflows/"+workflowFile+"#"+name, job.Steps, visited)
+			if err != nil {
+				return nil, err
+			}
+			sites = append(sites, found...)
+		}
 	}
 	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
 	if err != nil {

@@ -1,0 +1,16 @@
+goobers-cloud dev
+
+Usage:
+  goobers-cloud <COMMAND> [OPTIONS]
+
+Roles:
+  api          Serve the cloud control-plane API.
+  controller   Run cloud control-plane reconciliation.
+  migrate      Apply cloud data-store migrations.
+  worker       Run a Temporal engine worker.
+
+Commands:
+  completion   Generate a shell completion script.
+  help         Show command help.
+
+Run `goobers-cloud help COMMAND` for command details.

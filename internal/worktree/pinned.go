@@ -75,6 +75,12 @@ type pinnedQueueRecord struct {
 	PIDStartedAt time.Time `json:"pid_started_at,omitempty"`
 }
 
+type pinnedQueueEntry struct {
+	dir   string
+	path  string
+	runID string
+}
+
 var pinnedQueueProcessAlive = proc.Alive
 var pinnedQueueProcessStartTime = proc.StartTime
 
@@ -132,123 +138,36 @@ func (l *PinnedLease) release() error {
 // AcquirePinned waits in FIFO order for the repository's whole-run lease,
 // prepares its stable workspace, and returns it without creating a git worktree.
 func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *PinnedLease, retErr error) {
-	if !validRunID(opts.RunID) {
-		return nil, fmt.Errorf("worktree: pinned RunID %q must be a single path segment", opts.RunID)
-	}
-	if opts.RepoURL == "" || opts.BaseRef == "" {
-		return nil, fmt.Errorf("worktree: pinned RepoURL and BaseRef are required")
-	}
-	switch opts.CleanPolicy {
-	case "", PinnedCleanNone, PinnedCleanIgnoredSafe, PinnedCleanFull:
-	default:
-		return nil, fmt.Errorf("worktree: unknown pinned clean policy %q", opts.CleanPolicy)
+	if err := validatePinnedOptions(opts); err != nil {
+		return nil, err
 	}
 
 	key := repoKey(opts.RepoURL)
 	root := filepath.Join(m.pinnedRoot, key)
-	queueDir := filepath.Join(root, "lease.queue")
-	if err := os.MkdirAll(queueDir, 0o755); err != nil {
-		return nil, fmt.Errorf("worktree: create pinned lease queue: %w", err)
-	}
-	queueFile, err := os.CreateTemp(queueDir, fmt.Sprintf("%020d-%d-%s-", time.Now().UnixNano(), os.Getpid(), opts.RunID))
+	queue, err := enqueuePinnedRun(root, opts.RunID)
 	if err != nil {
-		return nil, fmt.Errorf("worktree: enqueue pinned run: %w", err)
-	}
-	queuePath := queueFile.Name()
-	pidStartedAt, _ := pinnedQueueProcessStartTime(os.Getpid())
-	queueRecord, _ := json.Marshal(pinnedQueueRecord{
-		RunID: opts.RunID, PID: os.Getpid(), PIDStartedAt: pidStartedAt,
-	})
-	if _, writeErr := queueFile.Write(queueRecord); writeErr != nil {
-		_ = queueFile.Close()
-		_ = os.Remove(queuePath)
-		return nil, fmt.Errorf("worktree: persist pinned queue entry: %w", writeErr)
-	}
-	if closeErr := queueFile.Close(); closeErr != nil {
-		_ = os.Remove(queuePath)
-		return nil, fmt.Errorf("worktree: close pinned queue entry: %w", closeErr)
+		return nil, err
 	}
 	defer func() {
 		if retErr != nil {
-			_ = os.Remove(queuePath)
+			_ = os.Remove(queue.path)
 		}
 	}()
 
 	lockPath := filepath.Join(root, "pin.lock")
 	recordPath := filepath.Join(root, "pin.lease.json")
-	var handle *lock.Handle
-	lastPosition := -1
-	for {
-		entries, err := os.ReadDir(queueDir)
-		if err != nil {
-			return nil, fmt.Errorf("worktree: read pinned lease queue: %w", err)
-		}
-		names := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			orphaned, err := pinnedQueueEntryOrphaned(filepath.Join(queueDir, entry.Name()), entry.Name())
-			if err != nil {
-				return nil, err
-			}
-			if orphaned {
-				if err := os.Remove(filepath.Join(queueDir, entry.Name())); err != nil && !os.IsNotExist(err) {
-					return nil, fmt.Errorf("worktree: remove orphaned pinned queue entry: %w", err)
-				}
-				continue
-			}
-			names = append(names, entry.Name())
-		}
-		sort.Strings(names)
-		position := 0
-		for i, name := range names {
-			if filepath.Join(queueDir, name) == queuePath {
-				position = i + 1
-				break
-			}
-		}
-		if position == 0 {
-			return nil, fmt.Errorf("worktree: pinned queue entry disappeared for run %s", opts.RunID)
-		}
-		visiblePosition := position
-		if data, readErr := os.ReadFile(recordPath); readErr == nil && len(strings.TrimSpace(string(data))) > 0 {
-			visiblePosition++
-		} else if readErr != nil && !os.IsNotExist(readErr) {
-			return nil, fmt.Errorf("worktree: read pinned lease position: %w", readErr)
-		}
-		if visiblePosition != lastPosition && opts.OnQueuePosition != nil {
-			if err := opts.OnQueuePosition(visiblePosition); err != nil {
-				return nil, err
-			}
-			lastPosition = visiblePosition
-		}
-		if opts.OnQueueWait != nil {
-			opts.OnQueueWait()
-		}
-		if position == 1 {
-			handle, err = lock.TryAcquire(lockPath)
-			if err == nil {
-				break
-			}
-			if !errors.Is(err, lock.ErrHeld) {
-				return nil, err
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
+	handle, err := waitForPinnedLease(ctx, queue, lockPath, recordPath, opts)
+	if err != nil {
+		return nil, err
 	}
 
-	lease := &PinnedLease{handle: handle, queue: queuePath, record: recordPath, root: root}
+	lease := &PinnedLease{handle: handle, queue: queue.path, record: recordPath, root: root}
 	defer func() {
 		if retErr != nil {
 			_ = lease.Release()
 		}
 	}()
-	if err := os.Remove(queuePath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(queue.path); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("worktree: dequeue acquired pinned run: %w", err)
 	}
 	lease.queue = ""
@@ -273,6 +192,125 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 	}
 	lease.Worktree = wt
 	return lease, nil
+}
+
+func validatePinnedOptions(opts PinnedOptions) error {
+	if !validRunID(opts.RunID) {
+		return fmt.Errorf("worktree: pinned RunID %q must be a single path segment", opts.RunID)
+	}
+	if opts.RepoURL == "" || opts.BaseRef == "" {
+		return fmt.Errorf("worktree: pinned RepoURL and BaseRef are required")
+	}
+	switch opts.CleanPolicy {
+	case "", PinnedCleanNone, PinnedCleanIgnoredSafe, PinnedCleanFull:
+		return nil
+	default:
+		return fmt.Errorf("worktree: unknown pinned clean policy %q", opts.CleanPolicy)
+	}
+}
+
+func enqueuePinnedRun(root, runID string) (pinnedQueueEntry, error) {
+	queue := pinnedQueueEntry{dir: filepath.Join(root, "lease.queue"), runID: runID}
+	if err := os.MkdirAll(queue.dir, 0o755); err != nil {
+		return queue, fmt.Errorf("worktree: create pinned lease queue: %w", err)
+	}
+	file, err := os.CreateTemp(queue.dir, fmt.Sprintf("%020d-%d-%s-", time.Now().UnixNano(), os.Getpid(), runID))
+	if err != nil {
+		return queue, fmt.Errorf("worktree: enqueue pinned run: %w", err)
+	}
+	queue.path = file.Name()
+	pidStartedAt, _ := pinnedQueueProcessStartTime(os.Getpid())
+	data, _ := json.Marshal(pinnedQueueRecord{RunID: runID, PID: os.Getpid(), PIDStartedAt: pidStartedAt})
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(queue.path)
+		return queue, fmt.Errorf("worktree: persist pinned queue entry: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(queue.path)
+		return queue, fmt.Errorf("worktree: close pinned queue entry: %w", err)
+	}
+	return queue, nil
+}
+
+func waitForPinnedLease(ctx context.Context, queue pinnedQueueEntry, lockPath, recordPath string, opts PinnedOptions) (*lock.Handle, error) {
+	lastPosition := -1
+	for {
+		position, err := pinnedQueuePosition(queue)
+		if err != nil {
+			return nil, err
+		}
+		visiblePosition, err := pinnedVisiblePosition(position, recordPath)
+		if err != nil {
+			return nil, err
+		}
+		if visiblePosition != lastPosition && opts.OnQueuePosition != nil {
+			if err := opts.OnQueuePosition(visiblePosition); err != nil {
+				return nil, err
+			}
+			lastPosition = visiblePosition
+		}
+		if opts.OnQueueWait != nil {
+			opts.OnQueueWait()
+		}
+		if position == 1 {
+			handle, err := lock.TryAcquire(lockPath)
+			if err == nil {
+				return handle, nil
+			}
+			if !errors.Is(err, lock.ErrHeld) {
+				return nil, err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func pinnedQueuePosition(queue pinnedQueueEntry) (int, error) {
+	entries, err := os.ReadDir(queue.dir)
+	if err != nil {
+		return 0, fmt.Errorf("worktree: read pinned lease queue: %w", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(queue.dir, entry.Name())
+		orphaned, err := pinnedQueueEntryOrphaned(path, entry.Name())
+		if err != nil {
+			return 0, err
+		}
+		if orphaned {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return 0, fmt.Errorf("worktree: remove orphaned pinned queue entry: %w", err)
+			}
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	for i, name := range names {
+		if filepath.Join(queue.dir, name) == queue.path {
+			return i + 1, nil
+		}
+	}
+	return 0, fmt.Errorf("worktree: pinned queue entry disappeared for run %s", queue.runID)
+}
+
+func pinnedVisiblePosition(position int, recordPath string) (int, error) {
+	data, err := os.ReadFile(recordPath)
+	if err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		return position + 1, nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("worktree: read pinned lease position: %w", err)
+	}
+	return position, nil
 }
 
 // RecordOutcome updates the consecutive terminal-failure count while the
@@ -401,18 +439,8 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 	root := filepath.Join(m.pinnedRoot, key)
 	repoDir := filepath.Join(root, "repo.git")
 	pinDir := filepath.Join(root, "pin")
-	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(repoDir, 0o755); err != nil {
-			return nil, fmt.Errorf("worktree: create pinned mirror: %w", err)
-		}
-		if err := runGit(ctx, repoDir, "init", "--bare"); err != nil {
-			return nil, fmt.Errorf("worktree: initialize pinned mirror: %w", err)
-		}
-		if err := runGit(ctx, repoDir, "remote", "add", "origin", opts.RepoURL); err != nil {
-			return nil, fmt.Errorf("worktree: configure pinned mirror origin: %w", err)
-		}
-	} else if err != nil {
-		return nil, fmt.Errorf("worktree: stat pinned mirror: %w", err)
+	if err := ensurePinnedMirror(ctx, repoDir, opts.RepoURL); err != nil {
+		return nil, err
 	}
 	refspecs := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
 	if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, append([]string{"fetch", "--prune", "origin"}, refspecs...)...); err != nil {
@@ -421,49 +449,11 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 	if err := ensureManagedGitConfig(ctx, repoDir); err != nil {
 		return nil, err
 	}
-	createdPin := false
-	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
-		refs := []string{opts.BaseRef}
-		if opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch) {
-			refs[0] = opts.Branch
-			if opts.SyncBase {
-				refs = append(refs, opts.BaseRef)
-			}
-		}
-		for _, ref := range refs {
-			if err := preflightPathLength(ctx, repoDir, ref, pinDir, limit); err != nil {
-				return nil, err
-			}
-		}
+	if err := m.preflightPinnedPathLength(ctx, repoDir, pinDir, opts); err != nil {
+		return nil, err
 	}
-	if _, err := os.Stat(pinDir); os.IsNotExist(err) {
-		if err := runGit(ctx, root, "clone", "--no-checkout", repoDir, pinDir); err != nil {
-			return nil, fmt.Errorf("worktree: materialize pinned workspace: %w", err)
-		}
-		// Unlike a linked `git worktree add` tree, `git clone` does not inherit
-		// the source's custom config — pinDir starts with git's defaults, not
-		// repoDir's managedGitConfig. In particular core.longpaths is unset
-		// again here, so the very next operation (renaming the freshly cloned
-		// "origin" remote, which rewrites every refs/remotes/origin/* ref) can
-		// fail on Windows with ERROR_FILENAME_EXCED_RANGE for any ref whose
-		// full on-disk path exceeds MAX_PATH — a real risk given the nested
-		// pin/.git/refs/remotes/<remote>/<branch-namespace>/<runID> layout.
-		// Apply the managed config before doing anything else in this tree.
-		if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
-			return nil, err
-		}
-		if err := runGit(ctx, pinDir, "remote", "rename", "origin", "mirror"); err != nil {
-			return nil, fmt.Errorf("worktree: name pinned mirror remote: %w", err)
-		}
-		if err := runGit(ctx, pinDir, "remote", "add", "origin", opts.RepoURL); err != nil {
-			return nil, fmt.Errorf("worktree: configure pinned push remote: %w", err)
-		}
-		createdPin = true
-	} else if err != nil {
-		return nil, fmt.Errorf("worktree: stat pinned workspace: %w", err)
-	} else if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
-		// Self-heal a pin created before this policy existed, same rationale as
-		// the mirror's own ensureManagedGitConfig call on every WorkingCopy.
+	createdPin, err := ensurePinnedWorkspace(ctx, root, repoDir, pinDir, opts.RepoURL)
+	if err != nil {
 		return nil, err
 	}
 	if !createdPin {
@@ -478,39 +468,12 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 	if err := runGit(ctx, pinDir, "reset", "--hard", baseRef); err != nil {
 		return nil, fmt.Errorf("worktree: reset pinned workspace: %w", err)
 	}
-	existing := false
-	var err error
-	if opts.Branch != "" {
-		existing, err = ensurePinnedBranch(ctx, pinDir, opts.Branch)
-		if err != nil {
-			return nil, err
-		}
+	existing, err := checkoutPinnedBranch(ctx, pinDir, baseRef, opts)
+	if err != nil {
+		return nil, err
 	}
-	switch {
-	case opts.Branch == "":
-		if err := runGit(ctx, pinDir, "checkout", "--detach", "--force", baseRef); err != nil {
-			return nil, fmt.Errorf("worktree: checkout pinned base: %w", err)
-		}
-	case existing:
-		if err := runGit(ctx, pinDir, "checkout", "--force", opts.Branch); err != nil {
-			return nil, fmt.Errorf("worktree: checkout pinned branch: %w", err)
-		}
-	case opts.RequireExistingBranch:
-		return nil, fmt.Errorf("worktree: branch %q does not exist in pinned workspace for run %s", opts.Branch, opts.RunID)
-	default:
-		if err := runGit(ctx, pinDir, "checkout", "-b", opts.Branch, baseRef); err != nil {
-			return nil, fmt.Errorf("worktree: create pinned branch: %w", err)
-		}
-	}
-	switch opts.CleanPolicy {
-	case PinnedCleanIgnoredSafe:
-		if err := runGit(ctx, pinDir, "clean", "-ffd"); err != nil {
-			return nil, fmt.Errorf("worktree: clean pinned workspace: %w", err)
-		}
-	case PinnedCleanFull:
-		if err := runGit(ctx, pinDir, "clean", "-ffdx"); err != nil {
-			return nil, fmt.Errorf("worktree: fully clean pinned workspace: %w", err)
-		}
+	if err := cleanPinnedWorkspace(ctx, pinDir, opts.CleanPolicy); err != nil {
+		return nil, err
 	}
 	if err := runGit(ctx, pinDir, "config", "user.name", BotGitUserName); err != nil {
 		return nil, err
@@ -535,6 +498,118 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		manager: m, key: key, startRef: startRef, repoURL: opts.RepoURL,
 		pinned: true, repoDir: pinDir,
 	}, nil
+}
+
+func ensurePinnedMirror(ctx context.Context, repoDir, repoURL string) error {
+	if _, err := os.Stat(repoDir); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("worktree: stat pinned mirror: %w", err)
+	}
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		return fmt.Errorf("worktree: create pinned mirror: %w", err)
+	}
+	if err := runGit(ctx, repoDir, "init", "--bare"); err != nil {
+		return fmt.Errorf("worktree: initialize pinned mirror: %w", err)
+	}
+	if err := runGit(ctx, repoDir, "remote", "add", "origin", repoURL); err != nil {
+		return fmt.Errorf("worktree: configure pinned mirror origin: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) preflightPinnedPathLength(ctx context.Context, repoDir, pinDir string, opts PinnedOptions) error {
+	limit, ok := m.pathLengthLimit(opts.RepoURL)
+	if !ok {
+		return nil
+	}
+	refs := []string{opts.BaseRef}
+	if opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch) {
+		refs[0] = opts.Branch
+		if opts.SyncBase {
+			refs = append(refs, opts.BaseRef)
+		}
+	}
+	for _, ref := range refs {
+		if err := preflightPathLength(ctx, repoDir, ref, pinDir, limit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensurePinnedWorkspace(ctx context.Context, root, repoDir, pinDir, repoURL string) (bool, error) {
+	if _, err := os.Stat(pinDir); err == nil {
+		// Self-heal a pin created before the managed-config policy existed.
+		if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
+			return false, err
+		}
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("worktree: stat pinned workspace: %w", err)
+	}
+	if err := runGit(ctx, root, "clone", "--no-checkout", repoDir, pinDir); err != nil {
+		return false, fmt.Errorf("worktree: materialize pinned workspace: %w", err)
+	}
+	// Unlike a linked `git worktree add` tree, `git clone` does not inherit
+	// repoDir's managed config. In particular core.longpaths is unset, so the
+	// next remote rename can rewrite refs beyond Windows MAX_PATH. Apply the
+	// managed config before any other operation in the cloned tree.
+	if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
+		return false, err
+	}
+	if err := runGit(ctx, pinDir, "remote", "rename", "origin", "mirror"); err != nil {
+		return false, fmt.Errorf("worktree: name pinned mirror remote: %w", err)
+	}
+	if err := runGit(ctx, pinDir, "remote", "add", "origin", repoURL); err != nil {
+		return false, fmt.Errorf("worktree: configure pinned push remote: %w", err)
+	}
+	return true, nil
+}
+
+func checkoutPinnedBranch(ctx context.Context, pinDir, baseRef string, opts PinnedOptions) (bool, error) {
+	existing := false
+	var err error
+	if opts.Branch != "" {
+		existing, err = ensurePinnedBranch(ctx, pinDir, opts.Branch)
+		if err != nil {
+			return false, err
+		}
+	}
+	switch {
+	case opts.Branch == "":
+		err = runGit(ctx, pinDir, "checkout", "--detach", "--force", baseRef)
+		if err != nil {
+			err = fmt.Errorf("worktree: checkout pinned base: %w", err)
+		}
+	case existing:
+		err = runGit(ctx, pinDir, "checkout", "--force", opts.Branch)
+		if err != nil {
+			err = fmt.Errorf("worktree: checkout pinned branch: %w", err)
+		}
+	case opts.RequireExistingBranch:
+		err = fmt.Errorf("worktree: branch %q does not exist in pinned workspace for run %s", opts.Branch, opts.RunID)
+	default:
+		err = runGit(ctx, pinDir, "checkout", "-b", opts.Branch, baseRef)
+		if err != nil {
+			err = fmt.Errorf("worktree: create pinned branch: %w", err)
+		}
+	}
+	return existing, err
+}
+
+func cleanPinnedWorkspace(ctx context.Context, pinDir string, policy PinnedCleanPolicy) error {
+	switch policy {
+	case PinnedCleanIgnoredSafe:
+		if err := runGit(ctx, pinDir, "clean", "-ffd"); err != nil {
+			return fmt.Errorf("worktree: clean pinned workspace: %w", err)
+		}
+	case PinnedCleanFull:
+		if err := runGit(ctx, pinDir, "clean", "-ffdx"); err != nil {
+			return fmt.Errorf("worktree: fully clean pinned workspace: %w", err)
+		}
+	}
+	return nil
 }
 
 func finishPinnedPreparation(ctx context.Context, pinDir string, opts PinnedOptions, existing bool) (string, error) {

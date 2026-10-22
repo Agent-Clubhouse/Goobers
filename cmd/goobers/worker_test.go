@@ -25,6 +25,8 @@ func TestRunWorkerUsageErrors(t *testing.T) {
 		{name: "unknown flag", args: []string{"--warp-speed"}},
 		{name: "positional args", args: []string{"extra"}},
 		{name: "empty task queue", args: []string{"--task-queue", ""}},
+		{name: "zero activity concurrency", args: []string{"--max-concurrent-activities", "0"}},
+		{name: "negative activity concurrency", args: []string{"--max-concurrent-activities", "-1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

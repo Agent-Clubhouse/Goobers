@@ -59,6 +59,11 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             with env override)\n" +
 	"  --drain-timeout <dur>      graceful-drain bound after a shutdown signal\n" +
 	"                             (default 30s)\n" +
+	"  --health-addr <host:port>  serve process liveness at /healthz and worker\n" +
+	"                             readiness at /readyz (disabled by default)\n" +
+	"  --max-concurrent-activities <n>\n" +
+	"                             maximum activities executed concurrently by\n" +
+	"                             this worker process (default 1000)\n" +
 	"  --work-root <dir>          root for stage workspaces (default: a\n" +
 	"                             goobers-worker dir under the OS temp dir)\n" +
 	"  --daemon-api <url>         daemon write API base URL; wires live journal\n" +
@@ -147,6 +152,22 @@ var (
 	runWorkerHost = func(ctx context.Context, host *workerhost.Host) error { return host.Run(ctx) }
 )
 
+func configuredWorkerHost(hostPort, namespace, healthAddr string, maxConcurrentActivities int, drain time.Duration, queues []string, engineConfig instance.EngineConfig, dc converter.DataConverter, deps bootstrap.EngineDeps) (*workerhost.Host, error) {
+	return newWorkerHost(workerhost.Config{
+		HostPort:                hostPort,
+		Namespace:               namespace,
+		TLS:                     engineConfig.TLS,
+		DataConverter:           dc,
+		TaskQueues:              queues,
+		HealthAddr:              healthAddr,
+		MaxConcurrentActivities: maxConcurrentActivities,
+		DrainTimeout:            drain,
+		BuildVersion:            version.Get().Version,
+		Versioning:              engineConfig.WorkerVersioning,
+		Deps:                    deps,
+	})
+}
+
 func runWorker(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -155,6 +176,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	hostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port")
 	namespace := fs.String("temporal-namespace", "", "Temporal namespace")
 	drain := fs.Duration("drain-timeout", workerhost.DefaultDrainTimeout, "graceful-drain bound after a shutdown signal")
+	healthAddr := fs.String("health-addr", "", "serve liveness and readiness probes on this address")
+	maxConcurrentActivities := fs.Int("max-concurrent-activities", workerhost.DefaultMaxConcurrentActivities, "maximum concurrent activity executions")
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
@@ -174,6 +197,10 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	if *configHistoryDepth < 0 {
 		pf(stderr, "error: --config-history-depth must not be negative\n")
+		return 2
+	}
+	if *maxConcurrentActivities <= 0 {
+		pf(stderr, "error: --max-concurrent-activities must be positive\n")
 		return 2
 	}
 	resolvedEndpoint, modeErr := workerblob.Resolve(*blobRoot, *blobEndpoint, os.Getenv("GOOBERS_BLOB_ENDPOINT"), *instanceRoot != "")
@@ -350,17 +377,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr, dc)
 	}
 
-	host, err := newWorkerHost(workerhost.Config{
-		HostPort:      *hostPort,
-		Namespace:     *namespace,
-		TLS:           engineConfig.TLS,
-		DataConverter: dc,
-		TaskQueues:    queues,
-		DrainTimeout:  *drain,
-		BuildVersion:  version.Get().Version,
-		Versioning:    engineConfig.WorkerVersioning,
-		Deps:          engineRuntime.deps,
-	})
+	host, err := configuredWorkerHost(
+		*hostPort, *namespace, *healthAddr, *maxConcurrentActivities, *drain, queues, engineConfig, dc, engineRuntime.deps,
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

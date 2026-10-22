@@ -80,7 +80,7 @@ func TestTriggerPlaneDispatchesOnTheDaemonsLifecycleContext(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := &dispatchContextRecorder{}
 			svc := newDaemonTriggerService()
-			svc.dispatch = recorder
+			svc.AttachDispatcher(recorder)
 
 			lifecycle, cancelLifecycle := context.WithCancel(context.Background())
 			defer cancelLifecycle()
@@ -120,7 +120,7 @@ func TestTriggerPlaneDispatchesOnTheDaemonsLifecycleContext(t *testing.T) {
 func TestTriggerPlaneFallsBackToTheRequestContextWhenUnattached(t *testing.T) {
 	recorder := &dispatchContextRecorder{}
 	svc := newDaemonTriggerService()
-	svc.dispatch = recorder
+	svc.AttachDispatcher(recorder)
 
 	requestCtx := context.Background()
 	if _, err := svc.Trigger(requestCtx, httpapi.TriggerRequest{Workflow: "implementation"}); err != nil {

@@ -111,16 +111,22 @@ spec:
           # GOOBERS_WORKER_BLOB_PROBE_WAIT, default 20m) instead of
           # crash-looping. A real failure (4xx, non-503 5xx, read-back
           # mismatch) exits at once with WORKER_BLOB_STORE_MISMATCH and the
-          # daemon's error body. This container deliberately declares NO
-          # liveness/readiness/startup probe, so the wait is never killed by
-          # the kubelet; do not add a liveness probe that requires startup to
-          # have completed without a startupProbe that covers the wait bound.
+          # daemon's error body. The startup probe below suppresses liveness
+          # and readiness until this startup work completes and the worker
+          # opens its health listener.
           args:
             - "worker"
             - "--task-queue"
             - "goobers-engine"
             - "--work-root"
             - "/var/lib/goobers-worker"
+            - "--health-addr"
+            - ":8081"
+            # Long-running dispatch activities hold a slot for the whole stage.
+            # Keep the 1 CPU / 2Gi pod bounded instead of inheriting the SDK's
+            # 1000-activity process default.
+            - "--max-concurrent-activities"
+            - "4"
             - "--instance"
             - "/var/lib/goobers"
             - "--blob-store"
@@ -149,6 +155,30 @@ spec:
             # reads GOOBERS_TEMPORAL_HOSTPORT (falls back to 127.0.0.1:7233).
             - name: GOOBERS_TEMPORAL_HOSTPORT
               value: temporal-frontend.goobers-temporal:7233
+          ports:
+            - name: health
+              containerPort: 8081
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 180
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
           volumeMounts:
             # Lock-bearing instance root: same on-disk layout as tiers 1-2
             # (§4), on the RWO block volume mounted by a single node.

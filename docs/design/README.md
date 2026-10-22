@@ -15,11 +15,11 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 15 |
-| `approved` | 27 |
+| `approved` | 28 |
 | `implemented` | 30 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **82** |
+| **Total** | **83** |
 
 ## `docs/adr/`
 
@@ -102,6 +102,7 @@ word — read the page, not this table, before depending on it.
 | Document | Status | Owner / area | Tracking | Delivered by | Remaining | Superseded by | Verified |
 |---|---|---|---|---|---|---|---|
 | [HA cloud dependency decision](decisions/ha-cloud-dependencies.md) | `approved` | — | — | — | — | — | — |
+| [HA engine-parity decision](decisions/ha-engine-parity.md) | `approved` | — | — | — | — | — | — |
 
 ## `docs/design/v0/`
 
