@@ -717,18 +717,9 @@ func reconcileProviderClaimMarker(run *RunSummary, markerPresent bool, now time.
 // journals keeps the metric fail-closed on incomplete history while the
 // milestone survives retention.
 func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
-	var initCompletedAt, firstPROpenAt time.Time
-	if s.sources.Telemetry != nil {
-		persisted, err := s.sources.Telemetry.TimeToFirstPR(ctx)
-		if err != nil {
-			return telemetry.TimeToFirstPRMetric{}, err
-		}
-		if persisted.InitCompletedAt != nil {
-			initCompletedAt = *persisted.InitCompletedAt
-		}
-		if persisted.FirstPROpenAt != nil {
-			firstPROpenAt = *persisted.FirstPROpenAt
-		}
+	initCompletedAt, firstPROpenAt, err := s.timeToFirstPRMilestones(ctx)
+	if err != nil {
+		return telemetry.TimeToFirstPRMetric{}, err
 	}
 	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
 	if err != nil {
@@ -758,13 +749,40 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 	if err != nil {
 		return telemetry.TimeToFirstPRMetric{}, err
 	}
+	firstPROpenAt, err = s.earliestPROpen(ctx, runIDs, initCompletedAt)
+	if err != nil {
+		return telemetry.TimeToFirstPRMetric{}, err
+	}
+	return telemetry.NewTimeToFirstPRMetric(initCompletedAt, firstPROpenAt), nil
+}
+
+func (s *Local) timeToFirstPRMilestones(ctx context.Context) (time.Time, time.Time, error) {
+	var initCompletedAt, firstPROpenAt time.Time
+	if s.sources.Telemetry == nil {
+		return initCompletedAt, firstPROpenAt, nil
+	}
+	persisted, err := s.sources.Telemetry.TimeToFirstPR(ctx)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if persisted.InitCompletedAt != nil {
+		initCompletedAt = *persisted.InitCompletedAt
+	}
+	if persisted.FirstPROpenAt != nil {
+		firstPROpenAt = *persisted.FirstPROpenAt
+	}
+	return initCompletedAt, firstPROpenAt, nil
+}
+
+func (s *Local) earliestPROpen(ctx context.Context, runIDs []string, initCompletedAt time.Time) (time.Time, error) {
+	var firstPROpenAt time.Time
 	for _, runID := range runIDs {
 		if err := ctx.Err(); err != nil {
-			return telemetry.TimeToFirstPRMetric{}, err
+			return time.Time{}, err
 		}
 		run, err := s.openRun(runID)
 		if err != nil {
-			return telemetry.TimeToFirstPRMetric{}, fmt.Errorf(
+			return time.Time{}, fmt.Errorf(
 				"read run %q for time to first PR: %w",
 				runID,
 				err,
@@ -788,7 +806,7 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 			}
 		}
 	}
-	return telemetry.NewTimeToFirstPRMetric(initCompletedAt, firstPROpenAt), nil
+	return firstPROpenAt, nil
 }
 
 // SchedulerStatus returns the current scheduler status recorded in the
@@ -987,44 +1005,9 @@ func (s *Local) restartReplacements(ctx context.Context, restartedAt time.Time) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		run, err := s.openRun(runID)
-		if err != nil {
+		candidate, ok := s.restartRunCandidate(runID, restartedAt)
+		if !ok {
 			continue
-		}
-		if run.identity.Trigger.Kind != journal.TriggerItem || run.identity.Trigger.Ref == "" {
-			continue
-		}
-		candidate := restartRun{
-			id:        runID,
-			itemID:    run.identity.Trigger.Ref,
-			startedAt: run.identity.StartedAt,
-		}
-		var daemonRecovery, interruptionPending bool
-		for _, record := range run.records {
-			event := record.Event
-			if event.Type == journal.EventRunnerAnnotation &&
-				runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
-				runnerString(event.Runner, "reason") == "daemon_restart" &&
-				!event.Time.Before(restartedAt) {
-				daemonRecovery = true
-			}
-			if event.Type == journal.EventStageFinished {
-				interrupted, _ := event.Runner["interruptedAttempt"].(bool)
-				if interrupted && event.Error != nil && event.Error.Code == "interrupted" {
-					interruptionPending = daemonRecovery
-				} else {
-					interruptionPending = false
-				}
-			}
-			if event.Type == journal.EventStageStarted && interruptionPending {
-				interruptionPending = false
-			}
-			if event.Type == journal.EventRunFinished &&
-				event.Status == string(journal.PhaseFailed) &&
-				!event.Time.Before(restartedAt) {
-				candidate.failedAt = event.Time
-				candidate.interruptedByRestart = interruptionPending
-			}
 		}
 		if !candidate.failedAt.IsZero() &&
 			candidate.startedAt.Before(restartedAt) &&
@@ -1038,6 +1021,49 @@ func (s *Local) restartReplacements(ctx context.Context, restartedAt time.Time) 
 	sort.Slice(replacements, func(i, j int) bool {
 		return replacements[i].startedAt.Before(replacements[j].startedAt)
 	})
+	result := matchRestartReplacements(failed, replacements)
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ItemID == result[j].ItemID {
+			return result[i].FailedRunID < result[j].FailedRunID
+		}
+		return result[i].ItemID < result[j].ItemID
+	})
+	return result, nil
+}
+
+func (s *Local) restartRunCandidate(runID string, restartedAt time.Time) (restartRun, bool) {
+	run, err := s.openRun(runID)
+	if err != nil || run.identity.Trigger.Kind != journal.TriggerItem || run.identity.Trigger.Ref == "" {
+		return restartRun{}, false
+	}
+	candidate := restartRun{id: runID, itemID: run.identity.Trigger.Ref, startedAt: run.identity.StartedAt}
+	var daemonRecovery, interruptionPending bool
+	for _, record := range run.records {
+		event := record.Event
+		if event.Type == journal.EventRunnerAnnotation &&
+			runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
+			runnerString(event.Runner, "reason") == "daemon_restart" &&
+			!event.Time.Before(restartedAt) {
+			daemonRecovery = true
+		}
+		if event.Type == journal.EventStageFinished {
+			interrupted, _ := event.Runner["interruptedAttempt"].(bool)
+			interruptionPending = interrupted && event.Error != nil &&
+				event.Error.Code == "interrupted" && daemonRecovery
+		}
+		if event.Type == journal.EventStageStarted && interruptionPending {
+			interruptionPending = false
+		}
+		if event.Type == journal.EventRunFinished && event.Status == string(journal.PhaseFailed) &&
+			!event.Time.Before(restartedAt) {
+			candidate.failedAt = event.Time
+			candidate.interruptedByRestart = interruptionPending
+		}
+	}
+	return candidate, true
+}
+
+func matchRestartReplacements(failed, replacements []restartRun) []RunReplacement {
 	var result []RunReplacement
 	for _, old := range failed {
 		for i := range replacements {
@@ -1056,13 +1082,7 @@ func (s *Local) restartReplacements(ctx context.Context, restartedAt time.Time) 
 			break
 		}
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].ItemID == result[j].ItemID {
-			return result[i].FailedRunID < result[j].FailedRunID
-		}
-		return result[i].ItemID < result[j].ItemID
-	})
-	return result, nil
+	return result
 }
 
 func runnerString(values map[string]any, key string) string {
