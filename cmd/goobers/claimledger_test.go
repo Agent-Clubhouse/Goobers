@@ -33,6 +33,7 @@ type claimsPlane struct {
 	server   *httptest.Server
 	layout   instance.Layout
 	registry *podauth.Registry
+	service  *daemonClaimService
 }
 
 func newClaimsPlane(t *testing.T) *claimsPlane {
@@ -64,11 +65,16 @@ func newClaimsPlane(t *testing.T) *claimsPlane {
 		t.Fatal(err)
 	}
 	t.Cleanup(journalWriter.Close)
+	service := newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+		return recoverClaims(layout, instanceLog, now, nil, nil)
+	})
+	if err := service.initializeMergeLock(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.close)
 	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
 		httpapi.WithAuthenticator(authenticator),
-		httpapi.WithClaimService(newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-			return recoverClaims(layout, instanceLog, now, nil, nil)
-		})),
+		httpapi.WithClaimService(service),
 		httpapi.WithJournalService(journalWriter),
 	)
 	if err != nil {
@@ -76,7 +82,7 @@ func newClaimsPlane(t *testing.T) *claimsPlane {
 	}
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return &claimsPlane{server: server, layout: layout, registry: registry}
+	return &claimsPlane{server: server, layout: layout, registry: registry, service: service}
 }
 
 // admitRun creates runID's journal under gaggle on the daemon (the run.yaml
@@ -402,6 +408,73 @@ func TestClaimLedgerMergeLockParity(t *testing.T) {
 			defer mu.Unlock()
 			if want := []string{"first-in", "first-out", "second-in"}; mustJSON(t, order) != mustJSON(t, want) {
 				t.Fatalf("window order = %v, want %v", order, want)
+			}
+		})
+	}
+}
+
+func TestClaimLedgerFileAndPlaneMergeLocksShareExclusion(t *testing.T) {
+	for _, firstBackend := range []string{"file", "plane"} {
+		t.Run(firstBackend+"-first", func(t *testing.T) {
+			plane := newClaimsPlane(t)
+			fileClient, err := fileClaimLedger(plane.layout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			planeClient := plane.client(t, "run-plane", plane.admitRun(t, "g", "run-plane"))
+			lock := func(runID string) claimsclient.MergeLock {
+				return claimsclient.MergeLock{
+					Key:      claimsclient.MergeLockKey("g", "github", "acme", "web"),
+					RunID:    runID,
+					Workflow: "merge-review",
+				}
+			}
+			first, second := fileClient, planeClient
+			firstRun, secondRun := "run-file", "run-plane"
+			if firstBackend == "plane" {
+				first, second = planeClient, fileClient
+				firstRun, secondRun = "run-plane", "run-file"
+			}
+
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			firstDone := make(chan error, 1)
+			go func() {
+				firstDone <- first.MergeLock(t.Context(), lock(firstRun), func(context.Context) error {
+					close(entered)
+					<-release
+					return nil
+				})
+			}()
+			<-entered
+
+			secondEntered := make(chan struct{})
+			secondDone := make(chan error, 1)
+			go func() {
+				secondDone <- second.MergeLock(t.Context(), lock(secondRun), func(context.Context) error {
+					close(secondEntered)
+					return nil
+				})
+			}()
+			select {
+			case <-secondEntered:
+				t.Fatal("file and plane merge windows overlapped")
+			case err := <-secondDone:
+				t.Fatalf("second merge lock failed before the first was released: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			close(release)
+			if err := <-firstDone; err != nil {
+				t.Fatalf("first merge lock: %v", err)
+			}
+			if err := <-secondDone; err != nil {
+				t.Fatalf("second merge lock: %v", err)
+			}
+			select {
+			case <-secondEntered:
+			default:
+				t.Fatal("second merge window never entered after release")
 			}
 		})
 	}

@@ -48,6 +48,8 @@ type daemonClaimService struct {
 	log           *journal.InstanceLog
 	shared        claimsclient.SharedClaimResolver
 	markerRelease func(context.Context, localscheduler.ClaimEntry, claimrelease.Reason) error
+	mergeFlock    *mergeFlockState
+	stopMergeHook func()
 	// recover is the daemon's OWN stale-claim sweep, injected rather than
 	// reconstructed: it closes over the intervention predicate and the
 	// restart-time recovery gate (up.go), which are in-memory daemon state
@@ -62,7 +64,26 @@ func newDaemonClaimService(
 	log *journal.InstanceLog,
 	recover func(now time.Time) ([]localscheduler.ClaimEntry, error),
 ) *daemonClaimService {
-	return &daemonClaimService{layout: layout, log: log, recover: recover}
+	service := &daemonClaimService{
+		layout: layout, log: log,
+		mergeFlock: newMergeFlockState(filepath.Join(layout.SchedulerDir(), mergeLockFileName)),
+	}
+	service.stopMergeHook = service.registerMergeLedgerObserver()
+	if recover != nil {
+		service.recover = func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+			released, recoverErr := recover(now)
+			refreshErr := service.refreshMergeFlock()
+			return released, errors.Join(recoverErr, refreshErr)
+		}
+	}
+	return service
+}
+
+func (s *daemonClaimService) close() {
+	if s.stopMergeHook != nil {
+		s.stopMergeHook()
+	}
+	s.mergeFlock.close()
 }
 
 func (s *daemonClaimService) lockPath() string {
@@ -125,6 +146,9 @@ func (s *daemonClaimService) Acquire(ctx context.Context, request httpapi.ClaimR
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
+	if isMergeLockRequest(request) {
+		return s.acquireMergeLock(ctx, request, lease)
+	}
 	client, err := s.coordinatedLedger(claimLockOperationAPIAcquire, request)
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
@@ -147,6 +171,9 @@ func (s *daemonClaimService) Renew(ctx context.Context, request httpapi.ClaimReq
 	lease, err := s.leaseDuration(request)
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
+	}
+	if isMergeLockRequest(request) {
+		return s.renewMergeLock(ctx, request, lease)
 	}
 	var response httpapi.ClaimResponse
 	var shared *localscheduler.ClaimEntry
