@@ -328,3 +328,106 @@ jobs:
           path: ${{ runner.temp }}/ha-nightly/evidence/
           if-no-files-found: error
           retention-days: 30
+
+  control-restart:
+    name: control in-process voluntary handoff (PG16 and Temporal)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_DB: goobers
+          POSTGRES_USER: goobers
+          POSTGRES_PASSWORD: goobers-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goobers -d goobers"
+          --health-interval 2s
+          --health-timeout 5s
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Measure controller takeover
+        shell: bash
+        env:
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+          GOOBERS_CONTROL_RTO_PRODUCTION: "1"
+        run: |
+          set -euo pipefail
+          go test -tags=cloudintegration -run '^TestTwoReplicaPG16Failover$' -count=20 -v -timeout=10m ./internal/cloud/control | tee "$RUNNER_TEMP/control-restart.log"
+      - name: Report lifecycle p95
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import math, os, pathlib, re
+          log = pathlib.Path(os.environ['RUNNER_TEMP'], 'control-restart.log').read_text()
+          scale = {'ns': 1e-9, 'µs': 1e-6, 'ms': 1e-3, 's': 1}
+          samples = sorted(float(value) * scale[unit] for value, unit in re.findall(r'IN-PROCESS-HANDOFF: ([0-9.]+)(ns|µs|ms|s)', log))
+          if len(samples) != 20:
+              raise SystemExit(f'Expected 20 restart samples, got {len(samples)}')
+          p95 = samples[math.ceil(len(samples) * .95) - 1]
+          message = f'In-process voluntary handoff p95: {p95:.3f}s ({len(samples)} samples; production lease timings; limit 60s)'
+          print(message)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(message + '\n\nIn-process voluntary handoff only; kind rollout RESTART-RTO and full provider/claim rebuild remain pending.\n')
+          if p95 > 60:
+              raise SystemExit('In-process handoff p95 exceeds 60 seconds')
+          PY
+      - name: Upload restart evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: control-restart-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/control-restart.log
+          if-no-files-found: error
+          retention-days: 30
+
+  journal-throughput:
+    name: PostgreSQL journal throughput report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_DB: goobers
+          POSTGRES_USER: goobers
+          POSTGRES_PASSWORD: goobers-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goobers -d goobers"
+          --health-interval 5s --health-timeout 5s --health-start-period 60s
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Report PostgreSQL journal throughput
+        shell: bash
+        env:
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=cloudintegration -timeout 5m -run '^$' -bench '^BenchmarkPostgresJournalAppend$' -benchtime=5s -count=3 ./internal/journal | tee "$RUNNER_TEMP/journal-throughput.txt"
+          cat "$RUNNER_TEMP/journal-throughput.txt" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload journal throughput
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pg-journal-throughput-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/journal-throughput.txt
+          if-no-files-found: error
+          retention-days: 30

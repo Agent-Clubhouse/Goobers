@@ -309,6 +309,7 @@ github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capt
 # the daemon evaluation controller that consumes them is #4425. Remove on wiring.
 github.com/goobers/goobers/internal/gagglehealth.ExtendEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
 github.com/goobers/goobers/internal/gagglehealth.Rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+
 github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.Build # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.CreateEmptyVersion # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.Flip # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
@@ -357,6 +358,35 @@ github.com/goobers/goobers/internal/cloud/readmodelpg.truncateVersion # HA-P3-11
 github.com/goobers/goobers/internal/cloud/readmodelpg.validateFilters # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.versionDDL # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.versionSchema # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.NewActiveFeedStore # HA-P3-12 projector feed is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.ActiveFeedStore.activeSchema # HA-P3-12 projector feed is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.ActiveFeedStore.State # HA-P3-12 projector feed is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.ActiveFeedStore.Changes # HA-P3-12 projector feed is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.ActiveFeedStore.LatestChangeSeq # HA-P3-12 projector feed is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.connectListener # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.Subscribe # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.Notify # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.requestPublish # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.listenLoop # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.publishLoop # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.waitBackoff # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.setListener # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.setPublisher # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.recordErrorLocked # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.broadcast # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.Health # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.Close # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.NotifierHealth.Degraded # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.NewNotifier # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.NewProjector # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Projector.Commit # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Projector.Feed # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Projector.Store # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Store.ChangeFeed # HA-P3-12 PostgreSQL backend compatibility for #7884 remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Store.PublishDefinitionsChanged # HA-P3-12 PostgreSQL backend compatibility for #7884 remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/readmodel.NewFeedWithWakeup # HA-P3-12 PostgreSQL projector feed remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/readmodel/conformance.changeFeedIdentityIsStable # Backend conformance helper is invoked only from tests for #7865/#7884. expires=2026-11-22
+github.com/goobers/goobers/internal/readmodel/conformance.definitionsChangeJoinsOrderedFeed # Backend conformance helper is invoked only from tests for #7865/#7884. expires=2026-11-22
 github.com/goobers/goobers/internal/blobstore.TouchReference # Safe physical blob GC writer qualification (#7843) exposes the shared digest-only reference seam before journal/recovery/child writers adopt it. expires=2026-11-22
 
 # HA-P3-14 (#7814) PostgreSQL recovery, cancel-receipt and terminal-report stores
@@ -416,13 +446,13 @@ github.com/goobers/goobers/internal/cloud/recoverypg.Store.ReleaseBundle # HA-P3
 github.com/goobers/goobers/internal/cloud/recoverypg.bound.ReleaseBundle # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
 github.com/goobers/goobers/internal/cloud/terminalreportpg.Store.leaseOutcome # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
 # HA-P3-17 cloud assembly awaits HA-P3-18 role composition.
-github.com/goobers/goobers/internal/cloud/podauth.New # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Auth.Authenticate # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Auth.VerifyCredentialGrant # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Auth.RunKeyReload # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Revocations.Revoke # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Revocations.IsRevoked # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Revocations.validate # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/enginedecision.Router.query # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.WorkflowID # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.GateState # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.HITLState # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.DecideGate # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.Intend # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.update # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
 
 # HA-P3-27 engine-only admission lands ahead of the control-role wiring (#7850). Remove on wiring.
 github.com/goobers/goobers/internal/cloud/config.NewApplier # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
@@ -438,5 +468,117 @@ github.com/goobers/goobers/internal/cloud/config.NewConfiguration # Engine-only 
 github.com/goobers/goobers/internal/cloud/config.Configuration.Admit # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
 github.com/goobers/goobers/internal/cloud/config.Configuration.Reload # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
 github.com/goobers/goobers/internal/cloud/config.Configuration.Status # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
-# Role and database provisioning (#7821) lands ahead of its caller, goobers-cloud
-# bootstrap (#7825). Remove on wiring.
+github.com/goobers/goobers/internal/childworkflow.EngineFreezer.Freeze # Production engine child freezer (#7758): its only caller is the childengine.Service Freezer composed with the cloud api role's assembleControlPlanes in the #7879 composition PR after #7850; until then only the freeze, golden and engine-load tests call it. expires=2026-11-20
+
+# HA-P3-09 PG backend awaits controller composition; no package-pattern exemptions supported.
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.AcceptOperatorMessage # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.AcknowledgeOperatorMessage # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.AppendBatch # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.AppendChildStageStarted # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.AppendIfAbsent # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.BeginTranscript # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.BindInstance # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.Checkpoint # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.ClaimNotificationDelivery # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.CompleteOperatorMessage # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.CreateRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.InstanceAppend # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.InstanceRead # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.ListRuns # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.OpenInstance # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.OpenRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.ReadBlob # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.ReadEvents # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RecordBlob # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RecordSpan # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RecoverRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RejectOperatorMessage # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RepairAppendBoundary # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.Retire # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RetireInstance # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunNotifications # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunStatus # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.appendClean # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.changed # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.indexArtifact # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.instanceOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.keepRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.liveOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.previousOccurrence # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.putBlob # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.readBlob # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.readRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.recordBlob # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.recordSpan # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.removePartialPaths # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.removeTranscriptPartials # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.requestOperator # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.tryRecover # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.updateOperator # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.withInstance # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.withRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.writeRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.New # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.capture.Append # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.capture.RecordFinal # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.capture.RecordFinalWithExpectedDigest # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.capture.append # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.emitKey # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.findOperator # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.lifecycle # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.normalizedOptions # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.prepareEvent # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.prepareIdentity # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.recordEvents # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.requireWrite # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.ArtifactByDigest # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.ArtifactBytes # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.ArtifactBytesBounded # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.EventRecords # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.Events # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.Identity # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.Phase # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.PhaseBounded # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.Schema # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.SpanBytes # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.runReader.State # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.stateForEvents # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.validDelta # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/journal.CurrentSchemaInfo # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/journal.MarshalEvent # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/journal.RecoverState # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/journal.ValidateAgentProgressRate # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.ownsRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.snapshot # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.decodeEvents # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.withHistory # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.withAppend # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.prepareCheckpoint # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.storeCheckpoint # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.operatorEvents # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.operatorKey # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.notificationIndex # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.latestNotification # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.progressIndex # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.validateProgress # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.claimRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.retireOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.completedTranscriptPartials # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.recoverableRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.validateRecoveryOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.matchesHistory # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.newReplayState # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.replayState.fold # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.replayState.applyLifecycle # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.replayState.gateExecuted # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.replayState.trackGate # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.replayState.applyBranches # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.replayState.advanceBranch # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.replayState.checkpoint # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/childengine.Service.Admit # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20
+github.com/goobers/goobers/internal/cloud/childengine.Service.Load # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20
+github.com/goobers/goobers/internal/cloud/childengine.Service.Cancel # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20
+github.com/goobers/goobers/internal/cloud/childengine.Service.configured # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20
+github.com/goobers/goobers/internal/cloud/childengine.Service.acceptedChild # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20
+github.com/goobers/goobers/internal/cloud/childengine.identityOf # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20
+github.com/goobers/goobers/internal/cloud/childengine.binding # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -106,7 +108,7 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	var project apiv1.RepoRef
 	parentSource := strings.ReplaceAll(childValidationParent, "[agent:model]", "[agent:model, repo:push, provider:pr:write]")
 	parentSource = strings.ReplaceAll(parentSource, "[agent:model, repo:push]", "[agent:model, repo:push, provider:pr:write]")
-	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, gooberCapabilities: []string{"agent:model", "repo:push", "provider:pr:write"}, parent: parentSource, source: publicationChildSource, workspace: func(s *daemonCredentialService, c triggerqueue.ChildRecord, m *worktree.Manager) *runner.ChildWorkspaceAdmission {
+	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, gooberCapabilities: []string{"agent:model", "repo:push", "provider:pr:write"}, parent: parentSource, source: publicationChildSource, workspace: func(s *daemonCredentialService, c triggerqueue.ChildRecord, m *worktree.Manager) *workspaceauthority.ChildWorkspaceAdmission {
 		set, report, err := loadConfigDirectory(s.layout.ConfigDir())
 		if err != nil {
 			t.Fatalf("load publication fixture: %v (%s)", err, runtimewiring.ValidationIssueSummary(report))

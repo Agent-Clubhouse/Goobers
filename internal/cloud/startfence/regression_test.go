@@ -11,7 +11,7 @@ import (
 
 func TestReviewMissingMemoMustNotAdoptUnknownExecution(t *testing.T) {
 	f := &fakeStarter{err: serviceerror.NewWorkflowExecutionAlreadyStarted("exists", "r", "e"), desc: &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Type: &commonpb.WorkflowType{Name: "Run"}}}}
-	s := &TemporalStarter{client: f, taskQueue: "cloud", admission: testStartAdmission{}}
+	s := &TemporalStarter{generation: testGenerationAdmission{}, client: f, taskQueue: "cloud", admission: testStartAdmission{}}
 	r, e := s.Start(t.Context(), cloudStartInput(9))
 	if e != nil || r.Adopt || !r.NotMine {
 		t.Fatalf("adopted execution with no acceptance/owner evidence: %+v", r)
@@ -20,7 +20,7 @@ func TestReviewMissingMemoMustNotAdoptUnknownExecution(t *testing.T) {
 func TestReviewUnpersistedMatchingIDsMustNotStart(t *testing.T) {
 	in := cloudStartInput(9)
 	f := &fakeStarter{run: fakeRun{id: in.RunID, runID: "exec"}}
-	s := &TemporalStarter{client: f, taskQueue: "cloud"}
+	s := &TemporalStarter{generation: testGenerationAdmission{}, client: f, taskQueue: "cloud"}
 	r, e := s.Start(t.Context(), in)
 	if e == nil && f.gotOpts.ID != "" {
 		t.Fatalf("cloud start used only caller-supplied matching strings; no acceptance row exists: %+v", r)
@@ -71,11 +71,11 @@ func TestPlacementDoesNotReplaceDurableCloudAdmission(t *testing.T) {
 		in := cloudStartInput(9)
 		in.SelfExecutionDenied = remoteOnly
 		fake := &fakeStarter{run: fakeRun{id: in.RunID}}
-		refused := &TemporalStarter{client: fake, taskQueue: "cloud"}
+		refused := &TemporalStarter{generation: testGenerationAdmission{}, client: fake, taskQueue: "cloud"}
 		if _, err := refused.Start(t.Context(), in); err == nil || fake.gotOpts.ID != "" {
 			t.Fatal("placement bypassed durable admission")
 		}
-		admitted := &TemporalStarter{client: fake, taskQueue: "cloud", admission: testStartAdmission{}}
+		admitted := &TemporalStarter{generation: testGenerationAdmission{}, client: fake, taskQueue: "cloud", admission: testStartAdmission{}}
 		if _, err := admitted.Start(t.Context(), in); err != nil {
 			t.Fatal(err)
 		}

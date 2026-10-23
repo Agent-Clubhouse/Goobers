@@ -266,7 +266,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil && !childProtocolEnabled(ctx) {
 		return RunResult{}, err
 	}
-	if err := wf.RefuseUnsupportedFanOut(in.Spec); err != nil {
+	if err := refuseUnassembledFanOut(ctx, in); err != nil {
 		return RunResult{}, err
 	}
 	in.Item = normalizeItemIntegrity(in.Item)
@@ -277,18 +277,17 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	if !humanGateImplementationEnabled(ctx) {
-		for _, gate := range in.Spec.Gates {
-			if err := refuseHumanGate(gate); err != nil {
-				return RunResult{}, err
-			}
-		}
+	if err := refuseUnreadyHumanGates(ctx, in); err != nil {
+		return RunResult{}, err
 	}
 	rec, err := newRunJournal(ctx, in, m)
 	if err != nil {
 		return RunResult{}, err
 	}
 	enableHumanGateDecisionOwner(ctx, rec, in)
+	if err := rec.initializeFanOut(ctx, in); err != nil {
+		return RunResult{}, err
+	}
 	// The HITL protocol's handlers are registered BEFORE the run does
 	// anything (#3883, decision 005 R8). Registration emits no history event,
 	// so this is invisible to replay of pre-protocol histories; registering
@@ -480,6 +479,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	}
 
 	for {
+		rec.advanceStaticJoin(state)
 		if out, err, stop := rec.branchBoundary(ctx, state, upstream, steps); stop {
 			return out, err
 		}
@@ -782,6 +782,10 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 			rec.workspaceHeadMoved(ctx, t.Name, result.Error.Message)
 			return "", supersededRunResult(t.Name, upstream, steps), true
 		}
+		if runsemantics.IsOutboxExportFailure(result) {
+			code, message := failureCause(result.Error)
+			return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
+		}
 		if t.ContinueOnError {
 			rec.toleratedFailure(ctx, t.Name)
 			break
@@ -939,7 +943,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q branch inputs: %w", t.Name, err)
 	}
-	inputGrades := engineInputGrades(t, upstreamResult, completed, qualifiedInputs)
+	inputGrades := rec.taskInputGrades(t, machine, upstreamResult, completed, qualifiedInputs)
 	inputGrades = bindings.addGrades(inputGrades)
 	integrityErr := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity)
 	if integrityErr == nil {
@@ -961,13 +965,8 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// preceding stage. A declared outputKey that resolves nowhere fails the
 	// stage closed: the declaration is a contract, not a hint. Keys are walked
 	// sorted so the first-missing error is deterministic under replay.
-	for _, inputKey := range sortedKeys(t.InputsFrom) {
-		outputKey := t.InputsFrom[inputKey]
-		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualifiedInputs)
-		if !ok {
-			return apiv1.ResultEnvelope{}, inputsFromError(t.Name, inputKey, outputKey, upstreamResult, completed, qualifiedInputs)
-		}
-		env.Inputs[inputKey] = v
+	if err := rec.bindTaskInputs(t, machine, upstreamResult, completed, qualifiedInputs, env.Inputs); err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	bindings.apply(env.Inputs)
 	rec.staticJoinInputs(t.Name, env.Inputs)

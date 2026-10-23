@@ -60,7 +60,7 @@ func sampleInput() engine.RunInput {
 
 func TestTemporalStarterStartsRun(t *testing.T) {
 	fs := &fakeStarter{run: fakeRun{id: "web/flow/item-1", runID: "exec-1"}}
-	s := &TemporalStarter{admission: testStartAdmission{}, client: fs, taskQueue: "goobers"}
+	s := &TemporalStarter{generation: testGenerationAdmission{}, admission: testStartAdmission{}, client: fs, taskQueue: "goobers"}
 
 	res, err := s.Start(context.Background(), sampleInput())
 	if err != nil {
@@ -108,7 +108,7 @@ func TestTemporalStarterStartsRun(t *testing.T) {
 // payload to find it.
 func TestTemporalStarterMemoCarriesBacklogItem(t *testing.T) {
 	fs := &fakeStarter{run: fakeRun{id: "web/flow/item-1", runID: "exec-1"}}
-	s := &TemporalStarter{admission: testStartAdmission{}, client: fs, taskQueue: "goobers"}
+	s := &TemporalStarter{generation: testGenerationAdmission{}, admission: testStartAdmission{}, client: fs, taskQueue: "goobers"}
 
 	in := sampleInput()
 	in.Item = &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, URL: "https://example/issues/42"}
@@ -132,14 +132,14 @@ func TestTemporalStarterMemoCarriesBacklogItem(t *testing.T) {
 
 func TestTemporalStarterPropagatesOtherErrors(t *testing.T) {
 	fs := &fakeStarter{err: errors.New("temporal unavailable")}
-	s := &TemporalStarter{admission: testStartAdmission{}, client: fs, taskQueue: "goobers"}
+	s := &TemporalStarter{generation: testGenerationAdmission{}, admission: testStartAdmission{}, client: fs, taskQueue: "goobers"}
 	if _, err := s.Start(context.Background(), sampleInput()); err == nil {
 		t.Error("expected a non-already-started error to propagate")
 	}
 }
 
 func TestTemporalStarterRequiresRunID(t *testing.T) {
-	s := &TemporalStarter{admission: testStartAdmission{}, client: &fakeStarter{}, taskQueue: "goobers"}
+	s := &TemporalStarter{generation: testGenerationAdmission{}, admission: testStartAdmission{}, client: &fakeStarter{}, taskQueue: "goobers"}
 	in := sampleInput()
 	in.RunID = ""
 	if _, err := s.Start(context.Background(), in); err == nil {
@@ -182,7 +182,7 @@ func TestReconcileAdoptsPredecessorStart(t *testing.T) {
 
 func TestCloudRejectsUnassignedRunID(t *testing.T) {
 	fake := &fakeStarter{}
-	starter := &TemporalStarter{client: fake, taskQueue: "cloud"}
+	starter := &TemporalStarter{generation: testGenerationAdmission{}, client: fake, taskQueue: "cloud"}
 	input := cloudStartInput(1)
 	input.AcceptanceID = "trigger-another-run"
 	if _, err := starter.Start(t.Context(), input); err == nil {
@@ -223,7 +223,7 @@ func existingStart(t *testing.T, owner StartOwnerMemo) *TemporalStarter {
 			},
 		},
 	}
-	return &TemporalStarter{client: fake, taskQueue: "cloud", admission: testStartAdmission{}}
+	return &TemporalStarter{generation: testGenerationAdmission{}, client: fake, taskQueue: "cloud", admission: testStartAdmission{}}
 }
 
 // Unit-test custody seam; PostgreSQL tests exercise the real admission adapter.

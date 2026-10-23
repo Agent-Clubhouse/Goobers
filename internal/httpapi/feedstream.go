@@ -59,8 +59,10 @@ type eventSource interface {
 
 // feedStream serves SSE from the read model's change feed.
 type feedStream struct {
-	feed  *readmodel.Feed
-	store *readmodel.Store
+	feed  readmodel.Feed
+	store interface {
+		State(context.Context) (readmodel.State, error)
+	}
 
 	mu     sync.Mutex
 	closed bool
@@ -72,12 +74,21 @@ type feedStream struct {
 
 // newFeedStream constructs a change-feed-backed event source.
 func newFeedStream(store *readmodel.Store) *feedStream {
+	return newFeedStreamWithFeed(store.Feed(), store)
+}
+
+func newFeedStreamWithFeed(
+	feed readmodel.Feed,
+	store interface {
+		State(context.Context) (readmodel.State, error)
+	},
+) *feedStream {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &feedStream{
 		// The store's one feed, not a second one over the same store: a feed
 		// built here would give commits and subscribers different rendezvous
 		// points, and the wakeup would be lost (#2458).
-		feed: store.Feed(), store: store, done: make(chan struct{}),
+		feed: feed, store: store, done: make(chan struct{}),
 		ctx: ctx, cancel: cancel,
 	}
 }
@@ -110,7 +121,13 @@ func (s *feedStream) Cursor() string {
 // than swallowed: unlike a projection, this has no repair sweep behind it — a
 // lost definitions change is simply never noticed by any client.
 func (s *feedStream) PublishDefinitionsChanged() error {
-	return s.store.PublishDefinitionsChanged(context.Background())
+	publisher, ok := s.store.(interface {
+		PublishDefinitionsChanged(context.Context) error
+	})
+	if !ok {
+		return errors.New("httpapi: definitions publisher is unavailable")
+	}
+	return publisher.PublishDefinitionsChanged(context.Background())
 }
 
 // Close stops the stream.

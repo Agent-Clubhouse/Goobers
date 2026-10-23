@@ -20,6 +20,7 @@ import (
 const upstreamCredentialMarker = "review-secret-delta-sentinel"
 
 func TestDatabaseUpstreamErrorsAreSanitized(t *testing.T) {
+	t.Setenv("GOOBERS_INSTANCE_ID", "test-instance")
 	for _, phase := range []string{"connect", "ping"} {
 		for _, side := range []string{"transaction", "direct"} {
 			t.Run(phase+"/"+side, func(t *testing.T) {
@@ -47,6 +48,7 @@ func TestDatabaseUpstreamErrorsAreSanitized(t *testing.T) {
 }
 
 func TestEntraUpstreamErrorsAreSanitized(t *testing.T) {
+	t.Setenv("GOOBERS_INSTANCE_ID", "test-instance")
 	for _, phase := range []string{"initialize", "token"} {
 		t.Run(phase, func(t *testing.T) {
 			t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")

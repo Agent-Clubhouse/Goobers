@@ -1,4 +1,4 @@
-// Package workerhost hosts the Temporal engine worker behind `goobers worker`
+// Package workerhost hosts the Temporal engine worker behind `goobers-cloud worker`
 // (#632, v2-cloud-scale A1.6): task-queue selection, graceful drain on
 // shutdown, and a versioned worker identity, so tier-3 workers are a
 // deployable unit (k8s-infra-shape §2). The engine itself stays quarantined —
@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/temporaldial"
+	"github.com/goobers/goobers/internal/workerrollout"
 	"github.com/goobers/goobers/internal/workerrouting"
 )
 
@@ -51,9 +53,13 @@ const ChildSettlementTimeout = 5 * time.Minute
 const DefaultMaxConcurrentActivities = 1000
 
 const (
-	placementBuildEnv  = "GOOBERS_RUNNER_BUILD"
-	placementWorkerEnv = "GOOBERS_RUNNER_WORKER"
-	healthShutdownWait = 5 * time.Second
+	placementBuildEnv         = "GOOBERS_RUNNER_BUILD"
+	placementWorkerEnv        = "GOOBERS_RUNNER_WORKER"
+	temporalDeploymentNameEnv = "TEMPORAL_DEPLOYMENT_NAME"
+	temporalWorkerBuildIDEnv  = "TEMPORAL_WORKER_BUILD_ID"
+	podNamespaceEnv           = "POD_NAMESPACE"
+	autoUpgradeRetentionEnv   = "GOOBERS_AUTO_UPGRADE_RETENTION"
+	healthShutdownWait        = 5 * time.Second
 )
 
 // Config describes one worker process.
@@ -84,6 +90,16 @@ type Config struct {
 	// as deployment "goobers", version BuildVersion (#5950). Off, the worker
 	// polls unversioned. It has no effect without a BuildVersion.
 	Versioning bool
+	// VersionRetention is the maximum number of live deployment versions.
+	// Zero disables retention reconciliation.
+	VersionRetention int
+	// RolloutNamespace contains the WorkerDeployment custom resource.
+	RolloutNamespace string
+	// AutoUpgradeRetention permits the retention reconciler to move pinned
+	// workflows across builds. It requires operator replay-compatibility
+	// evidence attested for this exact BuildVersion and is disabled by default.
+	AutoUpgradeRetention         bool
+	autoUpgradeRetentionMismatch string
 	// Logf receives the non-fatal deployment-routing health reports (#5950).
 	// Nil writes them to the process's stderr.
 	Logf func(format string, args ...any)
@@ -107,17 +123,26 @@ type Host struct {
 	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
 	// describeRouting and its cadence back the #5950 routing health check.
-	describeRouting        func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
-	routingDelay           time.Duration
-	routingInterval        time.Duration
-	childSettlementTimeout time.Duration
-	pollersStarted         atomic.Bool
-	routed                 atomic.Bool
-	draining               atomic.Bool
+	describeRouting             func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
+	newRolloutStatus            func() (workerrollout.StatusSource, error)
+	reconcileRollout            func(context.Context, workerrollout.StatusSource, workerrollout.TemporalClient, int, string) (workerrollout.Result, error)
+	routingDelay                time.Duration
+	routingInterval             time.Duration
+	routingRegistrationInterval time.Duration
+	rolloutInterval             time.Duration
+	childSettlementTimeout      time.Duration
+	pollersStarted              atomic.Bool
+	routed                      atomic.Bool
+	draining                    atomic.Bool
+	routingDescribeFailed       atomic.Bool
 }
 
 // New validates cfg and builds a Host.
 func New(cfg Config) (*Host, error) {
+	var err error
+	if cfg, err = applyDeploymentEnvironment(cfg, os.LookupEnv); err != nil {
+		return nil, err
+	}
 	if len(cfg.TaskQueues) == 0 {
 		return nil, errors.New("workerhost: at least one task queue is required")
 	}
@@ -135,6 +160,15 @@ func New(cfg Config) (*Host, error) {
 	if cfg.MaxConcurrentActivities == 0 {
 		cfg.MaxConcurrentActivities = DefaultMaxConcurrentActivities
 	}
+	if cfg.VersionRetention < 0 {
+		return nil, errors.New("workerhost: version retention must be positive")
+	}
+	if cfg.AutoUpgradeRetention && cfg.VersionRetention == 0 {
+		return nil, errors.New("workerhost: AUTO_UPGRADE retention requires a positive version limit")
+	}
+	if cfg.AutoUpgradeRetention && cfg.RolloutNamespace == "" {
+		return nil, errors.New("workerhost: rollout namespace is required when version retention is enabled")
+	}
 	h := &Host{cfg: cfg, tracker: &activityTracker{
 		buildID: cfg.BuildVersion,
 		worker:  Identity(cfg.BuildVersion),
@@ -149,10 +183,116 @@ func New(cfg Config) (*Host, error) {
 		return w
 	}
 	h.describeRouting = workerrouting.DescribeRouting
+	h.newRolloutStatus = func() (workerrollout.StatusSource, error) {
+		return workerrollout.NewInClusterStatusSource(cfg.RolloutNamespace, DeploymentName)
+	}
+	h.reconcileRollout = workerrollout.Reconcile
 	h.routingDelay = routingCheckDelay
 	h.routingInterval = routingCheckInterval
+	h.routingRegistrationInterval = routingRegistrationCheckInterval
+	h.rolloutInterval = time.Minute
 	h.childSettlementTimeout = ChildSettlementTimeout
+	if cfg.autoUpgradeRetentionMismatch != "" {
+		h.logf("goobers-cloud worker: error: %s", cfg.autoUpgradeRetentionMismatch)
+	}
 	return h, nil
+}
+
+func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) (Config, error) {
+	binaryVersion := strings.TrimSpace(cfg.BuildVersion)
+	deployment, hasDeployment := lookup(temporalDeploymentNameEnv)
+	buildID, hasBuildID := lookup(temporalWorkerBuildIDEnv)
+	if !hasDeployment && !hasBuildID {
+		return cfg, nil
+	}
+	deployment = strings.TrimSpace(deployment)
+	buildID = strings.TrimSpace(buildID)
+	if !hasDeployment || !hasBuildID || deployment == "" || buildID == "" {
+		return Config{}, fmt.Errorf("workerhost: %s and %s must both be non-empty", temporalDeploymentNameEnv, temporalWorkerBuildIDEnv)
+	}
+	if deployment != DeploymentName {
+		return Config{}, fmt.Errorf("workerhost: %s=%q, want %q", temporalDeploymentNameEnv, deployment, DeploymentName)
+	}
+	if isPlaceholder(buildID) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; set a distinct immutable ID for this release", temporalWorkerBuildIDEnv, buildID)
+	}
+	if !developmentBuild(binaryVersion) && !buildIDContainsVersion(buildID, binaryVersion) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q does not contain release binary version %q; refuse an in-place code update under a reused build ID",
+			temporalWorkerBuildIDEnv, buildID, binaryVersion)
+	}
+	cfg.BuildVersion = buildID
+	cfg.Versioning = true
+	// Controller-managed retention is enabled only by an attestation for this
+	// exact injected build, never by a value carried in a shared config.
+	cfg.AutoUpgradeRetention = false
+	if cfg.VersionRetention == 0 {
+		cfg.VersionRetention = workerrollout.DefaultVersionLimit
+	}
+	if cfg.RolloutNamespace == "" {
+		namespace, _ := lookup(podNamespaceEnv)
+		cfg.RolloutNamespace = strings.TrimSpace(namespace)
+	}
+	if raw, ok := lookup(autoUpgradeRetentionEnv); ok {
+		attestedBuild := strings.TrimSpace(raw)
+		if isPlaceholder(attestedBuild) {
+			return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; omit it until replay qualification passes", autoUpgradeRetentionEnv, attestedBuild)
+		}
+		if attestedBuild == buildID {
+			cfg.AutoUpgradeRetention = true
+		} else {
+			cfg.AutoUpgradeRetention = false
+			cfg.autoUpgradeRetentionMismatch = fmt.Sprintf(
+				"%s=%q does not match %s=%q; AUTO_UPGRADE retention is disabled",
+				autoUpgradeRetentionEnv, attestedBuild, temporalWorkerBuildIDEnv, buildID)
+		}
+	}
+	return cfg, nil
+}
+
+func developmentBuild(version string) bool {
+	return version == "" || version == "dev"
+}
+
+func buildIDContainsVersion(buildID, binaryVersion string) bool {
+	if containsBuildToken(buildID, binaryVersion) {
+		return true
+	}
+	normalized := strings.TrimPrefix(binaryVersion, "v")
+	return normalized != binaryVersion && containsBuildToken(buildID, normalized)
+}
+
+func containsBuildToken(buildID, version string) bool {
+	for offset := 0; offset <= len(buildID)-len(version); {
+		index := strings.Index(buildID[offset:], version)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		end := index + len(version)
+		if (index == 0 || !buildTokenCharacter(buildID[index-1])) &&
+			(end == len(buildID) || !buildTokenCharacter(buildID[end])) {
+			return true
+		}
+		offset = index + 1
+	}
+	return false
+}
+
+func buildTokenCharacter(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9'
+}
+
+func isPlaceholder(value string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(value))
+	return strings.Contains(upper, "CHANGE-ME") ||
+		strings.Contains(upper, "CHANGE_ME") ||
+		strings.Contains(upper, "CHANGEME") ||
+		strings.Contains(upper, "PLACEHOLDER") ||
+		strings.Contains(upper, "REPLACE-ME") ||
+		strings.Contains(upper, "REPLACE_ME") ||
+		(strings.HasPrefix(upper, "<") && strings.HasSuffix(upper, ">"))
 }
 
 // Identity is the versioned Temporal worker identity (#632): build version,
@@ -215,6 +355,13 @@ func (h *Host) Run(ctx context.Context) error {
 	if c != nil {
 		defer c.Close()
 	}
+	var rolloutStatus workerrollout.StatusSource
+	if h.cfg.AutoUpgradeRetention {
+		rolloutStatus, err = h.newRolloutStatus()
+		if err != nil {
+			return fmt.Errorf("workerhost: initialize version retention: %w", err)
+		}
+	}
 
 	previousBuild, hadBuild := os.LookupEnv(placementBuildEnv)
 	previousWorker, hadWorker := os.LookupEnv(placementWorkerEnv)
@@ -267,11 +414,19 @@ func (h *Host) Run(ctx context.Context) error {
 	// do, so report it rather than let the engine stall silently.
 	routingCtx, stopRouting := context.WithCancel(ctx)
 	defer stopRouting()
-	routingDone := make(chan struct{})
+	var background sync.WaitGroup
+	background.Add(1)
 	go func() {
-		defer close(routingDone)
+		defer background.Done()
 		h.checkRoutingLoop(routingCtx, c)
 	}()
+	if rolloutStatus != nil {
+		background.Add(1)
+		go func() {
+			defer background.Done()
+			h.checkRolloutLoop(routingCtx, rolloutStatus, workerrollout.SDKClient{Client: c})
+		}()
+	}
 
 	var runErr error
 	select {
@@ -281,7 +436,8 @@ func (h *Host) Run(ctx context.Context) error {
 		stopRouting()
 	}
 	h.pollersStarted.Store(false)
-	<-routingDone
+	stopRouting()
+	background.Wait()
 	stopAll()
 	if runErr != nil {
 		return runErr

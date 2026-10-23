@@ -797,14 +797,59 @@ are pod-private `emptyDir` volumes, config arrives by digest, and blobs use the
 authenticated blob plane. The reference therefore runs two worker replicas
 without mounting the daemon's RWO volumes.
 
-The base manifest still uses `Recreate` as a transitional guard against mixing
-builds in one Deployment. The rainbow rollout replaces it with one Deployment
-per build ID. A new build must have live pollers before it becomes current, and
-an older build stays running while Temporal has workflows pinned to it. Do not
-scale a draining build to zero merely because it receives no new workflows;
-remove it only after its pinned executions finish. The three-version retention
-cap and AUTO_UPGRADE handling for older pinned runs are part of the rainbow
-controller rollout.
+The base manifest still uses `Recreate` as a compatibility path. The
+[`workers`](workers/) overlay replaces it with Temporal Worker Controller
+v1.13.0 (Helm chart 0.32.0), which creates one Deployment per build ID. Install
+its CRDs and controller before applying the overlay:
+
+```sh
+helm upgrade --install temporal-worker-controller-crds \
+  oci://docker.io/temporalio/temporal-worker-controller-crds \
+  --version 0.32.0 --namespace temporal-worker-system --create-namespace
+helm upgrade --install temporal-worker-controller \
+  oci://docker.io/temporalio/temporal-worker-controller \
+  --version 0.32.0 --namespace temporal-worker-system \
+  -f deploy/reference/workers/controller-values.yaml
+kubectl apply -k deploy/reference/workers
+```
+
+Before applying, replace the documentation-only API-server CIDR in
+`workers/networkpolicy-apiserver.yaml`. Workers need only `get` access to their
+`WorkerDeployment` status; the default-deny namespace otherwise blocks the
+in-cluster Kubernetes client on managed control planes.
+
+The controller waits for the new build's pollers before making it current. An
+older build stays at two replicas while Temporal has workflows pinned to it,
+then scales to zero as soon as it is drained. The controller is configured to
+block a target that would exceed three live versions. While blocked, workers
+leave the target blocked by default. `AUTO_UPGRADE` replays each pinned
+workflow's complete history on the current build, so enable automatic retention
+only after captured histories from every retained build replay successfully
+against the release candidate. Set `GOOBERS_AUTO_UPGRADE_RETENTION` on the
+worker pod template to that release's exact `TEMPORAL_WORKER_BUILD_ID` to attest
+to the evidence. A stale build ID or the legacy value `true` logs an error and
+leaves retention disabled. The worker then changes
+workflows pinned to the oldest draining build to `AUTO_UPGRADE`. Their next
+workflow task replays on the current build, including a HITL run that resumes
+after the old Deployment has scaled down. At the cap, budget for at least six
+worker pods and keep all three images pullable until their versions drain.
+
+Release tooling must replace `workerOptions.unsafeCustomBuildID` with a
+distinct, immutable identifier containing the binary version for **every**
+image or workflow-code release, whether replay qualification passes or not.
+Use the version itself or `<version>-<workflow-source-hash>` and inject it from
+the release pipeline. Reusing that ID makes Worker Controller roll changed
+code in place under pinned workflows, so the worker rejects both the shipped
+`CHANGE-ME` placeholder and a release ID that does not contain its binary
+version at token boundaries. For example, binary `0.9.1` accepts
+`release-0.9.1-workflow-abcd` but rejects `release-0.9.10`. Plain `dev` builds
+are exempt for local development.
+
+The reference omits `GOOBERS_AUTO_UPGRADE_RETENTION`. After replay qualification
+for that release, add it to the worker environment with a value exactly equal
+to the already-selected `unsafeCustomBuildID`. This same-release template
+update may roll in place because the workflow code and build ID are unchanged;
+it only enables retention. Placeholder values are rejected at startup.
 
 Terminating one replica does not consume a stage attempt. The replacement
 worker adopts the exact live stage pod by UID, preserving the attempt number
@@ -822,18 +867,20 @@ worker pod is selected by two disruption budgets.
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
 
-### Temporal worker versioning is opt-in
+<a id="temporal-worker-versioning-is-opt-in"></a>
+### Temporal worker versioning
 
-By default the worker polls **unversioned**, which is what this reference's
-Temporal values expect (they enable none of the worker-versioning dynamic
-config). `engine.workerVersioning: true` in `instance.yaml` makes the worker
-register as worker deployment `goobers`, version `goobers.<build>`, and pin each
-new workflow to that build (#5950). Nothing in Goobers sets the deployment's
-current version (#5407), so an opted-in instance must, after every rollout that
-changes the build, run
-`temporal worker deployment set-current-version --deployment-name goobers --build-id <build>`.
-Until it does, the new worker's polls succeed and receive nothing, and runs
-pinned to the previous build wait for a worker of that build.
+Versioning remains opt-in outside the rainbow overlay.
+`engine.workerVersioning: true` makes a manually managed worker register as
+deployment `goobers`, version `goobers.<build>`, and pin each new workflow to
+that build. Such an operator must still change current/ramping routing
+explicitly.
+
+The rainbow overlay enables versioning in `instance.yaml`. Temporal Worker
+Controller injects `TEMPORAL_DEPLOYMENT_NAME` and
+`TEMPORAL_WORKER_BUILD_ID`; the worker validates both and uses that build ID
+instead of the binary version. Missing, partial, or foreign controller identity
+fails startup. Routing changes belong exclusively to the controller.
 
 The worker checks the deployment's routing 30 seconds after start and every 5
 minutes after that. It logs `goobers-cloud worker: error: worker deployment "goobers" current version is ...`
@@ -855,9 +902,9 @@ gets the ramp percentage. The check works in both directions:
   Status shows it as `draining`, raises no warning, and never suggests
   reverting to it while the current version has live workers.
 
-The worker's own log check applies the same rule.
-
-Neither tool changes the routing (#4084).
+The worker's own log check applies the same rule. Goobers changes only pinned
+workflow overrides when the controller reports a target blocked at the
+three-version cap; it never changes current or ramping routing.
 
 - **`goobers status`.** On an instance with an `engine:` block, status prints
   one of these lines:

@@ -82,7 +82,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.automated.retry.backoff` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.automated.retry.maxAttempts` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.automated.timeoutSeconds` | 2.0 | ga | supported | supported | supported | dev |
-| `gate.evaluator.human` | 2.0 | ga | supported | unsupported | supported | dev |
+| `gate.evaluator.human` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.human.approvers` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.human.onTimeout.escalate` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.human.onTimeout.reject` | 2.0 | ga | supported | supported | supported | dev |
@@ -145,7 +145,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.next` | 2.0 | ga | supported | supported | supported | dev |
 | `task.onTimeout.fail` | 2.0 | ga | supported | supported | supported | dev |
 | `task.onTimeout.salvage` | 2.0 | ga | supported | supported | supported | dev |
-| `task.outbox` | 2.0 | ga | supported | unsupported | supported | dev |
+| `task.outbox` | 2.0 | ga | supported | supported | supported | dev |
 | `task.outboxMirrorPath` | 2.0 | ga | supported | supported | supported | dev |
 | `task.policyActions` | 2.0 | ga | supported | supported | supported | dev |
 | `task.requiredCapabilities` | 2.0 | ga | supported | supported | supported | dev |
@@ -281,7 +281,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.automated.retry.backoff` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.retry.maxAttempts` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.timeoutSeconds` | 3.0 | ga | supported | supported | preview | dev |
-| `gate.evaluator.human` | 3.0 | ga | supported | unsupported | preview | dev |
+| `gate.evaluator.human` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.approvers` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.escalate` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.reject` | 3.0 | ga | supported | supported | preview | dev |
@@ -351,7 +351,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.next` | 3.0 | ga | supported | supported | preview | dev |
 | `task.onTimeout.fail` | 3.0 | ga | supported | supported | preview | dev |
 | `task.onTimeout.salvage` | 3.0 | ga | supported | supported | preview | dev |
-| `task.outbox` | 3.0 | ga | supported | unsupported | preview | dev |
+| `task.outbox` | 3.0 | ga | supported | supported | preview | dev |
 | `task.outboxMirrorPath` | 3.0 | ga | supported | supported | preview | dev |
 | `task.policyActions` | 3.0 | ga | supported | supported | preview | dev |
 | `task.repoFrom` | 3.0 | ga | supported | supported | preview | v0.4.0 |
@@ -499,7 +499,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.automated.retry.backoff` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.retry.maxAttempts` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.timeoutSeconds` | 3.1 | ga | supported | supported | preview | dev |
-| `gate.evaluator.human` | 3.1 | ga | supported | unsupported | preview | dev |
+| `gate.evaluator.human` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.approvers` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.escalate` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.reject` | 3.1 | ga | supported | supported | preview | dev |
@@ -584,7 +584,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.next` | 3.1 | ga | supported | supported | preview | dev |
 | `task.onTimeout.fail` | 3.1 | ga | supported | supported | preview | dev |
 | `task.onTimeout.salvage` | 3.1 | ga | supported | supported | preview | dev |
-| `task.outbox` | 3.1 | ga | supported | unsupported | preview | dev |
+| `task.outbox` | 3.1 | ga | supported | supported | preview | dev |
 | `task.outboxMirrorPath` | 3.1 | ga | supported | supported | preview | dev |
 | `task.policyActions` | 3.1 | ga | supported | supported | preview | dev |
 | `task.repoFrom` | 3.1 | ga | supported | supported | preview | v0.4.0 |

@@ -130,6 +130,8 @@ type DispatchStageResult struct {
 	ChildWait *journal.ChildHandoffRequest `json:"childWait,omitempty"`
 	// Usage is trusted adapter accounting, independent of result metrics.
 	Usage *AttemptUsage `json:"usage,omitempty"`
+	// Outbox is the supervisor-verified manifest of declared workspace files.
+	Outbox []dispatcher.SurrenderedOutboxFile `json:"outbox,omitempty"`
 	// Embed the legacy activity result so its JSON stays flat and histories
 	// recorded before mutation metadata was added remain replay-decodable.
 	apiv1.ResultEnvelope

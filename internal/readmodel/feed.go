@@ -40,9 +40,28 @@ type FeedPosition struct {
 	Changes []Change
 }
 
-// Feed tails committed changes.
-type Feed struct {
-	store *Store
+// FeedStore is the durable change-feed read surface.
+type FeedStore interface {
+	State(context.Context) (State, error)
+	Changes(context.Context, uint64, int) ([]Change, error)
+	LatestChangeSeq(context.Context) (uint64, error)
+}
+
+// FeedWakeup is a latency hint for a durable feed. Correctness must not depend
+// on it: cloud feeds also poll once per second.
+type FeedWakeup interface {
+	Subscribe() (<-chan struct{}, func())
+}
+
+// Feed is the bounded change-feed read surface used by SSE callers.
+type Feed interface {
+	Since(context.Context, Cursor, int) (FeedPosition, error)
+	Head(context.Context) (Cursor, error)
+}
+
+// ChangeFeed tails committed changes.
+type ChangeFeed struct {
+	store FeedStore
 
 	mu sync.Mutex
 	// Keyed by channel so a waiter that leaves before the next Notify can be
@@ -53,7 +72,13 @@ type Feed struct {
 	waiters map[chan struct{}]struct{}
 
 	readChanges func(context.Context, uint64, int) ([]Change, error)
+	wakeup      FeedWakeup
+	poll        time.Duration
 }
+
+// DefaultFeedPollInterval is the cloud feed's correctness fallback when a
+// PostgreSQL notification is delayed or lost.
+const DefaultFeedPollInterval = time.Second
 
 // NewFeed constructs a feed over a store.
 //
@@ -61,8 +86,17 @@ type Feed struct {
 // one instance while a subscriber waits on another and the wakeup is simply
 // lost (#2458). This constructor remains for tests that want an isolated feed
 // over a store they own, and for the store's own lazily-built singleton.
-func NewFeed(store *Store) *Feed {
-	return &Feed{store: store, readChanges: store.Changes}
+func NewFeed(store *Store) *ChangeFeed {
+	return &ChangeFeed{store: store, readChanges: store.Changes}
+}
+
+// NewFeedWithWakeup constructs a backend-neutral durable feed. The wakeup is a
+// latency optimization; a one-second poll remains the correctness path.
+func NewFeedWithWakeup(store FeedStore, wakeup FeedWakeup) *ChangeFeed {
+	return &ChangeFeed{
+		store: store, readChanges: store.Changes,
+		wakeup: wakeup, poll: DefaultFeedPollInterval,
+	}
 }
 
 // Notify wakes anything waiting for new changes.
@@ -71,7 +105,7 @@ func NewFeed(store *Store) *Feed {
 // whole point: a subscriber woken before the commit would read the feed, find
 // nothing, and go back to sleep — and the change it was woken for would then
 // wait for the next unrelated commit to be noticed.
-func (f *Feed) Notify() {
+func (f *ChangeFeed) Notify() {
 	f.mu.Lock()
 	waiters := f.waiters
 	f.waiters = nil
@@ -88,7 +122,7 @@ func (f *Feed) Notify() {
 // removal is by key under the same mutex, so it either happens before Notify
 // detaches the set (and the waiter is never closed) or after (and the delete
 // finds nothing) — never a double close and never a lost wakeup.
-func (f *Feed) wait() (<-chan struct{}, func()) {
+func (f *ChangeFeed) wait() (<-chan struct{}, func()) {
 	waiter := make(chan struct{})
 	f.mu.Lock()
 	if f.waiters == nil {
@@ -114,45 +148,87 @@ func (f *Feed) wait() (<-chan struct{}, func()) {
 // means take a snapshot, and `schema_changed` means the client's own decoding
 // may be wrong. Collapsing them into one code would make a rebuilt store and a
 // pruned feed indistinguishable from a client that is simply too old.
-func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPosition, error) {
-	state, err := f.store.State(ctx)
-	if err != nil {
-		return FeedPosition{}, err
-	}
-	if condition := EvaluateCursor(cursor, state); condition != CursorOK {
-		return FeedPosition{}, &CursorError{Condition: condition, Cursor: cursor, State: state}
-	}
-
+func (f *ChangeFeed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPosition, error) {
 	for {
+		if err := f.validateCursor(ctx, cursor); err != nil {
+			return FeedPosition{}, err
+		}
 		// Register BEFORE reading. Registering after would drop a change that
 		// commits between the read and the registration — the subscriber would
 		// then block until the next unrelated commit, and a quiet instance could
 		// sit on a stale view indefinitely.
-		waiter, unregister := f.wait()
+		var waiter <-chan struct{}
+		var unregister func()
+		if f.wakeup != nil {
+			waiter, unregister = f.wakeup.Subscribe()
+		} else {
+			waiter, unregister = f.wait()
+		}
 
 		changes, err := f.readChanges(ctx, cursor.Seq, limit)
 		if err != nil {
 			unregister()
 			return FeedPosition{}, err
 		}
+		if err := f.validateCursor(ctx, cursor); err != nil {
+			unregister()
+			return FeedPosition{}, err
+		}
 		if len(changes) > 0 {
 			unregister()
+			if changes[0].Seq != cursor.Seq+1 {
+				state, stateErr := f.store.State(ctx)
+				if stateErr != nil {
+					return FeedPosition{}, stateErr
+				}
+				return FeedPosition{}, &CursorError{
+					Condition: CursorFeedTruncated, Cursor: cursor, State: state,
+				}
+			}
 			next := cursor
 			next.Seq = changes[len(changes)-1].Seq
 			return FeedPosition{Cursor: next, Changes: changes}, nil
 		}
 
+		var (
+			poll  <-chan time.Time
+			timer *time.Timer
+		)
+		if f.poll > 0 {
+			timer = time.NewTimer(f.poll)
+			poll = timer.C
+		}
 		select {
 		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
 			unregister()
 			return FeedPosition{}, ctx.Err()
 		case <-waiter:
+			if timer != nil {
+				timer.Stop()
+			}
+			unregister()
+		case <-poll:
+			unregister()
 		}
 	}
 }
 
+func (f *ChangeFeed) validateCursor(ctx context.Context, cursor Cursor) error {
+	state, err := f.store.State(ctx)
+	if err != nil {
+		return err
+	}
+	if condition := EvaluateCursor(cursor, state); condition != CursorOK {
+		return &CursorError{Condition: condition, Cursor: cursor, State: state}
+	}
+	return nil
+}
+
 // Head returns the current end of the feed, for a client with no cursor.
-func (f *Feed) Head(ctx context.Context) (Cursor, error) {
+func (f *ChangeFeed) Head(ctx context.Context) (Cursor, error) {
 	state, err := f.store.State(ctx)
 	if err != nil {
 		return Cursor{}, err

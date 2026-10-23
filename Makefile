@@ -287,6 +287,7 @@ deploy-validate:
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check >/dev/null
 	kubectl kustomize deploy/reference/temporal >/dev/null
 	kubectl kustomize deploy/reference/goobers-cloud >/dev/null
+	kubectl kustomize deploy/reference/workers >/dev/null
 	kubectl kustomize deploy/reference/examples/goobers-system-registry >/dev/null
 	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/config-mirror | $(KUBECONFORM) -strict -summary
@@ -295,8 +296,10 @@ deploy-validate:
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/temporal | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/goobers-cloud | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/workers | $(KUBECONFORM) -strict -ignore-missing-schemas -summary
 	kubectl kustomize deploy/reference/goobers-cloud/cnpg | $(KUBECONFORM) -strict -summary -schema-location default -schema-location '$(CRD_SCHEMA_CATALOG)'
 	kubectl kustomize deploy/reference/examples/goobers-system-registry | $(KUBECONFORM) -strict -summary
+	$(GO) test ./deploy/reference/workers -count=1
 	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1
 	@echo "deploy/reference kustomize builds, schemas, value formats (#3310), and rendered-together cross-base assertion (#3301) OK"
 

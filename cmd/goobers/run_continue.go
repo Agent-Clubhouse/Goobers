@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
@@ -75,7 +76,7 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: read continuation source identity: %v\n", err)
 		return 1
 	}
-	pinnedMachine, err := runner.PinnedWorkflowMachine(sourceReader, sourceIdentity)
+	pinnedMachine, err := runsemantics.PinnedWorkflowMachine(sourceReader, sourceIdentity)
 	if err != nil {
 		pf(stderr, "error: resolve continuation source workflow: %v\n", err)
 		return 1

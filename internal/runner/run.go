@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	"github.com/goobers/goobers/internal/stageexec"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -831,7 +833,7 @@ type StartInput struct {
 	ChildCredentials *credentials.ChildCeiling
 	// ChildWorkspace selects a launcher-provisioned managed fork. It is
 	// trusted admission metadata, never a workflow input or arbitrary path.
-	ChildWorkspace *ChildWorkspaceAdmission
+	ChildWorkspace *workspaceauthority.ChildWorkspaceAdmission
 	// OnJournalPublished is a host-only admission barrier, never persisted or
 	// accepted from workflow inputs. It runs after immutable identity and inputs
 	// are durable, before stage execution. Failure preserves the journal for

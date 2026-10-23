@@ -32,6 +32,9 @@ type Authority struct {
 	ParentWorkflow              string
 	ParentWorkflowDigest        string
 	ParentGooberDigest          string
+	// Execution is the parent run's binding an engine child inherits. It is
+	// pinned into the start envelope at acceptance; nil for runner children.
+	Execution *ExecutionBinding
 }
 
 // AuthorityResolver must verify current grant ownership, active attempt,

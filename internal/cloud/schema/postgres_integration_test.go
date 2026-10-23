@@ -315,14 +315,14 @@ func privilegeKey(role, schemaName, table, operation, column string) string {
 func TestReconcileRefusesUninventoriedSchemaObjects(t *testing.T) {
 	pool, _ := migratedPool(t)
 	if _, err := pool.Exec(t.Context(), `
-		CREATE SCHEMA journal;
-		CREATE TABLE journal.run (run_id text PRIMARY KEY, body text);
-		GRANT USAGE ON SCHEMA journal TO goobers_api;
-		GRANT ALL ON journal.run TO goobers_api`); err != nil {
+		CREATE SCHEMA stray;
+		CREATE TABLE stray.run (run_id text PRIMARY KEY, body text);
+		GRANT USAGE ON SCHEMA stray TO goobers_api;
+		GRANT ALL ON stray.run TO goobers_api`); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyErr(t, pool); err == nil || !strings.Contains(err.Error(), "journal.run has no write-path inventory entry") {
-		t.Fatalf("apply with an uninventoried journal.run = %v", err)
+	if err := applyErr(t, pool); err == nil || !strings.Contains(err.Error(), "stray.run has no write-path inventory entry") {
+		t.Fatalf("apply with an uninventoried stray.run = %v", err)
 	}
 }
 

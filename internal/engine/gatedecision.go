@@ -35,11 +35,30 @@ const (
 
 const humanGateDecisionChange = "human-gate-decision-v1"
 
-type humanGateImplementationKey struct{}
+// HumanGateDecisionPolicyRequired refuses a human gate on a run that pinned
+// no enabled decision policy or live journal.
+const HumanGateDecisionPolicyRequired = "engine: human gates require an enabled HITL decision policy and live journaling"
 
-func humanGateImplementationEnabled(ctx workflow.Context) bool {
-	enabled, _ := ctx.Value(humanGateImplementationKey{}).(bool)
-	return enabled
+// refuseUnreadyHumanGates is the run-start human-gate check (HA-P4-12). It
+// shares humanGateDecisionChange with the decision protocol, so a history
+// recorded before engine support, which refused here without a marker,
+// replays that refusal. A new run executes its human gates only with an
+// enabled HITL decision policy and live journaling; otherwise it fails
+// closed at start instead of holding a gate no decision can reach.
+func refuseUnreadyHumanGates(ctx workflow.Context, in RunInput) error {
+	for _, g := range in.Spec.Gates {
+		if g.Evaluator != apiv1.EvaluatorHuman {
+			continue
+		}
+		if workflow.GetVersion(ctx, humanGateDecisionChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+			return refuseHumanGate(g)
+		}
+		if !in.HITL.enabled() || !in.LiveJournal {
+			return fmt.Errorf("%s: gate %q", HumanGateDecisionPolicyRequired, g.Name)
+		}
+		return nil
+	}
+	return nil
 }
 
 const (

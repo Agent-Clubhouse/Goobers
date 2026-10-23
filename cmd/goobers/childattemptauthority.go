@@ -11,7 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 type childAttemptCustody struct {
@@ -67,7 +67,7 @@ func (s *daemonCredentialService) childAttempt(ctx context.Context) (childAttemp
 
 // Review authority is derived only from the immutable, trusted workflow input.
 func childContractReview(reader *journal.Reader, contract childpod.Contract) (bool, error) {
-	machine, err := runner.PinnedWorkflowMachine(reader, contract.Identity)
+	machine, err := runsemantics.PinnedWorkflowMachine(reader, contract.Identity)
 	if err != nil {
 		return false, err
 	}

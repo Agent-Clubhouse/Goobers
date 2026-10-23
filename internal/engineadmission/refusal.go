@@ -42,9 +42,6 @@ var (
 	// and observation recording: internal/runner/run.go's AssignAndRecord /
 	// recordBanditResult arms).
 	ErrExperimentUnsupported = errors.New("task.experiment (bandit arm assignment) is not implemented on the engine walk")
-	// ErrOutboxUnsupported refuses task.outbox (internal/runner/outbox.go's
-	// workspace-relative export, #1552).
-	ErrOutboxUnsupported = errors.New("task.outbox (workspace file export) is not implemented on the engine walk")
 	// ErrParallelsUnsupported refuses spec.parallels (internal/runner's
 	// parallel_run.go fan-out/fan-in, @join branches and branch-qualified
 	// inputs).
@@ -141,9 +138,6 @@ func UnsupportedFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 		if t.Experiment != nil {
 			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.experiment", Err: ErrExperimentUnsupported})
 		}
-		if len(t.Outbox) > 0 {
-			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.outbox", Err: ErrOutboxUnsupported})
-		}
 	}
 	return out
 }
@@ -158,8 +152,9 @@ func RefuseFeatures(name string, spec apiv1.WorkflowSpec) error {
 	return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
 }
 
-// RefuseHumanGate is run()'s human-gate refusal, factored out so the daemon's
-// pre-dispatch check (RefuseDefinition) cannot drift from the walk's own.
+// RefuseHumanGate is the historical run-start human-gate refusal. The engine
+// still applies it to histories recorded before human gates were supported
+// (HA-P4-12, #7760), and to generated children, which cannot hold a gate yet.
 func RefuseHumanGate(g apiv1.Gate) error {
 	if g.Evaluator != apiv1.EvaluatorHuman {
 		return nil
@@ -169,7 +164,8 @@ func RefuseHumanGate(g apiv1.Gate) error {
 
 // RefuseDefinition reports why the engine walk cannot execute this definition,
 // or nil when it can. It aggregates every refusal the walk applies from the
-// definition ALONE — the R9 unsupported-feature set and human gates.
+// definition ALONE — the R9 unsupported-feature set. Human gates run on the
+// engine through the occurrence-bound decision protocol (#7760).
 //
 // # Why the daemon needs this before it dispatches
 //
@@ -182,7 +178,7 @@ func RefuseHumanGate(g apiv1.Gate) error {
 // It is wrong as a scheduler outcome. Since #3876 a cron tick can dispatch a
 // lane onto the engine, and neither refusal is visible to the placement-pin
 // predicate that made that choice: `spec.parallels`, `task.experiment`,
-// `task.limits`, `task.outbox`, and human gates contribute no placement rows,
+// `task.limits`, and human gates contribute no placement rows,
 // so a fully remote-pinned lane declaring any of them is selected for the
 // engine and then refused on EVERY tick — permanently, having run perfectly
 // well on the local runner the day before.
@@ -198,13 +194,6 @@ func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
 			return err
 		}
 		refusals = append(refusals, declared.Refusals...)
-	}
-	for _, g := range spec.Gates {
-		if err := RefuseHumanGate(g); err != nil {
-			refusals = append(refusals, &UnsupportedFeatureError{
-				Stage: g.Name, Feature: "gate.evaluator.human", Err: err,
-			})
-		}
 	}
 	return refusalError(name, refusals)
 }
