@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 
@@ -24,6 +25,10 @@ var ErrStaleAcknowledgement = errors.New("enginedecision: acknowledgement does n
 type Temporal interface {
 	UpdateWorkflow(context.Context, client.UpdateWorkflowOptions) (client.WorkflowUpdateHandle, error)
 	QueryWorkflow(ctx context.Context, workflowID, runID, queryType string, args ...interface{}) (converter.EncodedValue, error)
+}
+
+type pendingActivityReader interface {
+	DescribeWorkflowExecution(context.Context, string, string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
 }
 
 // Router implements intervention.EngineDecisions over Temporal.
@@ -44,7 +49,32 @@ func (r Router) GateState(ctx context.Context, runID string) (engine.GateDecisio
 // HITLState reads the run's terminal hold and generation.
 func (r Router) HITLState(ctx context.Context, runID string) (engine.HITLState, error) {
 	var state engine.HITLState
-	return state, r.query(ctx, runID, engine.HITLStateQuery, &state)
+	if err := r.query(ctx, runID, engine.HITLStateQuery, &state); err != nil {
+		return state, err
+	}
+	// Read retry evidence maintained by Temporal; no per-attempt workflow
+	// signal or command is needed to make uncertain delivery observable.
+	if state.Delivery == nil {
+		return state, nil
+	}
+	reader, ok := r.Client.(pendingActivityReader)
+	if !ok {
+		state.Delivery.LastError = "pending activity details unavailable"
+		return state, nil
+	}
+	response, err := reader.DescribeWorkflowExecution(ctx, WorkflowID(runID), "")
+	if err != nil {
+		return state, fmt.Errorf("enginedecision: read pending intervention delivery: %w", err)
+	}
+	for _, pending := range response.PendingActivities {
+		if pending.GetActivityType().GetName() != engine.ActCommitTerminalIntervention {
+			continue
+		}
+		state.Delivery.Attempt = pending.GetAttempt()
+		state.Delivery.LastError = pending.GetLastFailure().GetMessage()
+		break
+	}
+	return state, nil
 }
 
 // DecideGate delivers one occurrence-bound human-gate decision.

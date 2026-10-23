@@ -56,6 +56,9 @@ func (e *HTTPEmitter) CommitTerminalIntervention(ctx context.Context, req Termin
 	if e.Client != nil {
 		client = *e.Client
 	}
+	if client.Timeout <= 0 || client.Timeout > emitHTTPTimeout {
+		client.Timeout = emitHTTPTimeout
+	}
 	// A redirect must never forward the privileged worker credential.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
