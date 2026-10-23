@@ -90,12 +90,12 @@ func runBootstrapRole(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "goobers-cloud bootstrap: %v\n", err)
 		return 1
 	}
-	adminURL, err := databaseURL(*adminURLArg, *adminURLFile, "GOOBERS_DATABASE_ADMIN_URL")
+	adminURL, err := cloudpg.DatabaseURL(*adminURLArg, *adminURLFile, "GOOBERS_DATABASE_ADMIN_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud bootstrap: administrator database URL: %v\n", err)
 		return 2
 	}
-	directURL, err := databaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
+	directURL, err := cloudpg.DatabaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud bootstrap: owner database URL: %v\n", err)
 		return 2

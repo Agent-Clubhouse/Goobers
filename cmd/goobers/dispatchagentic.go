@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
@@ -106,7 +107,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		// so the engine ends the run superseded rather than failed.
 		code := workspaceProvisionFailureCode(err)
 		out := fail(code, err)
-		out.WorkspaceHeadMoved = code == runner.WorkspaceHeadMovedErrorCode
+		out.WorkspaceHeadMoved = code == runsemantics.WorkspaceHeadMovedErrorCode
 		return out
 	}
 	// The stamp the harness actually reads.

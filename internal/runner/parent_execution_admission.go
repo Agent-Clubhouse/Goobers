@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -46,7 +47,7 @@ func (r *Runner) recordHostTaskPlacement(tf taskFrame, attempt int, class journa
 	if !r.recordsPlacement() && !localParent {
 		return nil
 	}
-	if err := tf.jr.Append(journal.PlacementEvent(tf.t.Name, attempt, class, selfPlacement())); err != nil {
+	if err := tf.jr.Append(journal.PlacementEvent(tf.t.Name, attempt, class, runsemantics.SelfPlacement())); err != nil {
 		return fmt.Errorf("runner: journal placement for %q: %w", tf.t.Name, err)
 	}
 	return nil

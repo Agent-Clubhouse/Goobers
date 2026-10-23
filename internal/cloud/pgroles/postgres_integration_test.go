@@ -360,7 +360,12 @@ func TestProvisionOnPlatformOwnedMaintenanceDatabase(t *testing.T) {
 	c := setup(t)
 	platform, err := pgx.Connect(t.Context(), c.url(admin, "admin", c.platform))
 	if err != nil {
-		t.Skipf("administrator cannot reach the platform database: %v", err)
+		// The platform database is the one GOOBERS_TEST_POSTGRES_URL names, so
+		// the test administrator must reach it; failing here is a broken
+		// fixture or cluster state (for example a test that closed it to
+		// PUBLIC), not a missing environment.
+		t.Fatalf("test administrator %s cannot connect to the server's default database %q from GOOBERS_TEST_POSTGRES_URL: %v",
+			admin, c.platform, err)
 	}
 	defer func() { _ = platform.Close(context.Background()) }()
 	if _, err := pgroles.Provision(t.Context(), platform, pgroles.Plan{Instance: instance}); err != nil {

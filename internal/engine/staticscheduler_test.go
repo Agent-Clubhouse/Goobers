@@ -15,7 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -90,7 +90,7 @@ func schedulerInput(name string, width int32) staticSchedulerInput {
 	in.Spec.Tasks = append(in.Spec.Tasks, gamma)
 	in.Spec.Parallels[0].Branches = append(in.Spec.Parallels[0].Branches, apiv1.Branch{Name: "gamma", Start: "gamma"})
 	in.Spec.Parallels[0].MaxConcurrentBranches = width
-	in.Spec.Tasks[3].Inputs = map[string]string{runner.BranchCompletenessInput: "cannot override host completeness"}
+	in.Spec.Tasks[3].Inputs = map[string]string{runsemantics.BranchCompletenessInput: "cannot override host completeness"}
 	return staticSchedulerInput{Run: in}
 }
 
@@ -122,7 +122,7 @@ func TestStaticSchedulerBoundedAdmissionAndJoin(t *testing.T) {
 			acts := &Activities{Journal: writer, Workspaces: testWorkspaces(t), Det: &fakeRunner{run: func(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 				stage := stageOfTaskID(env.TaskID)
 				if stage == "join" {
-					data, err := json.Marshal(env.Inputs[runner.BranchCompletenessInput])
+					data, err := json.Marshal(env.Inputs[runsemantics.BranchCompletenessInput])
 					if err != nil {
 						return apiv1.ResultEnvelope{}, err
 					}

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/pathutil"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 const (
@@ -163,7 +164,7 @@ func taskDispatchError(stage string, result apiv1.ResultEnvelope, dispatchErr er
 	if dispatchErr != nil || !isOutboxExportFailure(result) {
 		return dispatchErr
 	}
-	return codedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", stage, result.Error.Message))
+	return runsemantics.CodedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", stage, result.Error.Message))
 }
 
 func stageFinishedOutputs(result apiv1.ResultEnvelope, continueOnError bool) map[string]interface{} {

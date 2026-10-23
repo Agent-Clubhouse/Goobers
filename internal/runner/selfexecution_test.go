@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func TestSelfExecutionDeniedLocalRunnerParksWithoutPlacement(t *testing.T) {
@@ -48,7 +49,7 @@ func TestSelfExecutionDeniedLocalRunnerParksWithoutPlacement(t *testing.T) {
 		if event.Type == journal.EventRunnerPlacement {
 			t.Fatal("refused attempt reported self placement")
 		}
-		if event.Error != nil && event.Error.Code == SelfExecutionDeniedCode {
+		if event.Error != nil && event.Error.Code == runsemantics.SelfExecutionDeniedCode {
 			classified = true
 		}
 	}
@@ -70,7 +71,7 @@ func TestSelfExecutionDeniedLocalReviewerParksBeforeProvisioning(t *testing.T) {
 	parked := 0
 	r := &Runner{cfg: Config{SelfExecutionDenied: true, Blocked: func(_ context.Context, o BlockedOutcome) error { parked++; return nil }}}
 	_, err, _ = r.evaluateGate(context.Background(), jr, nil, nil, StartInput{RunID: "denied-review"}, apiv1.Gate{Name: "review", Evaluator: apiv1.EvaluatorAgentic}, "", apiv1.ResultEnvelope{}, nil, nil, "", "", "")
-	var refused *SelfExecutionRefusal
+	var refused *runsemantics.SelfExecutionRefusal
 	if !errors.As(err, &refused) || parked != 1 {
 		t.Fatalf("review refusal: %v parked %d", err, parked)
 	}

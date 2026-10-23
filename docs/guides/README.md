@@ -23,6 +23,7 @@ cannot leave it outside the documented navigation surfaces.
 - [CI test results: JUnit artifacts and failure annotations](ci-test-results.md)
 - [Inspect claim verification](claim-verification.md)
 - [Cloud cutover runbook](cloud-cutover.md)
+- [Cloud operations](cloud-operations.md)
 - [Codex harness](codex-harness.md)
 - [Goobers comment attribution](comment-attribution.md)
 - [Workflow config drift](config-drift.md)

@@ -4,15 +4,30 @@ Usage:
   goobers-cloud <COMMAND> [OPTIONS]
 
 Roles:
-  api          Serve the cloud control-plane API.
-  controller   Run cloud control-plane reconciliation.
-  migrate      Apply cloud data-store migrations.
-  worker       Run a Temporal engine worker.
+  api                Serve the cloud control-plane API.
+  controller         Run cloud control-plane reconciliation.
+  migrate            Apply cloud data-store migrations.
+  worker             Run a Temporal engine worker.
 
 Commands:
-  bootstrap    Prepare a new cloud install for cutover.
-  cutover      Check cutover readiness of a cloud install.
-  completion   Generate a shell completion script.
-  help         Show command help.
+  bootstrap          Prepare a new cloud install for cutover.
+  cutover            Check cutover readiness of a cloud install.
+  completion         Generate a shell completion script.
+  help               Show command help.
+  status             Show cloud instance status through the API.
+  runs list          List runs through the API.
+  runs show          Show one run through the API.
+  runs logs          Read one run's journal events through the API.
+  claims list        List active claims through the API.
+  claims release     Release a cloud claim.
+  triggers           Submit a durable workflow trigger through the API.
+  approve            Approve a paused stage through the API.
+  override           Override a paused stage through the API.
+  deny               Deny an escalated run through the API.
+  cancel             Cancel a live run through the API.
+  config apply       Apply cloud configuration.
+  config status      Show cloud configuration status.
+  migrate status     Show cloud schema migration status.
+  lease status       Show cloud controller lease status.
 
 Run `goobers-cloud help COMMAND` for command details.

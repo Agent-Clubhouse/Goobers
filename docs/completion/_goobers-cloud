@@ -1,2 +1,2 @@
 #compdef goobers-cloud
-_arguments '1:command:(api bootstrap completion controller cutover help migrate worker)'
+_arguments '1:command:(api approve bootstrap cancel claims completion config controller cutover deny help lease migrate override runs status triggers worker)'
