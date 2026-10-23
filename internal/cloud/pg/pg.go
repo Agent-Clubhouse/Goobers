@@ -88,11 +88,11 @@ func PoolConfigs(config Config) (*pgxpool.Config, *pgxpool.Config, error) {
 	}
 	transaction, err := pgxpool.ParseConfig(config.TransactionURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cloud postgres: parse transaction URL: %w", err)
+		return nil, nil, errors.New("cloud postgres: transaction connection URL is invalid")
 	}
 	direct, err := pgxpool.ParseConfig(config.DirectURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cloud postgres: parse direct URL: %w", err)
+		return nil, nil, errors.New("cloud postgres: direct connection URL is invalid")
 	}
 	transaction.MaxConns = config.MaxConnections - config.DirectMaxConnections
 	direct.MaxConns = config.DirectMaxConnections
