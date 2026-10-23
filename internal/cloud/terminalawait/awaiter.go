@@ -71,9 +71,18 @@ type Config struct {
 	// Watermark persists how far closed-run discovery has completed. Required
 	// with Closed.
 	Watermark Watermark
-	// Margin is how far before the watermark Closed looks, to cover visibility
-	// lag (default 10m).
+	// Margin is how far before the watermark Closed looks, to cover clock skew
+	// between hosts (default 10m). The first epoch ever initialises the watermark
+	// from this host's clock, so skew must stay under Margin.
 	Margin time.Duration
+	// LagBound is the maximum Temporal visibility lag tolerated (default 1h): the
+	// watermark never advances past now-LagBound, so a run whose visibility
+	// record appears later than that after it closed is the one case that can be
+	// missed. Larger values widen each discovery pass.
+	LagBound time.Duration
+	// ClosedEvery throttles closed-run discovery (default 1m): each pass pages
+	// every closure in the LagBound window, far too heavy for every L2 tick.
+	ClosedEvery time.Duration
 	// RetryBase and RetryMax bound the backoff of a failed Finalize (defaults 2s
 	// and 5m).
 	RetryBase, RetryMax time.Duration
@@ -122,9 +131,9 @@ type Awaiters struct {
 	// closedAt is the close time of each closed run discovered but not yet done;
 	// the watermark cannot pass the earliest of them.
 	closedAt    map[string]time.Time
-	maxClosed   time.Time
 	watermark   time.Time
 	initialized bool
+	lastClosed  time.Time
 	cancel      context.CancelFunc
 	ctx         context.Context
 	stopping    bool
@@ -148,6 +157,12 @@ func New(handle *lease.Handle, cfg Config) (*Awaiters, error) {
 	}
 	if cfg.Margin <= 0 {
 		cfg.Margin = 10 * time.Minute
+	}
+	if cfg.LagBound <= 0 {
+		cfg.LagBound = time.Hour
+	}
+	if cfg.ClosedEvery <= 0 {
+		cfg.ClosedEvery = time.Minute
 	}
 	if cfg.RetryBase <= 0 {
 		cfg.RetryBase = 2 * time.Second
@@ -227,6 +242,10 @@ func (a *Awaiters) discoverClosed(ctx context.Context) ([]ClosedRun, error) {
 	}
 	a.mu.Lock()
 	initialized, mark := a.initialized, a.watermark
+	if initialized && a.cfg.Now().Sub(a.lastClosed) < a.cfg.ClosedEvery {
+		a.mu.Unlock()
+		return nil, nil // throttled: the pending closed runs are already being framed
+	}
 	a.mu.Unlock()
 	if !initialized {
 		through, ok, err := a.cfg.Watermark.Load(ctx)
@@ -250,6 +269,7 @@ func (a *Awaiters) discoverClosed(ctx context.Context) ([]ClosedRun, error) {
 	sort.Slice(closed, func(i, j int) bool { return closed[i].CloseTime.Before(closed[j].CloseTime) })
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.lastClosed = a.cfg.Now()
 	fresh := closed[:0:0]
 	for _, run := range closed {
 		if _, ok := a.done[run.RunID]; ok {
@@ -258,30 +278,24 @@ func (a *Awaiters) discoverClosed(ctx context.Context) ([]ClosedRun, error) {
 		a.closedAt[run.RunID] = run.CloseTime
 		fresh = append(fresh, run)
 	}
-	for _, run := range closed {
-		if run.CloseTime.After(a.maxClosed) {
-			a.maxClosed = run.CloseTime
-		}
-	}
 	return fresh, nil
 }
 
-// advanceWatermark moves the durable position to just before the earliest closed
-// run still unframed, or to the latest close seen when none is pending. A failure
-// is reported and leaves the position where it was (late, never lost).
+// advanceWatermark moves the durable position to now-LagBound, or to just before
+// the earliest closed run still unframed if that is earlier. Never past
+// now-LagBound: a run's visibility record may lag its close by up to LagBound,
+// and later closures must not carry the watermark over a run not yet listed. A
+// failure is reported and leaves the position where it was (late, never lost).
 func (a *Awaiters) advanceWatermark(ctx context.Context) {
 	if a.cfg.Closed == nil {
 		return
 	}
 	a.mu.Lock()
-	target := a.maxClosed
+	target := a.cfg.Now().Add(-a.cfg.LagBound)
 	for _, at := range a.closedAt {
-		if at.Before(target) {
-			target = at
+		if held := at.Add(-time.Nanosecond); held.Before(target) {
+			target = held
 		}
-	}
-	if len(a.closedAt) > 0 {
-		target = target.Add(-time.Nanosecond)
 	}
 	if !target.After(a.watermark) {
 		a.mu.Unlock()

@@ -612,7 +612,7 @@ func TestARunThatClosedInTheLeaderGapWithNoClaimsStillGetsItsFrameOnce(t *testin
 	r.temporal.runs["gap-run"] = &fakeRun{id: "gap-run", result: engine.RunResult{Status: engine.StatusCompleted}}
 	// Not open, not holding claims: only the durable listing knows it.
 	a, err := New(handle, Config{
-		Temporal: r.temporal, Now: func() time.Time { return base },
+		Temporal: r.temporal, Now: func() time.Time { return base }, LagBound: 30 * time.Second,
 		Identify:  func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
 		Open:      func(context.Context) (map[string]bool, error) { return r.open, nil },
 		Watermark: mark,
@@ -683,5 +683,77 @@ func TestTheWatermarkNeverPassesAnUnframedClosedRun(t *testing.T) {
 	_ = a.Stop(t.Context())
 	if got := mark.position(); !got.Before(closes[0].CloseTime) {
 		t.Fatalf("watermark %v passed the unframed run closed at %v", got, closes[0].CloseTime)
+	}
+}
+
+func TestAClosedRunWhoseVisibilityLagsPastTheMarginIsStillFramed(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 3}
+	t0 := time.Unix(100_000, 0)
+	var clock struct {
+		sync.Mutex
+		now time.Time
+	}
+	clock.now = t0
+	now := func() time.Time { clock.Lock(); defer clock.Unlock(); return clock.now }
+	advance := func(d time.Duration) { clock.Lock(); clock.now = clock.now.Add(d); clock.Unlock() }
+	mark := &memWatermark{through: t0.Add(-2 * time.Hour), set: true}
+	r.temporal.runs["laggy"] = &fakeRun{id: "laggy", result: engine.RunResult{Status: engine.StatusCompleted}}
+	r.temporal.runs["prompt"] = &fakeRun{id: "prompt", result: engine.RunResult{Status: engine.StatusCompleted}}
+	laggyClosed, promptClosed := t0.Add(time.Minute), t0.Add(2*time.Minute)
+	listings := 0
+	a, err := New(handle, Config{
+		Temporal: r.temporal, Now: now, Margin: 10 * time.Minute, LagBound: time.Hour, ClosedEvery: time.Minute,
+		Identify:  func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+		Open:      func(context.Context) (map[string]bool, error) { return nil, nil },
+		Watermark: mark,
+		Closed: func(_ context.Context, since time.Time) ([]ClosedRun, error) {
+			listings++
+			var out []ClosedRun
+			if promptClosed.After(since) {
+				out = append(out, ClosedRun{RunID: "prompt", CloseTime: promptClosed})
+			}
+			// Visibility indexes "laggy" only 25 minutes after it closed: beyond
+			// the margin, within the lag bound.
+			if now().After(laggyClosed.Add(25*time.Minute)) && laggyClosed.After(since) {
+				out = append(out, ClosedRun{RunID: "laggy", CloseTime: laggyClosed})
+			}
+			return out, nil
+		},
+		Hooks: func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick := func() {
+		if err := a.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(a)
+	}
+	advance(3 * time.Minute)
+	if err := a.Reattach(t.Context(), handle, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(a)
+	for range 3 { // a fast tick loop between passes
+		tick()
+	}
+	if listings != 1 {
+		t.Fatalf("closed-run discovery ran %d times in a burst of ticks, want it throttled to once", listings)
+	}
+	advance(15 * time.Minute)
+	tick() // a quiet pass: the watermark must not run ahead to now
+	advance(15 * time.Minute)
+	tick() // "laggy" is visible now, more than the margin after it closed
+	_ = a.Stop(t.Context())
+	r.claims.mu.Lock()
+	defer r.claims.mu.Unlock()
+	counts := map[string]int{}
+	for _, c := range r.claims.calls {
+		counts[c]++
+	}
+	if counts["laggy"] != 1 || counts["prompt"] != 1 || len(counts) != 2 {
+		t.Fatalf("frames per run = %v, want each exactly once", counts)
 	}
 }
