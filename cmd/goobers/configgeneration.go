@@ -105,12 +105,7 @@ var firstGenerationRetainer = scheduling.FirstGenerationRetainer
 func newExecutionGenerationRetainer(layout instance.Layout) (*configgeneration.Retainer, error) {
 	return generationService().NewRetainer(layout)
 }
-func executionGenerationPinsReader(layout instance.Layout) func(context.Context) (map[string]bool, error) {
-	return generationService().PinsReader(layout)
-}
-func retainExecutionGeneration(ctx context.Context, layout instance.Layout, retainer *configgeneration.Retainer) (instance.Layout, string, error) {
-	return generationService().Retain(ctx, layout, retainer)
-}
+
 func retainOptionalExecutionGeneration(layout instance.Layout, retainers []*configgeneration.Retainer) (instance.Layout, string, error) {
 	return generationService().RetainOptional(layout, retainers)
 }

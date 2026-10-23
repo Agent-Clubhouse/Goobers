@@ -9,9 +9,7 @@ import (
 func schedulerStateFiles() scheduling.StateFiles {
 	return scheduling.StateFiles{ClaimLock: withClaimLock, FileLock: withFileLock, BoundedLock: withBoundedFileLock}
 }
-func schedulerStateLock(l instance.Layout) func(string, string, func() error) error {
-	return schedulerStateFiles().Lock(l)
-}
+
 func fileStateStore(l instance.Layout) (stateclient.Store, error) {
 	return schedulerStateFiles().File(l)
 }

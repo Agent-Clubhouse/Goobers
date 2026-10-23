@@ -25,9 +25,7 @@ func stageClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (c
 func fileClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	return claimFiles().File(l, opts...)
 }
-func fileClaimLedgerWithResolver(l instance.Layout, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	return claimFiles().FileWithResolver(l, resolver, opts...)
-}
+
 func stageClaimLedgerForRun(l instance.Layout, gaggle, runID string, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	return claimFiles().StageForRun(l, gaggle, runID, opts...)
 }

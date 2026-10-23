@@ -71,15 +71,4 @@ func recoverClaims(
 	return claimLifecycle().Recover(l, log, now, interventionActive, gate)
 }
 
-func recoverClaimsWithResolver(
-	l instance.Layout,
-	log *journal.InstanceLog,
-	now time.Time,
-	interventionActive func(string) bool,
-	gate *localscheduler.RecoveryGate,
-	resolver claimsclient.SharedClaimResolver,
-) ([]localscheduler.ClaimEntry, error) {
-	return claimLifecycle().RecoverWithResolver(l, log, now, interventionActive, gate, resolver)
-}
-
 var recoverExpiredSharedClaims = scheduling.RecoverExpiredSharedClaims
