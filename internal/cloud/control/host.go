@@ -172,10 +172,14 @@ func (h *Host) runEpoch(ctx context.Context, handle *lease.Handle) error {
 	h.state.Store(&epochState{ctx: epochCtx, handle: handle})
 	defer h.state.Store(nil)
 	services, err := h.config.BuildEpoch(epochCtx, handle)
-	if err != nil {
-		return err
+	if err == nil {
+		err = services.validate()
 	}
-	if err := services.validate(); err != nil {
+	if err != nil {
+		cancel()
+		if services.Stop != nil {
+			return errors.Join(err, h.stop(services))
+		}
 		return err
 	}
 	if err := h.prepare(epochCtx, services); err != nil {

@@ -37,18 +37,18 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 	}
 	services, err := r.Services(ctx, handle)
 	if err != nil {
-		return EpochServices{}, err
+		return services, err
 	}
 	if err := services.validate(); err != nil {
-		return EpochServices{}, err
+		return services, err
 	}
 	store, err := acceptance.New(r.Pool, r.InstanceID)
 	if err != nil {
-		return EpochServices{}, err
+		return services, err
 	}
 	store.BindFence(r.Lease, handle)
 	if services.RestoreObservations == nil || services.CaptureObservations == nil {
-		return EpochServices{}, errors.New("cloud control requires durable provider observation wiring")
+		return services, errors.New("cloud control requires durable provider observation wiring")
 	}
 	observations := Observations{Pool: r.Pool, InstanceID: r.InstanceID, Lease: r.Lease, Handle: handle}
 	rebuild := services.RebuildBeforeReap

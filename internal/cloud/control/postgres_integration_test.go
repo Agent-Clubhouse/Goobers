@@ -220,3 +220,54 @@ func waitControl(t *testing.T, ctx context.Context, predicate func() bool) {
 		}
 	}
 }
+
+func TestPGControllerStopsWithinSelfFenceBoundAfterLeaseLoss(t *testing.T) {
+	pool := controlTestPool(t)
+	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "loss", Name: "controller", Holder: "old", TTL: 2 * time.Second, RenewInterval: 100 * time.Millisecond, SelfFenceAfter: 800 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	host, err := New(Config{SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil }, RetryInterval: 10 * time.Second, TickInterval: 10 * time.Millisecond, BuildEpoch: func(context.Context, *lease.Handle) (EpochServices, error) {
+		services := testServices()
+		services.Stop = func(context.Context) error { close(stopped); return nil }
+		return services, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- host.Run(ctx) }()
+	waitControl(t, ctx, host.Ready)
+	old := host.Owner()
+	start := time.Now()
+	if err := manager.Release(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := lease.New(lease.Config{Pool: pool, InstanceID: "loss", Name: "controller", Holder: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := successor.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = successor.Release(context.Background(), next) }()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if host.Ready() || host.Owner() != nil || time.Since(start) > 800*time.Millisecond {
+		t.Fatal("lost owner remained active beyond self-fence bound")
+	}
+	if err := manager.WithFence(ctx, old, func(context.Context, pgx.Tx) error { t.Error("stale callback entered"); return nil }); !errors.Is(err, lease.ErrStale) {
+		t.Fatalf("stale write=%v", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

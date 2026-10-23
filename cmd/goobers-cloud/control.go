@@ -193,6 +193,9 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 		completed++
 	case err = <-server.Errors():
 	}
+	if errors.Is(err, context.Canceled) {
+		err = nil
+	}
 	cancel()
 	shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
@@ -207,9 +210,6 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 		case <-shutdown.Done():
 			return errors.Join(err, shutdown.Err())
 		}
-	}
-	if errors.Is(err, context.Canceled) {
-		return nil
 	}
 	return err
 }
