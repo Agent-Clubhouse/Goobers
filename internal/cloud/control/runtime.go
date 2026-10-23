@@ -96,13 +96,9 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		after = next
 		return err
 	}
+	var pinsAfter string
 	services.L2 = func(ctx context.Context) error {
 		if err := store.Prune(ctx); err != nil {
-			return err
-		}
-		// Run pins outlive their acceptance row: they are retained until the
-		// run's engine execution is closed, then for ReplayRetention more.
-		if _, _, err := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal)); err != nil {
 			return err
 		}
 		if err := podauth.PruneExpired(ctx, r.Lease, handle); err != nil {
@@ -111,7 +107,13 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		if err := originalL2(ctx); err != nil {
 			return err
 		}
-		return reconcile(ctx)
+		reconcileErr := reconcile(ctx)
+		// Run pins outlive their acceptance row: they are retained until the
+		// run's engine execution is closed, then for ReplayRetention more. It
+		// runs last so a run Temporal cannot vouch for never stalls the rest.
+		sweep, sweepErr := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal), pinsAfter)
+		pinsAfter = sweep.Next
+		return errors.Join(reconcileErr, sweepErr)
 	}
 	return services, nil
 }

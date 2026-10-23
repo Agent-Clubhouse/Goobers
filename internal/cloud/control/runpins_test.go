@@ -23,17 +23,23 @@ func withStatus(status enums.WorkflowExecutionStatus) describeFunc {
 	}
 }
 
-func TestTemporalRunClosedKeepsRunningRunsOnly(t *testing.T) {
+func TestTemporalRunClosedOnlyForEnumeratedClosedStatuses(t *testing.T) {
 	outage := errors.New("temporal down")
 	for name, tc := range map[string]struct {
 		describe describeFunc
 		closed   bool
 		failed   bool
 	}{
-		"running":    {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_RUNNING)},
-		"completed":  {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_COMPLETED), closed: true},
-		"failed":     {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_FAILED), closed: true},
-		"terminated": {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_TERMINATED), closed: true},
+		"running":     {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_RUNNING)},
+		"completed":   {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_COMPLETED), closed: true},
+		"failed":      {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_FAILED), closed: true},
+		"terminated":  {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_TERMINATED), closed: true},
+		"canceled":    {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_CANCELED), closed: true},
+		"timed out":   {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_TIMED_OUT), closed: true},
+		"continued":   {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW), closed: true},
+		"paused":      {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_PAUSED)},
+		"unspecified": {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED), failed: true},
+		"unknown":     {describe: withStatus(enums.WorkflowExecutionStatus(99)), failed: true},
 		"forgotten": {describe: func() (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 			return nil, serviceerror.NewNotFound("workflow not found")
 		}, closed: true},
