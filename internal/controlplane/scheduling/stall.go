@@ -3,6 +3,7 @@ package scheduling
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -90,6 +91,9 @@ func (s *StallSweeper) Sweep(ctx context.Context) (StallSweepResult, error) {
 	var result StallSweepResult
 	var after string
 	var sweepErrs []error
+	retried, retryErrs := s.retryTerminating(ctx)
+	result.Terminated += retried
+	sweepErrs = append(sweepErrs, retryErrs...)
 	for {
 		candidates, err := s.config.Source.StallCandidates(
 			ctx, after, s.config.BatchSize)
@@ -115,6 +119,91 @@ func (s *StallSweeper) Sweep(ctx context.Context) (StallSweepResult, error) {
 	}
 }
 
+func (s *StallSweeper) retryTerminating(
+	ctx context.Context,
+) (int, []error) {
+	rows, err := s.config.Pool.Query(ctx, `
+		SELECT run_id,identity,reason
+		FROM control.stall_action
+		WHERE instance_id=$1 AND state='terminating'
+		  AND (retry_at IS NULL OR retry_at<=clock_timestamp())
+		ORDER BY COALESCE(retry_at,detected_at),run_id
+		LIMIT $2`,
+		s.config.InstanceID, s.config.BatchSize,
+	)
+	if err != nil {
+		return 0, []error{err}
+	}
+	type pending struct {
+		runID, reason string
+		identity      journal.RunIdentity
+	}
+	var actions []pending
+	for rows.Next() {
+		var action pending
+		var raw []byte
+		if err := rows.Scan(&action.runID, &raw, &action.reason); err != nil {
+			rows.Close()
+			return 0, []error{err}
+		}
+		if err := json.Unmarshal(raw, &action.identity); err != nil {
+			rows.Close()
+			return 0, []error{err}
+		}
+		actions = append(actions, action)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, []error{err}
+	}
+	var (
+		completed int
+		errs      []error
+	)
+	for _, action := range actions {
+		claimed, err := s.claimTerminating(ctx, action.runID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("retry claim %s: %w", action.runID, err))
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		candidate := StallActivity{Identity: action.identity}
+		if err := s.finishTermination(
+			ctx, candidate, action.reason, true); err != nil {
+			errs = append(errs, fmt.Errorf("retry termination %s: %w", action.runID, err))
+			continue
+		}
+		completed++
+	}
+	return completed, errs
+}
+
+func (s *StallSweeper) claimTerminating(
+	ctx context.Context,
+	runID string,
+) (bool, error) {
+	claimed := false
+	err := s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.stall_action
+			SET owner_epoch=$3,retry_at=NULL
+			WHERE instance_id=$1 AND run_id=$2
+			  AND state='terminating'
+			  AND (retry_at IS NULL OR retry_at<=clock_timestamp())
+			  AND owner_epoch<=$3`,
+			s.config.InstanceID, runID, epoch,
+		)
+		if err != nil {
+			return err
+		}
+		claimed = tag.RowsAffected() == 1
+		return nil
+	})
+	return claimed, err
+}
+
 func (s *StallSweeper) processCandidate(
 	ctx context.Context,
 	candidate StallActivity,
@@ -123,7 +212,7 @@ func (s *StallSweeper) processCandidate(
 	if err != nil || !due {
 		return 0, 0, err
 	}
-	action, err := s.claim(ctx, candidate.Identity.RunID, reason)
+	action, err := s.claim(ctx, candidate.Identity, reason)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -231,24 +320,29 @@ type stallAction struct {
 
 func (s *StallSweeper) claim(
 	ctx context.Context,
-	runID string,
+	identity journal.RunIdentity,
 	reason string,
 ) (stallAction, error) {
 	var action stallAction
-	err := s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+	rawIdentity, err := json.Marshal(identity)
+	if err != nil {
+		return action, err
+	}
+	err = s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		return tx.QueryRow(txCtx, `
 			INSERT INTO control.stall_action (
-				instance_id,run_id,reason,state,detected_at,owner_epoch
-			) VALUES ($1,$2,$3,'pending_cancel',clock_timestamp(),$4)
+				instance_id,run_id,identity,reason,state,detected_at,owner_epoch
+			) VALUES ($1,$2,$3,$4,'pending_cancel',clock_timestamp(),$5)
 			ON CONFLICT (instance_id,run_id) DO UPDATE
 			SET owner_epoch=excluded.owner_epoch,
+			    identity=excluded.identity,
 			    reason=CASE
 			      WHEN control.stall_action.state='pending_cancel'
 			      THEN excluded.reason ELSE control.stall_action.reason END
 			WHERE control.stall_action.instance_id=$1
-			  AND control.stall_action.owner_epoch<=$4
+			  AND control.stall_action.owner_epoch<=$5
 			RETURNING state,cancel_requested_at,retry_at`,
-			s.config.InstanceID, runID, reason, epoch,
+			s.config.InstanceID, identity.RunID, rawIdentity, reason, epoch,
 		).Scan(&action.state, &action.cancelRequestedAt, &action.retryAt)
 	})
 	return action, err

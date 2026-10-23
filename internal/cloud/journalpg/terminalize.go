@@ -8,7 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+)
+
+const (
+	runStalledErrorCode          = "run_stalled"
+	runDurationExceededErrorCode = "run_duration_exceeded"
 )
 
 // Terminalize durably closes a server-terminated engine run under the live
@@ -53,11 +57,11 @@ func (b *Backend) Terminalize(
 				return err
 			}
 			phase := journal.PhaseEscalated
-			code := runner.RunStalledErrorCode
+			code := runStalledErrorCode
 			message := "engine run terminated after exceeding the stall timeout"
 			if reason == "max_duration" {
 				phase = journal.PhaseAborted
-				code = runner.RunDurationExceededErrorCode
+				code = runDurationExceededErrorCode
 				message = "engine run terminated after exceeding maxRunDuration"
 			}
 			event := journal.Event{

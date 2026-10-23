@@ -297,6 +297,67 @@ func TestCloudFailingRunDoesNotBlockFollowingRun(t *testing.T) {
 	}
 }
 
+func TestCloudFailedTerminalCleanupIsRetried(t *testing.T) {
+	config := postgresJournalConfig(t)
+	var (
+		cleanupMu sync.Mutex
+		calls     int
+	)
+	config.TerminalCleanup = func(
+		context.Context,
+		journal.RunIdentity,
+		string,
+	) error {
+		cleanupMu.Lock()
+		defer cleanupMu.Unlock()
+		calls++
+		if calls == 1 {
+			return errors.New("forge cleanup unavailable")
+		}
+		return nil
+	}
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	runID := "00000000000000000000000000097816"
+	createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
+	if _, err := config.Pool.Exec(t.Context(), `
+		UPDATE journal.run_seq
+		SET last_append_at=clock_timestamp()-interval '1 hour'
+		WHERE instance_id=$1 AND run_id=$2`,
+		config.InstanceID, runID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	sweeper := cloudSweeper(t, config, backend,
+		&stallEngine{cancelErr: scheduling.ErrNoWorker}, 30*time.Minute, 0)
+	_, _ = sweeper.Sweep(t.Context())
+	if _, err := config.Pool.Exec(t.Context(), `
+		UPDATE control.stall_action
+		SET retry_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1 AND run_id=$2`,
+		config.InstanceID, runID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := sweeper.Sweep(t.Context()); err != nil ||
+		result.Terminated != 1 {
+		t.Fatalf("cleanup retry sweep = %+v %v", result, err)
+	}
+	var state string
+	if err := config.Pool.QueryRow(t.Context(), `
+		SELECT state FROM control.stall_action
+		WHERE instance_id=$1 AND run_id=$2`,
+		config.InstanceID, runID,
+	).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	cleanupMu.Lock()
+	defer cleanupMu.Unlock()
+	if calls < 2 || state != "terminated" {
+		t.Fatalf("cleanup calls=%d action state=%q", calls, state)
+	}
+}
+
 func cloudSweeper(
 	t *testing.T,
 	config journalpg.Config,

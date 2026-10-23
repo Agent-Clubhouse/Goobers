@@ -4,6 +4,7 @@
 CREATE TABLE control.stall_action (
     instance_id text NOT NULL,
     run_id text NOT NULL,
+    identity jsonb NOT NULL,
     reason text NOT NULL CHECK (reason IN ('stalled','max_duration')),
     state text NOT NULL CHECK (state IN (
         'pending_cancel','cancelling','cancel_requested','terminating','terminated'
