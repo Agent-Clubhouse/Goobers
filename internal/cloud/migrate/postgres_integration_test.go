@@ -11,12 +11,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/goobers/goobers/internal/cloud/pgtest"
+	"github.com/goobers/goobers/internal/cloud/pgroles"
 )
 
 func TestPostgresMigrationApply(t *testing.T) {
 	pool := privatePool(t)
-	pgtest.EnsureRoles(t, pool)
+	ensureRoles(t, pool)
 	catalog, err := Catalog()
 	if err != nil {
 		t.Fatal(err)
@@ -132,4 +132,19 @@ func privatePool(t *testing.T) *pgxpool.Pool {
 		admin.Close()
 	})
 	return pool
+}
+
+// ensureRoles provisions the cluster-wide roles through pgroles, as
+// pgtest.EnsureRoles does; this package's tests cannot import pgtest, which
+// imports migrate.
+func ensureRoles(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	conn, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := pgroles.ProvisionRoles(t.Context(), conn.Conn(), nil); err != nil {
+		t.Fatalf("provision cloud roles: %v", err)
+	}
 }
