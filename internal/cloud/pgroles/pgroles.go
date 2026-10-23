@@ -3,6 +3,13 @@
 // references, and the idempotent provisioning that goobers-cloud bootstrap
 // runs as the server administrator. Table and column grants are not here:
 // the schema migrations derive them from the write-path inventory.
+//
+// One goobers instance per PostgreSQL server. The roles are cluster-wide and
+// named for the contract, not the instance, so a second instance on the same
+// server would share them; Provision refuses a contract role that owns or can
+// reach a database outside its own instance's contract (ErrRoleDrift), and it
+// closes the maintenance database to the contract roles where the
+// administrator can act for its owner.
 package pgroles
 
 import (
@@ -104,7 +111,60 @@ func Provision(ctx context.Context, conn *pgx.Conn, plan Plan) (changed bool, er
 	if err := revokeForeignGrants(ctx, conn, databases); err != nil {
 		return changed, err
 	}
-	return changed, verifyConnect(ctx, conn, databases)
+	closed, err := closeMaintenanceDatabase(ctx, conn)
+	if err != nil {
+		return changed, err
+	}
+	return changed, verifyConnect(ctx, conn, databases, closed)
+}
+
+// closeMaintenanceDatabase keeps the contract roles out of the maintenance
+// database Provision runs on (normally postgres). They reach it only through
+// PUBLIC's default CONNECT and TEMPORARY, which cannot be revoked per role, so
+// every other existing login role is granted those explicitly before PUBLIC
+// loses them; roles created later must be granted access explicitly.
+//
+// This needs the database owner's rights. Where the platform owns the
+// maintenance database (managed servers), the administrator cannot act for it
+// and it stays open: the contract roles can then connect to it, but it holds
+// no goobers data and they have no privileges inside it. closed reports which.
+func closeMaintenanceDatabase(ctx context.Context, conn *pgx.Conn) (closed bool, err error) {
+	var database, owner string
+	var open, manageable bool
+	if err := conn.QueryRow(ctx, `
+		SELECT d.datname, pg_get_userbyid(d.datdba),
+		       d.datacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(d.datacl) AS a
+		           WHERE a.grantee = 0 AND a.privilege_type IN ('CONNECT', 'TEMPORARY')),
+		       (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) OR pg_has_role(current_user, d.datdba, 'SET')
+		FROM pg_database AS d WHERE d.datname = current_database()`).Scan(&database, &owner, &open, &manageable); err != nil {
+		return false, fmt.Errorf("pgroles: inspect maintenance database: %w", err)
+	}
+	if !open {
+		return true, nil
+	}
+	if !manageable {
+		return false, nil
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT rolname FROM pg_roles
+		WHERE rolcanlogin AND NOT rolname = ANY($1) AND rolname <> $2 ORDER BY 1`, Roles(), owner)
+	if err != nil {
+		return false, fmt.Errorf("pgroles: list login roles: %w", err)
+	}
+	others, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return false, fmt.Errorf("pgroles: list login roles: %w", err)
+	}
+	name := pgx.Identifier{database}.Sanitize()
+	var statements []string
+	for _, role := range others {
+		statements = append(statements, "GRANT CONNECT, TEMPORARY ON DATABASE "+name+" TO "+pgx.Identifier{role}.Sanitize())
+	}
+	statements = append(statements, "REVOKE CONNECT, TEMPORARY ON DATABASE "+name+" FROM PUBLIC")
+	if err := asOwner(ctx, conn, owner, statements); err != nil {
+		return false, fmt.Errorf("%w: cannot close maintenance database %s to the contract roles: %w", ErrRoleDrift, database, err)
+	}
+	return true, nil
 }
 
 // ProvisionRoles creates missing roles and converges existing ones to the
@@ -285,9 +345,16 @@ func revokeForeignGrants(ctx context.Context, conn *pgx.Conn, databases []Databa
 }
 
 // verifyConnect checks each role's effective database privileges on the
-// target databases: CONNECT exactly where the contract allows, and no
-// TEMPORARY or CREATE except as the owner.
-func verifyConnect(ctx context.Context, conn *pgx.Conn, databases []Database) error {
+// target databases and the maintenance database: CONNECT exactly where the
+// contract allows, and no TEMPORARY or CREATE except as the owner.
+func verifyConnect(ctx context.Context, conn *pgx.Conn, databases []Database, maintenanceClosed bool) error {
+	var maintenance string
+	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&maintenance); err != nil {
+		return fmt.Errorf("pgroles: read maintenance database: %w", err)
+	}
+	if maintenanceClosed && !slices.ContainsFunc(databases, func(d Database) bool { return d.Name == maintenance }) {
+		databases = append(slices.Clone(databases), Database{Name: maintenance})
+	}
 	for _, database := range databases {
 		for _, role := range Roles() {
 			var connect, other bool

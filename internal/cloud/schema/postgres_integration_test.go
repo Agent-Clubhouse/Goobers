@@ -409,7 +409,9 @@ func TestReconcileRevokesFunctionExecute(t *testing.T) {
 	pool, _ := migratedPool(t)
 	if _, err := pool.Exec(t.Context(), `
 		CREATE FUNCTION control.plain(n integer) RETURNS integer LANGUAGE sql AS 'SELECT n';
-		CREATE FUNCTION control.listed(n integer) RETURNS integer LANGUAGE sql AS 'SELECT n'`); err != nil {
+		CREATE FUNCTION control.listed(n integer) RETURNS integer LANGUAGE sql AS 'SELECT n';
+		CREATE PROCEDURE control.chore() LANGUAGE sql AS 'SELECT 1';
+		CREATE AGGREGATE control.total(integer) (SFUNC = int4pl, STYPE = integer)`); err != nil {
 		t.Fatal(err)
 	}
 	inventory, err := schema.LoadWritePaths()
@@ -430,6 +432,8 @@ func TestReconcileRevokesFunctionExecute(t *testing.T) {
 		{"goobers_controller", "control.plain(integer)", false},
 		{"goobers_controller", "control.listed(integer)", true},
 		{"goobers_api", "control.listed(integer)", false},
+		{"goobers_controller", "control.chore()", false},
+		{"goobers_api", "control.total(integer)", false},
 	} {
 		var got bool
 		if err := pool.QueryRow(t.Context(), "SELECT has_function_privilege($1, $2, 'EXECUTE')", check.role, check.function).Scan(&got); err != nil {
