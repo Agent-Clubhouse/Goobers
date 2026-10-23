@@ -68,7 +68,7 @@ func (u *copilotRepairUsage) prepare(ctx context.Context, runner ProcessRunner, 
 		previous.Metrics, previous.ModelUsage = native.metrics, native.modelUsage
 	}
 	applyControlledCopilotUsage(previous, runner)
-	applyCopilotUsageDocument(previous, u.usagePath)
+	applyCopilotUsageDocument(previous, u.usagePath, nil)
 	if finishErr != nil {
 		return nil, nil, finishErr
 	}

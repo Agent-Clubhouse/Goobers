@@ -1863,8 +1863,9 @@ func TestCopilotAdapterToolAllowlistRejectsConflictingConfiguredArgs(t *testing.
 }
 
 func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("COPILOT_HOME", "")
+	for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+		t.Setenv(name, "")
+	}
 	workspace := t.TempDir()
 	var calls []ProcessRequest
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
@@ -1947,8 +1948,9 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", "")
-			t.Setenv("COPILOT_HOME", "")
+			for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+				t.Setenv(name, "")
+			}
 			workspace := t.TempDir()
 			var calls []ProcessRequest
 			runner := &fakeProcessRunner{

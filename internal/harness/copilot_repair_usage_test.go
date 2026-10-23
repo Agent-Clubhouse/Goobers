@@ -48,6 +48,7 @@ func TestCopilotRepairRetainsEachSessionUsageOnce(t *testing.T) {
 				version = "GitHub Copilot CLI 1.0.83."
 			}
 			calls := 0
+			var observed map[string]float64
 			var initialID, initialUsagePath string
 			runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}, act: func(req ProcessRequest) error {
 				calls++
@@ -91,6 +92,9 @@ func TestCopilotRepairRetainsEachSessionUsageOnce(t *testing.T) {
 			out, err := (&CopilotAdapter{Command: []string{"copilot"}, Runner: runner}).Run(context.Background(), RunRequest{
 				HarnessVersion: version, Envelope: testEnvelope(workspace), Workspace: workspace,
 				CompletionPath: DefaultResultPath, Credentials: pushCredentials(t, "unused", "unused"),
+				UsageSink: func(metrics map[string]float64) {
+					observed = metrics
+				},
 			})
 			if (err != nil) != tc.failed {
 				t.Fatalf("Run error = %v", err)
@@ -101,6 +105,9 @@ func TestCopilotRepairRetainsEachSessionUsageOnce(t *testing.T) {
 			}
 			if calls != 2 || out.Metrics[telemetry.AttrGenAIUsageInputTokens] != want || out.Metrics[telemetry.AttrUsageNanoAIU] != want*100 {
 				t.Fatalf("calls=%d usage=%v, want input=%v nanoAIU=%v", calls, out.Metrics, want, want*100)
+			}
+			if observed[telemetry.AttrGenAIUsageInputTokens] != want || observed[telemetry.AttrUsageNanoAIU] != want*100 {
+				t.Fatalf("streamed usage=%v, want input=%v nanoAIU=%v", observed, want, want*100)
 			}
 			var modelInput int64
 			for _, model := range out.ModelUsage {
