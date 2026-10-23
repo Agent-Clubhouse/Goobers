@@ -27,6 +27,8 @@ func TestRunWorkerUsageErrors(t *testing.T) {
 		{name: "empty task queue", args: []string{"--task-queue", ""}},
 		{name: "zero activity concurrency", args: []string{"--max-concurrent-activities", "0"}},
 		{name: "negative activity concurrency", args: []string{"--max-concurrent-activities", "-1"}},
+		{name: "config endpoint with instance", args: []string{"--config-endpoint", "https://daemon.example", "--config-key-file", "key", "--instance", "instance"}},
+		{name: "config endpoint without key", args: []string{"--config-endpoint", "https://daemon.example"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

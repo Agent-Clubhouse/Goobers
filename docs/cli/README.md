@@ -2843,7 +2843,7 @@ $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.en
 lint config via the single authoritative validation engine (alias for validate)
 
 ~~~text
-Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]
+Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud] [--strict] [path]
 
 Lint an instance's instance.yaml and config/ directory (default path
 ".") against the single authoritative validation engine. This is an
@@ -2856,7 +2856,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, RUNTIME001, RUNTIME002, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -5580,7 +5580,7 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]
+Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). Placement findings (RNR001/RNR003) are errors when
@@ -5589,7 +5589,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --target cloud adds engine-only runtime eligibility findings; the default local target preserves local execution and exit behavior. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, RUNTIME001, RUNTIME002, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -5779,13 +5779,18 @@ Flags:
                              disables reload and freezes the worker on
                              its boot-time tree (default 10s; requires
                              --instance)
+  --config-endpoint <url>    daemon configuration plane; fetches sanitized
+                             instance config by digest and updates it live
+  --config-key-file <path>   shared signing key used only to mint worker
+                             config-plane credentials
   --config-history-depth <n>
                              how many superseded config trees to retain
                              so an in-flight run pinned to one is still
                              served the goober kit it was admitted
                              against across a reload; 0 disables
                              retention and refuses every superseded pin
-                             (default 3; requires --instance)
+                             (default 3; requires --instance or
+                             --config-endpoint)
   --dispatch-namespace <ns>  enables mode-3 stage dispatch: wires the
                              dispatcher behind the stage-dispatch seam and
                              serves the per-(gaggle x runner) dispatch
@@ -5811,7 +5816,9 @@ The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which
 build serves a queue.
 
-With --instance, the worker re-reads its config tree on
+With --instance, the worker re-reads its local config tree; with
+--config-endpoint, it fetches changed snapshots by digest. On either path,
+the worker checks on
 --config-reload-interval and atomically replaces the gaggle, credential,
 and agentic-kit seams whose config changed, so a definitions edit reaches
 the NEXT stage this worker serves without a pod restart. An attempt

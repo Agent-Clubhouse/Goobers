@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,6 +76,37 @@ func TestConfigMirrorAbsentSettingDoesNothing(t *testing.T) {
 	}
 	stop := r.startConfigMirror(t.Context())
 	stop()
+}
+
+func TestConfigureWorkerConfigPlaneDefersPublishingUntilBackgroundReload(t *testing.T) {
+	layout := instance.NewLayout(initDeterministicDemo(t))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.PodTokenKeyFile = filepath.Join(t.TempDir(), "key")
+	config.ConfigMirrorPath = t.TempDir()
+	digest, err := configDirectoryDigest(layout.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &upSession{}
+	session.ctx = context.Background()
+	session.l = layout
+	session.setup = &schedulerSetup{
+		Config:       config,
+		ConfigDigest: digest,
+	}
+	session.configureWorkerConfigPlane()
+	if session.configSnapshots == nil {
+		t.Fatal("keyed daemon did not wire the config plane")
+	}
+	if current := session.configSnapshots.Current(); current != "" {
+		t.Fatalf("configureAPI synchronously published %q", current)
+	}
+	if _, err := os.Stat(filepath.Join(config.ConfigMirrorPath, configmirror.SnapshotName)); !os.IsNotExist(err) {
+		t.Fatalf("configureAPI synchronously published legacy mirror: %v", err)
+	}
 }
 
 func TestConfigMirrorRetriesUnchangedAppliedDigestAfterShareFailure(t *testing.T) {

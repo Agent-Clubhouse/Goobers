@@ -37,6 +37,12 @@ type updateTransaction struct {
 	Changes []Change `json:"changes"`
 }
 
+type interruptedUpdateSource struct {
+	manifest       Manifest
+	manifestData   []byte
+	alreadyUpdated bool
+}
+
 // InstallResult describes toolkit and harness-reference changes.
 type InstallResult struct {
 	Installed          bool
@@ -126,49 +132,12 @@ func (r *Repository) Install(bundle Bundle, harness string) (InstallResult, erro
 	if !ok {
 		return InstallResult{}, fmt.Errorf("unsupported agent toolkit harness %q", harness)
 	}
-	instructionPath, err := r.securePath(adapter.InstructionTarget)
+	instructionPath, instructionInfo, instructionErr, err := r.inspectInstructionTarget(adapter.InstructionTarget)
 	if err != nil {
 		return InstallResult{}, err
 	}
-	instructionInfo, instructionErr := os.Lstat(instructionPath)
-	switch {
-	case instructionErr == nil && instructionInfo.Mode()&os.ModeSymlink != 0:
-		return InstallResult{}, fmt.Errorf("agent toolkit instruction target %s is a symbolic link", adapter.InstructionTarget)
-	case instructionErr == nil && !instructionInfo.Mode().IsRegular():
-		return InstallResult{}, fmt.Errorf("agent toolkit instruction target %s is not a regular file", adapter.InstructionTarget)
-	case instructionErr != nil && !os.IsNotExist(instructionErr):
-		return InstallResult{}, fmt.Errorf("inspect agent toolkit instruction target: %w", instructionErr)
-	}
-
-	manifest, manifestData, err := r.readManifest()
-	installed := false
-	switch {
-	case err == nil:
-		report, checkErr := r.check(bundle, manifest)
-		if checkErr != nil {
-			return InstallResult{}, checkErr
-		}
-		if report.State != "current" {
-			return InstallResult{}, fmt.Errorf("agent toolkit is already installed with state %s; run `goobers agent-kit check` and `goobers agent-kit update`", report.State)
-		}
-		if !bytes.Equal(manifestData, bundle.ManifestJSON) {
-			return InstallResult{}, fmt.Errorf("agent toolkit manifest is locally modified; run `goobers agent-kit update`")
-		}
-	case errors.Is(err, os.ErrNotExist):
-		rootPath, pathErr := r.securePath(InstalledRoot)
-		if pathErr != nil {
-			return InstallResult{}, pathErr
-		}
-		if _, statErr := os.Lstat(rootPath); statErr == nil {
-			return InstallResult{}, fmt.Errorf("%s exists without an installed manifest; refusing to claim or overwrite it", InstalledRoot)
-		} else if !os.IsNotExist(statErr) {
-			return InstallResult{}, fmt.Errorf("inspect agent toolkit root: %w", statErr)
-		}
-		if err := r.installBundle(bundle); err != nil {
-			return InstallResult{}, err
-		}
-		installed = true
-	default:
+	installed, err := r.ensureBundleInstalled(bundle)
+	if err != nil {
 		return InstallResult{}, err
 	}
 
@@ -217,6 +186,56 @@ func (r *Repository) Install(bundle Bundle, harness string) (InstallResult, erro
 		result.InstructionUpdated = true
 	}
 	return result, nil
+}
+
+func (r *Repository) inspectInstructionTarget(target string) (string, fs.FileInfo, error, error) {
+	path, err := r.securePath(target)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	info, statErr := os.Lstat(path)
+	switch {
+	case statErr == nil && info.Mode()&os.ModeSymlink != 0:
+		err = fmt.Errorf("agent toolkit instruction target %s is a symbolic link", target)
+	case statErr == nil && !info.Mode().IsRegular():
+		err = fmt.Errorf("agent toolkit instruction target %s is not a regular file", target)
+	case statErr != nil && !os.IsNotExist(statErr):
+		err = fmt.Errorf("inspect agent toolkit instruction target: %w", statErr)
+	}
+	return path, info, statErr, err
+}
+
+func (r *Repository) ensureBundleInstalled(bundle Bundle) (bool, error) {
+	manifest, manifestData, err := r.readManifest()
+	if err == nil {
+		report, checkErr := r.check(bundle, manifest)
+		if checkErr != nil {
+			return false, checkErr
+		}
+		if report.State != "current" {
+			return false, fmt.Errorf("agent toolkit is already installed with state %s; run `goobers agent-kit check` and `goobers agent-kit update`", report.State)
+		}
+		if !bytes.Equal(manifestData, bundle.ManifestJSON) {
+			return false, fmt.Errorf("agent toolkit manifest is locally modified; run `goobers agent-kit update`")
+		}
+		return false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	rootPath, err := r.securePath(InstalledRoot)
+	if err != nil {
+		return false, err
+	}
+	if _, statErr := os.Lstat(rootPath); statErr == nil {
+		return false, fmt.Errorf("%s exists without an installed manifest; refusing to claim or overwrite it", InstalledRoot)
+	} else if !os.IsNotExist(statErr) {
+		return false, fmt.Errorf("inspect agent toolkit root: %w", statErr)
+	}
+	if err := r.installBundle(bundle); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Check compares installed assets and identity with the supplied bundle.
@@ -279,109 +298,121 @@ func (r *Repository) PlanUpdate(bundle Bundle) (UpdatePlan, error) {
 	if err != nil {
 		return UpdatePlan{}, err
 	}
-	oldAssets := make(map[string]Asset, len(ownershipManifest.Assets))
-	for _, asset := range ownershipManifest.Assets {
-		installedPath, err := InstalledAssetPath(asset.Path)
-		if err != nil {
-			return UpdatePlan{}, err
-		}
-		oldAssets[installedPath] = asset
+	oldAssets, err := installedAssetsByPath(ownershipManifest)
+	if err != nil {
+		return UpdatePlan{}, err
 	}
-
-	var plan UpdatePlan
-	currentPaths := make([]string, 0, len(bundle.Files))
-	for installedPath := range bundle.Files {
-		currentPaths = append(currentPaths, installedPath)
+	plan, err := r.planAssetUpdates(bundle, oldAssets)
+	if err != nil {
+		return UpdatePlan{}, err
 	}
-	sort.Strings(currentPaths)
-	for _, installedPath := range currentPaths {
-		file := bundle.Files[installedPath]
-		state, err := r.readFileState(installedPath)
-		if err != nil {
-			return UpdatePlan{}, err
-		}
-		oldAsset, previouslyOwned := oldAssets[installedPath]
-		if !previouslyOwned && state.exists {
-			plan.UserCollisions = append(plan.UserCollisions, installedPath)
-			continue
-		}
-		if !state.exists {
-			plan.Changes = append(plan.Changes, Change{
-				Path: installedPath,
-				Kind: ChangeAdd,
-				New:  append([]byte(nil), file.Data...),
-				Mode: file.Mode,
-			})
-			continue
-		}
-		if bytes.Equal(state.data, file.Data) && requiredModeMatches(state.mode, file.Mode) {
-			continue
-		}
-		plan.Changes = append(plan.Changes, Change{
-			Path:    installedPath,
-			Kind:    ChangeModify,
-			Old:     state.data,
-			New:     append([]byte(nil), file.Data...),
-			OldMode: state.mode.Perm(),
-			Mode:    file.Mode,
-		})
-		if previouslyOwned {
-			oldMode, err := parseAssetMode(oldAsset.Mode)
-			if err != nil {
-				return UpdatePlan{}, err
-			}
-			if digest(state.data) != oldAsset.SHA256 || !requiredModeMatches(state.mode, oldMode) {
-				plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
-			}
-		}
-	}
-
-	oldPaths := make([]string, 0, len(oldAssets))
-	for installedPath := range oldAssets {
-		oldPaths = append(oldPaths, installedPath)
-	}
-	sort.Strings(oldPaths)
-	for _, installedPath := range oldPaths {
-		if _, stillOwned := bundle.Files[installedPath]; stillOwned {
-			continue
-		}
-		state, err := r.readFileState(installedPath)
-		if err != nil {
-			return UpdatePlan{}, err
-		}
-		if !state.exists {
-			continue
-		}
-		plan.Changes = append(plan.Changes, Change{
-			Path:    installedPath,
-			Kind:    ChangeDelete,
-			Old:     state.data,
-			OldMode: state.mode.Perm(),
-		})
-		oldMode, err := parseAssetMode(oldAssets[installedPath].Mode)
-		if err != nil {
-			return UpdatePlan{}, err
-		}
-		if digest(state.data) != oldAssets[installedPath].SHA256 || !requiredModeMatches(state.mode, oldMode) {
-			plan.ModifiedOwned = append(plan.ModifiedOwned, installedPath)
-		}
-	}
-
-	if !bytes.Equal(manifestData, bundle.ManifestJSON) {
-		if manifestModified {
-			plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
-		}
-		plan.Changes = append(plan.Changes, Change{
-			Path: InstalledManifestPath,
-			Kind: ChangeModify,
-			Old:  manifestData,
-			New:  append([]byte(nil), bundle.ManifestJSON...),
-			Mode: 0o644,
-		})
-	}
+	appendManifestUpdate(&plan, bundle, manifestData, manifestModified)
 	sort.Strings(plan.ModifiedOwned)
 	sort.Strings(plan.UserCollisions)
 	return plan, nil
+}
+
+func installedAssetsByPath(manifest Manifest) (map[string]Asset, error) {
+	assets := make(map[string]Asset, len(manifest.Assets))
+	for _, asset := range manifest.Assets {
+		path, err := InstalledAssetPath(asset.Path)
+		if err != nil {
+			return nil, err
+		}
+		assets[path] = asset
+	}
+	return assets, nil
+}
+
+func (r *Repository) planAssetUpdates(bundle Bundle, oldAssets map[string]Asset) (UpdatePlan, error) {
+	var plan UpdatePlan
+	currentPaths := make([]string, 0, len(bundle.Files))
+	for path := range bundle.Files {
+		currentPaths = append(currentPaths, path)
+	}
+	sort.Strings(currentPaths)
+	for _, path := range currentPaths {
+		if err := r.planCurrentAsset(&plan, path, bundle.Files[path], oldAssets); err != nil {
+			return UpdatePlan{}, err
+		}
+	}
+	oldPaths := make([]string, 0, len(oldAssets))
+	for path := range oldAssets {
+		oldPaths = append(oldPaths, path)
+	}
+	sort.Strings(oldPaths)
+	for _, path := range oldPaths {
+		if _, stillOwned := bundle.Files[path]; stillOwned {
+			continue
+		}
+		if err := r.planRemovedAsset(&plan, path, oldAssets[path]); err != nil {
+			return UpdatePlan{}, err
+		}
+	}
+	return plan, nil
+}
+
+func (r *Repository) planCurrentAsset(plan *UpdatePlan, path string, file File, oldAssets map[string]Asset) error {
+	state, err := r.readFileState(path)
+	if err != nil {
+		return err
+	}
+	oldAsset, previouslyOwned := oldAssets[path]
+	if !previouslyOwned && state.exists {
+		plan.UserCollisions = append(plan.UserCollisions, path)
+		return nil
+	}
+	if !state.exists {
+		plan.Changes = append(plan.Changes, Change{Path: path, Kind: ChangeAdd, New: append([]byte(nil), file.Data...), Mode: file.Mode})
+		return nil
+	}
+	if bytes.Equal(state.data, file.Data) && requiredModeMatches(state.mode, file.Mode) {
+		return nil
+	}
+	plan.Changes = append(plan.Changes, Change{
+		Path: path, Kind: ChangeModify, Old: state.data, New: append([]byte(nil), file.Data...),
+		OldMode: state.mode.Perm(), Mode: file.Mode,
+	})
+	if !previouslyOwned {
+		return nil
+	}
+	oldMode, err := parseAssetMode(oldAsset.Mode)
+	if err != nil {
+		return err
+	}
+	if digest(state.data) != oldAsset.SHA256 || !requiredModeMatches(state.mode, oldMode) {
+		plan.ModifiedOwned = append(plan.ModifiedOwned, path)
+	}
+	return nil
+}
+
+func (r *Repository) planRemovedAsset(plan *UpdatePlan, path string, oldAsset Asset) error {
+	state, err := r.readFileState(path)
+	if err != nil || !state.exists {
+		return err
+	}
+	plan.Changes = append(plan.Changes, Change{Path: path, Kind: ChangeDelete, Old: state.data, OldMode: state.mode.Perm()})
+	oldMode, err := parseAssetMode(oldAsset.Mode)
+	if err != nil {
+		return err
+	}
+	if digest(state.data) != oldAsset.SHA256 || !requiredModeMatches(state.mode, oldMode) {
+		plan.ModifiedOwned = append(plan.ModifiedOwned, path)
+	}
+	return nil
+}
+
+func appendManifestUpdate(plan *UpdatePlan, bundle Bundle, manifestData []byte, modified bool) {
+	if bytes.Equal(manifestData, bundle.ManifestJSON) {
+		return
+	}
+	if modified {
+		plan.ModifiedOwned = append(plan.ModifiedOwned, InstalledManifestPath)
+	}
+	plan.Changes = append(plan.Changes, Change{
+		Path: InstalledManifestPath, Kind: ChangeModify, Old: manifestData,
+		New: append([]byte(nil), bundle.ManifestJSON...), Mode: 0o644,
+	})
 }
 
 // ApplyUpdate writes a plan after enforcing its ownership acknowledgements.
@@ -438,42 +469,38 @@ func (r *Repository) validateUpdateChanges(changes []Change, recovering bool) er
 		if err != nil {
 			return err
 		}
-		switch change.Kind {
-		case ChangeAdd:
-			complete := state.exists &&
-				bytes.Equal(state.data, change.New) &&
-				requiredModeMatches(state.mode, change.Mode)
-			if state.exists && (!recovering || !complete) {
-				return fmt.Errorf("%s appeared after update planning; refusing to overwrite it", change.Path)
-			}
-		case ChangeModify:
-			original := state.exists &&
-				bytes.Equal(state.data, change.Old) &&
-				requiredModeMatches(state.mode, change.OldMode)
-			complete := state.exists &&
-				bytes.Equal(state.data, change.New) &&
-				requiredModeMatches(state.mode, change.Mode)
-			if !original && (!recovering || !complete) {
-				return fmt.Errorf("%s changed after update planning; refusing to overwrite it", change.Path)
-			}
-			if change.Path == InstalledManifestPath {
-				if _, err := DecodeManifest(change.New); err != nil {
-					return fmt.Errorf("validate updated agent toolkit manifest: %w", err)
-				}
-			}
-		case ChangeDelete:
-			original := state.exists &&
-				bytes.Equal(state.data, change.Old) &&
-				requiredModeMatches(state.mode, change.OldMode)
-			if state.exists && !original {
-				return fmt.Errorf("%s changed after update planning; refusing to delete it", change.Path)
-			}
-			if !recovering && !state.exists {
-				return fmt.Errorf("%s changed after update planning; refusing to delete it", change.Path)
-			}
-		default:
-			return fmt.Errorf("unsupported agent toolkit update change %q", change.Kind)
+		if err := validateUpdateChange(change, state, recovering); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func validateUpdateChange(change Change, state repositoryFile, recovering bool) error {
+	switch change.Kind {
+	case ChangeAdd:
+		complete := state.exists && bytes.Equal(state.data, change.New) && requiredModeMatches(state.mode, change.Mode)
+		if state.exists && (!recovering || !complete) {
+			return fmt.Errorf("%s appeared after update planning; refusing to overwrite it", change.Path)
+		}
+	case ChangeModify:
+		original := state.exists && bytes.Equal(state.data, change.Old) && requiredModeMatches(state.mode, change.OldMode)
+		complete := state.exists && bytes.Equal(state.data, change.New) && requiredModeMatches(state.mode, change.Mode)
+		if !original && (!recovering || !complete) {
+			return fmt.Errorf("%s changed after update planning; refusing to overwrite it", change.Path)
+		}
+		if change.Path == InstalledManifestPath {
+			if _, err := DecodeManifest(change.New); err != nil {
+				return fmt.Errorf("validate updated agent toolkit manifest: %w", err)
+			}
+		}
+	case ChangeDelete:
+		original := state.exists && bytes.Equal(state.data, change.Old) && requiredModeMatches(state.mode, change.OldMode)
+		if state.exists && !original || !recovering && !state.exists {
+			return fmt.Errorf("%s changed after update planning; refusing to delete it", change.Path)
+		}
+	default:
+		return fmt.Errorf("unsupported agent toolkit update change %q", change.Kind)
 	}
 	return nil
 }
@@ -490,57 +517,21 @@ func (r *Repository) planInterruptedUpdate(
 	if transaction.Version != updateTransactionVersion || len(transaction.Changes) == 0 {
 		return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update has an unsupported transaction")
 	}
-
-	sourceManifest := installed
-	sourceManifestData := manifestData
-	manifestAlreadyUpdated := false
-	var manifestChange *Change
-	for index := range transaction.Changes {
-		change := &transaction.Changes[index]
-		if change.Path != InstalledManifestPath {
-			continue
-		}
-		if manifestChange != nil {
-			return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update contains duplicate manifest changes")
-		}
-		manifestChange = change
+	source, err := interruptedSource(bundle, installed, manifestData, transaction.Changes)
+	if err != nil {
+		return UpdatePlan{}, err
 	}
-	if manifestChange != nil {
-		if manifestChange.Kind != ChangeModify ||
-			!bytes.Equal(manifestChange.New, bundle.ManifestJSON) ||
-			manifestChange.Mode != 0o644 {
-			return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update does not target the current bundle manifest")
-		}
-		var err error
-		sourceManifest, err = DecodeManifest(manifestChange.Old)
-		if err != nil {
-			return UpdatePlan{}, fmt.Errorf("decode interrupted agent toolkit source manifest: %w", err)
-		}
-		sourceManifestData = manifestChange.Old
-		if !bytes.Equal(manifestData, manifestChange.Old) &&
-			!bytes.Equal(manifestData, manifestChange.New) {
-			return UpdatePlan{}, fmt.Errorf("installed manifest changed during the interrupted agent toolkit update")
-		}
-		manifestAlreadyUpdated = bytes.Equal(manifestData, manifestChange.New)
-	} else if !bytes.Equal(manifestData, bundle.ManifestJSON) {
-		return UpdatePlan{}, fmt.Errorf("interrupted agent toolkit update omits the required manifest change")
-	}
-
 	ownershipManifest, sourceManifestModified, err := r.trustedOwnershipManifest(
 		bundle,
-		sourceManifest,
-		sourceManifestData,
+		source.manifest,
+		source.manifestData,
 	)
 	if err != nil {
 		return UpdatePlan{}, err
 	}
-	oldAssets := make(map[string]Asset, len(ownershipManifest.Assets))
-	for _, asset := range ownershipManifest.Assets {
-		installedPath, err := InstalledAssetPath(asset.Path)
-		if err != nil {
-			return UpdatePlan{}, err
-		}
-		oldAssets[installedPath] = asset
+	oldAssets, err := installedAssetsByPath(ownershipManifest)
+	if err != nil {
+		return UpdatePlan{}, err
 	}
 
 	plan := UpdatePlan{
@@ -563,58 +554,16 @@ func (r *Repository) planInterruptedUpdate(
 		if change.Path == InstalledManifestPath {
 			continue
 		}
-
-		oldAsset, previouslyOwned := oldAssets[change.Path]
-		target, targetOwned := bundle.Files[change.Path]
-		switch change.Kind {
-		case ChangeAdd:
-			if !targetOwned || len(change.Old) != 0 || change.OldMode != 0 ||
-				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode {
-				return UpdatePlan{}, fmt.Errorf("interrupted update add %s is not an exact current-bundle addition or owned-file restoration", change.Path)
-			}
-		case ChangeModify:
-			if !previouslyOwned || !targetOwned ||
-				!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode ||
-				change.OldMode != change.OldMode.Perm() {
-				return UpdatePlan{}, fmt.Errorf("interrupted update modification %s is not an exact manifest-owned current-bundle change", change.Path)
-			}
-			oldMode, err := parseAssetMode(oldAsset.Mode)
-			if err != nil {
-				return UpdatePlan{}, err
-			}
-			if digest(change.Old) != oldAsset.SHA256 || !requiredModeMatches(change.OldMode, oldMode) {
-				plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
-			}
-		case ChangeDelete:
-			if !previouslyOwned || targetOwned || len(change.New) != 0 || change.Mode != 0 ||
-				change.OldMode != change.OldMode.Perm() {
-				return UpdatePlan{}, fmt.Errorf("interrupted update deletion %s is not an obsolete manifest-owned asset", change.Path)
-			}
-			oldMode, err := parseAssetMode(oldAsset.Mode)
-			if err != nil {
-				return UpdatePlan{}, err
-			}
-			if digest(change.Old) != oldAsset.SHA256 || !requiredModeMatches(change.OldMode, oldMode) {
-				plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
-			}
-		default:
-			return UpdatePlan{}, fmt.Errorf("unsupported interrupted agent toolkit update change %q", change.Kind)
+		modified, err := validateInterruptedAssetChange(change, bundle, oldAssets)
+		if err != nil {
+			return UpdatePlan{}, err
 		}
-		if manifestAlreadyUpdated {
-			state, err := r.readFileState(change.Path)
-			if err != nil {
+		if modified {
+			plan.ModifiedOwned = append(plan.ModifiedOwned, change.Path)
+		}
+		if source.alreadyUpdated {
+			if err := r.requireCompletedInterruptedChange(change); err != nil {
 				return UpdatePlan{}, err
-			}
-			complete := change.Kind == ChangeDelete && !state.exists ||
-				change.Kind != ChangeDelete &&
-					state.exists &&
-					bytes.Equal(state.data, change.New) &&
-					requiredModeMatches(state.mode, change.Mode)
-			if !complete {
-				return UpdatePlan{}, fmt.Errorf(
-					"interrupted update has an incomplete asset change after its manifest was installed: %s",
-					change.Path,
-				)
 			}
 		}
 	}
@@ -624,6 +573,89 @@ func (r *Repository) planInterruptedUpdate(
 	sort.Strings(plan.ModifiedOwned)
 	plan.ModifiedOwned = slices.Compact(plan.ModifiedOwned)
 	return plan, nil
+}
+
+func interruptedSource(bundle Bundle, installed Manifest, manifestData []byte, changes []Change) (interruptedUpdateSource, error) {
+	source := interruptedUpdateSource{manifest: installed, manifestData: manifestData}
+	var manifestChange *Change
+	for index := range changes {
+		change := &changes[index]
+		if change.Path != InstalledManifestPath {
+			continue
+		}
+		if manifestChange != nil {
+			return source, fmt.Errorf("interrupted agent toolkit update contains duplicate manifest changes")
+		}
+		manifestChange = change
+	}
+	if manifestChange == nil {
+		if !bytes.Equal(manifestData, bundle.ManifestJSON) {
+			return source, fmt.Errorf("interrupted agent toolkit update omits the required manifest change")
+		}
+		return source, nil
+	}
+	if manifestChange.Kind != ChangeModify ||
+		!bytes.Equal(manifestChange.New, bundle.ManifestJSON) ||
+		manifestChange.Mode != 0o644 {
+		return source, fmt.Errorf("interrupted agent toolkit update does not target the current bundle manifest")
+	}
+	var err error
+	source.manifest, err = DecodeManifest(manifestChange.Old)
+	if err != nil {
+		return source, fmt.Errorf("decode interrupted agent toolkit source manifest: %w", err)
+	}
+	source.manifestData = manifestChange.Old
+	if !bytes.Equal(manifestData, manifestChange.Old) && !bytes.Equal(manifestData, manifestChange.New) {
+		return source, fmt.Errorf("installed manifest changed during the interrupted agent toolkit update")
+	}
+	source.alreadyUpdated = bytes.Equal(manifestData, manifestChange.New)
+	return source, nil
+}
+
+func validateInterruptedAssetChange(change Change, bundle Bundle, oldAssets map[string]Asset) (bool, error) {
+	oldAsset, previouslyOwned := oldAssets[change.Path]
+	target, targetOwned := bundle.Files[change.Path]
+	switch change.Kind {
+	case ChangeAdd:
+		if !targetOwned || len(change.Old) != 0 || change.OldMode != 0 ||
+			!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode {
+			return false, fmt.Errorf("interrupted update add %s is not an exact current-bundle addition or owned-file restoration", change.Path)
+		}
+		return false, nil
+	case ChangeModify:
+		if !previouslyOwned || !targetOwned ||
+			!bytes.Equal(change.New, target.Data) || change.Mode != target.Mode ||
+			change.OldMode != change.OldMode.Perm() {
+			return false, fmt.Errorf("interrupted update modification %s is not an exact manifest-owned current-bundle change", change.Path)
+		}
+	case ChangeDelete:
+		if !previouslyOwned || targetOwned || len(change.New) != 0 || change.Mode != 0 ||
+			change.OldMode != change.OldMode.Perm() {
+			return false, fmt.Errorf("interrupted update deletion %s is not an obsolete manifest-owned asset", change.Path)
+		}
+	default:
+		return false, fmt.Errorf("unsupported interrupted agent toolkit update change %q", change.Kind)
+	}
+	oldMode, err := parseAssetMode(oldAsset.Mode)
+	if err != nil {
+		return false, err
+	}
+	return digest(change.Old) != oldAsset.SHA256 || !requiredModeMatches(change.OldMode, oldMode), nil
+}
+
+func (r *Repository) requireCompletedInterruptedChange(change Change) error {
+	state, err := r.readFileState(change.Path)
+	if err != nil {
+		return err
+	}
+	complete := change.Kind == ChangeDelete && !state.exists ||
+		change.Kind != ChangeDelete && state.exists &&
+			bytes.Equal(state.data, change.New) &&
+			requiredModeMatches(state.mode, change.Mode)
+	if !complete {
+		return fmt.Errorf("interrupted update has an incomplete asset change after its manifest was installed: %s", change.Path)
+	}
+	return nil
 }
 
 func (r *Repository) writeUpdateTransaction(changes []Change) error {

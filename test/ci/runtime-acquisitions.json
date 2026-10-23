@@ -57,6 +57,8 @@
       ".github/workflows/ci.yml#unit/Prime module cache for latest release tag:go-modules",
       ".github/workflows/ci.yml#unit/Unit suite (-race, shard ${{ matrix.shard }}):go-modules",
       ".github/workflows/ci.yml#windows-smoke/Build Windows validation binary:go-modules",
+      ".github/workflows/ha-nightly.yml#smoke/Collect evidence:go-modules",
+      ".github/workflows/ha-nightly.yml#smoke/Run kind environment smoke:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Validate Windows daemon and implementation workflow:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows Azure CLI credential diagnostics:go-modules",
@@ -120,6 +122,7 @@
       "Makefile#linux-node-validation:[4]:go-modules",
       "Makefile#linux-node-validation:[5]:go-modules",
       "Makefile#linux-node-validation:[6]:go-modules",
+      "Makefile#portal-audit::go-modules",
       "Makefile#sandbox-check::go-modules",
       "Makefile#schema-description-coverage::go-modules",
       "Makefile#stress::go-modules",
@@ -153,6 +156,7 @@
       "no-phone-home:go-modules",
       "npm-registry:go-modules",
       "portal-contract-generate:go-modules",
+      "portal-audit:go-modules",
       "portal-embed-vet:go-modules",
       "portal-embed-test:go-modules",
       "runtime-acquisitions:go-modules",
@@ -207,7 +211,7 @@
     "from": [
       "Configured npm registry audit endpoint"
     ],
-    "offline": "no-offline-path: the mandatory portal-audit gate needs a reachable advisory service; warmed package caches do not replace it.",
+    "offline": "no-offline-path: warmed package caches do not replace advisory data. Required CI retries bounded 5xx/network failures and reports UNAVAILABLE with a warning when the service remains down; a successful advisory response containing findings still fails.",
     "sites": [
       "Makefile#portal-audit::npm-advisories",
       "portal-audit:npm-advisories"
@@ -229,15 +233,23 @@
   },
   {
     "id": "direct-download",
-    "what": "Pinned golangci-lint installer/release binary and checksum-verified Temporal CLI used by hosted integration",
+    "what": "Pinned golangci-lint installer/release binary, checksum-verified Temporal CLI, and checksum-verified nightly kind, Helm, Calico, CNPG, Temporal chart and toxiproxy assets",
     "from": [
       "raw.githubusercontent.com/golangci/golangci-lint",
       "github.com/golangci/golangci-lint/releases",
-      "github.com/temporalio/cli/releases v1.8.2 and release-asset redirects; SHA256 pinned in integration provisioning"
+      "github.com/temporalio/cli/releases v1.8.2 and release-asset redirects; SHA256 pinned in integration provisioning",
+      "github.com release assets and raw.githubusercontent.com for the versions pinned in ha-nightly.yml",
+      "get.helm.sh for the Helm archive pinned in ha-nightly.yml"
     ],
-    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally unless the pinned version is already on GOPATH/bin. Exhausting the release download falls back to go install from the configured GOPROXY, which is the separately declared go-modules acquisition and no more offline than it is. Local make ci instead requires golangci-lint already on PATH. Hosted Temporal provisioning always downloads its pinned release archive; offline execution requires a preprovisioned compatible CLI and bypassing that hosted provisioning step.",
+    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally unless the pinned version is already on GOPATH/bin. Exhausting the release download falls back to go install from the configured GOPROXY, which is the separately declared go-modules acquisition and no more offline than it is. Local make ci instead requires golangci-lint already on PATH. Hosted Temporal provisioning always downloads its pinned release archive; offline execution requires a preprovisioned compatible CLI and bypassing that hosted provisioning step. The HA nightly job intentionally downloads every declared asset, verifies its committed SHA256, and has no offline execution path on a fresh hosted runner.",
     "sites": [
       ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}@c09af852591b05c574b4485806c32518d0cd07e6c8aa032f9ccd48cdb95c0d0e:direct-download",
+      ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1:direct-download",
+      ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[2]:direct-download",
+      ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[3]:direct-download",
+      ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[4]:direct-download",
+      ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[5]:direct-download",
+      ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[6]:direct-download",
       ".github/workflows/ci.yml#integration/Provision Temporal cancellation dependency@8c89725058a86889f0d18805d4a0bca408370956d4bb0cd7bfb157bcf87091ed:direct-download"
     ]
   },
@@ -327,6 +339,9 @@
       ".github/workflows/ci.yml#windows-smoke/Set up Go:github-actions",
       ".github/workflows/ci.yml#windows-smoke/Upload Windows validation evidence:github-actions",
       ".github/workflows/ci.yml#checks/Upload CI diagnostics:github-actions",
+      ".github/workflows/ha-nightly.yml#smoke/Checkout:github-actions",
+      ".github/workflows/ha-nightly.yml#smoke/Set up Go:github-actions",
+      ".github/workflows/ha-nightly.yml#smoke/Upload evidence:github-actions",
       ".github/workflows/ci.yml#cmdgoobers-growth/Upload CI diagnostics:github-actions",
       ".github/workflows/ci.yml#darwin-build/Upload CI diagnostics:github-actions",
       ".github/workflows/ci.yml#deadcode/Upload CI diagnostics:github-actions",

@@ -197,6 +197,30 @@ func TestWorkerOptionsSetConfiguredActivityConcurrency(t *testing.T) {
 	}
 }
 
+func TestTwoWorkersServeOneQueue(t *testing.T) {
+	firstFleet, secondFleet := &fakeFleet{}, &fakeFleet{}
+	first := newTestHost(t, Config{TaskQueues: []string{"goobers-engine"}}, firstFleet)
+	second := newTestHost(t, Config{TaskQueues: []string{"goobers-engine"}}, secondFleet)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 2)
+	go func() { done <- first.Run(ctx) }()
+	go func() { done <- second.Run(ctx) }()
+	waitFor(t, func() bool {
+		firstFleet.mu.Lock()
+		defer firstFleet.mu.Unlock()
+		secondFleet.mu.Lock()
+		defer secondFleet.mu.Unlock()
+		return len(firstFleet.workers) == 1 && firstFleet.workers[0].isStarted() &&
+			len(secondFleet.workers) == 1 && secondFleet.workers[0].isStarted()
+	})
+	cancel()
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestWorkerOptionsBoundHeartbeatCancellationLatency(t *testing.T) {
 	for _, config := range []Config{
 		{TaskQueues: []string{"queue"}},

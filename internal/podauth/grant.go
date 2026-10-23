@@ -24,12 +24,12 @@ const CredentialGrantPrefix = "goobers-grant."
 // base64url payload.
 const credentialGrantMACDomain = "goobers/credential-grant/v1\x00"
 
-// MaxCredentialGrantTTL bounds a grant's life. A grant cannot be revoked
-// before it expires except by restarting the daemon that holds its key, so
-// the ceiling is the containment a leaked grant has. It sits above the
-// longest shipped stage timeout (the large-repo preset's 4h) with room for a
-// slow operator-set default; a stage that outlives it falls back to the
-// pre-grant behavior (its last delivered value) for the remainder.
+// MaxCredentialGrantTTL bounds a grant's life. Revocation is process-local and
+// is lost on restart or when a request reaches another replica, so the ceiling
+// is the containment a leaked grant has until shared revocation is available.
+// It sits above the longest shipped stage timeout (the large-repo preset's
+// 4h) with room for a slow operator-set default; a stage that outlives it
+// falls back to the pre-grant behavior (its last delivered value).
 const MaxCredentialGrantTTL = 24 * time.Hour
 
 // maxCredentialGrantBytes bounds a presented grant before any decoding.
@@ -39,7 +39,7 @@ const maxCredentialGrantBytes = 4096
 const maxCredentialGrantCapabilities = 32
 
 // ErrInvalidCredentialGrant reports a grant that is malformed, forged, or
-// signed by another key (a restarted daemon's grants all read this way).
+// signed by another key, including grants minted before key rotation.
 var ErrInvalidCredentialGrant = errors.New("podauth: invalid credential grant")
 
 // ErrExpiredCredentialGrant reports a well-signed grant past its expiry.

@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -38,9 +38,7 @@ import (
 //     the same capability-gated injector the stage-start resolve uses.
 //   - HOW LONG. The stage timeout plus a margin, capped at
 //     podauth.MaxCredentialGrantTTL.
-//   - HOW IT ENDS. It expires; a local grant is revoked when its attempt
-//     returns; and every grant dies with the daemon process, because the
-//     signing key is generated at startup and never persisted.
+//   - HOW IT ENDS. It expires; process-local revocation resets on restart or another replica, while startup key rotation invalidates outstanding grants.
 //   - HOW FAST. Each grant is rate-limited (grantRefreshBurst, then one per
 //     grantRefreshInterval), and every refresh is journaled with the attempt.
 
@@ -57,7 +55,7 @@ const (
 )
 
 // stageGrantIssuer holds the daemon's grant signing key and the per-grant
-// state the refresh route needs. The key is random per daemon process.
+// state the refresh route needs.
 type stageGrantIssuer struct {
 	key      *podauth.SignedKey
 	endpoint string
@@ -77,22 +75,6 @@ type grantBucket struct {
 	expiresAt time.Time
 }
 
-func newStageGrantIssuer(endpoint string) (*stageGrantIssuer, error) {
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("generate credential grant key: %w", err)
-	}
-	key, err := podauth.NewSignedKey(secret)
-	if err != nil {
-		return nil, err
-	}
-	return &stageGrantIssuer{
-		key: key, endpoint: endpoint, now: time.Now,
-		revoked: map[string]time.Time{},
-		buckets: map[[sha256.Size]byte]*grantBucket{},
-	}, nil
-}
-
 // withStageGrants enables mid-stage credential refresh on this daemon's
 // credential plane, served at the API reachable at listenAddress, and offers
 // the minter to the local runners of the instance at root. A daemon that
@@ -103,11 +85,22 @@ func (s *daemonCredentialService) withStageGrants(root, listenAddress string, tl
 	if err != nil {
 		return s
 	}
-	issuer, err := newStageGrantIssuer(endpoint)
+	keyFile := ""
+	if s.config != nil {
+		keyFile = s.config.API.PodTokenKeyFile
+	}
+	key, err := podauth.CredentialGrantSigningKey(keyFile)
 	if err != nil {
+		log.Printf("warning: credential-refresh grants and child-workflow stage authority are disabled: %v", err)
 		return s
 	}
-	s.grants = issuer
+	if keyFile == "" {
+		log.Printf("warning: api.podTokenKeyFile is not configured; credential-refresh grants will not survive a daemon restart")
+	}
+	s.grants = &stageGrantIssuer{
+		key: key, endpoint: endpoint, now: time.Now,
+		revoked: map[string]time.Time{}, buckets: map[[sha256.Size]byte]*grantBucket{},
+	}
 	registerStageGrantMinter(root, s)
 	return s
 }

@@ -78,7 +78,7 @@ const sourceTreeAdvisoryMessage = "--instance was not supplied; placement and ca
 
 var templateMarkers = []string{"your-org", "your-repo"}
 
-var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]\n\n" +
+var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). Placement findings (RNR001/RNR003) are errors when\n" +
 	"instance.yaml declares a runners: inventory that cannot satisfy some\n" +
@@ -87,6 +87,8 @@ var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--c
 	"placement and capability solve uses that real instance document. Without\n" +
 	"--instance, the solve uses instance.yaml.example, is advisory-only\n" +
 	"(warnings, never errors), and the output states that limitation. " +
+	"--target cloud adds engine-only runtime eligibility findings; the default " +
+	"local target preserves local execution and exit behavior. " +
 	strictHelpText() + " " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
 	"--github-annotations additionally writes each finding to stderr as a\n" +
@@ -180,6 +182,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	checkDispatchNamespaces := fs.Bool("check-dispatch-namespaces", false, "also verify each gaggle's isolation.namespace exists and this kubeconfig's credentials can dispatch into it (#4897); silently skipped with no cluster credentials")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	instancePath := fs.String("instance", "", "with --source-tree, solve placement and capabilities against this real instance.yaml")
+	target := fs.String("target", string(validateTargetLocal), "validate runtime eligibility for local or cloud execution")
 	strict := fs.Bool("strict", false, strictFlagDescription())
 	fs.Usage = helpUsage(stderr, name)
 	if !parseFlagsBeforePath(fs, args, stderr) {
@@ -191,6 +194,10 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	}
 	if *instancePath != "" && !*sourceTree {
 		pf(stderr, "error: --instance requires --source-tree\n")
+		return 2
+	}
+	if validateTarget(*target) != validateTargetLocal && validateTarget(*target) != validateTargetCloud {
+		pf(stderr, "error: --target must be local or cloud, got %q\n", *target)
 		return 2
 	}
 	root := "."
@@ -217,6 +224,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 		strict:                  *strict,
 		deferModelDiscovery:     startupPreflight,
 		startupPreflight:        startupPreflight,
+		target:                  validateTarget(*target),
 	}, humanOut, humanErr, diagnostics)
 	if *githubAnnotations {
 		emitGitHubAnnotations(stderr, diagnostics)
@@ -246,6 +254,7 @@ type validateOptions struct {
 	// engine, placement findings advisory (see runValidateAsDeferring).
 	// Never set from a CLI flag.
 	startupPreflight bool
+	target           validateTarget
 }
 
 func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagnostics *diagnosticCollector) int {
@@ -390,6 +399,10 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	printValidationWarnings(stdout, skillWarnings)
 
+	if code := emitConfiguredRuntimeFindings(options, configDir, cfg, set, report, stdout, diagnostics); code != 0 {
+		return code
+	}
+
 	// Static reality cross-checks (2026-08-08 cold-start audit; dsl-3.0.md §5
 	// checkpoint 1): the per-stage placement solve against the resolved
 	// runner inventory (RNR001/RNR003 — ERROR when a runners: inventory is
@@ -412,13 +425,8 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		advisorySourceSolve || options.startupPreflight,
 		options.sourceTree && options.instancePath != "")
 	placementErrors, capabilityErrors := emitStaticRealityFindings(stdout, diagnostics, staticRealityWarnings)
-	if capabilityErrors > 0 {
-		pf(stdout, "\nthe real instance cannot satisfy the configuration (%d capability error(s))\n", capabilityErrors)
-		return 1
-	}
-	if placementErrors > 0 {
-		pf(stdout, "\nthe declared runners: inventory cannot satisfy the configuration (%d placement error(s))\n", placementErrors)
-		return 1
+	if code := staticRealityExitCode(stdout, placementErrors, capabilityErrors); code != 0 {
+		return code
 	}
 
 	// Docs-location existence (#1016). The config-load pass (api/validate) has
@@ -567,6 +575,18 @@ func emitStaticRealityFindings(
 	return placementErrors, capabilityErrors
 }
 
+func staticRealityExitCode(stdout io.Writer, placementErrors, capabilityErrors int) int {
+	if capabilityErrors > 0 {
+		pf(stdout, "\nthe real instance cannot satisfy the configuration (%d capability error(s))\n", capabilityErrors)
+		return 1
+	}
+	if placementErrors > 0 {
+		pf(stdout, "\nthe declared runners: inventory cannot satisfy the configuration (%d placement error(s))\n", placementErrors)
+		return 1
+	}
+	return 0
+}
+
 var strictNeutralWarningCodes = func() []validate.WarningCode {
 	codes := []validate.WarningCode{
 		validate.WarningDeprecatedDSLVersion,
@@ -578,6 +598,8 @@ var strictNeutralWarningCodes = func() []validate.WarningCode {
 		validate.WarningInertADOCapability,
 		validate.WarningProviderInputDefaulted,
 		validate.WarningCommentIdentityDisagreement,
+		validate.RuntimeEngineUnsupported,
+		validate.RuntimeSelfExecutionRequired,
 	}
 	for _, code := range workflowsafety.Codes() {
 		codes = append(codes, validate.WarningCode(code))

@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
@@ -55,6 +56,7 @@ type workerSeams struct {
 	// through. Nil means node-local only: every stage of a run must then be
 	// polled by THIS worker or the first cross-node pointer fails closed.
 	store             blobstore.Store
+	configPlane       *configmirror.Client
 	recoveryEmitter   *livejournal.HTTPEmitter
 	checkpointEmitter livejournal.TranscriptEmitter
 	// logf receives reload diagnostics. A rejected reload is loud but never
@@ -80,6 +82,8 @@ type workerSeams struct {
 	// FAILS CLOSED with a named refusal rather than silently resolving the
 	// current tree. Guarded by mu.
 	history []*workerConfigSnapshot
+	// retired holds evicted snapshots still leased by an in-flight kit build.
+	retired []*workerConfigSnapshot
 	// historyDepth bounds history. Zero disables retention entirely, which
 	// makes any pin the current tree cannot satisfy an immediate refusal.
 	historyDepth int
@@ -111,6 +115,7 @@ type workerSeams struct {
 // cache in place, which is what lets an in-flight attempt keep the kit it was
 // handed while the next attempt gets the new tree.
 type workerConfigSnapshot struct {
+	users         atomic.Int64
 	configDir     string
 	generation    string
 	digest        string
