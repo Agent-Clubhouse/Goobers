@@ -5,17 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
+	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
@@ -145,5 +148,37 @@ func TestDeterministicActivityCarriesRecorderReceipts(t *testing.T) {
 		if len(receipts) != 1 || receipts[0] != receipt {
 			t.Fatalf("activity receipts = %+v", receipts)
 		}
+	}
+}
+
+// Pod artifacts are already emitted through the pod's journal plane. Returning
+// their pointers in the surrender document must not mint another recorder event.
+func TestPodArtifactEmissionIsNotDuplicatedBySurrender(t *testing.T) {
+	writer, root := newLiveWriter(t)
+	input := runInput("pod-artifact", fixtureSpec("work", []apiv1.Task{detTask("work", "")}, nil))
+	input.RunID = strings.Repeat("a", 32)
+	input.LiveJournal = true
+	input.Placements = []PinnedPlacement{remotePin("work")}
+	store := surrenderStore(t)
+	receipt := fixtureArtifactReceipt(t)
+	putSurrendered(t, store, input.RunID, "work", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Artifacts: []apiv1.ArtifactPointer{receipt.Ref}}})
+	dispatch := placementDispatchFunc(func(ctx context.Context, _ dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
+		_, err := writer.Emit(ctx, livejournal.EmitRequest{RunID: input.RunID, Gaggle: input.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpArtifact, Key: "pod/work/1/result.json", Artifact: &livejournal.ArtifactOp{Name: receipt.Name, Data: []byte("artifact bytes"), Integrity: apiv1.IntegrityDerived}}}})
+		return dispatcher.Report{Runner: "win-ci", Pod: "fixture-pod", Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true}, err
+	})
+	projection := executeForProjection(t, input, &Activities{Journal: writer, Dispatcher: dispatch, Surrenders: store}, false)
+	for _, op := range projection.Ops {
+		if op.Artifact != nil && op.Artifact.Name == receipt.Name {
+			t.Fatal("workflow recreated an already-emitted pod artifact")
+		}
+	}
+	recorded := 0
+	for _, event := range liveEvents(t, root, input.RunID) {
+		if event.Type == journal.EventArtifactRecorded && event.Name == receipt.Name {
+			recorded++
+		}
+	}
+	if recorded != 1 {
+		t.Fatalf("pod artifact recorded %d times", recorded)
 	}
 }
