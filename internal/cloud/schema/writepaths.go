@@ -33,9 +33,20 @@ var identifier = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 //go:embed writepaths.yaml
 var inventoryYAML []byte
 
-// Inventory is the checked-in table write policy.
+// Inventory is the checked-in table and sequence privilege policy.
 type Inventory struct {
-	Tables []Table `yaml:"tables"`
+	Tables    []Table    `yaml:"tables"`
+	Sequences []Sequence `yaml:"sequences"`
+}
+
+// Sequence describes one cloud sequence and the roles that may draw from it
+// (USAGE: nextval and currval).
+type Sequence struct {
+	Schema      string   `yaml:"schema"`
+	Name        string   `yaml:"sequence"`
+	Provisioned bool     `yaml:"provisioned"`
+	Rationale   string   `yaml:"rationale"`
+	Usage       []string `yaml:"usage"`
 }
 
 // Table describes one cloud table and its authorized writers.
@@ -122,7 +133,92 @@ func (inventory Inventory) Validate() error {
 			}
 		}
 	}
+	return inventory.validateSequences(seen)
+}
+
+func (inventory Inventory) validateSequences(seen map[string]struct{}) error {
+	for _, sequence := range inventory.Sequences {
+		key := sequence.Schema + "." + sequence.Name
+		if !identifier.MatchString(sequence.Schema) || !identifier.MatchString(sequence.Name) {
+			return fmt.Errorf("cloud write-path inventory has invalid sequence %q", key)
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("cloud write-path inventory duplicates %s", key)
+		}
+		seen[key] = struct{}{}
+		if strings.TrimSpace(sequence.Rationale) == "" {
+			return fmt.Errorf("cloud write-path inventory lacks rationale for sequence %s", key)
+		}
+		for _, role := range sequence.Usage {
+			if !slices.Contains(RuntimeRoles, role) {
+				return fmt.Errorf("cloud write-path inventory has invalid sequence role %q on %s", role, key)
+			}
+		}
+	}
 	return nil
+}
+
+func (inventory Inventory) tableIndex() map[string]Table {
+	index := make(map[string]Table, len(inventory.Tables))
+	for _, table := range inventory.Tables {
+		index[table.Schema+"."+table.Name] = table
+	}
+	return index
+}
+
+func (inventory Inventory) sequenceIndex() map[string]Sequence {
+	index := make(map[string]Sequence, len(inventory.Sequences))
+	for _, sequence := range inventory.Sequences {
+		index[sequence.Schema+"."+sequence.Name] = sequence
+	}
+	return index
+}
+
+// schemas lists every schema that holds a provisioned inventory object.
+func (inventory Inventory) schemas() []string {
+	var schemas []string
+	for _, table := range inventory.Tables {
+		if table.Provisioned && !slices.Contains(schemas, table.Schema) {
+			schemas = append(schemas, table.Schema)
+		}
+	}
+	for _, sequence := range inventory.Sequences {
+		if sequence.Provisioned && !slices.Contains(schemas, sequence.Schema) {
+			schemas = append(schemas, sequence.Schema)
+		}
+	}
+	return schemas
+}
+
+// schemaUsers lists, sorted, the roles granted anything on a provisioned
+// object in schema; only they get USAGE on it.
+func (inventory Inventory) schemaUsers(schema string) []string {
+	var roles []string
+	add := func(role string) {
+		if !slices.Contains(roles, role) {
+			roles = append(roles, role)
+		}
+	}
+	for _, table := range inventory.Tables {
+		if table.Schema != schema || !table.Provisioned {
+			continue
+		}
+		for _, reader := range table.Readers {
+			add(reader.Role)
+		}
+		for _, writer := range table.Writers {
+			add(writer.Role)
+		}
+	}
+	for _, sequence := range inventory.Sequences {
+		if sequence.Schema == schema && sequence.Provisioned {
+			for _, role := range sequence.Usage {
+				add(role)
+			}
+		}
+	}
+	slices.Sort(roles)
+	return roles
 }
 
 // WriterFor returns a role's policy for one table.

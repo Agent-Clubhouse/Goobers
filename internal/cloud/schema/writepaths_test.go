@@ -18,10 +18,32 @@ func TestMigrationsNeverManageRolesOrGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	privilege := regexp.MustCompile(`(?i)\b(CREATE\s+ROLE|ALTER\s+ROLE|GRANT|REVOKE)\b`)
 	for _, migration := range catalog {
-		if match := privilege.FindString(migration.SQL); match != "" {
+		if match := privilegeDDL.FindString(migration.SQL); match != "" {
 			t.Errorf("migration %s contains %q; privileges belong to the write-path inventory", migration.Name, match)
+		}
+	}
+}
+
+// privilegeDDL matches statements that create or change roles, privileges,
+// ownership or execution identity.
+var privilegeDDL = regexp.MustCompile(`(?i)\b((CREATE|ALTER|DROP)\s+(ROLE|USER|GROUP)|GRANT|REVOKE|OWNER\s+TO|SECURITY\s+DEFINER|SET\s+(LOCAL\s+|SESSION\s+)?ROLE|SET\s+SESSION\s+AUTHORIZATION)\b`)
+
+func TestMigrationGuardCatchesEquivalentDDL(t *testing.T) {
+	for _, statement := range []string{
+		"CREATE ROLE sneaky NOLOGIN", "create user sneaky", "CREATE GROUP sneaky", "ALTER ROLE goobers_api SUPERUSER",
+		"ALTER USER goobers_api CREATEROLE", "DROP ROLE goobers_api", "DROP USER x", "GRANT SELECT ON control.lease TO PUBLIC",
+		"REVOKE ALL ON control.lease FROM goobers_api", "ALTER TABLE control.lease OWNER TO goobers_controller",
+		"CREATE FUNCTION control.f() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'select 1'",
+		"SET ROLE goobers_owner", "SET LOCAL ROLE goobers_owner", "SET SESSION AUTHORIZATION goobers_owner",
+	} {
+		if !privilegeDDL.MatchString(statement) {
+			t.Errorf("migration guard misses %q", statement)
+		}
+	}
+	for _, statement := range []string{"CREATE TABLE control.grants_log (id int)", "CREATE INDEX lease_owner_idx ON control.lease (holder)"} {
+		if privilegeDDL.MatchString(statement) {
+			t.Errorf("migration guard rejects ordinary DDL %q", statement)
 		}
 	}
 }
