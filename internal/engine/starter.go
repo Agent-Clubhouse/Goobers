@@ -11,7 +11,9 @@ import (
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 )
 
 // RunGaggleMemoKey identifies engine runs in Temporal visibility without
@@ -20,6 +22,9 @@ const RunGaggleMemoKey = "goobers.run.gaggle.v1"
 
 // RunInputDigestMemoKey binds queued direct starts to their accepted input.
 const RunInputDigestMemoKey = "goobers.run.input_digest.v1"
+
+// StartOwnerMemoKey binds a Temporal execution to its accepted owner epoch.
+const StartOwnerMemoKey = "goobers.start-owner"
 
 // RunWorkflowMemoKey, RunWorkflowVersionMemoKey, and RunBacklogItemMemoKey
 // extend RunGaggleMemoKey with the rest of a run's Goobers identity (#2911):
@@ -53,6 +58,17 @@ type StartResult struct {
 	// the engine's exactly-once guarantee: a deterministic RunID makes a
 	// duplicate Start idempotent rather than launching a second run.
 	AlreadyRunning bool
+	// Adopt means the current owner may reconcile a predecessor's accepted start.
+	Adopt bool
+	// NotMine means the existing execution belongs to another acceptance or newer epoch.
+	NotMine bool
+}
+
+// StartOwnerMemo is the start-fence identity persisted in Temporal.
+type StartOwnerMemo struct {
+	AcceptanceID string `json:"acceptanceId,omitempty"`
+	OwnerEpoch   int64  `json:"ownerEpoch,omitempty"`
+	StarterID    string `json:"starterId,omitempty"`
 }
 
 // Starter is the engine's start API: it begins a workflow run for a pinned
@@ -84,6 +100,10 @@ func RunID(parts ...string) string {
 // client.Client satisfies it; tests provide a fake.
 type workflowStarter interface {
 	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error)
+}
+
+type workflowDescriber interface {
+	DescribeWorkflowExecution(context.Context, string, string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
 }
 
 // TemporalStarter starts engine runs on a Temporal task queue. It sets the run's
@@ -123,6 +143,10 @@ func (s *TemporalStarter) start(ctx context.Context, in RunInput, digest string)
 	if in.RunID == "" {
 		return StartResult{}, errors.New("engine: RunInput.RunID is required to start a run")
 	}
+	if in.SelfExecutionDenied &&
+		(in.AcceptanceID != "trigger-"+in.RunID || in.OwnerEpoch < 1 || in.StarterID == "") {
+		return StartResult{}, errors.New("engine: cloud start requires an acceptance-assigned run ID and owner")
+	}
 	opts := client.StartWorkflowOptions{
 		ID:                                       in.RunID,
 		TaskQueue:                                s.taskQueue,
@@ -136,11 +160,45 @@ func (s *TemporalStarter) start(ctx context.Context, in RunInput, digest string)
 	run, err := s.client.ExecuteWorkflow(ctx, opts, Run, in)
 	if err != nil {
 		if isAlreadyStarted(err) {
-			return StartResult{RunID: in.RunID, AlreadyRunning: true}, nil
+			return s.classifyExisting(ctx, in)
 		}
 		return StartResult{}, err
 	}
 	return StartResult{RunID: run.GetID()}, nil
+}
+
+func (s *TemporalStarter) classifyExisting(ctx context.Context, in RunInput) (StartResult, error) {
+	if in.OwnerEpoch == 0 {
+		return StartResult{RunID: in.RunID, AlreadyRunning: true}, nil
+	}
+	describer, ok := s.client.(workflowDescriber)
+	if !ok {
+		return StartResult{}, errors.New("engine: cloud starter cannot describe existing execution")
+	}
+	description, err := describer.DescribeWorkflowExecution(ctx, in.RunID, "")
+	if err != nil {
+		return StartResult{}, err
+	}
+	if description == nil || description.GetWorkflowExecutionInfo() == nil {
+		return StartResult{}, errors.New("engine: existing execution description is incomplete")
+	}
+	fields := description.GetWorkflowExecutionInfo().GetMemo().GetFields()
+	payload, exists := fields[StartOwnerMemoKey]
+	if !exists {
+		return StartResult{RunID: in.RunID, AlreadyRunning: true, Adopt: true}, nil
+	}
+	var owner StartOwnerMemo
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &owner); err != nil {
+		return StartResult{}, errors.New("engine: existing start-owner memo is invalid")
+	}
+	switch {
+	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch == in.OwnerEpoch:
+		return StartResult{RunID: in.RunID, AlreadyRunning: true}, nil
+	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch < in.OwnerEpoch:
+		return StartResult{RunID: in.RunID, AlreadyRunning: true, Adopt: true}, nil
+	default:
+		return StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+	}
 }
 
 // isAlreadyStarted reports whether err is Temporal's "already started" error.
@@ -159,6 +217,9 @@ func runMemo(in RunInput) map[string]interface{} {
 		RunGaggleMemoKey:          in.Gaggle,
 		RunWorkflowMemoKey:        in.WorkflowName,
 		RunWorkflowVersionMemoKey: strconv.Itoa(in.Version),
+		StartOwnerMemoKey: StartOwnerMemo{
+			AcceptanceID: in.AcceptanceID, OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID,
+		},
 	}
 	if in.Item != nil {
 		memo[RunBacklogItemMemoKey] = BacklogItemMemo{

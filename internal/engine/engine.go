@@ -68,6 +68,9 @@ type RunInput struct {
 	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
 	InstanceID             string             `json:"instanceId,omitempty"`
 	RunID                  string             `json:"runId"`
+	AcceptanceID           string             `json:"acceptanceId,omitempty"`
+	OwnerEpoch             int64              `json:"ownerEpoch,omitempty"`
+	StarterID              string             `json:"starterId,omitempty"`
 	Gaggle                 string             `json:"gaggle"`
 	WorkflowName           string             `json:"workflowName"`
 	Version                int                `json:"version"`

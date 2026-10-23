@@ -5,9 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	workflowpb "go.temporal.io/api/workflow/v1"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -31,6 +35,12 @@ type fakeStarter struct {
 	run     client.WorkflowRun
 	err     error
 	gotOpts client.StartWorkflowOptions
+	desc    *workflowservice.DescribeWorkflowExecutionResponse
+	descErr error
+}
+
+func (f *fakeStarter) DescribeWorkflowExecution(context.Context, string, string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+	return f.desc, f.descErr
 }
 
 func (f *fakeStarter) ExecuteWorkflow(_ context.Context, opts client.StartWorkflowOptions, _ interface{}, _ ...interface{}) (client.WorkflowRun, error) {
@@ -100,6 +110,9 @@ func TestTemporalStarterStartsRun(t *testing.T) {
 	if _, ok := fs.gotOpts.Memo[RunBacklogItemMemoKey]; ok {
 		t.Errorf("backlog item memo present for a run with no Item: %v", fs.gotOpts.Memo[RunBacklogItemMemoKey])
 	}
+	if _, ok := fs.gotOpts.Memo[StartOwnerMemoKey]; !ok {
+		t.Fatal("local start omitted the start-owner memo")
+	}
 }
 
 // TestTemporalStarterMemoCarriesBacklogItem covers #2911's other arm: a run
@@ -161,4 +174,77 @@ func TestTemporalStarterRequiresRunID(t *testing.T) {
 	if _, err := s.Start(context.Background(), in); err == nil {
 		t.Error("expected an error when RunID is empty")
 	}
+}
+
+func TestLostStartResponseIsMine(t *testing.T) {
+	input := cloudStartInput(7)
+	starter := existingStart(t, StartOwnerMemo{
+		AcceptanceID: input.AcceptanceID, OwnerEpoch: input.OwnerEpoch, StarterID: input.StarterID,
+	})
+	result, err := starter.Start(t.Context(), input)
+	if err != nil || !result.AlreadyRunning || result.Adopt || result.NotMine {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+}
+
+func TestZombieStartIsNotMine(t *testing.T) {
+	input := cloudStartInput(7)
+	starter := existingStart(t, StartOwnerMemo{
+		AcceptanceID: input.AcceptanceID, OwnerEpoch: 8, StarterID: "newer",
+	})
+	result, err := starter.Start(t.Context(), input)
+	if err != nil || !result.NotMine || result.Adopt {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+}
+
+func TestReconcileAdoptsPredecessorStart(t *testing.T) {
+	input := cloudStartInput(7)
+	starter := existingStart(t, StartOwnerMemo{
+		AcceptanceID: input.AcceptanceID, OwnerEpoch: 6, StarterID: "predecessor",
+	})
+	result, err := starter.Start(t.Context(), input)
+	if err != nil || !result.Adopt || result.NotMine {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+}
+
+func TestCloudRejectsUnassignedRunID(t *testing.T) {
+	fake := &fakeStarter{}
+	starter := &TemporalStarter{client: fake, taskQueue: "cloud"}
+	input := cloudStartInput(1)
+	input.AcceptanceID = "trigger-another-run"
+	if _, err := starter.Start(t.Context(), input); err == nil {
+		t.Fatal("cloud start accepted a run ID not assigned by its acceptance")
+	}
+	if fake.gotOpts.ID != "" {
+		t.Fatal("rejected cloud start reached Temporal")
+	}
+}
+
+func cloudStartInput(epoch int64) RunInput {
+	input := sampleInput()
+	input.RunID = "367a0f0c2c9c47b4d4946044615a1c2f"
+	input.AcceptanceID = "trigger-" + input.RunID
+	input.OwnerEpoch = epoch
+	input.StarterID = "controller-a"
+	input.SelfExecutionDenied = true
+	return input
+}
+
+func existingStart(t *testing.T, owner StartOwnerMemo) *TemporalStarter {
+	t.Helper()
+	payload, err := converter.GetDefaultDataConverter().ToPayload(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeStarter{
+		err: serviceerror.NewWorkflowExecutionAlreadyStarted("already started", "request", "execution"),
+		desc: &workflowservice.DescribeWorkflowExecutionResponse{
+			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+				Memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{StartOwnerMemoKey: payload}},
+			},
+		},
+	}
+	return &TemporalStarter{client: fake, taskQueue: "cloud"}
 }
