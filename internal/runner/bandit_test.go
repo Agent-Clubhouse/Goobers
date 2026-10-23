@@ -46,7 +46,7 @@ func TestBanditConfigRejectsMismatchedDefaultGateLevel(t *testing.T) {
 		DefaultGateLevel: 1,
 	})
 	task, _ := m.Task("implement")
-	_, _, err := banditConfig(m, task)
+	_, _, err := bandit.ConfigForTask(m, task)
 	if err == nil {
 		t.Fatal("expected default gate mismatch to fail closed")
 	}
@@ -63,7 +63,7 @@ func TestBanditConfigRequiresTaskToTransitionToGate(t *testing.T) {
 	// Get task and remove its Next field to simulate a task that doesn't transition to a gate
 	task, _ := m.Task("implement")
 	task.Next = ""
-	_, _, err := banditConfig(m, task)
+	_, _, err := bandit.ConfigForTask(m, task)
 	if err == nil {
 		t.Fatal("expected task without Next field to fail closed")
 	}
@@ -83,7 +83,7 @@ func TestBanditConfigRequiresGateToExist(t *testing.T) {
 	// Get task and set its Next field to a non-existent gate
 	task, _ := m.Task("implement")
 	task.Next = "non-existent-gate"
-	_, _, err := banditConfig(m, task)
+	_, _, err := bandit.ConfigForTask(m, task)
 	if err == nil {
 		t.Fatal("expected task with non-existent gate to fail closed")
 	}
@@ -103,7 +103,7 @@ func TestBanditConfigAllowsArmsWithEqualOrHigherGateLevel(t *testing.T) {
 	}
 	m := experimentFixtureMachine(t, experiment)
 	task, _ := m.Task("implement")
-	_, _, err := banditConfig(m, task)
+	_, _, err := bandit.ConfigForTask(m, task)
 	if err != nil {
 		t.Fatalf("valid experiment should succeed, got: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestBanditConfigRejectsArmsWithLowerGateLevel(t *testing.T) {
 	}
 	m := experimentFixtureMachine(t, experiment)
 	task, _ := m.Task("implement")
-	_, _, err := banditConfig(m, task)
+	_, _, err := bandit.ConfigForTask(m, task)
 	if err == nil {
 		t.Fatal("expected arm with lower gate level to fail closed")
 	}
@@ -138,7 +138,7 @@ func TestBanditConfigRejectsControlArmMismatchedWithActualGate(t *testing.T) {
 		DefaultGateLevel: 2,
 	})
 	task, _ := m.Task("implement")
-	_, _, err := banditConfig(m, task)
+	_, _, err := bandit.ConfigForTask(m, task)
 	if err == nil {
 		t.Fatal("expected control arm mismatch with actual gate to fail closed")
 	}
