@@ -198,6 +198,9 @@ func (s *DurableTriggerService) Drain(ctx context.Context) error {
 	pruneCtx, cancelPrune := context.WithTimeout(ctx, budget)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.Now(), 100)
 	cancelPrune()
+	if errors.Is(pruneErr, context.DeadlineExceeded) && ctx.Err() == nil {
+		pruneErr = nil
+	}
 	pruneErr = errors.Join(pruneErr, s.backend.SweepChildren(ctx))
 	if s.dispatch.Triggerer() == nil && !s.backend.HasChildren() {
 		return pruneErr
