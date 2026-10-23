@@ -8,4 +8,6 @@ type StartIdentity struct {
 	InstanceID   string
 	StarterID    string
 	OwnerEpoch   int64
+	// PredecessorEpoch is the exact durable epoch observed before Temporal classification.
+	PredecessorEpoch int64
 }
