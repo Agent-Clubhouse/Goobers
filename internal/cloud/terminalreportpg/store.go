@@ -218,7 +218,7 @@ func (s Store) claim(ctx context.Context, handle *lease.Handle, limit int, key *
 	var deliveries []Delivery
 	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			WITH due AS (
+			WITH due AS MATERIALIZED (
 				SELECT effect_key FROM control.terminal_report
 				WHERE instance_id=$1 AND delivered_at IS NULL
 				  AND retry_at <= clock_timestamp()

@@ -1,6 +1,6 @@
-// Package recoverypg indexes recovery snapshot records in PostgreSQL. The
-// bundle itself lives in object storage under BundleKey. A record's identity
-// is immutable and its retention, computed on the database clock, only grows.
+// Package recoverypg indexes retained recovery snapshots in PostgreSQL. Each
+// bundle lives in object storage under its bundle key. A record's identity is
+// immutable and its retention, computed on the database clock, only grows.
 package recoverypg
 
 import (
@@ -13,95 +13,69 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/recovery"
 )
 
-var (
-	// ErrConflict means the run already has a record with another identity.
-	ErrConflict = errors.New("recoverypg: run has a different recovery record")
-	// ErrNotFound means no record exists for the run.
-	ErrNotFound = errors.New("recoverypg: recovery record not found")
-)
-
-// Record is the immutable identity of one published snapshot. IdentityTime
-// is stored, compared and returned in UTC at microsecond precision.
-type Record struct {
-	RunID         string
-	RepositoryKey string
-	Ref           string
-	BaseRef       string
-	BaseSHA       string
-	SnapshotSHA   string
-	PatchDigest   string
-	ArchiveDigest string
-	ArchiveBytes  int64
-	ArchiveFormat string
-	BundleKey     string
-	IdentityTime  time.Time
-}
-
-// Stored is a record with its database-clock bookkeeping.
-type Stored struct {
-	Record
-	CreatedAt   time.Time
-	RetainUntil time.Time
-	OwnerEpoch  int64
-}
-
-// Store is the PostgreSQL recovery-record index for one lease.
+// Store is the PostgreSQL recovery-record index for one lease. Bind adapts it
+// to recovery.RecordIndex.
 type Store struct {
 	Pool  *pgxpool.Pool
 	Fence *lease.Manager
 }
 
-const columns = `run_id, repository_key, ref, base_ref, base_sha, snapshot_sha, patch_digest,
-	archive_digest, archive_bytes, archive_format, bundle_key, identity_time,
-	created_at, retain_until, owner_epoch`
+const columns = `version, repository_key, run_id, snapshot_sha, ref, base_ref, base_sha,
+	patch_digest, archive_digest, archive_bytes, archive_format, identity_unix_ns,
+	retain_until, bundle_key`
 
-func scan(row pgx.Row) (Stored, error) {
-	var s Stored
-	err := row.Scan(&s.RunID, &s.RepositoryKey, &s.Ref, &s.BaseRef, &s.BaseSHA, &s.SnapshotSHA,
-		&s.PatchDigest, &s.ArchiveDigest, &s.ArchiveBytes, &s.ArchiveFormat, &s.BundleKey,
-		&s.IdentityTime, &s.CreatedAt, &s.RetainUntil, &s.OwnerEpoch)
-	s.IdentityTime, s.CreatedAt, s.RetainUntil = s.IdentityTime.UTC(), s.CreatedAt.UTC(), s.RetainUntil.UTC()
-	return s, err
+const qualified = `r.version, r.repository_key, r.run_id, r.snapshot_sha, r.ref, r.base_ref,
+	r.base_sha, r.patch_digest, r.archive_digest, r.archive_bytes, r.archive_format,
+	r.identity_unix_ns, r.retain_until, r.bundle_key`
+
+func scan(row pgx.Row) (recovery.IndexedRecord, error) {
+	var indexed recovery.IndexedRecord
+	r := &indexed.Record
+	var identityNS int64
+	err := row.Scan(&r.Version, &r.RepositoryKey, &r.RunID, &r.SnapshotSHA, &r.Ref, &r.BaseRef,
+		&r.BaseSHA, &r.PatchDigest, &r.ArchiveDigest, &r.ArchiveBytes, &r.ArchiveFormat,
+		&identityNS, &r.RetainUntil, &indexed.Bundle)
+	r.CreatedAt, r.RetainUntil = time.Unix(0, identityNS).UTC(), r.RetainUntil.UTC()
+	return indexed, err
 }
 
-func (r Record) normalized() Record {
-	if r.ArchiveFormat == "" {
-		r.ArchiveFormat = "full"
-	}
-	r.IdentityTime = r.IdentityTime.UTC().Truncate(time.Microsecond)
-	return r
+func keyArgs(handle *lease.Handle, key recovery.RecordKey) []any {
+	return []any{handle.InstanceID, key.RepositoryKey, key.RunID, key.SnapshotSHA}
 }
 
-// Publish records r with retention measured from the database clock. An
-// identical retry resolves to the stored record and extends its retention;
-// a different identity for the same run is ErrConflict.
-func (s Store) Publish(ctx context.Context, handle *lease.Handle, r Record, retention time.Duration) (Stored, error) {
-	r = r.normalized()
-	if r.RunID == "" || r.BundleKey == "" || r.IdentityTime.IsZero() || retention <= 0 {
-		return Stored{}, errors.New("recoverypg: invalid record")
+// Publish indexes record, whose bundle is already durable at bundle, with
+// RetainUntil set retention past the database clock. record.RetainUntil must
+// be zero. An identical retry returns the stored record unchanged; a
+// different record for the same key is recovery.ErrRecordConflict.
+func (s Store) Publish(ctx context.Context, handle *lease.Handle, record recovery.Record, bundle string, retention time.Duration) (recovery.IndexedRecord, error) {
+	if err := validate(record, bundle, retention); err != nil {
+		return recovery.IndexedRecord{}, err
 	}
-	var stored Stored
+	record.CreatedAt = record.CreatedAt.UTC()
+	var indexed recovery.IndexedRecord
 	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
-		found, err := resolve(ctx, tx, handle, r, retention, &stored)
+		found, err := resolve(ctx, tx, handle, record, &indexed)
 		if found || err != nil {
 			return err
 		}
-		stored, err = scan(tx.QueryRow(ctx, `
-			INSERT INTO control.recovery_record (instance_id, run_id, repository_key, ref, base_ref,
-				base_sha, snapshot_sha, patch_digest, archive_digest, archive_bytes, archive_format,
-				bundle_key, identity_time, retain_until, owner_epoch)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now()+$14::interval, $15)
+		indexed, err = scan(tx.QueryRow(ctx, `
+			INSERT INTO control.recovery_record (instance_id, repository_key, run_id, snapshot_sha,
+				version, ref, base_ref, base_sha, patch_digest, archive_digest, archive_bytes,
+				archive_format, bundle_key, identity_unix_ns, retain_until, owner_epoch)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now()+$15::interval, $16)
 			ON CONFLICT DO NOTHING
 			RETURNING `+columns,
-			handle.InstanceID, r.RunID, r.RepositoryKey, r.Ref, r.BaseRef, r.BaseSHA, r.SnapshotSHA,
-			r.PatchDigest, r.ArchiveDigest, r.ArchiveBytes, r.ArchiveFormat, r.BundleKey,
-			r.IdentityTime, retention, handle.Epoch))
+			handle.InstanceID, record.RepositoryKey, record.RunID, record.SnapshotSHA,
+			record.Version, record.Ref, record.BaseRef, record.BaseSHA, record.PatchDigest,
+			record.ArchiveDigest, record.ArchiveBytes, record.ArchiveFormat, bundle,
+			record.CreatedAt.UnixNano(), retention, handle.Epoch))
 		if errors.Is(err, pgx.ErrNoRows) {
-			// A concurrent publish committed the run first; resolve against it.
-			if found, err = resolve(ctx, tx, handle, r, retention, &stored); !found && err == nil {
-				err = ErrNotFound
+			// A concurrent publish committed the key first; resolve against it.
+			if found, err = resolve(ctx, tx, handle, record, &indexed); !found && err == nil {
+				err = recovery.ErrRecordNotFound
 			}
 			return err
 		}
@@ -110,95 +84,111 @@ func (s Store) Publish(ctx context.Context, handle *lease.Handle, r Record, rete
 		}
 		return nil
 	})
-	return stored, err
+	return indexed, err
 }
 
-// resolve reports whether runID has a record; an identical one is renewed.
-func resolve(ctx context.Context, tx pgx.Tx, handle *lease.Handle, r Record, retention time.Duration, stored *Stored) (bool, error) {
+func validate(record recovery.Record, bundle string, retention time.Duration) error {
+	if !record.RetainUntil.IsZero() {
+		return errors.New("recoverypg: RetainUntil is set by the index")
+	}
+	if bundle == "" || retention <= 0 {
+		return errors.New("recoverypg: bundle and positive retention are required")
+	}
+	// The deadline is unknown until the database computes it; validate the
+	// record's shape against the earliest deadline it can have.
+	record.RetainUntil = record.CreatedAt.Add(retention)
+	return record.Validate()
+}
+
+// resolve reports whether the key is indexed; an identical record resolves to
+// the stored one unchanged.
+func resolve(ctx context.Context, tx pgx.Tx, handle *lease.Handle, record recovery.Record, indexed *recovery.IndexedRecord) (bool, error) {
 	existing, err := scan(tx.QueryRow(ctx, `SELECT `+columns+` FROM control.recovery_record
-		WHERE instance_id=$1 AND run_id=$2 FOR UPDATE`, handle.InstanceID, r.RunID))
+		WHERE instance_id=$1 AND repository_key=$2 AND run_id=$3 AND snapshot_sha=$4
+		FOR UPDATE`, keyArgs(handle, record.Key())...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read recovery record: %w", err)
 	}
-	if existing.normalized() != r {
-		return true, ErrConflict
+	if !recovery.SameIdentity(existing.Record, record) {
+		return true, recovery.ErrRecordConflict
 	}
-	*stored, err = renew(ctx, tx, handle, r.RunID, retention)
-	return true, err
+	*indexed = existing
+	return true, nil
 }
 
 // Renew extends retention to at least now()+retention on the database clock.
 // Retention never shrinks: a shorter request leaves the deadline unchanged.
-func (s Store) Renew(ctx context.Context, handle *lease.Handle, runID string, retention time.Duration) (Stored, error) {
+func (s Store) Renew(ctx context.Context, handle *lease.Handle, key recovery.RecordKey, retention time.Duration) (recovery.IndexedRecord, error) {
 	if retention <= 0 {
-		return Stored{}, errors.New("recoverypg: retention must be positive")
+		return recovery.IndexedRecord{}, errors.New("recoverypg: retention must be positive")
 	}
-	var stored Stored
+	var indexed recovery.IndexedRecord
 	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		stored, err = renew(ctx, tx, handle, runID, retention)
-		return err
+		indexed, err = scan(tx.QueryRow(ctx, `
+			UPDATE control.recovery_record
+			SET retain_until=GREATEST(retain_until, now()+$5::interval), owner_epoch=$6
+			WHERE instance_id=$1 AND repository_key=$2 AND run_id=$3 AND snapshot_sha=$4
+			  AND owner_epoch <= $6
+			RETURNING `+columns,
+			append(keyArgs(handle, key), retention, handle.Epoch)...))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return recovery.ErrRecordNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("renew recovery record: %w", err)
+		}
+		return nil
 	})
-	return stored, err
+	return indexed, err
 }
 
-func renew(ctx context.Context, tx pgx.Tx, handle *lease.Handle, runID string, retention time.Duration) (Stored, error) {
-	stored, err := scan(tx.QueryRow(ctx, `
-		UPDATE control.recovery_record
-		SET retain_until=GREATEST(retain_until, now()+$3::interval), owner_epoch=$4
-		WHERE instance_id=$1 AND run_id=$2 AND owner_epoch <= $4
-		RETURNING `+columns,
-		handle.InstanceID, runID, retention, handle.Epoch))
+// Get reads the effective record for key.
+func (s Store) Get(ctx context.Context, instanceID string, key recovery.RecordKey) (recovery.IndexedRecord, error) {
+	indexed, err := scan(s.Pool.QueryRow(ctx, `SELECT `+columns+` FROM control.recovery_record
+		WHERE instance_id=$1 AND repository_key=$2 AND run_id=$3 AND snapshot_sha=$4`,
+		instanceID, key.RepositoryKey, key.RunID, key.SnapshotSHA))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Stored{}, ErrNotFound
+		return recovery.IndexedRecord{}, recovery.ErrRecordNotFound
 	}
 	if err != nil {
-		return Stored{}, fmt.Errorf("renew recovery record: %w", err)
+		return recovery.IndexedRecord{}, fmt.Errorf("read recovery record: %w", err)
 	}
-	return stored, nil
-}
-
-// Get reads the effective record for runID.
-func (s Store) Get(ctx context.Context, instanceID, runID string) (Stored, error) {
-	stored, err := scan(s.Pool.QueryRow(ctx, `SELECT `+columns+` FROM control.recovery_record
-		WHERE instance_id=$1 AND run_id=$2`, instanceID, runID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Stored{}, ErrNotFound
-	}
-	if err != nil {
-		return Stored{}, fmt.Errorf("read recovery record: %w", err)
-	}
-	return stored, nil
+	return indexed, nil
 }
 
 // Reap deletes up to limit records whose retention has passed on the database
 // clock and returns them. The caller deletes each bundle afterwards; a bundle
 // left behind by a failed delete is unreferenced garbage, never a dangling row.
-func (s Store) Reap(ctx context.Context, handle *lease.Handle, limit int) ([]Stored, error) {
+func (s Store) Reap(ctx context.Context, handle *lease.Handle, limit int) ([]recovery.IndexedRecord, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
-	var reaped []Stored
+	var reaped []recovery.IndexedRecord
 	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			DELETE FROM control.recovery_record AS r
-			USING (
-				SELECT run_id FROM control.recovery_record
+			-- MATERIALIZED evaluates the LIMIT once: a rescanned subquery would
+			-- skip rows this statement already deleted and select new ones.
+			WITH due AS MATERIALIZED (
+				SELECT repository_key, run_id, snapshot_sha FROM control.recovery_record
 				WHERE instance_id=$1 AND retain_until < now() AND owner_epoch <= $2
 				ORDER BY retain_until, run_id
 				LIMIT $3
 				FOR UPDATE SKIP LOCKED
-			) AS due
-			WHERE r.instance_id=$1 AND r.run_id=due.run_id
+			)
+			DELETE FROM control.recovery_record AS r
+			USING due
+			WHERE r.instance_id=$1 AND r.repository_key=due.repository_key
+			  AND r.run_id=due.run_id AND r.snapshot_sha=due.snapshot_sha
 			RETURNING `+qualified,
 			handle.InstanceID, handle.Epoch, limit)
 		if err != nil {
 			return fmt.Errorf("reap recovery records: %w", err)
 		}
-		reaped, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Stored, error) { return scan(row) })
+		reaped, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (recovery.IndexedRecord, error) { return scan(row) })
 		return err
 	})
 	if err != nil {
@@ -207,6 +197,28 @@ func (s Store) Reap(ctx context.Context, handle *lease.Handle, limit int) ([]Sto
 	return reaped, nil
 }
 
-const qualified = `r.run_id, r.repository_key, r.ref, r.base_ref, r.base_sha, r.snapshot_sha,
-	r.patch_digest, r.archive_digest, r.archive_bytes, r.archive_format, r.bundle_key,
-	r.identity_time, r.created_at, r.retain_until, r.owner_epoch`
+// Bind returns the store as recovery.RecordIndex for one acquired lease.
+func (s Store) Bind(handle *lease.Handle) recovery.RecordIndex {
+	return bound{store: s, handle: handle}
+}
+
+type bound struct {
+	store  Store
+	handle *lease.Handle
+}
+
+func (b bound) Publish(ctx context.Context, record recovery.Record, bundle string, retention time.Duration) (recovery.IndexedRecord, error) {
+	return b.store.Publish(ctx, b.handle, record, bundle, retention)
+}
+
+func (b bound) Renew(ctx context.Context, key recovery.RecordKey, retention time.Duration) (recovery.IndexedRecord, error) {
+	return b.store.Renew(ctx, b.handle, key, retention)
+}
+
+func (b bound) Get(ctx context.Context, key recovery.RecordKey) (recovery.IndexedRecord, error) {
+	return b.store.Get(ctx, b.handle.InstanceID, key)
+}
+
+func (b bound) Reap(ctx context.Context, limit int) ([]recovery.IndexedRecord, error) {
+	return b.store.Reap(ctx, b.handle, limit)
+}

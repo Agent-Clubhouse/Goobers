@@ -1,41 +1,45 @@
 -- goobers:binary-version 0.7.0
 -- goobers:min-compatible-binary 0.6.0
 
--- Recovery records describe a snapshot bundle held in object storage. The
--- identity is immutable; retention and the owning epoch only move forward.
+-- Recovery records index retained snapshots whose bundles live in object
+-- storage. A run may retain several snapshots. The identity is immutable;
+-- retention and the owning epoch only move forward. identity_unix_ns keeps the
+-- record's capture time exactly, since timestamptz rounds to microseconds.
 CREATE TABLE control.recovery_record (
     instance_id text NOT NULL,
-    run_id text NOT NULL,
     repository_key text NOT NULL,
+    run_id text NOT NULL,
+    snapshot_sha text NOT NULL,
+    version integer NOT NULL,
     ref text NOT NULL,
     base_ref text NOT NULL,
     base_sha text NOT NULL,
-    snapshot_sha text NOT NULL,
     patch_digest text NOT NULL,
     archive_digest text NOT NULL,
-    archive_bytes bigint NOT NULL CHECK (archive_bytes >= 0),
-    archive_format text NOT NULL CHECK (archive_format IN ('full', 'delta')),
+    archive_bytes bigint NOT NULL CHECK (archive_bytes > 0),
+    archive_format text NOT NULL CHECK (archive_format IN ('', 'full', 'delta')),
     bundle_key text NOT NULL CHECK (bundle_key <> ''),
-    identity_time timestamptz NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
+    identity_unix_ns bigint NOT NULL,
+    indexed_at timestamptz NOT NULL DEFAULT now(),
     retain_until timestamptz NOT NULL,
     owner_epoch bigint NOT NULL CHECK (owner_epoch > 0),
-    PRIMARY KEY (instance_id, run_id)
+    CHECK (retain_until > to_timestamp(identity_unix_ns / 1e9)),
+    PRIMARY KEY (instance_id, repository_key, run_id, snapshot_sha)
 );
 
 CREATE INDEX recovery_record_retention ON control.recovery_record (instance_id, retain_until);
 
 CREATE FUNCTION control.recovery_record_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF (NEW.instance_id, NEW.run_id, NEW.repository_key, NEW.ref, NEW.base_ref,
-        NEW.base_sha, NEW.snapshot_sha, NEW.patch_digest, NEW.archive_digest,
-        NEW.archive_bytes, NEW.archive_format, NEW.bundle_key, NEW.identity_time,
-        NEW.created_at)
+    IF (NEW.instance_id, NEW.repository_key, NEW.run_id, NEW.snapshot_sha, NEW.version,
+        NEW.ref, NEW.base_ref, NEW.base_sha, NEW.patch_digest, NEW.archive_digest,
+        NEW.archive_bytes, NEW.archive_format, NEW.bundle_key, NEW.identity_unix_ns,
+        NEW.indexed_at)
        IS DISTINCT FROM
-       (OLD.instance_id, OLD.run_id, OLD.repository_key, OLD.ref, OLD.base_ref,
-        OLD.base_sha, OLD.snapshot_sha, OLD.patch_digest, OLD.archive_digest,
-        OLD.archive_bytes, OLD.archive_format, OLD.bundle_key, OLD.identity_time,
-        OLD.created_at) THEN
+       (OLD.instance_id, OLD.repository_key, OLD.run_id, OLD.snapshot_sha, OLD.version,
+        OLD.ref, OLD.base_ref, OLD.base_sha, OLD.patch_digest, OLD.archive_digest,
+        OLD.archive_bytes, OLD.archive_format, OLD.bundle_key, OLD.identity_unix_ns,
+        OLD.indexed_at) THEN
         RAISE EXCEPTION 'recovery record identity is immutable' USING ERRCODE = 'check_violation';
     END IF;
     NEW.retain_until := GREATEST(OLD.retain_until, NEW.retain_until);

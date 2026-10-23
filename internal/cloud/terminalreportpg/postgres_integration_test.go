@@ -15,8 +15,8 @@ import (
 	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/cloud/terminalreportpg"
 	"github.com/goobers/goobers/internal/terminalreport"
-	"github.com/goobers/goobers/test/testsupport/conformance/outbox"
 	"github.com/goobers/goobers/providers"
+	"github.com/goobers/goobers/test/testsupport/conformance/outbox"
 )
 
 func effect(item string, count int) terminalreport.Effect {
