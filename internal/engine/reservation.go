@@ -10,27 +10,10 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
-// ReserveRun builds the live-journal batch that claims a run id for an
-// engine-driven run BEFORE the workflow exists.
-//
-// # Why a reservation exists at all
-//
-// An engine run's journal is created by the workflow's FIRST emit, and the
-// first emit cannot happen until a worker picks the task up and the first
-// stage boundary is reached — up to stageScheduleToStart (15m) after
-// TemporalStarter.Start returns, and unbounded if no worker is polling the
-// queue. Between those two instants the run exists in Temporal and nowhere
-// else: there is no runs/<id>/ directory, so the daemon's boot scan cannot
-// see it, its scheduler slot is not reconstructible, and a daemon restart in
-// that window re-admits the SAME workflow under a fresh run id while the
-// first one keeps executing. The first run's terminal hooks then never fire —
-// its claims are never released and its circuit breaker never records
-// (decision 005 D1, "start-to-first-emit"; finding 002 hazard 6).
-//
-// Writing the header first closes the window: after Emit returns, runs/<id>/
-// exists on disk with run.yaml naming driver: engine, so the ordinary boot
-// scan sees the run and hands it to the engine reattach path like any other
-// interrupted engine run.
+// ReserveRun builds the idempotent live-journal batch for an owned engine run.
+// Provisional StartIntent custody closes the pre-Temporal crash window without
+// claiming ownership. The caller publishes this batch only after the start
+// fence classifies the execution as mine or adopt.
 //
 // # Why the header must be byte-identical to the workflow's
 //
@@ -93,70 +76,6 @@ func ReserveRun(in RunInput, startedAt time.Time) (livejournal.EmitRequest, erro
 		},
 		Ops: ops,
 	}, nil
-}
-
-// AbandonReservation builds the batch that CLOSES a reservation whose workflow
-// was never started.
-//
-// ReserveRun deliberately writes runs/<id>/ before Temporal is called, so a
-// daemon that dies in the start window leaves a record rather than nothing.
-// The cost is that a start which FAILS — an unreachable frontend, a namespace
-// error, a deadline — leaves behind a run directory stuck in phase running
-// with no workflow that will ever finish it. Nothing reclaims such a
-// directory: the orphan pruner skips anything holding a run.yaml, and the
-// stalled-run sweep keeps trying to cancel a workflow that does not exist,
-// journaling a fresh sweep failure on every tick, forever. During a Temporal
-// outage that is one immortal zombie run per scheduler tick per engine lane.
-//
-// So the reservation is compensated: the same recorder that opened it records
-// the run_failed cause and a terminal run.finished, and the run reads as a
-// failed run — which is exactly what it is.
-//
-// cause is the start failure's text; it becomes the run_failed cause an
-// operator reads.
-func AbandonReservation(in RunInput, startedAt, finishedAt time.Time, cause string) (livejournal.EmitRequest, error) {
-	req, err := ReserveRun(in, startedAt)
-	if err != nil {
-		return livejournal.EmitRequest{}, err
-	}
-	if finishedAt.IsZero() {
-		finishedAt = startedAt
-	}
-	if cause == "" {
-		cause = "engine dispatch failed to start the workflow"
-	}
-	// Rebuilt rather than appended to req.Ops, because emit keys are assigned
-	// over the whole projection: appending to the already-keyed batch would
-	// give the terminal ops keys that disagree with the ones the same
-	// recorder would mint.
-	in.Item = normalizeItemIntegrity(in.Item)
-	m, err := wf.Compile(
-		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
-		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
-	)
-	if err != nil {
-		return livejournal.EmitRequest{}, fmt.Errorf("engine: abandon run %s: compile workflow: %w", in.RunID, err)
-	}
-	rec, err := newRunJournalRecorder(in, m)
-	if err != nil {
-		return livejournal.EmitRequest{}, fmt.Errorf("engine: abandon run %s: %w", in.RunID, err)
-	}
-	rec.appendAt(startedAt, journal.Event{Type: journal.EventRunStarted, Status: string(journal.PhaseRunning)})
-	rec.appendAt(finishedAt, journal.Event{
-		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: "run_failed", Message: cause},
-	})
-	rec.appendAt(finishedAt, journal.Event{
-		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Disposition: journal.RunDispositionProduced,
-		TerminalCause: &journal.TerminalCause{Schema: journal.TerminalCauseSchema, Phase: journal.PhaseFailed, Classification: journal.TerminalInfrastructureFailure, SelectorKind: "condition", Code: "run_failed", Message: cause, CausalEventSeq: 2},
-	})
-	rec.assignEmitKeys()
-	ops := make([]livejournal.Op, 0, len(rec.proj.Ops))
-	for _, op := range rec.proj.Ops {
-		ops = append(ops, liveOpFrom(op))
-	}
-	req.Ops = ops
-	return req, nil
 }
 
 // TerminatedRunErrorCode is the run_failed cause code recorded when the daemon

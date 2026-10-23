@@ -4,15 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/goobers/goobers/internal/engine"
-	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
-	enumspb "go.temporal.io/api/enums/v1"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	enumspb "go.temporal.io/api/enums/v1"
+
+	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type reviewNotMineStarter struct {
@@ -38,6 +40,10 @@ func TestReviewNotMineSuppressesCallerSideEffects(t *testing.T) {
 	pending, readErr := os.ReadDir(filepath.Join(f.layout.SchedulerDir(), "engine-starts"))
 	if readErr != nil || len(pending) != 0 {
 		t.Fatalf("provisional reservation not released: %v, %v", pending, readErr)
+	}
+	events, logErr := journal.ReadInstanceLog(f.logDir)
+	if logErr != nil || len(events) != 0 {
+		t.Fatalf("NotMine authored instance events: %+v, %v", events, logErr)
 	}
 	_, awaited, _ := temporal.snapshot()
 	t.Logf("result=%+v err=%v terminal hooks=%v awaited=%v", result, err, f.hooks.order, awaited)

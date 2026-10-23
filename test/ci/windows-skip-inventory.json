@@ -199,6 +199,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/cloud/acceptance",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud acceptance admission tests run in Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",
