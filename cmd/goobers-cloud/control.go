@@ -191,7 +191,7 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 		completed++
 	case err = <-server.Errors():
 	}
-	if err == context.Canceled {
+	if err == context.Canceled { //nolint:errorlint // Only bare cancellation is benign; joined shutdown failures must survive.
 		err = nil
 	}
 	cancel()
@@ -202,7 +202,7 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 		select {
 		case result := <-done:
 			completed++
-			if result != context.Canceled {
+			if result != context.Canceled { //nolint:errorlint // Preserve fatal errors joined with cancellation.
 				err = errors.Join(err, result)
 			}
 		case <-shutdown.Done():
