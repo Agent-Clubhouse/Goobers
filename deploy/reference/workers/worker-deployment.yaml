@@ -62,6 +62,11 @@ spec:
             env:
               - name: GOOBERS_TEMPORAL_HOSTPORT
                 value: temporal-frontend.goobers-temporal:7233
+              # CHANGE-ME only after histories from all retained builds replay
+              # against this release. Keep this byte-identical to
+              # workerOptions.unsafeCustomBuildID below.
+              - name: GOOBERS_AUTO_UPGRADE_RETENTION
+                value: CHANGE-ME-replay-qualified-release
               - name: POD_NAMESPACE
                 valueFrom:
                   fieldRef:
@@ -134,3 +139,7 @@ spec:
     connectionRef:
       name: goobers-temporal
     temporalNamespace: default
+    # CHANGE-ME for every workflow-code release. A stable explicit ID avoids
+    # the default pod-template hash changing when its matching attestation env
+    # value is updated.
+    unsafeCustomBuildID: CHANGE-ME-replay-qualified-release

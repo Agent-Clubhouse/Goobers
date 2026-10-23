@@ -419,10 +419,35 @@ func TestRainbowWorkerReadinessRequiresRegistrationNotRouting(t *testing.T) {
 			if response.Code != tc.want {
 				t.Fatalf("GET /readyz = %d, want %d; body=%s", response.Code, tc.want, response.Body.String())
 			}
-			if interval := h.nextRoutingCheckInterval(); interval != tc.wantInterval {
+			if interval := h.nextRoutingCheckInterval(0); interval != tc.wantInterval {
 				t.Fatalf("next routing check = %s, want %s", interval, tc.wantInterval)
 			}
 		})
+	}
+
+}
+
+func TestRoutingDescribeErrorsBackOffExponentially(t *testing.T) {
+	h := newTestHost(t, Config{
+		TaskQueues:       []string{"goobers-engine"},
+		BuildVersion:     "v2",
+		Versioning:       true,
+		VersionRetention: workerrollout.DefaultVersionLimit,
+		RolloutNamespace: "goobers-system",
+	}, &fakeFleet{})
+	for failures, want := range []time.Duration{
+		5 * time.Second,
+		10 * time.Second,
+		20 * time.Second,
+		40 * time.Second,
+		80 * time.Second,
+		160 * time.Second,
+		5 * time.Minute,
+		5 * time.Minute,
+	} {
+		if got := h.nextRoutingCheckInterval(failures + 1); got != want {
+			t.Fatalf("%d describe failure(s): interval = %s, want %s", failures+1, got, want)
+		}
 	}
 }
 

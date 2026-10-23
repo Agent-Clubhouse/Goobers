@@ -33,6 +33,7 @@ func (h *Host) checkRoutingLoop(ctx context.Context, c client.Client) {
 	timer := time.NewTimer(h.routingDelay)
 	defer timer.Stop()
 	reported := ""
+	describeFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -40,11 +41,26 @@ func (h *Host) checkRoutingLoop(ctx context.Context, c client.Client) {
 		case <-timer.C:
 		}
 		reported = h.checkRoutingOnce(ctx, c, reported)
-		timer.Reset(h.nextRoutingCheckInterval())
+		if h.routingDescribeFailed.Load() {
+			describeFailures++
+		} else {
+			describeFailures = 0
+		}
+		timer.Reset(h.nextRoutingCheckInterval(describeFailures))
 	}
 }
 
-func (h *Host) nextRoutingCheckInterval() time.Duration {
+func (h *Host) nextRoutingCheckInterval(describeFailures int) time.Duration {
+	if describeFailures > 0 {
+		interval := h.routingRegistrationInterval
+		for range describeFailures - 1 {
+			if interval >= h.routingInterval/2 {
+				return h.routingInterval
+			}
+			interval *= 2
+		}
+		return interval
+	}
 	if h.cfg.VersionRetention > 0 && !h.routed.Load() {
 		return h.routingRegistrationInterval
 	}
@@ -64,6 +80,7 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 		return reported
 	}
 	finding := workerrouting.Check(h.versioned(), h.cfg.BuildVersion, routing, err)
+	h.routingDescribeFailed.Store(err != nil)
 	ready := finding.Problem == ""
 	if h.cfg.VersionRetention > 0 {
 		// Worker Controller cannot promote an inactive target until its

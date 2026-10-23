@@ -125,7 +125,7 @@ type Host struct {
 	// describeRouting and its cadence back the #5950 routing health check.
 	describeRouting             func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
 	newRolloutStatus            func() (workerrollout.StatusSource, error)
-	reconcileRollout            func(context.Context, workerrollout.StatusSource, workerrollout.TemporalClient, int) (workerrollout.Result, error)
+	reconcileRollout            func(context.Context, workerrollout.StatusSource, workerrollout.TemporalClient, int, string) (workerrollout.Result, error)
 	routingDelay                time.Duration
 	routingInterval             time.Duration
 	routingRegistrationInterval time.Duration
@@ -134,6 +134,7 @@ type Host struct {
 	pollersStarted              atomic.Bool
 	routed                      atomic.Bool
 	draining                    atomic.Bool
+	routingDescribeFailed       atomic.Bool
 }
 
 // New validates cfg and builds a Host.
