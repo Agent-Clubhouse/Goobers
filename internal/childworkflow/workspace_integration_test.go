@@ -5,7 +5,6 @@ package childworkflow
 import (
 	"bytes"
 	"errors"
-	"github.com/goobers/goobers/internal/testgit"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
