@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/goobers/goobers/internal/claimrelease"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -80,33 +81,41 @@ func (p *Plane) releaseAllForRun(ctx context.Context, request httpapi.ClaimReque
 		return httpapi.ClaimResponse{}, invalidRequest(
 			"gaggle and provider must be given together for a release of every claim the run holds")
 	}
-	reason := request.Reason.Normalize()
-	var released []httpapi.ClaimEntry
-	err := p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+	released, err := p.releaseRun(ctx, p.owner(), request.RunID, request.Gaggle, request.Provider, request.Reason)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	return httpapi.ClaimResponse{Ok: true, Released: wireEntries(released)}, nil
+}
+
+// releaseRun releases the run's non-publication claims, narrowed to one
+// namespace when gaggle is given, under handle's fence.
+func (p *Plane) releaseRun(
+	ctx context.Context, handle *cloudlease.Handle, runID, gaggle, provider string, reason claimrelease.Reason,
+) ([]localscheduler.ClaimEntry, error) {
+	reason = reason.Normalize()
+	var released []localscheduler.ClaimEntry
+	err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 		released = nil
-		entries, err := p.runEntries(ctx, tx, request.RunID)
+		entries, err := p.runEntries(ctx, tx, runID)
 		if err != nil {
 			return err
 		}
 		for _, entry := range entries {
-			if entry.IsPublicationClaim() ||
-				(request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider)) {
+			if entry.IsPublicationClaim() || (gaggle != "" && (entry.Gaggle != gaggle || entry.Provider != provider)) {
 				continue
 			}
-			moved, err := p.moveToHistory(ctx, tx, epoch, storedKey(entry), request.RunID, "", false, reason)
+			moved, err := p.moveToHistory(ctx, tx, epoch, storedKey(entry), runID, "", false, reason)
 			if err != nil {
 				return err
 			}
 			if moved {
-				released = append(released, wireEntry(entry))
+				released = append(released, entry)
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		return httpapi.ClaimResponse{}, err
-	}
-	return httpapi.ClaimResponse{Ok: true, Released: released}, nil
+	return released, err
 }
 
 // moveToHistory releases the run's row for key and completes its history

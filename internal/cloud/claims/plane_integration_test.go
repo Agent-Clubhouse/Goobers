@@ -453,8 +453,9 @@ func TestPlaneEpochMaintenanceAcrossTwoTakeovers(t *testing.T) {
 	}
 
 	gate := localscheduler.NewRecoveryGate()
+	everyRunClosed := func(context.Context, string) (bool, error) { return true, nil }
 	for name, closed := range map[string]RecoveryGate{"closed": gate, "nil": nil} {
-		if released, err := third.plane.RecoverExpired(ctx, handle, closed); err != nil || released != nil {
+		if released, err := third.plane.RecoverExpired(ctx, handle, closed, everyRunClosed); err != nil || released != nil {
 			t.Fatalf("%s gate recover = %+v, %v; want a no-op", name, released, err)
 		}
 	}
@@ -486,10 +487,28 @@ func TestPlaneEpochMaintenanceAcrossTwoTakeovers(t *testing.T) {
 	}
 
 	expire("closed")
+	expire("live")
 	gate.MarkRenewalRebuilt()
-	released, err := third.plane.RecoverExpired(ctx, handle, gate)
+	if released, err := third.plane.RecoverExpired(ctx, handle, gate, nil); err != nil || released != nil {
+		t.Fatalf("recover without a liveness confirmation = %+v, %v; want a no-op", released, err)
+	}
+	unknown := func(context.Context, string) (bool, error) { return true, errors.New("describe failed") }
+	if released, err := third.plane.RecoverExpired(ctx, handle, gate, unknown); err != nil || len(released) != 0 {
+		t.Fatalf("recover with an unconfirmed liveness = %+v, %v; want every claim kept", released, err)
+	}
+	confirmed := func(_ context.Context, runID string) (bool, error) { return runID == "run-closed", nil }
+	released, err := third.plane.RecoverExpired(ctx, handle, gate, confirmed)
 	if err != nil || len(released) != 1 || released[0].ItemID != "closed" {
-		t.Fatalf("recover after rebuild = %+v, %v; want only the closed run's expired lease", released, err)
+		t.Fatalf("recover after rebuild = %+v, %v; want only the confirmed-closed run's expired lease", released, err)
+	}
+	// Renew before reap in one tick revives the open run's expired lease, as
+	// the ledger's RenewRuns does, so even an everything-closed confirmation
+	// cannot reap it afterwards.
+	if revived, err := third.plane.RenewRuns(ctx, handle, map[string]bool{"run-open": true}); err != nil || len(revived) != 2 {
+		t.Fatalf("renew before reap = %+v, %v", revived, err)
+	}
+	if reaped, err := third.plane.RecoverExpired(ctx, handle, gate, everyRunClosed); err != nil || len(reaped) != 0 {
+		t.Fatalf("reap after renewal = %+v, %v; want the revived leases kept", reaped, err)
 	}
 	history, err := third.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-closed", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
 	if err != nil || len(history.History) != 1 || history.History[0].ReleaseReason.Disposition != claimrelease.StallSwept {
@@ -515,7 +534,8 @@ func TestPlaneRecoverExpiredRefusesTypedNilGate(t *testing.T) {
 	if !gate.RecoveryPermitted() {
 		t.Fatal("premise: the local nil gate permits recovery")
 	}
-	released, err := r.plane.RecoverExpired(ctx, r.handle.Load(), gate)
+	released, err := r.plane.RecoverExpired(ctx, r.handle.Load(), gate,
+		func(context.Context, string) (bool, error) { return true, nil })
 	if err != nil || len(released) != 0 {
 		t.Fatalf("typed nil gate recover = %+v, %v; want a no-op", released, err)
 	}
@@ -769,5 +789,46 @@ func TestPlaneHistoryRetentionMatchesFileLedger(t *testing.T) {
 	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.claim_history WHERE instance_id=$1 AND run_id='quiet'`,
 		pgtest.InstanceID).Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("quiet run rows after prune = %d (%v), want 0", stored, err)
+	}
+}
+
+// TestPlaneReleaseRunIsTheTerminalRelease: the run-wide terminal release
+// (ClaimLifecycle via ReleaseAllForRun) returns what it released, skips
+// publication locks, is idempotent, and refuses a stale handle retryably.
+func TestPlaneReleaseRunIsTheTerminalRelease(t *testing.T) {
+	f := newPlaneFixture(t)
+	first := f.leader(t, "a")
+	ctx := t.Context()
+	publication := localscheduler.PublicationLockItemIDPrefix + "owner/repo/3"
+	for _, item := range []string{"1", "2", publication} {
+		if got, err := first.plane.Acquire(ctx, request(item, "run-done")); err != nil || !got.Ok {
+			t.Fatalf("acquire %s = %+v, %v", item, got, err)
+		}
+	}
+	if _, err := first.plane.Acquire(ctx, request("other", "run-live")); err != nil {
+		t.Fatal(err)
+	}
+	second := f.takeover(t, "b")
+	if _, err := first.plane.ReleaseRun(ctx, first.handle.Load(), "run-done", claimrelease.Failed.Reason()); planeCode(err) != "503 recovering" {
+		t.Fatalf("stale handle release = %v, want retryable 503 recovering", err)
+	}
+	released, err := second.plane.ReleaseRun(ctx, second.handle.Load(), "run-done", claimrelease.Failed.Because("stage_failed", ""))
+	if err != nil || len(released) != 2 {
+		t.Fatalf("release run = %+v, %v; want items 1 and 2", released, err)
+	}
+	if again, err := second.plane.ReleaseRun(ctx, second.handle.Load(), "run-done", claimrelease.Failed.Reason()); err != nil || len(again) != 0 {
+		t.Fatalf("second release = %+v, %v; want none", again, err)
+	}
+	listed, err := second.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-done", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+	if err != nil || len(listed.Entries) != 1 || listed.Entries[0].ItemID != publication {
+		t.Fatalf("remaining = %+v, %v; want only the publication lock", listed.Entries, err)
+	}
+	for _, entry := range listed.History {
+		if entry.ItemID != publication && (entry.ReleaseReason.Disposition != claimrelease.Failed || entry.ReleaseReason.Code != "stage_failed") {
+			t.Fatalf("history %s reason = %+v", entry.ItemID, entry.ReleaseReason)
+		}
+	}
+	if other, err := second.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-live", Scope: httpapi.ClaimListScopeRun}); err != nil || len(other.Entries) != 1 {
+		t.Fatalf("other run = %+v, %v; want untouched", other, err)
 	}
 }

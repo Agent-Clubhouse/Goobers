@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -108,21 +109,62 @@ func (p *Plane) renewRow(ctx context.Context, tx pgx.Tx, epoch int64, entry loca
 	return response.Ok, err
 }
 
-// RecoverExpired releases every expired claim as stall-swept, mirroring
+// RunClosed confirms, from an authoritative source, that a run is closed.
+// An error means unknown, never closed.
+type RunClosed func(ctx context.Context, runID string) (closed bool, err error)
+
+// RecoverExpired releases expired claims as stall-swept, mirroring
 // localscheduler.ClaimLedger.RecoverExpired (claim.go), and returns the
-// released entries. It is a no-op until gate permits recovery: reaping before
-// the epoch's renewal rebuild would hand a live run's item to a second run
-// (DS6). Unlike the local nil-safe gate, a nil gate refuses, because every
-// cloud epoch has a renewal duty.
-func (p *Plane) RecoverExpired(ctx context.Context, handle *cloudlease.Handle, gate RecoveryGate) ([]localscheduler.ClaimEntry, error) {
-	if !recoveryPermitted(gate) {
+// released entries. Two guards narrow it for the cloud:
+//
+//   - It is a no-op until gate permits recovery: reaping before the epoch's
+//     renewal rebuild would hand a live run's item to a second run (DS6).
+//     Unlike the local nil-safe gate, a nil gate (typed or not) refuses,
+//     because every cloud epoch has a renewal duty.
+//   - An expired claim is released only when confirmClosed says its run is
+//     closed. Run visibility listings are eventually consistent and omit
+//     paused runs, so a run missing from the renewal set may still be live;
+//     an error or an open run keeps the claim. A nil confirmClosed refuses.
+func (p *Plane) RecoverExpired(
+	ctx context.Context, handle *cloudlease.Handle, gate RecoveryGate, confirmClosed RunClosed,
+) ([]localscheduler.ClaimEntry, error) {
+	if !recoveryPermitted(gate) || confirmClosed == nil {
 		return nil, nil
 	}
 	candidates, err := p.recoveryCandidates(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	return p.releaseCandidates(ctx, handle, candidates)
+	closed := map[string]bool{}
+	kept := candidates[:0]
+	for _, candidate := range candidates {
+		runID := candidate.entry.RunID
+		isClosed, seen := closed[runID]
+		if !seen {
+			var confirmErr error
+			isClosed, confirmErr = confirmClosed(ctx, runID)
+			isClosed = confirmErr == nil && isClosed
+			closed[runID] = isClosed
+		}
+		if isClosed {
+			kept = append(kept, candidate)
+		}
+	}
+	return p.releaseCandidates(ctx, handle, kept)
+}
+
+// ReleaseRun releases every claim the run holds with reason, under handle's
+// fence: the terminal release ClaimLifecycle performs through the ledger's
+// ReleaseAllForRun. Publication locks are skipped; their custody ends only by
+// verified release or expiry. It returns the released claims, so a second
+// call for the same run returns none.
+func (p *Plane) ReleaseRun(
+	ctx context.Context, handle *cloudlease.Handle, runID string, reason claimrelease.Reason,
+) ([]localscheduler.ClaimEntry, error) {
+	if runID == "" {
+		return nil, errors.New("cloud claims: run release requires a run")
+	}
+	return p.releaseRun(ctx, handle, runID, "", "", reason)
 }
 
 // recoveryPermitted refuses a nil gate, including a typed nil pointer: the
