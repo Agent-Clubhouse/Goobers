@@ -58,7 +58,7 @@ type corpusScenario struct {
 	runID   string
 	machine func(*testing.T) *workflow.Machine
 	run     func(*testing.T, context.Context, *runner.Runner, *workflow.Machine, string) runner.Result
-	script  deterministicScript
+	script  deterministicConfig
 }
 
 func localCorpus() []corpusScenario {
@@ -66,7 +66,7 @@ func localCorpus() []corpusScenario {
 		{
 			name: "retry-artifact-inputs-and-gates", runID: strings.Repeat("1", 32),
 			machine: completedMachine,
-			script: deterministicScript{
+			script: deterministicConfig{
 				failFirst: true, artifact: []byte(`{"result":"stable"}`),
 			},
 			run: startToTerminal,
@@ -79,7 +79,7 @@ func localCorpus() []corpusScenario {
 		{
 			name: "stage-boundary-cancellation", runID: strings.Repeat("3", 32),
 			machine: cancellationMachine,
-			script:  deterministicScript{cancelAfter: "first"},
+			script:  deterministicConfig{cancelAfter: "first"},
 			run:     startToCancellationBoundary,
 		},
 	}
@@ -104,7 +104,7 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r, runsDir := newCorpusRunner(t, &scenario.script, cancel)
+	r, runsDir := newCorpusRunner(t, newDeterministicScript(scenario.script), cancel)
 	machine := scenario.machine(t)
 	result := scenario.run(t, ctx, r, machine, scenario.runID)
 	if result.Phase == "" {
@@ -207,19 +207,24 @@ func volatileField(key string) bool {
 }
 
 type deterministicScript struct {
-	mu          sync.Mutex
-	calls       map[string]int
+	mu     sync.Mutex
+	calls  map[string]int
+	config deterministicConfig
+}
+
+type deterministicConfig struct {
 	failFirst   bool
 	artifact    []byte
 	cancelAfter string
 }
 
+func newDeterministicScript(config deterministicConfig) *deterministicScript {
+	return &deterministicScript{calls: map[string]int{}, config: config}
+}
+
 func (s *deterministicScript) next(task string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.calls == nil {
-		s.calls = map[string]int{}
-	}
 	s.calls[task]++
 	return s.calls[task]
 }
@@ -232,15 +237,15 @@ type scriptedDeterministic struct {
 
 func (s *scriptedDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	call := s.script.next(env.TaskID)
-	if s.script.failFirst && call == 1 {
+	if s.script.config.failFirst && call == 1 {
 		return apiv1.ResultEnvelope{}, errors.New("fixture policy retry")
 	}
 	result := apiv1.ResultEnvelope{
 		Status: apiv1.ResultSuccess, Summary: "stable result",
 		Outputs: map[string]any{"input": env.Inputs["fixture"]},
 	}
-	if len(s.script.artifact) > 0 {
-		ref, err := s.rec.RecordArtifact("result.json", s.script.artifact)
+	if len(s.script.config.artifact) > 0 {
+		ref, err := s.rec.RecordArtifact("result.json", s.script.config.artifact)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
@@ -252,7 +257,7 @@ func (s *scriptedDeterministic) Run(_ context.Context, env apiv1.InvocationEnvel
 	if err := commitFixtureChange(env.Workspace, env.TaskID, call); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	if s.script.cancelAfter != "" && strings.HasSuffix(env.TaskID, ":"+s.script.cancelAfter) {
+	if s.script.config.cancelAfter != "" && strings.HasSuffix(env.TaskID, ":"+s.script.config.cancelAfter) {
 		s.cancel()
 	}
 	return result, nil
