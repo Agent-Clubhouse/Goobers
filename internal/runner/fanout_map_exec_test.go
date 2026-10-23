@@ -13,11 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -299,16 +302,16 @@ func (h *mapHarness) join(t *testing.T) ([]journal.BranchOutcome, []MapItemResul
 		t.Fatalf("join dispatched %d times, want exactly once", len(h.joins))
 	}
 	env := h.joins[0]
-	completeness, ok := env.Inputs[MapCompletenessInput].([]journal.BranchOutcome)
+	completeness, ok := env.Inputs[runsemantics.MapCompletenessInput].([]journal.BranchOutcome)
 	if !ok {
-		t.Fatalf("join %s = %T, want []journal.BranchOutcome", MapCompletenessInput, env.Inputs[MapCompletenessInput])
+		t.Fatalf("join %s = %T, want []journal.BranchOutcome", runsemantics.MapCompletenessInput, env.Inputs[runsemantics.MapCompletenessInput])
 	}
-	results, ok := env.Inputs[MapResultsInput].([]MapItemResult)
+	results, ok := env.Inputs[runsemantics.MapResultsInput].([]MapItemResult)
 	if !ok {
-		t.Fatalf("join %s = %T, want []MapItemResult", MapResultsInput, env.Inputs[MapResultsInput])
+		t.Fatalf("join %s = %T, want []MapItemResult", runsemantics.MapResultsInput, env.Inputs[runsemantics.MapResultsInput])
 	}
-	if _, static := env.Inputs[BranchCompletenessInput]; static {
-		t.Fatalf("map join also received %s", BranchCompletenessInput)
+	if _, static := env.Inputs[runsemantics.BranchCompletenessInput]; static {
+		t.Fatalf("map join also received %s", runsemantics.BranchCompletenessInput)
 	}
 	return completeness, results, env
 }
@@ -836,7 +839,7 @@ func TestTaskInputGradesCarryRosterIntegrity(t *testing.T) {
 	par.mapVisit.join = &mapJoin{rosterIntegrity: apiv1.IntegrityDerived, resultsIntegrity: apiv1.IntegrityUnapproved}
 	collate, _ := machine.Task("collate")
 	grades = taskInputGrades(taskFrame{t: collate, in: StartInput{Machine: machine}, fanIn: par})
-	if grades[MapCompletenessInput] != apiv1.IntegrityDerived || grades[MapResultsInput] != apiv1.IntegrityUnapproved {
+	if grades[runsemantics.MapCompletenessInput] != apiv1.IntegrityDerived || grades[runsemantics.MapResultsInput] != apiv1.IntegrityUnapproved {
 		t.Fatalf("join grades = %v", grades)
 	}
 }

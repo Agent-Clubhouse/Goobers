@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -282,7 +283,7 @@ func validateChildWorkspaceResult(in StartInput, result apiv1.ResultEnvelope) er
 	if result.WorkspaceRevision != nil {
 		return fmt.Errorf("runner: child result cannot select another workspace revision")
 	}
-	if branch, ok := result.Outputs[WorkspaceBranchOutput].(string); ok && branch != "" && branch != in.WorkspaceBranch {
+	if branch, ok := result.Outputs[runsemantics.WorkspaceBranchOutput].(string); ok && branch != "" && branch != in.WorkspaceBranch {
 		return fmt.Errorf("runner: child result cannot rebind its owned workspace branch")
 	}
 	return nil
