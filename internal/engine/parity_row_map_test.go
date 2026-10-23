@@ -9,12 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	"go.temporal.io/sdk/testsuite"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -225,9 +228,12 @@ func runEngineMapParity(
 	in.Run.RunID = "engine-" + strings.ReplaceAll(t.Name(), "/", "-")
 	writer, dir := newLiveWriter(t)
 	acts.Journal = writer
-	out := executeScheduler(t, in, acts)
-	if out.Error != "" {
-		t.Fatalf("engine map parity: %+v", out)
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	env.RegisterActivity(acts)
+	env.ExecuteWorkflow(Run, in.Run)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("engine map parity via production Run: %v", err)
 	}
 	return liveEvents(t, dir, in.Run.RunID)
 }

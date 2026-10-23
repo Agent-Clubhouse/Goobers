@@ -17,7 +17,10 @@ const fanOutAssemblyVersion = "engine-run-fanout-assembly-v1"
 // older histories retain the refusal they recorded.
 func refuseUnassembledFanOut(ctx workflow.Context, in RunInput) error {
 	spec := in.Spec
-	if len(spec.Parallels) > 0 && workflow.GetVersion(ctx, fanOutAssemblyVersion, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+	if len(spec.Parallels) > 0 {
+		if workflow.GetVersion(ctx, fanOutAssemblyVersion, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+			return wf.RefuseUnsupportedFanOut(spec)
+		}
 		spec.Parallels = nil
 	}
 	if len(spec.Maps) > 0 {

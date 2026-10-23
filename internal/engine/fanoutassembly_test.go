@@ -256,12 +256,21 @@ func TestProductionRunLegacyMapHistoryKeepsRefusal(t *testing.T) {
 		in.DSLVersion, in.LiveJournal = "3.1", true
 		var suite testsuite.WorkflowTestSuite
 		env := temporaltest.NewWorkflowEnvironment(&suite)
-		env.OnGetVersion(staticMapVersion, workflow.DefaultVersion, 1).
-			Return(workflow.DefaultVersion)
+		if withParallel {
+			env.OnGetVersion(fanOutAssemblyVersion, workflow.DefaultVersion, 1).
+				Return(workflow.DefaultVersion)
+		} else {
+			env.OnGetVersion(staticMapVersion, workflow.DefaultVersion, 1).
+				Return(workflow.DefaultVersion)
+		}
 		// No activities registered: any attempt to run the producer is a failure.
 		env.ExecuteWorkflow(Run, in)
-		if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), wf.ErrMapUnsupported.Error()) {
-			t.Fatalf("map with parallel=%v: refusal=%v", withParallel, err)
+		want := wf.ErrMapUnsupported
+		if withParallel {
+			want = wf.ErrParallelsUnsupported
+		}
+		if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), want.Error()) {
+			t.Fatalf("map with parallel=%v: refusal=%v, want %v", withParallel, err, want)
 		}
 	}
 }
