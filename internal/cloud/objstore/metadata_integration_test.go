@@ -221,7 +221,15 @@ func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
 		insert string
 	}{
 		{"journal", "INSERT INTO journal.run_artifact (digest) VALUES ($1)"},
-		{"recovery", "INSERT INTO control.recovery_record (patch_digest) VALUES ($1)"},
+		{"recovery", `INSERT INTO control.recovery_record (
+			instance_id,repository_key,run_id,snapshot_sha,version,ref,
+			base_ref,base_sha,patch_digest,archive_digest,archive_bytes,
+			archive_format,bundle_key,identity_unix_ns,retain_until,owner_epoch
+		) VALUES (
+			'instance','repo','run','snapshot',1,'ref','base','sha',
+			$1,'',1,'','recovery/bundle',1,
+			clock_timestamp()+interval '1 day',1
+		)`},
 		{"pending-adoption", "INSERT INTO control.child_blob (digest) VALUES ($1)"},
 		{"child-grant", "INSERT INTO control.child_authority (config_digest) VALUES ($1)"},
 		{"child-result", "INSERT INTO control.child_lineage (result_ref) VALUES ($1)"},
@@ -274,7 +282,14 @@ func TestBlobReferenceCensusFailsClosedAndExcludesRecoveryBundleKey(t *testing.T
 	_, pool, _ := testMetadata(t, "goobers-config-gc-census-closed")
 	digest := "sha256:" + strings.Repeat("a", 64)
 	if _, err := pool.Exec(t.Context(), `
-		INSERT INTO control.recovery_record (bundle_key) VALUES ($1)`,
+		INSERT INTO control.recovery_record (
+			instance_id,repository_key,run_id,snapshot_sha,version,ref,
+			base_ref,base_sha,patch_digest,archive_digest,archive_bytes,
+			archive_format,bundle_key,identity_unix_ns,retain_until,owner_epoch
+		) VALUES (
+			'instance','repo','run','snapshot',1,'ref','base','sha',
+			'','',1,'',$1,1,clock_timestamp()+interval '1 day',1
+		)`,
 		digest,
 	); err != nil {
 		t.Fatal(err)
