@@ -35,7 +35,7 @@ type DirSource struct {
 
 	// afterCapture and beforeRecapture are test seams between the real read
 	// stages; production leaves them nil.
-	afterCapture, beforeRecapture func()
+	afterCapture, beforeRecapture, afterResolveConfig func()
 }
 
 // resolved is one view of the mounted directory with every symlink followed.
@@ -49,19 +49,32 @@ type resolved struct {
 	instanceFile string
 }
 
+// resolve follows symlinks exactly once, for config/, and derives everything
+// else from the version directory that resolution landed in. Resolving
+// instance.yaml independently would let an atomic ..data swap between the two
+// lookups pair one version's definitions with another's policy. instance.yaml
+// must be a regular file beside config/ in that same version directory; a
+// symlinked instance.yaml (it could resolve under a different version) is
+// refused.
 func (s DirSource) resolve() (resolved, error) {
 	root, err := filepath.EvalSymlinks(s.Root)
 	if err != nil {
 		return resolved{}, fmt.Errorf("resolve config directory: %w", err)
 	}
-	l := instance.NewLayout(root)
-	configDir, err := filepath.EvalSymlinks(l.ConfigDir())
+	configDir, err := filepath.EvalSymlinks(instance.NewLayout(root).ConfigDir())
 	if err != nil {
 		return resolved{}, fmt.Errorf("resolve config definitions: %w", err)
 	}
-	instanceFile, err := filepath.EvalSymlinks(l.ConfigFile())
+	if s.afterResolveConfig != nil {
+		s.afterResolveConfig()
+	}
+	instanceFile := filepath.Join(filepath.Dir(configDir), instance.ConfigFileName)
+	info, err := os.Lstat(instanceFile)
 	if err != nil {
-		return resolved{}, fmt.Errorf("resolve instance config: %w", err)
+		return resolved{}, fmt.Errorf("resolve instance config beside %s: %w", configDir, err)
+	}
+	if !info.Mode().IsRegular() {
+		return resolved{}, fmt.Errorf("instance config %s must be a regular file in the same version directory as config/", instanceFile)
 	}
 	return resolved{configDir: configDir, instanceFile: instanceFile}, nil
 }

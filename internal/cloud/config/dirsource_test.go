@@ -447,3 +447,70 @@ func TestDirSourceParsesOnlyFromTheCapturedBytes(t *testing.T) {
 		t.Fatalf("baseline policy = %q", original.Config.SelfExecutionPolicy())
 	}
 }
+
+// TestDirSourceResolvesOneVersionForDefinitionsAndPolicy swaps a projected
+// volume between the lookups of config/ and instance.yaml. Both paths must come
+// from the single resolution, so the candidate is one coherent version (or the
+// move is declined), never version A's definitions with version B's policy.
+func TestDirSourceResolvesOneVersionForDefinitionsAndPolicy(t *testing.T) {
+	t.Parallel()
+	a, b := demoDir(t), demoDir(t)
+	file := filepath.Join(a, "instance.yaml")
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(strings.Replace(string(raw), "selfExecution: deny", "selfExecution: allow", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	touchDefinition(t, b)
+	versionA, err := (DirSource{Root: a, InstanceID: "i"}).Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionB, err := (DirSource{Root: b, InstanceID: "i"}).Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, calls := range []int{1, 2} { // swap at the first resolution only, then at every one
+		mount := projectedVolume(t, a, "01")
+		seen := 0
+		source := DirSource{Root: mount, InstanceID: "i", afterResolveConfig: func() {
+			seen++
+			if calls == 2 || seen == 1 {
+				publishProjected(t, mount, map[bool]string{true: b, false: a}[seen%2 == 1], "0"+string(rune('1'+seen)))
+			}
+		}}
+		got, err := source.Load(t.Context())
+		if err != nil {
+			continue // declining a moving source is allowed
+		}
+		coherentA := got.Digest == versionA.Digest && got.Config.SelfExecutionPolicy() == versionA.Config.SelfExecutionPolicy()
+		coherentB := got.Digest == versionB.Digest && got.Config.SelfExecutionPolicy() == versionB.Config.SelfExecutionPolicy()
+		if !coherentA && !coherentB {
+			t.Fatalf("calls=%d: torn candidate: digest %q with policy %q", calls, got.Digest, got.Config.SelfExecutionPolicy())
+		}
+	}
+}
+
+func TestDirSourceRefusesAnInstanceFileOutsideTheConfigVersion(t *testing.T) {
+	t.Parallel()
+	root := demoDir(t)
+	elsewhere := filepath.Join(t.TempDir(), "instance.yaml")
+	data, err := os.ReadFile(filepath.Join(root, "instance.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(elsewhere, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "instance.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(root, "instance.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (DirSource{Root: root, InstanceID: "i"}).Load(t.Context()); err == nil {
+		t.Fatal("an instance.yaml that resolves outside config/'s version directory was accepted")
+	}
+}
