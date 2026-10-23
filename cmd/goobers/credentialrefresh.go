@@ -2,18 +2,15 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"path/filepath"
 	"slices"
 	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/podauth"
@@ -45,35 +42,7 @@ import (
 // credentialRefreshMarker identifies a mid-stage re-resolve's audit record.
 const credentialRefreshMarker = "credentials.refreshed"
 
-// grantRefreshBurst and grantRefreshInterval bound how often one grant may
-// mint. A stage refreshes a capability when it nears expiry or after a 401,
-// so a handful of calls an hour is the expected rate; the burst leaves room
-// for several capabilities expiring together.
-const (
-	grantRefreshBurst    = 6
-	grantRefreshInterval = 20 * time.Second
-)
-
-// stageGrantIssuer holds the daemon's grant signing key and the per-grant
-// state the refresh route needs.
-type stageGrantIssuer struct {
-	key      *podauth.SignedKey
-	endpoint string
-	now      func() time.Time
-
-	mu sync.Mutex
-	// revoked is keyed by grant ID, not by run/stage/attempt: a revisited
-	// stage restarts its attempt numbering, so a later execution of the same
-	// stage can carry the same triple as a finished one.
-	revoked map[string]time.Time
-	buckets map[[sha256.Size]byte]*grantBucket
-}
-
-type grantBucket struct {
-	tokens    float64
-	last      time.Time
-	expiresAt time.Time
-}
+const grantRefreshBurst = 6
 
 // withStageGrants enables mid-stage credential refresh on this daemon's
 // credential plane, served at the API reachable at listenAddress, and offers
@@ -81,7 +50,7 @@ type grantBucket struct {
 // cannot construct the issuer keeps serving with refresh disabled: stages
 // then behave exactly as they did before grants existed.
 func (s *daemonCredentialService) withStageGrants(root, listenAddress string, tls bool) *daemonCredentialService {
-	endpoint, err := localCredentialEndpoint(listenAddress, tls)
+	endpoint, err := planes.LocalCredentialEndpoint(listenAddress, tls)
 	if err != nil {
 		return s
 	}
@@ -97,9 +66,10 @@ func (s *daemonCredentialService) withStageGrants(root, listenAddress string, tl
 	if keyFile == "" {
 		log.Printf("warning: api.podTokenKeyFile is not configured; credential-refresh grants will not survive a daemon restart")
 	}
-	s.grants = &stageGrantIssuer{
-		key: key, endpoint: endpoint, now: time.Now,
-		revoked: map[string]time.Time{}, buckets: map[[sha256.Size]byte]*grantBucket{},
+	s.grants, err = planes.NewStageGrantIssuer(key, endpoint)
+	if err != nil {
+		log.Printf("warning: credential-refresh grants and child-workflow stage authority are disabled: %v", err)
+		return s
 	}
 	registerStageGrantMinter(root, s)
 	return s
@@ -111,24 +81,7 @@ func (s *daemonCredentialService) grantKey() *podauth.SignedKey {
 	if s == nil || s.grants == nil {
 		return nil
 	}
-	return s.grants.key
-}
-
-// localCredentialEndpoint turns the bound API address into the URL a stage on
-// this host dials: an unspecified bind address is reached over loopback.
-func localCredentialEndpoint(listenAddress string, tls bool) (string, error) {
-	host, port, err := net.SplitHostPort(listenAddress)
-	if err != nil {
-		return "", err
-	}
-	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-		host = "127.0.0.1"
-	}
-	scheme := "http"
-	if tls {
-		scheme = "https"
-	}
-	return scheme + "://" + net.JoinHostPort(host, port), nil
+	return s.grants.Key()
 }
 
 // MintStageGrant implements executor.StageCredentialGrants for the local
@@ -147,19 +100,7 @@ func (s *daemonCredentialService) MintStageGrant(env apiv1.InvocationEnvelope, c
 	if s.grants == nil {
 		return executor.StageCredentialGrant{}, errors.New("credential refresh is not enabled on this daemon")
 	}
-	token, grant, err := s.grants.key.MintCredentialGrant(podauth.CredentialGrant{
-		RunID: env.RunID, Stage: stageArtifactName(env.RunID, env.TaskID), Attempt: env.Attempt, Capabilities: capabilities,
-	}, ttl)
-	if err != nil {
-		return executor.StageCredentialGrant{}, err
-	}
-	s.shared.RegisterUntil([]byte(token), grant.ExpiresAt)
-	var once sync.Once
-	return executor.StageCredentialGrant{
-		Endpoint: s.grants.endpoint,
-		Token:    token,
-		Revoke:   func() { once.Do(func() { s.grants.revoke(grant.ID, grant.ExpiresAt) }) },
-	}, nil
+	return s.grants.MintStageGrant(env.RunID, stageArtifactName(env.RunID, env.TaskID), env.Attempt, capabilities, ttl, s.shared)
 }
 
 // mintPodStageGrant mints the grant a pod hands its deterministic stage
@@ -177,14 +118,7 @@ func (s *daemonCredentialService) mintPodStageGrant(request httpapi.CredentialRe
 	if timeout <= 0 {
 		timeout = time.Duration(request.TimeoutSeconds) * time.Second
 	}
-	token, grant, err := s.grants.key.MintCredentialGrant(podauth.CredentialGrant{
-		RunID: request.RunID, Stage: request.Stage, Attempt: request.Attempt, Capabilities: expiring,
-	}, executor.CredentialGrantTTL(timeout))
-	if err != nil {
-		return nil
-	}
-	s.shared.RegisterUntil([]byte(token), grant.ExpiresAt)
-	return &httpapi.CredentialGrantDelivery{Token: token, ExpiresAt: grant.ExpiresAt}
+	return s.grants.MintPodGrant(request, expiring, executor.CredentialGrantTTL(timeout), s.shared)
 }
 
 // expiringDeclaredCapabilities lists the stage's DECLARED capabilities whose
@@ -202,7 +136,7 @@ func expiringDeclaredCapabilities(resolved stageResolution) []string {
 
 // Refresh implements httpapi.CredentialRefreshService.
 func (s *daemonCredentialService) Refresh(ctx context.Context, token string, request httpapi.CredentialRefreshRequest) (httpapi.CredentialResolveResponse, error) {
-	grant, err := s.admitGrant(token, request.Capability)
+	grant, err := s.grants.Admit(token, request.Capability)
 	if err != nil {
 		return httpapi.CredentialResolveResponse{}, err
 	}
@@ -216,87 +150,6 @@ func (s *daemonCredentialService) Refresh(ctx context.Context, token string, req
 		return httpapi.CredentialResolveResponse{}, err
 	}
 	return resolved.response(resolveRequest), nil
-}
-
-// admitGrant verifies the grant, confines the capability to it, and charges
-// the grant's rate limit.
-func (s *daemonCredentialService) admitGrant(token, capabilityName string) (podauth.CredentialGrant, error) {
-	if s.grants == nil {
-		return podauth.CredentialGrant{}, credentialPlaneError(http.StatusServiceUnavailable,
-			"credentials_unavailable", "mid-stage credential refresh is not enabled on this daemon")
-	}
-	grant, err := s.grants.key.VerifyCredentialGrant(token)
-	if errors.Is(err, podauth.ErrExpiredCredentialGrant) {
-		return podauth.CredentialGrant{}, credentialPlaneError(http.StatusUnauthorized, "credential_grant_expired",
-			"the credential-refresh grant has expired")
-	}
-	if err != nil {
-		return podauth.CredentialGrant{}, credentialPlaneError(http.StatusUnauthorized, "credential_grant_invalid",
-			"the credential-refresh grant is not valid for this daemon")
-	}
-	if !grant.Allows(capabilityName) {
-		return podauth.CredentialGrant{}, credentialPlaneError(http.StatusForbidden, "capability_not_granted",
-			fmt.Sprintf("capability %q is not in this stage's credential-refresh grant", capabilityName))
-	}
-	if s.grants.isRevoked(grant) {
-		return podauth.CredentialGrant{}, credentialPlaneError(http.StatusUnauthorized, "credential_grant_revoked",
-			"the stage attempt this credential-refresh grant served has finished")
-	}
-	if !s.grants.allow(token, grant.ExpiresAt) {
-		return podauth.CredentialGrant{}, credentialPlaneError(http.StatusTooManyRequests, "credential_refresh_rate_limited",
-			"this credential-refresh grant is refreshing too often; retry later")
-	}
-	return grant, nil
-}
-
-func (g *stageGrantIssuer) revoke(id string, expiresAt time.Time) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.pruneLocked(g.now())
-	g.revoked[id] = expiresAt
-}
-
-func (g *stageGrantIssuer) isRevoked(grant podauth.CredentialGrant) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	_, revoked := g.revoked[grant.ID]
-	return revoked
-}
-
-// allow charges one refresh against the grant's token bucket.
-func (g *stageGrantIssuer) allow(token string, expiresAt time.Time) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	now := g.now()
-	g.pruneLocked(now)
-	digest := sha256.Sum256([]byte(token))
-	bucket, ok := g.buckets[digest]
-	if !ok {
-		bucket = &grantBucket{tokens: grantRefreshBurst, last: now, expiresAt: expiresAt}
-		g.buckets[digest] = bucket
-	}
-	bucket.tokens = min(float64(grantRefreshBurst), bucket.tokens+now.Sub(bucket.last).Seconds()/grantRefreshInterval.Seconds())
-	bucket.last = now
-	if bucket.tokens < 1 {
-		return false
-	}
-	bucket.tokens--
-	return true
-}
-
-// pruneLocked drops state for grants that have expired anyway, so the maps
-// stay bounded by live stages rather than by history.
-func (g *stageGrantIssuer) pruneLocked(now time.Time) {
-	for key, expiresAt := range g.revoked {
-		if !expiresAt.After(now) {
-			delete(g.revoked, key)
-		}
-	}
-	for digest, bucket := range g.buckets {
-		if !bucket.expiresAt.After(now) {
-			delete(g.buckets, digest)
-		}
-	}
 }
 
 // stageGrantMinters maps an absolute instance root to the minter its local
