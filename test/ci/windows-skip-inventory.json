@@ -1541,6 +1541,18 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/cloud/acceptance",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud control-plane policy has no Windows-specific seam; unit and PostgreSQL integration tests run on Linux."
+    },
+    {
+      "package": "internal/cloud/startfence",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud control-plane policy has no Windows-specific seam; unit and PostgreSQL integration tests run on Linux."
     }
   ]
 }
