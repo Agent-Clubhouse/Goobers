@@ -75,12 +75,19 @@ Options:
   --instance-id ID                 Instance identifier (required)
   --backup-ref REF                 Restorable backup identifier or PITR mark (required)
   --lease-name NAME                Controller lease name (default controller)
-  --database-direct-url URL        Direct URL (prefer env/file for credentials)
-  --database-direct-url-file PATH  Read direct URL from a mounted Secret
-  --database-auth MODE             password or entra (default password)
+  --admin-url URL                  Server administrator URL: creates roles and databases
+  --admin-url-file PATH            Read the administrator URL from a mounted Secret
+  --entra-principal ROLE=OBJECTID  Create ROLE as an Entra principal (repeatable)
+  --database-direct-url URL        Instance owner URL: runs migrations (prefer env/file)
+  --database-direct-url-file PATH  Read the owner URL from a mounted Secret
+  --database-auth MODE             password or entra, for the owner (default password)
+
+The administrator and owner are separate identities: the administrator never
+runs migrations and the owner never creates roles.
 
 Environment:
-  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+  GOOBERS_DATABASE_ADMIN_URL   Administrator PostgreSQL URL
+  GOOBERS_DATABASE_DIRECT_URL  Owner PostgreSQL URL
 ~~~
 
 ## `goobers-cloud completion`
