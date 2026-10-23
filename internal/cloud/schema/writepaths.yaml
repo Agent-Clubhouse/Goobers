@@ -833,7 +833,7 @@ tables:
   provisioned: true
   fence: owner_epoch
   rationale: The stall sweeper records and advances each run's cancel or terminate action under the controller-lease fence,
-    predicated on owner_epoch; retries list terminating actions. ON CONFLICT DO UPDATE needs SELECT on every column it sets.
+    predicated on owner_epoch; retries list terminating actions. ON CONFLICT DO UPDATE needs SELECT on each column it takes from EXCLUDED.
   readers:
   - role: goobers_controller
     columns:
