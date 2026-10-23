@@ -46,21 +46,27 @@ func (s *FileStore) Record(ctx context.Context, record ObservationRecord) error 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return durability.WriteFileAtomic(filepath.Join(dir, key+".json"), payload, 0o600,
+	var conflict error
+	err = durability.WriteFileAtomic(filepath.Join(dir, key+".json"), payload, 0o600,
 		durability.WithPublishRaceCheck(func(path string) error {
 			existing, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
 			if !bytes.Equal(existing, payload) {
+				conflict = ErrObservationConflict
 				return ErrObservationConflict
 			}
 			return nil
 		}))
+	return errors.Join(err, conflict)
 }
 
 // Observations returns a deterministically ordered snapshot of committed samples.
 func (s *FileStore) Observations(ctx context.Context, stage string) ([]Observation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(stage) == "" || len(stage) > 256 {
 		return nil, errors.New("bandit: invalid observation stage")
 	}
