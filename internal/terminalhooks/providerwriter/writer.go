@@ -39,6 +39,10 @@ type Writer interface {
 	WorkItem(ctx context.Context, ref ItemRef) (providers.WorkItem, error)
 	Comments(ctx context.Context, ref ItemRef) ([]providers.Comment, error)
 	// Update applies req to ref; req.Repository and req.ItemID are set from ref.
+	// An Update carrying a Comment is not idempotent on its own: callers must
+	// set req.IdempotencyKey on it, or use the Comments + UpdateComment upsert
+	// pattern keyed on a body marker. Implementations refuse a Comment with no
+	// IdempotencyKey as a permanent error rather than risk a duplicate post.
 	Update(ctx context.Context, ref ItemRef, req providers.UpdateWorkItemRequest) error
 	UpdateComment(ctx context.Context, ref ItemRef, commentID, body string) error
 	// PullLabels and DeleteBranch target the run's WorkspaceRepository.
@@ -46,7 +50,9 @@ type Writer interface {
 	// DeleteBranch treats an already-absent branch as success.
 	DeleteBranch(ctx context.Context, runID, branch string) error
 	// ReleaseClaimMarker removes the provider-visible claim marker for
-	// ref.ItemID held by ref.RunID; an already-absent marker is success.
+	// ref.ItemID held by ref.RunID; an already-absent marker is success. The
+	// release is scoped to ref.RunID's claim: if a successor has since claimed
+	// the item it fails (permanently) instead of closing the successor's claim.
 	ReleaseClaimMarker(ctx context.Context, ref ItemRef, reason claimrelease.Reason) error
 }
 
@@ -78,5 +84,11 @@ func (Pending) ReleaseClaimMarker(context.Context, ItemRef, claimrelease.Reason)
 	return pending("release claim marker")
 }
 
+// ErrPermanent marks a refusal that retrying cannot fix (an unkeyed comment
+// update, a claim released by a successor, ...). Implementations wrap it.
+var ErrPermanent = errors.New("permanent provider-writer refusal")
+
 // Permanent reports whether err should not be retried.
-func Permanent(err error) bool { return errors.Is(err, ErrRepositoryNotPinned) }
+func Permanent(err error) bool {
+	return errors.Is(err, ErrRepositoryNotPinned) || errors.Is(err, ErrPermanent)
+}

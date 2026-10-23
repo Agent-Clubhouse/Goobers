@@ -30,7 +30,7 @@ func TestPendingFailsEveryOperationClosed(t *testing.T) {
 }
 
 func TestPermanentOnlyForUnpinned(t *testing.T) {
-	if !Permanent(fmt.Errorf("x: %w", ErrRepositoryNotPinned)) || Permanent(errors.New("transient")) {
+	if !Permanent(fmt.Errorf("x: %w", ErrRepositoryNotPinned)) || !Permanent(fmt.Errorf("y: %w", ErrPermanent)) || Permanent(errors.New("transient")) {
 		t.Fatal("Permanent misclassifies")
 	}
 }
