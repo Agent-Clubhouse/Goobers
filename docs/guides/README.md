@@ -52,6 +52,7 @@ cannot leave it outside the documented navigation surfaces.
 - [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)
 - [Codex stage transcripts and usage](harness-codex-telemetry.md)
 - [Copilot usage when a stage is cancelled](harness-copilot-cancellation-accounting.md)
+- [Copilot stage authentication and configuration isolation](harness-copilot-isolation.md)
 - [Harness host-process safety](harness-host-process-safety.md)
 - [Copilot launcher session contract](harness-launcher-contract.md)
 - [Harness prompt transport](harness-prompt-transport.md)
