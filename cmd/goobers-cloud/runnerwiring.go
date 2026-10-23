@@ -117,7 +117,6 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 	tel := input.Telemetry
 	sharedReg := input.SharedRegistry
-	wtMgr := input.WorktreeManager
 	branchNamespaces := input.BranchNamespaces
 	gaggleProject := input.GaggleProject
 	additionalRepos := input.AdditionalRepos
