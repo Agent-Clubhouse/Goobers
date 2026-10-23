@@ -28,10 +28,18 @@ func TestBootstrapRealStepsAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Provision closes the database it runs on (it revokes PUBLIC CONNECT), so
+	// it runs on a scratch maintenance database, never the test server's own.
+	const maintenance = "cutover_it_maintenance"
 	drop := func() {
-		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgx.Identifier{database}.Sanitize()+" WITH (FORCE)")
+		for _, name := range []string{database, maintenance} {
+			_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
+		}
 	}
 	drop()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+maintenance); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { drop(); admin.Close() })
 
 	ownerConfig, err := pgxpool.ParseConfig(url)
@@ -44,7 +52,14 @@ func TestBootstrapRealStepsAgainstPostgres(t *testing.T) {
 	// the test credentials against the provisioned database; production
 	// passes a distinct owner URL.
 	connect := Connect{
-		Admin: func(ctx context.Context) (*pgx.Conn, error) { return pgx.Connect(ctx, url) },
+		Admin: func(ctx context.Context) (*pgx.Conn, error) {
+			config, err := pgx.ParseConfig(url)
+			if err != nil {
+				return nil, err
+			}
+			config.Database = maintenance
+			return pgx.ConnectConfig(ctx, config)
+		},
 		Owner: func(ctx context.Context) (*pgxpool.Pool, error) { return pgxpool.NewWithConfig(ctx, ownerConfig) },
 	}
 	// Steps whose backends have not shipped are dropped to model the day they
