@@ -267,7 +267,9 @@ func waitEngineChild(ctx workflow.Context, b ChildRunBinding, wait livejournal.A
 	var result RunResult
 	if err = future.Get(owned, &result); err != nil {
 		if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
-			err = errors.Join(errSealedChildRestart, err)
+			// The binding belongs to a sealed execution; fencing its family
+			// again would act on custody this parent does not own.
+			return apiv1.ContextPointer{}, errors.Join(errSealedChildRestart, err)
 		}
 		return cleanup(err)
 	}
