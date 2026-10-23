@@ -2,9 +2,10 @@
 //
 // Stage 1 of the two-stage GitOps deploy: a release pipeline applies this template to
 // provision the shared instance infra — AKS, Log Analytics, storage, Key Vault, the
-// ADX goober-run telemetry store, and the PostgreSQL datastore backing in-cluster
-// Temporal. Stage 2 (ArgoCD) then reconciles the separate `config` repo into the
-// cluster. This file provisions infra only; it does not deploy the workforce.
+// ADX goober-run telemetry store, the instance VNet, and the zone-redundant private
+// PostgreSQL server backing goobers-cloud and in-cluster Temporal. Stage 2 (ArgoCD)
+// then reconciles the separate `config` repo into the cluster. This file provisions
+// infra only; it does not deploy the workforce.
 targetScope = 'subscription'
 
 @description('Short prefix for all resource names (lowercase letters/digits).')
@@ -26,9 +27,15 @@ param location string = 'eastus'
 @description('Entra (AAD) tenant ID. Defaults to the deployment subscription tenant.')
 param tenantId string = subscription().tenantId
 
-@description('PostgreSQL administrator password for Temporal persistence. Supply via Key Vault reference (SEC-010).')
+@description('PostgreSQL break-glass administrator password. Supply via Key Vault reference (SEC-010).')
 @secure()
 param postgresAdminPassword string
+
+@description('Goobers instance name; names the instance database goobers_<instance>.')
+param instanceName string = namePrefix
+
+@description('Entra administrator of the PostgreSQL server ({ objectId, principalName, principalType }); goobers-cloud bootstrap connects as it to create roles.')
+param postgresEntraAdministrator object
 
 @description('Tags applied to every resource.')
 param tags object = {
@@ -87,13 +94,32 @@ module adx 'modules/adx.bicep' = {
   }
 }
 
+var postgresServerName = 'psql-${namePrefix}-${suffix}'
+var vnetName = 'vnet-${namePrefix}-${environment}'
+
+module network 'modules/network.bicep' = {
+  scope: rg
+  name: 'network'
+  params: {
+    location: location
+    name: vnetName
+    postgresServerName: postgresServerName
+    tags: tags
+  }
+}
+
 module postgres 'modules/postgres.bicep' = {
   scope: rg
   name: 'postgres'
   params: {
     location: location
-    name: 'psql-${namePrefix}-${suffix}'
+    name: postgresServerName
+    instanceName: instanceName
+    entraAdministrator: postgresEntraAdministrator
+    tenantId: tenantId
     administratorPassword: postgresAdminPassword
+    delegatedSubnetId: network.outputs.postgresSubnetId
+    privateDnsZoneId: network.outputs.postgresPrivateDnsZoneId
     tags: tags
   }
 }
@@ -105,7 +131,17 @@ module aks 'modules/aks.bicep' = {
     location: location
     name: 'aks-${namePrefix}-${environment}'
     logAnalyticsWorkspaceId: logs.outputs.workspaceId
+    vnetSubnetId: network.outputs.aksSubnetId
     tags: tags
+  }
+}
+
+module aksNetworkAccess 'modules/aks-network-access.bicep' = {
+  scope: rg
+  name: 'aks-network-access'
+  params: {
+    vnetName: vnetName
+    aksPrincipalId: aks.outputs.principalId
   }
 }
 
@@ -121,8 +157,11 @@ output aksOidcIssuerUrl string = aks.outputs.oidcIssuerUrl
 @description('ADX telemetry ingestion URI (OTel exporter target, TEL-010).')
 output adxClusterUri string = adx.outputs.clusterUri
 
-@description('PostgreSQL FQDN backing Temporal (DEP-011).')
+@description('Private PostgreSQL FQDN for goobers-cloud and Temporal (DEP-011).')
 output postgresFqdn string = postgres.outputs.fqdn
+
+@description('Instance database on the PostgreSQL server.')
+output postgresInstanceDatabase string = postgres.outputs.instanceDatabase
 
 @description('Key Vault URI consumed by the CSI driver (SEC-Q2).')
 output keyVaultUri string = keyvault.outputs.keyVaultUri
