@@ -80,7 +80,7 @@ func assertPreparedReviewOrder(t *testing.T, events []journal.Event, source, sto
 			if event.Ref == nil || event.Ref.Digest != journal.Digest(stored) {
 				t.Fatalf("wrong reviewer blob: %+v", event)
 			}
-			if event.Runner[livejournal.EmitKeyRunnerField] == "" {
+			if key, ok := event.Runner[livejournal.EmitKeyRunnerField].(string); !ok || key == "" {
 				t.Fatal("artifact is not keyed")
 			}
 		}
@@ -90,7 +90,7 @@ func assertPreparedReviewOrder(t *testing.T, events []journal.Event, source, sto
 			if event.Runner["sourceDigest"] != journal.Digest(source) || event.Runner["digest"] != journal.Digest(stored) || event.Runner["redacted"] != true || event.Runner["sourceBytes"] != float64(len(source)) || event.Runner["bytes"] != float64(len(stored)) {
 				t.Fatalf("redaction evidence=%v", event.Runner)
 			}
-			if event.Runner[livejournal.EmitKeyRunnerField] == "" {
+			if key, ok := event.Runner[livejournal.EmitKeyRunnerField].(string); !ok || key == "" {
 				t.Fatal("annotation is not keyed")
 			}
 		}
@@ -223,5 +223,29 @@ func TestReviewerPreparationDefaultVersionKeepsLegacyPath(t *testing.T) {
 		if op.Event != nil && op.Event.Runner["kind"] == runsemantics.ReviewerDiffRedactionKind {
 			t.Fatal("N-1 emitted new annotation")
 		}
+	}
+}
+
+func TestReviewerPreparationEmptyVisitRemovesPriorDiffPointer(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	activities := &Activities{Workspaces: testWorkspaces(t)}
+	env.RegisterActivity(activities)
+	env.ExecuteWorkflow(func(ctx workflow.Context) (apiv1.InvocationEnvelope, error) {
+		ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute})
+		invocation := apiv1.InvocationEnvelope{RunID: "run", TaskID: "run:review", ContextPointers: []apiv1.ContextPointer{{Name: "review.diff", Artifact: &apiv1.ArtifactPointer{Digest: "stale"}}, {Name: "unrelated"}}}
+		rec := &runJournal{}
+		_, err := rec.prepareReviewerDiff(ctx, &invocation, "", "", apiv1.WorkspaceScratch, false)
+		return invocation, err
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var invocation apiv1.InvocationEnvelope
+	if err := env.GetWorkflowResult(&invocation); err != nil {
+		t.Fatal(err)
+	}
+	if invocation.PreparedReviewerDiff == nil || invocation.PreparedReviewerDiff.Artifact != nil || len(invocation.ContextPointers) != 1 || invocation.ContextPointers[0].Name != "unrelated" {
+		t.Fatalf("stale evidence survived: %+v", invocation)
 	}
 }

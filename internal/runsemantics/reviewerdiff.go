@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -65,4 +66,22 @@ func PreparedReviewerDiffPointer(env apiv1.InvocationEnvelope) (*apiv1.ContextPo
 		return nil, fmt.Errorf("prepared reviewer diff: context pointer %q is missing", name)
 	}
 	return found, nil
+}
+
+// PreparedReviewerVerdict validates evidence already committed before dispatch.
+// Observed-empty implementation evidence produces the ordinary mechanical
+// verdict; unobserved required evidence refuses before the reviewer executes.
+func PreparedReviewerVerdict(env apiv1.InvocationEnvelope, requireDiff bool) (*apiv1.Verdict, error) {
+	pointer, err := PreparedReviewerDiffPointer(env)
+	if err != nil {
+		return nil, err
+	}
+	if pointer != nil || !requireDiff {
+		return nil, nil
+	}
+	if env.PreparedReviewerDiff == nil || !env.PreparedReviewerDiff.Observed {
+		return nil, fmt.Errorf("prepared reviewer diff: implementation evidence was not observed")
+	}
+	verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
+	return &verdict, nil
 }

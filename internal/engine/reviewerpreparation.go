@@ -76,16 +76,17 @@ func (r *runJournal) prepareReviewerDiff(ctx workflow.Context, env *apiv1.Invoca
 		return nil, err
 	}
 	env.PreparedReviewerDiff = &apiv1.PreparedReviewerDiff{Observed: prepared.Observed}
+	// Empty preparation also supersedes a previous visit's evidence.
+	pointers := make([]apiv1.ContextPointer, 0, len(env.ContextPointers)+1)
+	for _, existing := range env.ContextPointers {
+		if existing.Name != runsemantics.ReviewerDiffPointerName(gate) {
+			pointers = append(pointers, existing)
+		}
+	}
+	env.ContextPointers = pointers
 	if pointer != nil {
 		env.PreparedReviewerDiff.Artifact = pointer.Artifact
-		// The system-authored pointer supersedes any earlier same-name evidence.
-		pointers := make([]apiv1.ContextPointer, 0, len(env.ContextPointers)+1)
-		for _, existing := range env.ContextPointers {
-			if existing.Name != pointer.Name {
-				pointers = append(pointers, existing)
-			}
-		}
-		env.ContextPointers = append(pointers, *pointer)
+		env.ContextPointers = append(env.ContextPointers, *pointer)
 		ref := journalRefFrom(*pointer.Artifact)
 		r.append(ctx, prepared.Redaction.Event(gate, ref))
 	}

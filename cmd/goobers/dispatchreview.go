@@ -33,7 +33,6 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // reviewerDiffArtifact is the artifact name the diff is journaled under; the
@@ -141,23 +140,6 @@ func missingReviewerDiff(env apiv1.InvocationEnvelope, stage string) (*apiv1.Ver
 	mode := apiv1.WorkspaceMode(strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace)))
 	if !mode.IsWritableRepo() {
 		return nil, fmt.Errorf("reviewer diff: gate %q reviews implementation work but its %q workspace is not on the run branch, so the run's committed diff is not visible to it; declare `workspace: repo` on the gate's agentic block", stage, mode)
-	}
-	verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
-	return &verdict, nil
-}
-
-// Prepared evidence was committed before this pod started and materialized by
-// materializePodContext. Never recapture or record it from the pod's checkout.
-func preparedPodReviewerVerdict(env apiv1.InvocationEnvelope, requireDiff bool) (*apiv1.Verdict, error) {
-	pointer, err := runsemantics.PreparedReviewerDiffPointer(env)
-	if err != nil {
-		return nil, err
-	}
-	if pointer != nil || !requireDiff {
-		return nil, nil
-	}
-	if env.PreparedReviewerDiff == nil || !env.PreparedReviewerDiff.Observed {
-		return nil, fmt.Errorf("prepared reviewer diff: implementation evidence was not observed")
 	}
 	verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
 	return &verdict, nil

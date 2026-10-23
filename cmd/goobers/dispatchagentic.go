@@ -131,7 +131,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	}
 
 	if kit.IsReview() && kit.Envelope.PreparedReviewerDiff != nil {
-		verdict, err := preparedPodReviewerVerdict(kit.Envelope, kit.ReviewRequiresDiff)
+		verdict, err := runsemantics.PreparedReviewerVerdict(kit.Envelope, kit.ReviewRequiresDiff)
 		if err != nil {
 			return fail("reviewer_diff_missing", err)
 		}
