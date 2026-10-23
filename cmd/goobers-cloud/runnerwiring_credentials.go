@@ -1,0 +1,729 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"path"
+	"slices"
+	"strconv"
+	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/githubapp"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/providerconfig"
+	"github.com/goobers/goobers/providers"
+)
+
+// buildCredentials is the composition root for the secret-resolver seam. It
+// selects the local env/file implementation; a tier-3 deployment substitutes
+// its SEC-010 Key Vault Resolver here while all downstream wiring stays
+// unchanged. By default the first configured repo's token backs every
+// credentialed capability (V0 single-target-repo simplification, ARCHITECTURE.md
+// §6). instance.yaml's credentials: block then sources individual capabilities
+// or named BYO MCP credentials from their own token refs. Capability entries
+// override repo-token defaults; BYO entries remain unreachable until a goober's
+// MCP server explicitly references the matching name.
+// The returned Grants are runner-owned (empty Goober); buildGooberCredentialGrants
+// binds these sources to each goober's own declared capability and MCP keys
+// before an agentic injector can use them.
+// buildCredentials builds the resolver and runner-owned grants for one gaggle,
+// whose project repo is (gaggleOwner, gaggleName). Repo capabilities are granted
+// that gaggle's OWN repo token (per-repo credential scoping, MGV-5 #1012) rather
+// than an instance-wide default, so a gaggle's stages only ever hold a token for
+// that gaggle's repo. An empty (gaggleOwner, gaggleName) — an instance-level
+// caller, or a single-repo/legacy instance — falls back to the first repo's
+// token, byte-identical to the prior instance-global behavior. agent:model and
+// other cfg.Credentials entries stay unqualified (the shared token every gaggle
+// uses), overriding the repo-default grant for their capability (#287).
+// stores resolves store-backed token refs (#683) — built once per composition
+// root (daemon setup, or a one-shot command's own scope) so every consumer
+// shares one TTL cache; a store ref with a nil stores fails closed at
+// resolver construction rather than degrading into an unconfigured token.
+//
+// A github-app repo (#686) contributes a minting dynamic source under the same
+// ref name a static token would use, so every consumer that resolves the repo
+// ref — capability grants, ci-poll, the open-PR lister, worktree git auth —
+// receives short-lived installation tokens with no further wiring. An Azure
+// DevOps repo does the same for every auth kind (registerRepoCredentialSource).
+// registrar receives every minted token (and the App key) at mint time; nil is
+// only for display-path callers that never write journals.
+//
+// additionalRepos are the gaggle's read-only reference repos (MGV-10, #1285):
+// each gains only a repo-qualified contents:read grant from its own token, never
+// a write capability. Pass nil for instance-level or single-repo callers.
+// buildGaggleCredentials is buildCredentials for one gaggle's project and
+// backlog: a gaggle whose backlog lives on another provider than its project
+// (topology (b)) has its backlog-family capabilities bound to the backlog
+// repository's credential (gaggleBacklogRole); every other gaggle gets exactly
+// buildCredentials' grants.
+func buildGaggleCredentials(cfg *instance.Config, stores credentials.StoreResolver, project apiv1.RepoRef, backlog apiv1.BacklogRef, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
+	return buildRoleCredentials(cfg, stores, credentialBindingOwner(project), project.Name, gaggleBacklogRole(project, backlog), additionalRepos, registrar)
+}
+
+// credentialBindingOwner is the owner half of a repository's credential
+// binding key: the owner, qualified by the project on Azure DevOps.
+func credentialBindingOwner(project apiv1.RepoRef) string {
+	if project.Provider == apiv1.ProviderADO && project.Project != "" {
+		return project.Owner + "/" + project.Project
+	}
+	return project.Owner
+}
+
+// backlogRoleCapabilities is the capability family that routes to a gaggle's
+// backlog provider (docs/design/ado-parity-dsl-2-0.md §3.1).
+var backlogRoleCapabilities = []capability.Capability{
+	capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubIssuesApprove, capability.GitHubMilestonesWrite,
+}
+
+// gaggleBacklogRole returns the credential role binding for a gaggle whose
+// backlog lives on another provider than its project (providerconfig.CrossProviderBacklog):
+// the backlog-family capabilities bind to the repos[] entry matching the
+// backlog.project owner/name. It is nil for every other gaggle, which keeps
+// RunnerGrants' single project binding. A malformed backlog.project matches no
+// binding, so those capabilities fail closed instead of falling back to the
+// project's credential.
+func gaggleBacklogRole(project apiv1.RepoRef, backlog apiv1.BacklogRef) *credentials.BacklogRole {
+	if !providerconfig.CrossProviderBacklog(project.Provider, backlog.Provider) {
+		return nil
+	}
+	owner, name, ok := strings.Cut(backlog.Project, "/")
+	if !ok || owner == "" || name == "" {
+		return backlogRoleFor("", "")
+	}
+	return backlogRoleFor(owner, name)
+}
+
+// backlogRoleFor binds the backlog-family capabilities to the repos[] entry
+// for owner/name. An empty owner/name matches no binding.
+func backlogRoleFor(owner, name string) *credentials.BacklogRole {
+	role := &credentials.BacklogRole{Owner: owner, Name: name, Capabilities: make([]string, len(backlogRoleCapabilities))}
+	for i, c := range backlogRoleCapabilities {
+		role.Capabilities[i] = string(c)
+	}
+	return role
+}
+
+// daemonIdentityGrantScope is the repository a daemon identity mints for and
+// the capabilities it backs, for one gaggle. Without a backlog role that is
+// the gaggle's project repository and the whole daemon-mutation set, as
+// before. With one (topology (b)) the daemon identity is a GitHub identity
+// (a GitHub PAT or App) and the project is on Azure DevOps, so it backs only
+// the backlog-family capabilities of the set, for the backlog repository; the
+// pull-request and repository capabilities keep the Azure DevOps repository's
+// own credential and never receive the GitHub one.
+func daemonIdentityGrantScope(gaggleOwner, gaggleName string, backlog *credentials.BacklogRole) (string, string, []capability.Capability) {
+	if backlog == nil {
+		return gaggleOwner, gaggleName, daemonIdentityCapabilities
+	}
+	family := make(map[string]bool, len(backlog.Capabilities))
+	for _, c := range backlog.Capabilities {
+		family[c] = true
+	}
+	var caps []capability.Capability
+	for _, c := range daemonIdentityCapabilities {
+		if family[string(c)] {
+			caps = append(caps, c)
+		}
+	}
+	return backlog.Owner, backlog.Name, caps
+}
+
+// daemonIdentityOverrides is the grants a daemon identity backs for one
+// gaggle, by capability: the whole daemon-mutation set, or in topology (b)
+// only its backlog-family subset (daemonIdentityGrantScope). The credential
+// preflights use it so they agree with buildRoleCredentials about which
+// credential backs each capability.
+func daemonIdentityOverrides(backlog *credentials.BacklogRole) []credentials.Grant {
+	_, _, caps := daemonIdentityGrantScope("", "", backlog)
+	grants := make([]credentials.Grant, len(caps))
+	for i, c := range caps {
+		grants[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
+	}
+	return grants
+}
+
+func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, backlog *credentials.BacklogRole, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
+	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
+	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
+	var sources map[string]credentials.ExpiringResolveFunc
+	for _, r := range cfg.Repos {
+		owner := r.Owner
+		if r.Provider == "ado" && r.Project != "" {
+			owner += "/" + r.Project
+		}
+		ref := owner + "/" + r.Name
+		tokenRef, nextRefs, nextSources, err := registerRepoCredentialSource(r, ref, refs, sources, registrar, stores)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
+		}
+		refs, sources = nextRefs, nextSources
+		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
+	}
+	// Daemon identity (#1780/#1295): when configured, sources a single named
+	// ref backing the standard daemon-mutation capability set — one place
+	// instead of one credentials: entry per capability. Built before the
+	// explicit credentials: loop below so those entries, appended after,
+	// still win per RunnerGrants' last-wins-per-capability semantics
+	// (matches every explicit CredentialGrant's existing precedence over a
+	// repo-default grant).
+	var daemonIdentityOverrides []credentials.Grant
+	if cfg.DaemonIdentity != nil {
+		identityOwner, identityName, identityCaps := daemonIdentityGrantScope(gaggleOwner, gaggleName, backlog)
+		if cfg.DaemonIdentity.GitHubApp() {
+			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, identityOwner, identityName, registrar, stores)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build credentials: daemonIdentity: %w", err)
+			}
+			if sources == nil {
+				sources = make(map[string]credentials.ExpiringResolveFunc)
+			}
+			sources[daemonIdentityRefName] = mint
+		} else {
+			refs = append(refs, cfg.DaemonIdentity.Token.CredentialTokenRef(daemonIdentityRefName))
+		}
+		daemonIdentityOverrides = make([]credentials.Grant, len(identityCaps))
+		for i, c := range identityCaps {
+			daemonIdentityOverrides[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
+		}
+	}
+	// configrepo:write (TUT-A8, #1220): a github-app workflowSource mints a
+	// SECOND, write-scoped installation token for the config repository alone,
+	// under its own ref. It is never one of the repo-default grants (those bind
+	// a gaggle's product-repo token), so neither credential reaches the other's
+	// repository. A token-authed workflowSource has no implicit write source:
+	// its token is the read credential, so the operator names the write token
+	// explicitly with a credentials: entry for configrepo:write.
+	configWriteGrant, configWriteMint, err := workflowSourceWriteGrant(cfg.WorkflowSource, registrar, stores)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build credentials: workflowSource write credential: %w", err)
+	}
+	if configWriteMint != nil {
+		if sources == nil {
+			sources = make(map[string]credentials.ExpiringResolveFunc)
+		}
+		sources[workflowSourceWriteRefName] = configWriteMint
+	}
+	// Explicit credential refs: each sources one capability or named BYO MCP
+	// credential from its own token, namespaced away from repo refs.
+	for _, cg := range cfg.Credentials {
+		key, err := credentialGrantStorageKey(cg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: %w", err)
+		}
+		refs, sources, err = registerCredentialGrantSource(cg, key, refs, sources, registrar, stores)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: %s: %w", key, err)
+		}
+	}
+	// The expiring-source form threads each minted value's stated expiry
+	// through to the materialized Set (DS10): the credential plane's mint
+	// responses carry it, so a stage pod never treats a snapshot as unbounded.
+	resolver, err := credentials.NewResolverWithExpiring(refs, stores, nil, sources)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
+	}
+
+	overrides := make([]credentials.Grant, 0, len(daemonIdentityOverrides)+len(cfg.Credentials))
+	overrides = append(overrides, daemonIdentityOverrides...)
+	for _, cg := range cfg.Credentials {
+		key, err := credentialGrantStorageKey(cg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: %w", err)
+		}
+		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
+	}
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, repoCredentialedCapabilityNames(), overrides))
+	// An explicit credentials: entry for configrepo:write wins over the
+	// workflowSource-minted default, exactly as every other explicit entry wins.
+	if configWriteGrant != nil && !slices.ContainsFunc(grants, func(g credentials.Grant) bool {
+		return g.Goober == "" && g.Capability == configWriteGrant.Capability
+	}) {
+		grants = append(grants, *configWriteGrant)
+	}
+	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
+	// AdditionalRepos is granted only a repo-qualified contents:read token, drawn
+	// from that repo's own configured token binding. These runner-owned grants
+	// authenticate the reference-repo checkout at provision time (MGV-11); no
+	// write capability is ever produced for an additional repo, so a stage cannot
+	// obtain a write token for one — reference repos are read-only by construction.
+	additionalBindings := make([]credentials.RepoBinding, 0, len(additionalRepos))
+	for _, r := range additionalRepos {
+		owner := r.Owner
+		if r.Provider == apiv1.ProviderADO && r.Project != "" {
+			owner += "/" + r.Project
+		}
+		additionalBindings = append(additionalBindings, credentials.RepoBinding{Owner: owner, Name: r.Name})
+	}
+	grants = append(grants, credentials.AdditionalReadGrants(referenceReadBindings(cfg.Repos, bindings), additionalBindings, string(capability.ContentsRead))...)
+	return resolver, grants, nil
+}
+
+// registerRepoCredentialSource registers the credential source that backs one
+// configured repository under ref, and returns the token ref the repository's
+// grants bind to ("" when it has no credential).
+//
+// Two kinds of repository mint rather than read a static value, and register
+// an expiry-stating source under the same ref a static token would use:
+//   - a github-app repository (#686) mints installation tokens;
+//   - an Azure DevOps repository resolves its configured credential in the
+//     daemon, for every auth kind (docs/design/ado-parity-dsl-2-0.md §4.1):
+//     an Entra token for azure-cli, workload-identity and managed-identity,
+//     and the PAT (env, file, keychain or secret store) for pat.
+//
+// Every consumer that resolves the ref through the resolver — capability
+// grants, the Injector and the credential plane — then receives the minted
+// value with no further wiring. Any other repository with a configured token
+// appends its static token ref; a store-backed ref resolves through stores
+// (#683) and fails closed at resolver construction when no store resolver is
+// configured.
+func registerRepoCredentialSource(r instance.RepoRef, ref string, refs []credentials.TokenRef, sources map[string]credentials.ExpiringResolveFunc, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (string, []credentials.TokenRef, map[string]credentials.ExpiringResolveFunc, error) {
+	var build func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error)
+	switch {
+	case r.GitHubAppAuth():
+		build = newGitHubAppTokenSource
+	case adoRepositoryMintsCredential(r):
+		build = newADORepositoryTokenSource
+	case r.Token.Configured():
+		return ref, append(refs, r.Token.CredentialTokenRef(ref)), sources, nil
+	default:
+		return "", refs, sources, nil
+	}
+	// Fail closed on a duplicate owner/name (as a static-token repo does at
+	// NewResolverWith's duplicate-ref check): silently overwriting the minting
+	// source would let a second entry hijack the first's grants.
+	if _, dup := sources[ref]; dup {
+		return "", refs, sources, errors.New("duplicate repository reference")
+	}
+	mint, err := build(r, registrar, stores)
+	if err != nil {
+		return "", refs, sources, err
+	}
+	if sources == nil {
+		sources = make(map[string]credentials.ExpiringResolveFunc)
+	}
+	sources[ref] = mint
+	return ref, refs, sources, nil
+}
+
+// gooberCredentialRefs is one base capability's runner-owned sources: at most
+// one unscoped ref (shared across every harness) and at most one ref per
+// harness-scoped credentialGrant (#5148).
+type gooberCredentialRefs struct {
+	unscoped  string
+	byHarness map[string]string
+}
+
+// buildGooberCredentialGrants binds the configured credential sources to one
+// goober's definition-level capability and MCP credential keys, resolving
+// per-harness scoping (#5148): for each key, a source whose harness matches
+// this goober's own harness wins; absent that, the unscoped source (if any)
+// is used, so a single-grant config resolves exactly as it always has. The
+// resulting grants carry the goober identity and are keyed by the PLAIN
+// capability string — harness scoping is fully resolved here, so nothing
+// downstream (the Injector, the materialized Set, or an adapter's env
+// building) ever sees a harness-qualified key. A forged stage envelope
+// cannot make this injector reach a key granted only to another goober.
+func buildGooberCredentialGrants(gooberName, harness string, keys []string, sources []credentials.Grant) []credentials.Grant {
+	refs := make(map[string]*gooberCredentialRefs, len(sources))
+	entry := func(base string) *gooberCredentialRefs {
+		e, ok := refs[base]
+		if !ok {
+			e = &gooberCredentialRefs{}
+			refs[base] = e
+		}
+		return e
+	}
+	for _, source := range sources {
+		// Accept an already-bound grant for this goober as well as a
+		// runner-owned source. This makes the selection idempotent: the worker
+		// can narrow a pod kit to one goober before transport, and the shared
+		// executor constructor can apply the same scoping again in the pod
+		// without losing every grant. A grant bound to any sibling goober stays
+		// unreachable.
+		if source.Goober != "" && source.Goober != gooberName {
+			continue
+		}
+		base, sourceHarness, scoped := credentials.SplitHarnessScopedCapability(source.Capability)
+		e := entry(base)
+		if scoped {
+			if e.byHarness == nil {
+				e.byHarness = make(map[string]string, 1)
+			}
+			e.byHarness[sourceHarness] = source.Ref
+		} else {
+			e.unscoped = source.Ref
+		}
+	}
+	grants := make([]credentials.Grant, 0, len(keys))
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if !capability.StageDeclarable(key) && !mcpconfig.IsBYOCredentialKey(key) {
+			continue
+		}
+		e, ok := refs[key]
+		if !ok {
+			continue
+		}
+		ref := e.unscoped
+		if harness != "" {
+			if scopedRef, ok := e.byHarness[harness]; ok {
+				ref = scopedRef
+			}
+		}
+		if ref == "" {
+			continue
+		}
+		grants = append(grants, credentials.Grant{
+			Goober:     gooberName,
+			Capability: key,
+			Ref:        ref,
+		})
+	}
+	return grants
+}
+
+// deterministicCredentialGrants excludes named BYO MCP credential sources.
+// Those sources are reachable only after buildGooberCredentialGrants binds
+// them to a goober that explicitly references the named MCP server.
+func deterministicCredentialGrants(sources []credentials.Grant) []credentials.Grant {
+	grants := make([]credentials.Grant, 0, len(sources))
+	for _, source := range sources {
+		if !mcpconfig.IsBYOCredentialKey(source.Capability) {
+			grants = append(grants, source)
+		}
+	}
+	return grants
+}
+
+func credentialGrantKey(grant instance.CredentialGrant) (string, error) {
+	switch {
+	case grant.Capability != "" && grant.MCP == "":
+		if !capability.StageDeclarable(grant.Capability) {
+			return "", fmt.Errorf("capability %q cannot be stage-scoped", grant.Capability)
+		}
+		return grant.Capability, nil
+	case grant.Capability == "" && mcpconfig.ValidBYOCredentialName(grant.MCP):
+		return mcpconfig.BYOCredentialKey(grant.MCP), nil
+	default:
+		return "", errors.New("credential grant must set exactly one valid capability or mcp name")
+	}
+}
+
+// credentialGrantStorageKey is credentialGrantKey's result, further qualified
+// by the grant's optional harness (#5148) via credentials.HarnessScopedCapability
+// so a harness-scoped grant and an unscoped grant for the same capability
+// coexist as distinct runner-owned sources instead of colliding. An unscoped
+// grant's storage key is byte-identical to credentialGrantKey's plain result,
+// so a single-grant config resolves and namespaces its ref exactly as before.
+// buildGooberCredentialGrants is the only place that ever splits this key back
+// apart, once a goober's own harness is known.
+func credentialGrantStorageKey(grant instance.CredentialGrant) (string, error) {
+	key, err := credentialGrantKey(grant)
+	if err != nil {
+		return "", err
+	}
+	if grant.Harness == "" {
+		return key, nil
+	}
+	return credentials.HarnessScopedCapability(key, grant.Harness), nil
+}
+
+// credentialRefName is the resolver ref name for an explicit credentials entry,
+// namespaced so it can never collide with a repo ref (owner/name).
+func credentialRefName(key string) string { return "credential:" + key }
+
+func registerCredentialGrantSource(cg instance.CredentialGrant, key string, refs []credentials.TokenRef, sources map[string]credentials.ExpiringResolveFunc, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) ([]credentials.TokenRef, map[string]credentials.ExpiringResolveFunc, error) {
+	ref := credentialRefName(key)
+	if cg.GitHubApp == nil {
+		return append(refs, cg.Token.CredentialTokenRef(ref)), sources, nil
+	}
+	mint, err := newAgentModelGitHubAppTokenSource(cg.GitHubApp, registrar, stores)
+	if err != nil {
+		return refs, sources, err
+	}
+	if sources == nil {
+		sources = make(map[string]credentials.ExpiringResolveFunc)
+	}
+	sources[ref] = mint
+	return refs, sources, nil
+}
+
+// newGitHubAppTokenSource builds the installation-token minting source for a
+// github-app repo (#686). A package var so CLI tests substitute an
+// httptest-backed source (mirrors newPRPoller); the
+// production source caches until near expiry and single-flights refreshes.
+var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	source, err := githubapp.Source(repo, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return source.DeliverySource(logShortCredentialDelivery("GitHub App token for repository " + repo.Owner + "/" + repo.Name)), nil
+}
+
+var newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	if app == nil || app.PrivateKey == nil {
+		return nil, errors.New("agent:model GitHub App configuration requires a private key source")
+	}
+	const keyRefName = "agent-model-github-app-private-key"
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{app.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure agent:model App key source: %w", err)
+	}
+	_, repository, ok := strings.Cut(strings.TrimSpace(app.Repository), "/")
+	if !ok || repository == "" || strings.Contains(repository, "/") {
+		return nil, errors.New("agent:model GitHub App repository must be an exact owner/name")
+	}
+	repositoryID, err := strconv.ParseInt(string(app.RepositoryID), 10, 64)
+	if err != nil || repositoryID <= 0 {
+		return nil, errors.New("agent:model GitHub App repository ID must be a positive integer")
+	}
+	source, err := githubapp.New(githubapp.Config{
+		AppID:          string(app.AppID),
+		InstallationID: string(app.InstallationID),
+		RepositoryIDs:  []int64{repositoryID},
+		Permissions: map[string]string{
+			"copilot_requests": "write",
+			"metadata":         "read",
+		},
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return source.DeliverySource(logShortCredentialDelivery("agent:model GitHub App token " + app.Name)), nil
+}
+
+// newDaemonIdentityGitHubAppTokenSource builds the installation-token minting
+// source for a github-app-kind DaemonIdentity (#1780/#1779), scoped down to
+// this one gaggle's repo exactly like a repo's own github-app auth already
+// is (MGV-5 #1012) — a shared App installation must not hand one gaggle's
+// stages a token that reaches a sibling gaggle's repo. A package var, like
+// newGitHubAppTokenSource, so CLI tests substitute an httptest-backed source.
+var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleOwner, gaggleRepoName string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	const keyRefName = "daemon-identity-private-key"
+	// #3415: which installation mints depends on which owner this gaggle acts
+	// on, and that is known HERE -- buildCredentials receives the gaggle's
+	// owner and builds one resolver per gaggle. Selecting at wiring time is
+	// why the per-owner form needs no change to credentials.ResolveFunc, which
+	// takes only a context and could not otherwise learn the target.
+	//
+	// A gaggle whose owner has no binding is refused rather than defaulted:
+	// falling back to some other owner's installation reproduces exactly the
+	// 422-at-first-use this feature exists to prevent, only later and with a
+	// less obvious cause. Config validation already rejects this shape at
+	// load, so reaching here means the two disagree.
+	installationID, ok := d.InstallationForOwner(gaggleOwner)
+	if !ok {
+		return nil, fmt.Errorf(
+			"daemon identity has no GitHub App installation bound for owner %q; "+
+				"add it to daemonIdentity.installations", gaggleOwner)
+	}
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{d.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure daemon identity App key source: %w", err)
+	}
+	source, err := githubapp.New(githubapp.Config{
+		AppID:          string(d.AppID),
+		InstallationID: string(installationID),
+		Repositories:   []string{gaggleRepoName},
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return source.DeliverySource(logShortCredentialDelivery("daemon identity GitHub App token")), nil
+}
+
+// newWorkflowSourceAppTokenSource builds the installation-token minting source
+// for a github-app workflowSource (#3274). The daemon's config-repo fetch is
+// wired here — the composition root — because internal/instance owns the
+// gitsource seam but cannot import internal/githubapp (which imports it); the
+// gitsource receives the returned instance.GitTokenSource instead. A package
+// var, like newGitHubAppTokenSource, so CLI tests substitute a fake minter.
+const workflowSourceWriteRefName = "workflow-source-write"
+
+var workflowSourceWritePermissions = map[string]string{
+	"contents":      "write",
+	"pull_requests": "write",
+	"metadata":      "read",
+}
+
+func workflowSourceWriteGrant(source *instance.WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (*credentials.Grant, credentials.ExpiringResolveFunc, error) {
+	if source == nil || source.Kind != instance.WorkflowSourceKindGit || source.URL == "" || !source.GitHubAppAuth() {
+		return nil, nil, nil
+	}
+	mint, err := newWorkflowSourceWriteTokenSource(*source, registrar, stores)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &credentials.Grant{Capability: string(capability.ConfigRepoWrite), Ref: workflowSourceWriteRefName}, mint, nil
+}
+
+// newWorkflowSourceWriteTokenSource builds the write-scoped installation-token
+// source for a github-app workflowSource (TUT-A8): the same App identity and
+// installation the read path uses (#3274), down-scoped to the config repository
+// by name AND to contents:write + pull_requests:write by permission. A package
+// var, like its read sibling, so CLI tests substitute a fake minter.
+var newWorkflowSourceWriteTokenSource = func(source instance.WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	if !source.GitHubAppAuth() {
+		return nil, errors.New("workflowSource does not use github-app auth")
+	}
+	repository, err := workflowSourceRepositoryName(source.URL)
+	if err != nil {
+		return nil, err
+	}
+	const keyRefName = "workflow-source-write-private-key"
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{source.Auth.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure workflow-source App key source: %w", err)
+	}
+	minter, err := githubapp.New(githubapp.Config{
+		AppID:          string(source.Auth.AppID),
+		InstallationID: string(source.Auth.InstallationID),
+		Repositories:   []string{repository},
+		Permissions:    workflowSourceWritePermissions,
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return minter.DeliverySource(logShortCredentialDelivery("configrepo:write GitHub App token")), nil
+}
+
+// workflowSourceRepositoryName derives the repository name the minted
+// installation token is down-scoped to from the remote config URL's last path
+// segment (GitHub clone URLs end /<owner>/<repo>[.git]). Fail closed on a URL
+// with no derivable name: minting unscoped instead would silently widen the
+// token to the installation's whole repository set.
+func workflowSourceRepositoryName(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse workflowSource url: %w", err)
+	}
+	name := path.Base(strings.TrimSuffix(parsed.Path, ".git"))
+	if name == "" || name == "." || name == "/" {
+		return "", fmt.Errorf("cannot derive the config repository name from workflowSource url %q for installation-token down-scoping", rawURL)
+	}
+	return name, nil
+}
+
+// buildWorktreeGitEnv builds the worktree Manager's per-repo git-auth resolver
+// (MGV-11 #1286). Keyed on the clone URL the runner hands WorkingCopy, it backs:
+//   - each read-only reference repo (additionalRepos) with that repo's own
+//     contents:read token (MGV-10/#1285), as an x-access-token http.extraheader
+//     scoped to that URL — a read credential, never a push one;
+//   - an ADO project repo with its Entra/PAT source, stores-aware (#683);
+//   - a GitHub project repo with its github-app installation token or a
+//     static/store-backed token (#667/#686), via githubWorktreeGitEnvironment,
+//     scoped to the project repo's own clone URL;
+//   - every other URL with the ambient git environment (nil return).
+//
+// Returns (nil, nil) when nothing bespoke is needed — a GitHub-only gaggle whose
+// project repo and reference repos carry no configured tokens — so the Manager
+// keeps its plain ambient behavior and a single-gaggle instance is unchanged.
+func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, resolver credentials.Resolver, grants []credentials.Grant, cloneURL func(apiv1.RepoRef) (string, error), reg providers.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
+	grantRef := make(map[string]string, len(grants))
+	for _, g := range grants {
+		grantRef[g.Capability] = g.Ref
+	}
+	readRefByURL := make(map[string]string, len(additionalRepos))
+	for _, repo := range additionalRepos {
+		owner := repo.Owner
+		if repo.Provider == apiv1.ProviderADO && repo.Project != "" {
+			owner += "/" + repo.Project
+		}
+		ref, ok := grantRef[credentials.RepoScopedCapability(string(capability.ContentsRead), owner, repo.Name)]
+		if !ok {
+			// No configured read token for this reference repo — a public repo
+			// clones fine anonymously, so fall through to the ambient env.
+			continue
+		}
+		url, err := cloneURL(repo)
+		if err != nil {
+			return nil, fmt.Errorf("resolve reference repo %q clone URL: %w", repo.Name, err)
+		}
+		readRefByURL[url] = ref
+	}
+
+	var adoSource providers.ADOCredentialSource
+	if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
+		source, err := adoauth.Source(adoRepo, nil, stores)
+		if err != nil {
+			return nil, fmt.Errorf("configure ADO worktree authentication: %w", err)
+		}
+		adoSource = source
+	}
+
+	// GitHub project-repo authentication (#667/#686): github-app installation
+	// tokens or a static/store-backed token for the gaggle's own GitHub repo,
+	// scoped to its clone URL. nil when the project repo is not an authenticated
+	// GitHub repo (public, or a non-GitHub provider).
+	var githubProjectEnv func(context.Context, string) ([]string, error)
+	if githubRepo, ok := githubRepoForGaggle(cfg, gaggleProject); ok {
+		env, err := githubWorktreeGitEnvironment(workcopiesDir, githubRepo, reg, stores)
+		if err != nil {
+			return nil, fmt.Errorf("configure GitHub worktree authentication: %w", err)
+		}
+		githubProjectEnv = env
+	}
+
+	// Gitea project-repo authentication: a static/store-backed token for the
+	// gaggle's own Gitea repo, scoped to its clone URL, so run-branch push (and
+	// private-repo clone/fetch) authenticate. nil when the project repo is not
+	// an authenticated Gitea repo (public read, or another provider). Unlike
+	// GitHub, Gitea has no app-install auth — only a configured token.
+	var giteaProjectEnv func(context.Context, string) ([]string, error)
+	if giteaRepo, ok := giteaRepoForGaggle(cfg, gaggleProject); ok {
+		env, err := giteaWorktreeGitEnvironment(giteaRepo, reg, stores)
+		if err != nil {
+			return nil, fmt.Errorf("configure Gitea worktree authentication: %w", err)
+		}
+		giteaProjectEnv = env
+	}
+
+	if len(readRefByURL) == 0 && adoSource == nil && githubProjectEnv == nil && giteaProjectEnv == nil {
+		return nil, nil // nothing bespoke — keep the Manager's ambient behavior
+	}
+	return func(ctx context.Context, repoURL string) ([]string, error) {
+		if ref, ok := readRefByURL[repoURL]; ok {
+			token, err := resolver.Resolve(ctx, ref)
+			if err != nil {
+				return nil, fmt.Errorf("resolve reference-repo read token: %w", err)
+			}
+			return providers.GitHubGitAuthEnvironment(token, repoURL, reg), nil
+		}
+		if adoSource != nil {
+			return providers.ADOGitAuthEnvironment(ctx, adoSource, reg, repoURL)
+		}
+		if githubProjectEnv != nil {
+			// Scoped to the project repo's clone URL; returns nil (ambient) for
+			// any other URL.
+			return githubProjectEnv(ctx, repoURL)
+		}
+		if giteaProjectEnv != nil {
+			// Scoped to the Gitea project repo's clone URL; nil (ambient) elsewhere.
+			return giteaProjectEnv(ctx, repoURL)
+		}
+		return nil, nil // ambient
+	}, nil
+}

@@ -2,13 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/goobers/goobers/internal/workerhost"
 )
 
 func runForTest(args ...string) (int, string, string) {
@@ -33,46 +30,6 @@ func TestHelpGolden(t *testing.T) {
 		if !strings.Contains(stdout, role) {
 			t.Errorf("--help omits role %q", role)
 		}
-	}
-}
-
-func TestWorkerUsesWorkerHost(t *testing.T) {
-	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
-	t.Cleanup(func() {
-		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
-	})
-	var got workerhost.Config
-	newWorkerHost = func(cfg workerhost.Config) (*workerhost.Host, error) {
-		got = cfg
-		return &workerhost.Host{}, nil
-	}
-	runWorkerHost = func(context.Context, *workerhost.Host) error { return nil }
-	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
-
-	code, stdout, stderr := runForTest("worker", "--task-queue", "one", "--task-queue", "two", "--health-addr", ":8080")
-	if code != 0 || stderr != "" {
-		t.Fatalf("worker: code=%d stderr=%q", code, stderr)
-	}
-	if strings.Join(got.TaskQueues, ",") != "one,two" || got.HealthAddr != ":8080" {
-		t.Fatalf("worker host config = %+v", got)
-	}
-	if !strings.Contains(stdout, "drained cleanly") {
-		t.Fatalf("worker output = %q", stdout)
-	}
-}
-
-func TestWorkerMapsHostErrors(t *testing.T) {
-	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
-	t.Cleanup(func() {
-		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
-	})
-	newWorkerHost = func(workerhost.Config) (*workerhost.Host, error) { return &workerhost.Host{}, nil }
-	runWorkerHost = func(context.Context, *workerhost.Host) error { return workerhost.ErrAbandonedWork }
-	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
-
-	code, _, stderr := runForTest("worker")
-	if code != 3 || !strings.Contains(stderr, "drain timeout") {
-		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"github.com/goobers/goobers/internal/avexclusion"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/workerhost"
 )
 
 // avExclusionInstanceYAML declares one windows runner with the claim and one
@@ -455,48 +454,5 @@ func TestStagePodAVExclusionAdvisory(t *testing.T) {
 	}
 	if line := hostAVExclusionAdvisory(context.Background(), "daemon", nil, linux); line != "" {
 		t.Errorf("linux host advisory = %q, want empty", line)
-	}
-}
-
-// TestWorkerAVExclusionDirectoriesFollowTheProvisioner: the advisory's
-// worker set is the set workerEngineDepsForPlatform ACTUALLY provisions.
-//
-// The assertion is deliberately made against the runtime the provisioner
-// returns — the worktree manager's own root and the workspace
-// provisioner's own scratch directory — rather than against
-// workerWorkcopiesDir/workerScratchDir, which are the helpers the function
-// under test calls. Asserting against those would be tautological: it
-// cannot fail, and it would stay green if the provisioner were re-pointed
-// at a literal path, which is exactly the drift the advisory must not have.
-func TestWorkerAVExclusionDirectoriesFollowTheProvisioner(t *testing.T) {
-	workRoot := t.TempDir()
-	runtimeDeps, err := workerEngineDepsForPlatform(workRoot, "linux", "test-owner")
-	if err != nil {
-		t.Fatalf("provision worker engine deps: %v", err)
-	}
-	t.Cleanup(func() { _ = runtimeDeps.Close() })
-
-	provisioned, ok := runtimeDeps.deps.Workspaces.(*workerhost.WorktreeWorkspaces)
-	if !ok {
-		t.Fatalf("worker workspaces = %T, want *workerhost.WorktreeWorkspaces", runtimeDeps.deps.Workspaces)
-	}
-	tempDir := filepath.Join(workRoot, "tmp")
-	dirs := workerAVExclusionDirectories(workRoot, avExclusionDeps{tempDir: tempDir})
-	paths := map[string]bool{}
-	for _, d := range dirs {
-		paths[d.Path] = true
-	}
-	// worktree.NewManager absolutises its root, so compare like for like.
-	wantWorkcopies, err := filepath.Abs(workerWorkcopiesDir(workRoot))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if provisioned.Manager.Root != wantWorkcopies {
-		t.Fatalf("provisioner mirror root = %q, want %q", provisioned.Manager.Root, wantWorkcopies)
-	}
-	for _, want := range []string{workRoot, provisioned.Manager.Root, provisioned.ScratchDir, tempDir} {
-		if !paths[want] {
-			t.Errorf("worker advisory set %v does not name the provisioned directory %s", dirs, want)
-		}
 	}
 }

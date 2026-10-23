@@ -18,7 +18,6 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/sharedclaim"
@@ -149,7 +148,7 @@ func TestRemoteExecutionPolicyUsesDaemonPinAndRefusesTerminalRun(t *testing.T) {
 				}))
 				t.Cleanup(server.Close)
 				fence := remoteSharedExecutionFence(server.URL, func(runID string) (string, error) {
-					return workerExecutionBearer(&livejournal.HTTPEmitter{BaseURL: server.URL, Token: token}, runID)
+					return token, nil
 				})
 				ctx, stop, err := fence(t.Context(), apiv1.InvocationEnvelope{RunID: "shared-run"})
 				if err != nil {
@@ -172,9 +171,8 @@ func TestRemoteExecutionPolicyUsesDaemonPinAndRefusesTerminalRun(t *testing.T) {
 	}
 }
 
-func TestWorkerExecutionWithoutBearerRefusesRemoteDaemon(t *testing.T) {
-	emitter := &livejournal.HTTPEmitter{BaseURL: "https://daemon.example"}
-	fence := remoteSharedExecutionFence(emitter.BaseURL, func(runID string) (string, error) { return workerExecutionBearer(emitter, runID) })
+func TestRemoteExecutionWithoutBearerRefusesRemoteDaemon(t *testing.T) {
+	fence := remoteSharedExecutionFence("https://daemon.example", func(string) (string, error) { return "", nil })
 	_, stop, err := fence(t.Context(), apiv1.InvocationEnvelope{RunID: "run"})
 	stop()
 	if err == nil {

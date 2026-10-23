@@ -10,9 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/podauth"
 )
 
 // The ledger is atomically replaced. Execution needs a complete durable
@@ -32,24 +30,6 @@ func (s *daemonClaimService) executionClaimSnapshot(ctx context.Context, runID, 
 	}
 	return httpapi.ClaimListResponse{ClaimVisibility: mode, ObservedAt: time.Now(),
 		Entries: claimEntriesWire(ledger.ForRunAll(runID)), History: claimEntriesWire(ledger.HistoryForRun(runID))}, nil
-}
-
-func workerExecutionBearer(emitter *livejournal.HTTPEmitter, runID string) (string, error) {
-	if emitter.Token != "" {
-		return emitter.Token, nil
-	}
-	if emitter.Minter == nil {
-		// The observer validates that anonymous reads target literal loopback.
-		// Missing remote credentials never bypass the daemon policy check.
-		return "", nil
-	}
-	minter, ok := emitter.Minter.(interface {
-		MintScoped(string, time.Duration, ...string) (string, error)
-	})
-	if !ok {
-		return "", fmt.Errorf("worker shared execution requires a run-scoped bearer")
-	}
-	return minter.MintScoped(runID, 5*time.Minute, podauth.ScopeClaims)
 }
 
 func (s *daemonClaimService) executionClaimVisibility(ctx context.Context, runID string) (string, error) {

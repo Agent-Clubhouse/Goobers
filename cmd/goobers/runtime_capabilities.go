@@ -509,10 +509,6 @@ func init() {
 				withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
 		).withSynopsis(synopsisByID["temporal"]).withHelp("operate Temporal payload services", temporalHelp).
 			withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
-		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
-			withSynopsis(synopsisByID["worker"]).
-			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
-			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
 		command("config-seed", apicontract.ActionMaintenance, runConfigSeed).
 			withSynopsis(synopsisByID["config-seed"]).
 			withHelp("seed a private worker instance from a rendered configuration mirror", configSeedHelp).

@@ -23,6 +23,22 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+func readFileContent(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
+}
+
+func writeFileContent(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type childKitFixture struct {
 	driver      *runner.Runner
 	writer      childKitWriter
