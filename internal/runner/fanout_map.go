@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/goobers/goobers/internal/runsemantics"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
