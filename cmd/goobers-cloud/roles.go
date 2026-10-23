@@ -52,6 +52,8 @@ Options:
   --database-direct-url-file PATH  Read direct URL from a mounted Secret
   --database-auth MODE             password or entra (default password)
   --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --instance-id ID                 Goobers instance owning the migration lease (required)
+  --holder ID                      Unique migration pod/process identity
 
 Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
@@ -93,6 +95,8 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 	directURLFile := flags.String("database-direct-url-file", "", "file containing the direct PostgreSQL URL")
 	authMode := flags.String("database-auth", environmentOr("GOOBERS_DATABASE_AUTH", "password"), "database authentication mode: password or entra")
 	backupRef := flags.String("backup-ref", os.Getenv("GOOBERS_MIGRATION_BACKUP_REF"), "restorable backup identifier or PITR mark")
+	instanceID := flags.String("instance-id", os.Getenv("GOOBERS_INSTANCE_ID"), "Goobers instance identifier")
+	holder := flags.String("holder", environmentOr("GOOBERS_REPLICA_ID", defaultMigrationHolder()), "migration pod/process identity")
 	flags.Usage = func() { write(stderr, migrateHelp) }
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -100,7 +104,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*backupRef) == "" {
+	if flags.NArg() != 0 || strings.TrimSpace(*backupRef) == "" || strings.TrimSpace(*instanceID) == "" {
 		flags.Usage()
 		return 2
 	}
@@ -121,7 +125,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer pools.Close()
-	if err := runCloudMigrations(ctx, pools, *backupRef); err != nil {
+	if err := runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder); err != nil {
 		writef(stderr, "goobers-cloud migrate: %s\n", cloudpg.SafeDiagnostic(err))
 		return 1
 	}
@@ -151,12 +155,15 @@ var (
 	runAPIHost         = unavailableDatabaseRole
 	runControllerHost  = unavailableDatabaseRole
 	checkCloudSchema   = cloudmigrate.CheckPoolCompatibility
-	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef string) error {
+	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef, instanceID, holder string) error {
 		catalog, err := cloudmigrate.Catalog()
 		if err != nil {
 			return err
 		}
-		return (cloudmigrate.Runner{Direct: pools.Direct, Catalog: catalog, BackupRef: backupRef}).Apply(ctx)
+		return (cloudmigrate.Runner{
+			Direct: pools.Direct, Catalog: catalog, BackupRef: backupRef,
+			InstanceID: instanceID, Holder: holder,
+		}).Apply(ctx)
 	}
 )
 
@@ -281,6 +288,14 @@ func environmentOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func defaultMigrationHolder() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "unknown-host"
+	}
+	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
 func runWorkerRole(args []string, stdout, stderr io.Writer) int {
