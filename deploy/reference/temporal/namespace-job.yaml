@@ -18,12 +18,19 @@ kind: Job
 metadata:
   name: goobers-temporal-namespace
   namespace: goobers-temporal
+  labels:
+    app.kubernetes.io/name: temporal
+    app.kubernetes.io/component: namespace-registrar
 spec:
   # Reruns (chart upgrade, cluster rebuild) must not fail on an
   # already-registered namespace; backoffLimit bounds a genuine failure
   # (frontend unreachable) rather than retrying forever.
   backoffLimit: 6
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: temporal
+        app.kubernetes.io/component: namespace-registrar
     spec:
       restartPolicy: Never
       nodeSelector:

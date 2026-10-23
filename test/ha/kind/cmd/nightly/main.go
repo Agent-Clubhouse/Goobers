@@ -436,12 +436,13 @@ func collect() error {
 		return os.WriteFile(filepath.Join(evidence, "cluster-unavailable.txt"), []byte("kind cluster was not created\n"), 0o644)
 	}
 	for name, args := range map[string][]string{
-		"nodes.txt":         {"kubectl", "get", "nodes", "-o", "wide"},
-		"pods.txt":          {"kubectl", "get", "pods", "-A", "-o", "wide"},
-		"events.txt":        {"kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"},
-		"cnpg.yaml":         {"kubectl", "get", "cluster", "temporal-postgres", "-n", "goobers-temporal", "-o", "yaml"},
-		"helm-releases.txt": {"helm", "list", "-A"},
-		"temporal-logs.txt": {"kubectl", "logs", "-n", "goobers-temporal", "--all-containers", "--prefix", "--tail=200", "-l", "app.kubernetes.io/instance=temporal"},
+		"nodes.txt":              {"kubectl", "get", "nodes", "-o", "wide"},
+		"pods.txt":               {"kubectl", "get", "pods", "-A", "-o", "wide"},
+		"events.txt":             {"kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"},
+		"cnpg.yaml":              {"kubectl", "get", "cluster", "temporal-postgres", "-n", "goobers-temporal", "-o", "yaml"},
+		"helm-releases.txt":      {"helm", "list", "-A"},
+		"temporal-logs.txt":      {"kubectl", "logs", "-n", "goobers-temporal", "--all-containers", "--prefix", "--tail=200", "-l", "app.kubernetes.io/instance=temporal"},
+		"namespace-job-logs.txt": {"kubectl", "logs", "-n", "goobers-temporal", "--all-containers", "--prefix", "--tail=200", "-l", "app.kubernetes.io/component=namespace-registrar"},
 	} {
 		_ = capture(ctx, filepath.Join(evidence, name), args...)
 	}
