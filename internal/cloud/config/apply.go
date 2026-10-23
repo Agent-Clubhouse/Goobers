@@ -14,6 +14,10 @@ type Candidate struct {
 	Archive []byte
 	Config  *instance.Config
 	Set     *instance.ConfigSet
+	// Pins are the admission digests of the candidate's workflows, keyed
+	// "gaggle/workflow". Optional: without them the applied generation pins no
+	// start (PinFor fails closed).
+	Pins map[string]Pins
 }
 
 // Activator switches the running generation. The concrete implementation is
@@ -67,6 +71,7 @@ func (a *Applier) Apply(ctx context.Context, c Candidate) error {
 	if err := a.activator.Activate(ctx, c); err != nil {
 		return err
 	}
+	gen.pins = c.Pins
 	a.guard.Replace(gen)
 	a.status = Status{Applied: c.Digest}
 	return nil

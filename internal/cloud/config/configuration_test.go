@@ -97,3 +97,33 @@ func TestNewConfigurationRequiresDependencies(t *testing.T) {
 		t.Fatal("missing dependencies accepted")
 	}
 }
+
+func TestPinForServesOnlyTheAppliedGenerationsDigests(t *testing.T) {
+	pins := map[string]cloudconfig.Pins{"g/ok": {WorkflowDigest: "wf", GooberDigest: "goober"}, "g/half": {WorkflowDigest: "wf"}}
+	cfg, err := cloudconfig.NewConfiguration(readiness.Assess, &recordingActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) {
+			return cloudconfig.Candidate{Digest: "v1", Config: denyConfig(), Set: workflowSet(eligible()), Pins: pins}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := cfg.PinFor(ctx, "v1", "g", "ok"); !errors.Is(err, cloudconfig.ErrPinUnavailable) {
+		t.Fatalf("before the first apply = %v, want ErrPinUnavailable", err)
+	}
+	if err := cfg.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if wf, goober, err := cfg.PinFor(ctx, "v1", "g", "ok"); err != nil || wf != "wf" || goober != "goober" {
+		t.Fatalf("PinFor = %q %q %v", wf, goober, err)
+	}
+	for name, args := range map[string][3]string{
+		"stale generation": {"v0", "g", "ok"},
+		"unknown workflow": {"v1", "g", "missing"},
+		"half a pin":       {"v1", "g", "half"},
+	} {
+		if _, _, err := cfg.PinFor(ctx, args[0], args[1], args[2]); !errors.Is(err, cloudconfig.ErrPinUnavailable) {
+			t.Errorf("%s: %v, want ErrPinUnavailable", name, err)
+		}
+	}
+}
