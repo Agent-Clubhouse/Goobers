@@ -111,10 +111,7 @@ func TestStageGrantIssuerRejectsUnavailableAndForeignGrants(t *testing.T) {
 }
 
 func TestStageGrantIssuerMintsPodGrantAndPrunesExpiredState(t *testing.T) {
-	issuer, err := NewStageGrantIssuer("http://127.0.0.1:8080")
-	if err != nil {
-		t.Fatal(err)
-	}
+	issuer := newTestStageGrantIssuer(t, "http://127.0.0.1:8080")
 	now := time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
 	issuer.now = func() time.Time { return now }
 	issuer.Key().WithClock(func() time.Time { return now })
