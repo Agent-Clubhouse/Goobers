@@ -4,15 +4,14 @@
   "cloudReady": false,
   "summary": {
     "blockedWorkflows": 2,
-    "totalBlockers": 13,
+    "totalBlockers": 12,
     "configFixes": 4,
-    "waitingOnP4": 9,
+    "waitingOnP4": 8,
     "p4Issues": [
       7753,
       7754,
       7755,
       7758,
-      7760,
       7761,
       7762,
       7763
@@ -104,19 +103,6 @@
         },
         {
           "code": "RUNTIME001",
-          "feature": "gate.evaluator.human",
-          "stage": "approval",
-          "path": "/spec/gates/0/evaluator",
-          "message": "engine does not support gate.evaluator.human",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7760",
-            "issue": 7760,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7760"
-          }
-        },
-        {
-          "code": "RUNTIME001",
           "feature": "task.limits.maxTokens",
           "stage": "agent",
           "path": "/spec/tasks/0/limits/maxTokens",
@@ -192,25 +178,6 @@
     }
   ],
   "blockers": [
-    {
-      "key": "RUNTIME001:gate.evaluator.human",
-      "code": "RUNTIME001",
-      "feature": "gate.evaluator.human",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7760",
-        "issue": 7760,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7760"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "approval",
-          "path": "/spec/gates/0/evaluator"
-        }
-      ]
-    },
     {
       "key": "RUNTIME001:spec.maps",
       "code": "RUNTIME001",

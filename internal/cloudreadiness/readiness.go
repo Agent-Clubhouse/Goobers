@@ -101,7 +101,6 @@ var featureBlockers = map[workflow.FeatureID]FeatureBlocker{
 	"workflow.spec.parallels.selection": {Path: "spec.parallels.selection", Issue: 7754},
 	"workflow.spec.maps":                {Path: "spec.maps", Issue: 7755},
 	"task.childWorkflows":               {Path: "task.childWorkflows", Issue: 7758},
-	"gate.evaluator.human":              {Path: "gate.evaluator.human", Issue: 7760},
 	"task.limits.maxTokens":             {Path: "task.limits.maxTokens", Issue: 7761},
 	"task.limits.maxCostUSD":            {Path: "task.limits.maxCostUSD", Issue: 7761},
 	"task.outbox":                       {Path: "task.outbox", Issue: 7762},
@@ -208,14 +207,6 @@ func unsupportedFeatureBlockers(spec apiv1.WorkflowSpec) []Blocker {
 			continue
 		}
 		blockers = append(blockers, featureBlocker(id, refusal.Stage, featurePath(spec, id, refusal.Stage)))
-	}
-	for i, gate := range spec.Gates {
-		if gate.Evaluator == apiv1.EvaluatorHuman &&
-			engineRuntimeLevel("gate.evaluator.human") == workflow.RuntimeUnsupported {
-			blockers = append(blockers, featureBlocker(
-				"gate.evaluator.human", gate.Name, fmt.Sprintf("/spec/gates/%d/evaluator", i),
-			))
-		}
 	}
 	for i, task := range spec.Tasks {
 		if task.Type != apiv1.TaskAgentic || task.Limits == nil {
