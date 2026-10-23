@@ -1,0 +1,281 @@
+package journalpg
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/jackc/pgx/v5"
+)
+
+const maxEventBytes = 8 << 20
+
+// prepareEvent is deliberately called before BEGIN/lease.WithFence. The
+// transaction only stamps server-allocated sequencing metadata onto clean data.
+func prepareEvent(r *runOwner, event journal.Event) (journal.Event, error) {
+	event.Schema = journal.EventSchema
+	event.Seq = 1
+	event.Time = r.options.Clock()
+	if event.Progress != nil {
+		progress := *event.Progress
+		event.Progress = &progress
+		progress.Sequence = 1
+		if progress.OccurredAt.IsZero() {
+			progress.OccurredAt = event.Time
+		}
+		if progress.UpdatedAt.IsZero() {
+			progress.UpdatedAt = progress.OccurredAt
+		}
+	}
+	raw, err := journal.MarshalEvent(event)
+	if err != nil {
+		return journal.Event{}, err
+	}
+	raw = r.options.Scrubber.Scrub(raw)
+	if len(raw)+1 > maxEventBytes {
+		return journal.Event{}, errors.New("journalpg: event exceeds 8 MiB")
+	}
+	var clean journal.Event
+	if err := json.Unmarshal(raw, &clean); err != nil {
+		return clean, fmt.Errorf("journalpg: scrubbed event: %w", err)
+	}
+	if _, err := journal.MarshalEvent(clean); err != nil {
+		return clean, err
+	}
+	return clean, nil
+}
+func emitKey(event journal.Event) any {
+	key, _ := event.Runner["emitKey"].(string)
+	if key == "" {
+		return nil
+	}
+	return key
+}
+
+// AppendBatch commits all events or none. Allocation, deduplication, canonical
+// bytes and phase checkpoints share one transaction; rollback cannot leave gaps.
+func (b *Backend) AppendBatch(ctx context.Context, handle journal.RunHandle, token journal.OwnerToken, events []journal.Event) (int, error) {
+	r, err := b.writeRun(handle, token)
+	if err != nil {
+		return 0, err
+	}
+	clean := make([]journal.Event, len(events))
+	for i, event := range events {
+		clean[i], err = prepareEvent(r, event)
+		if err != nil {
+			return 0, err
+		}
+	}
+	var last int64
+	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
+		last = seq
+		for _, event := range clean {
+			var err error
+			last, _, err = b.appendClean(ctx, tx, r, last, event)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(events) > 0 {
+		b.changed(r, uint64(last))
+	}
+	return len(events), nil
+}
+
+func (b *Backend) appendClean(ctx context.Context, tx pgx.Tx, r *runOwner, seq int64, event journal.Event) (int64, journal.Event, error) {
+	if key := emitKey(event); key != nil {
+		var raw []byte
+		err := tx.QueryRow(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND emit_key=$3`, b.config.InstanceID, r.key.RunID, key).Scan(&raw)
+		if err == nil {
+			var prior journal.Event
+			err = json.Unmarshal(raw, &prior)
+			return seq, prior, err
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return seq, journal.Event{}, err
+		}
+	}
+	if event.Type == journal.EventAgentProgress && event.Progress != nil {
+		events, err := b.eventsTx(ctx, tx, r.key.RunID)
+		if err != nil {
+			return seq, journal.Event{}, err
+		}
+		if err := journal.ValidateAgentProgressRate(events, *event.Progress, event.Time); err != nil {
+			return seq, journal.Event{}, err
+		}
+	}
+	event.Seq = uint64(seq + 1)
+	if event.Progress != nil {
+		event.Progress.Sequence = event.Seq
+	}
+	raw, err := journal.MarshalEvent(event)
+	if err != nil {
+		return seq, journal.Event{}, err
+	}
+	if len(raw)+1 > maxEventBytes {
+		return seq, journal.Event{}, errors.New("journalpg: event exceeds 8 MiB")
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO journal.run_event(instance_id,run_id,seq,branch,type,stage,attempt,emit_key,at,body)
+ SELECT instance_id,run_id,$5,$6,$7,$8,$9,$10,$11,$12 FROM journal.run_seq WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`,
+		b.config.InstanceID, r.key.RunID, r.token, r.epoch, int64(event.Seq), event.Branch, string(event.Type), event.Stage, event.Attempt, emitKey(event), event.Time, raw)
+	if err = requireWrite(tag.RowsAffected(), err); err != nil {
+		return seq, journal.Event{}, err
+	}
+	tag, err = tx.Exec(ctx, `UPDATE journal.run_seq SET last_seq=$5,last_append_at=$6 WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, int64(event.Seq), event.Time)
+	if err = requireWrite(tag.RowsAffected(), err); err != nil {
+		return seq, journal.Event{}, err
+	}
+	if err = b.indexArtifact(ctx, tx, r, event); err != nil {
+		return seq, journal.Event{}, err
+	}
+	if lifecycle(event) {
+		err = b.checkpointTx(ctx, tx, r)
+	}
+	return int64(event.Seq), event, err
+}
+func lifecycle(event journal.Event) bool {
+	switch event.Type {
+	case journal.EventRunStarted, journal.EventRunResumed, journal.EventRunFinished, journal.EventGateOverridden, journal.EventGateEvaluated, journal.EventStageRerunRequested:
+		return true
+	default:
+		return false
+	}
+}
+func (b *Backend) indexArtifact(ctx context.Context, tx pgx.Tx, r *runOwner, event journal.Event) error {
+	if event.Ref == nil {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO journal.run_artifact(instance_id,run_id,seq,digest,kind)
+ SELECT instance_id,run_id,$5,$6,$7 FROM journal.run_seq WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, int64(event.Seq), event.Ref.Digest, string(event.Type))
+	return requireWrite(tag.RowsAffected(), err)
+}
+func (b *Backend) checkpointTx(ctx context.Context, tx pgx.Tx, r *runOwner) error {
+	events, err := b.eventsTx(ctx, tx, r.key.RunID)
+	if err != nil {
+		return err
+	}
+	state := stateForEvents(r.key.RunID, events)
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	// Phase-change writes only; explicit Checkpoint calls may advance at_seq.
+	tag, err := tx.Exec(ctx, `INSERT INTO journal.run_checkpoint(instance_id,run_id,phase,terminal,state,at_seq)
+ SELECT instance_id,run_id,$5,$6,$7,$8 FROM journal.run_seq WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4
+ ON CONFLICT(instance_id,run_id) DO UPDATE SET phase=EXCLUDED.phase,terminal=EXCLUDED.terminal,state=EXCLUDED.state,at_seq=EXCLUDED.at_seq
+ WHERE EXISTS(SELECT 1 FROM journal.run_seq s WHERE s.instance_id=$1 AND s.run_id=$2 AND s.owner_token=$3 AND s.owner_epoch=$4)`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, string(state.Phase), state.Phase != journal.PhaseRunning, raw, int64(state.LastSeq))
+	return requireWrite(tag.RowsAffected(), err)
+}
+func (b *Backend) eventsTx(ctx context.Context, tx pgx.Tx, runID string) ([]journal.Event, error) {
+	rows, err := tx.Query(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 ORDER BY seq`, b.config.InstanceID, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []journal.Event
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var e journal.Event
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// AppendIfAbsent evaluates the predicate against durable history while holding
+// the same row lock as the append. The predicate must not perform blocking IO.
+func (b *Backend) AppendIfAbsent(ctx context.Context, h journal.RunHandle, o journal.OwnerToken, event journal.Event, match func(journal.Event) bool) (bool, error) {
+	r, err := b.writeRun(h, o)
+	if err != nil {
+		return false, err
+	}
+	if match == nil {
+		return false, errors.New("journalpg: match predicate required")
+	}
+	clean, err := prepareEvent(r, event)
+	if err != nil {
+		return false, err
+	}
+	appended := false
+	var last int64
+	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
+		events, err := b.eventsTx(ctx, tx, r.key.RunID)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			if match(event) {
+				return nil
+			}
+		}
+		last, _, err = b.appendClean(ctx, tx, r, seq, clean)
+		appended = err == nil
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	if appended {
+		b.changed(r, uint64(last))
+	}
+	return appended, nil
+}
+
+// Checkpoint refreshes the derived state; committed event bytes remain truth.
+func (b *Backend) Checkpoint(ctx context.Context, h journal.RunHandle, o journal.OwnerToken) error {
+	r, err := b.writeRun(h, o)
+	if err != nil {
+		return err
+	}
+	return b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, _ int64) error { return b.checkpointTx(ctx, tx, r) })
+}
+
+// RepairAppendBoundary validates ownership. Atomic commits leave no torn tail.
+func (b *Backend) RepairAppendBoundary(ctx context.Context, h journal.RunHandle, o journal.OwnerToken) error {
+	r, err := b.writeRun(h, o)
+	if err != nil {
+		return err
+	}
+	return b.withRun(ctx, r, func(context.Context, pgx.Tx, int64) error { return nil })
+}
+
+// RunNotifications coalesces wakeups outside emit transactions on a dedicated
+// connection. Consumers must still poll at least once per second: notifications
+// are hints and a process crash between commit and wakeup may lose one.
+func (b *Backend) RunNotifications(ctx context.Context, conn *pgx.Conn) error {
+	if conn == nil {
+		return errors.New("journalpg: dedicated notification connection required")
+	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			select {
+			case <-b.dirty:
+				call, cancel := context.WithTimeout(ctx, 2*time.Second)
+				_, err := conn.Exec(call, `SELECT pg_notify('goobers_journal',$1)`, b.config.InstanceID)
+				cancel()
+				if err != nil {
+					return err
+				}
+			default:
+			}
+		}
+	}
+}
