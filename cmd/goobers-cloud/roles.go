@@ -14,7 +14,6 @@ import (
 
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/signals"
-	"github.com/goobers/goobers/internal/version"
 )
 
 const (
