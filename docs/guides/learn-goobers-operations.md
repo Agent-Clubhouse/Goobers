@@ -230,8 +230,9 @@ Check these operating changes before restarting on v0.5:
 
 #### Copilot CLI minimum
 
-Use **Copilot CLI 1.0.52 or newer**. Goobers appends `--no-remote-export` to
-Copilot session invocations; older CLIs fail harness preflight because they
+Use **Copilot CLI 1.0.52 or newer**. Goobers appends `--sync-session=off`
+on CLI 1.0.103 and newer, or `--no-remote-export` on older releases, to
+Copilot session invocations; CLIs below 1.0.52 fail harness preflight because they
 cannot honor that flag. Upgrade with `copilot update`, then run
 `goobers validate --check-harness <instance-path>` under the service account.
 Custom forwarding launchers must pass the appended flag through. See

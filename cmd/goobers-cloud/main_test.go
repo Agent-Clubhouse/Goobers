@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
+	"github.com/goobers/goobers/internal/workerhost"
 )
 
 func runForTest(args ...string) (int, string, string) {
@@ -58,6 +62,33 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	}
 }
 
+func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
+	originalPools, originalRun, originalSignal := newCloudPools, runCloudMigrations, signalContext
+	t.Cleanup(func() {
+		newCloudPools, runCloudMigrations, signalContext = originalPools, originalRun, originalSignal
+	})
+	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_INSTANCE_ID", "test-instance")
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
+		return &cloudpg.Pools{}, nil
+	}
+	var backupRef string
+	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup, _, _ string) error {
+		backupRef = backup
+		return nil
+	}
+
+	if code, _, _ := runForTest("migrate", "apply"); code != 2 {
+		t.Fatalf("migrate without backup code = %d, want 2", code)
+	}
+	t.Setenv("GOOBERS_MIGRATION_BACKUP_REF", "pitr:2026-10-22T20:00:00Z")
+	code, stdout, stderr := runForTest("migrate", "apply")
+	if code != 0 || stderr != "" || backupRef != "pitr:2026-10-22T20:00:00Z" {
+		t.Fatalf("migrate: code=%d stdout=%q stderr=%q backup=%q", code, stdout, stderr, backupRef)
+	}
+}
+
 func TestGeneratedDocs(t *testing.T) {
 	root := t.TempDir()
 	if err := writeDocs(root); err != nil {
@@ -94,5 +125,45 @@ func TestCompletionCommand(t *testing.T) {
 	code, stdout, stderr := runForTest("completion", "bash")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "goobers-cloud") {
 		t.Fatalf("completion bash: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestWorkerUsesWorkerHost(t *testing.T) {
+	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
+	t.Cleanup(func() {
+		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
+	})
+	var got workerhost.Config
+	newWorkerHost = func(cfg workerhost.Config) (*workerhost.Host, error) {
+		got = cfg
+		return &workerhost.Host{}, nil
+	}
+	runWorkerHost = func(context.Context, *workerhost.Host) error { return nil }
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+
+	code, stdout, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir(), "--task-queue", "one", "--task-queue", "two", "--health-addr", ":8080")
+	if code != 0 || strings.Contains(stderr, "error:") {
+		t.Fatalf("worker: code=%d stderr=%q", code, stderr)
+	}
+	if strings.Join(got.TaskQueues, ",") != "one,two" || got.HealthAddr != ":8080" {
+		t.Fatalf("worker host config = %+v", got)
+	}
+	if !strings.Contains(stdout, "drained cleanly") {
+		t.Fatalf("worker output = %q", stdout)
+	}
+}
+
+func TestWorkerMapsHostErrors(t *testing.T) {
+	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
+	t.Cleanup(func() {
+		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
+	})
+	newWorkerHost = func(workerhost.Config) (*workerhost.Host, error) { return &workerhost.Host{}, nil }
+	runWorkerHost = func(context.Context, *workerhost.Host) error { return workerhost.ErrAbandonedWork }
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+
+	code, _, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir())
+	if code != 3 || !strings.Contains(stderr, "drain timeout") {
+		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
 	}
 }
