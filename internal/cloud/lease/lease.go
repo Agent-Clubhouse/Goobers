@@ -106,7 +106,12 @@ func New(config Config) (*Manager, error) {
 	return &Manager{config: config}, nil
 }
 
-// Acquire takes over an expired lease using the database clock.
+// Acquire takes over an expired lease using the database clock. The history
+// is stamped with clock_timestamp(), the statement instant after the
+// heartbeat row lock and the expiry decision, never now(): a takeover
+// transaction can begin before the holder expires or releases and decide
+// after, and history stamped at transaction start would record an acquisition
+// before the predecessor's expiry or release that never happened.
 func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 	tx, err := m.config.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -135,7 +140,7 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 	if epoch > 0 && (holder != m.config.Holder || expired) {
 		if _, err := tx.Exec(ctx, `
 			UPDATE control.lease_history
-			SET released_at=now(), release_kind='expired'
+			SET released_at=clock_timestamp(), release_kind='expired'
 			WHERE instance_id=$1 AND name=$2 AND epoch=$3 AND released_at IS NULL`,
 			m.config.InstanceID, m.config.Name, epoch,
 		); err != nil {
@@ -156,7 +161,7 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO control.lease_history
 			(instance_id, name, epoch, holder, acquired_at)
-		VALUES ($1, $2, $3, $4, now())`,
+		VALUES ($1, $2, $3, $4, clock_timestamp())`,
 		m.config.InstanceID, m.config.Name, newEpoch, m.config.Holder,
 	); err != nil {
 		return nil, fmt.Errorf("record lease acquisition: %w", err)
@@ -291,7 +296,7 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE control.lease_history
-		SET released_at=now(), release_kind='voluntary'
+		SET released_at=clock_timestamp(), release_kind='voluntary'
 		WHERE instance_id=$1 AND name=$2 AND epoch=$3 AND released_at IS NULL`,
 		handle.InstanceID, handle.Name, handle.Epoch,
 	); err != nil {
