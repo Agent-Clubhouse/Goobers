@@ -3,6 +3,7 @@ package podauth
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,11 @@ func (r *testRevocations) IsRevoked(context.Context, string) (bool, error) { ret
 func authFixture(t *testing.T, store *testRevocations) *Auth {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(path, bytes.Repeat([]byte("k"), 32), 0600); err != nil {
+	raw, err := json.Marshal(map[string]shared.SigningKey{"current": {ID: "v1", Key: bytes.Repeat([]byte("k"), 32)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
 	a, err := New(Config{Mode: "signed", KeyFile: path, Revocations: store, Fallback: httpapi.DenyAllAuthenticator{}})
@@ -89,5 +94,23 @@ func TestCloudKeyReloadStops(t *testing.T) {
 	cancel()
 	if err := a.RunKeyReload(ctx, func(err error) { t.Error(err) }); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+func TestCloudRequiresExplicitJSONRing(t *testing.T) {
+	for name, raw := range map[string][]byte{
+		"raw":       bytes.Repeat([]byte("k"), 64),
+		"brace-raw": append([]byte("{"), bytes.Repeat([]byte("k"), 63)...),
+		"malformed": []byte(`{"current":{"id":"v1","key":"invalid"}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "keys.json")
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := New(Config{Mode: "signed", KeyFile: path, Revocations: &testRevocations{}}); err == nil {
+				t.Fatal("cloud boot accepted a non-ring file")
+			}
+		})
 	}
 }

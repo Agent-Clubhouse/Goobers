@@ -8,7 +8,11 @@ credentials are resolved. The role composition is owned by HA-P3-18. This librar
 refuses Registry mode, missing signing keys, and missing durable revocations.
 Local single-key installations retain their existing token format and behavior.
 
-A versioned key file contains base64 key material (at least 32 decoded bytes):
+Cloud auth explicitly uses `LoadKeyRingFile` and requires a JSON key ring; raw
+files and malformed JSON fail boot. The existing `LoadSignedKeyFile` and
+`LoadDerivedSignedKeyFile` APIs continue to treat files as arbitrary trimmed raw
+bytes, without format detection or reload. A versioned key file contains base64
+key material (at least 32 decoded bytes):
 
 ```json
 {
@@ -19,8 +23,8 @@ A versioned key file contains base64 key material (at least 32 decoded bytes):
 
 `previous` is optional. IDs contain 1–64 URL-safe letters, digits, underscores or
 hyphens. IDs are part of the MAC-covered payload; an unknown ID fails closed.
-Only `current` mints. An untagged token verifies against `current` only. A plain
-key file continues to mean a single untagged key. Credential-refresh key material
+Only `current` mints. An untagged token verifies against `current` only. The legacy raw-file
+loaders continue to produce a single untagged key. Credential-refresh key material
 is derived independently for each version using the existing HKDF domain.
 
 The watcher reads the file path every five seconds, including after Secret

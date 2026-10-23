@@ -95,7 +95,10 @@ func (s *SignedKey) verificationKey(payload string) ([]byte, string, error) {
 	}
 }
 
-func loadKeyRingFile(path, domain string) (*SignedKey, error) {
+// LoadKeyRingFile explicitly loads a JSON key ring, rejecting malformed JSON or
+// raw key material. A nonempty domain derives each key independently via HKDF.
+// Unlike the legacy raw-file loaders, this signer supports file reloads.
+func LoadKeyRingFile(path, domain string) (*SignedKey, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, errors.New("podauth: signing key file is required")
@@ -136,9 +139,6 @@ func deriveSigningKey(key []byte, domain string) ([]byte, error) {
 }
 
 func parseKeyRing(raw []byte) (*SignedKey, error) {
-	if !bytes.HasPrefix(raw, []byte("{")) {
-		return NewSignedKey(raw)
-	}
 	var document struct {
 		Current  SigningKey  `json:"current"`
 		Previous *SigningKey `json:"previous,omitempty"`
@@ -160,7 +160,7 @@ func (s *SignedKey) ReloadKeyFile() error {
 	if s.keyFile == "" {
 		return errors.New("podauth: signer has no key file")
 	}
-	replacement, err := loadKeyRingFile(s.keyFile, s.derivationDomain)
+	replacement, err := LoadKeyRingFile(s.keyFile, s.derivationDomain)
 	if err != nil {
 		return err
 	}

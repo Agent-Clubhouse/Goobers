@@ -39,11 +39,11 @@ func New(config Config) (*Auth, error) {
 	if config.Revocations == nil {
 		return nil, errors.New("cloud requires durable grant revocation")
 	}
-	keys, err := shared.LoadSignedKeyFile(config.KeyFile)
+	keys, err := shared.LoadKeyRingFile(config.KeyFile, "")
 	if err != nil {
 		return nil, err
 	}
-	grants, err := shared.LoadDerivedSignedKeyFile(config.KeyFile, shared.CredentialGrantKeyDomain)
+	grants, err := shared.LoadKeyRingFile(config.KeyFile, shared.CredentialGrantKeyDomain)
 	if err != nil {
 		return nil, err
 	}
