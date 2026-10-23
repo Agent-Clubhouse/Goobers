@@ -58,7 +58,7 @@ type ciJob struct {
 		Group            string `yaml:"group"`
 		CancelInProgress bool   `yaml:"cancel-in-progress"`
 	} `yaml:"concurrency"`
-	Strategy        struct {
+	Strategy struct {
 		FailFast string `yaml:"fail-fast"`
 		Matrix   struct {
 			Shard []string `yaml:"shard"`
