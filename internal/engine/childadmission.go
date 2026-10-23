@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -20,6 +21,13 @@ var errChildExecutionUnavailable = errors.New("engine: generated child execution
 type childWaitError struct{ error }
 
 func (e childWaitError) Unwrap() error { return e.error }
+
+// stopsAttemptLoop reports failures no policy or infrastructure retry may
+// repeat: cancellation, and a child handoff whose custody may have committed.
+func stopsAttemptLoop(ctx workflow.Context, err error) bool {
+	var childErr childWaitError
+	return temporal.IsCanceledError(err) || ctx.Err() != nil || errors.As(err, &childErr)
+}
 
 // childFamily is deterministic run state rebuilt from recorded activity results.
 // Counts survive ordinary retries and bound history before continuation support.
