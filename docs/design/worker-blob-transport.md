@@ -116,6 +116,8 @@ The worker mints a fresh two-minute token per call from the supervisor-loaded
 `api.podTokenKeyFile`. The key and the bearer are never placed in the worker's
 environment, because stage processes inherit it, and are never passed to stage
 pods, startup output or journals. Plane answers are classified for the engine:
-503 while no controller holds custody (a failover) is retried for the child
-activity's whole budget, a 4xx refusal is final, and anything else gets a
-bounded retry.
+503 while no controller holds custody (a failover), gateway failures, 429, and
+404/405 (the route is missing during an API rollout) are retried for the child
+activity's whole budget. Only the plane's explicit 409 refusal is final, and
+anything else gets a bounded retry. Each bearer lives two minutes, longer than
+one child activity attempt.

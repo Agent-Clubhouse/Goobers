@@ -147,17 +147,17 @@ func (c *Client) call(ctx context.Context, path string, body any, want int, limi
 }
 
 // statusClass maps a plane status onto the engine's custody error classes.
-// The plane answers 503 while no controller holds custody (failover) and a
-// 4xx for a request that can never succeed. Credential failures (401/403)
-// and other 5xx statuses stay unclassified: bounded retry, then stop.
+// Only the plane's explicit 409 refusal is permanent. 503 (no controller holds
+// custody), gateway failures, 429, and 404/405 (the route is missing while an
+// API rollout is in progress) are retryable. Everything else, including
+// credential failures and malformed requests, stays unclassified: a bounded
+// retry, then stop.
 func statusClass(status int) error {
-	switch {
-	case status == http.StatusServiceUnavailable, status == http.StatusBadGateway,
-		status == http.StatusGatewayTimeout, status == http.StatusTooManyRequests:
+	switch status {
+	case http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout, http.StatusTooManyRequests,
+		http.StatusNotFound, http.StatusMethodNotAllowed:
 		return engine.ErrChildCustodyUnavailable
-	case status == http.StatusUnauthorized, status == http.StatusForbidden:
-		return nil
-	case status >= 400 && status < 500:
+	case http.StatusConflict:
 		return engine.ErrChildCustodyRefused
 	default:
 		return nil
