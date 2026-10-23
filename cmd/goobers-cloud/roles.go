@@ -11,10 +11,13 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"go.temporal.io/sdk/client"
 
 	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/version"
@@ -171,6 +174,10 @@ var (
 )
 
 type databaseServices struct {
+	// HA-P3-18 binds acquired controller authority before invoking this factory.
+	// The factory never exposes a local, unfenced Temporal starter.
+	BindControllerFence func(*cloudlease.Manager, *cloudlease.Handle)
+	NewStarter          func(client.Client, string) engine.Starter
 	Pools               *cloudpg.Pools
 	Acceptances         triggerqueue.SchedulerPolicyStore
 	StartAdmissions     cloudacceptance.StartAdmissionStore
@@ -257,6 +264,10 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	services := databaseServices{
 		Pools: pools, Acceptances: acceptances, StartAdmissions: acceptances,
 		SchemaCompatibility: compatibilityErr,
+		BindControllerFence: acceptances.BindFence,
+		NewStarter: func(c client.Client, queue string) engine.Starter {
+			return engine.NewCloudTemporalStarter(c, queue, cloudacceptance.NewStartAdmission(acceptances))
+		},
 	}
 	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)

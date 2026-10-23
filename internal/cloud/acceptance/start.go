@@ -19,8 +19,8 @@ type StartStore interface {
 type startAdmission struct{ store StartStore }
 
 // NewStartAdmission wires durable acceptance into the cloud Temporal starter.
-func NewStartAdmission(store StartStore) engine.StartAdmission {
-	return &startAdmission{store: store}
+func NewStartAdmission(store *Store) engine.StartAdmission {
+	return &startAdmission{store: &startCustody{store: store}}
 }
 
 func (a *startAdmission) AdmitStart(ctx context.Context, in engine.RunInput) (engine.RunInput, error) {

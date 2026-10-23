@@ -30,8 +30,8 @@ func (s *Store) ReadStartAuthority(ctx context.Context, acceptanceID string) (St
 		err := tx.QueryRow(txCtx, `
 			SELECT id, run_id, owner_epoch
 			FROM control.acceptance
-			WHERE instance_id=$1 AND id=$2 AND state='dispatching'
-			  AND owner_epoch=$3
+			WHERE instance_id=$1 AND id=$2 AND state IN ('dispatching','dispatched')
+			  AND owner_epoch>0 AND owner_epoch<=$3
 			FOR SHARE`,
 			s.instanceID, acceptanceID, epoch,
 		).Scan(&authority.AcceptanceID, &authority.RunID, &authority.OwnerEpoch)
@@ -43,24 +43,16 @@ func (s *Store) ReadStartAuthority(ctx context.Context, acceptanceID string) (St
 	return authority, err
 }
 
-// ConfirmStart verifies that the accepted run still belongs to this epoch.
+// ConfirmStart idempotently records a proven current-owner start.
 func (s *Store) ConfirmStart(ctx context.Context, acceptanceID, runID string) error {
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
-		var exists bool
-		if err := tx.QueryRow(txCtx, `
-			SELECT EXISTS (
-				SELECT 1 FROM control.acceptance
-				WHERE instance_id=$1 AND id=$2 AND run_id=$3
-				  AND state='dispatching' AND owner_epoch=$4
-			)`,
-			s.instanceID, acceptanceID, runID, epoch,
-		).Scan(&exists); err != nil {
-			return err
-		}
-		if !exists {
-			return triggerqueue.ErrTransition
-		}
-		return nil
+		tag, err := tx.Exec(txCtx, `
+   UPDATE control.acceptance SET state='dispatched',
+     finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
+   WHERE instance_id=$1 AND id=$2 AND run_id=$3
+     AND state IN ('dispatching','dispatched') AND owner_epoch=$4`,
+			s.instanceID, acceptanceID, runID, epoch)
+		return changed(tag.RowsAffected(), err)
 	})
 }
 
@@ -76,9 +68,10 @@ func (s *Store) AdoptStart(
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.acceptance
-			SET owner_epoch=$5
+			SET owner_epoch=$5, state='dispatched',
+finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
 			WHERE instance_id=$1 AND id=$2 AND run_id=$3
-			  AND state='dispatching' AND owner_epoch=$4
+			  AND state IN ('dispatching','dispatched') AND owner_epoch=$4
 			  AND owner_epoch<$5`,
 			s.instanceID, acceptanceID, runID, predecessorEpoch, epoch,
 		)
