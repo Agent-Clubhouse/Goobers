@@ -20,11 +20,11 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-func postgresJournalConfig(t *testing.T) journalpg.Config {
+func postgresJournalConfig(t testing.TB) journalpg.Config {
 	return postgresJournalConfigRenew(t, true)
 }
 
-func postgresJournalConfigRenew(t *testing.T, renew bool) journalpg.Config {
+func postgresJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	t.Helper()
 	url := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
 	if url == "" {
@@ -91,7 +91,7 @@ func postgresJournalConfigRenew(t *testing.T, renew bool) journalpg.Config {
 	t.Cleanup(func() { cancel(); <-done; _ = manager.Release(context.Background(), handle) })
 	return journalpg.Config{Pool: pool, InstanceID: "test-instance", Lease: manager, LiveOwner: func() *lease.Handle { return handle }}
 }
-func postgresBackend(t *testing.T, config journalpg.Config) *journalpg.Backend {
+func postgresBackend(t testing.TB, config journalpg.Config) *journalpg.Backend {
 	t.Helper()
 	backend, err := journalpg.New(config)
 	if err != nil {
@@ -167,4 +167,22 @@ func TestJournalReaderBackendConformancePostgres(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// BenchmarkPostgresJournalAppend is a report-only nightly measurement. It has no
+// throughput threshold; correctness remains covered by the race/conformance gate.
+func BenchmarkPostgresJournalAppend(b *testing.B) {
+	config := postgresJournalConfig(b)
+	backend := postgresBackend(b, config)
+	handle, owner, err := backend.CreateRun(b.Context(), journal.CreateRunRequest{Identity: journal.RunIdentity{RunID: "run-benchmark", Gaggle: "g", Workflow: "benchmark"}})
+	if err != nil {
+		b.Fatal(err)
+	}
+	events := []journal.Event{{Type: journal.EventRunnerAnnotation, Name: "throughput"}}
+	for b.Loop() {
+		if _, err := backend.AppendBatch(b.Context(), handle, owner, events); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/s")
 }

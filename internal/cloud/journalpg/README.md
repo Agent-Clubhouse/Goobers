@@ -47,5 +47,6 @@ replacing the parent table or changing cursor identity.
 The full unchanged shared conformance suites and focused fencing/rollback tests
 run with `cloudintegration` against a local PostgreSQL 16 container, using
 `GOOBERS_TEST_POSTGRES_URL`. Each fixture creates its own database. The existing
-cloud CI job runs this suite against its PostgreSQL 16 service. No Azure resources
-or live model calls are needed.
+cloud CI job runs this suite against its PostgreSQL 16 service. The HA nightly workflow publishes `BenchmarkPostgresJournalAppend` throughput
+as a job summary and artifact; no throughput threshold gates merges. No Azure
+resources or live model calls are needed.
