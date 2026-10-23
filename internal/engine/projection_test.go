@@ -120,29 +120,6 @@ func TestProjectionDefaultsMissingItemIntegrityConservatively(t *testing.T) {
 
 // readDirBytes reads every regular file under dir into a path→content map, so
 // two projected journals can be compared byte-for-byte.
-func readDirBytes(t *testing.T, dir string) map[string][]byte {
-	t.Helper()
-	out := map[string][]byte{}
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		rel, rerr := filepath.Rel(dir, path)
-		if rerr != nil {
-			return rerr
-		}
-		out[rel] = data
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", dir, err)
-	}
-	return out
-}
 
 // TestProjectionOpTimesAreWorkflowClock guards against wall-clock leakage: op
 // times come from workflow.Now, so replaying the same fixture yields the same
