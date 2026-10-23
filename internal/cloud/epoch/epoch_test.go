@@ -494,6 +494,11 @@ func TestTemporalConfirmClosed(t *testing.T) {
 		"not found":  {fakeDescriber{err: serviceerror.NewNotFound("gone")}, true, false},
 		"error":      {fakeDescriber{err: errors.New("unavailable")}, false, true},
 		"no status":  {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED}, false, true},
+		"future":     {fakeDescriber{status: enumspb.WorkflowExecutionStatus(99)}, false, true},
+		"failed":     {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_FAILED}, true, false},
+		"canceled":   {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED}, true, false},
+		"timed out":  {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT}, true, false},
+		"continued":  {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW}, true, false},
 	} {
 		closed, err := TemporalConfirmClosed(tc.d)(t.Context(), "run-1")
 		if closed != tc.closed || (err != nil) != tc.err {

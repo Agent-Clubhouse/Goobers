@@ -44,13 +44,18 @@ func TemporalConfirmClosed(client Describer) func(ctx context.Context, runID str
 		if err != nil {
 			return false, err
 		}
-		switch response.GetWorkflowExecutionInfo().GetStatus() {
+		// The CLOSED set is enumerated explicitly. A status this build does not know
+		// (a server upgrade adds an enum value, as Paused once was) must keep the
+		// claim, never reap it.
+		switch status := response.GetWorkflowExecutionInfo().GetStatus(); status {
 		case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED:
 			return false, nil
-		case enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED:
-			return false, fmt.Errorf("cloud epoch: run %q has no execution status", runID)
-		default:
+		case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED, enumspb.WORKFLOW_EXECUTION_STATUS_FAILED,
+			enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED, enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED,
+			enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT, enumspb.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW:
 			return true, nil
+		default:
+			return false, fmt.Errorf("cloud epoch: run %q has unrecognized execution status %d", runID, int32(status))
 		}
 	}
 }
