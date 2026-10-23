@@ -66,7 +66,11 @@ param backupRetentionDays int = 35
 ])
 param geoRedundantBackup string = 'Disabled'
 
-@description('PostgreSQL major version.')
+@description('PostgreSQL major version. Role provisioning uses PostgreSQL 16 GRANT ... WITH SET syntax.')
+@allowed([
+  '16'
+  '17'
+])
 param postgresVersion string = '16'
 
 @description('Tags applied to the server.')
