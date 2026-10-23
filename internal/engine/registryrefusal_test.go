@@ -37,9 +37,6 @@ func TestAdmissionRefusesUnsupportedEngineFeatures(t *testing.T) {
 	experiment := r9Task("implement")
 	experiment.Experiment = &apiv1.BanditExperiment{}
 
-	outbox := r9Task("implement")
-	outbox.Outbox = []string{"dist/report.json"}
-
 	cases := []struct {
 		name     string
 		spec     apiv1.WorkflowSpec
@@ -47,7 +44,6 @@ func TestAdmissionRefusesUnsupportedEngineFeatures(t *testing.T) {
 		wantIn   string
 	}{
 		{"bandit experiment", r9Spec(experiment), ErrExperimentUnsupported, "task.experiment"},
-		{"outbox export", r9Spec(outbox), ErrOutboxUnsupported, "task.outbox"},
 	}
 
 	for _, tc := range cases {
@@ -135,9 +131,7 @@ func TestRefusalMessageReadsAsOneSentence(t *testing.T) {
 	t.Logf("operator-facing refusal: %s", msg)
 	// Each sentinel must still read as a whole sentence standalone, which is
 	// how an errors.Is caller that prints the sentinel sees it.
-	for _, sentinel := range []error{
-		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrOutboxUnsupported,
-	} {
+	for _, sentinel := range []error{ErrParallelsUnsupported, ErrExperimentUnsupported} {
 		if strings.Contains(sentinel.Error(), "engine:") {
 			t.Errorf("sentinel %q carries its own \"engine:\" prefix, which doubles when wrapped", sentinel)
 		}
@@ -165,11 +159,9 @@ func TestAdmissionRefusalReportsEveryDeclaration(t *testing.T) {
 
 	err := engineadmission.RefuseDefinition("flow", spec)
 	if err == nil {
-		t.Fatal("RefuseDefinition admitted a definition declaring three unsupported features")
+		t.Fatal("RefuseDefinition admitted a definition declaring unsupported features")
 	}
-	for _, sentinel := range []error{
-		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrOutboxUnsupported,
-	} {
+	for _, sentinel := range []error{ErrParallelsUnsupported, ErrExperimentUnsupported} {
 		if !errors.Is(err, sentinel) {
 			t.Errorf("refusal does not reach sentinel %v: %v", sentinel, err)
 		}
@@ -178,8 +170,16 @@ func TestAdmissionRefusalReportsEveryDeclaration(t *testing.T) {
 	if !errors.As(err, &multi) {
 		t.Fatalf("error is not an *UnsupportedFeaturesError: %v", err)
 	}
-	if len(multi.Refusals) != 3 {
-		t.Errorf("refusal names %d declarations, want 3: %v", len(multi.Refusals), err)
+	if len(multi.Refusals) != 2 {
+		t.Errorf("refusal names %d declarations, want 2: %v", len(multi.Refusals), err)
+	}
+}
+
+func TestAdmissionAdmitsOutbox(t *testing.T) {
+	task := r9Task("implement")
+	task.Outbox = []string{"reports/result.json"}
+	if err := engineadmission.RefuseDefinition("flow", r9Spec(task)); err != nil {
+		t.Fatalf("outbox definition refused after engine support landed: %v", err)
 	}
 }
 
