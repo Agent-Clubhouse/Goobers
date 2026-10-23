@@ -695,7 +695,7 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	at := workflow.Now(ctx)
 	ev := journal.Event{
 		Type: journal.EventGateEvaluated,
-		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated,
+		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated, Actor: gr.Actor,
 		Runner: map[string]any{
 			"repassAttempt":   gr.Attempt,
 			"gateAttempt":     gr.GateAttempt,
@@ -776,6 +776,14 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	}
 	r.appendAt(at, ev)
 	return artifact, nil
+}
+
+func (r *runJournal) humanGateExpired(ctx workflow.Context, gateName string, occurrence uint64, err error) {
+	r.append(ctx, journal.Event{
+		Type: journal.EventError, Gate: gateName,
+		Error:  journal.ErrorDetailFor(HumanGateWindowExpiredCode, err),
+		Runner: map[string]any{"gateOccurrence": occurrence},
+	})
 }
 
 // runFailedCause mirrors failTerminal/finishStageFailure's run_failed cause

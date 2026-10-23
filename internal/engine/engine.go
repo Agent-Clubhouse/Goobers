@@ -14,9 +14,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/childresult"
-	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
@@ -235,8 +235,6 @@ func HumanGateSignal(gateName string) string {
 	return "gate:" + gateName
 }
 
-const temporalHumanGateUnsupported = engineadmission.HumanGateUnsupported
-
 // Run is the engine's Temporal workflow function. It walks the pinned definition
 // as a state machine: tasks invoke activities to produce result envelopes; gates
 // evaluate and branch. It performs no wall-clock reads or randomness — all side
@@ -269,15 +267,18 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := refuseRemoteUsage(in.WorkflowName, in.Spec, in.Placements); err != nil {
 		return RunResult{}, err
 	}
-	for _, g := range in.Spec.Gates {
-		if err := refuseHumanGate(g); err != nil {
-			return RunResult{}, err
+	if !humanGateImplementationEnabled(ctx) {
+		for _, gate := range in.Spec.Gates {
+			if err := refuseHumanGate(gate); err != nil {
+				return RunResult{}, err
+			}
 		}
 	}
 	rec, err := newRunJournal(ctx, in, m)
 	if err != nil {
 		return RunResult{}, err
 	}
+	enableHumanGateDecisionOwner(ctx, rec, in)
 	// The HITL protocol's handlers are registered BEFORE the run does
 	// anything (#3883, decision 005 R8). Registration emits no history event,
 	// so this is invisible to replay of pre-protocol histories; registering
@@ -287,6 +288,11 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	hitl := newHITLSession(in, m, rec)
 	if err := hitl.register(ctx); err != nil {
 		return RunResult{}, err
+	}
+	gateDecisions := newGateDecisionSession(in, m, func() uint64 { return hitl.generation })
+	hitl.gateDecisions = gateDecisions
+	if err := gateDecisions.register(ctx); err != nil {
+		return RunResult{}, fmt.Errorf("engine: register human-gate decision handler: %w", err)
 	}
 	rec.runStarted(ctx)
 	rec.recordRunBranchUpfront(ctx, in)
@@ -379,6 +385,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 
 func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (walkOut RunResult, walkErr error) {
 	defer rec.reportSteps(&walkOut)
+	gateDecisions := gateDecisionSessionFor(hitl)
 	ctx = workflow.WithValue(ctx, podDispatchActivationKey{}, &podDispatchActivation{})
 	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
@@ -566,7 +573,10 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// The machine remains at this gate until its evaluator records a
 			// verdict — the same durable wait marker the local runner persists
 			// before dispatch.
-			rec.gatePaused(ctx, g.Name)
+			gateOccurrence, pauseErr := commitGatePause(ctx, rec, g, gateDecisions)
+			if pauseErr != nil {
+				return RunResult{}, pauseErr
+			}
 			gateDelta := selectGateDelta(ctx, g, runsemantics.ReviewsImplementation(m, g.Name), continuity, workspaceBranch, rec)
 			// The knownOutcome shortcut (runner.RetryFailureClass, mirrored
 			// from stepGate): a status-equals gate standing over a
@@ -602,7 +612,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				}
 				outcome = knownOutcome
 			} else {
-				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, gateInitialAttemptClass(repassBudget.Attempts[g.Name], repassBudget.InfrastructureAttempts[g.Name]), rec)
+				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, gateInitialAttemptClass(repassBudget.Attempts[g.Name], repassBudget.InfrastructureAttempts[g.Name]), rec, gateDecisions, gateOccurrence)
 			}
 			if gerr != nil {
 				return gateEvaluationFailed(ctx, rec, g.Name, gerr, upstream, steps)
@@ -642,6 +652,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				return RunResult{}, rerr
 			}
 			applyImplementationLaneOutcome(g, &gr, ev, review, findingReason, lifecycle.Arbitrate)
+			gr.Actor = review.Actor
 			verdict = applyBudgetVerdict(g, &gr, verdict)
 			gr.ResolvedFindingIDs = lifecycle.Resolved
 			gr.SuppressedFindingIDs = lifecycle.Suppressed
@@ -1038,7 +1049,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // ActReviewGoober with the arguments it always has (ruling 8, as amended by
 // #3845): that arm is untouched, and the walk's continuity selector already
 // hands both arms the same delta.
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, firstClass journal.AttemptClass, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, firstClass journal.AttemptClass, rec *runJournal, gateDecisions *gateDecisionSession, gateOccurrence livejournal.AppendReceipt) (string, *apiv1.Verdict, GateReviewResult, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -1189,9 +1200,8 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		return string(verdict.Decision), &verdict, review, nil
 
 	case apiv1.EvaluatorHuman:
-		var decision string
-		workflow.GetSignalChannel(ctx, HumanGateSignal(g.Name)).Receive(ctx, &decision)
-		return decision, nil, GateReviewResult{}, nil
+		decision, review, err := evaluateHumanGate(ctx, gateDecisions, rec, g, gateOccurrence)
+		return decision, nil, review, err
 
 	default:
 		return "", nil, GateReviewResult{}, fmt.Errorf("gate %q has unknown evaluator %q", g.Name, g.Evaluator)
