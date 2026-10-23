@@ -51,10 +51,13 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		// would run with no instructions at all.
 		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitUnavailable, err.Error())}
 	}
-	ctx, usage := newSupervisedUsageContext(ctx, kit.Envelope.Limits)
+	ctx, usage := newSupervisedUsageContext(ctx, kit.UsageAllowance)
 	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
 	ctx = invoke.WithAgentUsageStream(ctx, usage.report)
 	defer func() { settleSupervisedUsage(&out, usage) }()
+	if usage.budgetCause() != nil {
+		return stageOutcome{}
+	}
 	// fail shapes every refusal past this point. For a REVIEW the class
 	// matters in a way it does not for an invocation: a task's surrendered
 	// failure is a business outcome the workflow branches on, but a gate has

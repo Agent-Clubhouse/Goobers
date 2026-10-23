@@ -80,7 +80,9 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	if err != nil {
 		return "", err
 	}
-	applyAgenticKitAttemptContract(kit, attempt)
+	if err := applyAgenticKitAttemptContract(kit, attempt); err != nil {
+		return "", err
+	}
 	data, digest, err := agentickit.Marshal(kit)
 	if err != nil {
 		return "", err
@@ -103,9 +105,15 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	return digest, nil
 }
 
-func applyAgenticKitAttemptContract(kit *agentickit.Kit, attempt dispatcher.Attempt) {
+func applyAgenticKitAttemptContract(kit *agentickit.Kit, attempt dispatcher.Attempt) error {
 	kit.ReviewRequiresDiff = attempt.Review && attempt.ReviewRequiresDiff
 	kit.UsageAllowance = usageallowance.Clone(attempt.UsageAllowance)
+	if kit.UsageAllowance != nil {
+		if err := kit.UsageAllowance.Validate(); err != nil {
+			return fmt.Errorf("agentic kit usage allowance: %w", err)
+		}
+	}
+	return nil
 }
 
 // kitModeFor is the completion contract stamped INTO the kit (decision 001
