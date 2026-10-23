@@ -37,18 +37,23 @@ func rolePool(t *testing.T, owner *pgxpool.Pool, role string) *pgxpool.Pool {
 	return pool
 }
 
-func replicaService(t *testing.T, owner *pgxpool.Pool) *Service {
+// replicaService is one API replica with a REAL clock: every attempt carries a
+// different deadline, which is what production retries look like.
+func replicaService(t *testing.T, owner *pgxpool.Pool, admission *fakeAdmission) *Service {
 	t.Helper()
 	store, err := acceptance.New(rolePool(t, owner, "goobers_api"), instance)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newService(store, fakeAdmission{generation: "gen-1"})
+	service, _ := newService(store, admission)
+	service.Now = nil
+	return service
 }
 
 func TestTriggersUnderAPIRole(t *testing.T) {
 	owner := pgtest.Pool(t, "triggers")
-	first, second := replicaService(t, owner), replicaService(t, owner)
+	admission := &fakeAdmission{generation: "gen-1"}
+	first, second := replicaService(t, owner, admission), replicaService(t, owner, admission)
 
 	// Concurrent same-key requests across two replicas: one acceptance.
 	const attempts = 16
@@ -79,6 +84,16 @@ func TestTriggersUnderAPIRole(t *testing.T) {
 		t.Fatalf("acceptance rows = %d, %v; want 1", rows, err)
 	}
 
+	// A retry after a newer generation is applied, and after the workflow stops
+	// being eligible, still returns the original acceptance (real clock, PG
+	// payload comparison).
+	admission.setGeneration("gen-2")
+	admission.refuse = map[string]bool{"review": true}
+	if again, err := second.Trigger(t.Context(), request()); err != nil || !again.Duplicate || again.AcceptanceID != ids[0] {
+		t.Fatalf("retry after reconfiguration = %+v, %v; want the original acceptance", again, err)
+	}
+	admission.refuse = nil
+
 	// Key reuse for a different request is a conflict, never a second row.
 	changed := request()
 	changed.Workflow = "triage"
@@ -106,7 +121,7 @@ func TestTriggersUnderAPIRole(t *testing.T) {
 		t.Fatalf("controller pending = %v, %v", pending, err)
 	}
 	envelope, err := startintent.Parse(pending[0].Payload)
-	if err != nil || envelope.Target.ConfigGeneration != "gen-1" || envelope.Target.WorkflowDigest != "wf" {
+	if err != nil || envelope.Target.ConfigGeneration != "gen-1" || envelope.Target.WorkflowDigest != "wf-gen-1" {
 		t.Fatalf("controller envelope = %+v, %v", envelope, err)
 	}
 }

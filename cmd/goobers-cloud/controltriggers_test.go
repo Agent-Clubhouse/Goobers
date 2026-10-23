@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"testing"
@@ -17,6 +18,10 @@ type noAcceptances struct {
 
 func (noAcceptances) Accept(context.Context, string, string, []byte, time.Time) (triggerqueue.Record, bool, error) {
 	return triggerqueue.Record{}, false, errors.New("must not be reached")
+}
+
+func (noAcceptances) ByKey(context.Context, string) (triggerqueue.Record, error) {
+	return triggerqueue.Record{}, sql.ErrNoRows
 }
 
 func TestConstructTriggersComposesAndFailsClosedUntilConfigured(t *testing.T) {

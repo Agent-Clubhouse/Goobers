@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -30,26 +31,35 @@ var ErrPinUnavailable = errors.New("cloud triggers: workflow digest pinning is n
 // Store is the acceptance custody the plane needs from the API pool.
 type Store interface {
 	Accept(ctx context.Context, key, actor string, payload []byte, now time.Time) (triggerqueue.Record, bool, error)
+	ByKey(ctx context.Context, key string) (triggerqueue.Record, error)
 	Get(ctx context.Context, id, actor string) (triggerqueue.Record, error)
 }
 
-// Admission is the applied configuration's engine-only guard and generation.
+// Admission is the applied configuration's engine-only guard.
 type Admission interface {
-	// Generation returns the applied generation digest, or "" before the first apply.
-	Generation() string
-	// Admit refuses a workflow the applied generation did not assess eligible.
-	Admit(digest, gaggle, workflow string) error
+	// AdmitApplied reads ONE snapshot of the applied generation and returns its
+	// digest. It wraps cloudconfig.ErrNoAppliedGeneration before the first apply and the engine-only
+	// ineligibility error for a workflow that generation did not assess eligible.
+	AdmitApplied(gaggle, workflow string) (generation string, err error)
 }
 
 // Pin returns the immutable digests a start is admitted against.
 type Pin func(ctx context.Context, generation, gaggle, workflow string) (workflowDigest, gooberDigest string, err error)
+
+// Contains reports whether runID is a run of gaggle on this instance. It is the
+// pod-containment verifier: a stage pod may only trigger into the gaggle its own
+// run belongs to.
+type Contains func(ctx context.Context, gaggle, runID string) (bool, error)
 
 // Service accepts triggers and reports acceptance status.
 type Service struct {
 	Store     Store
 	Admission func() Admission
 	Pin       Pin
-	Now       func() time.Time
+	// Contains verifies pod principals. Nil refuses every pod-scoped trigger
+	// (fail closed), like the local plane without a verifier.
+	Contains Contains
+	Now      func() time.Time
 }
 
 var (
@@ -63,6 +73,56 @@ func invalid(message string) error {
 
 func unavailable(cause error) error {
 	return httpapi.NewInterventionError(http.StatusServiceUnavailable, "trigger_acceptance_unavailable", "trigger could not be acknowledged; retry with the same key", cause)
+}
+
+func gaggleMismatch(message string) error {
+	return httpapi.NewInterventionError(http.StatusForbidden, "gaggle_mismatch", message, nil)
+}
+
+// authorize ports the local plane's ValidateTriggerAuthority: pod containment
+// first, failing closed without a verifier.
+func (s *Service) authorize(ctx context.Context, request httpapi.TriggerRequest) error {
+	if !request.PodScoped {
+		return nil
+	}
+	if s.Contains == nil {
+		return gaggleMismatch("pod-principal triggers are not available from this server")
+	}
+	ok, err := s.Contains(ctx, request.Gaggle, request.PodRunID)
+	if err != nil {
+		return unavailable(err)
+	}
+	if !ok {
+		return gaggleMismatch("pod principal may only trigger a workflow in the gaggle its own run belongs to")
+	}
+	return nil
+}
+
+func startRequest(request httpapi.TriggerRequest) startintent.Request {
+	return startintent.Request{
+		Workflow: request.Workflow, Gaggle: request.Gaggle, SourceRun: request.SourceRun, Force: request.Force,
+		PodScoped: request.PodScoped, PodRunID: request.PodRunID,
+	}
+}
+
+// replay answers an existing key from custody, exactly as the local plane does:
+// admission, pinning and the current generation are never consulted, and the
+// stored deadline and pins are kept. Only the actor and the parsed request are
+// compared; the stored bytes carry a deadline and pins that legitimately differ
+// between attempts. found is false when the key is unused.
+func (s *Service) replay(ctx context.Context, request httpapi.TriggerRequest) (response httpapi.TriggerResponse, found bool, err error) {
+	record, err := s.Store.ByKey(ctx, request.RequestID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return httpapi.TriggerResponse{}, false, nil
+	}
+	if err != nil {
+		return httpapi.TriggerResponse{}, true, unavailable(err)
+	}
+	envelope, err := startintent.Parse(record.Payload)
+	if err != nil || record.Actor != request.Actor || envelope.Request != startRequest(request) {
+		return httpapi.TriggerResponse{}, true, httpapi.NewInterventionError(http.StatusConflict, "trigger_request_conflict", "request key belongs to another trigger", nil)
+	}
+	return httpapi.TriggerResponse{AcceptanceID: record.ID, State: string(record.State), RunID: record.RunID, Duplicate: true}, true, nil
 }
 
 // Trigger durably accepts one trigger request. A repeated request key returns
@@ -79,18 +139,30 @@ func (s *Service) Trigger(ctx context.Context, request httpapi.TriggerRequest) (
 	case request.PodScoped && request.PodRunID == "":
 		return httpapi.TriggerResponse{}, invalid("a pod-scoped trigger must name its run")
 	}
+	if s.Store == nil {
+		return httpapi.TriggerResponse{}, unavailable(errors.New("cloud triggers: no acceptance store"))
+	}
+	if err := s.authorize(ctx, request); err != nil {
+		return httpapi.TriggerResponse{}, err
+	}
+	if response, found, err := s.replay(ctx, request); found {
+		return response, err
+	}
 	var admission Admission
 	if s.Admission != nil {
 		admission = s.Admission()
 	}
-	if s.Store == nil || admission == nil || s.Pin == nil {
+	if admission == nil {
+		return httpapi.TriggerResponse{}, unavailable(errors.New("cloud triggers: no applied configuration is composed"))
+	}
+	if s.Pin == nil {
 		return httpapi.TriggerResponse{}, unavailable(ErrPinUnavailable)
 	}
-	generation := admission.Generation()
-	if generation == "" {
-		return httpapi.TriggerResponse{}, unavailable(errors.New("no configuration generation is applied"))
+	generation, err := admission.AdmitApplied(request.Gaggle, request.Workflow)
+	if errors.Is(err, cloudconfig.ErrNoAppliedGeneration) {
+		return httpapi.TriggerResponse{}, unavailable(err)
 	}
-	if err := admission.Admit(generation, request.Gaggle, request.Workflow); err != nil {
+	if err != nil {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusUnprocessableEntity, "trigger_workflow_ineligible", err.Error(), nil)
 	}
 	workflowDigest, gooberDigest, err := s.Pin(ctx, generation, request.Gaggle, request.Workflow)
@@ -99,11 +171,8 @@ func (s *Service) Trigger(ctx context.Context, request httpapi.TriggerRequest) (
 	}
 	now := s.now()
 	raw, err := (startintent.Envelope{
-		Kind: startintent.Kind,
-		Request: startintent.Request{
-			Workflow: request.Workflow, Gaggle: request.Gaggle, SourceRun: request.SourceRun, Force: request.Force,
-			PodScoped: request.PodScoped, PodRunID: request.PodRunID,
-		},
+		Kind:    startintent.Kind,
+		Request: startRequest(request),
 		Target: startintent.Target{
 			Gaggle: request.Gaggle, Workflow: request.Workflow, ConfigGeneration: generation,
 			WorkflowDigest: workflowDigest, GooberDigest: gooberDigest,
@@ -115,7 +184,11 @@ func (s *Service) Trigger(ctx context.Context, request httpapi.TriggerRequest) (
 	}
 	record, duplicate, err := s.Store.Accept(ctx, request.RequestID, request.Actor, raw, now)
 	if errors.Is(err, triggerqueue.ErrConflict) {
-		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusConflict, "trigger_request_conflict", "request key belongs to another trigger", nil)
+		// A concurrent first acceptance with its own deadline and pins: compare
+		// the stored request, not the bytes.
+		if response, found, replayErr := s.replay(ctx, request); found {
+			return response, replayErr
+		}
 	}
 	if err != nil {
 		return httpapi.TriggerResponse{}, unavailable(err)

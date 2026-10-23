@@ -15,10 +15,9 @@ import (
 var triggerPin triggers.Pin
 
 // appliedConfiguration is what the trigger plane needs of the process-wide
-// Configuration: its engine-only guard and the applied generation digest.
+// Configuration: its engine-only guard, read as one snapshot with the applied generation digest.
 type appliedConfiguration interface {
-	Admit(digest, gaggle, workflow string) error
-	Generation() string
+	AdmitApplied(gaggle, workflow string) (string, error)
 }
 
 // constructTriggers composes the API-side trigger plane over the API pool's
