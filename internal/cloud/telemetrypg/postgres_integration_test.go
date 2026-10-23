@@ -25,7 +25,10 @@ import (
 	"github.com/goobers/goobers/internal/telemetryclient"
 )
 
-func TestDefectNominationAggregatesParity(t *testing.T) {
+// TestDefectAggregatesWireShapeAndReplay checks the wire shape of materialized
+// findings and exact/changed replay. It is NOT a parity proof against the local
+// rollup: see TestMergedReadMatchesLocalRollup for that.
+func TestDefectAggregatesWireShapeAndReplay(t *testing.T) {
 	store, _ := telemetryTestStore(t, "controller")
 	now := time.Now().UTC()
 	findings := []struct {
@@ -384,34 +387,36 @@ func TestNoopCursorAdvanceKeepsReplayReceipt(t *testing.T) {
 }
 
 // Sequences of different streams have no shared order. Each source stream keeps
-// its own contribution and watermark for an aggregate identity; the read merges
-// them (latest observation wins), so neither silently replaces the other and a
-// lower position in one stream is never rejected because of another's.
+// its own contribution and watermark for an aggregate identity; the read
+// combines them as the local rollup does (counts add, the rate is recomputed),
+// so neither silently replaces the other and a lower position in one stream is
+// never rejected because of another's.
 func TestStreamsKeepIndependentAggregateContributions(t *testing.T) {
 	store, pool := telemetryTestStore(t, "streams")
 	base := time.Now().UTC().Truncate(time.Microsecond)
-	finding := func(rate float64) telemetryclient.Finding {
-		return telemetryclient.Finding{Kind: "stage-failure-rate", Subject: "build", Metrics: map[string]float64{"failureRate": rate}}
+	finding := func(failed, total float64) telemetryclient.Finding {
+		return telemetryclient.Finding{Kind: "stage-failure-rate", Subject: "build", Metrics: map[string]float64{
+			"failureRate": failed / total, "totalAttempts": total, "failedAttempts": failed}}
 	}
-	apply := func(stream string, from, next uint64, observed time.Time, rate float64) error {
+	apply := func(stream string, from, next uint64, observed time.Time, failed, total float64) error {
 		return store.Apply(t.Context(), Batch{
 			Consumer: "rollup", Current: journal.StreamCursor{Stream: stream, Seq: from}, NextSeq: next,
 			Aggregates: []AggregateRow{{
 				Gaggle: "g", Workflow: "w", Aggregate: telemetryclient.AggregateStageFailureRate,
-				ObservedAt: observed, Finding: finding(rate),
+				ObservedAt: observed, Finding: finding(failed, total),
 			}},
 		})
 	}
-	read := func() telemetryclient.Finding {
+	read := func() map[string]float64 {
 		t.Helper()
 		response, err := store.DefectAggregates(t.Context(), httpapi.TelemetryDefectAggregateRequest{
 			Gaggle: "g", Workflow: "w", Since: base.Add(-time.Hour),
 			Aggregates: []telemetryclient.Aggregate{telemetryclient.AggregateStageFailureRate},
 		})
 		if err != nil || len(response.Findings) != 1 {
-			t.Fatalf("read = %+v %v, want exactly one merged finding", response.Findings, err)
+			t.Fatalf("read = %+v %v, want exactly one combined finding", response.Findings, err)
 		}
-		return response.Findings[0]
+		return response.Findings[0].Metrics
 	}
 	contributions := func() int {
 		t.Helper()
@@ -421,33 +426,31 @@ func TestStreamsKeepIndependentAggregateContributions(t *testing.T) {
 		}
 		return n
 	}
-	// scheduler seq 10, then health seq 11 for the same identity: both retained.
-	if err := apply(journal.StreamScheduler, 0, 10, base, 0.5); err != nil {
+	// scheduler seq 10 (5 of 10 failed), then health seq 11 (9 of 10): both
+	// retained and combined: 14 of 20, not the later source's 0.9.
+	if err := apply(journal.StreamScheduler, 0, 10, base, 5, 10); err != nil {
 		t.Fatal(err)
 	}
-	if err := apply(journal.StreamHealth, 0, 11, base.Add(time.Second), 0.9); err != nil {
+	if err := apply(journal.StreamHealth, 0, 11, base.Add(time.Second), 9, 10); err != nil {
 		t.Fatal(err)
 	}
 	if got := contributions(); got != 2 {
 		t.Fatalf("contributions = %d, want one per source stream", got)
 	}
-	if got := read(); got.Metrics["failureRate"] != 0.9 {
-		t.Fatalf("merged = %+v, want the later (health) observation", got)
+	if m := read(); m["totalAttempts"] != 20 || m["failedAttempts"] != 14 || m["failureRate"] != 0.7 {
+		t.Fatalf("combined = %v, want 14 of 20 = 0.7", m)
 	}
-	// A LOWER position in another stream is valid in its own domain.
-	if err := apply(journal.StreamScheduler, 10, 12, base.Add(2*time.Second), 0.6); err != nil {
+	// A LOWER position in another stream is valid in its own domain, and the
+	// scheduler's new contribution replaces only its own earlier one.
+	if err := apply(journal.StreamScheduler, 10, 12, base.Add(2*time.Second), 6, 12); err != nil {
 		t.Fatalf("scheduler 10→12 after health 11: %v", err)
 	}
-	if got := read(); got.Metrics["failureRate"] != 0.6 {
-		t.Fatalf("merged = %+v, want the newest (scheduler) observation", got)
-	}
-	// Within one stream the watermark still never moves backward.
-	if err := apply(journal.StreamScheduler, 12, 13, base.Add(3*time.Second), 0.7); err != nil {
-		t.Fatal(err)
+	if m := read(); m["totalAttempts"] != 22 || m["failedAttempts"] != 15 {
+		t.Fatalf("combined = %v, want 15 of 22", m)
 	}
 	var seq int64
-	if err := pool.QueryRow(t.Context(), `SELECT source_seq FROM telemetry.defect_aggregate WHERE gaggle='g' AND source_stream=$1`, journal.StreamScheduler).Scan(&seq); err != nil || seq != 13 {
-		t.Fatalf("scheduler watermark = %d %v, want 13", seq, err)
+	if err := pool.QueryRow(t.Context(), `SELECT source_seq FROM telemetry.defect_aggregate WHERE gaggle='g' AND source_stream=$1`, journal.StreamScheduler).Scan(&seq); err != nil || seq != 12 {
+		t.Fatalf("scheduler watermark = %d %v, want 12", seq, err)
 	}
 	if got := contributions(); got != 2 {
 		t.Fatalf("contributions = %d after more scheduler writes, want 2", got)

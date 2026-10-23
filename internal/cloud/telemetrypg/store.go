@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -447,21 +448,17 @@ func (s *Store) DefectAggregates(
 		}
 	}
 	// Each source stream contributes its own row per aggregate identity, with a
-	// watermark in that stream's own sequence domain. Reading merges them: for
-	// one identity the contribution observed latest wins (ties by stream name),
-	// the same single-finding-per-identity shape the local rollup returns.
+	// watermark in that stream's own sequence domain. The read COMBINES them the
+	// way the local rollup aggregates across its sources (mergeContributions),
+	// so thresholds are applied to the combined counts, never to one source's.
 	rows, err := s.pool.Query(ctx, `
-		SELECT aggregate,finding FROM (
-			SELECT DISTINCT ON (gaggle,workflow,aggregate,kind,subject,error_class,signature)
-			       aggregate,finding,kind,subject,error_class,signature
-			FROM telemetry.defect_aggregate
-			WHERE instance_id=$1 AND gaggle=$2
-			  AND ($3='' OR workflow=$3)
-			  AND observed_at>=$4
-			ORDER BY gaggle,workflow,aggregate,kind,subject,error_class,signature,
-			         observed_at DESC,source_stream ASC
-		) merged
-		ORDER BY aggregate,kind,subject,error_class,signature`,
+		SELECT gaggle,workflow,aggregate,kind,subject,error_class,signature,finding
+		FROM telemetry.defect_aggregate
+		WHERE instance_id=$1 AND gaggle=$2
+		  AND ($3='' OR workflow=$3)
+		  AND observed_at>=$4
+		ORDER BY gaggle,workflow,aggregate,kind,subject,error_class,signature,
+		         observed_at DESC,source_stream ASC`,
 		s.instanceID, request.Gaggle, request.Workflow, request.Since.UTC(),
 	)
 	if err != nil {
@@ -473,23 +470,45 @@ func (s *Store) DefectAggregates(
 		Findings:            []telemetryclient.Finding{},
 		PromotionCandidates: []telemetryclient.PromotionSignal{},
 	}
+	maxFlagged := request.Thresholds.MaxFlaggedRuns
+	if maxFlagged <= 0 {
+		maxFlagged = defaultMaxFlaggedRuns
+	}
+	var group []telemetryclient.Finding
+	var groupKey aggregateKey
+	var groupAggregate string
+	flush := func() {
+		if len(group) == 0 {
+			return
+		}
+		finding := mergeContributions(group, maxFlagged)
+		if allowed[groupAggregate] && telemetryclient.FindingPassesThresholds(finding, request.Thresholds) {
+			response.Findings = append(response.Findings, finding)
+		}
+		group = group[:0]
+	}
 	for rows.Next() {
-		var aggregate string
+		var gaggle, workflow, aggregate, kind, subject, errorClass, signature string
 		var raw []byte
-		if err := rows.Scan(&aggregate, &raw); err != nil {
+		if err := rows.Scan(&gaggle, &workflow, &aggregate, &kind, &subject, &errorClass, &signature, &raw); err != nil {
 			return response, err
 		}
-		if !allowed[aggregate] {
-			continue
+		key := aggregateKey{gaggle: gaggle, workflow: workflow, aggregate: telemetryclient.Aggregate(aggregate),
+			kind: kind, subject: subject, errorClass: errorClass, signature: signature}
+		if len(group) > 0 && key != groupKey {
+			flush()
 		}
+		groupKey, groupAggregate = key, aggregate
 		var finding telemetryclient.Finding
 		if err := json.Unmarshal(raw, &finding); err != nil {
 			return response, err
 		}
-		if telemetryclient.FindingPassesThresholds(finding, request.Thresholds) {
-			response.Findings = append(response.Findings, finding)
-		}
+		group = append(group, finding)
 	}
+	if err := rows.Err(); err != nil {
+		return response, err
+	}
+	flush()
 	sort.Slice(response.Findings, func(i, j int) bool {
 		left, right := response.Findings[i], response.Findings[j]
 		if left.Kind != right.Kind {
@@ -524,3 +543,77 @@ func (s *Store) withFence(
 
 var _ journal.StreamCursorStore = (*Store)(nil)
 var _ httpapi.TelemetryDefectAggregateService = (*Store)(nil)
+
+// defaultMaxFlaggedRuns is the local rollup's default bound on the example runs
+// one finding carries (rollup.Thresholds.MaxFlaggedRuns).
+const defaultMaxFlaggedRuns = 10
+
+// mergeContributions combines the per-source-stream contributions to one
+// aggregate identity, newest observation first, as the local rollup combines its
+// sources: counts add and every derived rate is recomputed from the summed
+// counts (rollup.detectStageFailureRate, detectErrorSignatures, detectGateNoise).
+//
+//   - stage-failure-rate: totalAttempts and failedAttempts add; failureRate =
+//     failed/total.
+//   - error-signature: count adds.
+//   - gate-repass-churn: totalEvaluations and escalatedCount add; escalationRate
+//     = escalated/total.
+//   - gate-never-fails: totalEvaluations adds. A source that saw a non-pass
+//     contributes no such row, so every source that evaluates a gate must
+//     contribute its complete counts for this claim to be exact.
+//   - credit-assignment (and any other kind): a causal estimate is not a sum of
+//     partial estimates, so the newest contribution stands.
+//
+// FlaggedRuns are the contributions' pointers, newest contribution first,
+// de-duplicated and bounded.
+func mergeContributions(contributions []telemetryclient.Finding, maxFlagged int) telemetryclient.Finding {
+	merged := contributions[0]
+	merged.Metrics = maps.Clone(contributions[0].Metrics)
+	if merged.Metrics == nil {
+		merged.Metrics = map[string]float64{}
+	}
+	if len(contributions) > 1 {
+		sum := func(metric string) float64 {
+			var total float64
+			for _, contribution := range contributions {
+				total += contribution.Metrics[metric]
+			}
+			return total
+		}
+		switch merged.Kind {
+		case "stage-failure-rate":
+			total, failed := sum("totalAttempts"), sum("failedAttempts")
+			merged.Metrics["totalAttempts"], merged.Metrics["failedAttempts"] = total, failed
+			if total > 0 {
+				merged.Metrics["failureRate"] = failed / total
+			}
+		case "error-signature":
+			merged.Metrics["count"] = sum("count")
+		case "gate-repass-churn":
+			total, escalated := sum("totalEvaluations"), sum("escalatedCount")
+			merged.Metrics["totalEvaluations"], merged.Metrics["escalatedCount"] = total, escalated
+			if total > 0 {
+				merged.Metrics["escalationRate"] = escalated / total
+			}
+		case "gate-never-fails":
+			merged.Metrics["totalEvaluations"] = sum("totalEvaluations")
+		}
+	}
+	seen := map[telemetryclient.JournalPointer]bool{}
+	var flagged []telemetryclient.JournalPointer
+	for _, contribution := range contributions {
+		for _, pointer := range contribution.FlaggedRuns {
+			if len(flagged) >= maxFlagged {
+				break
+			}
+			if !seen[pointer] {
+				seen[pointer] = true
+				flagged = append(flagged, pointer)
+			}
+		}
+	}
+	if len(flagged) > 0 {
+		merged.FlaggedRuns = flagged
+	}
+	return merged
+}
