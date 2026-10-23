@@ -58,8 +58,8 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 	finding := workerrouting.Check(h.versioned(), h.cfg.BuildVersion, routing, err)
 	h.routed.Store(finding.Problem == "")
 	h.draining.Store(finding.Draining)
-	// TODO(#7747): scale down drained versions only after their pinned
-	// executions finish; readiness must keep them protected by the PDB.
+	// Temporal Worker Controller scales a version down only after it is
+	// drained. Readiness keeps a still-draining version protected meanwhile.
 	switch {
 	case finding.Problem != "":
 		h.logf("goobers-cloud worker: error: %s", finding.Problem)

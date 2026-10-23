@@ -52,6 +52,10 @@ func TestCurrentVersionNeverSetWithoutPollers(t *testing.T) {
 	if err != nil || replicas != 2 {
 		t.Fatalf("active replicas = %d, err=%v", replicas, err)
 	}
+	deploymentStrategy, found, err := unstructured.NestedString(object, "spec", "deployment", "strategy", "type")
+	if err != nil || !found || deploymentStrategy != "Recreate" {
+		t.Fatalf("per-build Deployment strategy = %q, found=%v err=%v", deploymentStrategy, found, err)
+	}
 	draining, err := nestedInt(object, "spec", "drainingDeployment", "replicas")
 	if err != nil || draining != 2 {
 		t.Fatalf("draining replicas = %d, err=%v", draining, err)

@@ -7,7 +7,7 @@ repos: []
 placement:
   selfExecution: deny
 engine:
-  hostPort: temporal-frontend.temporal.svc.cluster.local:7233
+  hostPort: temporal-frontend.goobers-temporal.svc.cluster.local:7233
   namespace: default
   taskQueue: goobers-engine
   workerVersioning: true
