@@ -2,16 +2,16 @@
 # §13.5, HA-P3-22). FRESH INSTALL ONLY: numHistoryShards is fixed forever, so
 # this cannot be applied to a running cluster that used another value.
 #
-# Standalone values for chart 1.3.0 (Temporal server 1.31.0), the end state of
+# Standalone values for chart 1.6.0 (Temporal server 1.31.4), the end state of
 # the HA-P2-01 upgrade ladder. It is NOT layered over values.yaml, which still
 # targets the pre-ladder 0.x chart layout:
 #
 #   helm install temporal temporal/temporal \
 #     --namespace goobers-temporal --create-namespace \
-#     --version 1.3.0 -f values-ha.yaml
+#     --version 1.6.0 -f values-ha.yaml
 #
 # Offline check (CI runs the same render and asserts the result):
-#   helm template temporal temporal-1.3.0.tgz -f values-ha.yaml
+#   helm template temporal temporal-1.6.0.tgz -f values-ha.yaml
 #
 # Per-service replicas, PDBs and spread are chart keys under server.<service>;
 # the chart does not add a pod selector to topology spread, so each constraint

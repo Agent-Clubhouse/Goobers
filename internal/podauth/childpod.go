@@ -27,7 +27,7 @@ func (s *SignedKey) mintContractPod(runID, contractDigest string, ttl time.Durat
 		return "", err
 	}
 	payload += "." + base64.RawURLEncoding.EncodeToString([]byte(contractDigest))
-	return prefix + payload + "." + s.sign(domain+payload), nil
+	return s.encodeToken(prefix, domain, payload), nil
 }
 
 func (s *SignedKey) custodyPayload(runID string, ttl time.Duration) (string, error) {
@@ -37,6 +37,9 @@ func (s *SignedKey) custodyPayload(runID string, ttl time.Duration) (string, err
 	}
 	payload := strings.TrimPrefix(ordinary, tokenPrefix)
 	payload = payload[:strings.LastIndex(payload, ".")]
+	if strings.HasPrefix(payload, "kid:") {
+		_, payload, _ = strings.Cut(payload, ".")
+	}
 	return payload, nil
 }
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // numberWords maps the counts the prose plausibly spells out. The guide said
@@ -26,9 +28,9 @@ var docsRestatingDaemonIdentityCapabilities = []string{
 func TestDaemonIdentityCapabilityDocsMatchTheGrantedSet(t *testing.T) {
 	t.Parallel()
 
-	want, ok := numberWords[len(daemonIdentityCapabilities)]
+	want, ok := numberWords[len(runtimewiring.DaemonIdentityCapabilities)]
 	if !ok {
-		t.Fatalf("daemonIdentityCapabilities has %d entries; add its number word to numberWords", len(daemonIdentityCapabilities))
+		t.Fatalf("daemonIdentityCapabilities has %d entries; add its number word to numberWords", len(runtimewiring.DaemonIdentityCapabilities))
 	}
 
 	for _, path := range docsRestatingDaemonIdentityCapabilities {
@@ -39,7 +41,7 @@ func TestDaemonIdentityCapabilityDocsMatchTheGrantedSet(t *testing.T) {
 		doc := string(raw)
 		name := filepath.Base(path)
 
-		for _, capability := range daemonIdentityCapabilities {
+		for _, capability := range runtimewiring.DaemonIdentityCapabilities {
 			if !strings.Contains(doc, "`"+string(capability)+"`") {
 				t.Errorf("%s does not name daemon-identity capability %q", name, capability)
 			}
@@ -49,7 +51,7 @@ func TestDaemonIdentityCapabilityDocsMatchTheGrantedSet(t *testing.T) {
 		// actually adjacent to the capability discussion, so unrelated prose
 		// elsewhere in these long pages cannot trip the check.
 		for count, word := range numberWords {
-			if count == len(daemonIdentityCapabilities) {
+			if count == len(runtimewiring.DaemonIdentityCapabilities) {
 				continue
 			}
 			for _, phrase := range []string{
@@ -57,7 +59,7 @@ func TestDaemonIdentityCapabilityDocsMatchTheGrantedSet(t *testing.T) {
 				fmt.Sprintf("%s capabilities: `repo:push`", word),
 			} {
 				if strings.Contains(doc, phrase) {
-					t.Errorf("%s says %q but daemonIdentityCapabilities has %d entries (want %q)", name, phrase, len(daemonIdentityCapabilities), want)
+					t.Errorf("%s says %q but daemonIdentityCapabilities has %d entries (want %q)", name, phrase, len(runtimewiring.DaemonIdentityCapabilities), want)
 				}
 			}
 		}

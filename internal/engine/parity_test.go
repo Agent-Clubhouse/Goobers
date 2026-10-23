@@ -595,10 +595,9 @@ type parityEnvelope struct {
 	// its stage a different repo.
 	CheckoutCones string
 	// Limits is the stage's execution bound (duration/tokens/cost),
-	// JSON-encoded. R9 refuses maxTokens/maxCostUSD at run start and admits
-	// maxDurationSeconds precisely BECAUSE the engine enforces it through the
-	// stage activity's StartToCloseTimeout — so the two sides passing the same
-	// Limits is the evidence that admission rests on.
+	// JSON-encoded. The engine enforces duration through the activity timeout
+	// and remote token/cost bounds through trusted supervisor usage, so the two
+	// sides passing the same Limits is the evidence that admission rests on.
 	Limits string
 	// ParentPlatformPolicy and NestedAgentPolicy are the runner-authored child
 	// authority for agentic stages, JSON-encoded. They are carried in the
@@ -617,7 +616,7 @@ type parityEnvelope struct {
 // projected fields covers the envelope exactly, so a new envelope field cannot
 // join the exclusion set by being forgotten.
 var parityEnvelopeExcludedFields = map[string]string{
-	"ChildWorkflowOrigin": "local-only durable stage-start authority; child workflows remain explicitly refused by Temporal until its actual committed journal identity is available",
+	"ChildWorkflowOrigin": "derived from each backend's own committed stage-start sequence, so values differ; TestParityRowChildOriginCommittedBinding compares the journal relation",
 	"ArtifactPublication": "optional named publication contract includes a backend-specific journal visit cursor; dedicated publication tests check the authority and bindings",
 	"Workspace":           "absolute path minted per attempt by each side's provisioner; never the same string",
 	"Attempt":             "infra retries renumber attempts independently on each side; dispatch order is the slice's",

@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -19,7 +20,7 @@ import (
 // inventory, and the production wedge reached it the other way ("130 of 128").
 //
 // The cap is written to instance.yaml as well as to the carried configuration
-// because resolveRecoveryPolicy and the occupancy reader both resolve it from
+// because runtimewiring.ResolveRecoveryPolicy and the occupancy reader both resolve it from
 // that file at the point of use; the two must agree, or the test would be
 // measuring a policy disagreement rather than over-cap behaviour.
 func (f *reclaimFixture) lowerCap(limit int) {
@@ -48,7 +49,7 @@ func (f *reclaimFixture) occupancyLine() string {
 
 // TestIntegrationRecoveryReclaimsInventoryAlreadyOverItsCap is #5354's second
 // acceptance bullet. An inventory holding more entries than the cap could not
-// reclaim anything: recoveryEvictFunc and retireExpiredRecovery both read at
+// reclaim anything: runtimewiring.RecoveryEvictFunc and retireExpiredRecovery both read at
 // the operator cap, and that read REFUSES on the count, so no reclamation rule
 // was ever evaluated and every refused publish fell through to the overflow
 // tier while superseded duplicates sat in the inventory untouched.
@@ -105,7 +106,7 @@ func TestIntegrationRecoveryReclaimsInventoryAlreadyOverItsCap(t *testing.T) {
 		if active[superseded] {
 			t.Fatalf("the surplus did not drain: superseded duplicate %s survived", superseded)
 		}
-		if justification, found := f.reclamationJustification(superseded); !found || justification != reclaimSupersededDuplicate {
+		if justification, found := f.reclamationJustification(superseded); !found || justification != runtimewiring.ReclaimSupersededDuplicate {
 			t.Fatalf("%s was retired without the superseded-duplicate justification: found=%v justification=%q", superseded, found, justification)
 		}
 	}
@@ -146,8 +147,8 @@ func TestIntegrationRecoveryExpirySweepRunsOnAnOverCapInventory(t *testing.T) {
 	}
 	active := f.activeRunIDs()
 	for justification, runID := range map[string]string{
-		reclaimStoredNoDiff:        "sweep-overcap-nodiff",
-		reclaimSupersededDuplicate: "sweep-overcap-dup-oldest",
+		runtimewiring.ReclaimStoredNoDiff:        "sweep-overcap-nodiff",
+		runtimewiring.ReclaimSupersededDuplicate: "sweep-overcap-dup-oldest",
 	} {
 		if active[runID] {
 			t.Fatalf("the sweep retired nothing on an over-cap inventory: %s survived", runID)

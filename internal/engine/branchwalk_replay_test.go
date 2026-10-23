@@ -17,22 +17,20 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 func TestStaticBranchBodiesRealHistoryReplay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard})
+	c, stop, err := startReplayClient(ctx, t, testsuite.DevServerOptions{LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := server.Stop(); err != nil {
+		if err := stop(); err != nil {
 			t.Error(err)
 		}
 	})
-	c := server.Client()
 	for _, mode := range []string{"task-chain", "gate", "terminal-gate", "timeout", "cancel", "legacy"} {
 		t.Run(mode, func(t *testing.T) {
 			gateBody := mode == "gate" || mode == "terminal-gate"

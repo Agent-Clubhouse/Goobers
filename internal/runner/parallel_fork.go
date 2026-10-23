@@ -53,30 +53,30 @@ func (r *Runner) prepareParallelForks(ctx context.Context, run *journal.Run, in 
 		if err != nil {
 			return nil, err
 		}
-		state = &parentForkState{plan: plan, reference: ref, plannedAt: run.Seq(), ready: map[int]bool{}}
+		state = &parentForkState{Plan: plan, Reference: ref, PlannedAt: run.Seq(), Ready: map[int]bool{}}
 	}
-	if err := validateParallelForkOwners(url, in, state.plan, len(parallel.Branches)); err != nil {
+	if err := validateParallelForkOwners(url, in, state.Plan, len(parallel.Branches)); err != nil {
 		return nil, err
 	}
 	if r.cfg.PrepareParentForkSource == nil {
 		return nil, errors.New("parallel fork source service unavailable")
 	}
-	restored, err := r.cfg.PrepareParentForkSource(ctx, run, forkSourceRequest(in, started), &state.plan.Source)
+	restored, err := r.cfg.PrepareParentForkSource(ctx, run, forkSourceRequest(in, started), &state.Plan.Source)
 	if err != nil {
 		return nil, err
 	}
-	if restored != state.plan.Source {
+	if restored != state.Plan.Source {
 		return nil, errors.New("parallel fork source changed on replay")
 	}
 	if err := r.prepareParallelRoot(ctx, run, url, state); err != nil {
 		return nil, err
 	}
-	for index, owner := range state.plan.Workspaces {
+	for index, owner := range state.Plan.Workspaces {
 		if err := r.prepareParallelFork(ctx, run, url, state, index+1, owner); err != nil {
 			return nil, err
 		}
 	}
-	return state.plan.Workspaces, nil
+	return state.Plan.Workspaces, nil
 }
 
 func parallelForkBoundary(events []journal.Event, parallel apiv1.Parallel) (journal.Event, error) {
@@ -110,10 +110,10 @@ func parallelForkOwners(url string, in StartInput, plan ParentForkPlan, count in
 func (r *Runner) prepareParallelFork(ctx context.Context, run *journal.Run, url string, state *parentForkState, branch int, owner worktree.StageCustody) error {
 	_, err := r.cfg.Worktrees.AdoptHeldStage(ctx, url, owner)
 	if err != nil {
-		if state.ready[branch] {
+		if state.Ready[branch] {
 			return fmt.Errorf("parallel ready workspace unavailable: %w", err)
 		}
-		workspace, createErr := r.cfg.Worktrees.CreateParallelFromSnapshot(ctx, worktree.ParallelForkOptions{RepoURL: url, OwnerRunID: owner.OwnerRunID, Gaggle: state.plan.Gaggle, ParallelSequence: state.plan.Sequence, Branch: branch, SnapshotSHA: owner.StartRef})
+		workspace, createErr := r.cfg.Worktrees.CreateParallelFromSnapshot(ctx, worktree.ParallelForkOptions{RepoURL: url, OwnerRunID: owner.OwnerRunID, Gaggle: state.Plan.Gaggle, ParallelSequence: state.Plan.Sequence, Branch: branch, SnapshotSHA: owner.StartRef})
 		if createErr != nil {
 			return createErr
 		}
@@ -125,10 +125,10 @@ func (r *Runner) prepareParallelFork(ctx context.Context, run *journal.Run, url 
 			return errors.New("parallel fork acquired unexpected workspace custody")
 		}
 	}
-	if state.ready[branch] {
+	if state.Ready[branch] {
 		return nil
 	}
-	return RecordParentForkReady(run, state.plan.Sequence, state.reference, branch, owner)
+	return RecordParentForkReady(run, state.Plan.Sequence, state.Reference, branch, owner)
 }
 
 func validateParallelForkOwners(url string, in StartInput, plan ParentForkPlan, count int) error {

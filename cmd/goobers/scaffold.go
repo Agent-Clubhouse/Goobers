@@ -15,6 +15,8 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -131,7 +133,7 @@ func runScaffoldKind(kind string, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	if err := prepareManualRoot(instance.NewLayout(target.instanceRoot), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(target.instanceRoot), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

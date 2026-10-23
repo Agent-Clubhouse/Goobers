@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -81,7 +82,7 @@ func runRecoveryResume(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if !claimsPlaneSelected() {
-		stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(root), stderr)
+		stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(root), stderr)
 		defer stopTelemetry()
 	}
 	registry, scrubber := journal.DefaultScrubber()

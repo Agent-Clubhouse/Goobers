@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func TestUpAtProtectedGenerationCapacityKeepsDiagnostics(t *testing.T) {
@@ -92,11 +93,11 @@ func testUpAtProtectedGenerationCapacity(t *testing.T, legacy, compact bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		firstDigest, err := configDirectoryDigest(firstDir)
+		firstDigest, err := runtimewiring.ConfigDirectoryDigest(firstDir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		lastDigest, err := configDirectoryDigest(lastDir)
+		lastDigest, err := runtimewiring.ConfigDirectoryDigest(lastDir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,7 +126,7 @@ func testUpAtProtectedGenerationCapacity(t *testing.T, legacy, compact bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recoveredDigest, err := configDirectoryDigest(recoveredDir)
+	recoveredDigest, err := runtimewiring.ConfigDirectoryDigest(recoveredDir)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -326,7 +326,7 @@ func TestDeployReferenceCloudShipsReferencedConfigMaps(t *testing.T) {
 	}
 }
 
-const temporalHAChart = "GOOBERS_TEMPORAL_CHART_1_3_0" // path to the sha-pinned temporal-1.3.0.tgz
+const temporalHAChart = "GOOBERS_TEMPORAL_HA_CHART" // path to the sha-pinned chart the HA reference targets (1.6.0)
 
 // TestDeployReferenceTemporalHAValuesRender renders values-ha.yaml with the
 // pinned chart and asserts the effective configuration, so a key the chart

@@ -22,7 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/planehttp"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -48,6 +48,8 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
+	// EngineChildren is the durable generated-child custody boundary.
+	EngineChildren ChildService
 	// ChildDispatchCompletion commits a stopped worker's final custody report
 	// through its existing Temporal connection before the activity returns.
 	ChildDispatchCompletion ChildDispatchCompletion
@@ -124,6 +126,8 @@ type Activities struct {
 // Placement is additive and omitempty, so a history written before it existed
 // decodes with a nil Placement rather than failing.
 type DispatchStageResult struct {
+	// ChildWait is authored by a trusted stopped-dispatch adapter, never decoded from a stage result.
+	ChildWait *journal.ChildHandoffRequest `json:"childWait,omitempty"`
 	// Usage is trusted adapter accounting, independent of result metrics.
 	Usage *AttemptUsage `json:"usage,omitempty"`
 	// Embed the legacy activity result so its JSON stays flat and histories
@@ -513,11 +517,11 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (out stageActivityResult, outErr error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
-			var refusal *runner.SelfExecutionRefusal
+			var refusal *runsemantics.SelfExecutionRefusal
 			if !errors.As(err, &refusal) {
 				return stageActivityResult{}, classifySeamError(err)
 			}
-			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
+			return stageActivityResult{ResultEnvelope: runsemantics.SelfExecutionBlockedResult(env.TaskID)}, nil
 		}
 	}
 	if a.Goober == nil {
@@ -616,11 +620,11 @@ func (a *Activities) salvageOnTimeout(
 	if capture == nil || len(capture.Diff) == 0 {
 		return apiv1.ResultEnvelope{}, nil, false
 	}
-	marker, err := runner.SalvageOnTimeoutMarker(len(capture.Diff), cause.Error())
+	marker, err := runsemantics.SalvageOnTimeoutMarker(len(capture.Diff), cause.Error())
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, false
 	}
-	return runner.SalvagedResult(), marker, true
+	return runsemantics.SalvagedResult(), marker, true
 }
 
 // captureUnpushedDiff asks a writable repo workspace for the patch it is
@@ -709,11 +713,11 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 		// pointer handed to the reviewer here and the one the journal commits
 		// address one blob by construction, not by agreement.
 		env.ContextPointers = append(env.ContextPointers, apiv1.ContextPointer{
-			Name:      runner.ReviewerDiffPointerName(gateNameFromTaskID(env)),
+			Name:      runsemantics.ReviewerDiffPointerName(gateNameFromTaskID(env)),
 			Integrity: apiv1.IntegrityDerived,
 			Artifact: &apiv1.ArtifactPointer{
 				Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
-				MediaType: runner.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
+				MediaType: runsemantics.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
 			},
 		})
 	}
@@ -764,6 +768,8 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 // artifact, no digest, no short-circuit.
 type GateReviewResult struct {
 	apiv1.Verdict
+	// Actor is populated only by the workflow-side human decision protocol.
+	Actor string `json:"actor,omitempty"`
 	// Diff is the subject patch, recorded by the workflow as the reviewer-diff
 	// artifact. Empty when the branch has not moved or the workspace cannot
 	// report one.
@@ -812,11 +818,11 @@ func captureGateDiff(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
-			var refusal *runner.SelfExecutionRefusal
+			var refusal *runsemantics.SelfExecutionRefusal
 			if !errors.As(err, &refusal) {
 				return stageActivityResult{}, classifySeamError(err)
 			}
-			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
+			return stageActivityResult{ResultEnvelope: runsemantics.SelfExecutionBlockedResult(env.TaskID)}, nil
 		}
 	}
 	if a.Det == nil {
@@ -845,8 +851,8 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 			// stage the gate dispatches is told only that a merge conflicted,
 			// never which files conflicted — which is the entire actionable
 			// content of the failure.
-			detail, derr := json.Marshal(runner.BaseSyncConflictDetail{
-				Code:             runner.BaseSyncConflictErrorCode,
+			detail, derr := json.Marshal(runsemantics.BaseSyncConflictDetail{
+				Code:             runsemantics.BaseSyncConflictErrorCode,
 				Message:          err.Error(),
 				Branch:           conflict.Branch,
 				BaseRef:          conflict.BaseRef,
@@ -858,8 +864,8 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 			return a.scrubStageActivityResult(ctx, stageActivityResult{
 				ResultEnvelope: apiv1.ResultEnvelope{
 					Status:  apiv1.ResultFailure,
-					Summary: runner.BaseSyncConflictSummary,
-					Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
+					Summary: runsemantics.BaseSyncConflictSummary,
+					Error:   journal.ErrorInfoFor(runsemantics.BaseSyncConflictErrorCode, err, true),
 				},
 				BaseSyncConflict: detail,
 				SelfPlacement:    selfStagePlacement(),
@@ -901,10 +907,10 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 // "journal nothing" — so an install that declares no placement keeps producing
 // the journals it produced before this existed, on both paths.
 func selfStagePlacement() *journal.Placement {
-	if !runner.PlacementDeclaredInEnvironment() {
+	if !runsemantics.PlacementDeclaredInEnvironment() {
 		return nil
 	}
-	placement := runner.SelfPlacement()
+	placement := runsemantics.SelfPlacement()
 	return &placement
 }
 
@@ -922,7 +928,7 @@ func selfStagePlacement() *journal.Placement {
 // carry them to a pod, so reporting success would strand exactly the diff
 // this mechanism protects — the same rule the pod's dispatch-exec applies.
 func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode, result *stageActivityResult) error {
-	if result.Status != apiv1.ResultSuccess && runner.DeclaredArtifactRetryFailure(result.ResultEnvelope) == nil {
+	if result.Status != apiv1.ResultSuccess && runsemantics.DeclaredArtifactRetryFailure(result.ResultEnvelope) == nil {
 		return nil
 	}
 	if !writableWorkspace(mode) {
@@ -1020,7 +1026,7 @@ func (a *Activities) EvaluateAutomated(ctx context.Context, gate apiv1.Automated
 // run directory locally, the worker's span store here), and that is all this
 // method does.
 func (a *Activities) validateDependencyResult(ctx context.Context, env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
-	if !runner.AppliesDependencyValidation(result, env.ContextPointers) {
+	if !runsemantics.AppliesDependencyValidation(result, env.ContextPointers) {
 		return result
 	}
 	// Fail open with no span source or no transcript pointer: see the Spans
@@ -1033,6 +1039,6 @@ func (a *Activities) validateDependencyResult(ctx context.Context, env apiv1.Inv
 	if err != nil {
 		return result
 	}
-	return runner.RejectDependencyResult(result,
-		runner.ValidateDependencyNotMetTranscript(transcript, env.ContextPointers, result))
+	return runsemantics.RejectDependencyResult(result,
+		runsemantics.ValidateDependencyNotMetTranscript(transcript, env.ContextPointers, result))
 }

@@ -18,6 +18,8 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/test/testsupport/netns"
 )
@@ -419,12 +421,12 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 	}
 
 	var cloneAttempts atomic.Int32
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) {
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) {
 		cloneAttempts.Add(1)
 		return "", errors.New("repository access disabled by demo test")
 	}
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 
 	previousSweep := delegationSweepInterval
 	delegationSweepInterval = 20 * time.Millisecond

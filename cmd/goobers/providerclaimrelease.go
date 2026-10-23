@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -59,7 +60,7 @@ func (u *upSession) releaseProviderClaimMarker(ctx context.Context, entry locals
 		if err != nil {
 			return err
 		}
-		resolver, grants, err := buildRoleCredentials(u.setup.Config, u.setup.SecretStores, project.Owner, project.Name, nil, nil, u.setup.SharedRegistry)
+		resolver, grants, err := runtimewiring.BuildRoleCredentials(u.setup.Config, u.setup.SecretStores, project.Owner, project.Name, nil, nil, u.setup.SharedRegistry)
 		if err != nil {
 			return err
 		}

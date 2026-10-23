@@ -136,9 +136,9 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.inputsFrom` | 2.0 | ga | supported | supported | supported | dev |
 | `task.inputsFrom.stageQualified` | 2.0 | ga | supported | supported | supported | v0.2.0 |
 | `task.limits` | 2.0 | ga | supported | supported | supported | dev |
-| `task.limits.maxCostUSD` | 2.0 | ga | supported | unsupported | supported | dev |
+| `task.limits.maxCostUSD` | 2.0 | ga | supported | supported | supported | dev |
 | `task.limits.maxDurationSeconds` | 2.0 | ga | supported | supported | supported | dev |
-| `task.limits.maxTokens` | 2.0 | ga | supported | unsupported | supported | dev |
+| `task.limits.maxTokens` | 2.0 | ga | supported | supported | supported | dev |
 | `task.minimumIntegrity` | 2.0 | ga | supported | supported | supported | dev |
 | `task.name` | 2.0 | ga | supported | supported | supported | dev |
 | `task.nestedAgentPolicy` | 2.0 | ga | supported | supported | supported | dev |
@@ -342,9 +342,9 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.inputsFrom` | 3.0 | ga | supported | supported | preview | dev |
 | `task.inputsFrom.stageQualified` | 3.0 | ga | supported | supported | preview | v0.2.0 |
 | `task.limits` | 3.0 | ga | supported | supported | preview | dev |
-| `task.limits.maxCostUSD` | 3.0 | ga | supported | unsupported | preview | dev |
+| `task.limits.maxCostUSD` | 3.0 | ga | supported | supported | preview | dev |
 | `task.limits.maxDurationSeconds` | 3.0 | ga | supported | supported | preview | dev |
-| `task.limits.maxTokens` | 3.0 | ga | supported | unsupported | preview | dev |
+| `task.limits.maxTokens` | 3.0 | ga | supported | supported | preview | dev |
 | `task.minimumIntegrity` | 3.0 | ga | supported | supported | preview | dev |
 | `task.name` | 3.0 | ga | supported | supported | preview | dev |
 | `task.nestedAgentPolicy` | 3.0 | ga | supported | supported | preview | dev |
@@ -575,9 +575,9 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.inputsFrom` | 3.1 | ga | supported | supported | preview | dev |
 | `task.inputsFrom.stageQualified` | 3.1 | ga | supported | supported | preview | v0.2.0 |
 | `task.limits` | 3.1 | ga | supported | supported | preview | dev |
-| `task.limits.maxCostUSD` | 3.1 | ga | supported | unsupported | preview | dev |
+| `task.limits.maxCostUSD` | 3.1 | ga | supported | supported | preview | dev |
 | `task.limits.maxDurationSeconds` | 3.1 | ga | supported | supported | preview | dev |
-| `task.limits.maxTokens` | 3.1 | ga | supported | unsupported | preview | dev |
+| `task.limits.maxTokens` | 3.1 | ga | supported | supported | preview | dev |
 | `task.minimumIntegrity` | 3.1 | ga | supported | supported | preview | dev |
 | `task.name` | 3.1 | ga | supported | supported | preview | dev |
 | `task.nestedAgentPolicy` | 3.1 | ga | supported | supported | preview | dev |
@@ -642,7 +642,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.parallels.join` | 3.1 | ga | supported | supported | preview | dev |
 | `workflow.spec.parallels.maxConcurrentBranches` | 3.1 | ga | supported | supported | preview | dev |
 | `workflow.spec.parallels.onFailure` | 3.1 | ga | supported | supported | preview | dev |
-| `workflow.spec.parallels.selection` | 3.1 | preview | supported | unsupported | preview | dev |
+| `workflow.spec.parallels.selection` | 3.1 | preview | supported | supported | preview | dev |
 | `workflow.spec.parallels.selection.source` | 3.1 | preview | supported | supported | preview | dev |
 | `workflow.spec.readiness` | 3.1 | ga | supported | supported | preview | dev |
 | `workflow.spec.readiness.claimVisibility` | 3.1 | ga | supported | supported | preview | dev |

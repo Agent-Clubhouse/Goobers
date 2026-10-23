@@ -389,7 +389,7 @@ func init() {
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --target cloud", "goobers validate --target cloud --format json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
@@ -509,10 +509,6 @@ func init() {
 				withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
 		).withSynopsis(synopsisByID["temporal"]).withHelp("operate Temporal payload services", temporalHelp).
 			withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
-		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
-			withSynopsis(synopsisByID["worker"]).
-			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
-			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
 		command("config-seed", apicontract.ActionMaintenance, runConfigSeed).
 			withSynopsis(synopsisByID["config-seed"]).
 			withHelp("seed a private worker instance from a rendered configuration mirror", configSeedHelp).

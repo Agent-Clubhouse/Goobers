@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/capability"
@@ -273,9 +275,9 @@ func TestPodCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) 
 // resolve through.
 func stubPRPoller(t *testing.T, poller executor.PRPoller) {
 	t.Helper()
-	prev := newPRPoller
-	newPRPoller = func(string) executor.PRPoller { return poller }
-	t.Cleanup(func() { newPRPoller = prev })
+	prev := runtimewiring.NewPRPoller
+	runtimewiring.NewPRPoller = func(string) executor.PRPoller { return poller }
+	t.Cleanup(func() { runtimewiring.NewPRPoller = prev })
 }
 
 // recordingArtifactRecorder is the LOCAL side's artifact sink. It implements
@@ -582,12 +584,12 @@ func TestCIPollPodPollsWithTheResolvedCredential(t *testing.T) {
 	fixture := defaultCIPollFixture()
 	setPodCIPollEnv(t, fixture)
 	var seen string
-	prev := newPRPoller
-	newPRPoller = func(token string) executor.PRPoller {
+	prev := runtimewiring.NewPRPoller
+	runtimewiring.NewPRPoller = func(token string) executor.PRPoller {
 		seen = token
 		return &recordingPRPoller{result: providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}}
 	}
-	t.Cleanup(func() { newPRPoller = prev })
+	t.Cleanup(func() { runtimewiring.NewPRPoller = prev })
 
 	if result := runCIPollStage(context.Background(), io.Discard); result.Status != apiv1.ResultSuccess {
 		t.Fatalf("result = %+v, want success", result)

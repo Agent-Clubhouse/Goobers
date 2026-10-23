@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -152,9 +153,9 @@ func readUnpushedDiffArtifacts(t *testing.T, runsDir, runID string) (patch []byt
 			continue
 		}
 		switch {
-		case strings.HasSuffix(e.Name, "/"+unpushedDiffPatchName):
+		case strings.HasSuffix(e.Name, "/"+runsemantics.UnpushedDiffPatchName):
 			patchRef = e.Ref
-		case strings.HasSuffix(e.Name, "/"+unpushedDiffMetaName):
+		case strings.HasSuffix(e.Name, "/"+runsemantics.UnpushedDiffMetaName):
 			metaRef = e.Ref
 		}
 	}
@@ -205,8 +206,8 @@ func TestEnvironmentalFaultAtLocalCIPreservesImplementDiff(t *testing.T) {
 	if !strings.Contains(string(patch), "impl.txt") || !strings.Contains(string(patch), "implement work") {
 		t.Fatalf("patch artifact does not contain the committed change:\n%s", patch)
 	}
-	if meta.Schema != unpushedDiffSchemaVersion {
-		t.Fatalf("metadata schema = %q, want %q", meta.Schema, unpushedDiffSchemaVersion)
+	if meta.Schema != runsemantics.UnpushedDiffSchemaVersion {
+		t.Fatalf("metadata schema = %q, want %q", meta.Schema, runsemantics.UnpushedDiffSchemaVersion)
 	}
 	if meta.RunID != "run-3366" || meta.Stage != "implement" || meta.Workflow != "implementation" {
 		t.Fatalf("metadata identity = %+v, want run-3366/implement/implementation", meta)
@@ -268,7 +269,7 @@ func assertUnpushedDiffSidecarIsDeterministic(t *testing.T, runsDir, runID strin
 	for i := range events {
 		e := events[i]
 		if e.Type != journal.EventArtifactRecorded || e.Ref == nil ||
-			!strings.HasSuffix(e.Name, "/"+unpushedDiffMetaName) {
+			!strings.HasSuffix(e.Name, "/"+runsemantics.UnpushedDiffMetaName) {
 			continue
 		}
 		raw, err := rd.ArtifactBytes(*e.Ref)

@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -400,7 +402,7 @@ func guidedCommand(executable string, args ...string) string {
 func guidedWorkflowFacts(instancePath, executable string) ([]guidedWorkflowFact, error) {
 	set, report, err := instance.LoadConfigDir(instance.NewLayout(instancePath).ConfigDir())
 	if err != nil {
-		return nil, fmt.Errorf("%w (%s)", err, validationIssueSummary(report))
+		return nil, fmt.Errorf("%w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	disabledGaggles := make(map[string]bool, len(set.Gaggles))
 	for _, gaggle := range set.Gaggles {

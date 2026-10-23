@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -115,7 +117,7 @@ func publishPodRecovery(ctx context.Context, repository string, trace podRecover
 	var inventory string
 	if err := podRecoveryPhase(ctx, trace, "prepare inventory", func(ctx context.Context) error {
 		var err error
-		inventory, err = prepareRecoveryInventory(root)
+		inventory, err = runtimewiring.PrepareRecoveryInventory(root)
 		return err
 	}); err != nil {
 		return err
@@ -135,7 +137,7 @@ func publishPodRecovery(ctx context.Context, repository string, trace podRecover
 			return publisher.PublishArchive(ctx, claims[0].ItemID, record, archive)
 		},
 	}
-	publication := recoveryCleanupJournal{directory: filepath.Join(root, "journal"), scrubber: journal.NewRegistryScrubber()}
+	publication := runtimewiring.RecoveryCleanupJournal{Directory: filepath.Join(root, "journal"), Scrubber: journal.NewRegistryScrubber()}
 	if err := podRecoveryPhase(ctx, trace, "retain abandoned preparation", func(ctx context.Context) error {
 		return recovery.RetainAbandonedPreparation(ctx, request, publication)
 	}); err != nil {

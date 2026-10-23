@@ -1,0 +1,323 @@
+{
+  "schemaVersion": "goobers.dev/cloud-readiness/v1",
+  "target": "cloud",
+  "cloudReady": false,
+  "summary": {
+    "blockedWorkflows": 2,
+    "totalBlockers": 10,
+    "configFixes": 4,
+    "waitingOnP4": 6,
+    "p4Issues": [
+      7753,
+      7755,
+      7758,
+      7760,
+      7762,
+      7763
+    ]
+  },
+  "workflows": [
+    {
+      "gaggle": "g",
+      "name": "all-features",
+      "dslVersion": "3.1",
+      "blockers": [
+        {
+          "code": "RUNTIME001",
+          "feature": "spec.parallels",
+          "stage": "fan",
+          "path": "/spec/parallels/0",
+          "message": "engine does not support spec.parallels",
+          "action": {
+            "kind": "p4",
+            "description": "wait for engine parity in #7753",
+            "issue": 7753,
+            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7753"
+          }
+        },
+        {
+          "code": "RUNTIME001",
+          "feature": "spec.maps",
+          "stage": "map",
+          "path": "/spec/maps/0",
+          "message": "engine does not support spec.maps",
+          "action": {
+            "kind": "p4",
+            "description": "wait for engine parity in #7755",
+            "issue": 7755,
+            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7755"
+          }
+        },
+        {
+          "code": "RUNTIME001",
+          "feature": "task.childWorkflows",
+          "stage": "agent",
+          "path": "/spec/tasks/0/childWorkflows",
+          "message": "engine does not support task.childWorkflows",
+          "action": {
+            "kind": "p4",
+            "description": "wait for engine parity in #7758",
+            "issue": 7758,
+            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7758"
+          }
+        },
+        {
+          "code": "RUNTIME001",
+          "feature": "task.experiment",
+          "stage": "agent",
+          "path": "/spec/tasks/0/experiment",
+          "message": "engine does not support task.experiment",
+          "action": {
+            "kind": "p4",
+            "description": "wait for engine parity in #7763",
+            "issue": 7763,
+            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7763"
+          }
+        },
+        {
+          "code": "RUNTIME001",
+          "feature": "task.outbox",
+          "stage": "agent",
+          "path": "/spec/tasks/0/outbox",
+          "message": "engine does not support task.outbox",
+          "action": {
+            "kind": "p4",
+            "description": "wait for engine parity in #7762",
+            "issue": 7762,
+            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7762"
+          }
+        },
+        {
+          "code": "RUNTIME001",
+          "feature": "gate.evaluator.human",
+          "stage": "approval",
+          "path": "/spec/gates/0/evaluator",
+          "message": "engine does not support gate.evaluator.human",
+          "action": {
+            "kind": "p4",
+            "description": "wait for engine parity in #7760",
+            "issue": 7760,
+            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7760"
+          }
+        },
+        {
+          "code": "RUNTIME002",
+          "stage": "agent",
+          "path": "/spec/tasks/0/runsOn",
+          "message": "stage \"agent\" is pinned to the control-plane host",
+          "action": {
+            "kind": "config",
+            "description": "add runsOn that selects a non-self runner"
+          }
+        },
+        {
+          "code": "RUNTIME002",
+          "stage": "review",
+          "path": "/spec/gates/1/runsOn",
+          "message": "agentic gate \"review\" has no runsOn and would execute on the control-plane host",
+          "action": {
+            "kind": "config",
+            "description": "add runsOn to the agentic gate"
+          }
+        }
+      ]
+    },
+    {
+      "gaggle": "g",
+      "name": "legacy",
+      "dslVersion": "2.0",
+      "blockers": [
+        {
+          "code": "RUNTIME002",
+          "stage": "local",
+          "path": "/spec/tasks/0/runsOn",
+          "message": "stage \"local\" is pinned to the control-plane host",
+          "action": {
+            "kind": "config",
+            "description": "add runsOn that selects a non-self runner"
+          }
+        },
+        {
+          "code": "RUNTIME003",
+          "path": "/dslVersion",
+          "message": "DSL 2.0 is local-runner-only and cannot run in cloud",
+          "action": {
+            "kind": "config",
+            "description": "migrate the workflow to DSL 3.0",
+            "command": "goobers fix --to 3.0"
+          }
+        }
+      ]
+    }
+  ],
+  "blockers": [
+    {
+      "key": "RUNTIME001:gate.evaluator.human",
+      "code": "RUNTIME001",
+      "feature": "gate.evaluator.human",
+      "action": {
+        "kind": "p4",
+        "description": "wait for engine parity in #7760",
+        "issue": 7760,
+        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7760"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "approval",
+          "path": "/spec/gates/0/evaluator"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME001:spec.maps",
+      "code": "RUNTIME001",
+      "feature": "spec.maps",
+      "action": {
+        "kind": "p4",
+        "description": "wait for engine parity in #7755",
+        "issue": 7755,
+        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7755"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "map",
+          "path": "/spec/maps/0"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME001:spec.parallels",
+      "code": "RUNTIME001",
+      "feature": "spec.parallels",
+      "action": {
+        "kind": "p4",
+        "description": "wait for engine parity in #7753",
+        "issue": 7753,
+        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7753"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "fan",
+          "path": "/spec/parallels/0"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME001:task.childWorkflows",
+      "code": "RUNTIME001",
+      "feature": "task.childWorkflows",
+      "action": {
+        "kind": "p4",
+        "description": "wait for engine parity in #7758",
+        "issue": 7758,
+        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7758"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "agent",
+          "path": "/spec/tasks/0/childWorkflows"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME001:task.experiment",
+      "code": "RUNTIME001",
+      "feature": "task.experiment",
+      "action": {
+        "kind": "p4",
+        "description": "wait for engine parity in #7763",
+        "issue": 7763,
+        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7763"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "agent",
+          "path": "/spec/tasks/0/experiment"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME001:task.outbox",
+      "code": "RUNTIME001",
+      "feature": "task.outbox",
+      "action": {
+        "kind": "p4",
+        "description": "wait for engine parity in #7762",
+        "issue": 7762,
+        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7762"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "agent",
+          "path": "/spec/tasks/0/outbox"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME002:add runsOn that selects a non-self runner",
+      "code": "RUNTIME002",
+      "action": {
+        "kind": "config",
+        "description": "add runsOn that selects a non-self runner"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "agent",
+          "path": "/spec/tasks/0/runsOn"
+        },
+        {
+          "gaggle": "g",
+          "workflow": "legacy",
+          "stage": "local",
+          "path": "/spec/tasks/0/runsOn"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME002:add runsOn to the agentic gate",
+      "code": "RUNTIME002",
+      "action": {
+        "kind": "config",
+        "description": "add runsOn to the agentic gate"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "all-features",
+          "stage": "review",
+          "path": "/spec/gates/1/runsOn"
+        }
+      ]
+    },
+    {
+      "key": "RUNTIME003:",
+      "code": "RUNTIME003",
+      "action": {
+        "kind": "config",
+        "description": "migrate the workflow to DSL 3.0",
+        "command": "goobers fix --to 3.0"
+      },
+      "occurrences": [
+        {
+          "gaggle": "g",
+          "workflow": "legacy",
+          "path": "/dslVersion"
+        }
+      ]
+    }
+  ]
+}

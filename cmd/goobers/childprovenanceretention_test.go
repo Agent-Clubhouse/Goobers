@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -55,7 +56,7 @@ func TestTelemetryPrunePreservesOverflowOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	overflow := filepath.Join(recoveryOverflowRoot(layout), filepath.Base(inventory))
+	overflow := filepath.Join(runtimewiring.RecoveryOverflowRoot(layout), filepath.Base(inventory))
 	if err := os.MkdirAll(overflow, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +67,7 @@ func TestTelemetryPrunePreservesOverflowOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertCustodyPreservesJournal(t, layout, dir, now)
-	if err := recovery.DeleteOverflowEntry(recoveryOverflowRoot(layout), record); err != nil {
+	if err := recovery.DeleteOverflowEntry(runtimewiring.RecoveryOverflowRoot(layout), record); err != nil {
 		t.Fatal(err)
 	}
 	results, _, err := pruneTelemetryRetention(layout, instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}, nil, now, false)

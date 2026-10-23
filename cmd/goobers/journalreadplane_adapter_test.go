@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -33,9 +32,6 @@ func seedCrossRunRun(t *testing.T, layout instance.Layout, gaggle, runID string,
 		t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runsDir, runID, "run.yaml"), []byte("runId: "+runID+"\ngaggle: "+gaggle+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

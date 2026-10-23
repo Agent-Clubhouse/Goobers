@@ -206,12 +206,9 @@ func ensureRuntimeSupport(features []Feature) []Feature {
 		engineLevel := RuntimeSupported
 		switch features[i].ID {
 		case "workflow.spec.parallels",
-			"workflow.spec.parallels.selection",
 			"workflow.spec.maps",
 			"task.childWorkflows",
 			"gate.evaluator.human",
-			"task.limits.maxTokens",
-			"task.limits.maxCostUSD",
 			"task.outbox",
 			"task.experiment":
 			engineLevel = RuntimeUnsupported

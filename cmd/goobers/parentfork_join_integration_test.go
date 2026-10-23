@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/goobers/goobers/test/testsupport/testdep"
-
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 type stopHostJoinAfterReady struct{ parallelworkspace.Recorder }
@@ -49,7 +49,7 @@ func interruptHostForkJoin(t *testing.T, restorer parentArchiveRestorer, run *jo
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := recoveryConfiguredProject(restorer.config, seed.Record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(restorer.config, seed.Record.RepositoryKey)
 	if err != nil {
 		t.Fatal(err)
 	}

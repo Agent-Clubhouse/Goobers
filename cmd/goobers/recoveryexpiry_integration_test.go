@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -74,9 +76,9 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previous })
+	previous := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previous })
 	now := time.Now().UTC()
 	start, finish := now.Add(-90*24*time.Hour), now.Add(-45*24*time.Hour)
 	if strings.HasPrefix(mode, "abandoned") || strings.HasPrefix(mode, "landed") {
@@ -107,7 +109,7 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	record := recovery.Record{Version: 1, RunID: runID, RepositoryKey: "github|||team|repo|", Ref: ref, BaseSHA: base, SnapshotSHA: snapshot, PatchDigest: digest, CreatedAt: start, RetainUntil: finish.Add(30 * 24 * time.Hour)}
-	root, err := prepareRecoveryInventory(layout.Root)
+	root, err := runtimewiring.PrepareRecoveryInventory(layout.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func seedRecoveryLandingForRetirement(t *testing.T, layout instance.Layout, repo
 		merge = strings.Repeat("f", 40)
 	}
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "team", Name: "repo"}
-	route, err := recoveryLandingRoute(repo)
+	route, err := runtimewiring.RecoveryLandingRoute(repo)
 	if err != nil {
 		t.Fatal(err)
 	}

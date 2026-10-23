@@ -14,23 +14,20 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	temporalworker "go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
-
-	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 func TestJournalOwnerRealHistoriesReplay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard})
+	c, stop, err := startReplayClient(ctx, t, testsuite.DevServerOptions{LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := server.Stop(); err != nil {
+		if err := stop(); err != nil {
 			t.Error(err)
 		}
 	})
-	c := server.Client()
 	for _, mode := range []string{"success", "ack-loss", "before-write", "bad-ack", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			writer, dir := newLiveWriter(t)

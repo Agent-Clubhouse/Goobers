@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -78,7 +80,7 @@ func containedParentPlacements(cfg *instance.Config, set *instance.ConfigSet, ma
 	if set == nil || machine == nil {
 		return nil, fmt.Errorf("parent source catalog unavailable")
 	}
-	goobers, err := resolveGoobersForGaggle(set, machine.Def.Spec.Gaggle)
+	goobers, err := runtimewiring.ResolveGoobersForGaggle(set, machine.Def.Spec.Gaggle)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +92,7 @@ func containedParentPlacements(cfg *instance.Config, set *instance.ConfigSet, ma
 			if len(gaggle.Spec.AdditionalRepos) != 0 {
 				return nil, fmt.Errorf("contained parent additional repositories are not yet supported")
 			}
-			if configured, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configured.Pinned() {
+			if configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project); ok && configured.Pinned() {
 				return nil, fmt.Errorf("contained parent requires a managed worktree, not a pinned checkout")
 			}
 		}

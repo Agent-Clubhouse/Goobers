@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -14,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 const maxChildKitBytes = 8 << 20
@@ -45,11 +48,11 @@ func (w childKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attempt
 		return "", err
 	}
 	defer releaseSnapshot()
-	kit, err := (agenticKitWriter{registrar: w.service.shared}).buildSnapshotKit(w.service.layout, snapshot, *attempt.Envelope, kitModeFor(attempt))
+	kit, err := snapshot.BuildAgenticKit(w.service.layout, *attempt.Envelope, runtimewiring.KitModeFor(attempt), w.service.shared)
 	if err != nil {
 		return "", err
 	}
-	kit.ReviewRequiresDiff = attempt.Review && runner.ReviewsImplementation(start.Proposal.Machine, attempt.Stage)
+	kit.ReviewRequiresDiff = attempt.Review && runsemantics.ReviewsImplementation(start.Proposal.Machine, attempt.Stage)
 	if attempt.Review {
 		if !slices.Equal(kit.Goobers[attempt.Envelope.Goober].Capabilities, attempt.Envelope.Capabilities) {
 			return "", errors.New("child reviewer capabilities differ from pinned Goober")
@@ -98,17 +101,17 @@ func (w childKitWriter) snapshot(ctx context.Context, start childExecutionStart)
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
 		release()
-		return nil, nil, fmt.Errorf("child kit: load retained config: %w (%s)", err, validationIssueSummary(report))
+		return nil, nil, fmt.Errorf("child kit: load retained config: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*start.Proposal.Workflow.DeepCopy()}
-	instructions, skills, err := loadSnapshotGooberInputs(directory, set)
+	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(directory, set)
 	if err != nil {
 		release()
 		return nil, nil, err
 	}
-	snapshot := &workerConfigSnapshot{configDir: directory, generation: w.identity.ConfigGeneration, cfg: w.service.config, set: set,
-		instructions: instructions, skillPackages: skills, digests: newGooberDigestIndex(w.service.config, set, instructions, skills)}
-	digest, err := snapshot.gooberDigestFor(w.identity.Gaggle, w.identity.Workflow)
+	snapshot := &workerConfigSnapshot{ConfigDirectory: directory, Generation: w.identity.ConfigGeneration, Config: w.service.config, Definitions: set,
+		Instructions: instructions, SkillPackages: skills, Digests: runtimewiring.NewGooberDigestIndex(w.service.config, set, instructions, skills)}
+	digest, err := snapshot.GooberDigestFor(w.identity.Gaggle, w.identity.Workflow)
 	if err != nil || digest != w.identity.GooberDigest {
 		release()
 		return nil, nil, errors.Join(errors.New("child kit Goober pin differs from admitted source"), err)

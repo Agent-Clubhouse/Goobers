@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
@@ -252,14 +254,14 @@ func (r *daemonMergedPRCostReconciler) targets() ([]daemonMergedPRCostTarget, er
 
 	namespaces := map[string]string{}
 	if set != nil {
-		namespaces = branchNamespacesByGaggle(set)
+		namespaces = runtimewiring.BranchNamespacesByGaggle(set)
 	}
 	targets := make(map[string]daemonMergedPRCostTarget)
 	representedRepos := make(map[string]bool)
 	if set != nil {
 		for i := range set.Gaggles {
 			gaggle := set.Gaggles[i]
-			repo, ok := configuredRepoForProject(r.cfg, gaggle.Spec.Project)
+			repo, ok := runtimewiring.ConfiguredRepoForProject(r.cfg, gaggle.Spec.Project)
 			if !ok {
 				if gaggle.Spec.Project.Owner == "" || gaggle.Spec.Project.Name == "" {
 					continue
@@ -342,7 +344,7 @@ func (r *daemonMergedPRCostReconciler) providers(
 		return nil, nil, repo, fmt.Errorf("unsupported provider %q", repo.Provider)
 	}
 
-	resolver, grants, err := buildCredentials(
+	resolver, grants, err := runtimewiring.BuildCredentials(
 		r.cfg,
 		r.stores,
 		target.Project.Owner,

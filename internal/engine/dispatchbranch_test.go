@@ -10,7 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // dispatchbranch_test.go covers #392 on the mode-3 seam: the run's REBOUND
@@ -36,7 +36,7 @@ type rebindingDeterministic struct {
 func (d *rebindingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
 	if strings.TrimPrefix(env.TaskID, env.RunID+":") == d.stage {
-		result.Outputs = map[string]interface{}{runner.WorkspaceBranchOutput: d.branch}
+		result.Outputs = map[string]interface{}{runsemantics.WorkspaceBranchOutput: d.branch}
 	}
 	return result, nil
 }

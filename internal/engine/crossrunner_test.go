@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -292,7 +293,7 @@ func TestCrossRunnerTerminalOutcomeParity(t *testing.T) {
 			wantStatus: StatusFailed,
 			wantCalls:  map[string]int{"analyze": 1, "verdict": 1},
 			wantEvals:  0,
-			wantCode:   runner.NoWorkUnsubstantiatedCode,
+			wantCode:   runsemantics.NoWorkUnsubstantiatedCode,
 		},
 		{
 			name: "no-work with a delivering declared upstream still completes",
@@ -641,7 +642,7 @@ func TestGateEvaluatorInfraRetry(t *testing.T) {
 // (#624): the engine's step guard IS the local runner's, not a copied
 // literal that can drift.
 func TestMaxStepsSharedWithLocalRunner(t *testing.T) {
-	if maxSteps != runner.DefaultMaxSteps {
-		t.Fatalf("engine maxSteps = %d, want runner.DefaultMaxSteps (%d)", maxSteps, runner.DefaultMaxSteps)
+	if maxSteps != runsemantics.DefaultMaxSteps {
+		t.Fatalf("engine maxSteps = %d, want runner.DefaultMaxSteps (%d)", maxSteps, runsemantics.DefaultMaxSteps)
 	}
 }

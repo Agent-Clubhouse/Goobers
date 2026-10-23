@@ -8,13 +8,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/goobers/goobers/providers"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/engine"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workspacedelta"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 )
 
 // WorktreeWorkspaces is the production engine.WorkspaceProvisioner: a fresh,
@@ -41,7 +41,7 @@ type WorktreeWorkspaces struct {
 	// ScratchDir roots scratch-mode workspaces.
 	ScratchDir string
 	// CloneURL derives the git remote for a RepoRef. Nil applies the local
-	// runner's own derivation (runner.DefaultRepoCloneURL).
+	// runner's own derivation (providers.CloneURL).
 	CloneURL func(apiv1.RepoRef) (string, error)
 	// Store is the content-addressed store workspace-delta bundles travel
 	// through (the worker's --blob-store, the RWX volume the daemon's blob
@@ -188,7 +188,7 @@ func (p *WorktreeWorkspaces) repoTarget(req engine.WorkspaceRequest) (repoURL, b
 	}
 	cloneURL := p.CloneURL
 	if cloneURL == nil {
-		cloneURL = runner.DefaultRepoCloneURL
+		cloneURL = providers.CloneURL
 	}
 	repoURL, err = cloneURL(req.RepoRef)
 	if err != nil {

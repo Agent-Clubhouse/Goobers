@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -36,9 +38,9 @@ func TestIntegrationRecoveryCleanupGuardScopePerRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, workcopies := t.TempDir(), t.TempDir()
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 
@@ -46,7 +48,7 @@ func TestIntegrationRecoveryCleanupGuardScopePerRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	option, err := recoveryCleanupOption(layout, cfg, workcopies, repoCloneURL, journal.NewRegistryScrubber(), nil)
+	option, err := recoveryCleanupOption(layout, cfg, workcopies, runtimewiring.RepoCloneURL, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
