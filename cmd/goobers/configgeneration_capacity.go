@@ -11,27 +11,13 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/configgeneration"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 const appliedGenerationAnnotation = journal.ConfigGenerationAppliedAnnotation
-
-// The instance journal is the authority for the last committed catalog, even
-// when a previously retained generation is reused without producing a new run.
-func lastAppliedExecutionGeneration(layout instance.Layout) (string, error) {
-	return appliedExecutionGenerationReader(layout)(context.Background())
-}
-
-func appliedExecutionGenerationReader(layout instance.Layout) func(context.Context) (string, error) {
-	latest := journal.NewInstanceLatest(layout.SchedulerDir(), journal.IsConfigGenerationAuthority)
-	return func(ctx context.Context) (string, error) {
-		event, _, err := latest.Read(ctx)
-		generation, _ := event.Runner["configGeneration"].(string)
-		return generation, err
-	}
-}
 
 // Older reload events predate commit-safe generation metadata. Neither their
 // digest nor a run's start time proves which catalog actually became active.
@@ -122,3 +108,5 @@ func journalStartupGeneration(log *journal.InstanceLog, generation, digest strin
 	}
 	return nil
 }
+
+var lastAppliedExecutionGeneration = scheduling.LastAppliedExecutionGeneration

@@ -48,6 +48,8 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
+	// EngineChildren is the durable generated-child admission boundary.
+	EngineChildren ChildAdmissions
 	// ChildDispatchCompletion commits a stopped worker's final custody report
 	// through its existing Temporal connection before the activity returns.
 	ChildDispatchCompletion ChildDispatchCompletion
@@ -124,6 +126,8 @@ type Activities struct {
 // Placement is additive and omitempty, so a history written before it existed
 // decodes with a nil Placement rather than failing.
 type DispatchStageResult struct {
+	// ChildWait is authored by a trusted stopped-dispatch adapter, never decoded from a stage result.
+	ChildWait *journal.ChildHandoffRequest `json:"childWait,omitempty"`
 	// Usage is trusted adapter accounting, independent of result metrics.
 	Usage *AttemptUsage `json:"usage,omitempty"`
 	// Embed the legacy activity result so its JSON stays flat and histories
@@ -764,6 +768,8 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 // artifact, no digest, no short-circuit.
 type GateReviewResult struct {
 	apiv1.Verdict
+	// Actor is populated only by the workflow-side human decision protocol.
+	Actor string `json:"actor,omitempty"`
 	// Diff is the subject patch, recorded by the workflow as the reviewer-diff
 	// artifact. Empty when the branch has not moved or the workspace cannot
 	// report one.

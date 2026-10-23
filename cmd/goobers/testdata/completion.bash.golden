@@ -74,10 +74,10 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --format --strict"
             ;;
         lint)
-            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --format --strict"
             ;;
         fix)
             flags+=" --to --instance-schema --write"
