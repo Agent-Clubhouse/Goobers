@@ -60,12 +60,12 @@ func assertCodecProtectsPayload(t *testing.T, dc converter.DataConverter) {
 	if dc == nil {
 		t.Fatal("codec converter missing")
 	}
-	p, err := dc.ToPayload("private-input")
+	p, err := dc.ToPayloads("private-input")
 	// The file-key backend requires POSIX private modes. Windows cannot
 	// represent those modes; the installed codec must refuse, never fall back
 	// to the SDK's plaintext converter. POSIX still proves actual encryption.
 	if runtime.GOOS == "windows" {
-		if !errors.Is(err, temporalcodec.ErrInvalidPayload) || p != nil {
+		if !errors.Is(err, temporalcodec.ErrInvalidPayload) || len(p.GetPayloads()) != 0 {
 			t.Fatalf("file-key codec did not fail closed on Windows: payload=%v err=%v", p, err)
 		}
 		return
@@ -73,13 +73,13 @@ func assertCodecProtectsPayload(t *testing.T, dc converter.DataConverter) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(p.Metadata["encoding"]) != temporalcodec.Encoding {
+	if len(p.GetPayloads()) != 1 || string(p.Payloads[0].Metadata["encoding"]) != temporalcodec.Encoding {
 		t.Fatal("configured client would write plaintext")
 	}
 }
 func TestTemporalCodecWorkerWiring(t *testing.T) {
 	root := initDemo(t)
-	configureTestTemporalCodec(t, root)
+	cfg := configureTestTemporalCodec(t, root)
 	got := captureWorkerHost(t)
 	var stdout, stderr bytes.Buffer
 	code := runWorker([]string{"--instance", root, "--work-root", filepath.Join(t.TempDir(), "work"), "--blob-store", filepath.Join(t.TempDir(), "blobs"), "--config-reload-interval", "0"}, &stdout, &stderr)
@@ -87,6 +87,19 @@ func TestTemporalCodecWorkerWiring(t *testing.T) {
 		t.Fatalf("worker=%d: %s", code, stderr.String())
 	}
 	assertCodecProtectsPayload(t, got.DataConverter)
+	// Exercise the refusal assertion on POSIX too: losing private key-directory
+	// permissions must abort encoding without returning any sendable payloads.
+	for _, store := range cfg.SecretStores {
+		if store.Name == "codec-keys" {
+			if err := os.Chmod(store.Directory, 0777); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	payloads, err := got.DataConverter.ToPayloads("private-input")
+	if !errors.Is(err, temporalcodec.ErrInvalidPayload) || len(payloads.GetPayloads()) != 0 {
+		t.Fatalf("unsafe key permissions did not refuse encoding: payloads=%v err=%v", payloads, err)
+	}
 }
 
 func TestTemporalCodecOrphanSweepsKeepConverter(t *testing.T) {
