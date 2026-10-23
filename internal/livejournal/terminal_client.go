@@ -16,6 +16,10 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// ErrTerminalAuthority refuses an unconfigured or unauthorized terminal worker.
+// Retrying this as a transport outage would strand an Update indefinitely.
+var ErrTerminalAuthority = errors.New("livejournal: terminal worker authority unavailable")
+
 // TerminalTokenMinter is deliberately separate from ordinary pod minting.
 // Only the resident worker may use it; its bearer never enters an invocation.
 type TerminalTokenMinter interface {
@@ -29,7 +33,7 @@ func (e *HTTPEmitter) CommitTerminalIntervention(ctx context.Context, req Termin
 	var out journal.TerminalInterventionReceipt
 	minter, ok := e.Minter.(TerminalTokenMinter)
 	if !ok || strings.TrimSpace(e.TerminalWorkerID) == "" || e.BaseURL == "" {
-		return out, errors.New("livejournal: terminal intervention requires a dedicated worker minter, identity and endpoint")
+		return out, fmt.Errorf("%w: dedicated worker minter, identity and endpoint required", ErrTerminalAuthority)
 	}
 	if !apiv1.ValidRunID(req.RunID) {
 		return out, journal.ErrInterventionInvalid
@@ -39,7 +43,7 @@ func (e *HTTPEmitter) CommitTerminalIntervention(ctx context.Context, req Termin
 		return out, fmt.Errorf("mint terminal intervention credential: %w", err)
 	}
 	if token == "" {
-		return out, errors.New("livejournal: empty terminal intervention credential")
+		return out, fmt.Errorf("%w: empty credential", ErrTerminalAuthority)
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -75,6 +79,8 @@ func (e *HTTPEmitter) CommitTerminalIntervention(ctx context.Context, req Termin
 		_ = json.Unmarshal(payload, &envelope)
 		refused := fmt.Errorf("livejournal: terminal intervention refused (%d %s): %s", response.StatusCode, envelope.Error.Code, envelope.Error.Message)
 		switch response.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return out, fmt.Errorf("%w: %w", ErrTerminalAuthority, refused)
 		case http.StatusConflict:
 			return out, fmt.Errorf("%w: %w", journal.ErrInterventionConflict, refused)
 		case http.StatusBadRequest:

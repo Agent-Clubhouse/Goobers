@@ -45,12 +45,12 @@ func TestTerminalClientUsesOnlyDedicatedCredential(t *testing.T) {
 		t.Fatalf("worker=%s calls=%d", minter.worker, calls)
 	}
 	emitter.Minter = &stubMinter{token: "pod-token"}
-	if _, err := emitter.CommitTerminalIntervention(t.Context(), req); err == nil {
+	if _, err := emitter.CommitTerminalIntervention(t.Context(), req); !errors.Is(err, ErrTerminalAuthority) {
 		t.Fatal("pod-only minter acquired terminal authority")
 	}
 	emitter.Minter = minter
 	emitter.TerminalWorkerID = ""
-	if _, err := emitter.CommitTerminalIntervention(t.Context(), req); err == nil {
+	if _, err := emitter.CommitTerminalIntervention(t.Context(), req); !errors.Is(err, ErrTerminalAuthority) {
 		t.Fatal("pod emitter acquired worker authority")
 	}
 	if calls != 1 {
@@ -62,7 +62,7 @@ func TestTerminalClientClassifiesRefusalsAndNeverRetriesOrRedirects(t *testing.T
 	for _, tc := range []struct {
 		status int
 		want   error
-	}{{400, journal.ErrInterventionInvalid}, {409, journal.ErrInterventionConflict}, {500, nil}, {307, nil}} {
+	}{{400, journal.ErrInterventionInvalid}, {401, ErrTerminalAuthority}, {403, ErrTerminalAuthority}, {409, journal.ErrInterventionConflict}, {500, nil}, {307, nil}} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +79,7 @@ func TestTerminalClientClassifiesRefusalsAndNeverRetriesOrRedirects(t *testing.T
 			if tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("err=%v want=%v", err, tc.want)
 			}
-			if tc.want == nil && (errors.Is(err, journal.ErrInterventionInvalid) || errors.Is(err, journal.ErrInterventionConflict)) {
+			if tc.want == nil && (errors.Is(err, journal.ErrInterventionInvalid) || errors.Is(err, journal.ErrInterventionConflict) || errors.Is(err, ErrTerminalAuthority)) {
 				t.Fatalf("transport failure became definitive: %v", err)
 			}
 		})

@@ -116,7 +116,7 @@ func TestLiveTerminalHistoriesReplayEveryWorkflowTask(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	c := hitlReplayServer(t, ctx)
-	for index, action := range []string{"approve", "override", "rerun", "deny"} {
+	for index, action := range []string{"approve", "override", "rerun", "deny", "rerun-reviewer"} {
 		t.Run(action, func(t *testing.T) {
 			run, seam, root, input := terminalReplayFixture(t, c, index)
 			state := waitLiveHITL(t, ctx, c, run, func(s HITLState) bool { return s.Phase == hitlPhaseAwaiting })
@@ -127,9 +127,12 @@ func TestLiveTerminalHistoriesReplayEveryWorkflowTask(t *testing.T) {
 			intent.Resolution = action
 			intent.Rationale = "operator reviewed"
 			intent.ExpectedTerminalGeneration = state.TerminalGeneration
-			if action == "rerun" {
+			if action == "rerun" || action == "rerun-reviewer" {
 				intent.Kind, intent.Stage, intent.InstructionAddendum = HITLRerunStage, "implement", "fix review"
 				intent.Gate, intent.Resolution, intent.Decision = "", "", ""
+				if action == "rerun-reviewer" {
+					intent.Stage = "review"
+				}
 			}
 			options := client.UpdateWorkflowOptions{WorkflowID: run.GetID(), RunID: run.GetRunID(), UpdateID: HITLIntentUpdateID(intent), UpdateName: HITLUpdateName, Args: []interface{}{intent}, WaitForStage: client.WorkflowUpdateStageAccepted}
 			handle, err := c.UpdateWorkflow(ctx, options)

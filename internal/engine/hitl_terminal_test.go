@@ -122,22 +122,27 @@ func TestLiveTerminalLostRepliesRetryOneIntentBeforeAcknowledgement(t *testing.T
 }
 
 func TestLiveTerminalDefinitiveRefusalDoesNotRetry(t *testing.T) {
-	env, seam, root, input := terminalTestEnvironment(t)
-	seam.refusal = journal.ErrInterventionConflict
-	intent := terminalApproveIntent(input)
-	refused := false
-	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(intent), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) { refused = err != nil }}, intent)
-	}, time.Second)
-	env.ExecuteWorkflow(Run, input)
-	if !refused || seam.calls != 1 {
-		t.Fatalf("refused=%v calls=%d", refused, seam.calls)
+	for _, refusal := range []error{journal.ErrInterventionConflict, journal.ErrInterventionStale, journal.ErrInterventionInvalid, livejournal.ErrTerminalAuthority} {
+		t.Run(refusal.Error(), func(t *testing.T) {
+			env, seam, root, input := terminalTestEnvironment(t)
+			seam.refusal = refusal
+			intent := terminalApproveIntent(input)
+			refused := false
+			env.RegisterDelayedCallback(func() {
+				env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(intent), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) { refused = err != nil }}, intent)
+			}, time.Second)
+			env.ExecuteWorkflow(Run, input)
+			if !refused || seam.calls != 1 {
+				t.Fatalf("refused=%v calls=%d", refused, seam.calls)
+			}
+			for _, event := range liveEvents(t, root, input.RunID) {
+				if event.Type == journal.EventRunResumed {
+					t.Fatal("refused intent reopened")
+				}
+			}
+		})
 	}
-	for _, event := range liveEvents(t, root, input.RunID) {
-		if event.Type == journal.EventRunResumed {
-			t.Fatal("refused intent reopened")
-		}
-	}
+
 }
 
 func TestLiveTerminalCancellationFencesLostReply(t *testing.T) {

@@ -125,7 +125,9 @@ approve, override, rerun or deny. The payload-bound Update waits for the trusted
 worker's journal activity to return its durable receipt. A lost response retries
 the exact same keyed transition; it cannot acknowledge a marker held only in
 workflow memory. A definitive generation, key or payload conflict refuses the
-Update immediately.
+Update immediately. A missing dedicated worker authority, or a 401/403 from
+the terminal route, is also a definitive refusal rather than an endless
+transport retry.
 
 Only one terminal delivery can be pending. The workflow holds terminal settlement
 while it is pending, even after the original operator hold deadline. The activity

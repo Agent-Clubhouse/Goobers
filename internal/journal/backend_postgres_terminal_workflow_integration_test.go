@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -62,6 +63,15 @@ func pgTerminalInput(id string) engine.RunInput {
 }
 
 func TestPostgresEngineTerminalInterventionsCommitBeforeAcknowledgement(t *testing.T) {
+	// Gate the tagged root, not a nested fixture: strict CI must never report
+	// PASS when every role-backed case was silently skipped.
+	if os.Getenv("GOOBERS_TEST_POSTGRES_URL") == "" {
+		if os.Getenv("TESTDEP_STRICT") == "1" {
+			t.Fatal("GOOBERS_TEST_POSTGRES_URL is required in strict CI")
+		}
+		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set (local PG16 required)")
+	}
+
 	for index, action := range []string{"approve", "override", "rerun", "deny", "cancel"} {
 		t.Run(action, func(t *testing.T) {
 			config := postgresJournalConfig(t)

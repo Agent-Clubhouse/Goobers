@@ -32,6 +32,8 @@ func (a *Activities) CommitTerminalIntervention(ctx context.Context, req livejou
 	receipt, err := committer.CommitTerminalIntervention(ctx, req)
 	if err != nil {
 		switch {
+		case errors.Is(err, livejournal.ErrTerminalAuthority):
+			return receipt, temporal.NewNonRetryableApplicationError(err.Error(), HITLErrUnauthorized, nil)
 		case errors.Is(err, journal.ErrInterventionStale):
 			return receipt, temporal.NewNonRetryableApplicationError(err.Error(), HITLErrGeneration, nil)
 		case errors.Is(err, journal.ErrInterventionConflict), errors.Is(err, journal.ErrInterventionPending), errors.Is(err, journal.ErrInterventionCancelled):
