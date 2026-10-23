@@ -41,11 +41,21 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		}
 	}
 	run := job.step(t, "Run cloud integration smoke")
-	// -p 1: the packages share cluster-wide PostgreSQL roles.
+	// -p 1: the packages share cluster-wide PostgreSQL roles. The -json stream
+	// must reach cloud-pg-report, which fails the job when a cloudintegration
+	// package ran no passing test, and it is uploaded as an artifact.
 	if !strings.Contains(run.Run, "go test -p 1 ") || !strings.Contains(run.Run, "-tags=integration,cloudpg,cloudintegration") ||
+		!strings.Contains(run.Run, " -json ") || !strings.Contains(run.Run, "set -uo pipefail") ||
+		!strings.Contains(run.Run, `tee "$RUNNER_TEMP/cloud-pg-test.json"`) ||
+		!strings.Contains(run.Run, `go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1`) ||
 		!strings.Contains(run.Run, "./internal/cloud/...") ||
 		run.Env["TESTDEP_STRICT"] != "1" {
 		t.Fatalf("cloud integration step = %+v", run)
+	}
+	upload := job.step(t, "Upload cloud integration test events")
+	if upload.If != "always()" || !strings.Contains(upload.Uses, "actions/upload-artifact@") ||
+		upload.With["path"] != "${{ runner.temp }}/cloud-pg-test.json" {
+		t.Fatalf("cloud integration events are not always uploaded: %+v", upload)
 	}
 	restart := job.step(t, "Restart Azurite with telemetry disabled")
 	if !strings.Contains(restart.Run, "--disableTelemetry --skipApiVersionCheck") ||
