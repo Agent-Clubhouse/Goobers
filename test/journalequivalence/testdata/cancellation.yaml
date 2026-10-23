@@ -1,0 +1,20 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: cancellation
+dslVersion: "3.0"
+spec:
+  gaggle: equivalence
+  start: first
+  tasks:
+    - name: first
+      type: deterministic
+      goal: finish before drain
+      run:
+        command: [fixture]
+      next: second
+    - name: second
+      type: deterministic
+      goal: pause at drain boundary
+      run:
+        command: [fixture]
