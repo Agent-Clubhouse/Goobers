@@ -193,11 +193,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			// attempt's outcome decides (#3875). Journaled for a failed
 			// dispatch too when the dispatch reported one, so the record of
 			// where an attempt ran does not depend on whether it succeeded.
-			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
-			if receiptErr := rec.recordArtifactReceipts(ctx, activityResult.RecordedArtifacts, err); receiptErr != nil {
+			if receiptErr := rec.recordDispatchEvidence(ctx, t.Name, int(attempt), class, activityResult, err); receiptErr != nil {
 				return apiv1.ResultEnvelope{}, receiptErr
 			}
-			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
 
 			if t.Type == apiv1.TaskAgentic && t.Limits != nil && (t.Limits.MaxTokens > 0 || t.Limits.MaxCostUSD > 0) && workflow.GetVersion(ctx, "cumulative-agentic-usage", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 				usage := dispatchFailureUsage(err)

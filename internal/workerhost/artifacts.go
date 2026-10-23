@@ -39,12 +39,9 @@ import (
 // digest-addressed with the same scheme the journal uses, which is what lets a
 // projection adopt them later rather than re-derive them.
 //
-// THE REMAINING GAP, stated plainly: nothing adopts these yet. The engine's
-// projection carries only context manifests and gate verdicts — it has no
-// channel for executor-produced bytes, and no span kind at all for transcripts.
-// Until that channel exists, these artifacts are durable and reachable on disk
-// but do not appear in the projected journal. That is the artifact/transcript
-// projection gap, not something this type can close on its own.
+// ReportArtifact lets the owning activity return trusted recorder receipts
+// for journal adoption. Ordinary artifacts use this channel; spans and prepared
+// named outputs retain their separate publication protocols.
 type StagingArtifacts struct {
 	// ReportArtifact carries successful ordinary recorder writes to the owning
 	// activity. Spans and prepared named-output blobs have separate protocols.

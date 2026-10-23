@@ -21,6 +21,7 @@ import (
 )
 
 type pgReceiptExecutor struct {
+	invoke.Goober
 	root  string
 	store blobstore.Store
 	fail  bool
@@ -60,7 +61,7 @@ func (e *receiptRetryEmitter) Emit(ctx context.Context, req livejournal.EmitRequ
 }
 
 func TestPostgresEngineRecorderReceiptsPrecedeOutcomeAndDeduplicate(t *testing.T) {
-	for _, mode := range []string{"success", "failure", "lost-response"} {
+	for _, mode := range []string{"success", "failure", "lost-response", "agentic-success", "agentic-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			config := postgresJournalConfig(t)
 			store, err := blobstore.NewDir(t.TempDir())
@@ -71,13 +72,18 @@ func TestPostgresEngineRecorderReceiptsPrecedeOutcomeAndDeduplicate(t *testing.T
 			emitter := &receiptRetryEmitter{writer: writer, loseOnce: mode == "lost-response"}
 			var suite testsuite.WorkflowTestSuite
 			env := temporaltest.NewWorkflowEnvironment(&suite)
-			env.RegisterActivity(&engine.Activities{Journal: emitter, Det: pgReceiptExecutor{root: t.TempDir(), store: store, fail: mode == "failure"}, Workspaces: &workerhost.WorktreeWorkspaces{ScratchDir: t.TempDir()}})
+			script := pgReceiptExecutor{root: t.TempDir(), store: store, fail: strings.HasSuffix(mode, "failure")}
+			env.RegisterActivity(&engine.Activities{Journal: emitter, Det: script, Goober: script, Workspaces: &workerhost.WorktreeWorkspaces{ScratchDir: t.TempDir()}})
+			task := apiv1.Task{Name: "work", Type: apiv1.TaskDeterministic, Goal: "record", Run: &apiv1.DeterministicRun{Command: []string{"fixture"}, Workspace: apiv1.WorkspaceScratch}}
+			if strings.HasPrefix(mode, "agentic") {
+				task.Type, task.Goober, task.Workspace, task.Run = apiv1.TaskAgentic, "fixture", apiv1.WorkspaceScratch, nil
+			}
 			runID := strings.Repeat("9", 32)
 			preview := true
 			env.ExecuteWorkflow(engine.Run, engine.RunInput{RunID: runID, Gaggle: "web", WorkflowName: "receipts", Version: 1, DSLVersion: "3.0", LiveJournal: true, PreviewFeaturesEnabled: &preview,
 				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "fixture", Name: "repo", Branch: "main"}, TriggerKind: string(journal.TriggerManual),
-				Spec: apiv1.WorkflowSpec{Gaggle: "web", Start: "work", Tasks: []apiv1.Task{{Name: "work", Type: apiv1.TaskDeterministic, Goal: "record", Run: &apiv1.DeterministicRun{Command: []string{"fixture"}, Workspace: apiv1.WorkspaceScratch}}}}})
-			if mode != "failure" && env.GetWorkflowError() != nil {
+				Spec: apiv1.WorkflowSpec{Gaggle: "web", Start: "work", Tasks: []apiv1.Task{task}}})
+			if !script.fail && env.GetWorkflowError() != nil {
 				t.Fatal(env.GetWorkflowError())
 			}
 			if emitter.loseOnce && !emitter.lost {
@@ -118,4 +124,9 @@ func TestPostgresEngineRecorderReceiptsPrecedeOutcomeAndDeduplicate(t *testing.T
 			assertNoLocalJournal(t, root)
 		})
 	}
+}
+
+func (e pgReceiptExecutor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	invoke.ReportAgentUsage(ctx, map[string]float64{"gen_ai.usage.input_tokens": 7})
+	return e.Run(ctx, env, apiv1.DeterministicRun{})
 }

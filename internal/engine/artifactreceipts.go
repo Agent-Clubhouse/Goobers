@@ -62,22 +62,34 @@ func artifactFailureEvidence(app *temporal.ApplicationError) (time.Time, dispatc
 	if readDispatchFailureDetails(app, &retryAt, &extra) != nil {
 		return retryAt, evidence, true
 	}
+	// Older activity adapters attach a typed usage detail before returning.
+	// Preserve that known in-process payload when extending the evidence;
+	// never guess the type of an unknown serialized extension.
+	if usage, ok := extra.(AttemptUsage); ok {
+		evidence.Usage = &usage
+		return retryAt, evidence, true
+	}
 	if readDispatchFailureDetails(app, &retryAt, &evidence) != nil || evidence.SchemaVersion != dispatchFailureEvidenceVersion {
 		return retryAt, evidence, false
 	}
 	return retryAt, evidence, true
 }
 
+// Workerhost carries attempt identity in an outer ApplicationError; recorder
+// evidence remains in its cause. Traverse wrappers without inventing receipts
+// for N-1 or unrecognized evidence.
 func failedArtifactReceipts(err error) []invoke.ArtifactReceipt {
-	var app *temporal.ApplicationError
-	if !errors.As(err, &app) {
-		return nil
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		var app *temporal.ApplicationError
+		if !errors.As(current, &app) {
+			continue
+		}
+		_, evidence, ok := artifactFailureEvidence(app)
+		if ok && len(evidence.RecordedArtifacts) > 0 {
+			return evidence.RecordedArtifacts
+		}
 	}
-	_, evidence, ok := artifactFailureEvidence(app)
-	if !ok {
-		return nil
-	}
-	return evidence.RecordedArtifacts
+	return nil
 }
 
 func (r *runJournal) recordArtifactReceipts(ctx workflow.Context, receipts []invoke.ArtifactReceipt, dispatchErr error) error {
@@ -97,5 +109,16 @@ func (r *runJournal) recordArtifactReceipts(ctx workflow.Context, receipts []inv
 		// that recorder exactly as on the local Run.RecordArtifact path.
 		r.artifactAt(workflow.Now(ctx), JournalArtifactOp{Name: receipt.Name, Ref: &ref, Integrity: ref.Integrity})
 	}
+	return nil
+}
+
+// Record dispatch evidence in journal order before its outcome. Receipts must
+// precede failure/finish events that can reference the recorded artifacts.
+func (r *runJournal) recordDispatchEvidence(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result stageActivityResult, dispatchErr error) error {
+	r.placement(ctx, stage, attempt, class, result)
+	if err := r.recordArtifactReceipts(ctx, result.RecordedArtifacts, dispatchErr); err != nil {
+		return err
+	}
+	r.recordDeferredRunBranch(ctx, dispatchErr, result.ResultEnvelope, len(result.Mutations) > 0)
 	return nil
 }

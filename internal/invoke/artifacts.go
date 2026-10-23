@@ -37,12 +37,14 @@ type ArtifactReceipts struct {
 	receipts []ArtifactReceipt
 }
 
+// Record appends one successful recorder observation.
 func (r *ArtifactReceipts) Record(receipt ArtifactReceipt) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.receipts = append(r.receipts, receipt)
 }
 
+// Snapshot returns a copy in recorder order.
 func (r *ArtifactReceipts) Snapshot() []ArtifactReceipt {
 	r.mu.Lock()
 	defer r.mu.Unlock()

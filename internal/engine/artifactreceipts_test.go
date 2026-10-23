@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -119,6 +120,7 @@ func TestArtifactReceiptsVersionGateAndRecordOrder(t *testing.T) {
 }
 
 type receiptExecutor struct {
+	invoke.Goober
 	receipt invoke.ArtifactReceipt
 	fail    bool
 }
@@ -180,5 +182,53 @@ func TestPodArtifactEmissionIsNotDuplicatedBySurrender(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Fatalf("pod artifact recorded %d times", recorded)
+	}
+}
+
+func TestArtifactReceiptsSurviveWorkerhostIdentityWrapper(t *testing.T) {
+	receipt := fixtureArtifactReceipt(t)
+	inner := withArtifactReceipts(classifySeamError(errors.New("recorded before failure")), []invoke.ArtifactReceipt{receipt})
+	var app *temporal.ApplicationError
+	if !errors.As(inner, &app) {
+		t.Fatal("expected application error")
+	}
+	outer := temporal.NewApplicationErrorWithOptions(inner.Error(), app.Type(), temporal.ApplicationErrorOptions{
+		Cause: inner, Details: []any{attemptidentity.Identity{WorkerIdentity: "fixture-worker"}},
+	})
+	converter := temporal.GetDefaultFailureConverter()
+	decoded := converter.FailureToError(converter.ErrorToFailure(outer))
+	if id := attemptIdentityFromError(decoded); id == nil || id.WorkerIdentity != "fixture-worker" {
+		t.Fatal("identity wrapper missing")
+	}
+	if got := failedArtifactReceipts(decoded); !reflect.DeepEqual(got, []invoke.ArtifactReceipt{receipt}) {
+		t.Fatalf("receipts behind workerhost wrapper = %+v", got)
+	}
+}
+
+func (e receiptExecutor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	invoke.ReportAgentUsage(ctx, map[string]float64{"gen_ai.usage.input_tokens": 7})
+	return e.Run(ctx, env, apiv1.DeterministicRun{})
+}
+
+func TestAgenticActivityCarriesRecorderReceipts(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		receipt := fixtureArtifactReceipt(t)
+		activities := Activities{Goober: receiptExecutor{receipt: receipt, fail: fail}, Workspaces: testWorkspaces(t)}
+		got, err := activities.InvokeGoober(t.Context(), apiv1.InvocationEnvelope{RunID: "receipt-run", TaskID: "receipt-run:work", RepoRef: apiv1.RepoRef{Name: "fixture"}}, "", "", apiv1.WorkspaceScratch, "")
+		receipts := got.RecordedArtifacts
+		if fail {
+			if err == nil {
+				t.Fatal("expected failure")
+			}
+			receipts = failedArtifactReceipts(err)
+			if usage := dispatchFailureUsage(err); !usage.Reported || usage.Metrics["gen_ai.usage.input_tokens"] != 7 {
+				t.Fatalf("lost agentic usage: %+v", usage)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if len(receipts) != 1 || receipts[0] != receipt {
+			t.Fatalf("agentic receipts=%+v", receipts)
+		}
 	}
 }
