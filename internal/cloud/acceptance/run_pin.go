@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -90,18 +91,27 @@ func (s *Store) recordRunPins(ctx context.Context, tx pgx.Tx, pins RunPins, epoc
 // runPinSweepBatch bounds one retention pass.
 const runPinSweepBatch = 64
 
+// ErrRunStatusUnavailable means the engine could not answer for any run (it is
+// unreachable or the pass ran out of time), as opposed to one run's status
+// being unconfirmable. RunClosed wraps it; the sweep stops the pass on it.
+var ErrRunStatusUnavailable = errors.New("cloud acceptance: run status unavailable")
+
 // RunClosed reports whether a run's engine execution is closed. A run the
 // engine no longer knows (its history retention-deleted) is closed.
 type RunClosed func(ctx context.Context, runID string) (bool, error)
 
 // RunPinSweep is one retention pass's outcome. Next is the cursor for the
 // following pass; it is empty once a lap over the candidates completes.
-// Unconfirmed holds the runs whose status could not be confirmed; their pins
-// are kept, and the error is the caller's to report, not to fail on.
+// Checked lists the runs whose status was confirmed this pass. Unconfirmed
+// holds the runs whose status could not be confirmed, and Halted why the pass
+// stopped early; their pins are kept, and both are the caller's to report, not
+// to fail on.
 type RunPinSweep struct {
 	Marked, Deleted int64
 	Next            string
-	Unconfirmed     []error
+	Checked         []string
+	Unconfirmed     map[string]error
+	Halted          error
 }
 
 // SweepRunPins applies run_pin's terminal-keyed retention: pins of runs that
@@ -112,9 +122,11 @@ type RunPinSweep struct {
 // the closed runs behind them. A run whose status cannot be confirmed keeps its
 // pin and is listed in Unconfirmed; the rest of the batch is still applied, and
 // the returned error is only the store's own (including a lost fence). The
-// closed predicate runs outside any transaction; only the marking and deletion
-// are fenced.
-func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string) (RunPinSweep, error) {
+// closed predicate runs outside any transaction, within budget for the whole
+// pass; at ErrRunStatusUnavailable or the end of the budget the pass halts and
+// the cursor stays before the run it stopped at. Only the marking and deletion
+// are fenced, on ctx.
+func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string, budget time.Duration) (RunPinSweep, error) {
 	if closed == nil {
 		return RunPinSweep{Next: after}, errors.New("cloud acceptance: run pin sweep requires a run status")
 	}
@@ -130,19 +142,31 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 	if err != nil {
 		return RunPinSweep{Next: after}, err
 	}
-	sweep := RunPinSweep{}
+	sweep := RunPinSweep{Unconfirmed: map[string]error{}}
 	if len(candidates) == runPinSweepBatch {
 		sweep.Next = candidates[len(candidates)-1]
 	}
+	statusCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	var closedRuns []string
-	for _, runID := range candidates {
-		done, err := closed(ctx, runID)
+	for i, runID := range candidates {
+		done, err := closed(statusCtx, runID)
+		if err != nil && (errors.Is(err, ErrRunStatusUnavailable) || statusCtx.Err() != nil) {
+			sweep.Halted = fmt.Errorf("run pin sweep: halted at run %s: %w", runID, err)
+			sweep.Next = after
+			if i > 0 {
+				sweep.Next = candidates[i-1]
+			}
+			break
+		}
 		switch {
 		case err != nil:
-			sweep.Unconfirmed = append(sweep.Unconfirmed, fmt.Errorf("run pin sweep: status of run %s: %w", runID, err))
+			sweep.Unconfirmed[runID] = fmt.Errorf("run pin sweep: status of run %s: %w", runID, err)
+			continue
 		case done:
 			closedRuns = append(closedRuns, runID)
 		}
+		sweep.Checked = append(sweep.Checked, runID)
 	}
 	err = s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, _ int64) error {
 		tag, err := tx.Exec(txCtx, `
@@ -160,7 +184,7 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 		return err
 	})
 	if err != nil {
-		return RunPinSweep{Next: after, Unconfirmed: sweep.Unconfirmed}, err
+		return RunPinSweep{Next: after, Unconfirmed: sweep.Unconfirmed, Halted: sweep.Halted}, err
 	}
 	return sweep, nil
 }

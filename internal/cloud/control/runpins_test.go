@@ -3,12 +3,15 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 )
 
 type describeFunc func() (*workflowservice.DescribeWorkflowExecutionResponse, error)
@@ -29,6 +32,7 @@ func TestTemporalRunClosedOnlyForEnumeratedClosedStatuses(t *testing.T) {
 		describe describeFunc
 		closed   bool
 		failed   bool
+		halts    bool
 	}{
 		"running":     {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_RUNNING)},
 		"completed":   {describe: withStatus(enums.WORKFLOW_EXECUTION_STATUS_COMPLETED), closed: true},
@@ -44,15 +48,45 @@ func TestTemporalRunClosedOnlyForEnumeratedClosedStatuses(t *testing.T) {
 			return nil, serviceerror.NewNotFound("workflow not found")
 		}, closed: true},
 		"outage": {describe: func() (*workflowservice.DescribeWorkflowExecutionResponse, error) { return nil, outage }, failed: true},
+		"unavailable": {describe: func() (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+			return nil, serviceerror.NewUnavailable("connection refused")
+		}, failed: true, halts: true},
+		"deadline": {describe: func() (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+			return nil, serviceerror.NewDeadlineExceeded("deadline exceeded")
+		}, failed: true, halts: true},
+		"context deadline": {describe: func() (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+			return nil, context.DeadlineExceeded
+		}, failed: true, halts: true},
 		"incomplete": {describe: func() (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 			return &workflowservice.DescribeWorkflowExecutionResponse{}, nil
 		}, failed: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			closed, err := temporalRunClosed(tc.describe)(t.Context(), "run")
-			if (err != nil) != tc.failed || closed != tc.closed {
-				t.Fatalf("closed = %v, %v; want %v (error %v)", closed, err, tc.closed, tc.failed)
+			if (err != nil) != tc.failed || closed != tc.closed || errors.Is(err, acceptance.ErrRunStatusUnavailable) != tc.halts {
+				t.Fatalf("closed = %v, %v; want %v (error %v, halts %v)", closed, err, tc.closed, tc.failed, tc.halts)
 			}
 		})
+	}
+}
+
+func TestRunPinReportsOncePerUnconfirmedRunAndOutage(t *testing.T) {
+	var reported []string
+	report := func(err error) { reported = append(reported, err.Error()) }
+	stuck, outage := errors.New("stuck"), errors.New("outage")
+	reports := runPinReports{}
+	for _, sweep := range []acceptance.RunPinSweep{
+		{Unconfirmed: map[string]error{"a": stuck}},
+		{Unconfirmed: map[string]error{"a": stuck}, Halted: outage},
+		{Unconfirmed: map[string]error{"a": stuck}, Halted: outage},
+		{Checked: []string{"a"}},
+		{Unconfirmed: map[string]error{"a": stuck}, Halted: outage},
+	} {
+		reports.report(sweep, report)
+	}
+	// "a" and the outage are each reported when they start, not while they
+	// persist, and again only after they cleared in between.
+	if got, want := fmt.Sprint(reported), "[stuck outage stuck outage]"; got != want {
+		t.Fatalf("reported %s, want %s", got, want)
 	}
 }
