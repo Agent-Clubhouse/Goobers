@@ -239,7 +239,7 @@ func runUpgradeProbe(ctx context.Context, env []string, evidence string, step te
 		return fmt.Errorf("temporal %s real workflow probe: %w", step.server, err)
 	}
 	replay := exec.CommandContext(ctx, "go", "test", "-v", "./internal/engine", "-run",
-		`Test(StaticBranchBodiesRealHistoryReplay|FreezeMapRosterHistoryReplaysAtEveryWorkflowTaskStart|JournalOwnerRealHistoriesReplay)$`,
+		`Test(E2|E4|E11)WalkHistoryReplays$`,
 		"-count=1")
 	replay.Env = append(env, temporaltest.ServerAddressEnvVar+"="+address)
 	output, err := replay.CombinedOutput()

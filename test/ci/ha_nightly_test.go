@@ -82,6 +82,7 @@ func TestHANightlyDeclaresRequiredTopologyAndOperations(t *testing.T) {
 		`"kind", "load", "docker-image", "goobers:ha-nightly"`,
 		`"kubectl", "apply", "-k", "test/ha/kind/reference"`,
 		`run", "./test/ha/temporalprobe"`,
+		`Test(E2|E4|E11)WalkHistoryReplays$`,
 		"1.27.4@sha256:",
 		"1.28.4@sha256:",
 		"1.29.7@sha256:",
