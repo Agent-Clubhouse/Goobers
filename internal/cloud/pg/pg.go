@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -152,7 +155,7 @@ func tokenBeforeConnect(provider TokenProvider, prior func(context.Context, *pgx
 		}
 		token, err := provider.Token(ctx)
 		if err != nil {
-			return fmt.Errorf("cloud postgres: acquire Entra token: %w", err)
+			return err
 		}
 		if strings.TrimSpace(token) == "" {
 			return errors.New("cloud postgres: Entra token is empty")
@@ -174,7 +177,79 @@ func (p EntraTokenProvider) Token(ctx context.Context) (string, error) {
 	}
 	token, err := p.Credential.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{PostgresEntraScope}})
 	if err != nil {
-		return "", err
+		statusCode := 0
+		var authenticationError *azidentity.AuthenticationFailedError
+		if errors.As(err, &authenticationError) && authenticationError.RawResponse != nil {
+			statusCode = authenticationError.RawResponse.StatusCode
+		}
+		return "", entraTokenError{statusCode: statusCode}
 	}
 	return token.Token, nil
+}
+
+type entraTokenError struct {
+	statusCode int
+}
+
+func (e entraTokenError) Error() string {
+	if e.statusCode > 0 {
+		return fmt.Sprintf("Entra token acquisition failed (status %d)", e.statusCode)
+	}
+	return "Entra token acquisition failed"
+}
+
+// SafeDiagnostic classifies an upstream database error without exposing its
+// message, response body, connection string, password, or token.
+func SafeDiagnostic(err error) string {
+	var tokenError entraTokenError
+	if errors.As(err, &tokenError) {
+		return tokenError.Error()
+	}
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) {
+		return postgresErrorClass(postgresError.Code) + " (SQLSTATE " + postgresError.Code + ")"
+	}
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) {
+		return "database DNS lookup failed"
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		if networkError.Timeout() {
+			return "database network timeout"
+		}
+		return "database connection failed"
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "database network timeout"
+	case errors.Is(err, context.Canceled):
+		return "database operation canceled"
+	default:
+		return "database operation failed"
+	}
+}
+
+func postgresErrorClass(code string) string {
+	if len(code) < 2 {
+		return "database server rejected operation"
+	}
+	switch code[:2] {
+	case "08":
+		return "database connection failed"
+	case "28":
+		return "database authentication failed"
+	case "3D":
+		return "database name rejected"
+	case "42":
+		return "database query rejected"
+	case "53":
+		return "database resource unavailable"
+	case "57":
+		return "database operation interrupted"
+	case "XX":
+		return "database server error"
+	default:
+		return "database server rejected operation"
+	}
 }
