@@ -40,6 +40,15 @@ spec:
                 configMapKeyRef:
                   name: goobers-cloud-migration
                   key: backup-ref
+            - name: GOOBERS_INSTANCE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud
+                  key: instance-id
+            - name: GOOBERS_REPLICA_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

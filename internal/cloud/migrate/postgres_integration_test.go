@@ -15,8 +15,12 @@ func TestPostgresMigrationApply(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
 	}
-
-	pool, err := pgxpool.New(t.Context(), databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +35,10 @@ func TestPostgresMigrationApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := Runner{Direct: pool, Catalog: catalog, BackupRef: "test-pitr-mark"}
+	runner := Runner{
+		Direct: pool, Catalog: catalog, BackupRef: "test-pitr-mark",
+		InstanceID: "test-instance", Holder: "migration-test",
+	}
 	if err := runner.Apply(t.Context()); err != nil {
 		t.Fatal(err)
 	}

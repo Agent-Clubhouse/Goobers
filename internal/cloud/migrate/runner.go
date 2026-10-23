@@ -10,11 +10,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 )
 
 const (
 	migrateLeaseLock   int64 = 0x676f6f6265727301
 	migrateSessionLock int64 = 0x676f6f6265727302
+	leaseSchemaVersion       = 2
 )
 
 var (
@@ -29,6 +32,8 @@ type Runner struct {
 	Direct           *pgxpool.Pool
 	Catalog          []Migration
 	BackupRef        string
+	InstanceID       string
+	Holder           string
 	PartitionIndexes []PartitionIndexPlan
 	Readmodels       []ReadmodelPlan
 	ReadmodelBuilder ReadmodelBuilder
@@ -53,6 +58,9 @@ func (r Runner) Apply(ctx context.Context) error {
 	if strings.TrimSpace(r.BackupRef) == "" {
 		return ErrBackupRequired
 	}
+	if strings.TrimSpace(r.InstanceID) == "" || strings.TrimSpace(r.Holder) == "" {
+		return errors.New("cloud migration instance and holder are required")
+	}
 	if r.Direct == nil {
 		return errors.New("cloud migration direct pool is required")
 	}
@@ -76,6 +84,9 @@ func (r Runner) Apply(ctx context.Context) error {
 		return err
 	}
 	for _, migration := range r.Catalog {
+		if migration.Version > leaseSchemaVersion {
+			continue
+		}
 		if applied[migration.Version] {
 			continue
 		}
@@ -83,20 +94,41 @@ func (r Runner) Apply(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, index := range r.PartitionIndexes {
-		if err := CreatePartitionedIndex(ctx, session.conn, index.Parent, index.Columns, index.Partitions); err != nil {
-			return err
+	lease.release()
+
+	manager, err := cloudlease.New(cloudlease.Config{
+		Pool: r.Direct, InstanceID: r.InstanceID, Name: "migrate", Holder: r.Holder,
+	})
+	if err != nil {
+		return err
+	}
+	return manager.Run(ctx, func(runCtx context.Context, handle *cloudlease.Handle) error {
+		for _, migration := range r.Catalog {
+			if migration.Version <= leaseSchemaVersion || applied[migration.Version] {
+				continue
+			}
+			err := manager.WithFence(runCtx, handle, func(txCtx context.Context, tx pgx.Tx) error {
+				return applyInTx(txCtx, tx, migration, r.BackupRef)
+			})
+			if err != nil {
+				return err
+			}
 		}
-	}
-	if len(r.Readmodels) > 0 && r.ReadmodelBuilder == nil {
-		return errors.New("cloud migration read-model builder is required")
-	}
-	for _, readmodel := range r.Readmodels {
-		if err := RebuildReadmodel(ctx, r.ReadmodelBuilder, readmodel.Name, readmodel.Version); err != nil {
-			return err
+		for _, index := range r.PartitionIndexes {
+			if err := CreatePartitionedIndex(runCtx, session.conn, index.Parent, index.Columns, index.Partitions); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		if len(r.Readmodels) > 0 && r.ReadmodelBuilder == nil {
+			return errors.New("cloud migration read-model builder is required")
+		}
+		for _, readmodel := range r.Readmodels {
+			if err := RebuildReadmodel(runCtx, r.ReadmodelBuilder, readmodel.Name, readmodel.Version); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 type heldLock struct {
@@ -122,10 +154,14 @@ func acquireLock(ctx context.Context, pool *pgxpool.Pool, key int64) (*heldLock,
 }
 
 func (lock *heldLock) release() {
+	if lock.conn == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _ = lock.conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", lock.key)
 	lock.conn.Release()
+	lock.conn = nil
 }
 
 func loadApplied(ctx context.Context, conn *pgxpool.Conn) (map[int]bool, error) {
@@ -158,6 +194,16 @@ func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, back
 		return fmt.Errorf("begin cloud migration %d: %w", migration.Version, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := applyInTx(ctx, tx, migration, backupRef); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit cloud migration %d: %w", migration.Version, err)
+	}
+	return nil
+}
+
+func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string) error {
 	if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 		return fmt.Errorf("apply cloud migration %d: %w", migration.Version, err)
 	}
@@ -168,9 +214,6 @@ func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, back
 		migration.Version, migration.Kind, migration.BinaryVersion, migration.MinCompatibleBinary, backupRef,
 	); err != nil {
 		return fmt.Errorf("record cloud migration %d: %w", migration.Version, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit cloud migration %d: %w", migration.Version, err)
 	}
 	return nil
 }

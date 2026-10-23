@@ -108,12 +108,13 @@ func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
 		newCloudPools, runCloudMigrations, signalContext = originalPools, originalRun, originalSignal
 	})
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_INSTANCE_ID", "test-instance")
 	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
 	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
 		return &cloudpg.Pools{}, nil
 	}
 	var backupRef string
-	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup string) error {
+	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup, _, _ string) error {
 		backupRef = backup
 		return nil
 	}
