@@ -55,8 +55,8 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if r.staticWalk.seen[state] {
 		return "", true, fmt.Errorf("engine: repeated static parallel visit %q is not supported", state)
 	}
-	if r.owner == nil || r.stepBudget == nil || p.Selection != nil {
-		return "", true, fmt.Errorf("engine: static parallel requires commit owner, shared budget and static branches")
+	if r.owner == nil || r.stepBudget == nil {
+		return "", true, fmt.Errorf("engine: static parallel requires commit owner and shared budget")
 	}
 	if err := refuseStaticJoinBindings(in.Spec, p.Name); err != nil {
 		return "", true, err
@@ -65,7 +65,22 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 		r.staticWalk.seen = map[string]bool{}
 	}
 	r.staticWalk.seen[state] = true
-	pwalk, result, err := r.fanOut(ctx, in, m, staticFanOutPlan(p), seed)
+	plan, err := r.selectiveFanOutPlan(ctx, in, m, p)
+	if err != nil {
+		r.append(ctx, journal.Event{
+			Type: journal.EventError, Parallel: p.Name,
+			Error: journal.ErrorDetailFor(runner.FanOutSourceInvalidCode, err),
+		})
+		if emitErr := r.emitPending(ctx); emitErr != nil {
+			return "", true, emitErr
+		}
+		target := p.OnFailure
+		if target == "" {
+			target = wf.TargetAbort
+		}
+		return target, true, nil
+	}
+	pwalk, result, err := r.fanOut(ctx, in, m, plan, seed)
 	if err != nil {
 		return "", true, err
 	}

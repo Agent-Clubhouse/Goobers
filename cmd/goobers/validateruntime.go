@@ -56,15 +56,14 @@ type runtimeBlocker struct {
 }
 
 var engineRuntimeBlockers = map[workflow.FeatureID]runtimeBlocker{
-	"workflow.spec.parallels":           {path: "spec.parallels", issue: 7753},
-	"workflow.spec.parallels.selection": {path: "spec.parallels.selection", issue: 7754},
-	"workflow.spec.maps":                {path: "spec.maps", issue: 7755},
-	"task.childWorkflows":               {path: "task.childWorkflows", issue: 7758},
-	"gate.evaluator.human":              {path: "gate.evaluator.human", issue: 7760},
-	"task.limits.maxTokens":             {path: "task.limits.maxTokens", issue: 7761},
-	"task.limits.maxCostUSD":            {path: "task.limits.maxCostUSD", issue: 7761},
-	"task.outbox":                       {path: "task.outbox", issue: 7762},
-	"task.experiment":                   {path: "task.experiment", issue: 7763},
+	"workflow.spec.parallels": {path: "spec.parallels", issue: 7753},
+	"workflow.spec.maps":      {path: "spec.maps", issue: 7755},
+	"task.childWorkflows":     {path: "task.childWorkflows", issue: 7758},
+	"gate.evaluator.human":    {path: "gate.evaluator.human", issue: 7760},
+	"task.limits.maxTokens":   {path: "task.limits.maxTokens", issue: 7761},
+	"task.limits.maxCostUSD":  {path: "task.limits.maxCostUSD", issue: 7761},
+	"task.outbox":             {path: "task.outbox", issue: 7762},
+	"task.experiment":         {path: "task.experiment", issue: 7763},
 }
 
 func appendRuntimeFindings(
