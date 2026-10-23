@@ -296,3 +296,21 @@ func TestConfigPackageClosureExcludesRunner(t *testing.T) {
 		}
 	}
 }
+
+func TestAppliedReportsOnlyTheRunningGeneration(t *testing.T) {
+	applier := cloudconfig.NewApplier(readiness.Assess, &recordingActivator{})
+	if _, ok := applier.Applied(); ok {
+		t.Fatal("a generation reported applied before any apply")
+	}
+	good := workflowSet(eligible())
+	if err := apply(applier, "sha256:good", denyConfig(), good); err != nil {
+		t.Fatal(err)
+	}
+	for code, w := range ineligible() {
+		_ = apply(applier, "sha256:bad-"+code, denyConfig(), workflowSet(w))
+	}
+	applied, ok := applier.Applied()
+	if !ok || applied.Digest != "sha256:good" || applied.Set != good {
+		t.Fatalf("applied = %+v %v, want the running generation after refused candidates", applied, ok)
+	}
+}

@@ -256,7 +256,7 @@ func TestAdmissionSurvivesRealLeaseTakeover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	predecessor, oldStore, oldHandle := f.handle.Epoch, f.store, f.handle
+	oldStore, oldHandle := f.store, f.handle
 	pending := acceptChild(t, f, "parent-e2", "call-1") // accepted, not yet admitted
 	if err := f.manager.Release(t.Context(), oldHandle); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestAdmissionSurvivesRealLeaseTakeover(t *testing.T) {
 	if _, err := successor.AdmitEngineChild(t.Context(), pending); err == nil {
 		t.Fatal("successor wrote child custody before adopting it")
 	}
-	if _, err := f.store.AdoptChildren(t.Context(), predecessor); err != nil {
+	if _, err := f.store.AdoptStaleChildCustody(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	// The predecessor's admission replays identically under the successor,
