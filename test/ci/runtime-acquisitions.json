@@ -465,11 +465,12 @@
   },
   {
     "id": "kubernetes-schemas",
-    "what": "Kubernetes JSON schemas fetched by kubeconform while validating rendered deployment resources",
+    "what": "Kubernetes and CRD JSON schemas fetched by kubeconform while validating rendered deployment resources",
     "from": [
-      "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/ (default schema-location template)"
+      "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/ (default schema-location template)",
+      "https://raw.githubusercontent.com/datreeio/CRDs-catalog/<pinned commit>/ (CRD_SCHEMA_CATALOG, CloudNativePG kinds)"
     ],
-    "offline": "Preprovision the complete schema set and override the Make KUBECONFORM command with the pinned tool plus -schema-location /absolute/registry/template. Omit default/HTTP locations to prevent fallback; missing local schemas must fail validation rather than skip resources.",
+    "offline": "Preprovision the complete schema set and override the Make KUBECONFORM command with the pinned tool plus -schema-location /absolute/registry/template, and CRD_SCHEMA_CATALOG with a local copy of the pinned CRD catalog. Omit default/HTTP locations to prevent fallback; missing local schemas must fail validation rather than skip resources.",
     "sites": [
       "Makefile#KUBECONFORM:kubernetes-schemas",
       "Makefile#deploy-validate::kubernetes-schemas",
@@ -478,7 +479,8 @@
       "Makefile#deploy-validate:[4]:kubernetes-schemas",
       "Makefile#deploy-validate:[5]:kubernetes-schemas",
       "Makefile#deploy-validate:[6]:kubernetes-schemas",
-      "Makefile#deploy-validate:[7]:kubernetes-schemas"
+      "Makefile#deploy-validate:[7]:kubernetes-schemas",
+      "Makefile#deploy-validate:[8]:kubernetes-schemas"
     ]
   },
   {
