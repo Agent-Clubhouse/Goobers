@@ -519,20 +519,21 @@ type contextManifest struct {
 }
 
 // executorError mirrors runTask's per-attempt dispatch-failure event.
-func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error, identity *attemptidentity.Identity) {
+func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error, identity *attemptidentity.Identity, committed *bool) {
 	ev := executorErrorEvent(stage, attempt, class, failureClass, dispatchErr, identity)
+	if domain := domainFailureFromError(dispatchErr); domain != nil {
+		*committed = *committed || domain.InfraCommittedWork
+	}
+	ev.Runner[runsemantics.InfraCommittedWorkKey] = *committed
 	r.append(ctx, ev)
 }
 
 func executorErrorEvent(stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error, identity *attemptidentity.Identity) journal.Event {
-	code := telemetry.ErrCodeExecutor
-	if failureClass == journal.AttemptInfra {
-		code = telemetry.ErrCodeInfraFailure
-	}
+	code, errorClass := dispatchJournalClassification(dispatchErr, failureClass)
 	ev := journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
-		Error:  journal.ErrorDetailFor("executor_error", dispatchErr),
-		Runner: map[string]any{"retryFailureClass": string(failureClass), "errorCode": code, "errorClass": string(telemetry.ClassifyError(code))},
+		Error:  domainErrorDetailFor("executor_error", dispatchErr),
+		Runner: map[string]any{"retryFailureClass": string(failureClass), "errorCode": code, "errorClass": string(errorClass), runsemantics.InfraCommittedWorkKey: false},
 	}
 	addAttemptIdentity(&ev, identity)
 	return ev
@@ -717,7 +718,7 @@ func (r *runJournal) evaluatorRetry(ctx workflow.Context, gate string, attempt i
 	r.append(ctx, journal.Event{
 		Type:  journal.EventError,
 		Gate:  gate,
-		Error: journal.ErrorDetailFor("evaluator_transient", err),
+		Error: domainErrorDetailFor("evaluator_transient", err),
 		Runner: map[string]any{
 			"evaluatorAttempt":  attempt,
 			"retryFailureClass": "infra",
@@ -857,6 +858,11 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 	errorDetail := &journal.ErrorDetail{Code: "run_failed", Message: journaled}
 	if len(cause) > 0 {
 		errorDetail.Causes = journal.ErrorCauses(cause[0])
+		if domain := domainFailureFromError(cause[0]); domain != nil {
+			errorDetail = domainErrorDetailFor("run_failed", cause[0])
+			detail["errorClass"] = string(telemetry.ClassifyError(domain.Code))
+			message = errorDetail.Message
+		}
 	}
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,

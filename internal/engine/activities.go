@@ -322,6 +322,10 @@ var ErrNotConfigured = errors.New("engine: activity dependency not configured")
 // the marker is visible; the workflow's retry loop and the history→journal
 // projection (#629) both read it back from the recorded type alone.
 func classifySeamError(err error) error {
+	return withDomainFailure(classifySeamTransportError(err), err, false)
+}
+
+func classifySeamTransportError(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -571,7 +575,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 			result.SelfPlacement = selfStagePlacement()
 			return a.scrubStageActivityResult(ctx, result)
 		}
-		return stageActivityResult{}, classifySeamError(err)
+		return stageActivityResult{}, classifyAgenticFailure(ctx, ws, err)
 	}
 	// #3374: a stage may not claim DEPENDENCY_NOT_MET without having inspected
 	// the context pointers it was handed. Validated HERE rather than in the

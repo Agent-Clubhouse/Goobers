@@ -103,7 +103,7 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if err != nil {
 		r.append(ctx, journal.Event{
 			Type: journal.EventError, Parallel: p.Name,
-			Error: journal.ErrorDetailFor(runsemantics.FanOutSourceInvalidCode, err),
+			Error: domainErrorDetailFor(runsemantics.FanOutSourceInvalidCode, err),
 		})
 		if emitErr := r.emitPending(ctx); emitErr != nil {
 			return "", true, emitErr

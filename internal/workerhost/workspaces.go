@@ -389,3 +389,12 @@ func (w *worktreeWorkspace) PublishDelta(ctx context.Context) (engine.WorkspaceD
 	_, _ = fmt.Fprintf(w.log, "workspace delta: published %s (%d bytes) carrying %s..%s on %s\n", bundle.Digest, len(bundle.Data), bundle.Base, bundle.Tip, w.branch)
 	return engine.WorkspaceDeltaPublication{Digest: bundle.Digest, Base: bundle.Base, Tip: bundle.Tip}, nil
 }
+
+// HasNewCommits implements engine.CommitInspector using the same worktree
+// observation as the local runner, before the activity removes the workspace.
+func (w *worktreeWorkspace) HasNewCommits(ctx context.Context) (bool, error) {
+	if w.wt == nil || w.wt.Branch == "" {
+		return false, nil
+	}
+	return w.wt.HasNewCommits(ctx)
+}
