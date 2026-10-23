@@ -44,6 +44,7 @@ func TestLocalJournalEquivalenceBaseline(t *testing.T) {
 					if digest := canonicalDigest(t, got); digest != localBaselineDigests[scenario.name] {
 						t.Fatalf("local baseline digest = %s, want %s", digest, localBaselineDigests[scenario.name])
 					}
+
 					continue
 				}
 
@@ -52,6 +53,23 @@ func TestLocalJournalEquivalenceBaseline(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCanonicalizerMasksOnlyAllowedVolatility(t *testing.T) {
+	const runID = "11111111111111111111111111111111"
+	value := map[string]any{
+		"time": "volatile", "runId": runID, "host": "runner-a", "durationMs": 42,
+		"name": "artifact-" + runID, "status": "completed", "format": "json",
+	}
+	maskVolatile(value, runID)
+	for _, key := range []string{"time", "runId", "host", "durationMs"} {
+		if value[key] != "<masked>" {
+			t.Fatalf("%s = %v, want masked", key, value[key])
+		}
+	}
+	if value["name"] != "artifact-<run-id>" || value["status"] != "completed" || value["format"] != "json" {
+		t.Fatalf("semantic fields changed: %+v", value)
 	}
 }
 
