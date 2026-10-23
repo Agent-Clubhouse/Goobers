@@ -26,10 +26,10 @@ func (noAcceptances) ByKey(context.Context, string) (triggerqueue.Record, error)
 
 func TestConstructTriggersComposesAndFailsClosedUntilConfigured(t *testing.T) {
 	var planes controlPlanes
-	if err := constructTriggers(context.Background(), databaseServices{}, controlAuth{}, nil, &planes); err == nil {
+	if err := constructTriggers(context.Background(), databaseServices{}, controlAuth{}, nil, nil, &planes); err == nil {
 		t.Fatal("trigger plane composed without an acceptance store")
 	}
-	if err := constructTriggers(context.Background(), databaseServices{Acceptances: noAcceptances{}}, controlAuth{}, nil, &planes); err != nil {
+	if err := constructTriggers(context.Background(), databaseServices{Acceptances: noAcceptances{}}, controlAuth{}, nil, nil, &planes); err != nil {
 		t.Fatal(err)
 	}
 	if planes.Triggers == nil {

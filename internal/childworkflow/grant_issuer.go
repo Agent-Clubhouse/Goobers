@@ -25,7 +25,7 @@ type StageAuthorityPreparer interface {
 // no separate in-memory authority map. The daemon must use the same signing key
 // in HTTPService and the same registry in its journal scrubbers.
 type GrantIssuer struct {
-	Queue     *triggerqueue.Store
+	Queue     ChildQueue
 	Grants    *podauth.SignedKey
 	Authority StageAuthorityPreparer
 	Endpoint  string

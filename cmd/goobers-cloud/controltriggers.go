@@ -26,7 +26,7 @@ type appliedConfiguration interface {
 // rows through the start fence. The Configuration is resolved on each request,
 // so assembly order against that seam is free; until it names a generation the
 // plane fails closed.
-func constructTriggers(_ context.Context, db databaseServices, _ controlAuth, _ func() *lease.Handle, p *controlPlanes) error {
+func constructTriggers(_ context.Context, db databaseServices, _ controlAuth, _ *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
 	if db.Acceptances == nil {
 		return errors.New("trigger plane requires the API acceptance store")
 	}
