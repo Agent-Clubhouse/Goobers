@@ -28,10 +28,10 @@ import (
 )
 
 var localBaselineDigests = map[string]string{
-	"retry-artifact-inputs-and-gates": "sha256:367154a223e1cb782e85eb51754dd98890876dd9683ca69dc0b5e0f345a95c3b",
+	"retry-artifact-inputs-and-gates": "sha256:65afb97a5cc6ea3e3c49d5e5226db8f26c1db206976648adcb92819fd0361976",
 	"human-gate":                      "sha256:4ade0f52fc3ab78b2202dbdfb128b91dcdae2310124709df5575c4bae95489bf",
 	"stage-boundary-cancellation":     "sha256:69ad5302bca5ab6e5806c546193bf842f8ebea0122f642b0e7a44ecccd3e56e6",
-	"gate-fail-rerun":                 "sha256:fc5e7bfff6eefcdf64bca32e0ac76b97e68776a6b2f5c0036a470a6375cb0dc5",
+	"gate-fail-rerun":                 "sha256:89140da2e0691dd07925ffca793a6d561dc2c1c8454de2e7958e0a8ae4185dbc",
 	"terminal-resume":                 "sha256:bcfc16278dbce9969be24de7dfd240c87e3960109399e9b6c79c923396ac1066",
 	"infrastructure-retry":            "sha256:4020c3810b2d63ea427856a7952211490e4f134d71f87bfc2cccbccd4d612dbc",
 }
@@ -59,34 +59,6 @@ func TestLocalJournalEquivalenceBaseline(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCanonicalizerMasksOnlyAllowedVolatility(t *testing.T) {
-	const runID = "11111111111111111111111111111111"
-	value := map[string]any{
-		"time": "volatile", "runId": runID, "host": "runner-a", "durationMs": 42,
-		"name": "artifact-" + runID, "status": "completed", "format": "json",
-		"finishedAt": nil, "latestErrorAt": "", "startedAt": "0001-01-01T00:00:00Z",
-	}
-	maskVolatile(value, runID)
-	for _, key := range []string{"time", "runId", "host", "durationMs"} {
-		if value[key] != "<masked>" {
-			t.Fatalf("%s = %v, want masked", key, value[key])
-		}
-	}
-	if value["name"] != "artifact-<run-id>" || value["status"] != "completed" || value["format"] != "json" {
-		t.Fatalf("semantic fields changed: %+v", value)
-	}
-	if value["finishedAt"] != nil || value["latestErrorAt"] != "" ||
-		value["startedAt"] != "0001-01-01T00:00:00Z" {
-		t.Fatalf("unset timestamp presence changed: %+v", value)
-	}
-	unset := canonicalJSON(t, map[string]any{"finishedAt": nil}, runID)
-	zero := canonicalJSON(t, map[string]any{"finishedAt": "0001-01-01T00:00:00Z"}, runID)
-	set := canonicalJSON(t, map[string]any{"finishedAt": "2026-10-23T00:00:00Z"}, runID)
-	if bytes.Equal(unset, set) || bytes.Equal(zero, set) {
-		t.Fatalf("unset timestamp canonicalized like set: null=%s zero=%s set=%s", unset, zero, set)
 	}
 }
 
@@ -277,52 +249,12 @@ func canonicalJSON(t *testing.T, value any, runID string) json.RawMessage {
 			delete(current, "causalEmitKey")
 		}
 	}
-	maskVolatile(decoded, runID)
+	maskCanonicalMetadata(decoded, value, runID)
 	data, err = json.Marshal(decoded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func maskVolatile(value any, runID string) {
-	switch typed := value.(type) {
-	case []any:
-		for index, item := range typed {
-			if text, ok := item.(string); ok {
-				typed[index] = strings.ReplaceAll(text, runID, "<run-id>")
-				continue
-			}
-			maskVolatile(item, runID)
-		}
-	case map[string]any:
-		for key, item := range typed {
-			if volatileField(key) {
-				if item != nil && item != "" && item != "0001-01-01T00:00:00Z" {
-					typed[key] = "<masked>"
-				}
-				continue
-			}
-			if text, ok := item.(string); ok {
-				typed[key] = strings.ReplaceAll(text, runID, "<run-id>")
-				continue
-			}
-			maskVolatile(item, runID)
-		}
-	}
-}
-
-func volatileField(key string) bool {
-	switch strings.ToLower(key) {
-	case "time", "startedat", "finishedat", "completedat", "requestedat", "expiresat",
-		"acknowledgedat", "retryat", "lastheartbeatat", "latesterrorat", "reviewat",
-		"queuedat", "podstartedat", "updatedat", "occurredat",
-		"lastactivity", "duration", "durationms",
-		"elapsed", "elapsedms", "runid", "host", "hostname", "hostidentity", "pid", "processid":
-		return true
-	default:
-		return false
-	}
 }
 
 type deterministicScript struct {

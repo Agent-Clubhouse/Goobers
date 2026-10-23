@@ -68,3 +68,18 @@ The cloud-pg job executes this package and includes it in `cloud-pg-report`, so
 missing PostgreSQL configuration or a missing build tag cannot silently skip
 the test. The spec spells the test `TestCloudJournalEquivalesLocal`; this package
 uses the corrected `TestCloudJournalEquivalentToLocal` name.
+
+The shared canonicalizer's volatility allowlist is path-specific in
+`canonical_metadata_test.go`: event `time`/`runId`, typed projection lifecycle
+clock/run-ID fields, and the managed branch's embedded current run ID in
+`externalRef.id` / `Run.Operator.WorkspaceBranch`. Array paths name only schema
+arrays. Business outputs, artifact names, strings containing the run ID, and
+untyped objects are compared verbatim; there is no recursive key-name masking.
+Unset, empty, zero and populated timestamps remain distinguishable. No
+host/duration envelope field occurs in this corpus, so none is implicitly
+masked. New locations require an explicit reviewed path.
+
+The tagged parent checks PG configuration before starting its fixtures. Missing
+PG fails strict CI; an opted-out local invocation skips the parent. The CI
+report rejects skipped descendants of any required tagged test even if its
+parent reports success.

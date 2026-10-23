@@ -27,6 +27,7 @@ import (
 )
 
 func TestCloudJournalEquivalentToLocal(t *testing.T) {
+	requireCloudPostgres(t) // Gate the parent; nested skips must never look like coverage.
 	for _, scenario := range localCorpus() {
 		t.Run(scenario.name, func(t *testing.T) {
 			for repetition := 0; repetition < 3; repetition++ {

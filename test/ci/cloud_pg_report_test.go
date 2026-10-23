@@ -68,7 +68,10 @@ func TestCloudPGReportRequiresTaggedTestsToPassUnskipped(t *testing.T) {
 		code   int
 		want   string
 	}{
-		"all tagged tests pass": {healthy + event("pass", "alpha", "TestAlphaUnit"), 0, "3 PostgreSQL test packages"},
+		"passed parent hides skipped child": {healthy + event("skip", "alpha", "TestAlphaPG/fixture/1"), 1, "TestAlphaPG/fixture/1"},
+		"passing descendant is coverage":    {healthy + event("pass", "alpha", "TestAlphaPG/fixture/1"), 0, "3 PostgreSQL test packages"},
+		"unrelated unit descendant skip":    {healthy + event("skip", "alpha", "TestAlphaUnit/optional"), 0, "3 PostgreSQL test packages"},
+		"all tagged tests pass":             {healthy + event("pass", "alpha", "TestAlphaUnit"), 0, "3 PostgreSQL test packages"},
 		"untagged pass only": {event("pass", "alpha", "TestAlphaUnit") + objstoreRun(13, 0) + event("pass", "test/ha/invariants", "TestSchema"),
 			1, "alpha: no PostgreSQL-tagged test passed"},
 		"tagged 1 pass + 12 skips": {event("pass", "alpha", "TestAlphaPG") + objstoreRun(1, 12) + event("pass", "objstore", "TestObjUnit") + event("pass", "test/ha/invariants", "TestSchema"),

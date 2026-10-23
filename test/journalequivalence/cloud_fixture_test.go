@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/pgroles"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
+	"github.com/goobers/goobers/internal/testdep"
 )
 
 func cloudJournalConfig(t testing.TB) journalpg.Config {
@@ -27,10 +28,7 @@ func cloudJournalConfig(t testing.TB) journalpg.Config {
 
 func cloudJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	t.Helper()
-	url := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
-	if url == "" {
-		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set (local PG16 required)")
-	}
+	url := requireCloudPostgres(t)
 	admin, err := pgxpool.New(t.Context(), url)
 	if err != nil {
 		t.Fatal(err)
@@ -112,4 +110,19 @@ func rolePool(t testing.TB, base *pgxpool.Pool, role string) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// An opt-in developer run may skip only at the tagged parent. Strict hosted
+// CI must fail before executing any fixture when its declared PG is absent.
+func requireCloudPostgres(t testing.TB) string {
+	t.Helper()
+	url := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
+	if url != "" {
+		return url
+	}
+	if os.Getenv(testdep.StrictEnv) == "1" {
+		t.Fatal("GOOBERS_TEST_POSTGRES_URL is required for cloud journal equivalence in strict CI")
+	}
+	t.Skip("GOOBERS_TEST_POSTGRES_URL is not set (local PG16 required)")
+	return ""
 }
