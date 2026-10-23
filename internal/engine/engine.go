@@ -17,7 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/usageallowance"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
@@ -40,7 +41,7 @@ const (
 	// last-resort guard against a definition that loops (WF-015 within a
 	// run). Shared with the local runner so the ceilings cannot drift again
 	// (#624: they had diverged 1000 vs 10000).
-	maxSteps = runner.DefaultMaxSteps
+	maxSteps = runsemantics.DefaultMaxSteps
 	// activityTimeout is the start-to-close timeout applied to activities whose
 	// stage declares no duration limit. A constant (not wall-clock) keeps the
 	// workflow deterministic.
@@ -343,7 +344,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
-		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runner.RunCanceledErrorCode
+		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runsemantics.RunCanceledErrorCode
 		if causeErr := rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced, ""); causeErr != nil {
 			return RunResult{}, errors.Join(err, causeErr)
 		}
@@ -573,7 +574,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if pauseErr != nil {
 				return RunResult{}, pauseErr
 			}
-			gateDelta := selectGateDelta(ctx, g, runner.ReviewsImplementation(m, g.Name), continuity, workspaceBranch, rec)
+			gateDelta := selectGateDelta(ctx, g, runsemantics.ReviewsImplementation(m, g.Name), continuity, workspaceBranch, rec)
 			// The knownOutcome shortcut (runner.RetryFailureClass, mirrored
 			// from stepGate): a status-equals gate standing over a
 			// nonzero_exit / base_sync_conflict failure already HAS its
@@ -583,7 +584,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// markers are journaled, then the outcome is resolved without an
 			// evaluator. Only ever set for an automated gate, which is why the
 			// (agentic-only) gate delta above is unaffected.
-			_, knownOutcome, _ := runner.RetryFailureClass(g, lastResult)
+			_, knownOutcome, _ := runsemantics.RetryFailureClass(g, lastResult)
 			addendum := addenda[g.Name]
 			delete(addenda, g.Name)
 			// The implementation-lane evidence this gate evaluates on (#3882).
@@ -670,7 +671,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// runner appends it, so a fail branch re-entering a completed stage
 			// leaves the record priorRepassCause reads back to classify the
 			// repass as infrastructure or content.
-			class, _, retryable := runner.RetryFailureClassForGateResult(g, lastResult, gr.Outcome)
+			class, _, retryable := runsemantics.RetryFailureClassForGateResult(g, lastResult, gr.Outcome)
 			// retryRoute is the local runner's routeRetryDecision "retry"
 			// return: it gates the annotation AND the learning injection
 			// together, because in the local runner both live inside the same
@@ -772,7 +773,7 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 			rec.toleratedFailure(ctx, t.Name)
 			break
 		}
-		if runner.IsNonRetryableEscalation(result.Error) {
+		if runsemantics.IsNonRetryableEscalation(result.Error) {
 			return escalationOutcome(m, t, upstream, steps)
 		}
 		if _, isGate := m.Gate(t.Next); t.Next != "" && isGate {
@@ -787,11 +788,11 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		// evidence. Producers that all journaled nothing mean the evidence
 		// never arrived, and completing on the claim alone would record that
 		// as a healthy empty tick.
-		if barren := runner.BarrenUpstream(declaredUpstreamProduction(t, upstream, evaluatedGates)); len(barren) > 0 {
+		if barren := runsemantics.BarrenUpstream(declaredUpstreamProduction(t, upstream, evaluatedGates)); len(barren) > 0 {
 			return "", RunResult{
 				Status: StatusFailed, FinalState: t.Name,
-				FailureCode:    runner.NoWorkUnsubstantiatedCode,
-				FailureMessage: runner.NoWorkUnsubstantiatedMessage(t.Name, barren),
+				FailureCode:    runsemantics.NoWorkUnsubstantiatedCode,
+				FailureMessage: runsemantics.NoWorkUnsubstantiatedMessage(t.Name, barren),
 				Outputs:        upstream, Steps: steps,
 			}, true
 		}
@@ -817,8 +818,8 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 // none: like the local runner's noWorkEvidenceGap, only a declared consumer of
 // upstream artifacts is judged on them, since a producer can also deliver
 // through the shared workspace and return an empty envelope.
-func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEnvelope, evaluatedGates map[string]bool) []runner.StageProduction {
-	production := make([]runner.StageProduction, 0, len(t.ContextFrom))
+func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEnvelope, evaluatedGates map[string]bool) []runsemantics.StageProduction {
+	production := make([]runsemantics.StageProduction, 0, len(t.ContextFrom))
 	for _, source := range t.ContextFrom {
 		if source == t.Name {
 			continue
@@ -827,7 +828,7 @@ func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEn
 			// An evaluated gate delivers its verdict to this stage as a
 			// "<gate>.verdict" pointer, so it always counts as production —
 			// the local runner counts its EventGateEvaluated identically.
-			production = append(production, runner.StageProduction{Stage: source, Delivered: true})
+			production = append(production, runsemantics.StageProduction{Stage: source, Delivered: true})
 			continue
 		}
 		result, ok := upstream[source]
@@ -837,9 +838,9 @@ func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEn
 			// there is nothing here to call barren.
 			continue
 		}
-		production = append(production, runner.StageProduction{
+		production = append(production, runsemantics.StageProduction{
 			Stage:     source,
-			Delivered: runner.DeliveredEvidence(result),
+			Delivered: runsemantics.DeliveredEvidence(result),
 		})
 	}
 	return production
@@ -981,7 +982,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
 	}
 	if in.SelfExecutionDenied {
-		return runner.SelfExecutionBlockedResult(t.Name), nil
+		return runsemantics.SelfExecutionBlockedResult(t.Name), nil
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, inputGrades)
@@ -995,11 +996,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// task's own declaration — the same one the continuity selector
 		// decided the delta from — so the worktree the agent is cut and the
 		// commits it is handed can never disagree.
-		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
+		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
-			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+			result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
 			return result, err
 		}, deltaOut)
 	}
@@ -1022,11 +1023,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// taskWorkspaceMode already read it. Pure over the pinned spec, so
 	// replay-deterministic.
 	run.Workspace = t.EffectiveWorkspace()
-	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
-		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+		result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
 }
@@ -1129,7 +1130,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// ones it has always had.
 		placement, remote := remotePlacementFor(in, g.Name)
 		if !remote && in.SelfExecutionDenied {
-			return "", nil, GateReviewResult{}, temporal.NewNonRetryableApplicationError((&runner.SelfExecutionRefusal{Stage: g.Name}).Error(), runner.SelfExecutionDeniedCode, nil)
+			return "", nil, GateReviewResult{}, temporal.NewNonRetryableApplicationError((&runsemantics.SelfExecutionRefusal{Stage: g.Name}).Error(), runsemantics.SelfExecutionDeniedCode, nil)
 		}
 		if remote {
 			ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
@@ -1208,13 +1209,13 @@ func selectedWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, namespac
 	if t.Type != apiv1.TaskDeterministic {
 		return "", nil
 	}
-	raw, exists := result.Outputs[runner.WorkspaceBranchOutput]
+	raw, exists := result.Outputs[runsemantics.WorkspaceBranchOutput]
 	if !exists {
 		return "", nil
 	}
 	value, ok := raw.(string)
 	if !ok {
-		return "", fmt.Errorf("%s must be a string, got %T", runner.WorkspaceBranchOutput, raw)
+		return "", fmt.Errorf("%s must be a string, got %T", runsemantics.WorkspaceBranchOutput, raw)
 	}
 	branch := strings.TrimSpace(value)
 	if branch == "" {
@@ -1222,7 +1223,7 @@ func selectedWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, namespac
 	}
 	normalizedNamespace := providers.NormalizeBranchNamespace(namespace)
 	if !strings.HasPrefix(branch, normalizedNamespace) {
-		return "", fmt.Errorf("%s %q is outside namespace %q", runner.WorkspaceBranchOutput, branch, normalizedNamespace)
+		return "", fmt.Errorf("%s %q is outside namespace %q", runsemantics.WorkspaceBranchOutput, branch, normalizedNamespace)
 	}
 	return branch, nil
 }

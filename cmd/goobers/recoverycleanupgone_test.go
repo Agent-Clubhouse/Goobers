@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -46,14 +48,14 @@ func TestRecoveryCleanupReapsGoneCheckout(t *testing.T) {
 				t.Fatal(err)
 			}
 			source, workcopies := createRecoveryCleanupSource(t), t.TempDir()
-			previousCloneURL := repoCloneURL
-			repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-			t.Cleanup(func() { repoCloneURL = previousCloneURL })
+			previousCloneURL := runtimewiring.RepoCloneURL
+			runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+			t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 			manager, err := worktree.NewManager(workcopies)
 			if err != nil {
 				t.Fatal(err)
 			}
-			option, err := recoveryCleanupOption(layout, cfg, workcopies, repoCloneURL, journal.NewRegistryScrubber(), nil)
+			option, err := recoveryCleanupOption(layout, cfg, workcopies, runtimewiring.RepoCloneURL, journal.NewRegistryScrubber(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -156,14 +158,14 @@ func TestRecoveryCleanupDefersRepositorylessCheckoutWithFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, workcopies := createRecoveryCleanupSource(t), t.TempDir()
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 	manager, err := worktree.NewManager(workcopies)
 	if err != nil {
 		t.Fatal(err)
 	}
-	option, err := recoveryCleanupOption(layout, cfg, workcopies, repoCloneURL, journal.NewRegistryScrubber(), nil)
+	option, err := recoveryCleanupOption(layout, cfg, workcopies, runtimewiring.RepoCloneURL, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +213,7 @@ func TestRecoveryCleanupHistoricalGoneCheckoutIsNotQuarantined(t *testing.T) {
 		Path: filepath.Join(workcopies, "repo-key", "runs", "wt-gone"), WorktreeID: runID + "-stage",
 		OwnerRunID: runID, StartRef: "0123456789012345678901234567890123456789", CreatedAt: startedAt,
 	}
-	if err := recoveryCleanupHistoricalTarget(context.Background(), layout, cfg, workcopies, journal.NewRegistryScrubber(), manager, key, target); err != nil {
+	if err := runtimewiring.RecoveryCleanupHistoricalTarget(context.Background(), layout, cfg, workcopies, journal.NewRegistryScrubber(), manager, key, target); err != nil {
 		t.Fatalf("historical cleanup of a gone checkout = %v, want settled", err)
 	}
 	assertMissingTargetRecorded(t, layout, runID, "unavailable", "missing")

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -232,7 +234,7 @@ func TestNamedTelemetryStoreReferenceAndNoDiagnosticInheritance(t *testing.T) {
 	registry := journal.NewRegistryScrubber()
 	var cfg telemetry.Config
 	source := instance.TelemetryConfig{Exporters: []instance.TelemetryExporterConfig{{Name: "collector", Kind: "otlp-grpc", Endpoint: "https://collector.example:4317", Headers: map[string]instance.TokenRef{"authorization": {Store: "fixture/token"}}}}}
-	if err := configureNamedTelemetry(t.Context(), &cfg, source, t.TempDir(), registry, wiringFakeStoreResolver{"fixture/token": "store-private-value"}, false); err != nil {
+	if err := runtimewiring.ConfigureNamedTelemetry(t.Context(), &cfg, source, t.TempDir(), registry, wiringFakeStoreResolver{"fixture/token": "store-private-value"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(cfg.Destinations) != 1 || cfg.Destinations[0].Config.OTLPHeaders["authorization"] != "store-private-value" || string(registry.Scrub([]byte("store-private-value"))) == "store-private-value" {
@@ -254,8 +256,8 @@ func TestNamedTelemetryCommandJournalHasOneOwnerAndTwoDestinations(t *testing.T)
 		t.Fatal(err)
 	}
 	var stderr bytes.Buffer
-	stopOne := startCommandJournalTelemetry(layout, &stderr)
-	stopTwo := startCommandJournalTelemetry(layout, &stderr)
+	stopOne := runtimewiring.StartCommandJournalTelemetry(layout, &stderr)
+	stopTwo := runtimewiring.StartCommandJournalTelemetry(layout, &stderr)
 	log, _, err := journal.OpenInstanceLog(filepath.Join(layout.Root, "scheduler"))
 	if err != nil {
 		t.Fatal(err)
@@ -280,11 +282,11 @@ func TestNamedTelemetryReplayRootsStayNamedAcrossReorder(t *testing.T) {
 	root := t.TempDir()
 	registry := journal.NewRegistryScrubber()
 	var first, second telemetry.Config
-	if err := configureNamedTelemetry(t.Context(), &first, source, root, registry, nil, false); err != nil {
+	if err := runtimewiring.ConfigureNamedTelemetry(t.Context(), &first, source, root, registry, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	source.Exporters[0], source.Exporters[1] = source.Exporters[1], source.Exporters[0]
-	if err := configureNamedTelemetry(t.Context(), &second, source, root, registry, nil, false); err != nil {
+	if err := runtimewiring.ConfigureNamedTelemetry(t.Context(), &second, source, root, registry, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	a, b := first.Destinations[0].Config.AzureMonitorReplayRoot, first.Destinations[1].Config.AzureMonitorReplayRoot

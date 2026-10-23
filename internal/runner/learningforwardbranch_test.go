@@ -12,37 +12,9 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
-
-// The #3929 ruling in one table: a learning episode is injected IFF the gate
-// result's repass attempt is at least 1. Nothing else — not the failure class,
-// not the target's identity, not whether the target happens to be upstream in
-// some independently re-derived sense — participates.
-//
-// This is the single predicate BOTH drivers call (internal/engine's gate arm
-// and this package's stepGate), which is the whole point of hoisting it here:
-// the engine used to re-derive "does this gate send work back?" from its own
-// upstream map, and a second derivation is a second thing to drift.
-func TestLearningEpisodeAppliesToRepassIsTheRuling(t *testing.T) {
-	for _, tt := range []struct {
-		attempt int
-		want    bool
-		why     string
-	}{
-		{attempt: 0, want: false, why: "a forward branch: the gate routed to a stage that has not run, so there is nothing to correct"},
-		{attempt: 1, want: true, why: "the first true repass"},
-		{attempt: 2, want: true, why: "a later repass, still within the budget"},
-		{attempt: gate.DefaultMaxRepasses, want: true, why: "the last repass the policy budget allows"},
-		{attempt: -1, want: false, why: "never produced by trackRepass, but must not be read as a repass if it ever were"},
-	} {
-		t.Run(fmt.Sprintf("attempt=%d", tt.attempt), func(t *testing.T) {
-			if got := LearningEpisodeAppliesToRepass(tt.attempt); got != tt.want {
-				t.Fatalf("LearningEpisodeAppliesToRepass(%d) = %v, want %v — %s", tt.attempt, got, tt.want, tt.why)
-			}
-		})
-	}
-}
 
 // TestForwardBranchKeepsItsRetryDecisionWithoutAnEpisode is the runner-side
 // regression for #3929, driven through a real Start() rather than through the
@@ -382,11 +354,11 @@ func forwardRetryDecisions(events []journal.Event) []runnerRetryDecision {
 		if e.Type != journal.EventRunnerAnnotation || e.Runner == nil {
 			continue
 		}
-		if kind, _ := e.Runner["kind"].(string); kind != retryDecisionKind {
+		if kind, _ := e.Runner["kind"].(string); kind != runsemantics.RetryDecisionKind {
 			continue
 		}
-		attempt, _ := runnerInt(e.Runner["repassAttempt"])
-		class, _ := e.Runner[retryFailureClassKey].(string)
+		attempt, _ := runsemantics.RunnerInt(e.Runner["repassAttempt"])
+		class, _ := e.Runner[runsemantics.RetryFailureClassKey].(string)
 		code, _ := e.Runner["failureCode"].(string)
 		target, _ := e.Runner["target"].(string)
 		out = append(out, runnerRetryDecision{
@@ -403,7 +375,7 @@ func countLearningInjections(events []journal.Event) int {
 		if e.Type != journal.EventRunnerAnnotation || e.Runner == nil {
 			continue
 		}
-		if kind, _ := e.Runner["kind"].(string); kind == LearningEpisodeInjectedKind {
+		if kind, _ := e.Runner["kind"].(string); kind == runsemantics.LearningEpisodeInjectedKind {
 			n++
 		}
 	}

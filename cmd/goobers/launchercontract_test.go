@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 )
@@ -20,7 +22,7 @@ func TestLauncherContractRequiredThroughProductionAdapterLookup(t *testing.T) {
 		{name: "renamed executable", commands: map[string][]string{"copilot": {"my-copilot"}}, custom: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			adapter, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, tc.commands, nil)
+			adapter, err := runtimewiring.AdapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, tc.commands, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

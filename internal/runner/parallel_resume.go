@@ -4,6 +4,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -45,7 +46,7 @@ func recoverParallelStage(writer *branchJournal, machine *workflow.Machine, stat
 	}
 	if isTask {
 		switch {
-		case boundary.Type == journal.EventStageFinished && boundary.Stage == state && !isInterruptedAttemptMarker(boundary):
+		case boundary.Type == journal.EventStageFinished && boundary.Stage == state && !runsemantics.IsInterruptedAttemptMarker(boundary):
 			restored.task = &last
 		case boundary.Type == journal.EventStageStarted && boundary.Stage == state:
 			var err error
@@ -69,8 +70,8 @@ func restoreInterruptedParallelTask(writer *branchJournal, machine *workflow.Mac
 	if attempt == 0 {
 		attempt = 1
 	}
-	errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
-	runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
+	errorDetail := &journal.ErrorDetail{Code: runsemantics.InterruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
+	runnerDetail := map[string]any{runsemantics.InterruptedAttemptMarkerKey: true}
 	if !restored.parent && task.Type == apiv1.TaskAgentic {
 		limits, err := workflow.TaskLimits(machine, task)
 		if err != nil {

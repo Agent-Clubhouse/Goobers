@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 func TestHandoffDoesNotChargeAttempt(t *testing.T) {
@@ -162,7 +163,7 @@ func TestHandoffFailuresRefuseSideEffectingRetry(t *testing.T) {
 				task := retrySpec(nil).Tasks[0]
 				task.PolicyActions = []string{"comment-on-pr-advisory"}
 				ctx = dispatchActivityContext(ctx, apiv1.Limits{MaxDurationSeconds: 60}, "queue")
-				_, err := dispatchWithRetry(ctx, RunInput{}, task, &runJournal{}, nil, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
+				_, err := dispatchWithRetry(ctx, RunInput{}, task, &runJournal{}, nil, func(ctx workflow.Context, attempt int, _ journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 					attempts = append(attempts, attempt)
 					input := dispatchInput("side-effect", "build", attempt)
 					input.Envelope.Limits.MaxDurationSeconds = 60

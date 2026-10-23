@@ -241,7 +241,7 @@ and [the v0.5 change](https://github.com/Agent-Clubhouse/Goobers/pull/5992).
 
 #### Temporal worker versioning
 
-`engine.workerVersioning` defaults to `false`: `goobers worker` polls
+`engine.workerVersioning` defaults to `false`: `goobers-cloud worker` polls
 unversioned unless explicitly opted in. An instance already using versioned
 workers, including affected v0.5 betas, must choose a transition path:
 

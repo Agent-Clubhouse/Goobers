@@ -11,6 +11,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	_ "time/tzdata"
 
 	"golang.org/x/term"
@@ -94,7 +97,7 @@ func enforceAppliedStageConfig() error {
 	if expected == "" {
 		return nil
 	}
-	current, err := configDirectoryDigestForGaggle(layout.ConfigDir(), gaggle)
+	current, err := runtimewiring.ConfigDirectoryDigestForGaggle(layout.ConfigDir(), gaggle)
 	if err != nil {
 		return fmt.Errorf("read deterministic-stage config generation: %w", err)
 	}

@@ -6,6 +6,7 @@ package main
 // rebound remains visible as a reviewed control-code change.
 var bodyLengthSeedCeilings = map[string]int{
 	"api/validate/validate.go\t(*index).checkWorkflow":              221,
+	"cmd/goobers-cloud/worker.go\trunWorker":                        255,
 	"cmd/goobers/applyverdict.go\trunApplyVerdict":                  489,
 	"cmd/goobers/backlogquery.go\trunBacklogQueryMode":              272,
 	"cmd/goobers/daemon.go\tbuildSchedulerDefinitions":              342,
@@ -22,7 +23,6 @@ var bodyLengthSeedCeilings = map[string]int{
 	"cmd/goobers/telemetryquery.go\trunTelemetryQuery":              206,
 	"cmd/goobers/trace.go\trunTraceWithFactories":                   223,
 	"cmd/goobers/validate.go\trunValidateConfig":                    261,
-	"cmd/goobers/worker.go\trunWorker":                              255,
 	"internal/apicontract/wire.go\tnewWireFixtures":                 753,
 	"internal/decomposition/publisher.go\t(Publisher).Publish":      233,
 	"internal/engine/dispatchstage.go\t(*Activities).DispatchStage": 283,

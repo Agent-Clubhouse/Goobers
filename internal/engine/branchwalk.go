@@ -10,7 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -84,7 +84,7 @@ func (f *branchWalkFrame) finish(ctx workflow.Context, out RunResult, err error,
 	case out.Status != StatusCompleted:
 		f.status = journal.BranchFailed
 	default:
-		f.status = runner.SettledBranchStatus(false, false, f.noOutput, f.produced || len(pointers) > len(f.pointers))
+		f.status = runsemantics.SettledBranchStatus(false, false, f.noOutput, f.produced || len(pointers) > len(f.pointers))
 	}
 }
 

@@ -16,13 +16,18 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+
 	kubetesting "k8s.io/client-go/testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -95,9 +100,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previous })
+	previous := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previous })
 	// Seed the same-keyed managed mirror directly with plain git, matching
 	// what a live run's own workspace provisioning already establishes by
 	// the time any run exists (WorkingCopy populates this mirror, and the

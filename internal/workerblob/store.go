@@ -168,7 +168,7 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 		bound.Observe(now, hints)
 		lastErr = err
 		if opts.Log != nil {
-			_, _ = fmt.Fprintf(opts.Log, "INFO goobers worker: blob-plane probe waiting for daemon readiness (attempt %d, %s elapsed, bound %s%s): %v\n",
+			_, _ = fmt.Fprintf(opts.Log, "INFO goobers-cloud worker: blob-plane probe waiting for daemon readiness (attempt %d, %s elapsed, bound %s%s): %v\n",
 				attempts, now.Sub(start).Round(time.Second), bound.Deadline().Sub(start).Round(time.Second), describeHints(hints), err)
 		}
 		return now.Before(bound.Deadline()), err

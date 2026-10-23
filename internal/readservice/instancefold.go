@@ -19,9 +19,10 @@ import (
 // only for the events appended since its last read, so a request costs what the
 // journal grew by rather than everything it has ever recorded (#3050).
 type instanceFold struct {
-	mu    sync.Mutex
-	seq   uint64
-	state instanceState
+	mu      sync.Mutex
+	seq     uint64
+	state   instanceState
+	backend journal.ReaderBackend
 }
 
 // instanceState is the scheduler and lifetime state derived from the instance
@@ -54,7 +55,11 @@ type instanceState struct {
 func (f *instanceFold) snapshot(ctx context.Context, schedulerDir string) (instanceState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	events, err := journal.ReadInstanceLogAfterSeq(schedulerDir, f.seq)
+	backend := f.backend
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{SchedulerDir: schedulerDir})
+	}
+	events, err := backend.InstanceRead(ctx, f.seq, 0)
 	if err != nil {
 		return instanceState{}, err
 	}

@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"gopkg.in/yaml.v3"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -123,7 +125,7 @@ func runScaffoldGaggle(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

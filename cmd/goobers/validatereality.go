@@ -1,31 +1,5 @@
 package main
 
-// validatereality.go teaches `goobers validate` the blind spots the
-// 2026-08-08 cold-start exercise proved certify never-working configs:
-//
-//   - static (every validate run): a gaggle/stage requiredCapabilities token
-//     no instance runner claims (CAP003 — dotnet #7, swift probes), and an
-//     unenforceable workflow maxOpenPRs cap (PRCAP001), and an
-//     automated gate's failure-keyed branch that declares completion a
-//     failed-without-continueOnError stage can never reach as a completed
-//     run (WF018 — swift #3's shape, corrected against the runner's actual
-//     semantics; see appendGateCompletionWarnings).
-//
-//   - network (--check-repos only, after the repository preflight already
-//     contacted the repo): the repository's actual label set compared
-//     against every selector and stage-applied label (SELECTOR001..003 —
-//     python #1/#7, swift #10), the combined positive selector's live
-//     open-item match count (SELECTOR002), and a ci-poll workflow pointed
-//     at a repository whose routed credential cannot read CI workflows or
-//     which has no CI workflows (CIPOLL001 — swift #9 + probe).
-//
-// Everything here is advisory: static findings are ordinary config warnings
-// (they count under --strict like any other config warning), network
-// findings are repo-state observations that print and land in the JSON
-// diagnostics envelope but never change the exit code — repo state can
-// change a minute later, and --strict must not fail a CI runner over it
-// (same contract as #1547's oversized-repo warning).
-
 import (
 	"context"
 	"fmt"
@@ -35,6 +9,34 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
+	// validatereality.go teaches `goobers validate` the blind spots the
+	// 2026-08-08 cold-start exercise proved certify never-working configs:
+	//
+	//   - static (every validate run): a gaggle/stage requiredCapabilities token
+	//     no instance runner claims (CAP003 — dotnet #7, swift probes), and an
+	//     unenforceable workflow maxOpenPRs cap (PRCAP001), and an
+	//     automated gate's failure-keyed branch that declares completion a
+	//     failed-without-continueOnError stage can never reach as a completed
+	//     run (WF018 — swift #3's shape, corrected against the runner's actual
+	//     semantics; see appendGateCompletionWarnings).
+	//
+	//   - network (--check-repos only, after the repository preflight already
+	//     contacted the repo): the repository's actual label set compared
+	//     against every selector and stage-applied label (SELECTOR001..003 —
+	//     python #1/#7, swift #10), the combined positive selector's live
+	//     open-item match count (SELECTOR002), and a ci-poll workflow pointed
+	//     at a repository whose routed credential cannot read CI workflows or
+	//     which has no CI workflows (CIPOLL001 — swift #9 + probe).
+	//
+	// Everything here is advisory: static findings are ordinary config warnings
+	// (they count under --strict like any other config warning), network
+	// findings are repo-state observations that print and land in the JSON
+	// diagnostics envelope but never change the exit code — repo state can
+	// change a minute later, and --strict must not fail a CI runner over it
+	// (same contract as #1547's oversized-repo warning).
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -615,7 +617,7 @@ func appendMaxOpenPRWarnings(
 			// Both forges enforce the cap by polling the bound repository's
 			// open PRs (ADO since ADO-N30); only a missing binding leaves the
 			// count unknown.
-			if _, configured := configuredRepoForProject(cfg, project); configured {
+			if _, configured := runtimewiring.ConfiguredRepoForProject(cfg, project); configured {
 				continue
 			}
 			message = fmt.Sprintf(
@@ -841,7 +843,7 @@ func gatherRepoRealityDemand(root, configDir string, cfg *instance.Config, set *
 		return demand
 	}
 	repoIndex := func(project apiv1.RepoRef) (int, bool) {
-		bound, ok := configuredRepoForProject(cfg, project)
+		bound, ok := runtimewiring.ConfiguredRepoForProject(cfg, project)
 		if !ok {
 			return 0, false
 		}
