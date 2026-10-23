@@ -256,17 +256,17 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	}
 	objectCredential, err := newDefaultAzureCredential()
 	if err != nil {
-		writef(stderr, "goobers-cloud %s: initialize object-store credential: %v\n", role, err)
+		writef(stderr, "goobers-cloud %s: object-store credential initialization failed\n", role)
 		return 1
 	}
 	blobs, err := newAzureObjectStore(*objectStoreURL, *objectStoreContainer, objectCredential)
 	if err != nil {
-		writef(stderr, "goobers-cloud %s: %v\n", role, err)
+		writef(stderr, "goobers-cloud %s: object-store initialization failed\n", role)
 		return 1
 	}
 	objects, err := newObjectMetadata(pools.Transaction, blobs)
 	if err != nil {
-		writef(stderr, "goobers-cloud %s: %v\n", role, err)
+		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)
 		return 1
 	}
 	services := cloudServices{
