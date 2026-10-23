@@ -115,6 +115,7 @@ type Sweeper struct {
 	watermarks Watermarks
 	options    Options
 	stats      Stats
+	failures   map[string]*runFailure
 	stat       func(string) (os.FileInfo, error)
 }
 
@@ -293,9 +294,7 @@ func (s *Sweeper) sweepForwardRoot(
 			// One directory's failure must not stop the walk; the cursor still
 			// advances past it, or a single bad directory would wedge repair
 			// forever at the same position.
-			s.stats.Failures++
-			s.options.Logger.Warn("repair reconcile failed",
-				"root", cursor.Root, "run_id", name, "error", err)
+			s.recordRunFailure(name, "repair reconcile failed", err, "root", cursor.Root)
 		}
 		cursor.AfterName = name
 	}
@@ -561,9 +560,7 @@ func (s *Sweeper) sweepReverse(
 			if ctx.Err() != nil {
 				return examined, ctx.Err()
 			}
-			s.stats.Failures++
-			s.options.Logger.Warn("repair journal lookup failed", "run_id", row.RunID,
-				"error", fmt.Errorf("open journal: %w", err))
+			s.recordRunFailure(row.RunID, "repair journal lookup failed", fmt.Errorf("open journal: %w", err))
 			// An unreadable source is not evidence of deletion. Keep the row,
 			// but advance past it so other runs progress; retry next cycle.
 			found = true
@@ -616,7 +613,8 @@ func (s *Sweeper) project(ctx context.Context, dir string) (readmodel.Projection
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return readmodel.Projection{}, false, nil
+		return readmodel.Projection{}, false,
+			fmt.Errorf("repair: read identity in %s: %w", dir, err)
 	}
 	events, err := reader.Events()
 	if err != nil {

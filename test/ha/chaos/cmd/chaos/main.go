@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -18,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) != 2 {
-		exitf("usage: chaos list|run|verify-pending")
+		exitf("usage: chaos list|run|verify-pending|freeze-smoke")
 	}
 	switch os.Args[1] {
 	case "list":
@@ -28,6 +31,10 @@ func main() {
 				state = s.Pending
 			}
 			fmt.Printf("%s\t%s\n", s.ID, state)
+		}
+	case "freeze-smoke":
+		if err := freezeSmoke(); err != nil {
+			exitf("%v", err)
 		}
 	case "verify-pending":
 		if err := verifyPending(); err != nil {
@@ -40,6 +47,25 @@ func main() {
 	default:
 		exitf("unknown command %q", os.Args[1])
 	}
+}
+
+// freezeSmoke runs CgroupFreeze against the current kubectl context and writes
+// the evidence lines to HA_EVIDENCE_DIR/freeze-smoke.txt and stdout.
+func freezeSmoke() error {
+	evidence := os.Getenv("HA_EVIDENCE_DIR")
+	if evidence == "" {
+		return fmt.Errorf("HA_EVIDENCE_DIR is required")
+	}
+	lines, err := chaos.FreezeSmoke(context.Background(), chaos.OSExecutor{}, time.Sleep)
+	text := strings.Join(lines, "\n") + "\n"
+	fmt.Print(text)
+	if werr := os.MkdirAll(evidence, 0o755); werr != nil {
+		return errors.Join(err, werr)
+	}
+	if werr := os.WriteFile(filepath.Join(evidence, "freeze-smoke.txt"), []byte(text), 0o644); werr != nil {
+		return errors.Join(err, werr)
+	}
+	return err
 }
 
 // verifyPending fails when a pending reference is no longer open.

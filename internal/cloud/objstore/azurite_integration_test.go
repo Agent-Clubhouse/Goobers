@@ -72,6 +72,36 @@ func TestAzureBlobStoreConformance(t *testing.T) {
 	}
 }
 
+func TestIdempotentPutAdvancesETag(t *testing.T) {
+	store := testAzureStore(t, "goobers-put-touch")
+	data := []byte("shared writer payload")
+	digest := digestFor(data)
+	if err := store.Put(t.Context(), digest, data); err != nil {
+		t.Fatal(err)
+	}
+	key, err := blobKey(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := store.client.ServiceClient().NewContainerClient(
+		store.container).NewBlobClient(key)
+	first, err := client.GetProperties(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), digest, data); err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.GetProperties(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ETag == nil || second.ETag == nil || *first.ETag == *second.ETag {
+		t.Fatalf("idempotent Put ETags = %v / %v, want change",
+			first.ETag, second.ETag)
+	}
+}
+
 func testAzureStore(t *testing.T, container string) *Azure {
 	t.Helper()
 	account := os.Getenv("GOOBERS_TEST_AZURITE_ACCOUNT")
