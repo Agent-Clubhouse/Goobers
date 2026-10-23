@@ -214,6 +214,7 @@ type azureMutation struct {
 	lease *azurelease.BlobClient
 }
 
+// AcquireMutation waits for exclusive storage authority over one digest.
 func (a *Azure) AcquireMutation(
 	ctx context.Context,
 	digest string,
@@ -243,6 +244,7 @@ func (a *Azure) AcquireMutation(
 	}
 }
 
+// TryAcquireMutation attempts exclusive storage authority without waiting.
 func (a *Azure) TryAcquireMutation(
 	ctx context.Context,
 	digest string,
