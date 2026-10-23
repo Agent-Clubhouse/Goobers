@@ -7,7 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -31,7 +33,10 @@ func classify(err error) error {
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, err)
 	case errors.Is(err, errNotLiveChild), errors.Is(err, errBindingDiffers), errors.Is(err, sql.ErrNoRows),
 		errors.Is(err, triggerqueue.ErrParentCancelled), errors.Is(err, triggerqueue.ErrParentSettled),
-		errors.Is(err, triggerqueue.ErrChildAuthorityChanged), errors.Is(err, triggerqueue.ErrChildProposalUnavailable):
+		errors.Is(err, triggerqueue.ErrChildAuthorityChanged), errors.Is(err, triggerqueue.ErrChildProposalUnavailable),
+		// The accepted child no longer reproduces from its pinned generation.
+		errors.Is(err, childworkflow.ErrFrozenChildDrift), errors.Is(err, childworkflow.ErrAuthorityUnavailable),
+		errors.Is(err, objstore.ErrGenerationNotFound), errors.Is(err, objstore.ErrGenerationInvalid):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	default:
 		return err
