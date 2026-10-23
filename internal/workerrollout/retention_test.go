@@ -83,7 +83,7 @@ func TestRetentionUnblocksTargetWithOldestPinnedVersion(t *testing.T) {
 			},
 		},
 	}
-	result, err := Reconcile(t.Context(), fakeStatusSource{status: blockedStatus()}, temporal, DefaultVersionLimit)
+	result, err := Reconcile(t.Context(), fakeStatusSource{status: blockedStatus()}, temporal, DefaultVersionLimit, "v3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestRetentionDoesNothingUntilControllerBlocksTarget(t *testing.T) {
 			status := blockedStatus()
 			tc.mutate(&status)
 			temporal := &fakeTemporal{}
-			result, err := Reconcile(t.Context(), fakeStatusSource{status: status}, temporal, DefaultVersionLimit)
+			result, err := Reconcile(t.Context(), fakeStatusSource{status: status}, temporal, DefaultVersionLimit, status.CurrentBuildID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,11 +122,23 @@ func TestRetentionDoesNothingUntilControllerBlocksTarget(t *testing.T) {
 	}
 }
 
+func TestRetentionOnlyRunsOnCurrentBuild(t *testing.T) {
+	status := blockedStatus()
+	temporal := &fakeTemporal{}
+	result, err := Reconcile(t.Context(), fakeStatusSource{status: status}, temporal, DefaultVersionLimit, "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (Result{}) || len(temporal.set) != 0 {
+		t.Fatalf("result = %+v, updates = %+v; non-current build acted", result, temporal.set)
+	}
+}
+
 func TestRetentionFailsClosedWithoutSafeOldestVersion(t *testing.T) {
 	status := blockedStatus()
 	status.Deprecated[0].EligibleForDeletion = true
 	status.Deprecated[1].Status = "Current"
-	_, err := Reconcile(t.Context(), fakeStatusSource{status: status}, &fakeTemporal{}, DefaultVersionLimit)
+	_, err := Reconcile(t.Context(), fakeStatusSource{status: status}, &fakeTemporal{}, DefaultVersionLimit, status.CurrentBuildID)
 	if err == nil {
 		t.Fatal("Reconcile accepted a blocked target without a safe draining predecessor")
 	}
@@ -149,7 +161,7 @@ func TestRetentionSurfacesListAndUpdateFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			status := blockedStatus()
 			status.Deprecated = status.Deprecated[1:]
-			if _, err := Reconcile(t.Context(), fakeStatusSource{status: status}, tc.temporal, DefaultVersionLimit); err == nil {
+			if _, err := Reconcile(t.Context(), fakeStatusSource{status: status}, tc.temporal, DefaultVersionLimit, status.CurrentBuildID); err == nil {
 				t.Fatal("Reconcile hid a Temporal failure")
 			}
 		})
