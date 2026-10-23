@@ -36,8 +36,8 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
 	{field: "Claims", issue: "#7808", present: func(p controlPlanes) bool { return p.Claims != nil }},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }},
-	{field: "Journal", issue: "#7809", present: func(p controlPlanes) bool { return p.Journal != nil }},
-	{field: "RunJournal", issue: "#7809", present: func(p controlPlanes) bool { return p.RunJournal != nil }},
+	{field: "Journal", issue: "#7818", present: func(p controlPlanes) bool { return p.Journal != nil }},
+	{field: "RunJournal", issue: "#7818", present: func(p controlPlanes) bool { return p.RunJournal != nil }},
 	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }},
 }
