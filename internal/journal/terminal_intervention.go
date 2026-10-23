@@ -32,6 +32,8 @@ type TerminalInterventionReceipt struct {
 	Resumed   bool   `json:"resumed"`
 	Duplicate bool   `json:"duplicate"`
 	Cancelled bool   `json:"cancelled,omitempty"`
+	// CommittedPrefix counts original intent events preceding its cancellation.
+	CommittedPrefix int `json:"committedPrefix,omitempty"`
 }
 
 // TerminalInterventionBackend is intentionally separate from ordinary append.

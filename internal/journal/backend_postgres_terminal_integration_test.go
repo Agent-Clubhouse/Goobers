@@ -267,7 +267,7 @@ func TestPostgresTerminalInterventionCancellationBlocksLateRetry(t *testing.T) {
 				{Type: journal.EventRunFinished, Status: "aborted", Reason: "operator cancellation", Runner: map[string]any{"emitKey": key.RunID + "-abort"}},
 			}
 			receipt, err := backend.CommitTerminalIntervention(t.Context(), h, o, cancel)
-			if err != nil || !receipt.Cancelled || receipt.Seq != uint64(prefix+4) {
+			if err != nil || !receipt.Cancelled || receipt.CommittedPrefix != prefix || receipt.Seq != uint64(prefix+4) {
 				t.Fatalf("cancel=%+v err=%v", receipt, err)
 			}
 			if _, err := backend.CommitTerminalIntervention(t.Context(), h, o, original); !errors.Is(err, journal.ErrInterventionCancelled) {

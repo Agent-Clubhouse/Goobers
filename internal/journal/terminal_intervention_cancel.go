@@ -97,7 +97,7 @@ func (c *TerminalInterventionCheck) cancellationReceipt() TerminalInterventionRe
 	if resumed {
 		segment++
 	}
-	return TerminalInterventionReceipt{Segment: segment, Resumed: resumed, Cancelled: true}
+	return TerminalInterventionReceipt{Segment: segment, Resumed: resumed, Cancelled: true, CommittedPrefix: c.matched}
 }
 
 func (c *TerminalInterventionCheck) remainingCancellation() (int, TerminalInterventionReceipt, error) {

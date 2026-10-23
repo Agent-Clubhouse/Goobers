@@ -55,7 +55,7 @@ func TestTerminalInterventionCancellationRecoversFilePrefix(t *testing.T) {
 					}
 				}
 				receipt, err := run.CommitTerminalIntervention(cancel)
-				if err != nil || !receipt.Cancelled || receipt.Seq != uint64(prefix+4) || run.Phase() != PhaseAborted {
+				if err != nil || !receipt.Cancelled || receipt.CommittedPrefix != prefix || receipt.Seq != uint64(prefix+4) || run.Phase() != PhaseAborted {
 					t.Fatalf("cancel=%+v phase=%s err=%v", receipt, run.Phase(), err)
 				}
 				if _, err := run.CommitTerminalIntervention(original); !errors.Is(err, ErrInterventionCancelled) {
