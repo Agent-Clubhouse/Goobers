@@ -13,10 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -35,6 +35,7 @@ func postgresJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, admin)
 	database := "journal_" + strings.ToLower(rand.Text())
 	if _, err := admin.Exec(t.Context(), "CREATE DATABASE "+pgx.Identifier{database}.Sanitize()); err != nil {
 		admin.Close()
@@ -116,54 +117,14 @@ func TestJournalReaderBackendConformancePostgres(t *testing.T) {
 		config := postgresJournalConfig(t)
 		backend := postgresBackend(t, config)
 		writer := newCleanupBackend(t, backend)
-		ctx := context.Background()
-		for _, runID := range []string{"run-alpha", "run-zeta"} {
-			empty, emptyOwner, err := writer.CreateRun(ctx, journal.CreateRunRequest{
-				Identity: journal.RunIdentity{RunID: runID, Gaggle: "g", Workflow: "implementation"},
-			})
-			if err != nil {
-				return nil, err
-			}
-			if err := writer.Retire(ctx, empty, emptyOwner); err != nil {
-				return nil, err
-			}
-		}
-		handle, owner, err := writer.CreateRun(ctx, journal.CreateRunRequest{
-			Identity: journal.RunIdentity{RunID: "run-reader", Gaggle: "g", Workflow: "implementation"},
-		})
-		if err != nil {
+		if err := seedReaderBackend(writer); err != nil {
 			return nil, err
 		}
-		if _, err := writer.AppendBatch(ctx, handle, owner, []journal.Event{
-			{Type: journal.EventRunnerAnnotation, Name: "first"},
-		}); err != nil {
+		// The storage adapter injects a future envelope field after retirement.
+		// A writer that only knows today's Event cannot produce that field.
+		if _, err := config.Pool.Exec(context.Background(), `UPDATE journal.run_event SET body=$1 WHERE instance_id=$2 AND run_id='run-reader' AND seq=2`, []byte(unknownReaderRecord), config.InstanceID); err != nil {
 			return nil, err
 		}
-		ref, err := writer.RecordBlob(ctx, handle, owner, journal.BlobRecord{
-			Event: journal.Event{Type: journal.EventArtifactRecorded, Name: "blob", Integrity: apiv1.IntegrityDerived},
-			Data:  []byte("reader-blob"),
-		})
-		if err != nil {
-			return nil, err
-		}
-		_ = ref
-		if err := writer.Retire(ctx, handle, owner); err != nil {
-			return nil, err
-		}
-		instance, instanceOwner, _, err := writer.OpenInstance(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if err := writer.InstanceAppend(ctx, instance, instanceOwner, journal.Event{Type: journal.EventDaemonStarted}); err != nil {
-			return nil, err
-		}
-		if err := writer.InstanceAppend(ctx, instance, instanceOwner, journal.Event{Type: journal.EventRunnerAnnotation, Name: "second"}); err != nil {
-			return nil, err
-		}
-		if err := writer.RetireInstance(ctx, instance, instanceOwner); err != nil {
-			return nil, err
-		}
-
 		return backend, nil
 	}); err != nil {
 		t.Fatal(err)
