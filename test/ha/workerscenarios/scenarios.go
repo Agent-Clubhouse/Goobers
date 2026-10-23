@@ -10,7 +10,9 @@ import (
 )
 
 const (
-	Chaos13   = "CHAOS-13"
+	// Chaos13 identifies the worker-eviction adoption scenario.
+	Chaos13 = "CHAOS-13"
+	// Upgrade11 identifies the held-run rainbow-upgrade scenario.
 	Upgrade11 = "UPGRADE-11"
 )
 
