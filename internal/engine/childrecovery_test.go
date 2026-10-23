@@ -23,7 +23,6 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -88,10 +87,6 @@ func (h *childRecoveryHarness) start() client.WorkflowRun {
 		h.t.Fatal(err)
 	}
 	return run
-}
-
-func recoveryCustody() dispatcher.PodCustody {
-	return dispatcher.PodCustody{Namespace: "gaggle-web", Pod: "work", UID: "work-uid", Attempt: 1, Custody: true}
 }
 
 // await fails with the child's journal instead of blocking the suite when an
