@@ -74,8 +74,8 @@ CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CO
 SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 GOVULNCHECK    := $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 KUBECONFORM    := $(GO) run github.com/yannh/kubeconform/cmd/kubeconform@$(KUBECONFORM_VERSION)
-# CRD schemas for operator-owned kinds (CloudNativePG), pinned to one catalog commit.
-CRD_SCHEMA_CATALOG := https://raw.githubusercontent.com/datreeio/CRDs-catalog/501527ab9c40c827144c8f45945b25a023e344ce/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+# Vendored CRD schemas for operator-owned kinds (CloudNativePG); see the README there.
+CRD_SCHEMA_CATALOG := test/fixtures/crd-schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
 
 ## help: Show this help.
 .PHONY: help

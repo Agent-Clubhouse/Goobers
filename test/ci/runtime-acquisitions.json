@@ -235,15 +235,16 @@
   },
   {
     "id": "direct-download",
-    "what": "Pinned golangci-lint installer/release binary, checksum-verified Temporal CLI, and checksum-verified nightly kind, Helm, Calico, CNPG, Temporal chart and toxiproxy assets",
+    "what": "Pinned golangci-lint installer/release binary, checksum-verified Temporal CLI, checksum-verified Bicep CLI, and checksum-verified nightly kind, Helm, Calico, CNPG, Temporal chart and toxiproxy assets",
     "from": [
       "raw.githubusercontent.com/golangci/golangci-lint",
       "github.com/golangci/golangci-lint/releases",
       "github.com/temporalio/cli/releases v1.8.2 and release-asset redirects; SHA256 pinned in integration provisioning",
+      "github.com/Azure/bicep/releases v0.40.2 bicep-linux-x64 and release-asset redirects; SHA256 pinned in preflight provisioning",
       "github.com release assets and raw.githubusercontent.com for the versions pinned in ha-nightly.yml",
       "get.helm.sh for the Helm archive pinned in ha-nightly.yml"
     ],
-    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally unless the pinned version is already on GOPATH/bin. Exhausting the release download falls back to go install from the configured GOPROXY, which is the separately declared go-modules acquisition and no more offline than it is. Local make ci instead requires golangci-lint already on PATH. Hosted Temporal provisioning always downloads its pinned release archive; offline execution requires a preprovisioned compatible CLI and bypassing that hosted provisioning step. The HA nightly job intentionally downloads every declared asset, verifies its committed SHA256, and has no offline execution path on a fresh hosted runner.",
+    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally unless the pinned version is already on GOPATH/bin. Exhausting the release download falls back to go install from the configured GOPROXY, which is the separately declared go-modules acquisition and no more offline than it is. Local make ci instead requires golangci-lint already on PATH. Hosted Temporal provisioning always downloads its pinned release archive; offline execution requires a preprovisioned compatible CLI and bypassing that hosted provisioning step. Hosted Bicep provisioning likewise always downloads its pinned binary; locally the Bicep tests use a CLI already on PATH or from az bicep install, and skip without one unless GOOBERS_REQUIRE_BICEP is set. The HA nightly job intentionally downloads every declared asset, verifies its committed SHA256, and has no offline execution path on a fresh hosted runner.",
     "sites": [
       ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}@c09af852591b05c574b4485806c32518d0cd07e6c8aa032f9ccd48cdb95c0d0e:direct-download",
       ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1:direct-download",
@@ -252,6 +253,7 @@
       ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[4]:direct-download",
       ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[5]:direct-download",
       ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@d0b28f1e07ecd65ce1a70b467a58d2612028fa4d890228bbb6f74c866fed35f1[6]:direct-download",
+      ".github/workflows/ci.yml#preflight/Provision pinned Bicep CLI@43f70147e5a9e1b65130fac427d1a5741191453029d5f70164ecd96028965a69:direct-download",
       ".github/workflows/ci.yml#integration/Provision Temporal cancellation dependency@8c89725058a86889f0d18805d4a0bca408370956d4bb0cd7bfb157bcf87091ed:direct-download"
     ]
   },
@@ -456,12 +458,11 @@
   },
   {
     "id": "kubernetes-schemas",
-    "what": "Kubernetes and CRD JSON schemas fetched by kubeconform while validating rendered deployment resources",
+    "what": "Kubernetes JSON schemas fetched by kubeconform while validating rendered deployment resources (CRD schemas are vendored under test/fixtures/crd-schemas)",
     "from": [
-      "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/ (default schema-location template)",
-      "https://raw.githubusercontent.com/datreeio/CRDs-catalog/<pinned commit>/ (CRD_SCHEMA_CATALOG, CloudNativePG kinds)"
+      "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/ (default schema-location template)"
     ],
-    "offline": "Preprovision the complete schema set and override the Make KUBECONFORM command with the pinned tool plus -schema-location /absolute/registry/template, and CRD_SCHEMA_CATALOG with a local copy of the pinned CRD catalog. Omit default/HTTP locations to prevent fallback; missing local schemas must fail validation rather than skip resources.",
+    "offline": "Preprovision the complete schema set and override the Make KUBECONFORM command with the pinned tool plus -schema-location /absolute/registry/template. Omit default/HTTP locations to prevent fallback; missing local schemas must fail validation rather than skip resources.",
     "sites": [
       "Makefile#KUBECONFORM:kubernetes-schemas",
       "Makefile#deploy-validate::kubernetes-schemas",
