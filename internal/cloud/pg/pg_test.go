@@ -2,7 +2,7 @@ package pg
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -103,17 +103,20 @@ func (c *recordingCredential) GetToken(_ context.Context, options policy.TokenRe
 	return azcore.AccessToken{Token: "token-" + string(rune('0'+c.calls)), ExpiresOn: time.Now().Add(time.Hour)}, nil
 }
 
-func TestEntraTokenProviderWrapsCredentialFailure(t *testing.T) {
-	cause := errors.New("identity unavailable")
+func TestEntraTokenProviderRedactsCredentialFailure(t *testing.T) {
+	const marker = "identity-secret-marker"
 	config, _, err := PoolConfigs(Config{
 		TransactionURL: testURL, DirectURL: testURL,
-		TokenProvider: EntraTokenProvider{Credential: &recordingCredential{err: cause}},
+		TokenProvider: EntraTokenProvider{Credential: &recordingCredential{err: fmt.Errorf("identity unavailable: %s", marker)}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = config.BeforeConnect(t.Context(), config.ConnConfig.Copy())
-	if !errors.Is(err, cause) {
-		t.Fatalf("error = %v", err)
+	if err == nil || strings.Contains(err.Error(), marker) {
+		t.Fatalf("unsafe token error = %v", err)
+	}
+	if diagnostic := SafeDiagnostic(err); diagnostic != "Entra token acquisition failed" {
+		t.Fatalf("diagnostic = %q", diagnostic)
 	}
 }

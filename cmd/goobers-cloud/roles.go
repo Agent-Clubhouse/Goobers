@@ -159,7 +159,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	case "entra":
 		credential, err := newDefaultAzureCredential()
 		if err != nil {
-			writef(stderr, "goobers-cloud %s: initialize Entra credential: %v\n", role, err)
+			writef(stderr, "goobers-cloud %s: Entra credential initialization failed\n", role)
 			return 1
 		}
 		config.TokenProvider = cloudpg.EntraTokenProvider{Credential: credential}
@@ -171,16 +171,16 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	defer stop()
 	pools, err := newCloudPools(ctx, config)
 	if err != nil {
-		writef(stderr, "goobers-cloud %s: %v\n", role, err)
+		writef(stderr, "goobers-cloud %s: %s\n", role, cloudpg.SafeDiagnostic(err))
 		return 1
 	}
 	defer pools.Close()
 	if err := pools.Transaction.Ping(ctx); err != nil {
-		writef(stderr, "goobers-cloud %s: transaction pool: %v\n", role, err)
+		writef(stderr, "goobers-cloud %s: transaction pool: %s\n", role, cloudpg.SafeDiagnostic(err))
 		return 1
 	}
 	if err := pools.Direct.Ping(ctx); err != nil {
-		writef(stderr, "goobers-cloud %s: direct pool: %v\n", role, err)
+		writef(stderr, "goobers-cloud %s: direct pool: %s\n", role, cloudpg.SafeDiagnostic(err))
 		return 1
 	}
 	if err := serve(ctx, pools); err != nil {
