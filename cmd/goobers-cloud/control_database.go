@@ -49,7 +49,7 @@ type controlDatabaseOptions struct {
 
 func controlInstanceDatabase(instance string) (string, error) {
 	if instance == "" || strings.EqualFold(instance, "default") || strings.EqualFold(instance, "change-me") {
-		return "", errors.New("control requires a non-placeholder --instance-id or GOOBERS_INSTANCE_ID")
+		return "", errors.New("cloud role requires a non-placeholder --instance-id or GOOBERS_INSTANCE_ID")
 	}
 	return pgroles.InstanceDatabase(instance)
 }

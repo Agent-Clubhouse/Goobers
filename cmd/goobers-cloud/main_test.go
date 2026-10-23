@@ -39,6 +39,7 @@ func TestHelpGolden(t *testing.T) {
 }
 
 func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
+	t.Setenv("GOOBERS_INSTANCE_ID", "test-instance")
 	const password = "do-not-log-this-password"
 	t.Setenv("GOOBERS_DATABASE_URL", "postgres://user:"+password+"@[invalid/goobers")
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
@@ -193,5 +194,26 @@ func TestBootstrapFailsClosedWhileBackendsUnavailable(t *testing.T) {
 func TestCutoverCheckRequiresInputs(t *testing.T) {
 	if code, _, _ := runForTest("cutover", "check"); code != 2 {
 		t.Fatalf("cutover check without inputs: code=%d, want 2", code)
+	}
+}
+
+func TestDatabaseRolesRequireNonPlaceholderInstanceBeforeConnecting(t *testing.T) {
+	prior := newCloudPools
+	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
+		t.Fatal("opened database before instance validation")
+		return nil, nil
+	}
+	t.Cleanup(func() { newCloudPools = prior })
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")
+	for _, role := range []string{"api", "controller"} {
+		for _, value := range []string{"", "default", "change-me", "DEFAULT", "../bad"} {
+			t.Run(role+"/"+value, func(t *testing.T) {
+				t.Setenv("GOOBERS_INSTANCE_ID", value)
+				code, _, stderr := runForTest(role)
+				if code != 2 || !strings.Contains(stderr, "instance") {
+					t.Fatalf("code=%d error=%s", code, stderr)
+				}
+			})
+		}
 	}
 }

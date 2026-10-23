@@ -56,6 +56,7 @@ Usage: goobers-cloud api [DATABASE OPTIONS]
 Serve the cloud control-plane API.
 
 Database options:
+  --instance-id ID                 Required instance (or GOOBERS_INSTANCE_ID)
   --database-url URL               PgBouncer URL (prefer env/file for credentials)
   --database-url-file PATH         Read PgBouncer URL from a mounted Secret
   --database-direct-url URL        Direct URL (prefer env/file for credentials)
@@ -69,6 +70,7 @@ Database options:
   --experimental-physical-blob-gc  Enable storage-leased physical deletion (#7843)
 
 Environment:
+  GOOBERS_INSTANCE_ID          Required non-placeholder instance identity
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
   GOOBERS_OBJECT_STORE_URL     Azure Blob service URL
