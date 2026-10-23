@@ -333,6 +333,13 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
+	if w.logf != nil {
+		for name, info := range harnessInfo {
+			for _, warning := range info.Warnings {
+				w.logf("HARNESS %s WARNING: %s", name, warning)
+			}
+		}
+	}
 
 	scoped := l.ForGaggle(gaggle)
 	appliedConfigDigest, ok := snapshot.gaggleDigests[gaggle]

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/workflow"
@@ -25,19 +26,16 @@ func TestContainedParentCoordinatorKeepsOrdinaryPlacementEnforcement(t *testing.
 			}
 			identity := localscheduler.WorkflowIdentity{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow}
 			machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{identity: machine}
-			selections, err := engineSelections(f.cfg, f.applied, machines)
-			if err != nil {
-				t.Fatal(err)
-			}
-			selected := selections[identity]
-			if selected.UseEngine || len(selected.ContainedParentStages) != 1 || !selected.ContainedParentStages["plan"] {
+			placements := localPlacements(f.cfg, f.applied, machines)
+			selected := placements[identity]
+			if len(selected.containedParentStages) != 1 || !selected.containedParentStages["plan"] {
 				t.Fatal("parent coordinator not selected", selected)
 			}
-			caps := selected.schedulerSelfCapabilities([]string{"isolated-parent"})
+			caps := selected.parentCoordinatorHostCapabilities([]string{"isolated-parent"})
 			if slices.Contains(caps, "isolated-parent") != ordinary {
 				t.Fatal("ordinary host capability changed", caps)
 			}
-			decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, selections)
+			decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, placements)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,18 +56,44 @@ func TestContainedParentCoordinatorRequiresAuthenticatedPlacement(t *testing.T) 
 	f.cfg.API.PodTokenKeyFile = ""
 	identity := localscheduler.WorkflowIdentity{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow}
 	machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{identity: machine}
-	selections, err := engineSelections(f.cfg, f.applied, machines)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(selections[identity].ContainedParentStages) != 0 {
+	placements := localPlacements(f.cfg, f.applied, machines)
+	selected := placements[identity]
+	if selected.refusal == "" || len(selected.containedParentStages) != 0 {
 		t.Fatal("unsigned parent transport admitted")
 	}
-	decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, selections)
+	decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, placements)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decisions.Refusals[identity] == "" {
 		t.Fatal("unsupported parent fell back to the host")
+	}
+}
+
+func TestLocalPlacementsRefusesUnsupportedParentWithoutFailingAllDefinitions(t *testing.T) {
+	f := containedParentFixture(t)
+	f.applied.Gaggles[0].Spec.AdditionalRepos = []apiv1.RepoRef{{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "example",
+		Name:     "secondary",
+	}}
+	_, machine, err := childStageCatalog(f.cfg, f.applied, childworkflow.ParentSelection{
+		Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow, Stage: "plan",
+	}, childworkflow.BackendRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := localscheduler.WorkflowIdentity{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow}
+	machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{identity: machine}
+	placements := localPlacements(f.cfg, f.applied, machines)
+	if refusal := placements[identity].refusal; !strings.Contains(refusal, "additional repositories") {
+		t.Fatalf("local placement refusal = %q", refusal)
+	}
+	decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, placements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(decisions.Refusals[identity], "additional repositories") {
+		t.Fatalf("workflow refusal = %+v", decisions.Refusals)
 	}
 }

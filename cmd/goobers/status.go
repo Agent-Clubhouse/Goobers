@@ -29,13 +29,11 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/memstat"
-	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
-	"github.com/goobers/goobers/internal/workerrouting"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -207,7 +205,6 @@ func renderSchedulerStatusSignals(
 	text.WriteString(workerConfigDivergenceStatusLines(status, now))
 	text.WriteString(refusedWorkflowStatusLines(status))
 	text.WriteString(isolationMandateStatusLines(status))
-	text.WriteString(engineFallbackStatusLines(status))
 }
 
 // refusedWorkflowStatusLines surfaces the workflows the startup constraint
@@ -392,7 +389,6 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 
 type statusJSONSummary struct {
 	Recovery       *recoveryView                  `json:"recovery,omitempty"`
-	EngineFallback *readmodel.EngineFallback      `json:"engineFallback,omitempty"`
 	Lineage        *readservice.RunLineage        `json:"lineage,omitempty"`
 	RunID          string                         `json:"runId"`
 	Workflow       string                         `json:"workflow"`
@@ -409,20 +405,16 @@ type statusJSONOutput struct {
 	ClusterChecks           []clustercheck.Result                      `json:"clusterChecks,omitempty"`
 	Root                    *statusRootIdentity                        `json:"root,omitempty"`
 	QueueEligibility        *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
-	EngineFallbacks         []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
-	// EngineRouting is the Temporal worker deployment's routing verdict
-	// (#6020); omitted on instances with no engine configured.
-	EngineRouting          *workerrouting.Assessment                  `json:"engineRouting,omitempty"`
-	Warnings               []validate.CodedWarning                    `json:"warnings"`
-	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
-	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
-	StageServiceAccounts   map[string]string                          `json:"stageServiceAccounts,omitempty"`
-	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
-	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
-	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
-	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
-	JournalHealth          *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
-	StorageHealth          *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
+	Warnings                []validate.CodedWarning                    `json:"warnings"`
+	TimeToFirstPR           *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
+	DaemonRestart           *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	StageServiceAccounts    map[string]string                          `json:"stageServiceAccounts,omitempty"`
+	IsolationMandates       map[string][]string                        `json:"isolationMandates,omitempty"`
+	Maintenance             *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
+	WorkerConfigDivergence  []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
+	TelemetryRetention      *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
+	JournalHealth           *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
+	StorageHealth           *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -685,7 +677,6 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 	summaries := make([]statusJSONSummary, len(runs))
 	for i, r := range runs {
 		summaries[i] = statusJSONSummary{
-			EngineFallback: r.EngineFallback,
 			Lineage:        r.Lineage,
 			RunID:          r.RunID,
 			Workflow:       r.Workflow,
@@ -1134,7 +1125,6 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader, options
 	runs := make([]runSummary, len(summaries))
 	for i, run := range summaries {
 		runs[i] = runSummary{
-			EngineFallback: run.EngineFallback,
 			Lineage:        run.Lineage,
 			RunID:          run.ID,
 			Workflow:       run.Workflow,
@@ -1498,7 +1488,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if summaryErr := appendStatusFleetSummaryText(&text, runLoader, loadFleetSummary, textWorkflows, runs, status, err == nil, now); summaryErr != nil {
 			return "", summaryErr
 		}
-		text.WriteString(runLoader.collectionAndEngineText(ctx))
+		text.WriteString(statusCollectionUnavailableText(runLoader.collectionStatus()))
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))
@@ -1591,7 +1581,6 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			selfExecution = instance.SelfExecutionStats{}
 		}
 		var stageServiceAccounts map[string]string
-		var engineFallbacks []readmodel.EngineFallback
 		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
 		var clusterChecks []clustercheck.Result
 		var parked *statusParkedBacklog
@@ -1611,7 +1600,6 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				isolationMandates = status.IsolationMandates
 				selfExecution = status.SelfExecution
 				stageServiceAccounts = status.StageServiceAccounts
-				engineFallbacks = status.EngineFallbacks
 				workerConfigDivergence = status.WorkerConfigDivergence
 				clusterChecks = status.ClusterChecks
 			}
@@ -1628,7 +1616,6 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			ClusterChecks:           clusterChecks,
 			Root:                    optionalStatusRoot(fullStatus, l, now),
 			QueueEligibility:        optionalStatusQueueEvidence(fullStatus, sources, set.Workflows, *gaggleFilter, *workflowFilter),
-			EngineFallbacks:         engineFallbacks,
 			WorkerConfigDivergence:  workerConfigDivergence,
 			Warnings:                warnings,
 			TimeToFirstPR:           timeToFirstPR,
@@ -1650,7 +1637,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if !runsOnlyMode {
 			output.Runs = statusRecoverySummaries(l, runs, now)
 		}
-		return writeStatusJSON(stdout, stderr, runLoader.withEngineRouting(context.Background(), output))
+		return writeStatusJSON(stdout, stderr, output)
 	}
 
 	// Skipped in --json mode since the structured summary has no plain-text

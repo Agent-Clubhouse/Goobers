@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -64,10 +66,11 @@ func sweepAttempt() dispatcher.PodAttempt {
 // and every id composable from this attempt answers NotFound.
 func scheduledSweepAttempt() dispatcher.PodAttempt {
 	claimID := "goobers-e2e-nightly-2026-08-29T03:00:00Z"
+	sum := sha256.Sum256([]byte(claimID))
 	return dispatcher.PodAttempt{
 		Pod: "gbn-open-pr-e9791a88-a1", Namespace: "gaggle-e2e",
 		OwningWorkflowID: claimID + "-run",
-		RunID:            engine.RunID(claimID), Stage: "open-pr", Attempt: 1,
+		RunID:            hex.EncodeToString(sum[:16]), Stage: "open-pr", Attempt: 1,
 	}
 }
 

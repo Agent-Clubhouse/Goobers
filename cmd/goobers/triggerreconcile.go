@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/childworkflow"
-	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/startintent"
@@ -104,9 +103,6 @@ func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, rec
 	}
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.reconcileChildReceipt(ctx, record)
-	}
-	if header.Kind == enginestartintent.Kind {
-		return nil // Remote uncertainty must never enter local absence-based replay.
 	}
 	if header.Kind == startintent.Kind {
 		if s.ordinary == nil {

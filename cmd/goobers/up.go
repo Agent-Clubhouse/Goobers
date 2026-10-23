@@ -23,7 +23,6 @@ import (
 	"github.com/goobers/goobers/internal/daemonheartbeat"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -479,8 +478,6 @@ type upServices struct {
 	configSnapshots            *configmirror.Plane
 	credentialPlane            *daemonCredentialService
 	durableTriggers            *durableTriggerService
-	engineClient               *daemonEngineClient
-	engineGuards               *engineRunGuards
 	interventions              *intervention.Service
 	liveJournals               *livejournal.Writer
 	reads                      *readservice.Local
@@ -885,65 +882,23 @@ func (u *upSession) prepare() int {
 	return u.startServices()
 }
 
+func engineMovedWarning(cfg *instance.Config) string {
+	if cfg == nil || !cfg.EngineProjectionEnabled() {
+		return ""
+	}
+	return "warning: engine: is no longer executed by goobers; run the control plane with goobers-cloud"
+}
+
 func (u *upSession) startServices() int {
 	var err error
-	// One Temporal client per daemon (decision 003 step 1(e)): the projection
-	// reconciler, the DS6 claim-liveness probe and the engine-driven run
-	// guards each used to dial the frontend themselves. nil on an instance
-	// with no `engine:` configuration, which leaves every consumer below on
-	// its pre-existing no-engine path.
-	u.engineClient, err = newDaemonEngineClient(u.setup.Config)
-	if err != nil {
-		pf(u.stderr, "error: dial engine for daemon Temporal client: %v\n", err)
-		return 1
-	}
-	defer u.engineClient.Close()
-	u.engineGuards = u.engineClient.Guards()
-	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
-	// verifies a live-authored journal against a re-projection, so a source
-	// given to one and not the other turns every adopted span into a false
-	// divergence.
-	stopEngineProjection, err := startEngineProjection(u.ctx, u.l, u.setup.Config, u.setup.Definitions, u.engineClient, u.setup.Watermarks, u.setup.InstanceLog, u.setup.Telemetry, u.liveJournals, u.blobStore)
-	if err != nil {
-		return daemonStartupFailure(u.ctx, err, func() {
-			pf(u.stderr, "error: start engine projection reconciler: %v\n", err)
-		})
-	}
-	defer stopEngineProjection()
-	// #3876 (decision 005 D1, piece 6): teach the guards the run-id ->
-	// workflow-id mapping BEFORE anything reattaches, or a scheduled engine
-	// run's describe returns NotFound and the resume scan releases its
-	// concurrency slot underneath a live workflow. A failed scan is a
-	// warning, not a boot failure: it degrades to the pre-#3876 behaviour, in
-	// which direct runs still reattach correctly.
-	var openEngineRuns map[string]engine.OpenRun
-	var engineScanErr error
-	u.engineGuards, openEngineRuns, engineScanErr = attachEngineOpenRunResolver(u.ctx, u.engineClient, u.engineGuards, ownedGaggleSet(u.setup.Machines))
-	if daemonStartupWarning(u.ctx, engineScanErr, func() {
-		pf(u.stderr, "warning: %v\n", engineScanErr)
-	}) {
-		return 0
-	}
-	for _, runID := range reportOrphanedEngineRuns(u.l, u.setup.InstanceLog, openEngineRuns) {
-		pf(u.stderr, "warning: engine run %s is open on the engine with no local run directory\n", runID)
-	}
-	// #3876 (decision 005 D1): the engine starters the scheduler entries carry
-	// were built before this client and this writer existed. Attach them now,
-	// once, so a lane the selection predicate placed on the engine can
-	// actually dispatch. An unattached runtime refuses the dispatch rather
-	// than silently running remotely-pinned stages on this host.
-	if u.engineClient != nil {
-		u.setup.EngineRuntime.Attach(
-			engine.NewTemporalStarter(u.engineClient.Temporal(), u.setup.Config.EffectiveEngineConfig().TaskQueue),
-			u.engineGuards,
-			u.liveJournals,
-			time.Now,
-		)
+	if warning := engineMovedWarning(u.setup.Config); warning != "" {
+		pln(u.stderr, warning)
 	}
 	printValidationWarnings(u.stdout, u.setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(u.setup.Definitions, u.setup.Config); warning != "" {
 		pln(u.stdout, warning)
 	}
+
 	if err := handleSpansOnlyRunCleanup(u.l, *u.cleanupSpansOnlyRuns, u.stdout); err != nil {
 		pf(u.stderr, "error: clean up spans-only run directories: %v\n", err)
 		return 1
@@ -1017,7 +972,7 @@ func (u *upSession) startServices() int {
 	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", u.stderr)
 	stopSchedulerProjector := u.reads.StartSchedulerStateProjector(0)
 	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", u.stderr)
-	u.stopDaemonHealth = startDaemonHealth(u.ctx, u.root, u.currentDaemon, u.setup, u.recoveryInventory.Stats, u.reads, u.ready.Load, u.engineClient)
+	u.stopDaemonHealth = startDaemonHealth(u.ctx, u.root, u.currentDaemon, u.setup, u.recoveryInventory.Stats, u.reads, u.ready.Load)
 	defer u.stopDaemonHealth()
 	return u.configureAPI()
 }
@@ -1049,16 +1004,6 @@ func (u *upSession) configureAPI() int {
 	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithConfigAuthoringReader(configReader))
 	u.interventions = newRunInterventionService(u.l, u.setup, &u.wg, u.apiLog)
-	// #3883 (decision 005 R8): give the intervention surface a second
-	// destination. Runner-driven runs keep the in-process path untouched;
-	// engine-driven ones, which every verb refused outright since #3847, are
-	// now answered by the workflow that owns them over the versioned HITL
-	// protocol. Attached after the open-run scan so a SCHEDULED engine run —
-	// whose workflow id is not its run id — is addressable; a daemon with no
-	// engine client attaches nothing and keeps the refusal verbatim.
-	if deliverer := u.engineClient.HITLDeliverer(u.engineGuards); deliverer != nil {
-		u.interventions.AttachHITLDeliverer(deliverer)
-	}
 	// The write planes (#3509, distributed-state-and-coordination.md §7):
 	// claims over the same ledger + flock the CLI claimants use, triggers
 	// through the same scheduler path the pending-triggers sweep dispatches,
@@ -1139,11 +1084,6 @@ func (u *upSession) configureAPI() int {
 	u.recoverExpiredClaims = func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 		return recoverClaims(u.l, u.setup.InstanceLog, now, u.interventions.Active, u.claimRecoveryGate)
 	}
-	// The run-control plane routes local runs through the pending-cancels
-	// sweep's live Runner path and retained engine runs through CancelWorkflow.
-	// Only the local path uses the slot release attached below; the engine
-	// releases its slot when its existing settlement path observes completion.
-	u.cancelPlane.engine = newDaemonEngineCancelService(u.l, u.setup.Interventions, u.engineClient, u.engineGuards, u.setup.InstanceLog)
 	claimPlane := newDaemonClaimService(u.l, u.setup.InstanceLog, u.recoverExpiredClaims)
 	if err := claimPlane.initializeMergeLock(); err != nil {
 		claimPlane.close()
@@ -1152,13 +1092,12 @@ func (u *upSession) configureAPI() int {
 	u.recoverExpiredClaims = claimPlane.recover
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
 	claimPlane.markerRelease = u.releaseProviderClaimMarker
-	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(u.engineClient.Temporal(), surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
+	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(nil, surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
 	// Local parent admission requires the existing explicit workflow preview opt-in.
 	u.credentialPlane.installTrustedLocalChildren(u.liveJournals)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
 	journalService.AttachReads(u.reads)
 	journalService.definitions = u.setup.Interventions
-	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	u.apiHandlerOpts = append(u.apiHandlerOpts,
 		httpapi.WithInterventions(u.interventions),
@@ -1331,7 +1270,7 @@ func (u *upSession) recoverClaims() int {
 	// leaves it closed and refuses startup: an expired lease is claimable
 	// even with reaping gated, so crash resume must not execute without it.
 	var closeClaimLiveness func()
-	u.claimLiveness, closeClaimLiveness, err = buildClaimLivenessProbe(u.setup.Config, u.engineClient, u.setup.RunnerRegistry.RunIDs)
+	u.claimLiveness, closeClaimLiveness, err = buildClaimLivenessProbe(u.setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(u.stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
@@ -1578,7 +1517,7 @@ func (u *upSession) startScheduler() int {
 	}
 	u.stalledSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "stalled_run_sweep_failed")
 	drainedDowntime, hostSuspensions := readSweepDowntime(u.setup.InstanceLog, u.stderr)
-	sweepDeps := stalledSweepDependencies(u.setup, drainedDowntime, hostSuspensions, u.liveJournals)
+	sweepDeps := stalledSweepDependencies(u.setup, drainedDowntime, hostSuspensions)
 	u.sweepStalled = func(now time.Time, recoveryRunDirs ...[]string) error {
 		// Observe first, so a suspension that just ended is credited by the
 		// sweep that would otherwise read it as run time or silence.
@@ -1588,7 +1527,6 @@ func (u *upSession) startScheduler() int {
 			u.l,
 			u.setup.RunnerRegistry,
 			u.setup.LegacyRunner,
-			u.engineGuards,
 			u.setup.InstanceLog,
 			sweepDeps,
 			u.setup.TerminalNotifier,
@@ -1693,7 +1631,7 @@ func (u *upSession) recoverRuns() int {
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	u.resumeResult, err = resumeStartupRuns(u.ctx, u.l, u.setup, u.engineGuards, u.sched, &u.wg, u.recoveryRunDirs, u.tracker, u.stdout)
+	u.resumeResult, err = resumeStartupRuns(u.ctx, u.l, u.setup, u.sched, &u.wg, u.recoveryRunDirs, u.tracker, u.stdout)
 	if err != nil {
 		return daemonStartupFailure(u.ctx, err, func() {
 			pf(u.stderr, "error: %v\n", err)
@@ -2433,7 +2371,7 @@ func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDown
 	return cleanDaemonDowntime(events), hostsuspend.NewLedger(log, hostsuspend.FromEvents(events))
 }
 
-func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, hostSuspensions *hostsuspend.Ledger, live *livejournal.Writer) *stalledSweepDeps {
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, hostSuspensions *hostsuspend.Ledger) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
@@ -2456,7 +2394,6 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
 		DrainedDowntime:        drainedDowntime,
 		HostSuspensions:        hostSuspensions,
-		CloseEngineRun:         closeTerminatedEngineRun(live),
 	}
 }
 

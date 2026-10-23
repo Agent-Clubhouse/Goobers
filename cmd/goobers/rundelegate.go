@@ -195,10 +195,6 @@ const (
 // use. Before this was atomic, os.CreateTemp minted the request file already
 // named *.request.json, so a sweep landing between create and write read empty
 // bytes and failed the delegation.
-func writeTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workflow string) (requestID string, err error) {
-	return writeTriggerRequestContextOptions(ctx, schedulerDir, gaggle, workflow, false)
-}
-
 func writeTriggerRequestContextOptions(ctx context.Context, schedulerDir, gaggle, workflow string, force bool) (requestID string, err error) {
 	createdAt, deadline := triggerRequestLifetime(ctx, triggerDelegationTimeout)
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
@@ -287,22 +283,6 @@ func triggerDelegateFileProtocol() delegateFileProtocol {
 // timeout — not an indefinite wait — bounds the case where no live daemon is
 // actually picking requests up (e.g. it exited between this process
 // observing up.lock held and writing its request).
-func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (runID string, err error) {
-	for {
-		resp, err := pollTriggerResponseEvent(ctx, schedulerDir, requestID, timeout, false)
-		if err != nil {
-			return "", err
-		}
-		if resp.State == triggerResponseQueued {
-			continue
-		}
-		if resp.Error != "" {
-			return "", errors.New(resp.Error)
-		}
-		return resp.RunID, nil
-	}
-}
-
 func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID string, timeout time.Duration, withdrawOnTimeout bool) (triggerResponse, error) {
 	respPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+responseSuffix)
 	ackPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+ackSuffix)

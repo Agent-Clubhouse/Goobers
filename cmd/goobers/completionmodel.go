@@ -316,27 +316,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"service task-status": {
 		{name: "json", desc: "Emit JSON"},
 	},
-	"engine-start": {
-		{name: "gaggle", takesArg: true, desc: "Gaggle owning the workflow"},
-		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
-		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
-		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
-		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key (requires --direct)"},
-		{name: "direct", desc: "Dispatch straight to Temporal instead of through the running daemon"},
-		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
-	},
-	"engine-queues": {
-		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
-		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
-		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
-		{name: "timeout", takesArg: true, desc: "Bound on the whole describe"},
-		{name: "json", desc: "Emit JSON"},
-	},
-	"engine-project": {
-		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
-		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
-		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
-	},
 	"worker": {
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},

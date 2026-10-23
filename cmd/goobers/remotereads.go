@@ -447,7 +447,7 @@ func remoteStatusRuns(ctx context.Context, reads *remoteRuns, options statusOpti
 		}
 		pages++
 		for _, run := range page.Runs {
-			summary := runSummary{EngineFallback: run.EngineFallback, RunID: run.ID, Workflow: run.Workflow, Gaggle: run.Gaggle, Phase: run.Phase, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt, Operator: run.Operator, Lineage: run.Lineage}
+			summary := runSummary{RunID: run.ID, Workflow: run.Workflow, Gaggle: run.Gaggle, Phase: run.Phase, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt, Operator: run.Operator, Lineage: run.Lineage}
 			if statusRunMatches(summary, options) {
 				runs = append(runs, summary)
 			}

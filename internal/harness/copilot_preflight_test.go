@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestPrepareCopilotPreflightEnvironmentCopiesOnlyStoredAuthentication(t *testing.T) {
+func TestPrepareCopilotPreflightEnvironmentPreservesStoredLoginWithoutCopying(t *testing.T) {
 	ambientHome := t.TempDir()
 	storedConfig := []byte(`{"oauthToken":"stored-login"}`)
 	if err := os.WriteFile(filepath.Join(ambientHome, copilotConfigFileName), storedConfig, 0o600); err != nil {
@@ -48,15 +48,11 @@ func TestPrepareCopilotPreflightEnvironmentCopiesOnlyStoredAuthentication(t *tes
 		t.Fatal("preflight reused the ambient Copilot home")
 	}
 	isolatedHome, ok := copilotConfigHome(env)
-	if !ok || isolatedHome != dir {
-		t.Fatalf("isolated COPILOT_HOME = %q, %v; want %q", isolatedHome, ok, dir)
+	if !ok || isolatedHome != ambientHome {
+		t.Fatalf("stored-login home = %q, %v; want %q", isolatedHome, ok, ambientHome)
 	}
-	gotConfig, err := os.ReadFile(filepath.Join(dir, copilotConfigFileName))
-	if err != nil {
-		t.Fatalf("read seeded config: %v", err)
-	}
-	if string(gotConfig) != string(storedConfig) {
-		t.Fatalf("seeded config = %q, want %q", gotConfig, storedConfig)
+	if _, err := os.Stat(filepath.Join(dir, copilotConfigFileName)); !os.IsNotExist(err) {
+		t.Fatalf("login file was copied to private home: %v", err)
 	}
 	for _, path := range []string{
 		"mcp-config.json",
@@ -69,11 +65,8 @@ func TestPrepareCopilotPreflightEnvironmentCopiesOnlyStoredAuthentication(t *tes
 			t.Fatalf("ambient customization %q reached isolated home: %v", path, err)
 		}
 	}
-	if value, ok := environmentValue(env, copilotWorkspaceMCPEnv); ok {
-		t.Fatalf("%s remained enabled with value %q", copilotWorkspaceMCPEnv, value)
-	}
-	if value, ok := environmentValue(env, copilotPluginDirOnlyEnv); !ok || value != "true" {
-		t.Fatalf("%s = %q, %v; want true", copilotPluginDirOnlyEnv, value, ok)
+	if value, ok := environmentValue(env, copilotWorkspaceMCPEnv); !ok || value != "true" {
+		t.Fatalf("stored-login compatibility environment changed: %q, %v", value, ok)
 	}
 
 	cleanup()

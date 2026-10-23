@@ -1,12 +1,7 @@
 package main
 
-// cloudentrypointwiring_test.go covers the three cloud-mode entry points the
-// production instance runs — `goobers worker`, `goobers engine-queues`,
-// `goobers engine-project` — at the level their flag-parsing tests do not
-// reach: what the handler ASSEMBLES beneath the prologue and hands to the
-// runtime. Each handler's own components are tested elsewhere; the assembly
-// at the CLI boundary was not, which is the wiring-gap class that produced
-// #2965 (#4223).
+// cloudentrypointwiring_test.go covers the legacy `goobers worker` entry point
+// until its separate removal.
 //
 // Same shape as workerwiring_routing_test.go: real production wiring, only
 // the transport (Temporal, the cluster) substituted at the existing seams.
@@ -14,7 +9,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -306,180 +300,6 @@ func TestRunWorkerDispatchNamespaceRequiresInstance(t *testing.T) {
 	}
 	if strings.Contains(stdout.String()+stderr.String(), "do-not-print") {
 		t.Fatal("missing-instance refusal exposed URL credentials")
-	}
-}
-
-// fakeEngineQueuesClient is the dialled client engine-queues uses, answered
-// from the existing fakeQueueDescriber table.
-type fakeEngineQueuesClient struct {
-	*fakeQueueDescriber
-	closed bool
-}
-
-func (c *fakeEngineQueuesClient) Close() { c.closed = true }
-
-// engine-queues is the evidence surface for the queue-ownership check, so the
-// queue SET it describes is the whole point: the instance's workflow queue
-// plus every goobers-dispatch.* queue the runner inventory implies — derived
-// exactly as `goobers worker --dispatch-namespace` derives the queues it
-// serves. A command that described only the workflow queue would report a
-// clean answer about a set nobody checked.
-func TestRunEngineQueuesDescribesTheDerivedQueueSet(t *testing.T) {
-	root := initDemo(t)
-	declareDispatchRunner(t, root, "linux-pod")
-	dispatchQueue := dispatcher.QueuePrefix + ".example.linux-pod"
-
-	describer := &fakeQueueDescriber{pollers: map[string][]string{
-		"goobers-engine/workflow":   {"goobers-worker/v1@goobers-worker-0#1"},
-		"goobers-engine/activity":   {"goobers-worker/v1@goobers-worker-0#1"},
-		dispatchQueue + "/workflow": {"goobers-worker/v1@goobers-worker-0#1"},
-		dispatchQueue + "/activity": {"goobers-worker/v1@goobers-worker-0#1"},
-	}}
-	fakeClient := &fakeEngineQueuesClient{fakeQueueDescriber: describer}
-	var dialled client.Options
-	previousDial := dialEngineQueues
-	dialEngineQueues = func(_ context.Context, opts client.Options) (engineQueuesClient, error) {
-		dialled = opts
-		return fakeClient, nil
-	}
-	t.Cleanup(func() { dialEngineQueues = previousDial })
-
-	var stdout, stderr bytes.Buffer
-	if code := runEngineQueues([]string{"--json", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit = %d, want 0\nstderr: %s", code, stderr.String())
-	}
-	if dialled.HostPort != "127.0.0.1:7233" || dialled.Namespace != "goobers-cloud" {
-		t.Errorf("dialled %s (namespace %s), want the instance's engine config", dialled.HostPort, dialled.Namespace)
-	}
-	if !fakeClient.closed {
-		t.Error("the dialled client was not closed")
-	}
-
-	var rows []queuePollers
-	if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil {
-		t.Fatalf("decode report: %v\n%s", err, stdout.String())
-	}
-	byKey := map[string]queuePollers{}
-	for _, row := range rows {
-		byKey[row.Queue+"/"+row.Type] = row
-	}
-	for _, key := range []string{
-		"goobers-engine/workflow", "goobers-engine/activity",
-		dispatchQueue + "/workflow", dispatchQueue + "/activity",
-	} {
-		row, ok := byKey[key]
-		if !ok {
-			t.Fatalf("no row for %s; described %v", key, describer.asked)
-		}
-		if len(row.Pollers) != 1 {
-			t.Errorf("%s pollers = %v, want the worker's identity", key, row.Pollers)
-		}
-	}
-	if !byKey[dispatchQueue+"/activity"].Dispatch {
-		t.Error("the derived dispatch queue is not marked as one")
-	}
-}
-
-// A describe failure is a reportable finding, not a crash: the command exits
-// 1 with the failing queue named.
-func TestRunEngineQueuesReportsDescribeFailure(t *testing.T) {
-	root := initDemo(t)
-	previousDial := dialEngineQueues
-	dialEngineQueues = func(context.Context, client.Options) (engineQueuesClient, error) {
-		return &fakeEngineQueuesClient{fakeQueueDescriber: &fakeQueueDescriber{err: context.DeadlineExceeded}}, nil
-	}
-	t.Cleanup(func() { dialEngineQueues = previousDial })
-
-	var stdout, stderr bytes.Buffer
-	if code := runEngineQueues([]string{root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit = %d, want 1\nstderr: %s", code, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "describe task queue") {
-		t.Errorf("stderr does not name the failing describe:\n%s", stderr.String())
-	}
-}
-
-// fakeProjectionClient records the projection query engine-project issues.
-type fakeProjectionClient struct {
-	workflowIDs []string
-	closed      bool
-	err         error
-}
-
-func (c *fakeProjectionClient) QueryWorkflow(_ context.Context, workflowID, _, _ string, _ ...interface{}) (converter.EncodedValue, error) {
-	c.workflowIDs = append(c.workflowIDs, workflowID)
-	return nil, c.err
-}
-
-func (c *fakeProjectionClient) Close() { c.closed = true }
-
-// engine-project resolves the frontend from the instance's engine config,
-// opens the read-model intake beside it, and projects THE run it was asked
-// about into that gaggle's runs directory. The run id reaching the query is
-// the wiring: a handler that dropped it would project nothing while exiting
-// as if it had.
-func TestRunEngineProjectWiresRunIDAndInstanceIntoTheProjection(t *testing.T) {
-	root := initDemo(t)
-	declareDispatchRunner(t, root, "linux-pod")
-
-	fakeClient := &fakeProjectionClient{err: context.DeadlineExceeded}
-	var dialled client.Options
-	previousDial := dialEngineProject
-	dialEngineProject = func(_ context.Context, opts client.Options) (engineProjectClient, error) {
-		dialled = opts
-		return fakeClient, nil
-	}
-	t.Cleanup(func() { dialEngineProject = previousDial })
-
-	var stdout, stderr bytes.Buffer
-	code := runEngineProject([]string{"--gaggle", "example", "run-4223", root}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("exit = %d, want 1 (the projection query failed)\nstderr: %s", code, stderr.String())
-	}
-	if dialled.HostPort != "127.0.0.1:7233" || dialled.Namespace != "goobers-cloud" {
-		t.Errorf("dialled %s (namespace %s), want the instance's engine config", dialled.HostPort, dialled.Namespace)
-	}
-	if !slices.Contains(fakeClient.workflowIDs, "run-4223") {
-		t.Errorf("queried workflow ids = %v, want the run id the command was given", fakeClient.workflowIDs)
-	}
-	if !fakeClient.closed {
-		t.Error("the dialled client was not closed")
-	}
-	if !strings.Contains(stderr.String(), "run-4223") {
-		t.Errorf("stderr does not name the run:\n%s", stderr.String())
-	}
-	// The read-model intake is opened from the instance layout, which is what
-	// makes a projected run observable to the read model.
-	if _, err := os.Stat(instance.NewLayout(root).IntakeDB()); err != nil {
-		t.Errorf("read-model intake not opened under the instance: %v", err)
-	}
-}
-
-// The dispatch prologue: --gaggle is required, and an unloadable instance is a
-// config error, not a dial attempt.
-func TestRunEngineProjectUsageAndConfigErrors(t *testing.T) {
-	previousDial := dialEngineProject
-	dialEngineProject = func(context.Context, client.Options) (engineProjectClient, error) {
-		t.Error("temporal was dialled despite a prologue refusal")
-		return nil, context.Canceled
-	}
-	t.Cleanup(func() { dialEngineProject = previousDial })
-
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "missing gaggle", args: []string{"run-4223"}},
-		{name: "no run id", args: []string{"--gaggle", "example"}},
-		{name: "no instance", args: []string{"--gaggle", "example", "run-4223", t.TempDir()}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			if code := runEngineProject(tc.args, &stdout, &stderr); code != 2 {
-				t.Fatalf("exit = %d, want 2\nstderr: %s", code, stderr.String())
-			}
-		})
 	}
 }
 

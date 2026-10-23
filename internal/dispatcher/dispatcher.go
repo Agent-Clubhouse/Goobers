@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // Defaults for Config fields left zero. Each is a named constant so a
@@ -496,6 +497,10 @@ type Attempt struct {
 	// (agentickit.Kit.ReviewRequiresDiff), never the pod spec. Meaningless
 	// without Review.
 	ReviewRequiresDiff bool
+	// UsageAllowance is the trusted remaining token/cost budget for this
+	// physical attempt. Nil is the legacy/unlimited contract; explicit zero
+	// fields mean exhausted and must prevent harness start.
+	UsageAllowance *usageallowance.Allowance
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.

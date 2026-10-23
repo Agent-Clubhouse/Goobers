@@ -116,7 +116,6 @@ func resumeStartupRuns(
 	ctx context.Context,
 	l instance.Layout,
 	setup *schedulerSetup,
-	guards *engineRunGuards,
 	sched *localscheduler.Scheduler,
 	wg *sync.WaitGroup,
 	recoveryRunDirs []string,
@@ -128,7 +127,7 @@ func resumeStartupRuns(
 	err = runStartupPhase(stdout, tracker, "crash-resume", target, func() error {
 		var resumeErr error
 		outcome, resumeErr = resumeInterruptedRunsWithRunners(
-			ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, guards,
+			ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry,
 			setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog,
 			setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled,
 			wg, func(seen resumeOutcome) {

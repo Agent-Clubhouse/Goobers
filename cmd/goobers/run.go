@@ -293,8 +293,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	// run's stale-looking lease, so renewal must run before any
 	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
 	// recover-at-setup behavior.
-	claimRecovery := newOneShotClaimRecovery(l)
-	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -326,10 +325,6 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 			}
 		}
 	}()
-	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 
 	matches := 0
 	gaggle := target.Gaggle
@@ -881,20 +876,6 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	// `run abort` appends a terminal event straight into the run's own
-	// journal. On an engine-driven run that is a forgery: the workflow keeps
-	// executing on the engine and keeps emitting into the journal this
-	// command just declared finished. So it does not abort one — it asks the
-	// ENGINE to cancel the workflow (#3877), and the engine writes the run's
-	// terminal itself. Nothing in this process touches that journal.
-	//
-	// An already-terminal engine run is NOT routed here — it falls through to
-	// the terminal guard below, which answers "run %s is already terminal".
-	// There is no workflow left to cancel, and pointing the operator at one
-	// that has finished is the same class of misleading answer.
-	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
-		return runEngineDrivenCancel(l, identity, "run abort", stdout, stderr)
-	}
 	runLayout := l
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
@@ -1156,17 +1137,6 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
-	}
-	// `run cancel` asks the daemon to stop a run it is executing in-process.
-	// It never is for an engine-driven run — so the cancellation goes to the
-	// ENGINE instead (#3877), where the run actually executes. This is
-	// deliberately NOT gated on a live daemon: the daemon is not the thing
-	// driving the run, and requiring one would leave an engine run
-	// unstoppable during exactly the outage an operator most wants to stop it
-	// in. As with abort, an already-terminal run gets the accurate "already
-	// terminal" answer from the guard below instead.
-	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
-		return runEngineDrivenCancel(l, identity, "run cancel", stdout, stderr)
 	}
 	// Event-log-first terminal guard (#242), matching `run abort`: a run that
 	// already finished has nothing live to cancel.

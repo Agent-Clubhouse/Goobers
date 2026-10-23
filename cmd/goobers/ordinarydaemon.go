@@ -19,12 +19,10 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 	if s.Generations == nil || s.OrdinaryRuntime == nil || triggers == nil {
 		return errors.New("ordinary durable admission unavailable")
 	}
-	triggers.directEngine = directEngineService(layout, triggers.queue, s.Config)
 	catalog := &ordinaryStartCatalog{generation: s.ExecutionGeneration, entries: append([]localscheduler.WorkflowEntry(nil), s.Entries...), store: s.Generations.Store}
 	s.OrdinaryCatalog = catalog
-	engine := s.EngineRuntime
 	build := func(ctx context.Context, target startintent.Target) (startintent.Prepared, error) {
-		return s.OrdinaryRuntime(ctx, target, engine)
+		return s.OrdinaryRuntime(ctx, target)
 	}
 	s.SourceStarts = &startintent.Sources{Queue: triggers.queue, Build: build, Acquire: func(ctx context.Context, target startintent.Target) (func(), error) {
 		_, lease, err := s.Generations.Store.Acquire(ctx, target.ConfigGeneration)

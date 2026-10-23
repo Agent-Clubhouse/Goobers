@@ -10,9 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/blobstore"
-	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/configgeneration"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -270,52 +268,4 @@ func retainOptionalExecutionGeneration(layout instance.Layout, retainers []*conf
 		return layout, "", nil
 	}
 	return retainExecutionGeneration(context.Background(), layout, retainer)
-}
-
-func pinnedDirectEngineInput(ctx context.Context, layout instance.Layout, cfg *instance.Config, gaggle, workflowName, dedupe string, liveJournal bool) (engine.RunInput, func(), error) {
-	owner, err := layout.EnsureIdentity(ctx)
-	if err != nil {
-		return engine.RunInput{}, nil, err
-	}
-	store, err := executionGenerationStore(layout)
-	if err != nil {
-		return engine.RunInput{}, nil, err
-	}
-	store.DurablePins = executionGenerationPinsReader(instance.NewLayout(layout.Root))
-	archive, generation, err := configgeneration.CaptureForInstance(ctx, layout.ConfigDir(), owner)
-	if err != nil {
-		return engine.RunInput{}, nil, err
-	}
-	directory, lease, err := store.KeepExternallyOwned(ctx, archive, generation)
-	if err != nil {
-		return engine.RunInput{}, nil, err
-	}
-	release := func() { _ = lease.Release() }
-	input, err := engineInputFromGeneration(directory, cfg, gaggle, workflowName, dedupe, owner, generation, liveJournal)
-	if err != nil {
-		release()
-		return engine.RunInput{}, nil, err
-	}
-	return input, release, nil
-}
-func engineInputFromGeneration(directory string, cfg *instance.Config, gaggle, workflowName, dedupe, owner, generation string, liveJournal bool) (engine.RunInput, error) {
-	set, report, err := loadConfigDirectory(directory)
-	if err != nil {
-		return engine.RunInput{}, fmt.Errorf("load pinned engine definitions: %w (%s)", err, validationIssueSummary(report))
-	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
-	registry, project, err := bootstrap.RegisterGaggleWorkflows(set, gaggle)
-	if err != nil {
-		return engine.RunInput{}, err
-	}
-	definition, found := registry.Latest(workflowName)
-	if !found {
-		return engine.RunInput{}, fmt.Errorf("pinned workflow %q is unavailable", workflowName)
-	}
-	spec, err := engineRunSpec(engineRunRequest{configGeneration: generation, instanceID: owner, cfg: cfg, set: set, gaggle: gaggle, dedupeKey: dedupe, project: project, def: definition, liveJournal: liveJournal})
-	if err != nil {
-		return engine.RunInput{}, err
-	}
-	return registry.StartInput(workflowName, spec)
 }

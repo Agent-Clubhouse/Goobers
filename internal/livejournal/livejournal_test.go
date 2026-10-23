@@ -583,17 +583,3 @@ func TestReserveParksEmitsAndRefusesOpenRuns(t *testing.T) {
 		t.Fatalf("journal ends with %s, want the released emit's stage.finished", last.Type)
 	}
 }
-
-func TestAuthoredDetectsLiveJournals(t *testing.T) {
-	w, runsDir := testWriter(t)
-	started := time.Now().UTC().Truncate(time.Second)
-	if _, err := w.Emit(context.Background(), openBatch("run-auth", started)); err != nil {
-		t.Fatal(err)
-	}
-	if !Authored(readEvents(t, runsDir, "run-auth")) {
-		t.Fatal("live journal not detected as authored")
-	}
-	if Authored([]journal.Event{{Type: journal.EventRunStarted}}) {
-		t.Fatal("keyless events must not read as live-authored")
-	}
-}

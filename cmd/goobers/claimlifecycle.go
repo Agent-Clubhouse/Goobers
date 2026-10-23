@@ -106,10 +106,8 @@ func renewLiveClaims(ctx context.Context, l instance.Layout, probe localschedule
 // renewal set is rebuilt from ledger + liveness BEFORE this reap is permitted
 // to run — while the gate is closed the pass is a no-op, so a freshly
 // restarted daemon cannot reap a live distributed run's claims in the gap
-// before renewals flow again. Nil gate (the one-shot `goobers run`/`signal`
-// paths on a pure mode-1 instance) permits, preserving their existing
-// behavior; an engine-configured one-shot passes a real gate through
-// oneShotClaimRecovery.
+// before renewals flow again. Nil gate on one-shot `goobers run`/`signal`
+// paths permits recovery, preserving their local behavior.
 func recoverClaims(
 	l instance.Layout,
 	log *journal.InstanceLog,
