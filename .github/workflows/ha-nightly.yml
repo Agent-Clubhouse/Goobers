@@ -95,6 +95,43 @@ jobs:
           HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
         run: go run ./test/ha/kind/cmd/nightly run
 
+      # HA-P3-20: apply the goobers-cloud reference to the same kind cluster.
+      # Gated until the combined `control` role and the `sleep` subcommand
+      # (#7850) are in the tree, so this stays a no-op before they land.
+      - name: Detect goobers-cloud control role
+        id: cloud
+        run: |
+          if grep -q 'name: "control"' cmd/goobers-cloud/main.go && grep -q 'name: "sleep"' cmd/goobers-cloud/main.go; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=cloud reference skipped::goobers-cloud control role not present yet"
+          fi
+
+      - name: Apply goobers-cloud reference and check rollout
+        if: ${{ steps.cloud.outputs.ready == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl -n goobers-temporal exec temporal-postgres-1 -c postgres -- \
+            psql -v ON_ERROR_STOP=1 -c 'CREATE DATABASE goobers_cloud OWNER temporal'
+          secrets="$(mktemp -d)"
+          trap 'rm -rf "$secrets"' EXIT
+          chmod 700 "$secrets"
+          pw="$(kubectl -n goobers-temporal get secret temporal-postgres-app -o jsonpath='{.data.password}' | base64 -d)"
+          printf 'postgres://temporal:%s@temporal-postgres-rw.goobers-temporal.svc:5432/goobers_cloud?sslmode=require' "$pw" > "$secrets/url"
+          cp "$secrets/url" "$secrets/direct-url"
+          kubectl create namespace goobers-cloud
+          kubectl -n goobers-cloud create secret generic goobers-cloud-database \
+            --from-file=url="$secrets/url" --from-file=direct-url="$secrets/direct-url"
+          # Outside Argo the PreSync hook is just a Job: apply everything, then
+          # require the Job to complete before checking the control rollout.
+          kubectl apply -k test/ha/kind/cloud-reference
+          kubectl -n goobers-cloud wait --for=condition=complete job/goobers-cloud-migrate --timeout=10m
+          kubectl -n goobers-cloud rollout status deployment/goobers-control --timeout=5m
+          kubectl -n goobers-cloud wait --for=condition=Ready pod -l app.kubernetes.io/name=goobers-control --timeout=2m
+          kubectl -n goobers-cloud get pdb goobers-control
+
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}
         run: |

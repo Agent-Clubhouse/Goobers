@@ -198,14 +198,15 @@ func TestDeployReferenceTemporalHAValues(t *testing.T) {
 	if v.Web["replicaCount"] != float64(2) {
 		t.Fatalf("web replicaCount = %v", v.Web["replicaCount"])
 	}
-	cfg := v.Server["config"].(map[string]any)
-	if cfg["numHistoryShards"] != float64(512) {
-		t.Fatalf("numHistoryShards = %v, want 512", cfg["numHistoryShards"])
+	persistence := v.Server["config"].(map[string]any)["persistence"].(map[string]any)
+	if persistence["numHistoryShards"] != float64(512) {
+		t.Fatalf("numHistoryShards = %v, want 512", persistence["numHistoryShards"])
 	}
 	for _, store := range []string{"default", "visibility"} {
-		sql := cfg["persistence"].(map[string]any)[store].(map[string]any)["sql"].(map[string]any)
-		if sql["user"] != "temporal_app" || sql["port"] != float64(5432) {
-			t.Fatalf("%s store must use temporal_app on direct 5432, got %v/%v", store, sql["user"], sql["port"])
+		sql := persistence["datastores"].(map[string]any)[store].(map[string]any)["sql"].(map[string]any)
+		addr, _ := sql["connectAddr"].(string)
+		if sql["user"] != "temporal_app" || !strings.HasSuffix(addr, ":5432") {
+			t.Fatalf("%s store must use temporal_app on direct 5432, got %v/%v", store, sql["user"], addr)
 		}
 	}
 }
