@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/generationpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/objstore"
+	"github.com/goobers/goobers/internal/cloud/startpin"
 )
 
 // constructConfiguration composes the control role's single configuration owner:
@@ -32,7 +33,7 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	if err != nil {
 		return err
 	}
-	configuration, err := cloudconfig.NewDirConfiguration(readiness.Assess, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID})
+	configuration, err := cloudconfig.NewDirConfiguration(readiness.Assess, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID, Pins: startpin.Compute})
 	if err != nil {
 		return err
 	}
