@@ -123,9 +123,9 @@ type SurrenderedOutboxFile struct {
 }
 
 // SurrenderContractForOutbox keeps ordinary v2 surrenders readable by an N-1
-// worker and opts into v3 only when the new manifest is present.
-func SurrenderContractForOutbox(files []SurrenderedOutboxFile) int {
-	if len(files) > 0 {
+// worker and opts into v3 whenever an outbox declaration must be acknowledged.
+func SurrenderContractForOutbox(declared bool) int {
+	if declared {
 		return SurrenderContractV3
 	}
 	return SurrenderContractV2
@@ -145,6 +145,9 @@ type SurrenderedResult struct {
 	// Outbox is the path-preserving manifest of declared files already
 	// uploaded under Digest. Only v3 writers may populate it.
 	Outbox []SurrenderedOutboxFile `json:"outbox,omitempty"`
+	// OutboxExported acknowledges that the v3 supervisor evaluated the pinned
+	// declaration, including the valid empty-export case.
+	OutboxExported bool `json:"outboxExported,omitempty"`
 	// ChildWorkspaceDigest names the bounded child output carrier. The host
 	// verifies its contract and waits for exact pod writer termination before
 	// importing its tree. Ordinary workspace delta semantics do not apply.
@@ -245,7 +248,7 @@ func (r SurrenderedResult) Validate() error {
 			return fmt.Errorf("dispatcher: invalid observed usage")
 		}
 	}
-	if err := validateSurrenderedOutboxManifest(version, r.Outbox); err != nil {
+	if err := validateSurrenderedOutboxManifest(version, r.Outbox, r.OutboxExported); err != nil {
 		return err
 	}
 	if err := r.Result.Validate(); err != nil {
@@ -269,9 +272,12 @@ func (r SurrenderedResult) Validate() error {
 	return nil
 }
 
-func validateSurrenderedOutboxManifest(version int, files []SurrenderedOutboxFile) error {
-	if version < SurrenderContractV3 && len(files) > 0 {
+func validateSurrenderedOutboxManifest(version int, files []SurrenderedOutboxFile, exported bool) error {
+	if version < SurrenderContractV3 && (len(files) > 0 || exported) {
 		return fmt.Errorf("dispatcher: outbox manifest requires surrender contract version %d", SurrenderContractV3)
+	}
+	if len(files) > 0 && !exported {
+		return errors.New("dispatcher: outbox manifest is not acknowledged as exported")
 	}
 	if len(files) > journal.MaxOutboxFilesPerAttempt {
 		return fmt.Errorf("dispatcher: outbox manifest exceeds %d files", journal.MaxOutboxFilesPerAttempt)

@@ -94,6 +94,7 @@ func TestSurrenderContractAcceptsCurrentAndPreviousVersions(t *testing.T) {
 		}},
 		{name: "v3 outbox", mutate: func(result *SurrenderedResult) {
 			result.ContractVersion = SurrenderContractV3
+			result.OutboxExported = true
 			result.Outbox = []SurrenderedOutboxFile{{
 				RelPath: "reports/result.json",
 				Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -129,6 +130,7 @@ func TestSurrenderContractAcceptsCurrentAndPreviousVersions(t *testing.T) {
 func TestOldWorkerIgnoresOutboxManifest(t *testing.T) {
 	current := SurrenderedResult{
 		ContractVersion: SurrenderContractV3,
+		OutboxExported:  true,
 		Outbox: []SurrenderedOutboxFile{{
 			RelPath: "reports/result.json",
 			Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -152,10 +154,10 @@ func TestOldWorkerIgnoresOutboxManifest(t *testing.T) {
 }
 
 func TestSurrenderContractForOutboxPreservesNMinusOneWithoutManifest(t *testing.T) {
-	if got := SurrenderContractForOutbox(nil); got != SurrenderContractV2 {
+	if got := SurrenderContractForOutbox(false); got != SurrenderContractV2 {
 		t.Fatalf("no-manifest version=%d, want v2", got)
 	}
-	if got := SurrenderContractForOutbox([]SurrenderedOutboxFile{{RelPath: "report"}}); got != SurrenderContractV3 {
+	if got := SurrenderContractForOutbox(true); got != SurrenderContractV3 {
 		t.Fatalf("manifest version=%d, want v3", got)
 	}
 }

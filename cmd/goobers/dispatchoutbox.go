@@ -23,10 +23,14 @@ func stageMetricsAndCaptureOutbox(ctx context.Context, exitCode int, eligible bo
 
 func podStageScrubberAndCaptureOutbox(ctx context.Context, creds []dispatcher.MintedCredential, scheme string) journal.Scrubber {
 	scrubber := podStageScrubber(creds, scheme)
+	capturePodOutboxScrubber(ctx, scrubber)
+	return scrubber
+}
+
+func capturePodOutboxScrubber(ctx context.Context, scrubber journal.Scrubber) {
 	if capture, ok := ctx.Value(declaredStageOutboxCaptureKey{}).(*declaredStageOutboxCapture); ok {
 		capture.scrubber = scrubber
 	}
-	return scrubber
 }
 
 func publishPodOutbox(ctx context.Context, scrubber journal.Scrubber) ([]dispatcher.SurrenderedOutboxFile, error) {

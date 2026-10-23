@@ -830,7 +830,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 }
 
 func validateSurrenderedTaskResult(input DispatchStageInput, attempt int, surrendered dispatcher.SurrenderedResult) error {
-	if err := validateSurrenderedOutbox(input, surrendered.Outbox); err != nil {
+	if err := validateSurrenderedOutbox(input, surrendered); err != nil {
 		return err
 	}
 	if surrendered.Result.Status == "" {
@@ -839,12 +839,22 @@ func validateSurrenderedTaskResult(input DispatchStageInput, attempt int, surren
 	return nil
 }
 
-func validateSurrenderedOutbox(input DispatchStageInput, files []dispatcher.SurrenderedOutboxFile) error {
-	if len(files) == 0 {
+func validateSurrenderedOutbox(input DispatchStageInput, surrendered dispatcher.SurrenderedResult) error {
+	files := surrendered.Outbox
+	if input.Review && (len(files) > 0 || surrendered.OutboxExported) {
+		return errors.New("engine: reviewer surrender carries task outbox files")
+	}
+	if len(input.Outbox) == 0 {
+		if surrendered.OutboxExported {
+			return errors.New("engine: surrender acknowledges an undeclared task outbox")
+		}
 		return nil
 	}
-	if input.Review {
-		return errors.New("engine: reviewer surrender carries task outbox files")
+	if surrendered.ContractVersion < dispatcher.SurrenderContractV3 {
+		return fmt.Errorf("engine: task %q declares outbox paths but the surrender writer does not support contract v%d", input.Envelope.TaskID, dispatcher.SurrenderContractV3)
+	}
+	if !surrendered.OutboxExported && !runner.IsOutboxExportFailure(surrendered.Result) {
+		return fmt.Errorf("engine: task %q declares outbox paths but the surrender does not acknowledge export", input.Envelope.TaskID)
 	}
 	declared := make([]string, 0, len(input.Outbox))
 	for _, entry := range input.Outbox {

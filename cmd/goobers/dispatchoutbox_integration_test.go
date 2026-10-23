@@ -51,7 +51,8 @@ func TestRunDispatchExecSurrendersV3OutboxManifest(t *testing.T) {
 		t.Fatalf("exit code=%d", code)
 	}
 	if surrendered.ContractVersion != dispatcher.SurrenderContractV3 ||
-		len(surrendered.Outbox) != 1 || surrendered.Outbox[0].RelPath != "report.txt" {
+		!surrendered.OutboxExported || len(surrendered.Outbox) != 1 ||
+		surrendered.Outbox[0].RelPath != "report.txt" {
 		t.Fatalf("surrendered=%+v", surrendered)
 	}
 	if _, err := os.Stat("report.txt"); err != nil {

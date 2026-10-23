@@ -121,6 +121,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: journal.ErrorInfoFor("execution_authority_ended", cause, false)}
 	}
 	stopFence()
+	outboxDeclared := strings.TrimSpace(os.Getenv(dispatcher.EnvStageOutbox)) != ""
 	var outbox []dispatcher.SurrenderedOutboxFile
 	var outboxErr error
 	if outcome.OutboxEligible {
@@ -187,10 +188,11 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
-		ContractVersion:       dispatcher.SurrenderContractForOutbox(outbox),
+		ContractVersion:       dispatcher.SurrenderContractForOutbox(outboxDeclared),
 		ObservedUsage:         outcome.ObservedUsage,
 		ObservedUsageReported: outcome.ObservedUsageReported,
 		Outbox:                outbox,
+		OutboxExported:        outboxDeclared && outcome.OutboxEligible && outboxErr == nil,
 		RecoveryAcknowledged:  true,
 		Mutations:             mutations,
 		Result:                envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
@@ -294,15 +296,15 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
 		return runAgenticStage(ctx, stdout, stderr)
 	}
-	switch strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) {
-	case executor.KindCIPoll:
-		return stageOutcome{Result: runCIPollStage(ctx, stderr), OutboxEligible: true}
-	case executor.KindExternalTelemetry:
-		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr), OutboxEligible: true}
-	}
-	var headMoved bool
 	capture := &declaredStageOutboxCapture{}
 	ctx = context.WithValue(ctx, declaredStageOutboxCaptureKey{}, capture)
+	switch strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) {
+	case executor.KindCIPoll:
+		return stageOutcome{Result: runCIPollStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: true}
+	case executor.KindExternalTelemetry:
+		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: true}
+	}
+	var headMoved bool
 	result := runDeclaredStage(ctx, stdout, stderr, &headMoved)
 	return stageOutcome{Result: result, WorkspaceHeadMoved: headMoved, OutboxScrubber: capture.scrubber, OutboxEligible: capture.eligible}
 }
@@ -552,7 +554,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *
 	case runErr != nil:
 		exitCode = -1
 	}
-	stageMetrics := stageMetricsAndCaptureOutbox(ctx, exitCode, runErr == nil && !timedOut)
+	stageMetrics := stageMetricsAndCaptureOutbox(ctx, exitCode, true)
 
 	// #4119: the result file is READ BEFORE the artifacts are emitted because
 	// it is one of them. The local executor records it (shell.go's

@@ -123,11 +123,11 @@ func runExternalTelemetryStage(ctx context.Context, stderr io.Writer) apiv1.Resu
 	}
 
 	registrar, scrubber := journal.DefaultScrubber()
-	scrub := func(s string) string { return string(scrubber.Scrub([]byte(s))) }
-	if secret != "" {
-		// Registered BEFORE anything can carry it, exactly as ci-poll's token.
-		registrar.Register([]byte(secret))
+	for _, cred := range creds {
+		registrar.Register([]byte(cred.Value))
 	}
+	capturePodOutboxScrubber(ctx, scrubber)
+	scrub := func(s string) string { return string(scrubber.Scrub([]byte(s))) }
 	if connector.Auth.Token != nil {
 		if secret == "" {
 			return failureEnvelope("credential_resolve_failed", fmt.Sprintf(

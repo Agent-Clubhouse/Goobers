@@ -168,7 +168,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	}
 
 	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
-	exec, scrubber, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
+	exec, scrubber, err := buildPodAgenticExecutor(kit, stderr, checkoutCreds, runsDir)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
 	}
