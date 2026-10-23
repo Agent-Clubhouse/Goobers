@@ -37,11 +37,16 @@ func TestIntegrationCopilotDeniesNameBasedKill(t *testing.T) {
 	t.Setenv("PATH", stubs+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
+	info, err := (&CopilotAdapter{Command: []string{"copilot"}}).Preflight(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	id, err := newHarnessSessionID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	argv := withCopilotHostSafety([]string{"copilot", "-p=", "--session-id", id, "--allow-all-tools", "--no-remote-export", "--log-dir", filepath.Join(workspace, "logs")})
+	argv := withCopilotNoRemoteExport([]string{"copilot", "-p=", "--session-id", id, "--allow-all-tools", "--log-dir", filepath.Join(workspace, "logs")}, info.Version)
+	argv = withCopilotHostSafety(argv)
 	process, _, err := startCopilotControlProcess(ctx, ExecProcessRunner{}, ProcessRequest{
 		Command: argv, Dir: workspace, Env: baseEnv(nil, nil), Timeout: time.Minute,
 	}, 1)
