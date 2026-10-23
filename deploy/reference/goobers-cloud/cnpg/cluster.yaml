@@ -8,7 +8,8 @@ metadata:
   name: goobers-pg
 spec:
   instances: 3
-  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  # Pinned by digest; bump deliberately (minor upgrades roll the instances).
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.10@sha256:6287f6497c8c7495305900b79b7aa8d0c9515fa9d3614eff81650068f4d9bacf
   primaryUpdateStrategy: unsupervised
   enablePDB: true
   postgresql:
@@ -25,10 +26,13 @@ spec:
     enablePodAntiAffinity: true
     podAntiAffinityType: required
     topologyKey: kubernetes.io/hostname
+  # One instance per zone: a zone loss must never take the primary and its
+  # only synchronous standby together. Clusters without three zones (kind)
+  # need a zone label on the nodes or an overlay that relaxes this.
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: ScheduleAnyway
+      whenUnsatisfiable: DoNotSchedule
       labelSelector:
         matchLabels:
           cnpg.io/cluster: goobers-pg

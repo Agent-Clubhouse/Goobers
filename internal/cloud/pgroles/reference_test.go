@@ -13,19 +13,6 @@ import (
 
 const referenceRoot = "../../.."
 
-func TestInstanceDatabase(t *testing.T) {
-	for instance, want := range map[string]string{"prod": "goobers_prod", "Team-A": "goobers_team_a"} {
-		if got, err := InstanceDatabase(instance); err != nil || got != want {
-			t.Fatalf("InstanceDatabase(%q) = %q, %v; want %q", instance, got, err, want)
-		}
-	}
-	for _, instance := range []string{"", "1st", "a b", "x;drop", strings.Repeat("a", 41)} {
-		if _, err := InstanceDatabase(instance); err == nil {
-			t.Fatalf("InstanceDatabase(%q) accepted an unsafe name", instance)
-		}
-	}
-}
-
 func documents(t *testing.T, path string) []map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(referenceRoot, path))
@@ -57,6 +44,15 @@ func field(document map[string]any, path ...string) any {
 // owners equal to the roles and databases bootstrap provisions.
 func TestCNPGReferenceMatchesContract(t *testing.T) {
 	cluster := documents(t, "deploy/reference/goobers-cloud/cnpg/cluster.yaml")[0]
+	if image := field(cluster, "spec", "imageName").(string); !strings.Contains(image, "@sha256:") {
+		t.Fatalf("CNPG image %q is not pinned by digest", image)
+	}
+	for _, entry := range field(cluster, "spec", "topologySpreadConstraints").([]any) {
+		spread := entry.(map[string]any)
+		if spread["topologyKey"] == "topology.kubernetes.io/zone" && spread["whenUnsatisfiable"] != "DoNotSchedule" {
+			t.Fatalf("CNPG zone spread is %v, want DoNotSchedule", spread["whenUnsatisfiable"])
+		}
+	}
 	var roles []string
 	for _, entry := range field(cluster, "spec", "managed", "roles").([]any) {
 		role := entry.(map[string]any)

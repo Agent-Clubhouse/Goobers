@@ -1,5 +1,7 @@
 # Base backups and WAL archive for the Barman Cloud plugin. The endpoint and
-# credentials are placeholders: kind points at an in-cluster S3-compatible store.
+# credentials are placeholders: kind points at an in-cluster S3-compatible store
+# over plain HTTP. Anywhere else, use an https endpoint (and endpointCA if it is
+# privately signed).
 apiVersion: barmancloud.cnpg.io/v1
 kind: ObjectStore
 metadata:
