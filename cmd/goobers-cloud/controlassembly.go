@@ -131,7 +131,7 @@ func constructEngineChildAdmissions(_ context.Context, db databaseServices, _ co
 		return errors.New("engine child admissions require the controller database")
 	}
 	admissions := childengine.Fenced{Pool: db.Pools.Transaction, InstanceID: db.InstanceID, Lease: manager, Owner: owner, Blobs: db.Blobs, Objects: db.Objects,
-		Applied: applied, Wait: childengine.MaxWait, Actor: "goobers-cloud/control", Now: time.Now}
+		Applied: applied, Wait: childengine.MaxWait, Actor: "goobers-cloud/control", Now: time.Now, Adoption: &childengine.EpochAdoption{}}
 	if err := admissions.Validate(); err != nil {
 		return fmt.Errorf("%w (control needs --object-store-url)", err)
 	}

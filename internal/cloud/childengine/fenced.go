@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,20 +32,43 @@ type Fenced struct {
 	Wait       time.Duration
 	Actor      string
 	Now        func() time.Time
+	// Adoption records the lease epoch whose predecessors' custody this
+	// replica has adopted; it is shared by every call.
+	Adoption *EpochAdoption
 }
 
 var _ engine.ChildAdmissions = Fenced{}
 
+// EpochAdoption adopts earlier epochs' child custody once per lease epoch,
+// before the first call that epoch serves.
+type EpochAdoption struct {
+	mu      sync.Mutex
+	adopted int64
+}
+
+func (a *EpochAdoption) ensure(ctx context.Context, store *acceptance.Store, epoch int64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.adopted == epoch {
+		return nil
+	}
+	if _, err := store.AdoptStaleChildCustody(ctx); err != nil {
+		return err
+	}
+	a.adopted = epoch
+	return nil
+}
+
 // Validate reports a missing dependency before the plane is served.
 func (f Fenced) Validate() error {
 	if f.Pool == nil || f.InstanceID == "" || f.Lease == nil || f.Owner == nil || f.Blobs == nil || f.Objects == nil || f.Applied == nil ||
-		f.Wait <= 0 || f.Wait > MaxWait || f.Actor == "" || f.Now == nil {
+		f.Wait <= 0 || f.Wait > MaxWait || f.Actor == "" || f.Now == nil || f.Adoption == nil {
 		return errors.New("childengine: fenced admissions are not configured")
 	}
 	return nil
 }
 
-func (f Fenced) service() (*Service, error) {
+func (f Fenced) service(ctx context.Context) (*Service, error) {
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}
@@ -58,6 +82,10 @@ func (f Fenced) service() (*Service, error) {
 	}
 	store.BindFence(f.Lease, handle)
 	store.BindChildBlobs(f.Blobs)
+	// A new epoch serves only after it owns every predecessor's custody.
+	if err := f.Adoption.ensure(ctx, store, handle.Epoch); err != nil {
+		return nil, classify(err)
+	}
 	source, err := objstore.NewGenerationSource(f.Objects, f.InstanceID, "")
 	if err != nil {
 		return nil, err
@@ -72,7 +100,7 @@ func (f Fenced) service() (*Service, error) {
 
 // Admit freezes and binds one child start under the live lease.
 func (f Fenced) Admit(ctx context.Context, in engine.ChildAdmissionInput) (engine.ChildRunBinding, error) {
-	service, err := f.service()
+	service, err := f.service(ctx)
 	if err != nil {
 		return engine.ChildRunBinding{}, err
 	}
@@ -81,7 +109,7 @@ func (f Fenced) Admit(ctx context.Context, in engine.ChildAdmissionInput) (engin
 
 // Load reads the bound manifest under the live lease.
 func (f Fenced) Load(ctx context.Context, b engine.ChildRunBinding) ([]byte, error) {
-	service, err := f.service()
+	service, err := f.service(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +118,7 @@ func (f Fenced) Load(ctx context.Context, b engine.ChildRunBinding) ([]byte, err
 
 // Cancel fences the child family under the live lease.
 func (f Fenced) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
-	service, err := f.service()
+	service, err := f.service(ctx)
 	if err != nil {
 		return err
 	}

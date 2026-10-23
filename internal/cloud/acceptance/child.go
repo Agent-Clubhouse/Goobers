@@ -117,7 +117,7 @@ func (s *Store) AcceptChild(
 			return err
 		}
 		if parentEpoch != epoch {
-			return triggerqueue.ErrTransition
+			return ErrStaleChildEpoch
 		}
 		if cancelled != nil {
 			return triggerqueue.ErrParentCancelled
