@@ -136,16 +136,21 @@ func migratedPool(t *testing.T) (*pgxpool.Pool, string) {
 
 func apply(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if err := applyErr(t, pool); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func applyErr(t *testing.T, pool *pgxpool.Pool) error {
+	t.Helper()
 	catalog, err := migrate.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (migrate.Runner{
+	return (migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: "grant-test",
 		InstanceID: "grant-test", Holder: "grant-test",
-	}).Apply(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	}).Apply(t.Context())
 }
 
 func assertPrivilegesMatch(t *testing.T, pool *pgxpool.Pool, inventory schema.Inventory) {
@@ -175,6 +180,15 @@ func assertPrivilegesMatch(t *testing.T, pool *pgxpool.Pool, inventory schema.In
 	actual := loadWritePrivileges(t, pool)
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("database privileges differ from inventory\nactual: %#v\nwant:   %#v", actual, expected)
+	}
+	// ACL rows miss inherited and owner privileges; compare what the roles
+	// can effectively do as well.
+	effective, err := schema.EffectivePrivileges(t.Context(), pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := inventory.ExpectedPrivileges(); !reflect.DeepEqual(effective, want) {
+		t.Fatalf("effective privileges differ from inventory\nactual: %v\nwant:   %v", effective, want)
 	}
 }
 
@@ -276,4 +290,106 @@ func loadWritePrivileges(t *testing.T, pool *pgxpool.Pool) map[string]bool {
 
 func privilegeKey(role, schemaName, table, operation, column string) string {
 	return role + "|" + schemaName + "." + table + "|" + operation + "|" + column
+}
+
+// The reviewer-3 probes below (R-1..R-4) are kept as regression tests. A
+// reconcile that cannot make effective privileges equal the inventory must
+// refuse the apply rather than leave extra privileges behind.
+
+func TestReconcileRefusesUninventoriedSchemaObjects(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `
+		CREATE SCHEMA journal;
+		CREATE TABLE journal.run (run_id text PRIMARY KEY, body text);
+		GRANT USAGE ON SCHEMA journal TO goobers_api;
+		GRANT ALL ON journal.run TO goobers_api`); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyErr(t, pool); err == nil || !strings.Contains(err.Error(), "journal.run has no write-path inventory entry") {
+		t.Fatalf("apply with an uninventoried journal.run = %v", err)
+	}
+}
+
+func TestReconcileRefusesInheritedPrivileges(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `GRANT pg_write_all_data TO goobers_api`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `REVOKE pg_write_all_data FROM goobers_api`) })
+	if err := applyErr(t, pool); !errors.Is(err, schema.ErrRolePrivileged) {
+		t.Fatalf("apply with goobers_api in pg_write_all_data = %v, want ErrRolePrivileged", err)
+	}
+}
+
+func TestReconcileRefusesRuntimeRoleOwnership(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `ALTER TABLE control.lease_history OWNER TO goobers_controller`); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyErr(t, pool); !errors.Is(err, schema.ErrRolePrivileged) {
+		t.Fatalf("apply with a controller-owned table = %v, want ErrRolePrivileged", err)
+	}
+}
+
+func TestReconcileRevokesExtraGrants(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `
+		GRANT SELECT (holder) ON control.lease TO goobers_api;
+		GRANT SELECT ON control.schema_migration TO PUBLIC;
+		GRANT CREATE ON SCHEMA control TO goobers_api;
+		GRANT USAGE, CREATE ON SCHEMA public TO PUBLIC`); err != nil {
+		t.Fatal(err)
+	}
+	apply(t, pool)
+	inventory, err := schema.LoadWritePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPrivilegesMatch(t, pool, inventory)
+}
+
+// TestReconcileGrantsSequenceUsage: a sequence is reconciled like a table, so
+// the role the inventory names can draw from it and no other can.
+func TestReconcileGrantsSequenceUsage(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `CREATE SEQUENCE control.reconcile_generation AS bigint`); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := schema.LoadWritePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(t, pool, inventory); err == nil || !strings.Contains(err.Error(), "control.reconcile_generation has no provisioned write-path inventory entry") {
+		t.Fatalf("reconcile with an uninventoried sequence = %v", err)
+	}
+	inventory.Sequences = append(inventory.Sequences, schema.Sequence{
+		Schema: "control", Name: "reconcile_generation", Provisioned: true, Rationale: "test", Usage: []string{"goobers_controller"},
+	})
+	if err := reconcile(t, pool, inventory); err != nil {
+		t.Fatal(err)
+	}
+	for role, allowed := range map[string]bool{"goobers_controller": true, "goobers_api": false} {
+		tx, err := pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(t.Context(), "SET LOCAL ROLE "+role+"; SELECT nextval('control.reconcile_generation')")
+		_ = tx.Rollback(context.Background())
+		if (err == nil) != allowed {
+			t.Fatalf("%s nextval = %v, want allowed=%v", role, err, allowed)
+		}
+	}
+}
+
+func reconcile(t *testing.T, pool *pgxpool.Pool, inventory schema.Inventory) error {
+	t.Helper()
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := schema.ReconcileGrants(t.Context(), tx, inventory); err != nil {
+		return err
+	}
+	return tx.Commit(t.Context())
 }
