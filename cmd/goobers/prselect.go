@@ -659,8 +659,13 @@ type prSelectSourceRequest struct {
 // the documented ADO no-op gates unreachable rather than probing unsupported
 // comment, file, or branch operations.
 func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
+	authority, err := prSelectAuthority()
+	if err != nil {
+		return nil, nil, err
+	}
+	opts := []stageProviderOption{withStageProviderCapability(authority)}
 	if repo.Provider == providers.ProviderADO {
-		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.ProviderPRWrite))
+		provider, err := newMergeReviewProvider(root, repo, true, opts...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -671,20 +676,37 @@ func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSour
 		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider), conflicts: prSelectADOConflictProvider{mergeReviewADOProvider{ADOProvider: ado}}, snapshots: ado}, nil, nil
 	}
 
-	token, err := providerToken(capability.ProviderPRWrite)
-	if err != nil {
-		return nil, nil, err
-	}
 	// Dispatch on the routed repo's own provider kind. Constructing a GitHub
 	// provider unconditionally addressed a Gitea-routed repo's selection scan
 	// to api.github.com with a Gitea credential, failing the stage with a 401
 	// github_auth_failed on a repo that has no GitHub side at all — the same
 	// defect open-pr's per-kind dispatch fixed for PR creation.
-	provider, err := remediationStageProvider(root, repo, token, true)
+	if repo.Provider == providers.ProviderGitHub {
+		opts = append(opts, withStageProviderCache())
+	}
+	provider, err := newProviderForStageSurface[remediationProvider](root, repo, false, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
 	return refCheckPRSelectSource{provider: provider}, provider, nil
+}
+
+// prSelectAuthority implements only pr-select's manifested alternative, not a
+// global capability alias. Prefer a delivered provider:pr:write; once selected,
+// its fence or authentication failure must never fall back to github:pr:write.
+// Keep the capability identity through provider construction for scheme,
+// expiry and refresh-grant lookup, rather than passing a detached raw token.
+func prSelectAuthority() (capability.Capability, error) {
+	if os.Getenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite))) != "" {
+		if _, err := providerToken(capability.ProviderPRWrite); err != nil {
+			return "", fmt.Errorf("pr-select with the delivered %s (no fallback to %s): %w", capability.ProviderPRWrite, capability.GitHubPRWrite, err)
+		}
+		return capability.ProviderPRWrite, nil
+	}
+	if _, err := providerToken(capability.GitHubPRWrite); err != nil {
+		return "", fmt.Errorf("pr-select needs %s (or %s): %w", capability.ProviderPRWrite, capability.GitHubPRWrite, err)
+	}
+	return capability.GitHubPRWrite, nil
 }
 
 // refCheckPRSelectSource is the GitHub/Gitea source: checks are resolved at a
