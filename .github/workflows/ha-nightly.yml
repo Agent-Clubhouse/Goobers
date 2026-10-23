@@ -95,6 +95,14 @@ jobs:
           HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
         run: go run ./test/ha/kind/cmd/nightly run
 
+      - name: Freeze smoke (CgroupFreeze on kind)
+        shell: bash
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: |
+          set -euo pipefail
+          go run ./test/ha/chaos/cmd/chaos freeze-smoke | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Verify chaos pending references are still open
         env:
           GH_TOKEN: ${{ github.token }}

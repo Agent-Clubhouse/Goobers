@@ -61,6 +61,7 @@
       ".github/workflows/ci.yml#windows-smoke/Build Windows validation binary:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Collect evidence:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run kind environment smoke:go-modules",
+      ".github/workflows/ha-nightly.yml#smoke/Freeze smoke (CgroupFreeze on kind):go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run chaos harness:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run chaos harness[2]:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Verify chaos pending references are still open:go-modules",
