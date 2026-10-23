@@ -243,7 +243,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			}
 		}
 		if emitErr != nil {
-			if cancelSafeStageJournal(ctx) && stopsAttemptLoop(ctx, emitErr) {
+			if cancelStopsJournalEmit(ctx, emitErr) {
 				if !completionCommitted {
 					rec.rollbackUnemitted(mark)
 				}
@@ -314,6 +314,13 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+func cancelStopsJournalEmit(
+	ctx workflow.Context,
+	err error,
+) bool {
+	return cancelSafeStageJournal(ctx) && stopsAttemptLoop(ctx, err)
 }
 
 func winningAttemptDelta(attempt int, result stageActivityResult) deltaPublication {

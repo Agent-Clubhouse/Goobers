@@ -157,13 +157,16 @@ func TestPostgresLiveJournalOperatorCancelPreservesCommittedStage(t *testing.T) 
 				if err != nil || cancelled {
 					return
 				}
-				switch info.ActivityType.Name {
-				case engine.ActRunDeterministic:
+				switch {
+				case strings.HasPrefix(
+					info.ActivityType.Name,
+					engine.ActRunDeterministic,
+				):
 					if cancelPoint == "after-executor-commit" {
 						cancelled = true
 						env.CancelWorkflow()
 					}
-				case engine.ActEmitJournal:
+				case info.ActivityType.Name == engine.ActEmitJournal:
 					emits++
 					if cancelPoint == "after-stage-finished-emit" &&
 						emits == 3 {
