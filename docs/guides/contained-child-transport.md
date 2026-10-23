@@ -161,7 +161,7 @@ Use a unique image tag such as `qualification-<commit>`, embed that same value i
 `internal/version.Version` with `go build -ldflags`, and push the image to
 `localhost:45081/goobers:<tag>`. The test retains the production `Always` pull
 policy, signature checks, namespace isolation and exact pod-UID custody checks.
-Provide the repository-pinned Temporal CLI (`v1.8.2`) through
+Provide the repository-pinned Temporal CLI (`v1.9.0`) through
 `GOOBERS_TEMPORAL_CLI`, then run:
 
 ```sh

@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/goobers/goobers/internal/engine"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // admitSelfExecution shares first-use snapshot initialization with the executor
@@ -29,7 +29,7 @@ func (w *workerSeams) admitSelfExecution(stage string) error {
 	denied := cfg.SelfExecutionDenied()
 	cfg.ObserveSelfExecution(denied)
 	if denied {
-		return &runner.SelfExecutionRefusal{Stage: stage}
+		return &runsemantics.SelfExecutionRefusal{Stage: stage}
 	}
 	return nil
 }

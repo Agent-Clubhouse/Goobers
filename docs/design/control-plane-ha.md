@@ -196,7 +196,7 @@ The seven SQLite DBs use `SetMaxOpenConns(1)` + `_txlock=immediate` + flock, so 
 
 ### 6.3 Four facts that shape the plan
 
-1. **The engine refuses 8 DSL features.** `internal/engineadmission/refusal.go:41-60,133-157` (parallels, selection, maps, child workflows, experiment, outbox), `:226-241` (remote limits) and `:172-177,243` (human gates). The comment at `:15-20` cites decision 005 R9: these "have NO engine walk implementation and are not being ported". D-1 reverses that.
+1. **At the plan baseline, the engine refused 8 DSL features.** `internal/engineadmission/refusal.go` covered parallels, selection, maps, child workflows, experiment, outbox, remote limits and human gates. D-1 reverses that baseline incrementally; remote token/cost limits now use trusted supervisor usage.
 2. **The runner cannot place stages in pods.** `DispatchOne` is the seam by which a non-engine driver would place one stage attempt in a pod, but "nothing constructs a client for it yet" (`internal/engine/dispatchone.go:14-30`). dsl-3.0 says `internal/runner` "has no gate dispatch arm and will not get one" (`docs/design/dsl-3.0.md:205-215`). A runner-driven lane executes its stages in-process on the host running the runner. That is why D-2 leaves cloud with no runner at all rather than a remote-dispatching one.
 3. **Every DSL 2.0 lane self-pins.** Pre-3.0 placement emits task-only rows and no gate rows: "a 2.0 gate cannot carry runsOn, so every 2.0 gate stays in the control plane" (`internal/workflow/placement.go:46-55`). The daemon keeps such lanes on the runner (`cmd/goobers/engineselection.go:60-130`), and child-workflow parents go through `containedParentSelection` (`:240-246`). In an engine-only cloud, **a 2.0 workflow cannot run at all**, regardless of the 8 features. This matches dsl-3.0 D14 ("2.0 is local-runner-only").
 4. **Run IDs already come from durable acceptance rows on every queued path.** Triggers (`internal/triggerqueue/store.go:131-197`: "Assigned run IDs are the random suffix of the durable acceptance ID"), source batches (schedules, webhooks, item/backlog workers, signals; `source_start.go:103-111`) and child starts (`children.go:218`). Random minting remains only on direct paths: `dispatchRunID("")` (`localscheduler/dispatchidentity.go:10-13`, via `scheduler.go:2701`), `childadmission.go:126`, `cmd/goobers/run_continue.go:168` and `runner/child_quiescence.go:32`.
@@ -294,7 +294,7 @@ A workflow that runs locally can be refused by the engine, for two independent r
 Shipped usage on `main` at the baseline:
 - The reference gaggle has 17 workflows. 16 are DSL 2.0; `quality-spot-check` is DSL 3.1 (preview).
 - `config-examples/` has 23 workflows across its gaggles, all DSL 2.0.
-- Engine-refused features declared by those 40 workflows: `spec.parallels` in 4 (`quality-sprint`, `quality-spot-check`, and `work-nomination` in both example gaggles) and `spec.parallels.selection` in 1 (`quality-spot-check`). None declares `spec.maps`, `task.childWorkflows`, `task.experiment`, `task.outbox`, remote `task.limits.maxTokens/maxCostUSD`, or a human gate.
+- At the baseline, refused features declared by those 40 workflows were `spec.parallels` in 4 (`quality-sprint`, `quality-spot-check`, and `work-nomination` in both example gaggles) and `spec.parallels.selection` in 1 (`quality-spot-check`). None declares `spec.maps`, `task.childWorkflows`, `task.experiment`, `task.outbox`, remote `task.limits.maxTokens/maxCostUSD`, or a human gate.
 
 <a id="engine-only-admission"></a>
 ### 8.2 Rule: cloud is engine-only from its first release [APPROVED, D-2]
@@ -302,7 +302,7 @@ Shipped usage on `main` at the baseline:
 - **The cloud control plane never executes stages.** `goobers-cloud` enforces `placement.selfExecution: deny` at boot; its runner inventory has no self runner; `selfExecution: allow` is not a valid cloud setting. `internal/runner` is not in `goobers-cloud`'s dependency closure (asserted by `TestGoobersCloudClosureExcludesRunner`).
 - **A workflow is cloud-eligible only when all of these hold:**
   1. `dslVersion` ≥ 3.0 (2.0 is local-runner-only, dsl-3.0 D14);
-  2. `engineadmission.RefusePlacedDefinition` returns nil against the cloud runner inventory: no engine-unsupported feature, no human gate, no remote token/cost limit;
+  2. `engineadmission.RefusePlacedDefinition` returns nil against the cloud runner inventory: no engine-unsupported feature or human gate;
   3. no stage pins to self, and every agentic gate has a placement row (`runsOn`).
 - **Where it is enforced (defence in depth):**
   1. **Validate time:** findings `RUNTIME001`–`RUNTIME003` ([§8.3](#runtime-support-column)).
@@ -316,7 +316,7 @@ Shipped usage on `main` at the baseline:
 ### 8.3 Runtime-support column and validate findings [APPROVED] (HA-P4-01)
 
 - **Registry.** `internal/workflow/v_3_0/features.go` `Feature` gains `Runtimes []RuntimeSupport{Runtime: "runner"|"engine", Level SupportLevel, Since string}`. The same column goes into v_3_1 and the supportmatrix export (`internal/supportmatrix/supportmatrix.go`), so `goobers dsl support` and the agent-toolkit manifest show it.
-- **One source of truth.** `TestRuntimeSupportColumnMatchesEngineRefusals` asserts that the features marked `engine: unsupported` equal `engineadmission.UnsupportedFeatures` ∪ {human gate, remote limits}. Neither can drift.
+- **One source of truth.** `TestRuntimeSupportColumnMatchesEngineRefusals` asserts that the features marked `engine: unsupported` equal `engineadmission.UnsupportedFeatures` ∪ {human gate}. Neither can drift.
 - **Findings:**
 
 | Code | Meaning | Local instance | Instance with `engine:` (mode 3 in `goobers`) | Cloud target (`--target cloud`, `goobers-cloud`) |
@@ -353,7 +353,7 @@ Expected result for the reference gaggle at the baseline: `RUNTIME003` for the 1
 | 3 | `spec.maps` (data-driven fan-out) | 0 | Reuses the parallels branch machinery, so it is cheapest next | HA-P4-07 |
 | 4 | `task.childWorkflows` and child-workflow **parents** | 0 (children are agent-generated at runtime) | A detailed draft design exists; parents are the remaining `containedParentSelection` fallback | HA-P4-08, HA-P4-09, HA-P4-10 |
 | 5 | Human gates (`evaluator: human`) | 0 | GA HITL primitive likely in adopter workflows; needs a new Update protocol | HA-P4-11, HA-P4-12 |
-| 6 | Remote `task.limits.maxTokens/maxCostUSD` | 0 | In cloud every agentic stage is remote, so any token or cost cap refuses the lane; cost-safety knob | HA-P4-13 |
+| 6 | Remote `task.limits.maxTokens/maxCostUSD` | 0 | **Landed:** trusted supervisor usage now enforces token and cost caps for remote stages | HA-P4-13 |
 | 7 | `task.outbox` (workspace file export, #1552) | 0 | Contained change to the surrender protocol | HA-P4-14 |
 | 8 | `task.experiment` (bandit arm assignment) | 0 (the `implementation-pre-review-experiment` lane is an A/B lane by name but declares no `task.experiment`) | Least used; needs a new plane route and store seam | HA-P4-15 |
 | — | Qualification sweep against the locked DSL 3.0 surface | — | Waits for #7590/#7616 | HA-P4-16 |
@@ -375,7 +375,7 @@ The self-hosting instance's own configuration lives outside this repository, so 
 | Selection | Evaluated as a deterministic step before fan-out; the selection result is frozen in history; unselected branches are journaled as the runner does | parallels |
 | Maps | Roster frozen at map start as a blob digest in history (the fan-out contract's source-freezing), one branch per item, bounded concurrency, the join and integrity checks (`workflow_integrity`) | parallels |
 | Child workflows + parents | Per the engine-child-workflows draft, phase 1: frozen proposal bytes under `SourceDigest`, committed child origin carried from `emitPending` into dispatch (no projection ordinal), Temporal child workflows with one active path; parents on the engine, removing `containedParentSelection` | HA-P4-03 record |
-| Human gates | New Update `goobers.gate-decision.v1`: `UpdateID = RequestID`; the validator binds (gate name, committed `gate.paused` sequence, terminal generation); the hold is a workflow timer bounded by the HITL window; the existing parity events `gate.paused` / `gate.evaluated` are journaled via the emit plane. An unanswered hold fails closed as `human_gate_window_expired`, journaled against that occurrence; `approve` / `override` / `deny` route to the Update for engine runs. This is the "occurrence-bound Temporal signal" the refusal text asks for (`refusal.go:243`) | committed gate-occurrence identity in the journal; HA-P4-03 record |
+| Human gates | New Update `goobers.gate-decision.v1`: `UpdateID = RequestID`; the validator binds (gate name, gate occurrence ordinal, terminal generation); the hold is a workflow timer bounded by the HITL window; `gate.pending` / `gate.decided` journaled via the emit plane; `approve` / `override` / `deny` route to the Update for engine runs. This is the "occurrence-bound Temporal signal" the refusal text asks for (`refusal.go:243`) | gate-occurrence identity in the journal; HA-P4-03 record |
 | Remote limits | The trusted supervisor in the stage pod (`__dispatch-exec`, a Goobers binary, not workflow-authored) reads the harness adapter's usage, reports it in an additive surrender field, and enforces the in-stage cap by terminating the harness. The walk charges cumulative usage under the existing `cumulative-agentic-usage` gate. **Trust model:** usage is "supervisor-measured", the same class as the local runner's measurement; HA-P4-03 records the ruling | surrender field (contract version bump, N/N-1 tolerant) |
 | Outbox | `__dispatch-exec` collects declared outbox paths after the stage, uploads them as content-addressed blobs, and lists them in an additive `outbox` surrender manifest; the walk records `artifact.recorded` (kind `outbox`) at the runner's paths | additive surrender field |
 | Experiment | Arm assignment in a local activity whose result is recorded in history (replay-stable); observations through a new closed-parameter plane route to a bandit store seam (file store locally, a PG table in cloud). Workers keep no DB credentials | plane route; bandit store seam |
@@ -556,9 +556,11 @@ Today Temporal runs every stage activity with `MaximumAttempts: 1`, and StartToC
    - same `acceptance_id` and `owner_epoch` ⇒ *mine* (a retry of my own start whose response was lost); proceed idempotently, every following write is keyed;
    - same `acceptance_id`, older `owner_epoch`, seen by the **current** leader during reconciliation ⇒ *adopt*: a fenced write moves the acceptance row to `dispatched, owner_epoch = mine`; the slot is rebuilt from open workflows (rebuild-before-reap); the predecessor's reservation emit dedups by key;
    - any other case, including a **newer** `owner_epoch` ⇒ **not mine**: no claim write, no slot accounting, no `run.started` emit, no terminal-hook registration; the caller re-validates its lease and demotes if stale (`StartResult{NotMine: true}`);
-   - memo absent (a run started by a pre-memo binary) ⇒ *adopt*, only by the lease holder.
+   - missing or malformed memo ⇒ refuse; absent evidence never proves ownership.
 3. **Fenced acceptance transition.** `accepted → dispatching` is a fenced write stamping `owner_epoch`, so a zombie with a stale epoch can't reach step 2 at all. The memo check covers the window in which the zombie passed the fence just before losing it.
-4. **Local.** `goobers` sets the memo too (harmless); the "not mine" branch is unreachable with one daemon; `StartResult.NotMine` is additive.
+4. **Cloud-only after #7783.** Local `goobers` no longer starts engine workflows. `cmd/goobers-cloud` supplies a durable-admission starter factory, lease binding, recovery and status seams. HA-P3-18 (#7818) connects them to the controller loop; continue/child admission entrypoints remain part of that wiring.
+5. **Two-phase custody.** `BeginDispatch` is the provisional reservation. Durable `run_id` and the live handle supply start authority before Temporal. Only mine/adopt confirms `dispatched`; adoption compares the exact predecessor epoch observed before Temporal. NotMine leaves ownership unchanged, even if lease revalidation also fails.
+6. **Quarantine and recovery.** Dispatches uncertain for one minute appear as `start ownership uncertain`. A fenced sweep reserves at most 32 retry attempts using `SKIP LOCKED`, with four concurrent attempts, ten-second attempt deadlines, and durable exponential backoff capped at one minute beyond the attempt deadline. A failed attempt leaves its row dispatching; other runs proceed. Status pages contain identity and retry time, never pinned payloads.
 
 Tests: `TestZombieStartIsNotMine` (two starters, epochs E and E+1, one acceptance row ⇒ exactly one claim row, one slot, one `run.started`), `TestLostStartResponseIsMine`, `TestReconcileAdoptsPredecessorStart`; CHAOS-3 end to end.
 
@@ -570,7 +572,7 @@ The lease and its heartbeat are **separate rows**, so renew never conflicts with
 ```sql
 -- authority: changes only on takeover or voluntary release
 CREATE TABLE control.lease (instance_id text, name text, holder text NOT NULL, epoch bigint NOT NULL,
-  PRIMARY KEY (instance_id, name));                       -- name: 'control','projector','gc','migrate'
+  PRIMARY KEY (instance_id, name));                       -- name: 'controller','projector','gc','migrate'
 -- liveness: touched every renew; never locked by fenced transactions
 CREATE TABLE control.lease_heartbeat (instance_id text, name text, holder text NOT NULL, epoch bigint NOT NULL,
   expires_at timestamptz NOT NULL, PRIMARY KEY (instance_id, name)) WITH (fillfactor = 50);
@@ -595,7 +597,7 @@ COMMIT;
 -- fenced write: every leader-originated transaction
 BEGIN;
 SET LOCAL statement_timeout = '2s'; SET LOCAL idle_in_transaction_session_timeout = '2s';
-SELECT 1 FROM control.lease WHERE instance_id=$i AND name='control' AND holder=$me AND epoch=$E FOR SHARE;  -- 0 rows ⇒ ROLLBACK, demote
+SELECT 1 FROM control.lease WHERE instance_id=$i AND name='controller' AND holder=$me AND epoch=$E FOR SHARE;  -- 0 rows ⇒ ROLLBACK, demote
 … writes, each stamping epoch/owner_epoch where the table has the column …
 COMMIT;
 ```
@@ -803,7 +805,7 @@ CREATE TABLE control.schema_migration (version int PRIMARY KEY, kind text CHECK 
 - Layout `blobs/sha256/<aa>/<rest>` (same as `blobstore.Dir`) with `If-None-Match: *` create-only puts. Readers verify the digest.
 - Write order: blob first, then the row that points at it. A crash in between leaves an orphan for GC, never a dangling pointer.
 - `recovery/<record>/snapshot.bundle` is immutable, with soft-delete and versioning on.
-- **GC (DS8)** is a leader job under the `gc` lease. A digest is deleted only when **all** hold: no row in `journal.run_artifact`, config generations, recovery records or pending adoptions; older than the TTL baseline; unreferenced for longer than the **PITR retention window**, so a restored DB never points at a deleted blob. GC is pausable for restores; bucket lifecycle rules are a backstop only.
+- **GC (DS8)** is a leader job under the `gc` lease. A digest is deleted only when **all** hold: no row in `journal.run_artifact`, config generations, recovery records or pending adoptions; older than the TTL baseline; unreferenced for longer than the **PITR retention window**, so a restored DB never points at a deleted blob. The collector must observe the same storage ETag unreferenced in two consecutive sweeps separated by more than the maximum publication latency. Every `Put`, including an idempotent existing-blob Put, takes the mutation lease and advances the ETag; digest-only referencers call `blobstore.TouchReference` before committing. A writer class is excluded fail-closed until its complete write surface is recorded in `control.blob_reference_writer_protocol`. Publishers and collectors therefore serialize on the blob's storage lease; config publishers additionally renew the lease before commit, clear the candidate in that transaction, and touch the blob after commit. The collector stamps and conditionally deletes by ETag while it still owns that storage lease, so loss of its database lease cannot race a successful publisher. The census treats missing relations as referenced, includes child `result_ref`/`workspace_ref` values, and excludes recovery `bundle_key` because that is a separate `recovery/...` location rather than a `blobs/sha256/...` digest. GC is pausable for restores; the configured floor and Blob soft-delete are both at least the 35-day PostgreSQL backup window. Physical deletion remains disabled by default behind `--experimental-physical-blob-gc`.
 - Today there is **no** general GC caller; the only `Remove` caller is `internal/configgeneration/store.go:232`.
 
 <a id="migrations"></a>
@@ -828,6 +830,8 @@ CREATE TABLE control.schema_migration (version int PRIMARY KEY, kind text CHECK 
 2. On the old instance: pause admissions; let open runs finish or cancel them (bounded by the longest run, or HITL holds resolved or abandoned by the operator); verify no claims are held, so nothing is double-claimed across instances.
 3. Switch the webhook target and the trigger clients; unpause the new install.
 4. Keep the old instance **read-only** (snapshot the RWO volume) for its retention window to serve history, then retire it.
+
+**Rollback** until the old instance is retired: re-pause the new install, repoint the webhook and trigger clients, drain or cancel its runs and verify no claims are held, then unpause the old instance. Retiring the old instance is the point of no return.
 
 An importer is only needed for history continuity, which is dropped as a constraint. If it is wanted later, a one-shot best-effort journal importer can be added as a non-gating tool.
 
@@ -857,7 +861,7 @@ Pinning protects rollouts, but node drains and evictions still kill worker pods.
 
 ### 13.4 Upgrade ladder [APPROVED] (HA-P2-01)
 
-From 1.27.2 / chart 0.62.0, one minor at a time with the schema job first, to the first release where Worker Deployment APIs are GA (target picked in HA-P2-01; UNVERIFIED; chart ≥0.73.1 for 1.30+). Each step sets the versioning dynamic config, runs the engine replay suites and a D11 smoke, and records rollback. The ladder runs on the **current** single-replica Temporal, because P2 doesn't wait for P3.
+From 1.27.2 / chart 0.62.0, first patch to 1.27.4, then advance one minor at a time through 1.28.4 / 0.67.0, 1.29.7 / 0.73.2 and 1.30.8 / 0.74.0, to **1.31.4 / chart 1.6.0** (Worker Deployment APIs became GA in 1.31.0; the ladder takes the latest patch in that minor). Each legacy step runs and awaits a schema-only Job before changing server pods; chart 1.6.0 supplies a pre-upgrade hook. Each step sets the versioning dynamic config, waits for every disposable History shard's range ID to advance and remain stable for 30 seconds, continues and replays a history started on the previous version, runs a fresh workflow, and records rollback. The ladder runs on the **current** single-replica Temporal, because P2 doesn't wait for P3.
 
 ### 13.5 Server HA [APPROVED] (HA-P3-22)
 
@@ -1008,11 +1012,11 @@ No k8s Lease or Lease RBAC anywhere; the controller has `automountServiceAccount
 <a id="security"></a>
 ## 15. Security
 
-- **DB auth.** Azure: Entra workload identity per SA → a distinct PG role per role (`goobers_api`, `goobers_controller`, `goobers_owner`, `temporal_app`). pgx fetches an Entra token in `BeforeConnect` (scope `https://ossrdbms-aad.database.windows.net/.default`). App traffic uses the built-in PgBouncer (6432, transaction mode) with `QueryExecModeExec` and no named prepared statements; the notifier and migrate use 5432. Token auth via 6432 is tested explicitly (reported unreliable elsewhere; UNVERIFIED with pgx). Private networking; `publicNetworkAccess` disabled (it is `Enabled` in `postgres.bicep` at the baseline). CNPG: operator-managed per-role Secrets or client certificates; never a superuser for apps.
+- **DB auth.** Azure: Entra workload identity per SA → a distinct PG role per role (`goobers_api`, `goobers_controller`, `goobers_owner`, `temporal_app`). pgx fetches an Entra token in `BeforeConnect` (scope `https://ossrdbms-aad.database.windows.net/.default`). App traffic uses the built-in PgBouncer (6432, transaction mode) with `QueryExecModeExec` and no named prepared statements; the notifier and migrate use 5432. Token auth via 6432 is tested explicitly (reported unreliable elsewhere; UNVERIFIED with pgx). Private networking; `publicNetworkAccess` disabled (VNet-integrated in `postgres.bicep` since HA-P3-21; it was `Enabled` at the baseline). CNPG: operator-managed per-role Secrets or client certificates; never a superuser for apps.
 - **Grants.** Generated from the write-path inventory ([§11.2](#lease)). `goobers_api` has no DDL and no write on leader-only columns; `goobers_controller` has no DDL; `goobers_owner` is used only by the migrate Job.
 - **Secrets.** Key Vault CSI (or k8s Secrets) holds versioned pod-token keys, the webhook HMAC secret and provider app keys, mounted into **api and controller only**. Workers and stage pods get none. There is **no scrub key**: the database and its backups hold no secret material, raw, encrypted or fingerprinted ([§11.4](#scrubber)).
 - **No stages in the control plane (D-2).** `selfExecution: deny` is enforced at boot; the `control` / api / controller pods mount no harness, workspace or stage credentials; `internal/runner` is not linked into `goobers-cloud`.
-- **Plane bearer keys** (HA-P3-17). Signed tokens carry a `kid`; verifiers hold {current, previous} and mint with current; the key file is watched and reloaded. Rotation: add new as previous → roll → promote → roll → drop old only after at least the longest grant TTL (currently **24h**), counted from when every replica has stopped minting with the old key. Pod tokens alone expire within 8h; credential-refresh and child-workflow grants determine the longer overlap. Registry mode (`podauth.go:144-155`) is refused at boot in cloud. The credential-refresh grant key is derived from the shared key in its own MAC domain (HA-P0-06); revocations go to `control.grant_revocation`.
+- **Plane bearer keys** (HA-P3-17). Signed tokens carry a `kid`; verifiers hold {current, previous} and mint with current; the key file is watched and reloaded. Rotation: add new as previous → roll → promote → roll → drop old after the max token TTL (8h, `signed.go:17`). Registry mode (`podauth.go:144-155`) is refused at boot in cloud. The credential-refresh grant key is derived from the shared key in its own MAC domain (HA-P0-06); revocations go to `control.grant_revocation`.
 - **Internal proxy channel** (P5 run-owner routing and registry handoff): a service bearer in a new `podauth` MAC domain; NetworkPolicy allows it only between pods in `goobers-api`; handoff payloads are never logged or persisted.
 - **Webhook secret:** dual-secret verify during rotation; dedup by source receipt makes redeliveries harmless.
 - **Network:** default-deny in every namespace; stage pods reach the api Service only; workers have no DB route.
@@ -1357,7 +1361,6 @@ The adversarial review (verdict: rethink) drove the current shape: the cloud DSL
 
 ### A.4 Still UNVERIFIED
 
-- The exact Temporal server version where Worker Deployment APIs are GA (picked in HA-P2-01).
 - KEDA Temporal scaler; Worker Controller fit.
 - Azure Disk detach time on node loss (today's RTO estimate).
 - Entra token auth through PgBouncer 6432 with pgx.

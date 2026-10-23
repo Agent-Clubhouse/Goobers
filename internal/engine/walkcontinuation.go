@@ -6,7 +6,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // settleWalk is the terminal hook for the serial walk. Branch bodies return
@@ -66,7 +66,7 @@ func (r *runJournal) gateContinuation(ctx workflow.Context, in RunInput, gateNam
 	// internal/gate.reconcileLearningFindings exists to read back.
 	// The retry-decision annotation above stays on retryRoute: only
 	// the episode is widened.
-	if runner.LearningEpisodeAppliesToBranch(learningEpisodeBranchFor(gr)) {
+	if runsemantics.LearningEpisodeAppliesToBranch(learningEpisodeBranchFor(gr)) {
 		episode, eerr := r.learningEpisode(ctx, in, gateName, next, gr, verdict, lastStage, lastResult, injected)
 		if eerr != nil {
 			return nil, fmt.Errorf("engine: journal learning episode for gate %q: %w", gateName, eerr)

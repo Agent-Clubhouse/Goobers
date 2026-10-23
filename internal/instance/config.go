@@ -1552,12 +1552,11 @@ type EngineConfig struct {
 	TLS *temporaldial.TLS `json:"tls,omitempty" yaml:"tls,omitempty"`
 	// WorkerVersioning opts `goobers-cloud worker` into Temporal worker-deployment
 	// versioning (#5950): pollers register as deployment "goobers", version
-	// goobers.<build>, with Pinned as the default workflow behavior. It is
-	// OFF by default because nothing in the product sets the deployment's
-	// current version (#5407): a versioned worker whose build is not current
-	// receives no tasks, so every upgrade that changes the build ID would
-	// stall the engine until an operator ran set-current-version. Off, the
-	// worker polls unversioned, which is what a reference Temporal expects.
+	// goobers.<build>, with Pinned as the default workflow behavior. It remains
+	// OFF by default for local and manually managed workers. The reference
+	// rainbow deployment enables it; Temporal Worker Controller injects the
+	// authoritative build ID and promotes a version only after its pollers are
+	// healthy.
 	WorkerVersioning bool `json:"workerVersioning,omitempty" yaml:"workerVersioning,omitempty"`
 }
 

@@ -42,18 +42,15 @@ var (
 	// and observation recording: internal/runner/run.go's AssignAndRecord /
 	// recordBanditResult arms).
 	ErrExperimentUnsupported = errors.New("task.experiment (bandit arm assignment) is not implemented on the engine walk")
-	// ErrRemoteUsageLimitsUnsupported refuses budgeted agentic pod dispatch:
-	// the remote surrender protocol does not yet carry trusted adapter usage.
-	ErrRemoteUsageLimitsUnsupported = errors.New("task.limits.maxTokens/maxCostUSD on remote agentic tasks are not implemented on the engine walk")
-	// ErrOutboxUnsupported refuses task.outbox (internal/runner/outbox.go's
-	// workspace-relative export, #1552).
-	ErrOutboxUnsupported = errors.New("task.outbox (workspace file export) is not implemented on the engine walk")
 	// ErrParallelsUnsupported refuses spec.parallels (internal/runner's
 	// parallel_run.go fan-out/fan-in, @join branches and branch-qualified
 	// inputs).
 	ErrParallelsUnsupported = errors.New("spec.parallels (fan-out/fan-in branches) are not implemented on the engine walk")
 	// ErrMapsUnsupported refuses DSL 3.1 spec.maps (data-driven fan-out).
 	ErrMapsUnsupported = errors.New("spec.maps (data-driven fan-out) is not implemented on the engine walk")
+	// ErrHumanGateUnsupported refuses evaluator: human until the engine owns
+	// the occurrence-bound decision protocol.
+	ErrHumanGateUnsupported = errors.New(HumanGateUnsupported)
 )
 
 // UnsupportedFeatureError names one refused declaration: which stage (empty for
@@ -141,9 +138,6 @@ func UnsupportedFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 		if t.Experiment != nil {
 			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.experiment", Err: ErrExperimentUnsupported})
 		}
-		if len(t.Outbox) > 0 {
-			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.outbox", Err: ErrOutboxUnsupported})
-		}
 	}
 	return out
 }
@@ -164,7 +158,7 @@ func RefuseHumanGate(g apiv1.Gate) error {
 	if g.Evaluator != apiv1.EvaluatorHuman {
 		return nil
 	}
-	return fmt.Errorf("%s: gate %q", HumanGateUnsupported, g.Name)
+	return fmt.Errorf("%w: gate %q", ErrHumanGateUnsupported, g.Name)
 }
 
 // RefuseDefinition reports why the engine walk cannot execute this definition,
@@ -182,7 +176,7 @@ func RefuseHumanGate(g apiv1.Gate) error {
 // It is wrong as a scheduler outcome. Since #3876 a cron tick can dispatch a
 // lane onto the engine, and neither refusal is visible to the placement-pin
 // predicate that made that choice: `spec.parallels`, `task.experiment`,
-// `task.limits`, `task.outbox`, and human gates contribute no placement rows,
+// `task.limits`, and human gates contribute no placement rows,
 // so a fully remote-pinned lane declaring any of them is selected for the
 // engine and then refused on EVERY tick — permanently, having run perfectly
 // well on the local runner the day before.
@@ -191,53 +185,58 @@ func RefuseHumanGate(g apiv1.Gate) error {
 // the runner, where the feature is implemented, with the refusal text as the
 // operator-facing reason.
 func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
+	var refusals []*UnsupportedFeatureError
+	var declared *UnsupportedFeaturesError
 	if err := RefuseFeatures(name, spec); err != nil {
-		return err
+		if !errors.As(err, &declared) {
+			return err
+		}
+		refusals = append(refusals, declared.Refusals...)
 	}
 	for _, g := range spec.Gates {
 		if err := RefuseHumanGate(g); err != nil {
-			return err
+			refusals = append(refusals, &UnsupportedFeatureError{
+				Stage: g.Name, Feature: "gate.evaluator.human", Err: err,
+			})
 		}
 	}
-	return nil
+	return refusalError(name, refusals)
 }
 
 // RefusePlacedDefinition also checks features whose support depends on the
-// pinned executor. Local agentic usage budgets are supported; remote usage
-// must be carried in the surrender protocol before that refusal can be lifted.
-func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
-	if err := RefuseDefinition(name, spec); err != nil {
+// pinned executor. Remote usage limits are supported through trusted
+// supervisor surrender usage; placements remain for future checks.
+func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, _ []dispatcher.PinnedPlacement) error {
+	refusals, err := placedDefinitionRefusals(name, spec, RefuseDefinition)
+	if err != nil {
 		return err
 	}
-	return RefuseRemoteUsage(name, spec, placements)
+	return refusalError(name, refusals)
 }
 
-// RefuseRemoteUsage rejects token or cost limits on agentic tasks pinned to
-// remote executors, whose surrender protocol does not carry trusted usage.
-func RefuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
+func placedDefinitionRefusals(
+	name string,
+	spec apiv1.WorkflowSpec,
+	refuseDefinition func(string, apiv1.WorkflowSpec) error,
+) ([]*UnsupportedFeatureError, error) {
 	var refusals []*UnsupportedFeatureError
-	for _, t := range spec.Tasks {
-		if t.Type != apiv1.TaskAgentic || t.Limits == nil || (t.Limits.MaxTokens <= 0 && t.Limits.MaxCostUSD <= 0) {
-			continue
-		}
-		if _, remote := remotePlacementFor(placements, t.Name); remote {
-			refusals = append(refusals, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.limits.maxTokens/maxCostUSD", Err: ErrRemoteUsageLimitsUnsupported})
-		}
+	var declared *UnsupportedFeaturesError
+	err := refuseDefinition(name, spec)
+	if err != nil && !errors.As(err, &declared) {
+		return nil, err
 	}
-	if len(refusals) > 0 {
-		return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
+	if declared != nil {
+		refusals = append(refusals, declared.Refusals...)
 	}
-	return nil
+	return refusals, nil
+}
+
+func refusalError(name string, refusals []*UnsupportedFeatureError) error {
+	if len(refusals) == 0 {
+		return nil
+	}
+	return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
 }
 
 // HumanGateUnsupported is retained verbatim for historical engine refusals.
 const HumanGateUnsupported = "engine: human gates require occurrence-bound Temporal signals and are not supported yet"
-
-func remotePlacementFor(placements []dispatcher.PinnedPlacement, stage string) (dispatcher.PinnedPlacement, bool) {
-	for _, pin := range placements {
-		if pin.Stage == stage {
-			return pin, !pin.Self
-		}
-	}
-	return dispatcher.PinnedPlacement{}, false
-}

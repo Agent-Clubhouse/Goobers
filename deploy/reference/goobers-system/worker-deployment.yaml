@@ -12,9 +12,8 @@ metadata:
     goobers.dev/role: worker
 spec:
   replicas: 2
-  # HA-P2-07 replaces this with per-build rainbow Deployments. Until then,
-  # Recreate avoids mixing builds while still allowing multiple replicas of
-  # one build to poll the same queues.
+  # The ../workers overlay replaces this compatibility Deployment with a
+  # WorkerDeployment that owns one Recreate Deployment per build ID.
   strategy:
     type: Recreate
   selector:
@@ -28,9 +27,17 @@ spec:
         goobers.dev/role: worker
     spec:
       serviceAccountName: goobers-worker
-      # Allow the default 30s Temporal drain, 5m child custody settlement, and exit.
-      # Increase this when overriding --drain-timeout.
+      # Keep the staged 360s bound until ChildSettlementTimeout is lowered and
+      # rainbow re-attachment passes CHAOS-13 qualification.
       terminationGracePeriodSeconds: 360
+      priorityClassName: goobers-control-plane
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: goobers-worker
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:

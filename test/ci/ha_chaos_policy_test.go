@@ -100,7 +100,7 @@ func TestHANightlyChaosStepsFailTheJob(t *testing.T) {
 		t.Skip("bash not available on this runner; the nightly runs on ubuntu")
 	}
 	steps := haNightlySteps(t)
-	for _, name := range []string{"Run chaos harness", "Verify chaos pending references are still open"} {
+	for _, name := range []string{"Run chaos harness", "Verify chaos pending references are still open", "Freeze smoke (CgroupFreeze on kind)"} {
 		step, ok := steps[name]
 		if !ok {
 			t.Fatalf("ha-nightly.yml has no step %q", name)
@@ -124,6 +124,7 @@ func TestHANightlyChaosStepsFailTheJob(t *testing.T) {
 			case strings.Contains(line, "go run ./test/ha/chaos/cmd/chaos "):
 				line = strings.Replace(line, "go run ./test/ha/chaos/cmd/chaos run", "sh -c 'exit 3'", 1)
 				line = strings.Replace(line, "go run ./test/ha/chaos/cmd/chaos verify-pending", "sh -c 'exit 3'", 1)
+				line = strings.Replace(line, "go run ./test/ha/chaos/cmd/chaos freeze-smoke", "sh -c 'exit 3'", 1)
 			case strings.HasPrefix(strings.TrimSpace(line), "go test"):
 				line = "true"
 			}

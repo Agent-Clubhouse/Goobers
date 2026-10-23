@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -89,7 +90,7 @@ func TestEnforceExpectedOutputs(t *testing.T) {
 			wantMsg: []string{"agent result", `"prNumber"`},
 		},
 		{name: "agentic stage on dsl 3.0 stays advisory", version: supportmatrix.V3DSLVersion, task: agentic, status: apiv1.ResultSuccess, outputs: partial},
-		{name: "salvaged agentic timeout is runner-synthesized", version: supportmatrix.V31DSLVersion, task: agentic, status: apiv1.ResultSuccess, outputs: SalvagedResult().Outputs},
+		{name: "salvaged agentic timeout is runner-synthesized", version: supportmatrix.V31DSLVersion, task: agentic, status: apiv1.ResultSuccess, outputs: runsemantics.SalvagedResult().Outputs},
 		{
 			name: "preserved committed work is runner-synthesized", version: supportmatrix.V31DSLVersion, task: agentic,
 			status: apiv1.ResultSuccess, outputs: preserveCommittedWorkOnInfraRetry(apiv1.ResultEnvelope{Status: apiv1.ResultFailure}).Outputs,
@@ -98,15 +99,15 @@ func TestEnforceExpectedOutputs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := apiv1.ResultEnvelope{Status: tc.status, Outputs: tc.outputs}
-			got := EnforceExpectedOutputs(tc.version, tc.task, in)
+			got := runsemantics.EnforceExpectedOutputs(tc.version, tc.task, in)
 			if !tc.wantFail {
 				if got.Status != tc.status || got.Error != nil {
 					t.Fatalf("result = %+v, want status %q unchanged", got, tc.status)
 				}
 				return
 			}
-			if got.Status != apiv1.ResultFailure || got.Error == nil || got.Error.Code != MissingExpectedOutputsCode || got.Error.Retryable {
-				t.Fatalf("result = %+v (error %+v), want non-retryable %s failure", got, got.Error, MissingExpectedOutputsCode)
+			if got.Status != apiv1.ResultFailure || got.Error == nil || got.Error.Code != runsemantics.MissingExpectedOutputsCode || got.Error.Retryable {
+				t.Fatalf("result = %+v (error %+v), want non-retryable %s failure", got, got.Error, runsemantics.MissingExpectedOutputsCode)
 			}
 			for _, want := range tc.wantMsg {
 				if !strings.Contains(got.Error.Message, want) {
@@ -152,7 +153,7 @@ func TestDSL31ExpectedOutputsBOMIntermediaryHandoff(t *testing.T) {
 			intermediary: `printf '` + bom + `{"autoMerge":"enabled"}\r\n' > result.json`,
 			wantPhase:    journal.PhaseFailed,
 			wantFailure:  "enable-auto-merge",
-			wantFailCode: MissingExpectedOutputsCode,
+			wantFailCode: runsemantics.MissingExpectedOutputsCode,
 		},
 		{
 			name:         "dsl 3.0 keeps the advisory behaviour",

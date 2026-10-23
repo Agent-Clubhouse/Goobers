@@ -6,24 +6,23 @@ import (
 	"testing"
 
 	"go.temporal.io/sdk/temporal"
-
 	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func TestSelfExecutionDeniedActivitiesRefuseBeforeSideEffects(t *testing.T) {
-	acts := &Activities{AdmitSelfExecution: func(stage string) error { return &runner.SelfExecutionRefusal{Stage: stage} }}
+	acts := &Activities{AdmitSelfExecution: func(stage string) error { return &runsemantics.SelfExecutionRefusal{Stage: stage} }}
 	env := apiv1.InvocationEnvelope{TaskID: "run:work"}
 	agent, err := acts.InvokeGoober(context.Background(), env, "", "", apiv1.WorkspaceRepo, "")
-	if err != nil || agent.Status != apiv1.ResultBlocked || agent.Error.Code != runner.SelfExecutionDeniedCode || agent.SelfPlacement != nil {
+	if err != nil || agent.Status != apiv1.ResultBlocked || agent.Error.Code != runsemantics.SelfExecutionDeniedCode || agent.SelfPlacement != nil {
 		t.Fatalf("agent: %+v %v", agent, err)
 	}
 	det, err := acts.RunDeterministic(context.Background(), env, apiv1.DeterministicRun{}, "", "")
-	if err != nil || det.Status != apiv1.ResultBlocked || det.Error.Code != runner.SelfExecutionDeniedCode || det.SelfPlacement != nil {
+	if err != nil || det.Status != apiv1.ResultBlocked || det.Error.Code != runsemantics.SelfExecutionDeniedCode || det.SelfPlacement != nil {
 		t.Fatalf("deterministic: %+v %v", det, err)
 	}
 	_, err = acts.ReviewGoober(context.Background(), env, "", "", apiv1.WorkspaceRepo, "", true)
@@ -47,7 +46,7 @@ func TestSelfExecutionDeniedFullDispatchedLifecycle(t *testing.T) {
 	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-cli", Pod: "work-pod", Image: "example/worker:v1", Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true}}
 	proj := executeForProjection(t, in, &Activities{Dispatcher: fake, Surrenders: store, AdmitSelfExecution: func(stage string) error {
 		t.Errorf("self selected for %s", stage)
-		return &runner.SelfExecutionRefusal{Stage: stage}
+		return &runsemantics.SelfExecutionRefusal{Stage: stage}
 	}}, false)
 	attempts, _ := fake.recorded()
 	if len(attempts) != 3 {
@@ -65,7 +64,7 @@ func TestSelfExecutionDeniedFullDispatchedLifecycle(t *testing.T) {
 }
 
 func TestSelfExecutionDeniedDispatchBoundary(t *testing.T) {
-	acts := &Activities{Dispatcher: &fakeStageDispatcher{}, Surrenders: surrenderStore(t), AdmitSelfExecution: func(stage string) error { return &runner.SelfExecutionRefusal{Stage: stage} }}
+	acts := &Activities{Dispatcher: &fakeStageDispatcher{}, Surrenders: surrenderStore(t), AdmitSelfExecution: func(stage string) error { return &runsemantics.SelfExecutionRefusal{Stage: stage} }}
 	err := acts.validateStageDispatch(DispatchStageInput{Envelope: apiv1.InvocationEnvelope{TaskID: "run:work"}, Placement: PinnedPlacement{Self: true}})
 	if !isTestSelfExecutionDenied(err) {
 		t.Fatalf("dispatch self selection lost policy classification: %v", err)
@@ -86,7 +85,7 @@ func TestSelfExecutionUnavailableIsNotPolicyRefusal(t *testing.T) {
 
 func isTestSelfExecutionDenied(err error) bool {
 	var app *temporal.ApplicationError
-	return errors.As(err, &app) && app.Type() == runner.SelfExecutionDeniedCode
+	return errors.As(err, &app) && app.Type() == runsemantics.SelfExecutionDeniedCode
 }
 
 func TestSelfExecutionDeniedPinnedPolicyRejectsAbsentAndSelfPins(t *testing.T) {

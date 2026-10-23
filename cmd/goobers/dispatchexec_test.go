@@ -24,8 +24,8 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func fastArtifactTiming() artifactTiming {
@@ -269,8 +269,8 @@ func TestRunDispatchExecContextSurrendersToTheWriteAPI(t *testing.T) {
 	if surrendered.Result.Status != apiv1.ResultSuccess {
 		t.Fatalf("surrendered status = %q, want success", surrendered.Result.Status)
 	}
-	if surrendered.ContractVersion != dispatcher.CurrentSurrenderContract {
-		t.Fatalf("surrender contract version = %d, want %d", surrendered.ContractVersion, dispatcher.CurrentSurrenderContract)
+	if surrendered.ContractVersion != dispatcher.SurrenderContractV2 {
+		t.Fatalf("surrender contract version = %d, want v2 without an outbox manifest", surrendered.ContractVersion)
 	}
 }
 
@@ -1405,8 +1405,8 @@ func TestDispatchExecClassifiesSyncBaseConflictAsRetryableInfra(t *testing.T) {
 	if got.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %q, want failure", got.Status)
 	}
-	if got.Error == nil || got.Error.Code != runner.BaseSyncConflictErrorCode {
-		t.Fatalf("error = %+v, want code %q (the self arms' classification, so failure-class routes to remediation instead of an implementation repass)", got.Error, runner.BaseSyncConflictErrorCode)
+	if got.Error == nil || got.Error.Code != runsemantics.BaseSyncConflictErrorCode {
+		t.Fatalf("error = %+v, want code %q (the self arms' classification, so failure-class routes to remediation instead of an implementation repass)", got.Error, runsemantics.BaseSyncConflictErrorCode)
 	}
 	if !got.Error.Retryable {
 		t.Fatal("a base_sync_conflict must be Retryable, matching internal/engine/activities.go's RunDeterministic and internal/runner/run.go — failure-class's isRecognizedInfrastructureFailure never matches this code, so Retryable is the only thing that routes it OutcomeInfra")

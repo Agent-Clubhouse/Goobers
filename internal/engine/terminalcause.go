@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -43,12 +43,18 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 	refs := map[string]journal.Ref{}
 	for i, op := range projection.Ops {
 		if op.Kind == opArtifact && op.Artifact != nil {
-			ref, err := journal.ArtifactRef(op.Artifact.Data)
-			if err != nil {
-				return nil, err
+			var ref journal.Ref
+			if op.Artifact.Ref != nil {
+				ref = *op.Artifact.Ref
+			} else {
+				var err error
+				ref, err = journal.ArtifactRef(op.Artifact.Data)
+				if err != nil {
+					return nil, err
+				}
+				artifacts[ref.Digest] = op.Artifact.Data
 			}
 			refs[projectedArtifactKey(op.Artifact.Branch, op.Artifact.Name)] = ref
-			artifacts[ref.Digest] = op.Artifact.Data
 		}
 		if op.Event == nil {
 			continue
@@ -65,7 +71,7 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 		}
 		events = append(events, e)
 	}
-	c, err := runner.BuildTerminalCause(events, phase, finalState, r.terminalCause, r.machine, r.proj.Identity.RunControls, func(ref journal.Ref) ([]byte, error) {
+	c, err := runsemantics.BuildTerminalCause(events, phase, finalState, r.terminalCause, r.machine, r.proj.Identity.RunControls, func(ref journal.Ref) ([]byte, error) {
 		data, ok := artifacts[ref.Digest]
 		if !ok {
 			return nil, errors.New("engine: terminal verdict artifact missing")

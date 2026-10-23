@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
@@ -50,10 +51,13 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		// would run with no instructions at all.
 		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitUnavailable, err.Error())}
 	}
-	ctx, usage := newSupervisedUsageContext(ctx, kit.Envelope.Limits)
+	ctx, usage := newSupervisedUsageContext(ctx, kit.UsageAllowance)
 	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
 	ctx = invoke.WithAgentUsageStream(ctx, usage.report)
 	defer func() { settleSupervisedUsage(&out, usage) }()
+	if usage.budgetCause() != nil {
+		return stageOutcome{}
+	}
 	// fail shapes every refusal past this point. For a REVIEW the class
 	// matters in a way it does not for an invocation: a task's surrendered
 	// failure is a business outcome the workflow branches on, but a gate has
@@ -103,7 +107,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		// so the engine ends the run superseded rather than failed.
 		code := workspaceProvisionFailureCode(err)
 		out := fail(code, err)
-		out.WorkspaceHeadMoved = code == runner.WorkspaceHeadMovedErrorCode
+		out.WorkspaceHeadMoved = code == runsemantics.WorkspaceHeadMovedErrorCode
 		return out
 	}
 	// The stamp the harness actually reads.
@@ -167,12 +171,18 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	}
 
 	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
+	exec, scrubber, err := buildPodAgenticExecutor(kit, stderr, checkoutCreds, runsDir)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
 	}
+	executionStarted := false
+	defer func() {
+		out.OutboxScrubber = scrubber
+		out.OutboxEligible = executionStarted
+	}()
 
 	if kit.IsReview() {
+		executionStarted = true
 		// The SAME executor and the SAME constructor as an invocation — only
 		// the completion contract differs: harness.Executor.Review drives
 		// ModeReview and validates the verdict against the shared schema.
@@ -200,6 +210,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		}
 	}
 
+	executionStarted = true
 	result, err := exec.Invoke(ctx, kit.Envelope)
 	if err != nil {
 		return fail("agentic_invocation_failed", err)
@@ -476,8 +487,15 @@ func podAgenticExecutorInput(w runtimewiring.PodExecutorWiring) runtimewiring.Ag
 	input.ChildWorkflows = parentPodAccess(w.Registry)
 	return input
 }
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
-	return runtimewiring.BuildPodAgenticExecutor(kit, stderr, minted, runsDir, func(input runtimewiring.AgenticExecutorInput) runtimewiring.AgenticExecutorInput {
+
+// buildPodAgenticExecutor also returns the scrubber chained over the
+// executor's own secret registry, so the outbox export redacts every value the
+// executor registered (minted credentials included).
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, journal.Scrubber, error) {
+	var scrubber journal.Scrubber
+	exec, err := runtimewiring.BuildPodAgenticExecutor(kit, stderr, minted, runsDir, func(input runtimewiring.AgenticExecutorInput) runtimewiring.AgenticExecutorInput {
+		scrubber = journal.Chain(input.SharedRegistry, journal.NewPatternScrubber())
 		return podAgenticExecutorInput(runtimewiring.PodExecutorWiring{Kit: kit, RunsDir: runsDir, Stderr: stderr, Scrubber: input.SharedRegistry, Registry: input.SharedRegistry, Resolver: input.Resolver, Grants: input.Grants, AdapterRegistry: input.AdapterRegistry, HarnessInfo: input.HarnessInfo})
 	})
+	return exec, scrubber, err
 }

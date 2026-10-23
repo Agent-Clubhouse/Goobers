@@ -58,7 +58,7 @@ func eligible() apiv1.Workflow {
 func ineligible() map[string]apiv1.Workflow {
 	r001 := eligible()
 	r001.Name = "r001"
-	r001.Spec.Tasks[0].Outbox = []string{"result.json"}
+	r001.Spec.Tasks[0].Experiment = &apiv1.BanditExperiment{}
 	r002 := eligible()
 	r002.Name = "r002"
 	r002.Spec.Tasks[0].RunsOn = &apiv1.RunsOn{Capabilities: []string{"no-such-capability"}}
@@ -180,7 +180,7 @@ func TestGuardReloadReplacesGenerationAtomically(t *testing.T) {
 	}
 	// Same name gains an unsupported feature: refused, old generation stays.
 	reloaded := workflowSet(eligible())
-	reloaded.Workflows[0].Spec.Tasks[0].Outbox = []string{"report.txt"}
+	reloaded.Workflows[0].Spec.Tasks[0].Experiment = &apiv1.BanditExperiment{}
 	if err := apply(applier, "v2", denyConfig(), reloaded); err == nil {
 		t.Fatal("ineligible reload applied")
 	}

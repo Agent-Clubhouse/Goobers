@@ -33,12 +33,12 @@ func TestCommittedChildOriginRequired(t *testing.T) {
 		env, dir := childEnvironment(t, f)
 		in := childParentInput()
 		env.ExecuteWorkflow("Run", in)
-		if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), errChildExecutionUnavailable.Error()) {
-			t.Fatalf("admitted child crossed the HA-P4-08 activation boundary: %v", err)
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatal(err)
 		}
 		var started journal.Event
 		for _, event := range liveEvents(t, dir, in.RunID) {
-			if event.Type == journal.EventStageStarted && event.Stage == "parent" {
+			if event.Type == journal.EventStageStarted && event.Stage == "parent" && event.Attempt == 1 {
 				started = event
 			}
 		}
@@ -46,7 +46,7 @@ func TestCommittedChildOriginRequired(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stage start was not bound by the writer: %v", err)
 		}
-		if len(f.envelopes) != 1 || f.envelopes[0].ChildWorkflowOrigin == nil || *f.envelopes[0].ChildWorkflowOrigin != *origin || f.envelopes[0].Goober != "coder" {
+		if len(f.envelopes) != 2 || f.envelopes[0].ChildWorkflowOrigin == nil || *f.envelopes[0].ChildWorkflowOrigin != *origin || f.envelopes[0].Goober != "coder" {
 			t.Fatalf("dispatch origin differs from the committed start: %+v want %+v", f.envelopes, origin)
 		}
 		if origin.StageOccurrence != journal.StageAttemptID(in.RunID, 0, "parent", started.Seq) || origin.AttemptID != origin.StageOccurrence {
@@ -55,8 +55,18 @@ func TestCommittedChildOriginRequired(t *testing.T) {
 		if len(f.admissions) != 1 || f.admissions[0].OriginSeq != started.Seq || f.admissions[0].Request.Origin != *origin {
 			t.Fatalf("admission was not bound to the committed origin: %+v", f.admissions)
 		}
-		if !slices.Equal(f.calls, []string{"dispatch", "admit", "cancel"}) {
-			t.Fatalf("admission was not fenced after the activation boundary: %v", f.calls)
+		if want := []string{"dispatch", "admit", "park", "load", "child-stage", "finalize", "complete", "dispatch"}; !slices.Equal(f.calls, want) {
+			t.Fatalf("child family order = %v, want %v", f.calls, want)
+		}
+		// The continuation is a new attempt of the SAME occurrence, bound to
+		// its own committed start, carrying the child's untrusted return.
+		next := f.envelopes[1]
+		if next.Attempt != 2 || next.ChildWorkflowOrigin == nil || next.ChildWorkflowOrigin.StageOccurrence != origin.StageOccurrence || next.ChildWorkflowOrigin.AttemptID == origin.AttemptID {
+			t.Fatalf("continuation lost its occurrence binding: %+v", next.ChildWorkflowOrigin)
+		}
+		last := next.ContextPointers[len(next.ContextPointers)-1]
+		if last.Name != "child-completion" || last.Integrity != apiv1.IntegrityUnapproved {
+			t.Fatalf("continuation context = %+v", next.ContextPointers)
 		}
 	})
 

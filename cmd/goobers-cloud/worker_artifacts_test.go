@@ -6,11 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/gate"
-	"github.com/goobers/goobers/internal/runner"
 )
 
 func TestWorkerArtifactGateReadsFleetWithoutWorkspaceWrites(t *testing.T) {
@@ -40,7 +41,7 @@ func TestWorkerArtifactGateReadsFleetWithoutWorkspaceWrites(t *testing.T) {
 	}}}
 	runsDir := filepath.Join(t.TempDir(), "must-not-create-runs")
 	seams := &workerSeams{store: store}
-	seams.snapshot.Store(&workerConfigSnapshot{gaggles: map[string]*builtGaggleSeams{"web": {seams: &gaggleSeams{cfg: runner.Config{Automated: auto}, runsDir: runsDir}}}})
+	seams.snapshot.Store(&workerConfigSnapshot{gaggles: map[string]*builtGaggleSeams{"web": {seams: &gaggleSeams{cfg: runtimewiring.ExecutorConfig{Automated: auto}, runsDir: runsDir}}}})
 	conf := apiv1.AutomatedGate{Check: "evidence"}
 	env := apiv1.InvocationEnvelope{RunID: "remote-run", Gaggle: "web", ContextPointers: []apiv1.ContextPointer{{Name: "producer.artifact[0]", Artifact: &pointer}}}
 	got, err := seams.Automated().Evaluate(context.Background(), conf, env)

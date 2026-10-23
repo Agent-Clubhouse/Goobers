@@ -81,6 +81,31 @@
           "rationale": "local runtimes must not depend on cloud-only packages"
         }
       ]
+    },
+    {
+      "name": "engine-excludes-local-runner",
+      "roots": [
+        "github.com/goobers/goobers/internal/engine",
+        "github.com/goobers/goobers/internal/runsemantics"
+      ],
+      "forbidden": [
+        {
+          "path": "github.com/goobers/goobers/internal/runner",
+          "rationale": "Shared engine semantics must not link local executor construction (HA-P3-18, D-2)."
+        }
+      ]
+    },
+    {
+      "name": "cloud-runtime-excludes-local-runner",
+      "roots": [
+        "github.com/goobers/goobers/cmd/goobers-cloud"
+      ],
+      "forbidden": [
+        {
+          "path": "github.com/goobers/goobers/internal/runner",
+          "rationale": "Cloud control and worker roles must never link the local workflow driver (HA D-2, #7848)."
+        }
+      ]
     }
   ],
   "lanes": [

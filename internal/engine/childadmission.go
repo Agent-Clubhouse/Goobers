@@ -34,6 +34,16 @@ func stopsAttemptLoop(ctx workflow.Context, err error) bool {
 type childFamily struct {
 	total       int32
 	occurrences map[string]int32
+	// continuations are settled child returns per stage, in admission order;
+	// a fresh occurrence (attempt 1) starts without any.
+	continuations map[string][]apiv1.ContextPointer
+}
+
+func (r *runJournal) childState() *childFamily {
+	if r.children == nil {
+		r.children = &childFamily{occurrences: map[string]int32{}, continuations: map[string][]apiv1.ContextPointer{}}
+	}
+	return r.children
 }
 
 // childAdmissionPlan is the single descriptor the admission controller accepts.
@@ -71,6 +81,9 @@ func (r *runJournal) bindChildStart(ctx workflow.Context, t apiv1.Task, attempt 
 		return
 	}
 	continuation := attempt > 1 || class == journal.AttemptHuman || class == journal.AttemptInfra
+	if attempt == 1 {
+		delete(r.childState().continuations, t.Name)
+	}
 	r.proj.Ops[len(r.proj.Ops)-1].ChildStageStart = &livejournal.ChildStageStart{Continuation: continuation}
 }
 
@@ -102,6 +115,7 @@ func (r *runJournal) childAttemptEnvelope(env apiv1.InvocationEnvelope, task api
 	origin := receipt.Origin
 	env.ChildWorkflowOrigin = &origin
 	env.Goober = task.Goober
+	env.ContextPointers = r.childContextPointers(task.Name, env.ContextPointers)
 	if env.ArtifactPublication != nil {
 		env.ArtifactPublication.Visit = receipt.Seq
 	}
@@ -126,15 +140,13 @@ func (r *runJournal) childAdmissionPlanFor(ctx workflow.Context, in RunInput, t 
 // reserveChildSlot charges the per-occurrence and per-run bounds before the
 // admission command, so a refused admission still consumes no external slot.
 func (r *runJournal) reserveChildSlot(plan childAdmissionPlan) error {
-	if r.children == nil {
-		r.children = &childFamily{occurrences: map[string]int32{}}
-	}
+	family := r.childState()
 	occurrence := plan.Origin.Origin.StageOccurrence
-	if r.children.occurrences[occurrence] >= plan.Task.ChildWorkflows.EffectiveMaxChildren() || r.children.total >= apiv1.MaxChildWorkflows {
+	if family.occurrences[occurrence] >= plan.Task.ChildWorkflows.EffectiveMaxChildren() || family.total >= apiv1.MaxChildWorkflows {
 		return errors.New("engine: stage child limit exceeded")
 	}
-	r.children.occurrences[occurrence]++
-	r.children.total++
+	family.occurrences[occurrence]++
+	family.total++
 	return nil
 }
 
@@ -152,6 +164,9 @@ func (r *runJournal) admitChild(ctx workflow.Context, plan childAdmissionPlan) (
 		return binding, err
 	}
 	if !binding.sameParent(plan.Input) {
+		if binding.restartedParent(plan.Input) {
+			return binding, errSealedChildRestart
+		}
 		return binding, errors.New("engine: admission receipt differs from parent intent")
 	}
 	return binding, nil
@@ -166,11 +181,14 @@ func cancelChild(ctx workflow.Context, binding ChildRunBinding, cause error) err
 }
 
 // dispatchWithChildAdmission routes a trusted adapter's child handoff through
-// admission. Outside the protocol a handoff fails closed; inside it, phase
-// HA-P4-08 admits, fences and stops before any child command.
-func (r *runJournal) dispatchWithChildAdmission(ctx workflow.Context, in RunInput, t apiv1.Task, attempt int, class journal.AttemptClass, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error)) (stageActivityResult, error) {
+// admission. Outside the protocol a handoff fails closed. Histories without
+// the execution marker keep the HA-P4-08 fence; marked ones run the child and
+// return errChildContinued so the attempt loop continues the occurrence.
+func (r *runJournal) dispatchWithChildAdmission(ctx workflow.Context, in RunInput, t apiv1.Task, step childStep, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error)) (stageActivityResult, error) {
+	attempt, class := step.Attempt, step.Class
 	result, err := dispatch(ctx, attempt, class)
 	if result.ChildWait == nil {
+		result.Integrity = r.childResultIntegrity(t.Name, result.Integrity)
 		return result, err
 	}
 	if err != nil {
@@ -187,5 +205,11 @@ func (r *runJournal) dispatchWithChildAdmission(ctx workflow.Context, in RunInpu
 	if err != nil {
 		return stageActivityResult{}, childWaitError{err}
 	}
-	return stageActivityResult{}, childWaitError{cancelChild(ctx, binding, errChildExecutionUnavailable)}
+	if workflow.GetVersion(ctx, childExecutionChangeID, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		return stageActivityResult{}, childWaitError{cancelChild(ctx, binding, errChildExecutionUnavailable)}
+	}
+	if err = r.awaitChild(ctx, in, t, step, result, binding); !errors.Is(err, errChildContinued) {
+		return stageActivityResult{}, childWaitError{err}
+	}
+	return stageActivityResult{}, err
 }

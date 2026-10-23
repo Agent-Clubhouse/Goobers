@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/goobers/goobers/internal/workerrollout"
 	"github.com/goobers/goobers/internal/workerrouting"
 )
 
@@ -34,6 +35,68 @@ func TestWorkerOptionsUnversionedUnlessOptedIn(t *testing.T) {
 	}
 	if !strings.Contains(opts.Identity, "goobers-worker/v0.5.0@") {
 		t.Fatalf("identity %q lost the build version; it must stay diagnosable when unversioned", opts.Identity)
+	}
+}
+
+func TestWorkerOptionsUseControllerDeploymentVersion(t *testing.T) {
+	t.Setenv(temporalDeploymentNameEnv, DeploymentName)
+	t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
+	t.Setenv(podNamespaceEnv, "goobers-system")
+	h, err := New(Config{
+		TaskQueues:   []string{"goobers-engine"},
+		BuildVersion: "binary-version",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := h.workerOptions()
+	if !opts.DeploymentOptions.UseVersioning ||
+		opts.DeploymentOptions.Version.DeploymentName != DeploymentName ||
+		opts.DeploymentOptions.Version.BuildID != "template-hash" {
+		t.Fatalf("DeploymentOptions = %+v, want controller-injected version", opts.DeploymentOptions)
+	}
+	if !strings.Contains(opts.Identity, "goobers-worker/template-hash@") {
+		t.Fatalf("identity %q does not use controller build ID", opts.Identity)
+	}
+	if h.cfg.VersionRetention != workerrollout.DefaultVersionLimit || h.cfg.RolloutNamespace != "goobers-system" {
+		t.Fatalf("controller rollout config = retention %d namespace %q", h.cfg.VersionRetention, h.cfg.RolloutNamespace)
+	}
+	if h.cfg.AutoUpgradeRetention {
+		t.Fatal("AUTO_UPGRADE retention enabled without compatibility attestation")
+	}
+}
+
+func TestWorkerControllerAutoUpgradeRetentionRequiresAttestation(t *testing.T) {
+	t.Setenv(temporalDeploymentNameEnv, DeploymentName)
+	t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
+	t.Setenv(podNamespaceEnv, "goobers-system")
+	t.Setenv(autoUpgradeRetentionEnv, "true")
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.cfg.AutoUpgradeRetention {
+		t.Fatal("AUTO_UPGRADE retention compatibility attestation was ignored")
+	}
+}
+
+func TestWorkerControllerDeploymentVersionFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deployment string
+		build      string
+	}{
+		{name: "missing build", deployment: DeploymentName},
+		{name: "missing deployment", build: "v2"},
+		{name: "wrong deployment", deployment: "other", build: "v2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(temporalDeploymentNameEnv, tc.deployment)
+			t.Setenv(temporalWorkerBuildIDEnv, tc.build)
+			if _, err := New(Config{TaskQueues: []string{"goobers-engine"}}); err == nil {
+				t.Fatal("New accepted incomplete or foreign controller identity")
+			}
+		})
 	}
 }
 
@@ -268,6 +331,64 @@ func TestWorkerReadinessKeepsDrainingVersionReady(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"draining":true`) {
 		t.Fatalf("GET /readyz body = %s, want draining=true", response.Body.String())
+	}
+}
+
+func TestRainbowWorkerReadinessRequiresRegistrationNotRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		routing workerrouting.Routing
+		want    int
+	}{
+		{
+			name: "first install registered without current",
+			routing: workerrouting.Routing{
+				Registered: map[string]bool{"v2": true},
+			},
+			want: http.StatusOK,
+		},
+		{
+			name: "newer registered build not current",
+			routing: workerrouting.Routing{
+				WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+					CurrentVersion: deploymentVersion("v1"),
+				},
+				Registered: map[string]bool{"v1": true, "v2": true},
+			},
+			want: http.StatusOK,
+		},
+		{
+			name: "unregistered build",
+			routing: workerrouting.Routing{
+				WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+					CurrentVersion: deploymentVersion("v1"),
+				},
+				Registered: map[string]bool{"v1": true},
+			},
+			want: http.StatusServiceUnavailable,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHost(t, Config{
+				TaskQueues:       []string{"goobers-engine"},
+				BuildVersion:     "v2",
+				Versioning:       true,
+				VersionRetention: workerrollout.DefaultVersionLimit,
+				RolloutNamespace: "goobers-system",
+			}, &fakeFleet{})
+			h.pollersStarted.Store(true)
+			h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+				return tc.routing, nil
+			}
+			if problem := h.checkRoutingOnce(context.Background(), nil, ""); problem == "" && tc.want == http.StatusOK {
+				t.Fatal("registered inactive build lost its routing mismatch diagnostic")
+			}
+			response := httptest.NewRecorder()
+			h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			if response.Code != tc.want {
+				t.Fatalf("GET /readyz = %d, want %d; body=%s", response.Code, tc.want, response.Body.String())
+			}
+		})
 	}
 }
 
