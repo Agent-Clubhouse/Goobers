@@ -210,18 +210,18 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 		}
 	}
 	started, err := starter.Start(ctx, in)
-	if err != nil {
-		// The response may have been lost after Temporal accepted the run.
-		// Keep provisional custody for the boot-time reclassification pass.
-		return localscheduler.StartResult{Phase: journal.PhaseFailed, FailureCode: "engine_start_failed", FailureMessage: err.Error()}, err
-	}
 	if started.NotMine {
 		if intent.Input.RunID != "" {
 			if err := engine.ReleaseStart(directory, in.RunID); err != nil {
 				return localscheduler.StartResult{Phase: journal.PhaseFailed}, err
 			}
 		}
-		return localscheduler.StartResult{Phase: journal.PhaseFailed}, engine.ErrStartNotMine
+		return localscheduler.StartResult{Phase: journal.PhaseFailed}, errors.Join(engine.ErrStartNotMine, err)
+	}
+	if err != nil {
+		// The response may have been lost after Temporal accepted the run.
+		// Keep provisional custody for the boot-time reclassification pass.
+		return localscheduler.StartResult{Phase: journal.PhaseFailed, FailureCode: "engine_start_failed", FailureMessage: err.Error()}, err
 	}
 	if intent.Input.RunID != "" {
 		if err := engine.ConfirmStart(ctx, directory, intent, live); err != nil {

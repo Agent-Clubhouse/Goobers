@@ -556,9 +556,9 @@ Today Temporal runs every stage activity with `MaximumAttempts: 1`, and StartToC
    - same `acceptance_id` and `owner_epoch` ⇒ *mine* (a retry of my own start whose response was lost); proceed idempotently, every following write is keyed;
    - same `acceptance_id`, older `owner_epoch`, seen by the **current** leader during reconciliation ⇒ *adopt*: a fenced write moves the acceptance row to `dispatched, owner_epoch = mine`; the slot is rebuilt from open workflows (rebuild-before-reap); the predecessor's reservation emit dedups by key;
    - any other case, including a **newer** `owner_epoch` ⇒ **not mine**: no claim write, no slot accounting, no `run.started` emit, no terminal-hook registration; the caller re-validates its lease and demotes if stale (`StartResult{NotMine: true}`);
-   - memo absent (a run started by a pre-memo binary) ⇒ *adopt*, only by the lease holder.
+   - memo absent or malformed ⇒ **not mine / unverifiable**. A lease alone does not prove that an existing execution belongs to this acceptance; any future legacy migration path must separately prove immutable acceptance and execution identity before adoption.
 3. **Fenced acceptance transition.** `accepted → dispatching` is a fenced write stamping `owner_epoch`, so a zombie with a stale epoch can't reach step 2 at all. The memo check covers the window in which the zombie passed the fence just before losing it.
-4. **Local.** `goobers` sets the memo too (harmless); the "not mine" branch is unreachable with one daemon; `StartResult.NotMine` is additive.
+4. **Local.** `goobers` sets the memo too; cloud admission is independent of `placement.selfExecution`. Before Temporal, the daemon persists a private provisional start intent, not an owned run journal. Mine/adopt confirms the journal; NotMine releases only the provisional intent. Crash recovery reclassifies unresolved intents with bounded retries, quarantines only their workflow lanes, and retains quarantine until an owned execution settles. `status` and `doctor --temporal-codec` expose "start ownership uncertain" without blocking unrelated startup.
 
 Tests: `TestZombieStartIsNotMine` (two starters, epochs E and E+1, one acceptance row ⇒ exactly one claim row, one slot, one `run.started`), `TestLostStartResponseIsMine`, `TestReconcileAdoptsPredecessorStart`; CHAOS-3 end to end.
 

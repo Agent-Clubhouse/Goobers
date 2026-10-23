@@ -54,7 +54,9 @@ func TestRecoveryNotMineReleasesOnlyProvisionalCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	starter := intentStarter(func(context.Context, RunInput) (StartResult, error) { return StartResult{NotMine: true}, nil })
+	starter := intentStarter(func(context.Context, RunInput) (StartResult, error) {
+		return StartResult{NotMine: true}, errors.New("stale lease")
+	})
 	if err := recoverStartIntent(t.Context(), dir, intent, starter, nil, func(context.Context, RunInput) error { t.Fatal("NotMine awaited"); return nil }); err != nil {
 		t.Fatal(err)
 	}

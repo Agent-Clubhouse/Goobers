@@ -39,7 +39,7 @@ func (s *TemporalStarter) admit(ctx context.Context, in RunInput) (RunInput, err
 func (s *TemporalStarter) confirm(ctx context.Context, in RunInput, result StartResult) (StartResult, error) {
 	if s.admission != nil {
 		if err := s.admission.ConfirmStart(ctx, in, result); err != nil {
-			return StartResult{}, err
+			return result, err
 		}
 	}
 	return result, nil

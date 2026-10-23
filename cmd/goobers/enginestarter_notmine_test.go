@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 type reviewNotMineStarter struct {
 	directory string
+	fenceErr  error
 	t         *testing.T
 }
 
@@ -27,12 +29,25 @@ func (s reviewNotMineStarter) Start(_ context.Context, in engine.RunInput) (engi
 	if err != nil || len(pending) != 1 {
 		s.t.Fatalf("missing provisional custody during start: %+v, %v", pending, err)
 	}
-	return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+	return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, s.fenceErr
 }
 func TestReviewNotMineSuppressesCallerSideEffects(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		t.Run(fmt.Sprint("stale=", stale), func(t *testing.T) {
+			var fenceErr error
+			if stale {
+				fenceErr = errors.New("stale lease")
+			}
+			assertNotMineSuppressesEffects(t, fenceErr)
+		})
+	}
+}
+
+func assertNotMineSuppressesEffects(t *testing.T, fenceErr error) {
+	t.Helper()
 	temporal := &fakeEngineWorkflows{status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED, result: engine.RunResult{Status: engine.StatusCompleted, FinalState: "implement", NoWork: true}}
 	f := newEngineStarterFixture(t, temporal, &recordingEngineStarter{})
-	f.starter.runtime.Attach(reviewNotMineStarter{directory: filepath.Join(f.layout.SchedulerDir(), "engine-starts"), t: t}, &engineRunGuards{client: temporal}, f.live, time.Now)
+	f.starter.runtime.Attach(reviewNotMineStarter{directory: filepath.Join(f.layout.SchedulerDir(), "engine-starts"), t: t, fenceErr: fenceErr}, &engineRunGuards{client: temporal}, f.live, time.Now)
 	result, err := f.starter.Start(t.Context(), engineStartRequest("review-notmine"))
 	if !errors.Is(err, engine.ErrStartNotMine) {
 		t.Fatalf("NotMine error = %v", err)

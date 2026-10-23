@@ -82,11 +82,11 @@ func recoverStartIntent(ctx context.Context, directory string, intent StartInten
 	attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
 	result, err := starter.Start(attempt, intent.Input)
 	cancel()
-	if err != nil {
-		return err
-	}
 	if result.NotMine {
 		return ReleaseStart(directory, intent.Input.RunID)
+	}
+	if err != nil {
+		return err
 	}
 	if live == nil {
 		return errors.New("engine: recovery requires a live journal")

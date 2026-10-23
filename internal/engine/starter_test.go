@@ -247,6 +247,7 @@ func existingStart(t *testing.T, owner StartOwnerMemo) *TemporalStarter {
 		err: serviceerror.NewWorkflowExecutionAlreadyStarted("already started", "request", "execution"),
 		desc: &workflowservice.DescribeWorkflowExecutionResponse{
 			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+				Type: &commonpb.WorkflowType{Name: "Run"},
 				Memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{StartOwnerMemoKey: payload}},
 			},
 		},

@@ -1,17 +1,18 @@
 package engine
 
 import (
+	"testing"
+
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
-	"testing"
 )
 
 func TestReviewMissingMemoMustNotAdoptUnknownExecution(t *testing.T) {
 	f := &fakeStarter{err: serviceerror.NewWorkflowExecutionAlreadyStarted("exists", "r", "e"), desc: &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{}}}
 	s := &TemporalStarter{client: f, taskQueue: "cloud", admission: testStartAdmission{}}
 	r, e := s.Start(t.Context(), cloudStartInput(9))
-	if e == nil && r.Adopt {
+	if e != nil || r.Adopt || !r.NotMine {
 		t.Fatalf("adopted execution with no acceptance/owner evidence: %+v", r)
 	}
 }
@@ -36,7 +37,7 @@ func TestReviewLocalRemotePlacementIsNotCloudAdmission(t *testing.T) {
 }
 
 func TestStartFenceRefusesUnverifiableOwner(t *testing.T) {
-	for _, mode := range []string{"acceptance", "newer", "epoch-zero", "starter", "instance", "input", "malformed"} {
+	for _, mode := range []string{"acceptance", "newer", "epoch-zero", "starter", "instance", "input", "type", "malformed"} {
 		t.Run(mode, func(t *testing.T) {
 			in := cloudStartInput(7)
 			owner := StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: 7, StarterID: in.StarterID}
@@ -59,6 +60,9 @@ func TestStartFenceRefusesUnverifiableOwner(t *testing.T) {
 			}
 			if mode == "input" {
 				in.WorkflowName = "foreign"
+			}
+			if mode == "type" {
+				fake.desc.WorkflowExecutionInfo.Type.Name = "ForeignWorkflow"
 			}
 			if mode == "malformed" {
 				fake.desc.WorkflowExecutionInfo.Memo.Fields[StartOwnerMemoKey].Data = []byte("invalid-json")

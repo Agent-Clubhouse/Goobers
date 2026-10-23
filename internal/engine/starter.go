@@ -207,6 +207,9 @@ func (s *TemporalStarter) classifyExisting(ctx context.Context, in RunInput) (St
 	if description == nil || description.GetWorkflowExecutionInfo() == nil {
 		return StartResult{}, errors.New("engine: existing execution description is incomplete")
 	}
+	if description.GetWorkflowExecutionInfo().GetType().GetName() != "Run" {
+		return StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+	}
 	fields := description.GetWorkflowExecutionInfo().GetMemo().GetFields()
 	payload, exists := fields[StartOwnerMemoKey]
 	if !exists {
