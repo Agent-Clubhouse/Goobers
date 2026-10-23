@@ -322,8 +322,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// the run being emitted for. Env token still wins when present, which
 		// keeps the single-run/pod posture working unchanged.
 		emitter := &livejournal.HTTPEmitter{
-			BaseURL: *daemonAPI,
-			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
+			TerminalWorkerID: workerhost.Identity(version.Get().Version),
+			BaseURL:          *daemonAPI,
+			Token:            workerEnvOr("GOOBERS_POD_TOKEN", ""),
 		}
 		if emitter.Token == "" {
 			cfg, cerr := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
