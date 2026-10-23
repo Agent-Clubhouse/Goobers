@@ -121,7 +121,7 @@ func (r *runJournal) rollbackUnemitted(m journalMark) {
 func (r *runJournal) emitFailure(ctx workflow.Context, stage string, attempt int, err error) {
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: journal.AttemptInfra,
-		Error:  journal.ErrorDetailFor(JournalEmitFailedErrorCode, err),
+		Error:  domainErrorDetailFor(JournalEmitFailedErrorCode, err),
 		Runner: map[string]any{"retryFailureClass": string(journal.AttemptInfra)},
 	})
 }

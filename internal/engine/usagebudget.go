@@ -7,6 +7,7 @@ import (
 
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -48,19 +49,9 @@ func (c *activityUsageCollector) snapshot() AttemptUsage {
 }
 
 // Keep retry-at at detail zero (the existing infrastructure error contract);
-// usage occupies detail one and survives Temporal's error serialization.
+// usage shares the versioned evidence at detail one with the domain envelope.
 func agenticUsageError(err error, usage AttemptUsage) error {
-	var app *temporal.ApplicationError
-	if !errors.As(err, &app) {
-		return err
-	}
-	var retryAt time.Time
-	if app.HasDetails() {
-		_ = app.Details(&retryAt)
-	}
-	return temporal.NewApplicationErrorWithOptions(app.Message(), app.Type(), temporal.ApplicationErrorOptions{
-		NonRetryable: app.NonRetryable(), Cause: app.Unwrap(), Details: []interface{}{retryAt, usage},
-	})
+	return withDispatchFailureEvidence(err, dispatcher.Report{}, &usage, usage.Unavailable)
 }
 func dispatchFailureUsage(err error) AttemptUsage {
 	for current := err; current != nil; current = errors.Unwrap(current) {

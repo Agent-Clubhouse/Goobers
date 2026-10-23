@@ -28,12 +28,12 @@ import (
 )
 
 var localBaselineDigests = map[string]string{
-	"retry-artifact-inputs-and-gates": "sha256:f2d85fc2231a0f9610f855c62258898d07cea1877ae6d2777d2585b1d5b90019",
+	"retry-artifact-inputs-and-gates": "sha256:367154a223e1cb782e85eb51754dd98890876dd9683ca69dc0b5e0f345a95c3b",
 	"human-gate":                      "sha256:4ade0f52fc3ab78b2202dbdfb128b91dcdae2310124709df5575c4bae95489bf",
 	"stage-boundary-cancellation":     "sha256:69ad5302bca5ab6e5806c546193bf842f8ebea0122f642b0e7a44ecccd3e56e6",
 	"gate-fail-rerun":                 "sha256:fc5e7bfff6eefcdf64bca32e0ac76b97e68776a6b2f5c0036a470a6375cb0dc5",
 	"terminal-resume":                 "sha256:bcfc16278dbce9969be24de7dfd240c87e3960109399e9b6c79c923396ac1066",
-	"infrastructure-retry":            "sha256:53c21e89ac10d619a2ad13c70548dc9f4e7f3744687d01b0d7a1fec57796919d",
+	"infrastructure-retry":            "sha256:4020c3810b2d63ea427856a7952211490e4f134d71f87bfc2cccbccd4d612dbc",
 }
 
 func TestLocalJournalEquivalenceBaseline(t *testing.T) {
@@ -42,6 +42,9 @@ func TestLocalJournalEquivalenceBaseline(t *testing.T) {
 			var baseline canonicalRun
 			for repetition := 0; repetition < 3; repetition++ {
 				got := runScenario(t, scenario)
+				if scenario.name == "infrastructure-retry" {
+					assertDomainInfrastructureError(t, got)
+				}
 				if repetition == 0 {
 					baseline = got
 					if digest := canonicalDigest(t, got); digest != localBaselineDigests[scenario.name] {
@@ -615,4 +618,28 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
+}
+
+// Infrastructure failures retain the invoke marker and underlying cause, not
+// unary errors.Join wrappers from successful cleanup or mutation reporting.
+func assertDomainInfrastructureError(t *testing.T, run canonicalRun) {
+	t.Helper()
+	for _, raw := range run.Events {
+		var event struct {
+			Type   journal.EventType
+			Error  *journal.ErrorDetail
+			Runner map[string]any
+		}
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != journal.EventError {
+			continue
+		}
+		if event.Error == nil || event.Error.Message != "fixture infrastructure retry" || len(event.Error.Causes) != 2 || event.Runner["errorClass"] != "infra" || event.Runner["errorCode"] != "infra.failure" {
+			t.Fatalf("domain error drift: %+v, runner=%v", event.Error, event.Runner)
+		}
+		return
+	}
+	t.Fatal("infrastructure retry recorded no error")
 }
