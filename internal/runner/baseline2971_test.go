@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -228,7 +229,7 @@ func TestInheritedPlatformDeadcodeFailureParksTheRun(t *testing.T) {
 
 	if res.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated: an inherited failure parks as %s instead of repassing",
-			res.Phase, SharedBaselineFailureCode)
+			res.Phase, runsemantics.SharedBaselineFailureCode)
 	}
 	annotations := baselineAnnotations(t, runsDir, runID)
 	if len(annotations) != 1 {
@@ -317,7 +318,7 @@ func TestBaselineCandidateOnlyMatchesGenericLocalCIFailures(t *testing.T) {
 		want   bool
 	}{
 		{"local ci nonzero exit", localCI, failure("nonzero_exit"), true},
-		{"typed sync conflict", localCI, failure(BaseSyncConflictErrorCode), false},
+		{"typed sync conflict", localCI, failure(runsemantics.BaseSyncConflictErrorCode), false},
 		{"another stage", apiv1.Task{Name: "implement", Type: apiv1.TaskDeterministic}, failure("nonzero_exit"), false},
 		{"agentic stage named local-ci", apiv1.Task{Name: localCIStageName, Type: apiv1.TaskAgentic}, failure("nonzero_exit"), false},
 		{"success", localCI, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, false},
@@ -345,10 +346,10 @@ func TestApplyBaselineDecision(t *testing.T) {
 	if !changed {
 		t.Fatal("changed = false, want the parked disposition applied")
 	}
-	if parked.Error.Code != SharedBaselineFailureCode || parked.Error.Retryable {
-		t.Fatalf("error = %+v, want a non-retryable %s", parked.Error, SharedBaselineFailureCode)
+	if parked.Error.Code != runsemantics.SharedBaselineFailureCode || parked.Error.Retryable {
+		t.Fatalf("error = %+v, want a non-retryable %s", parked.Error, runsemantics.SharedBaselineFailureCode)
 	}
-	if !isNonRetryableEscalation(parked.Error) {
+	if !runsemantics.IsNonRetryableEscalation(parked.Error) {
 		t.Fatal("the parked disposition must be a recognized non-retryable escalation")
 	}
 

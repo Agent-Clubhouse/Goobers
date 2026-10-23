@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -159,7 +160,7 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 		if err := json.Unmarshal(conflictData, &conflict); err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("decode local-ci conflict context: %w", err)
 		}
-		if conflict.Code != baseSyncConflictErrorCode || conflict.Branch == "" || conflict.BaseRef != "main" ||
+		if conflict.Code != runsemantics.BaseSyncConflictErrorCode || conflict.Branch == "" || conflict.BaseRef != "main" ||
 			len(conflict.ConflictingFiles) != 1 || conflict.ConflictingFiles[0] != "README.md" {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("local-ci conflict context = %+v, want README.md conflict against main", conflict)
 		}
@@ -424,16 +425,16 @@ func TestRunnerRoutesBatchLoadBaseSyncConflictsThroughBoundedRemediation(t *test
 					t.Fatalf("base sync conflict was journaled as executor_error: %+v", event.Error)
 				}
 				if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) &&
-					event.Error != nil && event.Error.Code == baseSyncConflictErrorCode {
+					event.Error != nil && event.Error.Code == runsemantics.BaseSyncConflictErrorCode {
 					conflictCount++
 				}
 				if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultSuccess) {
 					successfulCI = true
 				}
-				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == retryDecisionKind &&
-					event.Runner["failureCode"] == baseSyncConflictErrorCode {
-					if event.Runner[retryFailureClassKey] != string(journal.AttemptPolicy) {
-						t.Fatalf("retry failure class = %v, want %s", event.Runner[retryFailureClassKey], journal.AttemptPolicy)
+				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == runsemantics.RetryDecisionKind &&
+					event.Runner["failureCode"] == runsemantics.BaseSyncConflictErrorCode {
+					if event.Runner[runsemantics.RetryFailureClassKey] != string(journal.AttemptPolicy) {
+						t.Fatalf("retry failure class = %v, want %s", event.Runner[runsemantics.RetryFailureClassKey], journal.AttemptPolicy)
 					}
 					retryAttempts = append(retryAttempts, int(event.Runner["repassAttempt"].(float64)))
 				}
@@ -534,7 +535,7 @@ func TestRunnerResumesConflictRetryFromDurableGateDecision(t *testing.T) {
 				{Type: journal.EventStageStarted, Stage: "local-ci", Attempt: 1},
 				{
 					Type: journal.EventStageFinished, Stage: "local-ci", Attempt: 1, Status: string(apiv1.ResultFailure),
-					Error: &journal.ErrorDetail{Code: baseSyncConflictErrorCode, Message: "base moved during sync"},
+					Error: &journal.ErrorDetail{Code: runsemantics.BaseSyncConflictErrorCode, Message: "base moved during sync"},
 				},
 				{Type: journal.EventGatePaused, Gate: "local-gate"},
 				{Type: journal.EventGateStarted, Gate: "local-gate", Runner: map[string]any{"repassAttempt": repassAttempt}},
@@ -551,8 +552,8 @@ func TestRunnerResumesConflictRetryFromDurableGateDecision(t *testing.T) {
 				if err := jr.Append(journal.Event{
 					Type: journal.EventRunnerAnnotation, Stage: "local-ci", Gate: "local-gate",
 					Runner: map[string]any{
-						"kind": retryDecisionKind, retryFailureClassKey: string(journal.AttemptPolicy),
-						"failureCode": baseSyncConflictErrorCode, "repassAttempt": repassAttempt, "target": target,
+						"kind": runsemantics.RetryDecisionKind, runsemantics.RetryFailureClassKey: string(journal.AttemptPolicy),
+						"failureCode": runsemantics.BaseSyncConflictErrorCode, "repassAttempt": repassAttempt, "target": target,
 					},
 				}); err != nil {
 					t.Fatalf("append retry annotation: %v", err)
@@ -564,8 +565,8 @@ func TestRunnerResumesConflictRetryFromDurableGateDecision(t *testing.T) {
 					{
 						Type: journal.EventStageFinished, Stage: target, Attempt: 1, AttemptClass: journal.AttemptInfra,
 						Status: string(apiv1.ResultFailure),
-						Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
-						Runner: map[string]any{interruptedAttemptMarkerKey: true},
+						Error:  &journal.ErrorDetail{Code: runsemantics.InterruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
+						Runner: map[string]any{runsemantics.InterruptedAttemptMarkerKey: true},
 					},
 				} {
 					if err := jr.Append(event); err != nil {
@@ -580,7 +581,7 @@ func TestRunnerResumesConflictRetryFromDurableGateDecision(t *testing.T) {
 					{Type: journal.EventStageStarted, Stage: "local-ci", Attempt: 1},
 					{
 						Type: journal.EventStageFinished, Stage: "local-ci", Attempt: 1, Status: string(apiv1.ResultFailure),
-						Error: &journal.ErrorDetail{Code: baseSyncConflictErrorCode, Message: "base moved again during sync"},
+						Error: &journal.ErrorDetail{Code: runsemantics.BaseSyncConflictErrorCode, Message: "base moved again during sync"},
 					},
 				} {
 					if err := jr.Append(event); err != nil {
@@ -626,7 +627,7 @@ func TestRunnerResumesConflictRetryFromDurableGateDecision(t *testing.T) {
 				if event.Type == journal.EventGateEvaluated && event.Gate == "local-gate" && event.Verdict == gate.OutcomeFail {
 					failedVerdicts++
 				}
-				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == retryDecisionKind {
+				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == runsemantics.RetryDecisionKind {
 					retryDecisions++
 				}
 				if event.Type == journal.EventStageFinished && event.Stage == "local-ci" && event.Status == string(apiv1.ResultSuccess) {
@@ -686,7 +687,7 @@ func TestRunnerPrepareConflictFailureClassRepassesImplement(t *testing.T) {
 	}
 	sawConflict, sawFail := false, false
 	for _, event := range events {
-		if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Error != nil && event.Error.Code == baseSyncConflictErrorCode {
+		if event.Stage == "local-ci" && event.Type == journal.EventStageFinished && event.Error != nil && event.Error.Code == runsemantics.BaseSyncConflictErrorCode {
 			sawConflict = true
 		}
 		if event.Gate == "local-gate" && event.Type == journal.EventGateEvaluated {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // Preserve the simple verifier seam for embedders while allowing the production
@@ -17,7 +18,7 @@ func (r *Runner) verifyToolchains(ctx context.Context, in StartInput) (retErr er
 	if !ok {
 		return r.toolchains.Verify(ctx, in.RequiredCapabilities)
 	}
-	if !machineUsesRepo(in.Machine) {
+	if !runsemantics.MachineUsesRepo(in.Machine) {
 		return v.VerifyIn(ctx, in.RequiredCapabilities, "")
 	}
 	if in.pinnedWorkspace != nil {

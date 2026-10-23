@@ -1,104 +1,104 @@
 package engine
 
-// Parity rows E10-learning-episode-injection, E10-learning-episode-not-injected
-// and E10-learning-episode-forward-branch — plan item E10 (#3913). The
-// production-shaped infrastructure sibling of the third lives next door in
-// parity_row_learning_episode_infra_test.go.
-//
-// Inventory row (finding 002): "Learning-episode injection on the generic gate
-// retry arm (recordLearningInjection): a repassing gate records a
-// learning/episode-<gate>-<seq>.json artifact, threads a learning.episode[<seq>]
-// derived-integrity context pointer into the re-entered stage, and writes a
-// learning.episode.injected runner.annotation carrying episodeId, signature,
-// classification, recommendedAction, findingIdentities and correctionFeedback.
-// Lane-agnostic: learningFindingsForRepass has an explicit non-verdict fallback,
-// so it fires for deterministic stages too."
-// Runner site: internal/runner/run.go's retry arm (~2091) and
-// recordLearningInjection (~2123). Engine: (*runJournal).learningEpisode on the
-// recordWalkArtifact seam, called from walk's gate arm.
-//
-// # Why this is its own row rather than E5's, and what it compares
-//
-// The producer half of the learning behaviour sits on the GENERIC retry arm —
-// `if retry { … }` after routeRetryDecision, with no lane, executor-type or
-// verdict condition — while E5/#3882's reconcileLearningFindings and
-// disproveReviewerFindings are verdict-gated consumers. This row therefore
-// walks a purely DETERMINISTIC fixture: if the injection only reproduced behind
-// a reviewer, the split would be wrong.
-//
-// It compares the three surfaces #3913 measured as divergent, plus the walk:
-//
-//   - ENVELOPE: the re-entered stage carries learning.episode[<seq>], with the
-//     same pointer NAME (which encodes the corrected event's journal sequence)
-//     and the same derived integrity grade on both sides.
-//   - CONFORMANCE: artifact.recorded for learning/episode-<gate>-<seq>.json.
-//   - CONFORMANCE, one step removed and the one that actually changes routing:
-//     the re-entered stage's stage.finished INTEGRITY. The injected pointer is
-//     derived and produced integrity is the floor of a stage's inputs, so the
-//     repassed stage grades derived rather than trusted. minimumIntegrity is
-//     admission control, so a side that skipped the pointer would make a
-//     different admission decision for the same definition on the same failure
-//     — asserted explicitly here rather than left to ride along inside the
-//     conformance diff, because that is the failure mode worth naming.
-//
-// checkAllSurfaces covers the first two (the harness's shared differs); the
-// third and the episode's own content-addressed identity are compared field by
-// field below, off the RAW event log, because runner.annotation lives in the
-// runner.* namespace and journal.IsConformanceNormative excludes that whole
-// namespace by prefix.
-//
-// # Parallels
-//
-// internal/runner's retry arm has TWO further routes for the pointer, both
-// branch-scoped: parallel.recordCurrentPointer, taken when stepGate runs inside
-// a sequentially-executed branch, and runBranch's own accumulator, taken when
-// maxConcurrentBranches > 1. There is deliberately no engine counterpart and no
-// parity row for either — spec.parallels is REFUSED at run start on the engine
-// (registryrefusal.go, ruling R9), so the engine walk can never reach a retry
-// arm inside a branch — and a parity row is impossible for the same reason:
-// the engine side of such a fixture never starts. The claim is pinned as an
-// executable one instead, by TestLearningEpisodeParallelRouteIsRunnerOnly in
-// learningepisode_test.go, which exercises the runner's branch-scoped route and
-// asserts the engine's refusal beside it. If parallels ever start walking on
-// the engine, that test goes red and the branch-scoped routes must be ported
-// with it.
-//
-// #3932 closed the divergence BETWEEN those two runner routes. runBranch used
-// to carry a hand-copied half of the arm — the verdict pointer and not the
-// learning episode — so maxConcurrentBranches, a scheduling bound, decided
-// whether a repass received its correction. Both walkers now share one producer
-// (runner.recordGateRetryInjection), and the equivalence is pinned by
-// TestConcurrentAndSequentialBranchesInjectTheSameCorrection. That removes the
-// prerequisite this note used to record for lifting R9: there is now one arm to
-// port rather than two that disagree.
-//
-// # The forward-branch ruling (#3929)
-//
-// #3917 registered E10-learning-episode-forward-branch as an expected failure:
-// on a retryable failure whose gate branch routes ONWARD to a stage that has
-// never run, the runner injected an episode and the engine did not. The ruling
-// that settled it is that the engine was right for the wrong reason, and the
-// right reason is now spelled once, in runner.LearningEpisodeAppliesToRepass:
-// an episode is injected IFF the gate result's repass attempt is at least 1.
-//
-// The engine used to answer the same question with its own re-derived
-// gateSendsBack predicate (implementationlane.go), which happened to agree with
-// the repass attempt at that call site but was a second derivation of a fact
-// the gate had already computed and journalled. It is gone; both drivers now
-// read the evidenced attempt. Nothing else moved: retry classification, the
-// stage.retry.decision annotation (still written, still carrying repassAttempt
-// 0 on a forward branch), routeRetryDecision's return, the routing itself and
-// parallel failure accounting are all untouched — which is what the E2 rows
-// and internal/runner's own forward-branch regressions pin.
-
 import (
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// Parity rows E10-learning-episode-injection, E10-learning-episode-not-injected
+	// and E10-learning-episode-forward-branch — plan item E10 (#3913). The
+	// production-shaped infrastructure sibling of the third lives next door in
+	// parity_row_learning_episode_infra_test.go.
+	//
+	// Inventory row (finding 002): "Learning-episode injection on the generic gate
+	// retry arm (recordLearningInjection): a repassing gate records a
+	// learning/episode-<gate>-<seq>.json artifact, threads a learning.episode[<seq>]
+	// derived-integrity context pointer into the re-entered stage, and writes a
+	// learning.episode.injected runner.annotation carrying episodeId, signature,
+	// classification, recommendedAction, findingIdentities and correctionFeedback.
+	// Lane-agnostic: learningFindingsForRepass has an explicit non-verdict fallback,
+	// so it fires for deterministic stages too."
+	// Runner site: internal/runner/run.go's retry arm (~2091) and
+	// recordLearningInjection (~2123). Engine: (*runJournal).learningEpisode on the
+	// recordWalkArtifact seam, called from walk's gate arm.
+	//
+	// # Why this is its own row rather than E5's, and what it compares
+	//
+	// The producer half of the learning behaviour sits on the GENERIC retry arm —
+	// `if retry { … }` after routeRetryDecision, with no lane, executor-type or
+	// verdict condition — while E5/#3882's reconcileLearningFindings and
+	// disproveReviewerFindings are verdict-gated consumers. This row therefore
+	// walks a purely DETERMINISTIC fixture: if the injection only reproduced behind
+	// a reviewer, the split would be wrong.
+	//
+	// It compares the three surfaces #3913 measured as divergent, plus the walk:
+	//
+	//   - ENVELOPE: the re-entered stage carries learning.episode[<seq>], with the
+	//     same pointer NAME (which encodes the corrected event's journal sequence)
+	//     and the same derived integrity grade on both sides.
+	//   - CONFORMANCE: artifact.recorded for learning/episode-<gate>-<seq>.json.
+	//   - CONFORMANCE, one step removed and the one that actually changes routing:
+	//     the re-entered stage's stage.finished INTEGRITY. The injected pointer is
+	//     derived and produced integrity is the floor of a stage's inputs, so the
+	//     repassed stage grades derived rather than trusted. minimumIntegrity is
+	//     admission control, so a side that skipped the pointer would make a
+	//     different admission decision for the same definition on the same failure
+	//     — asserted explicitly here rather than left to ride along inside the
+	//     conformance diff, because that is the failure mode worth naming.
+	//
+	// checkAllSurfaces covers the first two (the harness's shared differs); the
+	// third and the episode's own content-addressed identity are compared field by
+	// field below, off the RAW event log, because runner.annotation lives in the
+	// runner.* namespace and journal.IsConformanceNormative excludes that whole
+	// namespace by prefix.
+	//
+	// # Parallels
+	//
+	// internal/runner's retry arm has TWO further routes for the pointer, both
+	// branch-scoped: parallel.recordCurrentPointer, taken when stepGate runs inside
+	// a sequentially-executed branch, and runBranch's own accumulator, taken when
+	// maxConcurrentBranches > 1. There is deliberately no engine counterpart and no
+	// parity row for either — spec.parallels is REFUSED at run start on the engine
+	// (registryrefusal.go, ruling R9), so the engine walk can never reach a retry
+	// arm inside a branch — and a parity row is impossible for the same reason:
+	// the engine side of such a fixture never starts. The claim is pinned as an
+	// executable one instead, by TestLearningEpisodeParallelRouteIsRunnerOnly in
+	// learningepisode_test.go, which exercises the runner's branch-scoped route and
+	// asserts the engine's refusal beside it. If parallels ever start walking on
+	// the engine, that test goes red and the branch-scoped routes must be ported
+	// with it.
+	//
+	// #3932 closed the divergence BETWEEN those two runner routes. runBranch used
+	// to carry a hand-copied half of the arm — the verdict pointer and not the
+	// learning episode — so maxConcurrentBranches, a scheduling bound, decided
+	// whether a repass received its correction. Both walkers now share one producer
+	// (runner.recordGateRetryInjection), and the equivalence is pinned by
+	// TestConcurrentAndSequentialBranchesInjectTheSameCorrection. That removes the
+	// prerequisite this note used to record for lifting R9: there is now one arm to
+	// port rather than two that disagree.
+	//
+	// # The forward-branch ruling (#3929)
+	//
+	// #3917 registered E10-learning-episode-forward-branch as an expected failure:
+	// on a retryable failure whose gate branch routes ONWARD to a stage that has
+	// never run, the runner injected an episode and the engine did not. The ruling
+	// that settled it is that the engine was right for the wrong reason, and the
+	// right reason is now spelled once, in runner.LearningEpisodeAppliesToRepass:
+	// an episode is injected IFF the gate result's repass attempt is at least 1.
+	//
+	// The engine used to answer the same question with its own re-derived
+	// gateSendsBack predicate (implementationlane.go), which happened to agree with
+	// the repass attempt at that call site but was a second derivation of a fact
+	// the gate had already computed and journalled. It is gone; both drivers now
+	// read the evidenced attempt. Nothing else moved: retry classification, the
+	// stage.retry.decision annotation (still written, still carrying repassAttempt
+	// 0 on a forward branch), routeRetryDecision's return, the routing itself and
+	// parallel failure accounting are all untouched — which is what the E2 rows
+	// and internal/runner's own forward-branch regressions pin.
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -494,14 +494,14 @@ func learningEpisodes(side paritySide) []learningEpisodeRecord {
 		if e.Type != journal.EventRunnerAnnotation || e.Runner == nil {
 			continue
 		}
-		if kind, _ := e.Runner["kind"].(string); kind != runner.LearningEpisodeInjectedKind {
+		if kind, _ := e.Runner["kind"].(string); kind != runsemantics.LearningEpisodeInjectedKind {
 			continue
 		}
 		sourceSeq := uint64(annotationInt(e.Runner, "sourceSeq"))
 		artifact, ok := recorded[e.Name]
 		record := learningEpisodeRecord{
 			ArtifactName:      e.Name,
-			PointerName:       runner.LearningEpisodePointerName(sourceSeq),
+			PointerName:       runsemantics.LearningEpisodePointerName(sourceSeq),
 			Stage:             e.Stage,
 			Subject:           annotationString(e.Runner, "sourceStage"),
 			Target:            annotationString(e.Runner, "target"),

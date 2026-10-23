@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
@@ -114,7 +114,7 @@ func TestDSL31EngineEnforcesExpectedOutputs(t *testing.T) {
 			if result.Status != wantStatus || consumed != (wantStatus == StatusCompleted) {
 				t.Fatalf("status = %s consumed = %v, want %s: %+v", result.Status, consumed, wantStatus, result)
 			}
-			if wantStatus == StatusFailed && (result.FailureCode != runner.MissingExpectedOutputsCode || result.FinalState != "produce" ||
+			if wantStatus == StatusFailed && (result.FailureCode != runsemantics.MissingExpectedOutputsCode || result.FinalState != "produce" ||
 				!strings.Contains(result.FailureMessage, `["trace"]`)) {
 				t.Fatalf("failure = %s at %s: %s", result.FailureCode, result.FinalState, result.FailureMessage)
 			}

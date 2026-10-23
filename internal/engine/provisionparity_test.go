@@ -20,8 +20,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/goobers/goobers/internal/livejournal"
-
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -29,7 +27,9 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workerhost"
@@ -343,9 +343,9 @@ func TestCrossRunnerPersistentProvisioningStopsAtTheInfrastructureBound(t *testi
 				t.Errorf("%s: terminal error = %q, want the original 503 cause preserved", got, got.err)
 			}
 			requireTransientPremise(t, got, "503")
-			if len(got.attempts) != int(runner.DefaultMaxInfrastructureAttempts) {
+			if len(got.attempts) != int(runsemantics.DefaultMaxInfrastructureAttempts) {
 				t.Errorf("%s: attempts = %d (%s), want %d (the shared infrastructure bound)",
-					got, len(got.attempts), formatAttemptClasses(got.attempts), runner.DefaultMaxInfrastructureAttempts)
+					got, len(got.attempts), formatAttemptClasses(got.attempts), runsemantics.DefaultMaxInfrastructureAttempts)
 			}
 			if got.execCalls != 0 {
 				t.Errorf("%s: executor called %d times, want 0 — provisioning never succeeded", got, got.execCalls)

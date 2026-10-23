@@ -12,7 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // Failure types stamped onto activity errors so an attempt's class survives
@@ -56,18 +56,18 @@ const reservedHeadMovedCode = "workspace_head_moved_unattested"
 // result file, or an in-process executor's — and is renamed so it fails like
 // any other stage failure instead of skipping gate routing and every streak.
 func admitWorkspaceHeadMoved(result *apiv1.ResultEnvelope, attested bool) {
-	if attested || result.Error == nil || result.Error.Code != runner.WorkspaceHeadMovedErrorCode {
+	if attested || result.Error == nil || result.Error.Code != runsemantics.WorkspaceHeadMovedErrorCode {
 		return
 	}
 	result.Error.Code = reservedHeadMovedCode
-	result.Error.Message = "stage reported the runtime-reserved code " + runner.WorkspaceHeadMovedErrorCode + ": " + result.Error.Message
+	result.Error.Message = "stage reported the runtime-reserved code " + runsemantics.WorkspaceHeadMovedErrorCode + ": " + result.Error.Message
 }
 
 // workspaceHeadMovedResult reports whether a stage's surrendered failure is a
 // pull request head that moved under the run (#6019). Only an attested code
 // survives admitWorkspaceHeadMoved to reach here.
 func workspaceHeadMovedResult(result apiv1.ResultEnvelope) bool {
-	return result.Status == apiv1.ResultFailure && result.Error != nil && result.Error.Code == runner.WorkspaceHeadMovedErrorCode
+	return result.Status == apiv1.ResultFailure && result.Error != nil && result.Error.Code == runsemantics.WorkspaceHeadMovedErrorCode
 }
 
 // gateEvaluationFailed is the walk's answer to a gate evaluation that
@@ -133,9 +133,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	}
 	// The infrastructure budget includes its triggering failure, so it can add
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
-	maxAttempts := policyMaxAttempts + runner.DefaultMaxInfrastructureAttempts - 1
+	maxAttempts := policyMaxAttempts + runsemantics.DefaultMaxInfrastructureAttempts - 1
 
-	var usageBudget runner.StageUsageBudget
+	var usageBudget runsemantics.StageUsageBudget
 	var policyAttempts, infrastructureFailures, priorAttemptDeferrals int32
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
@@ -258,11 +258,11 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			lastErr = emitErr
 			infrastructureFailures++
 			nextRetryClass = journal.AttemptInfra
-			if infrastructureFailures >= runner.DefaultMaxInfrastructureAttempts {
-				rec.exhaustedTerminalRetry(t.Name, journal.AttemptInfra, int(infrastructureFailures), int(runner.DefaultMaxInfrastructureAttempts))
+			if infrastructureFailures >= runsemantics.DefaultMaxInfrastructureAttempts {
+				rec.exhaustedTerminalRetry(t.Name, journal.AttemptInfra, int(infrastructureFailures), int(runsemantics.DefaultMaxInfrastructureAttempts))
 				return apiv1.ResultEnvelope{}, fmt.Errorf(
 					"engine: journal stage %q: %w (attempt %d/%d)",
-					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
+					t.Name, lastErr, infrastructureFailures, runsemantics.DefaultMaxInfrastructureAttempts)
 			}
 			if retryDelay := infrastructureRetryDelay(emitErr, backoff, workflow.Now(ctx)); retryDelay > 0 {
 				if serr := sleepBeforeRetry(ctx, rec, t.Name, int(attempt), nextRetryClass, retryDelay); serr != nil {
@@ -293,8 +293,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		nextRetryClass = journal.AttemptPolicy
 		if failureClass == journal.AttemptInfra {
 			chargeInfraFailure(err, &infrastructureFailures, &priorAttemptDeferrals, &maxAttempts)
-			retryLimit, retryCount = runner.DefaultMaxInfrastructureAttempts, infrastructureFailures
-			shouldRetry = infrastructureFailures < runner.DefaultMaxInfrastructureAttempts
+			retryLimit, retryCount = runsemantics.DefaultMaxInfrastructureAttempts, infrastructureFailures
+			shouldRetry = infrastructureFailures < runsemantics.DefaultMaxInfrastructureAttempts
 			nextRetryClass = journal.AttemptInfra
 		}
 		if !shouldRetry {

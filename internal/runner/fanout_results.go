@@ -5,6 +5,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -139,7 +140,7 @@ func reconstructFanOutResults(runID string, events []journal.Event, machine *wor
 				occurrences[key] = journal.StageOccurrence(runID, e, occurrences[key])
 			}
 		case journal.EventStageFinished:
-			if open == "" || e.Branch < 1 || isInterruptedAttemptMarker(e) {
+			if open == "" || e.Branch < 1 || runsemantics.IsInterruptedAttemptMarker(e) {
 				continue
 			}
 			occurrence := occurrences[branchStage{e.Branch, e.Stage}]
