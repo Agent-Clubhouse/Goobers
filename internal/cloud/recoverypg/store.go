@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -70,22 +69,22 @@ func (s Store) Publish(ctx context.Context, handle *lease.Handle, record recover
 				version, ref, base_ref, base_sha, patch_digest, archive_digest, archive_bytes,
 				archive_format, bundle_key, identity_unix_ns, retain_until, owner_epoch)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now()+$15::interval, $16)
-			ON CONFLICT ON CONSTRAINT recovery_record_pkey DO NOTHING
+			ON CONFLICT DO NOTHING
 			RETURNING `+columns,
 			handle.InstanceID, record.RepositoryKey, record.RunID, record.SnapshotSHA,
 			record.Version, record.Ref, record.BaseRef, record.BaseSHA, record.PatchDigest,
 			record.ArchiveDigest, record.ArchiveBytes, record.ArchiveFormat, bundle,
 			record.CreatedAt.UnixNano(), retention, handle.Epoch))
 		if errors.Is(err, pgx.ErrNoRows) {
-			// A concurrent publish committed the key first; resolve against it.
+			// Every unique index is an arbiter (no conflict target), so a racing
+			// publish never surfaces as a unique violation. A committed record
+			// for the key resolves as an identical retry or ErrRecordConflict;
+			// otherwise the conflict was the bundle location, which another
+			// record holds.
 			if found, err = resolve(ctx, tx, handle, record, &indexed); !found && err == nil {
-				err = recovery.ErrRecordNotFound
+				err = fmt.Errorf("%w: %s", recovery.ErrBundleUnavailable, bundle)
 			}
 			return err
-		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.ConstraintName == "recovery_record_bundle_unique" {
-			return fmt.Errorf("%w: %s", recovery.ErrBundleUnavailable, bundle)
 		}
 		if err != nil {
 			return fmt.Errorf("insert recovery record: %w", err)
