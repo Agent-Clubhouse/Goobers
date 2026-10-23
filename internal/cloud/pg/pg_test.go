@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,20 @@ func TestPoolConfigRejectsOverBudgetDirectPool(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("over-budget direct pool accepted")
+	}
+}
+
+func TestPoolConfigParseErrorRedactsPassword(t *testing.T) {
+	const password = "do-not-log-this-password"
+	_, _, err := PoolConfigs(Config{
+		TransactionURL: "postgres://user:" + password + "@[invalid/goobers",
+		DirectURL:      testURL,
+	})
+	if err == nil {
+		t.Fatal("invalid connection URL accepted")
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Fatalf("parse error exposed password: %v", err)
 	}
 }
 

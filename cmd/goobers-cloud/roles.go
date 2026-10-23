@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -22,11 +24,17 @@ const (
 Serve the cloud control-plane API.
 
 Database options:
-  --database-url URL               PgBouncer transaction-pool URL
-  --database-direct-url URL        Direct PostgreSQL URL for session-bound work
+  --database-url URL               PgBouncer URL (prefer env/file for credentials)
+  --database-url-file PATH         Read PgBouncer URL from a mounted Secret
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
   --database-max-conns N           Total connection budget (default 16)
   --database-direct-max-conns N    Direct-pool reservation (default 2)
   --database-auth MODE             password or entra (default password)
+
+Environment:
+  GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 `
 	controllerHelp = `Usage: goobers-cloud controller [DATABASE OPTIONS]
 
@@ -114,8 +122,10 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	}
 	flags := flag.NewFlagSet(role, flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	transactionURL := flags.String("database-url", "", "PgBouncer transaction-pool URL")
-	directURL := flags.String("database-direct-url", "", "direct PostgreSQL URL")
+	transactionURLArg := flags.String("database-url", "", "PgBouncer transaction-pool URL")
+	transactionURLFile := flags.String("database-url-file", "", "file containing the PgBouncer transaction-pool URL")
+	directURLArg := flags.String("database-direct-url", "", "direct PostgreSQL URL")
+	directURLFile := flags.String("database-direct-url-file", "", "file containing the direct PostgreSQL URL")
 	maxConnections := flags.Int("database-max-conns", int(cloudpg.DefaultMaxConnections), "total database connection budget")
 	directConnections := flags.Int("database-direct-max-conns", int(cloudpg.DefaultDirectMaxConnections), "direct-pool connection reservation")
 	authMode := flags.String("database-auth", "password", "database authentication mode: password or entra")
@@ -126,12 +136,22 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		}
 		return 2
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*transactionURL) == "" || strings.TrimSpace(*directURL) == "" {
+	if flags.NArg() != 0 {
 		flags.Usage()
 		return 2
 	}
+	transactionURL, err := databaseURL(*transactionURLArg, *transactionURLFile, "GOOBERS_DATABASE_URL")
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: transaction database URL: %v\n", role, err)
+		return 2
+	}
+	directURL, err := databaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: direct database URL: %v\n", role, err)
+		return 2
+	}
 	config := cloudpg.Config{
-		TransactionURL: *transactionURL, DirectURL: *directURL,
+		TransactionURL: transactionURL, DirectURL: directURL,
 		MaxConnections: int32(*maxConnections), DirectMaxConnections: int32(*directConnections),
 	}
 	switch *authMode {
@@ -168,6 +188,29 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		return 1
 	}
 	return 0
+}
+
+func databaseURL(argument, filename, environment string) (string, error) {
+	if strings.TrimSpace(argument) != "" && strings.TrimSpace(filename) != "" {
+		return "", errors.New("choose either the URL argument or file, not both")
+	}
+	if value := strings.TrimSpace(argument); value != "" {
+		return value, nil
+	}
+	if strings.TrimSpace(filename) != "" {
+		content, err := os.ReadFile(filename)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", filename, err)
+		}
+		if value := strings.TrimSpace(string(content)); value != "" {
+			return value, nil
+		}
+		return "", fmt.Errorf("%s is empty", filename)
+	}
+	if value := strings.TrimSpace(os.Getenv(environment)); value != "" {
+		return value, nil
+	}
+	return "", fmt.Errorf("set the corresponding flag, file, or %s", environment)
 }
 
 func runWorkerRole(args []string, stdout, stderr io.Writer) int {
