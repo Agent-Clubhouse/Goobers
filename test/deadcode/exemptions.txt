@@ -357,6 +357,7 @@ github.com/goobers/goobers/internal/cloud/readmodelpg.truncateVersion # HA-P3-11
 github.com/goobers/goobers/internal/cloud/readmodelpg.validateFilters # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.versionDDL # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.versionSchema # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/blobstore.TouchReference # Safe physical blob GC writer qualification (#7843) exposes the shared digest-only reference seam before journal/recovery/child writers adopt it. expires=2026-11-22
 
 # HA-P3-14 (#7814) PostgreSQL recovery, cancel-receipt and terminal-report stores
 # land ahead of the goobers-cloud control role (#7818) that composes them. Remove on wiring.

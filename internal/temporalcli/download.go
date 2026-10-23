@@ -25,7 +25,7 @@ const (
 	// EnvVar names the offline override for a pre-existing Temporal CLI.
 	EnvVar = "GOOBERS_TEMPORAL_CLI"
 	// Version is the Temporal CLI release used by dev-server tests.
-	Version = "v1.8.2"
+	Version = "v1.9.0"
 
 	maxAttempts   = 4
 	baseDelay     = 250 * time.Millisecond

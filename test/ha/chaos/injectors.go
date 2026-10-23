@@ -351,10 +351,15 @@ func (f *CgroupFreeze) Revert(ctx context.Context) error {
 	if f.cgroup != "" {
 		err = f.setFrozen(ctx, false)
 	}
-	if derr := f.deleteHelper(ctx); err == nil {
-		err = derr
+	if err != nil {
+		// Keep the helper: deleting it would strand the freeze. Sweep retries.
+		return err
 	}
-	return err
+	if derr := f.deleteHelper(ctx); derr != nil {
+		return derr
+	}
+	f.helper, f.cgroup = "", ""
+	return nil
 }
 
 func (f *CgroupFreeze) setFrozen(ctx context.Context, frozen bool) error {

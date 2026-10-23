@@ -49,6 +49,27 @@ func TestDirRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTouchReferenceFallback(t *testing.T) {
+	t.Parallel()
+	store, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("referenced bytes")
+	digest := digestOf(data)
+	if err := store.Put(t.Context(), digest, data); err != nil {
+		t.Fatal(err)
+	}
+	if err := TouchReference(t.Context(), store, digest); err != nil {
+		t.Fatal(err)
+	}
+	if err := TouchReference(
+		t.Context(), store, digestOf([]byte("missing")),
+	); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing reference touch = %v, want ErrNotFound", err)
+	}
+}
+
 func TestDirCorruptBlobIsNotFoundAndPutRecovers(t *testing.T) {
 	t.Parallel()
 	store, err := NewDir(t.TempDir())
