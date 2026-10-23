@@ -44,10 +44,11 @@ func TestCHAOS13Contract(t *testing.T) {
 	fixture := &fakeFixture{
 		sideBefore: SideEffectObservation{
 			RunID: "run", Attempt: 2, StagePod: "stage-pod",
-			ChargedAttempts: 2,
+			StagePodUID: "uid-1", OwnerWorker: "worker-a", ChargedAttempts: 2,
 		},
 		sideAfter: SideEffectObservation{
 			RunID: "run", Attempt: 2, StagePod: "stage-pod",
+			StagePodUID: "uid-1", OwnerWorker: "worker-b",
 			Adopted: true, ChargedAttempts: 2, Terminal: true,
 		},
 	}
@@ -57,13 +58,28 @@ func TestCHAOS13Contract(t *testing.T) {
 	if !fixture.evicted {
 		t.Fatal("worker eviction was not injected")
 	}
-	fixture.sideAfter.StagePod = "second-pod"
-	if err := RunCHAOS13(t.Context(), fixture); err == nil {
-		t.Fatal("second pod passed CHAOS-13")
+	fixture.sideAfter.StagePod = "renamed-observation"
+	if err := RunCHAOS13(t.Context(), fixture); err != nil {
+		t.Fatalf("pod name changed with stable UID: %v", err)
 	}
-	fixture.sideBefore.StagePod = ""
+	fixture.sideAfter.StagePodUID = "uid-2"
 	if err := RunCHAOS13(t.Context(), fixture); err == nil {
-		t.Fatal("incomplete fixture evidence passed CHAOS-13")
+		t.Fatal("replacement pod UID passed CHAOS-13")
+	}
+	fixture.sideAfter.StagePodUID = fixture.sideBefore.StagePodUID
+	fixture.sideAfter.OwnerWorker = fixture.sideBefore.OwnerWorker
+	if err := RunCHAOS13(t.Context(), fixture); err == nil {
+		t.Fatal("unchanged owner worker passed CHAOS-13")
+	}
+	fixture.sideAfter.OwnerWorker = "worker-b"
+	fixture.sideBefore.ChargedAttempts = 0
+	if err := RunCHAOS13(t.Context(), fixture); err == nil {
+		t.Fatal("zero initial charged attempts passed CHAOS-13")
+	}
+	fixture.sideBefore.ChargedAttempts = 2
+	fixture.sideBefore.StagePodUID = ""
+	if err := RunCHAOS13(t.Context(), fixture); err == nil {
+		t.Fatal("missing pod UID passed CHAOS-13")
 	}
 }
 
