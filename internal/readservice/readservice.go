@@ -288,9 +288,6 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 	if sources.FleetAssociation == nil {
 		sources.FleetAssociation = defaultFleetAssociation
 	}
-	if sources.Journal == nil {
-		sources.Journal = fileJournalReader(sources.Layout)
-	}
 	now := time.Now
 	snapshot, err := newDefinitionSnapshot(sources.Definitions, sources.Validation, now())
 	if err != nil {
@@ -312,7 +309,7 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 		// every list while enabled, including closed-set refusals.
 		readModelReads: sources.ReadModel != nil,
 	}
-	local.instanceLog.backend = sources.Journal
+	local.instanceLog.backend = local.journalReader()
 	local.definitions.Store(snapshot)
 	return local, nil
 }
@@ -329,6 +326,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 // lower-level filesystem operation does not return within five seconds.
 func (s *Local) StartActiveRunSampler(interval time.Duration) func() error {
 	sampler := newActiveRunSampler(s.sources.Layout, interval, s.now)
+	if s.sources.Journal != nil {
+		sampler.walk = s.backendActiveRunCounts
+	}
 	if s.readModelReads && s.sources.ReadModel != nil {
 		sampler.walk = s.projectedActiveRunCounts
 	}
@@ -404,22 +404,11 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 	if err := ctx.Err(); err != nil {
 		return Health{}, err
 	}
-	// #2265: resolve through the generation pointer rather than the legacy
-	// bare "events.jsonl" name — that path goes frozen (its mtime stops
-	// advancing) the first time in-daemon compaction rotates the journal to
-	// a new generation, which would make this freshness check falsely go
-	// stale on any instance that has ever compacted.
-	eventsPath, err := journal.InstanceEventsPath(s.sources.Layout.SchedulerDir())
+	journalUpdatedAt, err := s.instanceJournalUpdatedAt(ctx)
 	if err != nil {
-		return Health{}, fmt.Errorf("resolve instance journal path: %w", err)
+		return Health{}, err
 	}
-	info, err := os.Stat(eventsPath)
-	if err != nil {
-		return Health{}, fmt.Errorf("read instance journal freshness: %w", err)
-	}
-
 	observedAt := s.now().UTC()
-	journalUpdatedAt := info.ModTime().UTC()
 	definitions := s.definitions.Load()
 	ref := definitions.set.Manifest.Spec.Instance
 	healthy := true

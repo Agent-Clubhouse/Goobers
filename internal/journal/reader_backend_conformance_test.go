@@ -3,8 +3,10 @@ package journal_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -102,6 +104,113 @@ func journalReaderBackendConformance(factory readerBackendFactory) error {
 	}
 	if len(instance) != 1 || instance[0].Seq != 2 || instance[0].Type != journal.EventRunnerAnnotation || instance[0].Name != "second" {
 		return fmt.Errorf("instance read = %+v", instance)
+	}
+	if err := readerHandleConformance(ctx, backend, ref, reader); err != nil {
+		return err
+	}
+	return readerPageContinuation(ctx, backend, ref)
+}
+
+func readerPageContinuation(ctx context.Context, backend journal.ReaderBackend, ref journal.RunRef) error {
+	records, err := backend.ReadEvents(ctx, ref, 3, 1)
+	if err != nil {
+		return err
+	}
+	if len(records) != 1 || records[0].Event.Seq != 4 || records[0].Event.Name != "surplus" {
+		return fmt.Errorf("continued event page = %+v", records)
+	}
+	events, err := backend.InstanceRead(ctx, 2, 1)
+	if err != nil {
+		return err
+	}
+	if len(events) != 1 || events[0].Seq != 3 || events[0].Name != "third" {
+		return fmt.Errorf("continued instance page = %+v", events)
+	}
+	events, err = backend.InstanceRead(ctx, 3, 1)
+	if err != nil || len(events) != 0 {
+		return fmt.Errorf("instance past end = %+v: %v", events, err)
+	}
+	return nil
+}
+
+func readerHandleConformance(ctx context.Context, backend journal.ReaderBackend, ref journal.RunRef, reader journal.RunReader) error {
+	records, err := backend.ReadEvents(ctx, ref, 0, 0)
+	if err != nil {
+		return err
+	}
+	if len(records) != 6 {
+		return fmt.Errorf("all event records = %d", len(records))
+	}
+	if !bytes.Equal(records[1].Raw, []byte(unknownReaderRecord)) {
+		return errors.New("original raw bytes including unknown fields were changed")
+	}
+	handleRecords, err := reader.EventRecords()
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(handleRecords, records) {
+		return errors.New("handle records differ from paged records")
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	if len(events) != len(records) {
+		return errors.New("handle events are incomplete")
+	}
+	for i, record := range records {
+		if !reflect.DeepEqual(events[i], record.Event) {
+			return fmt.Errorf("handle event %d differs", i)
+		}
+		var decoded journal.Event
+		if err := json.Unmarshal(record.Raw, &decoded); err != nil {
+			return fmt.Errorf("raw event %d: %w", i, err)
+		}
+		if !reflect.DeepEqual(decoded, record.Event) {
+			return fmt.Errorf("raw event %d differs", i)
+		}
+	}
+	state, err := reader.State()
+	if err != nil {
+		return err
+	}
+	if state.RunID != ref.ID || state.LastSeq != 6 || state.Phase != journal.PhaseCompleted || !state.KnownSchema() {
+		return fmt.Errorf("handle checkpoint = %+v", state)
+	}
+	phase, err := reader.Phase()
+	if err != nil || phase != journal.PhaseCompleted {
+		return fmt.Errorf("handle phase = %s: %v", phase, err)
+	}
+	bounded, err := reader.PhaseBounded(ctx)
+	if err != nil || bounded != phase {
+		return fmt.Errorf("bounded phase = %s: %v", bounded, err)
+	}
+	if reader.Schema().Version != journal.CurrentSchemaVersion {
+		return fmt.Errorf("handle schema = %+v", reader.Schema())
+	}
+	artifact := records[2].Event.Ref
+	if artifact == nil {
+		return errors.New("missing artifact ref")
+	}
+	if _, err := reader.ArtifactBytesBounded(*artifact, 1); err == nil {
+		return errors.New("artifact byte ceiling ignored")
+	}
+	data, err := reader.ArtifactByDigest(artifact.Digest)
+	if err != nil || !bytes.Equal(data, []byte("reader-blob")) {
+		return fmt.Errorf("digest lookup = %q: %v", data, err)
+	}
+	span := records[5].Event.Ref
+	if span == nil {
+		return errors.New("missing span ref")
+	}
+	data, err = reader.SpanBytes(*span)
+	if err != nil || !bytes.Equal(data, []byte("reader-span")) {
+		return fmt.Errorf("span = %q: %v", data, err)
+	}
+	bad := *artifact
+	bad.Digest = "sha256:" + string(bytes.Repeat([]byte("0"), 64))
+	if _, err := reader.ArtifactBytes(bad); err == nil {
+		return errors.New("invalid artifact digest accepted")
 	}
 	return nil
 }

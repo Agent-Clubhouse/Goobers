@@ -23,6 +23,8 @@ type RunFilter struct {
 }
 
 // RunReader is the typed read surface used by shared control-plane readers.
+// A handle is bound to the OpenRun context. Callers must keep that context alive
+// for the entire read; backends must honor cancellation during subsequent I/O.
 type RunReader interface {
 	Schema() SchemaInfo
 	Identity() (RunIdentity, error)
@@ -74,10 +76,16 @@ func (b FileReaderBackend) OpenRun(ctx context.Context, ref RunRef) (RunReader, 
 	if err != nil {
 		return nil, err
 	}
+	var reader *Reader
 	if ref.ReadOnly {
-		return OpenReadOnly(dir)
+		reader, err = OpenReadOnly(dir)
+	} else {
+		reader, err = OpenRead(dir)
 	}
-	return OpenRead(dir)
+	if err != nil {
+		return nil, err
+	}
+	return contextRunReader{RunReader: reader, ctx: ctx}, nil
 }
 
 // ReadEvents reads a bounded sequence page after afterSeq.
@@ -116,6 +124,9 @@ func (b FileReaderBackend) ListRuns(ctx context.Context, filter RunFilter) ([]Ru
 	}
 	var refs []RunRef
 	for _, root := range roots {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		entries, err := os.ReadDir(root)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -124,6 +135,9 @@ func (b FileReaderBackend) ListRuns(ctx context.Context, filter RunFilter) ([]Ru
 			return nil, err
 		}
 		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if entry.IsDir() && apiv1.ValidRunID(entry.Name()) && entry.Name() > filter.After {
 				refs = append(refs, RunRef{ID: entry.Name()})
 			}
@@ -168,7 +182,13 @@ func (b FileReaderBackend) resolveRun(ctx context.Context, runID string) (string
 	for _, root := range roots {
 		dir := filepath.Join(root, runID)
 		if info, err := os.Lstat(dir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-			return dir, nil
+			// Only an absent identity is unpublished. Malformed or unreadable
+			// identities must reach admission instead of being hidden.
+			if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err == nil {
+				return dir, nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return "", err
+			}
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}

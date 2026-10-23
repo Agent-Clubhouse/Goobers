@@ -790,6 +790,10 @@ func (s *Local) activeRunCountsWithAge(ctx context.Context) (map[localscheduler.
 			counts, err := s.projectedActiveRunCounts(ctx)
 			return counts, 0, err
 		}
+		if s.sources.Journal != nil {
+			counts, err := s.backendActiveRunCounts(ctx)
+			return counts, 0, err
+		}
 		// A one-shot construction without a projection pays for the authoritative
 		// answer once; long-lived projected services never enter this path.
 		runDirs, err := s.sources.Layout.RunDirs()

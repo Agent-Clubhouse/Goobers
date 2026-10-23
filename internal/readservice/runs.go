@@ -775,7 +775,7 @@ func (s *Local) latestTerminalWorkflowOutcome(
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			run, err := s.openRun(ref.RunID)
+			run, err := s.openRun(ctx, ref.RunID)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					continue
@@ -1119,7 +1119,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		}
 		for _, ref := range refs {
 			keyStarted, keyRunID = ref.StartedAt, ref.RunID
-			run, err := s.openRun(ref.RunID)
+			run, err := s.openRun(ctx, ref.RunID)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					continue
@@ -1194,7 +1194,7 @@ func (s *Local) runSummariesForStage(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		run, err := s.openRun(ref.ID)
+		run, err := s.openRun(ctx, ref.ID)
 		if err != nil {
 			if skipUnreadable || errors.Is(err, ErrNotFound) {
 				continue
@@ -1250,7 +1250,7 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err := ctx.Err(); err != nil {
 		return RunDetail{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -1310,7 +1310,7 @@ func (s *Local) RunMetadata(ctx context.Context, runID string) (journal.RunIdent
 	if err := ctx.Err(); err != nil {
 		return journal.RunIdentity{}, nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return journal.RunIdentity{}, nil, err
 	}
@@ -1326,7 +1326,7 @@ func (s *Local) runEventsUnannotated(ctx context.Context, runID string) (EventLi
 	if err := ctx.Err(); err != nil {
 		return EventList{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return EventList{}, err
 	}
@@ -1346,7 +1346,7 @@ func (s *Local) stageAttemptsUnannotated(ctx context.Context, runID, stage strin
 	if stage == "" {
 		return AttemptList{}, fmt.Errorf("%w: stage is required", ErrInvalidArgument)
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return AttemptList{}, err
 	}
@@ -1418,7 +1418,7 @@ func (s *Local) RunTelemetryStageAttempts(ctx context.Context, runID string) ([]
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.openRun(runID); err != nil {
+	if _, err := s.openRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	attempts, err := s.telemetryStageAttempts(ctx, runID)
@@ -1436,7 +1436,7 @@ func (s *Local) Artifact(ctx context.Context, runID, digest string) (ArtifactCon
 	if err := ctx.Err(); err != nil {
 		return ArtifactContent{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -1457,7 +1457,7 @@ func (s *Local) Transcript(ctx context.Context, runID string, seq uint64) (Trans
 	if err := ctx.Err(); err != nil {
 		return TranscriptContent{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return TranscriptContent{}, err
 	}
@@ -1484,7 +1484,7 @@ func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]Tran
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1575,7 +1575,7 @@ func (s *Local) RunSpans(ctx context.Context, runID string) ([]rollup.SpanSummar
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.openRun(runID); err != nil {
+	if _, err := s.openRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	empty := []rollup.SpanSummary{}
@@ -1597,7 +1597,7 @@ func (s *Local) RunEscalation(ctx context.Context, runID string) (*TraceEscalati
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1636,7 +1636,7 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return 0, err
 	}
@@ -1665,7 +1665,7 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 // production.
 var openRunObserver func(runID string)
 
-func (s *Local) openRun(runID string) (runRead, error) {
+func (s *Local) openRun(ctx context.Context, runID string) (runRead, error) {
 	readprobe.RecordJournalOpen()
 	if openRunObserver != nil {
 		openRunObserver(runID)
@@ -1673,7 +1673,7 @@ func (s *Local) openRun(runID string) (runRead, error) {
 	if !apiv1.ValidRunID(runID) {
 		return runRead{}, fmt.Errorf("%w: invalid run id", ErrInvalidArgument)
 	}
-	reader, err := s.journalReader().OpenRun(context.Background(), journal.RunRef{ID: runID})
+	reader, err := s.journalReader().OpenRun(ctx, journal.RunRef{ID: runID})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)

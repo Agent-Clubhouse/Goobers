@@ -181,6 +181,9 @@ func (s *Sweeper) Run(ctx context.Context) {
 // waiting on a ticker — a rate-bounded loop asserted with sleeps would be both
 // slow and flaky.
 func (s *Sweeper) Step(ctx context.Context) error {
+	if s.options.Journal != nil {
+		return s.stepBackend(ctx)
+	}
 	runsDirs, err := s.runsDirs(ctx)
 	if err != nil {
 		return err
@@ -276,7 +279,7 @@ func (s *Sweeper) sweepForwardRoot(
 	if cursor.CycleStartedAt.IsZero() {
 		cursor.CycleStartedAt = s.options.Now().UTC()
 	}
-	names, err := s.readBatch(cursor.Root, cursor.AfterName, limit)
+	names, err := s.readBatch(ctx, cursor.Root, cursor.AfterName, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -381,6 +384,10 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 		return err
 	}
 
+	return s.reconcilePublished(ctx, dir, runID)
+}
+
+func (s *Sweeper) reconcilePublished(ctx context.Context, dir, runID string) error {
 	if row, projected, err := s.store.GetRun(ctx, runID); err != nil {
 		return err
 	} else if projected {
@@ -403,7 +410,7 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 		return nil
 	}
 
-	projection, found, err := s.project(dir)
+	projection, found, err := s.project(ctx, dir)
 	if err != nil {
 		return err
 	}
@@ -502,7 +509,7 @@ func (s *Sweeper) refreshStaleRunning(ctx context.Context, dir, runID string, ro
 	// phase column: the terminal event settles finishedAt, currentStage and the
 	// outcome fields together, and a row carrying a terminal phase beside
 	// running-shaped values would be a third state neither source describes.
-	projection, found, err := s.project(dir)
+	projection, found, err := s.project(ctx, dir)
 	if err != nil {
 		return err
 	}
@@ -549,8 +556,11 @@ func (s *Sweeper) sweepReverse(
 		}
 		s.stats.EntriesExamined++
 		examined++
-		_, found := s.locate(row.RunID, runsDirs)
-		if !found && !refreshedRoots && s.options.ResolveRunsDirs != nil {
+		found, err := s.runExists(ctx, row.RunID, runsDirs)
+		if err != nil {
+			return examined, err
+		}
+		if !found && s.options.Journal == nil && !refreshedRoots && s.options.ResolveRunsDirs != nil {
 			// A new root may have been projected after Step's snapshot.
 			// Refresh after selecting candidates before declaring a journal gone.
 			runsDirs, err = s.runsDirs(ctx)
@@ -584,14 +594,17 @@ func (s *Sweeper) sweepReverse(
 }
 
 // project reads a run directory into a projection. Never takes a journal lock.
-func (s *Sweeper) project(dir string) (readmodel.Projection, bool, error) {
+func (s *Sweeper) project(ctx context.Context, dir string) (readmodel.Projection, bool, error) {
 	backend := s.options.Journal
 	if backend == nil {
 		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{filepath.Dir(dir)}})
 	}
-	reader, err := backend.OpenRun(context.Background(), journal.RunRef{ID: filepath.Base(dir)})
-	if err != nil {
+	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: filepath.Base(dir)})
+	if errors.Is(err, os.ErrNotExist) {
 		return readmodel.Projection{}, false, nil
+	}
+	if err != nil {
+		return readmodel.Projection{}, false, err
 	}
 	identity, err := reader.Identity()
 	if err != nil {
@@ -646,12 +659,12 @@ func (s *Sweeper) runsDirs(ctx context.Context) ([]string, error) {
 // Sorting is what makes the cursor meaningful: os.ReadDir's order is not
 // specified across platforms, and a walk that resumed "after X" in an unsorted
 // listing could skip entries indefinitely.
-func (s *Sweeper) readBatch(root, after string, limit int) ([]string, error) {
+func (s *Sweeper) readBatch(ctx context.Context, root, after string, limit int) ([]string, error) {
 	backend := s.options.Journal
 	if backend == nil {
 		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{root}})
 	}
-	refs, err := backend.ListRuns(context.Background(), journal.RunFilter{After: after, Limit: limit})
+	refs, err := backend.ListRuns(ctx, journal.RunFilter{After: after, Limit: limit})
 	if err != nil {
 		return nil, fmt.Errorf("repair: read %s: %w", root, err)
 	}

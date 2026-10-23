@@ -72,7 +72,7 @@ func seedCrossRunRun(t *testing.T, layout instance.Layout, gaggle, runID string,
 		t.Fatalf("close run %s: %v", runID, err)
 	}
 	if err := os.WriteFile(filepath.Join(runsDir, runID, "run.yaml"),
-		[]byte("runId: "+runID+"\ngaggle: "+gaggle+"\n"), 0o644); err != nil {
+		[]byte("schema: "+journal.RunSchema+"\nrunId: "+runID+"\ngaggle: "+gaggle+"\nworkflow: implementation\n"), 0o644); err != nil {
 		t.Fatalf("write run.yaml for %s: %v", runID, err)
 	}
 }
@@ -553,5 +553,26 @@ func seedConflictRunWith(t *testing.T, layout instance.Layout, gaggle, runID, fi
 	}
 	if err := os.WriteFile(filepath.Join(runsDir, runID, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBackendJournalPlaneUsesIdentityWithoutLocalRoots(t *testing.T) {
+	authoritative := crossRunTestLayout(t)
+	seedCrossRunRun(t, authoritative, "g", "run-asking", journal.PhaseCompleted)
+	seedCrossRunRun(t, authoritative, "g", "run-target", journal.PhaseFailed)
+	seedCrossRunRun(t, authoritative, "foreign", "run-foreign", journal.PhaseFailed)
+	backend := journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{authoritative.ForGaggle("g").RunsDir(), authoritative.ForGaggle("foreign").RunsDir()}})
+	service := NewRunJournalService(crossRunTestLayout(t), nil, backend)
+	response, err := service.RunPhase(t.Context(), journalclient.RunPhaseRequest{RunID: "run-asking", TargetRunID: "run-target", Gaggle: "g"})
+	if err != nil || response.Phase != "failed" {
+		t.Fatalf("backend phase=%+v error=%v", response, err)
+	}
+	for _, req := range []journalclient.RunPhaseRequest{
+		{RunID: "run-asking", TargetRunID: "run-foreign", Gaggle: "g"},
+		{RunID: "run-foreign", TargetRunID: "run-target", Gaggle: "g"},
+	} {
+		if _, err := service.RunPhase(t.Context(), req); err == nil {
+			t.Fatal("cross-gaggle identity accepted")
+		}
 	}
 }
