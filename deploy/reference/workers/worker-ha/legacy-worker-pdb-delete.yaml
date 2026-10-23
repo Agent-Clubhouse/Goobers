@@ -1,6 +1,0 @@
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: goobers-worker
-  namespace: goobers-system
-$patch: delete

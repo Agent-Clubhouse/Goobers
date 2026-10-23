@@ -125,42 +125,123 @@ func TestRainbowWorkerHAContract(t *testing.T) {
 		}
 	}
 
-	deletePatch := loadManifest(t, "worker-ha/legacy-worker-pdb-delete.yaml")
-	if deletePatch["kind"] != "PodDisruptionBudget" ||
-		deletePatch["$patch"] != "delete" {
-		t.Fatalf("legacy PDB delete patch = %+v", deletePatch)
-	}
 }
 
-func TestRainbowPDBSelectorsDoNotOverlap(t *testing.T) {
+func TestRenderedWorkerPDBsNeverOverlap(t *testing.T) {
+	legacy := loadManifest(t, "../goobers-system/worker-pdb.yaml")
+	legacySelector, found, err := unstructured.NestedMap(
+		legacy, "spec", "selector")
+	if err != nil || !found {
+		t.Fatalf("legacy selector: found=%v err=%v", found, err)
+	}
+	legacyPod := map[string]string{
+		"app.kubernetes.io/name": "goobers-worker",
+	}
+	if matches := countMatchingSelectors(
+		legacyPod, []map[string]any{legacySelector},
+	); matches != 1 {
+		t.Fatalf("legacy pod matched %d PDBs", matches)
+	}
+
+	template := loadManifest(t, "worker-ha/worker-pdb-template.yaml")
+	baseSelector, found, err := unstructured.NestedMap(
+		template, "spec", "template", "spec", "selector")
+	if err != nil || !found || len(baseSelector) == 0 {
+		t.Fatalf("rainbow selector: %+v found=%v err=%v",
+			baseSelector, found, err)
+	}
 	builds := []string{"build-a", "build-b"}
 	for _, podBuild := range builds {
-		matches := 0
-		for _, pdbBuild := range builds {
-			if podBuild == pdbBuild {
-				matches++
-			}
+		pod := map[string]string{
+			"app.kubernetes.io/name":      "goobers-worker",
+			"goobers.dev/role":            "worker",
+			"temporal.io/deployment-name": "goobers",
+			"temporal.io/build-id":        podBuild,
 		}
+		var rendered []map[string]any
+		for _, pdbBuild := range builds {
+			rendered = append(rendered, renderBuildSelector(
+				baseSelector, pdbBuild))
+		}
+		matches := countMatchingSelectors(pod, rendered)
 		if matches != 1 {
 			t.Fatalf("build %q matched %d per-build PDBs", podBuild, matches)
 		}
+		if !selectorMatches(legacySelector, pod) {
+			t.Fatal("fixture no longer proves why #7888 must delete the legacy PDB")
+		}
 	}
-	kustomization, err := os.ReadFile("worker-ha/kustomization.yaml")
+	templateBody, err := os.ReadFile("worker-ha/worker-pdb-template.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(
-		string(kustomization), "legacy-worker-pdb-delete.yaml") {
-		t.Fatal("rainbow component does not delete the broad legacy PDB")
-	}
-	template, err := os.ReadFile("worker-ha/worker-pdb-template.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(template), "goobers.dev/build") ||
-		!strings.Contains(string(template), "temporal.io/build-id") {
+	if strings.Contains(string(templateBody), "goobers.dev/build") ||
+		!strings.Contains(string(templateBody), "temporal.io/build-id") {
 		t.Fatal("rainbow PDB does not use the Temporal build-label contract")
 	}
+}
+
+func renderBuildSelector(base map[string]any, build string) map[string]any {
+	rendered := make(map[string]any, len(base))
+	for key, value := range base {
+		rendered[key] = value
+	}
+	rendered["matchLabels"] = map[string]any{
+		"temporal.io/deployment-name": "goobers",
+		"temporal.io/build-id":        build,
+	}
+	return rendered
+}
+
+func countMatchingSelectors(
+	pod map[string]string,
+	selectors []map[string]any,
+) int {
+	matches := 0
+	for _, selector := range selectors {
+		if selectorMatches(selector, pod) {
+			matches++
+		}
+	}
+	return matches
+}
+
+func selectorMatches(selector map[string]any, pod map[string]string) bool {
+	matchLabels, _, _ := unstructured.NestedMap(selector, "matchLabels")
+	for key, value := range matchLabels {
+		if pod[key] != value {
+			return false
+		}
+	}
+	expressions, _, _ := unstructured.NestedSlice(selector, "matchExpressions")
+	for _, raw := range expressions {
+		expression, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		key, _ := expression["key"].(string)
+		operator, _ := expression["operator"].(string)
+		switch operator {
+		case "Exists":
+			if _, found := pod[key]; !found {
+				return false
+			}
+		case "In":
+			found := false
+			values, _ := expression["values"].([]any)
+			for _, value := range values {
+				if pod[key] == value {
+					found = true
+				}
+			}
+			if !found {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return len(matchLabels) > 0 || len(expressions) > 0
 }
 
 func manifestInt(t *testing.T, object map[string]any, fields ...string) int {

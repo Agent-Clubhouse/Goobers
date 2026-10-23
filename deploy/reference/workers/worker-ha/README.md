@@ -16,6 +16,7 @@ and service account may manage PDBs. Pin Worker Controller v1.13.0 (Helm chart
 `temporal.io/deployment-name`. The template also carries non-empty
 `matchExpressions`, so an uninjected selector never selects unrelated pods.
 
-The component delete-patches the legacy broad PDB before per-build PDBs are
-created. PriorityClasses are prerequisites owned by #7852's cloud reference;
-this component references `goobers-control-plane` and never redefines it.
+#7888's rainbow overlay delete-patches the legacy broad PDB before including
+this component; the legacy PDB remains only in the non-rainbow render.
+PriorityClasses are prerequisites owned by #7852's cloud reference; this
+component references `goobers-control-plane` and never redefines it.
