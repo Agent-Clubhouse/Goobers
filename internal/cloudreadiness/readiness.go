@@ -102,8 +102,6 @@ var featureBlockers = map[workflow.FeatureID]FeatureBlocker{
 	"workflow.spec.maps":      {Path: "spec.maps", Issue: 7755},
 	"task.childWorkflows":     {Path: "task.childWorkflows", Issue: 7758},
 	"gate.evaluator.human":    {Path: "gate.evaluator.human", Issue: 7760},
-	"task.limits.maxTokens":   {Path: "task.limits.maxTokens", Issue: 7761},
-	"task.limits.maxCostUSD":  {Path: "task.limits.maxCostUSD", Issue: 7761},
 	"task.outbox":             {Path: "task.outbox", Issue: 7762},
 	"task.experiment":         {Path: "task.experiment", Issue: 7763},
 }
@@ -206,10 +204,6 @@ func unsupportedFeatureBlockers(name string, spec apiv1.WorkflowSpec, placements
 		return []Blocker{genericFeatureBlocker("", "", "/spec", err.Error())}
 	}
 	for _, refusal := range refused.Refusals {
-		if refusal.Feature == "task.limits.maxTokens/maxCostUSD" {
-			blockers = append(blockers, remoteLimitBlockers(spec, refusal.Stage)...)
-			continue
-		}
 		id, ok := featureIDForPath(refusal.Feature)
 		if !ok {
 			blockers = append(blockers, genericFeatureBlocker(
@@ -224,26 +218,6 @@ func unsupportedFeatureBlockers(name string, spec apiv1.WorkflowSpec, placements
 			continue
 		}
 		blockers = append(blockers, featureBlocker(id, refusal.Stage, featurePath(spec, id, refusal.Stage)))
-	}
-	return blockers
-}
-
-func remoteLimitBlockers(spec apiv1.WorkflowSpec, stage string) []Blocker {
-	var blockers []Blocker
-	for i, task := range spec.Tasks {
-		if task.Name != stage || task.Type != apiv1.TaskAgentic || task.Limits == nil {
-			continue
-		}
-		if task.Limits.MaxTokens > 0 {
-			blockers = append(blockers, featureBlocker(
-				"task.limits.maxTokens", task.Name, fmt.Sprintf("/spec/tasks/%d/limits/maxTokens", i),
-			))
-		}
-		if task.Limits.MaxCostUSD > 0 {
-			blockers = append(blockers, featureBlocker(
-				"task.limits.maxCostUSD", task.Name, fmt.Sprintf("/spec/tasks/%d/limits/maxCostUSD", i),
-			))
-		}
 	}
 	return blockers
 }
