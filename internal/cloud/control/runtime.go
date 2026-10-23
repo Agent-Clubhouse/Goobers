@@ -107,13 +107,21 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		if err := originalL2(ctx); err != nil {
 			return err
 		}
-		reconcileErr := reconcile(ctx)
+		if err := reconcile(ctx); err != nil {
+			return err
+		}
 		// Run pins outlive their acceptance row: they are retained until the
-		// run's engine execution is closed, then for ReplayRetention more. It
-		// runs last so a run Temporal cannot vouch for never stalls the rest.
-		sweep, sweepErr := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal), pinsAfter)
+		// run's engine execution is closed, then for ReplayRetention more. The
+		// sweep is best-effort against Temporal: a run it cannot vouch for keeps
+		// its pins and is reported, never returned, since an L2 error ends every
+		// loop and drops the epoch. Only the store's own errors (a lost fence
+		// among them) are returned, as for Prune above.
+		sweep, err := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal), pinsAfter)
 		pinsAfter = sweep.Next
-		return errors.Join(reconcileErr, sweepErr)
+		for _, unconfirmed := range sweep.Unconfirmed {
+			r.report(unconfirmed)
+		}
+		return err
 	}
 	return services, nil
 }
@@ -169,4 +177,10 @@ func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter eng
 		after = ""
 	}
 	return after, nil
+}
+
+func (r Runtime) report(err error) {
+	if r.Report != nil {
+		r.Report(err)
+	}
 }

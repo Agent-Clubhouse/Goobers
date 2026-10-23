@@ -96,9 +96,12 @@ type RunClosed func(ctx context.Context, runID string) (bool, error)
 
 // RunPinSweep is one retention pass's outcome. Next is the cursor for the
 // following pass; it is empty once a lap over the candidates completes.
+// Unconfirmed holds the runs whose status could not be confirmed; their pins
+// are kept, and the error is the caller's to report, not to fail on.
 type RunPinSweep struct {
 	Marked, Deleted int64
 	Next            string
+	Unconfirmed     []error
 }
 
 // SweepRunPins applies run_pin's terminal-keyed retention: pins of runs that
@@ -107,9 +110,10 @@ type RunPinSweep struct {
 // pins are never touched, however old. Candidates are visited in run_id order
 // after the cursor, so long-running parents cannot fill every batch and starve
 // the closed runs behind them. A run whose status cannot be confirmed keeps its
-// pin; its error is returned after the rest of the batch is applied. The closed
-// predicate runs outside any transaction; only the marking and deletion are
-// fenced.
+// pin and is listed in Unconfirmed; the rest of the batch is still applied, and
+// the returned error is only the store's own (including a lost fence). The
+// closed predicate runs outside any transaction; only the marking and deletion
+// are fenced.
 func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string) (RunPinSweep, error) {
 	if closed == nil {
 		return RunPinSweep{Next: after}, errors.New("cloud acceptance: run pin sweep requires a run status")
@@ -131,12 +135,11 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 		sweep.Next = candidates[len(candidates)-1]
 	}
 	var closedRuns []string
-	var unconfirmed []error
 	for _, runID := range candidates {
 		done, err := closed(ctx, runID)
 		switch {
 		case err != nil:
-			unconfirmed = append(unconfirmed, fmt.Errorf("run pin sweep: status of run %s: %w", runID, err))
+			sweep.Unconfirmed = append(sweep.Unconfirmed, fmt.Errorf("run pin sweep: status of run %s: %w", runID, err))
 		case done:
 			closedRuns = append(closedRuns, runID)
 		}
@@ -157,7 +160,7 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 		return err
 	})
 	if err != nil {
-		return RunPinSweep{Next: after}, err
+		return RunPinSweep{Next: after, Unconfirmed: sweep.Unconfirmed}, err
 	}
-	return sweep, errors.Join(unconfirmed...)
+	return sweep, nil
 }
