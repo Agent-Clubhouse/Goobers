@@ -12,13 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/sdk/converter"
+
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runtimewiring"
-	"go.temporal.io/sdk/converter"
 
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"

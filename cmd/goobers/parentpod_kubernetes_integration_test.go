@@ -17,8 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/runtimewiring"
 	"go.temporal.io/sdk/testsuite"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	temporalworker "go.temporal.io/sdk/worker"
 	"sigs.k8s.io/yaml"

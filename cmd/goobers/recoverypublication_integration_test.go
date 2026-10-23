@@ -15,8 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"

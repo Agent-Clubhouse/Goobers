@@ -29,8 +29,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/runtimewiring"
 	"go.opentelemetry.io/otel"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"

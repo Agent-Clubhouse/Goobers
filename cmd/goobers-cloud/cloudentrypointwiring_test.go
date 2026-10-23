@@ -10,6 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
+
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -17,10 +22,6 @@ import (
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/workerhost"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // cloudentrypointwiring_test.go covers the legacy `goobers-cloud worker` entry point

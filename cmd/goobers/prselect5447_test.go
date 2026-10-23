@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/runtimewiring"
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"

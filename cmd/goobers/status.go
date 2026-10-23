@@ -15,8 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/runtimewiring"
 	"golang.org/x/term"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"

@@ -6,10 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runtimewiring"
-	"sigs.k8s.io/yaml"
 )
 
 func TestConfigMirrorPublishesOnlyAppliedGeneration(t *testing.T) {

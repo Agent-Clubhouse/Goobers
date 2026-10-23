@@ -20,8 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/runtimewiring"
 	"go.temporal.io/sdk/testsuite"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
