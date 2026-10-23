@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -147,5 +148,50 @@ func TestUnauthenticatedDeliveryPersistsNothing(t *testing.T) {
 	}
 	if n := count(t, apiPool, "SELECT count(*) FROM control.source_receipt WHERE instance_id=$1"); n != 1 {
 		t.Fatalf("receipts = %d, want 1", n)
+	}
+}
+
+func TestReviewedFailureModesOnPostgres(t *testing.T) {
+	owner := pgtest.Pool(t, "webhookfail")
+	intake, apiPool := replica(t, owner)
+	handler := newTestHandler(t, intake)
+	receipts := func() int {
+		return count(t, apiPool, "SELECT count(*) FROM control.source_receipt WHERE instance_id=$1")
+	}
+
+	// Identity conflict is a definitive 409 and preserves the original rows.
+	if rec := deliver(t, handler, sign(testSecret, body), "delivery-x"); rec.Code != 202 {
+		t.Fatalf("first status %d", rec.Code)
+	}
+	other := strings.Replace(body, `"number":7`, `"number":8`, 1)
+	if rec := deliverBody(t, handler, "pull_request", other, "delivery-x"); rec.Code != 409 {
+		t.Fatalf("conflict status %d, want 409", rec.Code)
+	}
+	if receipts() != 1 || count(t, apiPool, "SELECT count(*) FROM control.acceptance WHERE instance_id=$1") != 2 {
+		t.Fatal("a conflicting delivery changed durable state")
+	}
+
+	// Signed but malformed deliveries persist nothing; unsubscribed events are no-ops.
+	for name, tc := range map[string]struct{ event, payload string }{
+		"push null": {"push", "null"}, "issues {}": {"issues", "{}"},
+	} {
+		if rec := deliverBody(t, handler, tc.event, tc.payload, "delivery-"+name); rec.Code != 400 {
+			t.Errorf("%s: status %d, want 400", name, rec.Code)
+		}
+	}
+	push := `{"repository":{"name":"app","owner":{"login":"acme"}}}`
+	if rec := deliverBody(t, handler, "push", push, "delivery-push"); rec.Code != 202 {
+		t.Fatalf("unsubscribed push status %d, want 202", rec.Code)
+	}
+	if receipts() != 1 {
+		t.Fatalf("receipts = %d, want only the original", receipts())
+	}
+
+	// A committed delivery is answered from its receipt even without pinning.
+	intake.Pin = func(context.Context, string, string, string) (string, string, error) {
+		return "", "", ErrPinUnavailable
+	}
+	if rec := deliver(t, handler, sign(testSecret, body), "delivery-x"); rec.Code != 202 {
+		t.Fatalf("redelivery without pinning status %d, want 202", rec.Code)
 	}
 }

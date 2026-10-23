@@ -73,9 +73,17 @@ func (c *Configuration) WebhookRecipients(event, owner, name string) (string, []
 	if gen == nil {
 		return "", nil, fmt.Errorf("%w: %w", ErrIneligible, ErrNoGeneration)
 	}
+	// One recipient per workflow, however many of its triggers match: the local
+	// scheduler subscribes a workflow once per signal (localscheduler.queueSignal
+	// builds one WorkflowEntry per workflow and the subscription scan breaks at
+	// the first matching signal), so two overlapping triggers must not start two
+	// runs for one delivery.
 	var out []WebhookSubscription
+	seen := map[string]bool{}
 	for _, s := range gen.webhooks {
-		if s.matches(event, owner, name) {
+		key := workflowKey(s.Gaggle, s.Workflow)
+		if !seen[key] && s.matches(event, owner, name) {
+			seen[key] = true
 			out = append(out, s)
 		}
 	}

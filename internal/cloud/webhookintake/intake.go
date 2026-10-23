@@ -7,10 +7,12 @@ package webhookintake
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
@@ -36,6 +38,7 @@ type Pin func(ctx context.Context, generation, gaggle, workflow string) (workflo
 
 // SourceStore durably records a source batch without a controller lease.
 type SourceStore interface {
+	SourceReceipt(ctx context.Context, key string) (triggerqueue.SourceReceipt, error)
 	AcceptSourceAPI(ctx context.Context, batch triggerqueue.SourceBatch, now time.Time) (triggerqueue.SourceReceipt, bool, error)
 }
 
@@ -53,14 +56,36 @@ func (i *Intake) AcceptWebhook(ctx context.Context, d webhook.Delivery, now time
 	if i.Store == nil || i.Subs == nil || i.Pin == nil {
 		return nil, ErrPinUnavailable
 	}
+	if strings.TrimSpace(d.RepositoryOwner) == "" || strings.TrimSpace(d.RepositoryName) == "" {
+		return nil, fmt.Errorf("%w: delivery %q names no repository", webhook.ErrUnusableDelivery, d.ID)
+	}
 	name, ref := webhook.SignalName(d.Event), webhook.TriggerRef(d)
 	key, fingerprint, actor, err := startintent.SignalReceiptIdentity(d.ID, name, ref, &d)
 	if err != nil {
 		return nil, err
 	}
+	// A committed delivery answers from its stored receipt, before any current
+	// recipient resolution or pinning: the delivery ID owns its recipient set.
+	// This mirrors startintent.Sources.AcceptSignal's read-first order and lets a
+	// redelivery succeed even when pinning is unavailable.
+	switch prior, err := i.Store.SourceReceipt(ctx, key); {
+	case err == nil:
+		if prior.Actor != actor || prior.Fingerprint != fingerprint {
+			return nil, fmt.Errorf("%w: %w", webhook.ErrDeliveryConflict, triggerqueue.ErrConflict)
+		}
+		return prior.AcceptanceIDs, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return nil, err
+	}
 	generation, subs, err := i.Subs.WebhookRecipients(d.Event, d.RepositoryOwner, d.RepositoryName)
 	if err != nil {
 		return nil, err
+	}
+	if len(subs) == 0 {
+		// No eligible workflow subscribes: a no-op. Nothing is recorded, so a
+		// later delivery of the same ID after a configuration change is not
+		// blocked by an empty receipt.
+		return nil, nil
 	}
 	batch := triggerqueue.SourceBatch{Key: key, Actor: actor, Fingerprint: fingerprint}
 	for _, sub := range subs {
@@ -84,6 +109,9 @@ func (i *Intake) AcceptWebhook(ctx context.Context, d webhook.Delivery, now time
 		batch.Starts = append(batch.Starts, triggerqueue.SourceStart{Payload: raw})
 	}
 	receipt, _, err := i.Store.AcceptSourceAPI(ctx, batch, now)
+	if errors.Is(err, triggerqueue.ErrConflict) {
+		return nil, fmt.Errorf("%w: %w", webhook.ErrDeliveryConflict, err)
+	}
 	return receipt.AcceptanceIDs, err
 }
 

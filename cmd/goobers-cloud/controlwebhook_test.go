@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/control"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/webhook"
 )
@@ -88,5 +90,38 @@ func TestMountedWebhookAuthenticatesBeforeAnything(t *testing.T) {
 	got.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/anything", nil))
 	if rec.Code != http.StatusTeapot {
 		t.Fatalf("other paths must reach the API handler, got %d", rec.Code)
+	}
+}
+
+func TestMountedWebhookKeepsOffLoopbackAuthenticationEvidence(t *testing.T) {
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	api, err := httpapi.NewControlStatusHandler(httpapi.DenyAllAuthenticator{}, func(context.Context) (any, error) { return nil, nil }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsOption := func(s *http.Server) error {
+		s.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		return nil
+	}
+	if _, err := httpapi.NewServer("0.0.0.0:0", api, logger, tlsOption); err != nil {
+		t.Fatalf("premise: authenticated handler rejected off loopback: %v", err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("s3cret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := cloudconfig.NewConfiguration(
+		func(*instance.Config, *instance.ConfigSet) cloudconfig.Assessment { return nil }, noActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) { return cloudconfig.Candidate{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounted, stop, err := mountWebhook(context.Background(), controlOptions{webhookSecretFile: secret}, webhookDatabases(), configuration, api, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	if _, err := httpapi.NewServer("0.0.0.0:0", mounted, logger, tlsOption); err != nil {
+		t.Fatalf("mounting the webhook lost the authenticated-transport evidence: %v", err)
 	}
 }

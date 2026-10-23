@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/webhookintake"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/webhook"
 )
 
@@ -47,8 +48,5 @@ func mountWebhook(ctx context.Context, o controlOptions, db controlDatabases, co
 	if err != nil {
 		return nil, nil, err
 	}
-	mux := http.NewServeMux()
-	mux.Handle(webhook.Path, hook)
-	mux.Handle("/", api)
-	return mux, stop, nil
+	return httpapi.WrapWithRoute(api, webhook.Path, hook), stop, nil
 }
