@@ -52,12 +52,11 @@ var (
 	// parallel_run.go fan-out/fan-in, @join branches and branch-qualified
 	// inputs).
 	ErrParallelsUnsupported = errors.New("spec.parallels (fan-out/fan-in branches) are not implemented on the engine walk")
-	// ErrSelectiveParallelUnsupported refuses a DSL 3.1 selective parallel
-	// (spec.parallels[].selection). It is reported alongside
-	// ErrParallelsUnsupported so the refusal names the selection explicitly.
-	ErrSelectiveParallelUnsupported = errors.New("spec.parallels selection (selective parallel) is not implemented on the engine walk")
 	// ErrMapsUnsupported refuses DSL 3.1 spec.maps (data-driven fan-out).
 	ErrMapsUnsupported = errors.New("spec.maps (data-driven fan-out) is not implemented on the engine walk")
+	// ErrHumanGateUnsupported refuses evaluator: human until the engine owns
+	// the occurrence-bound decision protocol.
+	ErrHumanGateUnsupported = errors.New(HumanGateUnsupported)
 )
 
 // UnsupportedFeatureError names one refused declaration: which stage (empty for
@@ -135,11 +134,6 @@ func UnsupportedFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 	if len(spec.Parallels) > 0 {
 		out = append(out, &UnsupportedFeatureError{Feature: "spec.parallels", Err: ErrParallelsUnsupported})
 	}
-	for _, p := range spec.Parallels {
-		if p.Selection != nil {
-			out = append(out, &UnsupportedFeatureError{Stage: p.Name, Feature: "spec.parallels.selection", Err: ErrSelectiveParallelUnsupported})
-		}
-	}
 	for _, m := range spec.Maps {
 		out = append(out, &UnsupportedFeatureError{Stage: m.Name, Feature: "spec.maps", Err: ErrMapsUnsupported})
 	}
@@ -173,7 +167,7 @@ func RefuseHumanGate(g apiv1.Gate) error {
 	if g.Evaluator != apiv1.EvaluatorHuman {
 		return nil
 	}
-	return fmt.Errorf("%s: gate %q", HumanGateUnsupported, g.Name)
+	return fmt.Errorf("%w: gate %q", ErrHumanGateUnsupported, g.Name)
 }
 
 // RefuseDefinition reports why the engine walk cannot execute this definition,
@@ -200,30 +194,61 @@ func RefuseHumanGate(g apiv1.Gate) error {
 // the runner, where the feature is implemented, with the refusal text as the
 // operator-facing reason.
 func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
+	var refusals []*UnsupportedFeatureError
+	var declared *UnsupportedFeaturesError
 	if err := RefuseFeatures(name, spec); err != nil {
-		return err
+		if !errors.As(err, &declared) {
+			return err
+		}
+		refusals = append(refusals, declared.Refusals...)
 	}
 	for _, g := range spec.Gates {
 		if err := RefuseHumanGate(g); err != nil {
-			return err
+			refusals = append(refusals, &UnsupportedFeatureError{
+				Stage: g.Name, Feature: "gate.evaluator.human", Err: err,
+			})
 		}
 	}
-	return nil
+	return refusalError(name, refusals)
 }
 
 // RefusePlacedDefinition also checks features whose support depends on the
 // pinned executor. Local agentic usage budgets are supported; remote usage
 // must be carried in the surrender protocol before that refusal can be lifted.
 func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
-	if err := RefuseDefinition(name, spec); err != nil {
+	refusals, err := placedDefinitionRefusals(name, spec, placements, RefuseDefinition)
+	if err != nil {
 		return err
 	}
-	return RefuseRemoteUsage(name, spec, placements)
+	return refusalError(name, refusals)
+}
+
+func placedDefinitionRefusals(
+	name string,
+	spec apiv1.WorkflowSpec,
+	placements []dispatcher.PinnedPlacement,
+	refuseDefinition func(string, apiv1.WorkflowSpec) error,
+) ([]*UnsupportedFeatureError, error) {
+	var refusals []*UnsupportedFeatureError
+	var declared *UnsupportedFeaturesError
+	err := refuseDefinition(name, spec)
+	if err != nil && !errors.As(err, &declared) {
+		return nil, err
+	}
+	if declared != nil {
+		refusals = append(refusals, declared.Refusals...)
+	}
+	refusals = append(refusals, remoteUsageRefusals(spec, placements)...)
+	return refusals, nil
 }
 
 // RefuseRemoteUsage rejects token or cost limits on agentic tasks pinned to
 // remote executors, whose surrender protocol does not carry trusted usage.
 func RefuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
+	return refusalError(name, remoteUsageRefusals(spec, placements))
+}
+
+func remoteUsageRefusals(spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) []*UnsupportedFeatureError {
 	var refusals []*UnsupportedFeatureError
 	for _, t := range spec.Tasks {
 		if t.Type != apiv1.TaskAgentic || t.Limits == nil || (t.Limits.MaxTokens <= 0 && t.Limits.MaxCostUSD <= 0) {
@@ -233,10 +258,14 @@ func RefuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []dispat
 			refusals = append(refusals, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.limits.maxTokens/maxCostUSD", Err: ErrRemoteUsageLimitsUnsupported})
 		}
 	}
-	if len(refusals) > 0 {
-		return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
+	return refusals
+}
+
+func refusalError(name string, refusals []*UnsupportedFeatureError) error {
+	if len(refusals) == 0 {
+		return nil
 	}
-	return nil
+	return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
 }
 
 // HumanGateUnsupported is retained verbatim for historical engine refusals.

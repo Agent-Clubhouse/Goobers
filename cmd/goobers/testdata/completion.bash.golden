@@ -74,10 +74,10 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --format --strict"
             ;;
         lint)
-            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --format --strict"
             ;;
         fix)
             flags+=" --to --instance-schema --write"
@@ -123,9 +123,6 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 codec-server) flags+=" --listen --tls-cert --tls-key --allow-origin" ;;
             esac
-            ;;
-        worker)
-            flags+=" --instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --config-endpoint --config-key-file --blob-probe-wait --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --health-addr --max-concurrent-activities --work-root"
             ;;
         config-seed)
             flags+=" --mirror --instance"

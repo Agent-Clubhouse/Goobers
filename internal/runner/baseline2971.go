@@ -9,16 +9,9 @@ import (
 	"github.com/goobers/goobers/internal/baseline"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
-
-// SharedBaselineFailureCode is the stage-failure code a local-ci failure
-// carries once it is attributed to the target branch rather than to the run's
-// own diff (#2971). It is a recognized non-retryable disposition
-// (escalateErrorCodes), so the affected run parks against the shared blocker
-// through the existing #415 route instead of spending an implementation repass
-// re-deriving that there is nothing branch-local to fix.
-const SharedBaselineFailureCode = "SHARED_BASELINE_FAILURE"
 
 // baselineClassificationKind is the runner.annotation kind that records a
 // baseline comparison. Every classification is journaled — including
@@ -57,7 +50,7 @@ const baselineReleaseKind = "baseline.release"
 // parks exactly as they were rather than disturbing the run.
 func (r *Runner) releaseBaselineParks(ctx context.Context, ws *walkState) {
 	health := r.cfg.BaselineHealth
-	if health == nil || !machineUsesRepo(ws.in.Machine) {
+	if health == nil || !runsemantics.MachineUsesRepo(ws.in.Machine) {
 		return
 	}
 	repoURL, err := r.cfg.RepoCloneURL(ws.in.RepoRef)
@@ -138,7 +131,7 @@ func applyBaselineDecision(result apiv1.ResultEnvelope, decision baseline.Decisi
 	}
 	result.Summary = fmt.Sprintf("shared baseline failure: %s", decision.Reason)
 	result.Error = &apiv1.ErrorInfo{
-		Code:      SharedBaselineFailureCode,
+		Code:      runsemantics.SharedBaselineFailureCode,
 		Message:   decision.Reason,
 		Retryable: false,
 	}

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -97,7 +99,7 @@ func TestInterventionCLICommandsCallDaemonAPI(t *testing.T) {
 			args = append(args, "run-1", "review", root)
 			code, stdout, stderr := runArgs(t, args...)
 			var banner strings.Builder
-			if err := prepareManualRoot(instance.NewLayout(root), &banner); err != nil {
+			if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), &banner); err != nil {
 				t.Fatal(err)
 			}
 			if code != 0 || stderr != banner.String() {

@@ -482,7 +482,7 @@ type APIConfig struct {
 	// PodTokenKeyFile is a path to shared key material for STATELESS pod
 	// tokens (Goobers#3701). Set it when the mode-3 dispatcher runs in a
 	// different process from the daemon — the split `goobers up` /
-	// `goobers worker --dispatch-namespace` deployment — because the
+	// `goobers-cloud worker --dispatch-namespace` deployment — because the
 	// in-memory token registry is daemon-local and a token minted in the
 	// worker cannot otherwise be verified by the daemon receiving the
 	// surrender.
@@ -1515,7 +1515,7 @@ type OTLPConfig struct {
 // collector through a Service name other than the certificate's SAN).
 //
 // Validated SHAPE ONLY at load — no filesystem read happens here. The same
-// instance.yaml this loads is also loaded by `goobers worker --instance`,
+// instance.yaml this loads is also loaded by `goobers-cloud worker --instance`,
 // which builds no telemetry client at all, so a load-time file read here
 // would fail the worker over a file it has no reason to mount. The paths
 // are read only by telemetry.New, on the daemon, where a read/parse failure
@@ -1550,7 +1550,7 @@ type EngineConfig struct {
 	// Nil keeps the plaintext dial a local dev Temporal expects; every dial
 	// site builds its options through temporaldial.Options with this value.
 	TLS *temporaldial.TLS `json:"tls,omitempty" yaml:"tls,omitempty"`
-	// WorkerVersioning opts `goobers worker` into Temporal worker-deployment
+	// WorkerVersioning opts `goobers-cloud worker` into Temporal worker-deployment
 	// versioning (#5950): pollers register as deployment "goobers", version
 	// goobers.<build>, with Pinned as the default workflow behavior. It is
 	// OFF by default because nothing in the product sets the deployment's

@@ -231,6 +231,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
 		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
 		{name: "target", takesArg: true, desc: "Validate runtime eligibility for local or cloud execution"},
+		{name: "format", takesArg: true, desc: "Cloud readiness output format (text or json)"},
 		{name: "strict", desc: strictFlagDescription()},
 	},
 	"lint": {
@@ -242,6 +243,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "source-tree", desc: "Lint a checked-in config source tree"},
 		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
 		{name: "target", takesArg: true, desc: "Validate runtime eligibility for local or cloud execution"},
+		{name: "format", takesArg: true, desc: "Cloud readiness output format (text or json)"},
 		{name: "strict", desc: strictFlagDescription()},
 	},
 	"up": {
@@ -315,25 +317,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"service task-status": {
 		{name: "json", desc: "Emit JSON"},
-	},
-	"worker": {
-		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
-		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
-		{name: "blob-endpoint", takesArg: true, desc: "HTTP(S) artifact plane alternative"},
-		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
-		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
-		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
-		{name: "config-endpoint", takesArg: true, desc: "Daemon worker-configuration plane"},
-		{name: "config-key-file", takesArg: true, desc: "Shared signing key for worker configuration fetches"},
-		{name: "blob-probe-wait", takesArg: true, desc: "How long the startup blob-plane probe waits for a not-yet-ready daemon before exiting"},
-		{name: "config-history-depth", takesArg: true, desc: "How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)"},
-		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
-		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
-		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
-		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
-		{name: "health-addr", takesArg: true, desc: "Address serving worker liveness and readiness probes"},
-		{name: "max-concurrent-activities", takesArg: true, desc: "Maximum concurrent activity executions"},
-		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 	},
 	"config-seed": {
 		{name: "mirror", takesArg: true, desc: "Read-only rendered config mirror path"},

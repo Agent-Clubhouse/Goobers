@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -46,12 +45,9 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 			},
 		},
 		"goobers-worker": {
-			binary:  "goobers",
-			command: "worker",
-			validateArgs: func(args []string) error {
-				return validateManifestArgs(args, registeredCommandFlagSet(t, "worker"),
-					[]string{"config-endpoint", "config-key-file", "blob-endpoint", "daemon-api"}, 0)
-			},
+			binary:       "goobers-cloud",
+			command:      "worker",
+			validateArgs: func([]string) error { return nil },
 		},
 	}
 
@@ -114,18 +110,6 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 		t.Fatalf("examined %d of %d contracted Deployments (%v); every CLI contract must be checked against a shipped manifest", len(examined), len(contracts), slices.Sorted(maps.Keys(examined)))
 	}
 
-	var stdout, stderr bytes.Buffer
-	if code := runWorker([]string{"--config-endpoint", "https://daemon.example"}, &stdout, &stderr); code != 2 {
-		t.Error("worker config endpoint without a key was accepted")
-	}
-	workerFlags := registeredCommandFlagSet(t, "worker")
-	if err := validateManifestArgs([]string{"--instance", "/instance", "--not-a-worker-flag"}, workerFlags, []string{"instance"}, 0); err == nil {
-		t.Error("unknown worker flag was accepted")
-	}
-	workerFlags = registeredCommandFlagSet(t, "worker")
-	if err := validateManifestArgs([]string{"--instance", "/instance", "--drain-timeout", "eventually"}, workerFlags, []string{"instance"}, 0); err == nil {
-		t.Error("invalid worker flag value was accepted")
-	}
 	if _, err := app.ParseArgs("operator", []string{"--version=eventually"}, io.Discard, true); err == nil {
 		t.Error("invalid operator flag value was accepted")
 	}

@@ -20,7 +20,6 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 func TestMapRosterFrozen(t *testing.T) {
@@ -144,20 +143,20 @@ func TestFreezeMapRosterSeparatesCallerAndSourceErrors(t *testing.T) {
 func TestFreezeMapRosterHistoryReplaysAtEveryWorkflowTaskStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+	c, stop, err := startReplayClient(ctx, t, testsuite.DevServerOptions{
 		LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard,
 	})
 	if err != nil {
 		t.Fatalf("start Temporal dev server: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := server.Stop(); err != nil {
+		if err := stop(); err != nil {
 			t.Errorf("stop Temporal dev server: %v", err)
 		}
 	})
 	store, input, _ := mapRosterActivityFixture(t)
 	const queue = "map-roster-freeze-replay"
-	worker := temporalworker.New(server.Client(), queue, temporalworker.Options{})
+	worker := temporalworker.New(c, queue, temporalworker.Options{})
 	worker.RegisterWorkflow(freezeMapRosterProbe)
 	worker.RegisterActivity(&Activities{FanOutBlobs: store})
 	if err := worker.Start(); err != nil {
@@ -165,7 +164,7 @@ func TestFreezeMapRosterHistoryReplaysAtEveryWorkflowTaskStart(t *testing.T) {
 	}
 	t.Cleanup(worker.Stop)
 
-	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: "map-roster-freeze-replay", TaskQueue: queue,
 	}, freezeMapRosterProbe, input)
 	if err != nil {
@@ -175,7 +174,7 @@ func TestFreezeMapRosterHistoryReplaysAtEveryWorkflowTaskStart(t *testing.T) {
 	if err := run.Get(ctx, &result); err != nil {
 		t.Fatal(err)
 	}
-	history := readMapFreezeHistory(t, ctx, server.Client(), run)
+	history := readMapFreezeHistory(t, ctx, c, run)
 	replayMapFreezeHistory(t, history, "full")
 	prefixes := 0
 	for i, event := range history.Events {

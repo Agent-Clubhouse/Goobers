@@ -9,6 +9,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/childpod"
@@ -60,7 +62,7 @@ func testParentKitUsesRetainedSourceAndExistingModelGrants(t *testing.T, selecte
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseline, err := (agenticKitWriter{registrar: service.shared}).buildSnapshotKit(service.layout, snapshot, env, kitModeFor(attempt))
+	baseline, err := snapshot.BuildAgenticKit(service.layout, env, runtimewiring.KitModeFor(attempt), service.shared)
 	release()
 	if err != nil {
 		t.Fatal(err)

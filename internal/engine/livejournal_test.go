@@ -1,19 +1,5 @@
 package engine
 
-// livejournal_test.go covers the engine side of the live journal service
-// (distributed-state-and-coordination.md §8, DS4/DS5) against §13's
-// acceptance items 3 and 4:
-//
-//   - a run with LiveJournal pinned authors its journal mid-flight through
-//     the emission seam — stage transitions are on disk BEFORE the run
-//     closes (item 3's visibility half; the StalledRunTimeout half lives
-//     with the sweep in cmd/goobers);
-//   - a redelivered emission (retried activity) is deduplicated: exactly one
-//     copy per idempotency key, and the live journal's normative view diffs
-//     empty against an independent history re-projection (item 4);
-//   - an emission that exhausts its bounded budget fails the attempt as
-//     attemptClass infra, never the policy budget (§8 failure policy, #3361);
-
 import (
 	"context"
 	"errors"
@@ -25,11 +11,25 @@ import (
 
 	"go.temporal.io/sdk/testsuite"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// livejournal_test.go covers the engine side of the live journal service
+	// (distributed-state-and-coordination.md §8, DS4/DS5) against §13's
+	// acceptance items 3 and 4:
+	//
+	//   - a run with LiveJournal pinned authors its journal mid-flight through
+	//     the emission seam — stage transitions are on disk BEFORE the run
+	//     closes (item 3's visibility half; the StalledRunTimeout half lives
+	//     with the sweep in cmd/goobers);
+	//   - a redelivered emission (retried activity) is deduplicated: exactly one
+	//     copy per idempotency key, and the live journal's normative view diffs
+	//     empty against an independent history re-projection (item 4);
+	//   - an emission that exhausts its bounded budget fails the attempt as
+	//     attemptClass infra, never the policy budget (§8 failure policy, #3361);
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -296,8 +296,8 @@ func TestLiveJournalEmitExhaustionFailsAttemptAsInfra(t *testing.T) {
 			}
 		}
 	}
-	if emitFailures != int(runner.DefaultMaxInfrastructureAttempts) {
-		t.Fatalf("journal_emit_failed events = %d, want the infra budget %d", emitFailures, runner.DefaultMaxInfrastructureAttempts)
+	if emitFailures != int(runsemantics.DefaultMaxInfrastructureAttempts) {
+		t.Fatalf("journal_emit_failed events = %d, want the infra budget %d", emitFailures, runsemantics.DefaultMaxInfrastructureAttempts)
 	}
 	terminal := proj.Ops[len(proj.Ops)-1].Event
 	if terminal == nil || terminal.Type != journal.EventRunFinished || terminal.Status != string(journal.PhaseFailed) {
@@ -307,8 +307,8 @@ func TestLiveJournalEmitExhaustionFailsAttemptAsInfra(t *testing.T) {
 	cause := terminal.TerminalCause
 	if cause == nil || cause.Classification != journal.TerminalInfrastructureFailure ||
 		cause.SelectorKind != "stage" || cause.Selector != "implement" || cause.Retry == nil ||
-		cause.Retry.Consumed != int(runner.DefaultMaxInfrastructureAttempts)-1 ||
-		cause.Retry.Allowed != int(runner.DefaultMaxInfrastructureAttempts)-1 ||
+		cause.Retry.Consumed != int(runsemantics.DefaultMaxInfrastructureAttempts)-1 ||
+		cause.Retry.Allowed != int(runsemantics.DefaultMaxInfrastructureAttempts)-1 ||
 		cause.CausalEventSeq == 0 || cause.CausalEmitKey == "" {
 		t.Fatalf("journal emission exhaustion cause = %+v", cause)
 	}

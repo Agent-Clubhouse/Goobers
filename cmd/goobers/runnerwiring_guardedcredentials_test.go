@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -31,10 +33,10 @@ func testLocalAgenticExecutorRefusesConfigCredentialFiles(t *testing.T, source s
 			if err := os.WriteFile(keyPath, []byte(secret), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			original := newAgenticAdapter
-			t.Cleanup(func() { newAgenticAdapter = original })
+			original := runtimewiring.NewAgenticAdapter
+			t.Cleanup(func() { runtimewiring.NewAgenticAdapter = original })
 			started := false
-			newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+			runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 				return &harness.FakeAdapter{Act: func(_ context.Context, _ harness.RunRequest) error {
 					started = true
 					_, err := os.ReadFile(keyPath)

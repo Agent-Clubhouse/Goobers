@@ -7,11 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -152,7 +155,7 @@ func runBranchesFromEvents(events []journal.Event) []runBranchTarget {
 			events[i].Runner["annotation"] != runner.ReboundWorkspaceBranchAnnotation {
 			continue
 		}
-		branch, _ := events[i].Runner[runner.WorkspaceBranchOutput].(string)
+		branch, _ := events[i].Runner[runsemantics.WorkspaceBranchOutput].(string)
 		boundSHA, _ := events[i].Runner[runner.ReboundBranchBoundSHAKey].(string)
 		add(branch, boundSHA)
 	}
@@ -221,15 +224,15 @@ func (p *terminalCapturePlan) worthCapturing(managedKey, mirror, tip string) (bo
 	if err != nil || contained {
 		return false, err
 	}
-	captureAt, err := recoveryWindowTime(p.events, p.startedAt)
+	captureAt, err := runtimewiring.RecoveryWindowTime(p.events, p.startedAt)
 	if err != nil {
 		return false, err
 	}
-	publication := recoveryCleanupJournal{directory: p.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
+	publication := runtimewiring.RecoveryCleanupJournal{Directory: p.layout.SchedulerDir(), Scrubber: journal.NewRegistryScrubber()}
 	// Repository is filled in by publish: the request is built here, where the
 	// policy and inventory resolve once, but the snapshot is captured from the
 	// checkout that only exists if this function says yes.
-	request, err := recoveryCleanupRequest(p.layout, cfg, p.manager.Root, p.manager, key, "", p.runID, captureAt, publication)
+	request, err := runtimewiring.RecoveryCleanupRequest(p.layout, cfg, p.manager.Root, p.manager, key, "", p.runID, captureAt, publication)
 	if err != nil {
 		return false, err
 	}
@@ -272,7 +275,7 @@ func terminalCaptureIdentity(l instance.Layout, cfg *instance.Config, managedKey
 	if err != nil {
 		return "", "", false, err
 	}
-	cloneURL := repoCloneURL
+	cloneURL := runtimewiring.RepoCloneURL
 	if cloneURL == nil {
 		cloneURL = runner.DefaultRepoCloneURL
 	}

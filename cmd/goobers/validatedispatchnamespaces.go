@@ -4,18 +4,25 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 )
 
+const dispatchNamespacePreflightTimeout = 30 * time.Second
+
+var preflightGaggleNamespaces = dispatcher.PreflightNamespaces
+
 // WarningDispatchNamespaceUnready (GNS001) fires when --check-dispatch-namespaces
 // finds a gaggle's declared isolation.namespace that the CURRENT dispatch
 // configuration cannot honor: the namespace does not exist, or this
 // kubeconfig's credentials lack the RBAC grants the mode-3 dispatcher's
 // create/cleanup path needs there (#4897 acceptance criterion 3). This is the
-// exact check `goobers worker --dispatch-namespace` runs at startup — running
+// exact check `goobers-cloud worker --dispatch-namespace` runs at startup — running
 // it here, ahead of a rollout, is the upgrade/preflight diagnostic operators
 // use to provision access before enabling or expanding mode-3 dispatch.
 const WarningDispatchNamespaceUnready = "GNS001"
@@ -40,7 +47,7 @@ func checkGaggleDispatchNamespacesIfRequested(options validateOptions, root, con
 // silently rather than failing — the same posture --check-repos takes when a
 // provider token is absent.
 func checkGaggleDispatchNamespaces(root, configDir string, set *instance.ConfigSet, stdout io.Writer, diagnostics *diagnosticCollector) {
-	gaggleNamespaces, err := gaggleNamespacesFromConfig(set.Gaggles)
+	gaggleNamespaces, err := runtimewiring.GaggleNamespacesFromConfig(set.Gaggles)
 	if err != nil {
 		pf(stdout, "dispatch namespaces not checked: %v\n", err)
 		return

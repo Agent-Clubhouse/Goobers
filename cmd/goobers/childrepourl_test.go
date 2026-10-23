@@ -3,13 +3,15 @@ package main
 import (
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestChildRepositoryURLUsesProductionDefaultAndTrustedOverride(t *testing.T) {
-	previous := repoCloneURL
-	repoCloneURL = nil
-	t.Cleanup(func() { repoCloneURL = previous })
+	previous := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = nil
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previous })
 	for _, test := range []struct {
 		ref apiv1.RepoRef
 		url string
@@ -22,7 +24,7 @@ func TestChildRepositoryURLUsesProductionDefaultAndTrustedOverride(t *testing.T)
 			t.Fatal(got, err)
 		}
 	}
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return "trusted-test-path", nil }
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return "trusted-test-path", nil }
 	if got, err := childRepoCloneURL(apiv1.RepoRef{}); err != nil || got != "trusted-test-path" {
 		t.Fatal(got, err)
 	}

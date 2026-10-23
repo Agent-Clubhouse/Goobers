@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
@@ -94,7 +96,7 @@ func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, pr
 			// A GitHub backlog for ADO code (topology (b)): the claim marker
 			// lives on the GitHub issue, released with the backlog repository's
 			// credential.
-			return buildTerminalGitHubClaimMarkerRelease(cfg, backlog, credentialBindingOwner(project), project.Name, backlogRoleFor(backlog.Owner, backlog.Name), registrar, stores)
+			return buildTerminalGitHubClaimMarkerRelease(cfg, backlog, runtimewiring.CredentialBindingOwner(project), project.Name, runtimewiring.BacklogRoleFor(backlog.Owner, backlog.Name), registrar, stores)
 		}
 		if backlog.Provider != providers.ProviderADO {
 			return nil, providers.RepositoryRef{}, nil
@@ -112,7 +114,7 @@ func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, pr
 // issue, and (owner, name, backlog) select the credential exactly as the
 // gaggle's stages get it.
 func buildTerminalGitHubClaimMarkerRelease(cfg *instance.Config, repo providers.RepositoryRef, owner, name string, backlog *credentials.BacklogRole, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef, error) {
-	resolver, grants, err := buildRoleCredentials(cfg, stores, owner, name, backlog, nil, registrar)
+	resolver, grants, err := runtimewiring.BuildRoleCredentials(cfg, stores, owner, name, backlog, nil, registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}
