@@ -9,6 +9,8 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
+const lifecycleReceiptsVersion = "engine-lifecycle-receipts-v1"
+
 func (o *journalCommitOwner) preserveAppendReceipts(ops []livejournal.Op, receipts []livejournal.AppendReceipt, watermark uint64) error {
 	pending := make(map[string]livejournal.AppendReceipt)
 	next := 0
@@ -47,11 +49,17 @@ func (o *journalCommitOwner) preserveAppendReceipts(ops []livejournal.Op, receip
 	return nil
 }
 
-// commitLifecycle returns only an acknowledged per-event identity. The owner
-// retains its original emit key if an acknowledgement is lost or incomplete.
+// commitLifecycle returns an acknowledged per-event identity for new histories.
+// Pre-receipt scheduler histories retain their original append protocol and
+// return no identity; their static branches do not consume lifecycle receipts.
+// The owner retains the original emit key across uncertain acknowledgements.
 func (r *runJournal) commitLifecycle(ctx workflow.Context, event journal.Event) (livejournal.AppendReceipt, error) {
 	if r.owner == nil {
 		return livejournal.AppendReceipt{}, fmt.Errorf("engine: lifecycle requires a commit owner")
+	}
+	if workflow.GetVersion(ctx, lifecycleReceiptsVersion, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		r.append(ctx, event)
+		return livejournal.AppendReceipt{}, r.emitPending(ctx)
 	}
 	r.append(ctx, event)
 	i := len(r.proj.Ops) - 1
