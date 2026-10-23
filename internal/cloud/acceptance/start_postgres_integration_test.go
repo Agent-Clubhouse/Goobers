@@ -5,6 +5,7 @@ package acceptance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -392,16 +393,16 @@ func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
 	}
 	controller := successorStore(t, childRolePool(t, pool, "goobers_controller"))
 	running := func(context.Context, string) (bool, error) { return false, nil }
-	if marked, deleted, err := controller.SweepRunPins(t.Context(), running); err != nil || marked != 0 || deleted != 0 {
-		t.Fatalf("sweep of a running parent = %d marked, %d deleted, %v", marked, deleted, err)
+	if sweep, err := controller.SweepRunPins(t.Context(), running, ""); err != nil || sweep.Marked != 0 || sweep.Deleted != 0 {
+		t.Fatalf("sweep of a running parent = %+v, %v", sweep, err)
 	}
 	if present, terminal := pinState(); !present || terminal {
 		t.Fatalf("running parent's pins: present=%v terminal=%v, want kept and live", present, terminal)
 	}
 
 	closed := func(context.Context, string) (bool, error) { return true, nil }
-	if marked, deleted, err := controller.SweepRunPins(t.Context(), closed); err != nil || marked != 1 || deleted != 0 {
-		t.Fatalf("sweep of the closed run = %d marked, %d deleted, %v", marked, deleted, err)
+	if sweep, err := controller.SweepRunPins(t.Context(), closed, ""); err != nil || sweep.Marked != 1 || sweep.Deleted != 0 {
+		t.Fatalf("sweep of the closed run = %+v, %v", sweep, err)
 	}
 	if present, terminal := pinState(); !present || !terminal {
 		t.Fatalf("closed run's pins: present=%v terminal=%v, want kept and terminal", present, terminal)
@@ -409,10 +410,66 @@ func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `UPDATE control.run_pin SET terminal_at=terminal_at-interval '8 days' WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID); err != nil {
 		t.Fatal(err)
 	}
-	if _, deleted, err := controller.SweepRunPins(t.Context(), closed); err != nil || deleted != 1 {
-		t.Fatalf("sweep after retention deleted %d (%v), want 1", deleted, err)
+	if sweep, err := controller.SweepRunPins(t.Context(), closed, ""); err != nil || sweep.Deleted != 1 {
+		t.Fatalf("sweep after retention deleted %d (%v), want 1", sweep.Deleted, err)
 	}
 	if present, _ := pinState(); present {
 		t.Fatal("pins outlived their retention after the run closed")
+	}
+}
+
+func TestPGRunPinSweepRotatesPastLiveRunsAndIsolatesUnconfirmed(t *testing.T) {
+	store, pool := testStore(t, 1)
+	runs := []string{"aa-unconfirmed", "zz-closed"}
+	for i := range runPinSweepBatch {
+		runs = append(runs, fmt.Sprintf("live-%03d", i))
+	}
+	for _, runID := range runs {
+		if _, err := pool.Exec(t.Context(), `
+			INSERT INTO control.run_pin (instance_id, run_id, acceptance_id, gaggle, workflow, workflow_version, workflow_digest,
+				goober_digest, config_generation, repo_ref, branch_namespace, input_digest, owner_epoch, created_at)
+			VALUES ($1, $2, $2, 'g', 'w', 1, 'wd', 'gd', 'cg', '{}', 'goobers', 'id', 1, clock_timestamp()-interval '8 days')`,
+			store.instanceID, runID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.manager.Release(t.Context(), store.handle); err != nil {
+		t.Fatal(err)
+	}
+	controller := successorStore(t, childRolePool(t, pool, "goobers_controller"))
+	outage := errors.New("temporal cannot vouch for this run")
+	status := func(_ context.Context, runID string) (bool, error) {
+		switch runID {
+		case "aa-unconfirmed":
+			return false, outage
+		case "zz-closed", "live-010":
+			return true, nil
+		}
+		return false, nil
+	}
+
+	// A full batch of the oldest candidates: the unconfirmed run's error is
+	// returned, yet the closed run inside the batch is still marked.
+	first, err := controller.SweepRunPins(t.Context(), status, "")
+	if !errors.Is(err, outage) || first.Marked != 1 || first.Next == "" {
+		t.Fatalf("first pass = %+v, %v; want 1 marked, a cursor, and the unconfirmed error", first, err)
+	}
+	// The cursor carries the sweep past the long-running parents to the closed
+	// run behind them, and the lap then wraps.
+	second, err := controller.SweepRunPins(t.Context(), status, first.Next)
+	if err != nil || second.Marked != 1 || second.Next != "" {
+		t.Fatalf("second pass = %+v, %v; want 1 marked and the lap complete", second, err)
+	}
+
+	rows, err := pool.Query(t.Context(), `SELECT run_id FROM control.run_pin WHERE instance_id=$1 AND terminal_at IS NOT NULL ORDER BY run_id`, store.instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(terminal) != "[live-010 zz-closed]" {
+		t.Fatalf("terminal pins = %v, want only the closed runs", terminal)
 	}
 }

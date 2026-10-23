@@ -94,34 +94,50 @@ const runPinSweepBatch = 64
 // engine no longer knows (its history retention-deleted) is closed.
 type RunClosed func(ctx context.Context, runID string) (bool, error)
 
+// RunPinSweep is one retention pass's outcome. Next is the cursor for the
+// following pass; it is empty once a lap over the candidates completes.
+type RunPinSweep struct {
+	Marked, Deleted int64
+	Next            string
+}
+
 // SweepRunPins applies run_pin's terminal-keyed retention: pins of runs that
 // are older than ReplayRetention and now closed are marked terminal, and pins
 // terminal for longer than ReplayRetention are deleted. A running parent's
-// pins are never touched, however old. The closed predicate runs outside any
-// transaction; only the marking and deletion are fenced.
-func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed) (marked, deleted int64, err error) {
+// pins are never touched, however old. Candidates are visited in run_id order
+// after the cursor, so long-running parents cannot fill every batch and starve
+// the closed runs behind them. A run whose status cannot be confirmed keeps its
+// pin; its error is returned after the rest of the batch is applied. The closed
+// predicate runs outside any transaction; only the marking and deletion are
+// fenced.
+func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string) (RunPinSweep, error) {
 	if closed == nil {
-		return 0, 0, errors.New("cloud acceptance: run pin sweep requires a run status")
+		return RunPinSweep{Next: after}, errors.New("cloud acceptance: run pin sweep requires a run status")
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT run_id FROM control.run_pin
-		WHERE instance_id=$1 AND terminal_at IS NULL AND created_at<clock_timestamp()-$2*interval '1 second'
-		ORDER BY created_at, run_id LIMIT $3`,
-		s.instanceID, triggerqueue.ReplayRetention.Seconds(), runPinSweepBatch)
+		WHERE instance_id=$1 AND terminal_at IS NULL AND created_at<clock_timestamp()-$2*interval '1 second' AND run_id>$3
+		ORDER BY run_id LIMIT $4`,
+		s.instanceID, triggerqueue.ReplayRetention.Seconds(), after, runPinSweepBatch)
 	if err != nil {
-		return 0, 0, err
+		return RunPinSweep{Next: after}, err
 	}
 	candidates, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return 0, 0, err
+		return RunPinSweep{Next: after}, err
+	}
+	sweep := RunPinSweep{}
+	if len(candidates) == runPinSweepBatch {
+		sweep.Next = candidates[len(candidates)-1]
 	}
 	var closedRuns []string
+	var unconfirmed []error
 	for _, runID := range candidates {
 		done, err := closed(ctx, runID)
-		if err != nil {
-			return 0, 0, fmt.Errorf("run pin sweep: status of run %s: %w", runID, err)
-		}
-		if done {
+		switch {
+		case err != nil:
+			unconfirmed = append(unconfirmed, fmt.Errorf("run pin sweep: status of run %s: %w", runID, err))
+		case done:
 			closedRuns = append(closedRuns, runID)
 		}
 	}
@@ -132,13 +148,16 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed) (marked, del
 		if err != nil {
 			return err
 		}
-		marked = tag.RowsAffected()
+		sweep.Marked = tag.RowsAffected()
 		tag, err = tx.Exec(txCtx, `
 			DELETE FROM control.run_pin
 			WHERE instance_id=$1 AND terminal_at<clock_timestamp()-$2*interval '1 second'`,
 			s.instanceID, triggerqueue.ReplayRetention.Seconds())
-		deleted = tag.RowsAffected()
+		sweep.Deleted = tag.RowsAffected()
 		return err
 	})
-	return marked, deleted, err
+	if err != nil {
+		return RunPinSweep{Next: after}, err
+	}
+	return sweep, errors.Join(unconfirmed...)
 }
