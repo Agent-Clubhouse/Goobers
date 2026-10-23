@@ -1,7 +1,7 @@
-//go:build cloudintegration
+//go:build cloudintegration || cloudpg
 
 // Package pgtest holds fixtures for cloud PostgreSQL integration tests. It is
-// compiled only with the cloudintegration tag.
+// compiled only with the cloudintegration or cloudpg tag.
 package pgtest
 
 import (
