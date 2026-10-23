@@ -7,8 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
 const rebuildBatchSize = 100
@@ -38,19 +36,13 @@ func (b *Builder) Build(ctx context.Context, target string) error {
 		return fmt.Errorf("readmodelpg: invalid rebuild target %q", target)
 	}
 	sourceVersion, done, err := b.prepare(ctx, target)
-	if err != nil {
+	if err != nil || done {
 		return err
-	}
-	if done {
-		return b.reconcileGrants(ctx)
 	}
 	for {
 		done, err = b.copyBatch(ctx, target, sourceVersion)
-		if err != nil {
+		if err != nil || done {
 			return err
-		}
-		if done {
-			return b.reconcileGrants(ctx)
 		}
 	}
 }
@@ -416,7 +408,7 @@ func (b *Builder) CreateEmptyVersion(ctx context.Context, version int) error {
 	if err != nil {
 		return err
 	}
-	if err := b.fence.WithFence(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+	return b.fence.WithFence(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 		activeVersion, err := lockPointer(ctx, tx, epoch)
 		if err != nil {
 			return err
@@ -425,29 +417,7 @@ func (b *Builder) CreateEmptyVersion(ctx context.Context, version int) error {
 			return fmt.Errorf("readmodelpg: refusing to replace active schema %s", target)
 		}
 		return resetVersion(ctx, tx, target, 0, 0, true, epoch)
-	}); err != nil {
-		return err
-	}
-	return b.reconcileGrants(ctx)
-}
-
-func (b *Builder) reconcileGrants(ctx context.Context) error {
-	inventory, err := cloudschema.LoadWritePaths()
-	if err != nil {
-		return err
-	}
-	tx, err := b.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("readmodelpg: begin grant reconcile: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := cloudschema.ReconcileGrants(ctx, tx, inventory); err != nil {
-		return fmt.Errorf("readmodelpg: reconcile grants: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("readmodelpg: commit grant reconcile: %w", err)
-	}
-	return nil
+	})
 }
 
 func lockPointer(ctx context.Context, tx pgx.Tx, epoch int64) (int, error) {

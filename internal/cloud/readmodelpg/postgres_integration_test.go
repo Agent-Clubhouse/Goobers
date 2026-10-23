@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/cloud/readmodelpg"
+	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/conformance"
@@ -65,6 +66,7 @@ func TestPostgresConformance(t *testing.T) {
 		if err := builder.CreateEmptyVersion(t.Context(), current); err != nil {
 			t.Fatal(err)
 		}
+		reconcileReadmodelGrants(t, admin)
 		activateVersion(t, admin, current, int64(current))
 		store, err := readmodelpg.NewVersion(t.Context(), pool, current, fence)
 		if err != nil {
@@ -506,6 +508,7 @@ func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
 	if err := builder.Build(t.Context(), "readmodel_v2"); err != nil {
 		t.Fatal(err)
 	}
+	reconcileReadmodelGrants(t, admin)
 	if err := builder.Flip(t.Context(), "readmodel", 2); err != nil {
 		t.Fatal(err)
 	}
@@ -643,6 +646,25 @@ func controllerPool(t *testing.T, admin *pgxpool.Pool) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+func reconcileReadmodelGrants(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	inventory, err := cloudschema.LoadWritePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(t.Context()) }()
+	if err := cloudschema.ReconcileGrants(t.Context(), tx, inventory); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func applyMigrations(t *testing.T, pool *pgxpool.Pool) {
