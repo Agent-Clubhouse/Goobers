@@ -417,11 +417,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// reviewer evaluated in a pod. Untouched by the self arm.
 	gateDispatches := map[string]int{}
 	// Physical task dispatches never reset when the graph revisits a task.
-	taskDispatches := rec.taskDispatches
-	if taskDispatches == nil {
-		taskDispatches = map[string]int{}
-		rec.taskDispatches = taskDispatches
-	}
+	taskDispatches := rec.taskDispatchCounters()
 	// evaluatedGates names every gate that has recorded a verdict on this
 	// walk. A gate named in a downstream stage's contextFrom delivers that
 	// verdict as context, so the #2736 no-work check must count it as

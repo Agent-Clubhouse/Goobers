@@ -33,19 +33,31 @@ func TestFreezeRosterBlobDoesNotExpandHTMLCharacters(t *testing.T) {
 }
 
 func TestFreezeRosterBlobAppliesSharedNormalizedSizeBound(t *testing.T) {
-	const envelopeOverhead = len(`{"schemaVersion":1,"items":[{"identity":"a","item":{"value":""}}]}`)
-	data := []byte(`{"schemaVersion":1,"items":[{"identity":"a","item":{"value":"` +
-		strings.Repeat("x", int(MaxSourceBytes)-envelopeOverhead) + `"}}]}`)
-	if int64(len(data)) > MaxSourceBytes {
-		t.Fatalf("fixture source = %d, bound = %d", len(data), MaxSourceBytes)
+	def, source, data := frozenRosterFixture()
+	_, encoded, _, err := FreezeRosterBlob(def, source, data)
+	if err != nil {
+		t.Fatal(err)
 	}
-	def, source, _ := frozenRosterFixture()
-	source.Digest, source.Size = journal.Digest(data), int64(len(data))
-	_, _, _, err := FreezeRosterBlob(def, source, data)
+	encoded = append(encoded, make([]byte, int(MaxFrozenRosterBytes)-len(encoded)+1)...)
+	_, err = DecodeRosterBlob(encoded, journal.Digest(encoded), def)
 	var invalid *SourceError
 	if !errors.As(err, &invalid) || invalid.Reason != ReasonTooLarge ||
 		!strings.Contains(err.Error(), "normalized roster") {
 		t.Fatalf("normalized oversize error = %T %v", err, err)
+	}
+}
+
+func TestFreezeRosterBlobAllowsDocumentedNormalizedOverhead(t *testing.T) {
+	data := []byte(`{"schemaVersion":1,"items":[{"identity":"a","item":{"value":"` +
+		strings.Repeat("x", MaxFrozenItemBytes-len(`{"value":""}`)) + `"}}]}`)
+	def, source, _ := frozenRosterFixture()
+	source.Digest, source.Size = journal.Digest(data), int64(len(data))
+	_, encoded, _, err := FreezeRosterBlob(def, source, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) <= len(data) || int64(len(encoded)) > MaxFrozenRosterBytes {
+		t.Fatalf("normalized overhead source=%d frozen=%d bound=%d", len(data), len(encoded), MaxFrozenRosterBytes)
 	}
 }
 

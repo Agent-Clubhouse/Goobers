@@ -13,9 +13,15 @@ import (
 // FrozenRosterSchemaVersion identifies the content-addressed roster blob.
 const FrozenRosterSchemaVersion = "goobers.dev/frozen-map-roster/v1"
 
-// MaxFrozenRosterBytes bounds the normalized content-addressed roster shared
-// by the runner and engine. It is separate from the producer source bound.
-const MaxFrozenRosterBytes = MaxSourceBytes
+const (
+	// FrozenRosterOverheadBytes allows the normalized blob to add its schema,
+	// source lineage, bounds, identities, and computed digests without reducing
+	// the producer's full MaxSourceBytes payload allowance.
+	FrozenRosterOverheadBytes = 64 << 10
+	// MaxFrozenRosterBytes bounds the normalized content-addressed roster shared
+	// by the runner and engine.
+	MaxFrozenRosterBytes = MaxSourceBytes + FrozenRosterOverheadBytes
+)
 
 // FrozenRosterBlob is the normalized, content-addressed representation of one
 // map visit. The map definition is pinned separately in the workflow input;

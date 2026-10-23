@@ -179,6 +179,13 @@ type runJournal struct {
 	ordinals map[string]int
 }
 
+func (r *runJournal) taskDispatchCounters() map[string]int {
+	if r.taskDispatches == nil {
+		r.taskDispatches = map[string]int{}
+	}
+	return r.taskDispatches
+}
+
 // newRunJournal builds the recorder and registers the projection query. The
 // caller records runStarted (and, for a non-deferred trigger, the run-branch
 // provenance) once the definition has compiled.
