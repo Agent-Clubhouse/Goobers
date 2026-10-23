@@ -16,7 +16,7 @@ import (
 	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
-// upgradeTo0022 applies the catalog without 0022, runs seed against the
+// upgradeTo0022 applies the catalog before 0022, runs seed against the
 // pre-0022 schema, then applies the full catalog.
 func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	t.Helper()
@@ -28,7 +28,7 @@ func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	}
 	var before []Migration
 	for _, migration := range catalog {
-		if migration.Version != 22 {
+		if migration.Version < 22 {
 			before = append(before, migration)
 		}
 	}
@@ -47,8 +47,9 @@ func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	return pool
 }
 
-// writePathsBefore0022 is the current inventory without the table 0022
-// creates.
+// writePathsBefore0022 is the current inventory without what 0022 and later
+// claim migrations add: the claim_run_history table and the cleanup-custody
+// column (0024).
 func writePathsBefore0022() (cloudschema.Inventory, error) {
 	inventory, err := cloudschema.LoadWritePaths()
 	if err != nil {
@@ -57,6 +58,17 @@ func writePathsBefore0022() (cloudschema.Inventory, error) {
 	inventory.Tables = slices.DeleteFunc(inventory.Tables, func(table cloudschema.Table) bool {
 		return table.Schema == "control" && table.Name == "claim_run_history"
 	})
+	later := func(column string) bool { return column == "release_pending_at" }
+	for i := range inventory.Tables {
+		table := &inventory.Tables[i]
+		for j := range table.Readers {
+			table.Readers[j].Columns = slices.DeleteFunc(slices.Clone(table.Readers[j].Columns), later)
+		}
+		for j := range table.Writers {
+			table.Writers[j].Insert = slices.DeleteFunc(slices.Clone(table.Writers[j].Insert), later)
+			table.Writers[j].Update = slices.DeleteFunc(slices.Clone(table.Writers[j].Update), later)
+		}
+	}
 	return inventory, nil
 }
 

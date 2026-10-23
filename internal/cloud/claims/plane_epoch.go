@@ -95,7 +95,7 @@ func (p *Plane) renewRow(ctx context.Context, tx pgx.Tx, epoch int64, entry loca
 	if err != nil {
 		return false, err
 	}
-	if row.entry.RunID != entry.RunID {
+	if row.entry.RunID != entry.RunID || row.entry.ReleasePending {
 		return false, nil
 	}
 	request := httpapi.ClaimRequest{
