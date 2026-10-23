@@ -48,8 +48,9 @@ func cloudJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
+	basePool := pool
 	t.Cleanup(func() {
-		pool.Close()
+		basePool.Close()
 		_, _ = admin.Exec(context.Background(), "DROP DATABASE "+pgx.Identifier{database}.Sanitize()+" WITH (FORCE)")
 		admin.Close()
 	})
@@ -64,7 +65,7 @@ func cloudJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	// The backend and its lease run as the controller role production uses, so
 	// a write path missing from the grant inventory fails here.
 	pool = rolePool(t, pool, pgroles.Controller)
-	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "test-instance", Name: "controller", Holder: "test"})
+	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "test-instance", Name: lease.ControllerName, Holder: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
