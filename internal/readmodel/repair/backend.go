@@ -45,8 +45,7 @@ func (s *Sweeper) stepBackend(ctx context.Context) error {
 			s.stats.EntriesExamined++
 			cursor.EntriesThisCycle++
 			if err := s.reconcilePublished(ctx, ref.ID, ref.ID); err != nil {
-				s.stats.Failures++
-				s.options.Logger.Warn("repair reconcile failed", "run_id", ref.ID, "error", err)
+				s.recordRunFailure(ref.ID, "repair reconcile failed", err)
 			}
 			cursor.AfterName = ref.ID
 		}
