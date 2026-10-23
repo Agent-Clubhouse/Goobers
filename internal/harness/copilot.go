@@ -611,8 +611,8 @@ func normalizeResolvedCopilotConfig(model string, options map[string]apiextensio
 	return normalized, nil
 }
 
-// Preflight verifies the Copilot CLI binary is on PATH and responds to a
-// version check, returning its reported version on success.
+// Preflight verifies executable/version and public CLI options, followed by
+// the configured authentication probe when present.
 func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if err := refuseChildConfigProbe(ctx); err != nil {
 		return PreflightInfo{}, err
@@ -633,34 +633,15 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q not found on PATH — install the GitHub Copilot CLI "+
 			"and sign in before running agentic stages", bin)
 	}
-	args := c.VersionArgs
-	if len(args) == 0 {
-		args = []string{"--version"}
-	}
-	// Explicit baseEnv(), not the ProcessRequest zero value — since #122,
-	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
-	// default-deny), so the version-check subprocess needs this passed
-	// explicitly the same way Run's credentialEnv does.
-	versionCommand := append(append([]string(nil), resolveHarnessCommand(c.Command)...), args...)
-	versionProbe := fmt.Sprintf("harness: copilot-cli: %q", versionCommand)
-	versionStdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
-	res, err := c.runner().Run(ctx, ProcessRequest{
-		Command:            versionCommand,
-		Env:                baseEnv(c.ExtraEnvAllowlist, c.EnvUnset),
-		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
-		StdoutCapture:      versionStdout,
-	})
-	if err != nil || res.ExitCode != 0 {
-		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
-	}
-	if versionStdout.Truncated() {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: version stdout exceeded the diagnostic output bound")
-	}
-	version := firstOutputLine(versionStdout.Bytes())
-	if version == "" {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
+	version, args, err := c.probeVersion(ctx)
+	if err != nil {
+		return PreflightInfo{}, err
 	}
 	c.verifyLauncherUsageOutput(ctx, version, args)
+	capabilities, err := c.preflightPublicCapabilities(ctx)
+	if err != nil {
+		return PreflightInfo{}, err
+	}
 	c.warnUnprobedStoredAuth(authCheckArgs)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
@@ -737,7 +718,11 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			c.cacheLauncherContract(launcherContract{Version: 1, SessionMode: "adapter-managed"})
 		}
 	}
-	return PreflightInfo{Version: version}, nil
+	authentication := readinessCheck("authentication", "harness_authentication_unobservable", "unobservable", "no authentication probe configured; version and public option checks do not validate credentials")
+	if len(authCheckArgs) > 0 {
+		authentication = readinessCheck("authentication", "harness_authentication_probe_passed", "supported", "configured authentication probe passed; model entitlement is not established by public CLI help")
+	}
+	return PreflightInfo{Version: version, Checks: []ReadinessCheck{capabilities, authentication}}, nil
 }
 
 func (c *CopilotAdapter) runCopilotAuthProbe(ctx context.Context, probe string, req ProcessRequest, version string, launcherProbe bool, successLine string) error {
@@ -819,7 +804,11 @@ func (c *CopilotAdapter) AuthStatus(ctx context.Context) (AuthInfo, error) {
 	}
 	preflight, err := c.Preflight(ctx)
 	if err == nil {
-		info.Status = AuthStatusAuthenticated
+		for _, check := range preflight.Checks {
+			if check.Category == "authentication" && check.Outcome == "supported" {
+				info.Status = AuthStatusAuthenticated
+			}
+		}
 		info.Version = preflight.Version
 		info.Remediation = ""
 		return info, nil

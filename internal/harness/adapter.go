@@ -258,6 +258,9 @@ type MCPServerFailure struct {
 type PreflightInfo struct {
 	Version  string
 	Warnings []string
+	// Checks separate observed CLI capability evidence from authentication
+	// presence/usability. A successful version probe alone proves neither.
+	Checks []ReadinessCheck
 }
 
 // ConfigWarningKind identifies a non-blocking harness configuration finding.

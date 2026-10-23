@@ -56,10 +56,10 @@ func prepareCopilotStageHome(workspace string, env []string) ([]string, func(), 
 func (c *CopilotAdapter) prepareStageRuntime(ctx context.Context, req RunRequest, env []string) ([]string, *copilotConfinement, func(), error) {
 	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
 	// into the workspace, with the exception of raw debug logs, which get an
-	// invocation-private external directory and a narrow writable grant below.
-	// The remaining runtime state follows ADR-0001. The overrides
-	// happen before the session-id block below so the native transcript path
-	// derives from the confined COPILOT_HOME.
+	// invocation-private external directory and a narrow writable grant from
+	// the capture setup. The remaining runtime state follows ADR-0001. Apply
+	// these overrides before the caller derives the session transcript path
+	// from the confined COPILOT_HOME.
 	var confinement *copilotConfinement
 	var err error
 	cleanup := func() {}
