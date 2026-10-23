@@ -16,9 +16,10 @@ import (
 
 	_ "time/tzdata"
 
+	"golang.org/x/term"
+
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/version"
-	"golang.org/x/term"
 )
 
 const configGenerationMismatchCode = "config_generation_mismatch"

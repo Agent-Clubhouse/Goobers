@@ -12,13 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/runtimewiring"
-	"sigs.k8s.io/yaml"
 )
 
 type daemonWorkerConfigService struct {

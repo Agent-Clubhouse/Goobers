@@ -78,7 +78,7 @@ func testPodRecoveryRepositoryTransfer(t *testing.T, repo providers.RepositoryRe
 			Repository: hostRepository, RepositoryKey: key, RunID: runID,
 			IdentityTime: time.Now().UTC(), RetainUntil: time.Now().UTC().Add(30 * 24 * time.Hour),
 			InventoryRoot: inventory, CleanupRoots: []string{source}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20,
-		}, runtimewiring.RecoveryCleanupJournal{directory: host.SchedulerDir(), scrubber: journal.NewRegistryScrubber()})
+		}, runtimewiring.RecoveryCleanupJournal{Directory: host.SchedulerDir(), Scrubber: journal.NewRegistryScrubber()})
 		if err != nil {
 			t.Errorf("host intake: %v", err)
 			w.WriteHeader(http.StatusBadRequest)

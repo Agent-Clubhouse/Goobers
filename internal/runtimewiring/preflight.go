@@ -289,6 +289,7 @@ func agentModelGrantIdentity(cfg *instance.Config, h apiv1.Harness) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// PreflightAgenticHarnesses checks referenced harnesses and scopes refusals to affected workflows.
 func PreflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, environment harness.EnvironmentConfig, harnessCommand map[string][]string, credentialFor ModelCredentialFor) (HarnessPreflightInfo, error) {
 	uses, order := collectHarnessUses(goobers, workflows)
 	info := make(HarnessPreflightInfo)
@@ -487,6 +488,7 @@ func (p harnessGroupPreflight) Check(ctx context.Context, modelCredential func(c
 	return result, nil
 }
 
+// PreflightAdapterConfig probes and validates a goober's harness configuration.
 func PreflightAdapterConfig(ctx context.Context, adapter harness.Adapter, spec apiv1.GooberSpec) (harness.PreflightInfo, error) {
 	if configPreflighter, ok := adapter.(interface {
 		PreflightConfig(context.Context, string, map[string]apiextensionsv1.JSON) (harness.PreflightInfo, error)

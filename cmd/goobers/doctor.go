@@ -12,14 +12,15 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
+
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/k8spreflight"
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 const doctorHelp = "Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +

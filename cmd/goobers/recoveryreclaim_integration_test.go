@@ -199,7 +199,7 @@ func (f *reclaimFixture) abandon(record recovery.Record) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	log := runtimewiring.RecoveryCleanupJournal{directory: f.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
+	log := runtimewiring.RecoveryCleanupJournal{Directory: f.layout.SchedulerDir(), Scrubber: journal.NewRegistryScrubber()}
 	if err := log.Append(event); err != nil {
 		f.t.Fatal(err)
 	}
