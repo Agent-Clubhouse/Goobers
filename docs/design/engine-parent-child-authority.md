@@ -48,9 +48,14 @@ The flow:
    issuer family as #7879's plane) and sends only the run ID and the committed
    origin.
 3. **Verify and bind (control, under the controller lease).** Control:
-   - opens the parent journal through `journalpg`;
-   - verifies the attempt is active (§5);
-   - checks that the journal identity equals the start-fence row's pins (§4);
+   - loads the run's `control.run_pin` row; a missing row, or an empty required
+     pin, refuses;
+   - builds the parent identity from those pins and control state, never from
+     the journal (§4);
+   - opens the parent journal through `journalpg`, verifies the attempt is
+     active (§5), and requires the journal identity to agree with the pins;
+   - checks the bound Temporal execution: `RUNNING`, with a memo input digest
+     equal to the pin (§5);
    - computes `Authority` with `childworkflow.PinnedAuthority` over the
      object-store `GenerationSource`;
    - mints the child-workflow grant with its credential-grant key;
@@ -103,9 +108,12 @@ domain (`podauth.LoadKeyRingFile(file, CredentialGrantKeyDomain)`).
   instance-scoped, and the bind checks the journal and start-row instance.
 - **Choose the policy.** Capabilities, goobers, PR publication and the child
   ceiling come from the parent stage's `childWorkflows` policy in the **pinned
-  generation**, recompiled by control from the object-store archive. The pins
-  are checked against the start-fence row, which control wrote (§4). The worker
-  cannot widen them.
+  generation**, recompiled by control from the object-store archive. The
+  generation and digests come from `control.run_pin`, which control wrote (§4).
+  The worker cannot widen them.
+- **Redirect where children act.** The repository children work on and publish
+  to is `run_pin.repo_ref`, the repository the start fence started the run on.
+  A journalled `WorkspaceRepository` that disagrees refuses (§4).
 - **Get a child accepted without a control-side binding.** A self-minted grant
   fails `CheckChildAuthority`, because only control writes the bound row, under
   its lease.
@@ -128,51 +136,66 @@ defence-in-depth.
 
 ## 4. Pins: do not trust worker-asserted values
 
-The worker sends only `run` and the origin. Control obtains every pin itself:
+The worker sends only `run` and the origin. **The parent identity passed to
+`PinnedAuthority` is built entirely from control-held state. The worker-written
+journal identity is never an input to authority.** It is only cross-checked, and
+any disagreement refuses.
 
-| Pin | Source today | Trusted because |
+| Field of the parent identity | Source | Why |
 |---|---|---|
-| `InstanceID`, `RunID`, `Gaggle`, `Workflow`, `WorkflowVersion` | journal identity (`journalpg` `RunReader.Identity`) | **cross-checked** against the start-fence row |
-| `ConfigGeneration`, `WorkflowDigest`, `GooberDigest`, workspace repository | journal identity | **cross-checked** against the start-fence row (see gap below) |
+| `InstanceID` | the control store's own instance | the bind is instance-scoped by construction |
+| `RunID`, `Gaggle`, `Workflow`, `WorkflowVersion` | `control.run_pin` | written by the start fence (below) |
+| `ConfigGeneration`, `WorkflowDigest`, `GooberDigest` | `control.run_pin` | as above. `PinnedAuthority` recompiles the parent stage from the pinned generation archive and requires both digests to match |
+| `WorkspaceRepository` | `control.run_pin.repo_ref` (the `RunInput.RepoRef` the run was started with) | the repository children act on and publish to is control-authored |
+| `Driver` | constant `engine`: control sets it, it isn't pinned | the cloud starts engine runs only |
+| `Child` | constant nil: control sets it | a `run_pin` row exists only for a top-level run the start fence started. A missing row refuses, which keeps the I2 recursion guard |
 | Stage occurrence, attempt ID, attempt number, branch | committed `ChildOriginReceipt` in the journal | written by the control-side journal writer, not asserted by the worker |
-| Parent stage policy, capabilities, goobers | `PinnedAuthority` recompiled from the pinned generation archive | control-side compile; the workflow and goober digests must match |
 
-**Gap.** The start-fence row (`control.acceptance`) holds the trigger payload,
-`state` and `run_id`. **It does not hold the run's pins.** The journal identity
-is created by the worker's `CreateRun` through the journal plane. So without a
-control-authored copy, the pins in the table above are worker-originated.
+**The `run_pin` row is required.** If it's missing (for example, a run started
+before migration 0022), or a field the bind needs is empty (`config_generation`,
+`workflow_digest`, `goober_digest`, `repo_ref`), the bind refuses
+(`ErrAuthorityUnavailable`). The journal is read for **two** things only:
+- the active attempt (§5);
+- a cross-check that its identity's `InstanceID`, `RunID`, `Gaggle`, `Workflow`,
+  `WorkflowVersion`, `WorkflowDigest`, `GooberDigest`, `ConfigGeneration`,
+  `Driver = engine`, `Child = nil` and `WorkspaceRepository` (nil, or equal to
+  the pin) equal the values above.
 
-**Fix (smaller than #7818, and independent of it).** Control resolves the run's
-`engine.RunInput` (`control.Runtime.drain` → `StartInputResolver`) immediately
-before `starter.Start`. The start fence's fenced `accepted → dispatching`
-transition would persist the resolved pins next to the acceptance row before the
-Temporal workflow starts. That is one expand migration and one store method:
-- `config_generation`
-- `workflow_digest`
-- `goober_digest`
-- `workflow`
-- `workflow_version`
-- `repo_ref` (JSON)
-- `driver`
+Any disagreement refuses. A worker that journals a different repository, digest
+or generation gets nothing.
 
-The bind then requires the journal identity to equal those pins exactly.
+**Gap closed by migration 0022 (`control.run_pin`).** The start-fence row
+(`control.acceptance`) holds only the trigger payload, `state` and `run_id`, and
+the journal identity is the worker's `CreateRun`. Control resolves the run's
+`engine.RunInput` immediately before `starter.Start`
+(`control.Runtime.drain` → `StartInputResolver`). The start fence now records
+its pins in `control.run_pin`, a sibling table keyed `(instance_id, run_id)` with
+a cascade from the acceptance row, inside the **same fenced transaction** that
+confirms or adopts the Temporal start (`ConfirmStart`/`AdoptStart`). The row
+holds exactly:
+- `acceptance_id`, `gaggle`, `workflow`, `workflow_version`;
+- `workflow_digest`, `goober_digest`, `config_generation`;
+- `repo_ref` (JSON), `branch_namespace`;
+- `input_digest` (the start-owner memo digest), `owner_epoch`.
 
-The pins are **evidence, never a start gate**. Refusing to confirm a Temporal
-start because a pin is empty would wedge legitimate runs; a prototype did
-exactly that in the control failover tests. The start fence records whatever
-the started input carries, and requires only the run and acceptance identity.
-The child-authority bind refuses its own operation when a pin it needs is
-empty. Pins are written in the same fenced transaction that confirms or adopts
-the start. The classified start runs exactly that `RunInput`: an existing
-workflow is adopted only when its start-owner memo carries the same input
-digest, so a retry or a successor adopt writes identical pins. Different pins
-for a recorded run refuse. This is
-**much smaller than #7818**: a migration, a writepaths row and a start-fence
-change, against composing the whole journal plane. It does **not remove** the
-#7818 dependency, though. The origin receipt in step 1 is itself a journal-plane
-write, so no engine parent can start a child-capable stage until the journal
-plane is composed. Both are needed. The pin row is what turns the journal from
-the worker's word into a checked fact.
+`driver` is not stored, because it is the constant above. The classified start
+runs exactly that `RunInput`: an existing workflow is adopted only when its
+start-owner memo carries the same input digest. So a retry or a successor adopt
+writes identical pins, and different pins for a recorded run refuse
+(`ErrRunPinsDiffer`).
+
+**Pins are evidence, never a start gate.** Refusing to confirm a Temporal start
+because a pin is empty would wedge legitimate runs; a prototype did exactly that
+in the control failover tests. So the start fence records whatever the started
+input carries and requires only the run and acceptance identity. The bind
+refuses its own operation when a pin it needs is empty. #8085 (b) carries a test
+per required pin.
+
+This is much smaller than #7818: one migration, a writepaths row and a
+start-fence change, already built on a branch. It does **not** remove the #7818
+dependency. The origin receipt in step 1 is itself a journal-plane write, so no
+engine parent can start a child-capable stage until the journal plane is
+composed.
 
 ## 5. Attempt currency, revocation and replacement
 
@@ -186,18 +209,38 @@ requires:
   finished);
 - the started event's `Seq`, `Attempt` and `Branch` to equal the receipt.
 
-**Liveness independent of the worker's journal.** The bind and each `Resolve`
-also check the parent's Temporal workflow with `DescribeWorkflowExecution`
-(control holds the Temporal client):
-- its status must be `RUNNING`;
-- the workflow ID and run ID must equal the run's bound execution.
+**Bound execution, independent of the worker's journal.** The bind and each
+`Resolve` call `DescribeWorkflowExecution(workflowID = run_id, runID = "")`
+(control holds the Temporal client; an empty run ID describes the latest run of
+that workflow ID). Two checks must hold:
+- the execution's status is `RUNNING`;
+- its start-owner memo (`StartOwnerMemoKey`) decodes and its `InputDigest`
+  equals `control.run_pin.input_digest`.
 
-A worker that stops writing cannot keep a grant alive past its parent workflow's
-end. The pending-activity list is not required for correctness and is not used:
-activity IDs are not a stable contract.
+The memo is written by control's own start fence, so this binds the live
+execution to the exact pinned start. A worker that stops writing, or journals
+past its parent's end, cannot keep a grant alive. The pending-activity list is
+not used, because activity IDs are not a stable contract.
 
-**Fencing.** Bind and revoke run under `withFence`. A replica that lost the lease
-cannot bind; the plane answers 503, and the worker retries (#8074 classes).
+- **Reset.** A Temporal reset of the parent creates a new run under the same
+  workflow ID from the original start event, so its memo, and therefore
+  `InputDigest`, is preserved. The latest run must be `RUNNING` with the same
+  digest. Grants then continue to be governed by the active-attempt check:
+  attempts the reset discarded are superseded in the journal and refuse.
+- **Continue-as-new.** The engine `Run` never continues-as-new today. If it
+  ever does, the new run must carry the same start-owner memo. Otherwise the
+  digest check fails closed and the parent's grants refuse until re-bound.
+
+**Fencing and epoch adoption.** Bind, revoke and every custody write run under
+`withFence`. A replica that lost the lease cannot bind; the plane answers 503,
+and the worker retries (#8074 classes). A controller that takes over the lease
+first adopts **every** earlier epoch's child custody in one fenced, idempotent
+transaction, before the first call of its epoch is served
+(`acceptance.AdoptStaleChildCustody`, run once per epoch by
+`childengine.Fenced`; implemented in #8095). The previous exact-predecessor
+`AdoptChildren` is removed. A stale epoch that is somehow still observed returns
+the distinct, retryable `acceptance.ErrStaleChildEpoch`, never
+`ErrParentCancelled`, which is a permanent refusal.
 
 **Mapping against `GrantIssuer`, one to one:**
 
@@ -209,7 +252,7 @@ cannot bind; the plane answers 503, and the worker retries (#8074 classes).
 | a still-active attempt may renew after expiry; a revoked one may not | **kept**: the worker re-calls the route on renewal | long waits stay bounded by TTL |
 | re-run `PrepareStage` after binding; on drift, revoke and fail (`samePreparedAuthority`) | **kept**: recheck after bind, under the same fence | closes the bind/drift race |
 | bearer registered with the journal secret scrubber (`Secrets.RegisterUntil`) | **changed**: control registers it with its own scrubber; the worker registers the value it receives with the stage's scrubber | the bearer must never land in either side's journal |
-| revoker: an older attempt finishing must not revoke its replacement (`ErrChildAuthorityChanged` ignored) | **kept**: `DELETE` revokes only the exact bound grant ID | the same replacement safety |
+| revoker: an older attempt finishing must not revoke its replacement (`ErrChildAuthorityChanged` ignored) | **kept**: `DELETE` revokes only the exact bound grant ID. `ErrChildAuthorityChanged` (already replaced) is success. `ErrStaleChildEpoch` and unavailability are retried after adoption, never reported as success | the same replacement safety, plus takeover |
 | in-process provider called by the harness launcher | **changed**: an HTTP route called by the worker at dispatch | the engine worker is not the API host |
 | `Endpoint` = the daemon API | **changed**: the control API endpoint | the pod talks to control |
 
@@ -257,10 +300,10 @@ backends.
 | Local invariant | Engine-native | Justification |
 |---|---|---|
 | I1. The principal is the workflow-parent pod issuer with a valid contract digest and `run:<id>` subject | **replaced**: the principal is the worker child-admission issuer; the run ID is in the path | no contained parent pod exists. The authenticating party is the trusted host, as with the daemon's own in-process issuer |
-| I2. The parent run exists, the identity's run ID matches, and the parent is not itself a child (`id.Child == nil`) | **kept**: `journalpg` identity, plus the start-fence row pins | the same recursion and identity guard |
-| I3. The retained parent contract decodes, carries `ParentOrigin`, and its identity deep-equals the journal identity | **replaced**: the origin comes from the committed `ChildOriginReceipt`; the pins equal the start-fence row | the contract existed only to bind a pod to its attempt. With no pod-held identity, the control-written receipt and row are the binding |
+| I2. The parent run exists, the identity's run ID matches, and the parent is not itself a child (`id.Child == nil`) | **kept**: a `control.run_pin` row is required (one exists only for a top-level run the start fence started); `Child` is constant nil; the journal identity must agree | the same recursion and identity guard, from control-authored state |
+| I3. The retained parent contract decodes, carries `ParentOrigin`, and its identity deep-equals the journal identity | **replaced**: the origin comes from the committed `ChildOriginReceipt`; the parent identity is built from `run_pin` and control state, and the journal identity must deep-agree with it | the contract existed only to bind a pod to its attempt. With no pod-held identity, the control-written receipt and pin row are the binding |
 | I4. `active()`: `VerifyActiveStage`, plus the started event's seq, branch, attempt and start time equal the contract | **kept**, with the receipt in place of the contract: seq, branch and attempt from the receipt | the start-time check is dropped, because the receipt seq already identifies the exact event |
-| I5. `custody()`: the physical writer is not yet joined (`ParentCustodyPending`) | **replaced**: Temporal liveness, plus the activity-end release | it guarded a contained pod's late output. Engine stage output flows through the worker's activity, whose end releases the grant |
+| I5. `custody()`: the physical writer is not yet joined (`ParentCustodyPending`) | **replaced**: the bound-execution check (`RUNNING`, plus memo `InputDigest` = `run_pin.input_digest`, §5), plus the activity-end release | it guarded a contained pod's late output. Engine stage output flows through the worker's activity, whose end releases the grant |
 | The envelope is built from the pinned machine; the task must be agentic with `childWorkflows` | **kept**: `PinnedAuthority`/`StageCatalog` refuse otherwise | the same stage gate |
 | After issuing, recheck active and custody, else revoke | **kept**: recheck active and liveness after bind, else revoke | the same race closure |
 
@@ -268,11 +311,13 @@ backends.
 
 1. **#7818.** The journal plane is composed in control. This is required for the
    origin receipt (step 1), and for `journalpg` reads.
-2. **Start-fence pins** (§4). A new expand migration and start-fence write. It
-   can land before #7818.
+2. **Start-fence pins** (§4). Migration 0022 `control.run_pin`, written in the
+   start fence's confirm/adopt transaction. Built on a branch; its PR opens when
+   this note is approved, and can land before #7818.
 3. **#8085 (b).** The control authority route (bind, revoke, renew), worker
-   dispatch acquire and release, Secret delivery, the harness provider, and
-   `VerifyActiveStage` widened to `RunReader`.
+   dispatch acquire and release, delivery as a dispatcher-privileged env var
+   (§2 step 4), the harness provider, `VerifyActiveStage` widened to
+   `RunReader`, and a test per required empty pin.
 4. **Disposition parity (gate before (c)).** Cloud `RequestChildDisposition`
    either implements supersede/revision (archive, rebind, reconcile and
    history-full sentinels, real `ChildDispositionHistory`) or refuses revisions
@@ -280,9 +325,11 @@ backends.
    runs against both the SQLite and the cloud store (§5).
 5. **#8085 (c).** `ChildWorkflowService` on control over `ChildQueue`, with
    `Resolve` = §5 checks, and per-child generation pins.
-6. **#8085 (d).** End-to-end, including a worker kill mid-stage (the grant goes
-   inert at parent completion or TTL) and a lease takeover between bind and
-   submit.
+6. **#8085 (d).** End-to-end, including:
+   - a worker kill mid-stage (the grant goes inert at parent completion or TTL);
+   - a control failover between bind and submit, where the successor adopts
+     every earlier epoch's custody and then serves the submit;
+   - a Temporal reset of the parent.
 
 Production keeps refusing `task.childWorkflows` until (d); #7758 follows.
 
@@ -290,13 +337,14 @@ Production keeps refusing `task.childWorkflows` until (d); #7758 follows.
 
 - Should the Temporal liveness check also confirm a pending activity for the
   stage? It is deliberately not required today (§5).
-- Delivery: should the pod fetch its grant at runtime, as the local
-  contained-parent exchange does, to keep it out of the pod spec? That needs an
-  attempt-bound pod identity (a pod token over a digest of the receipt, like
-  `MintChildPod`). The env-var delivery in §2 step 4 matches today's pod-token
-  exposure and is simpler.
-- Should the start-fence pins go on `control.acceptance`, or on a sibling
-  `control.run_pin` table keyed by `run_id`? Recommendation: a sibling table, so
-  the acceptance row's hot path stays narrow.
+- **Resolved: delivery (Q2).** The grant is delivered as a dispatcher-privileged
+  env var (§2 step 4), stripped from the stage environment and placed only in
+  the child-workflow MCP tool config. Its pod-spec exposure equals today's
+  `GOOBERS_POD_TOKEN`. That's consistent, simple, and requires no new pod
+  identity. Fetching at runtime (an attempt-bound pod token over the receipt
+  digest, like `MintChildPod`) is a hardening follow-up for all pod bearers
+  together, not specific to this grant. No Kubernetes Secret object is used.
+- **Resolved: pin placement.** A sibling `control.run_pin` table, so the
+  acceptance row's hot path stays narrow (§4).
 - Should the control-only credential-grant key file (§3 residual) be a
   prerequisite rather than a follow-up?
