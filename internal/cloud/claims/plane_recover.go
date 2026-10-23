@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/goobers/goobers/internal/claimrelease"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -32,15 +33,23 @@ type recoveryCandidate struct {
 // a lease renewed meanwhile survives. The HTTP recovery gate keeps the sweep
 // from running before the controller has finished taking over.
 func (p *Plane) Recover(ctx context.Context, _ httpapi.ClaimRecoverRequest) (httpapi.ClaimRecoverResponse, error) {
-	candidates, err := p.recoveryCandidates(ctx)
+	candidates, err := p.recoveryCandidates(ctx, true)
 	if err != nil {
 		return httpapi.ClaimRecoverResponse{}, err
 	}
+	released, err := p.releaseCandidates(ctx, p.owner(), candidates)
+	return httpapi.ClaimRecoverResponse{Released: wireEntries(released)}, err
+}
+
+// releaseCandidates releases candidates in bounded fenced batches and returns
+// the entries actually released, including those of batches committed before
+// a failure.
+func (p *Plane) releaseCandidates(ctx context.Context, handle *cloudlease.Handle, candidates []recoveryCandidate) ([]localscheduler.ClaimEntry, error) {
 	var released []localscheduler.ClaimEntry
 	for start := 0; start < len(candidates); start += recoverBatch {
 		batch := candidates[start:min(start+recoverBatch, len(candidates))]
 		var moved []localscheduler.ClaimEntry
-		err := p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 			moved = moved[:0]
 			for _, candidate := range batch {
 				ok, err := p.moveToHistory(ctx, tx, epoch, storedKey(candidate.entry),
@@ -55,26 +64,26 @@ func (p *Plane) Recover(ctx context.Context, _ httpapi.ClaimRecoverRequest) (htt
 			return nil
 		})
 		if err != nil {
-			return httpapi.ClaimRecoverResponse{Released: wireEntries(released)}, err
+			return released, err
 		}
 		released = append(released, moved...)
 	}
-	return httpapi.ClaimRecoverResponse{Released: wireEntries(released)}, nil
+	return released, nil
 }
 
-// recoveryCandidates reads expired leases and leases held by terminal runs,
-// with the reason each release will record.
-func (p *Plane) recoveryCandidates(ctx context.Context) ([]recoveryCandidate, error) {
+// recoveryCandidates reads expired leases, and with terminal also leases held
+// by terminal runs, with the reason each release will record.
+func (p *Plane) recoveryCandidates(ctx context.Context, terminal bool) ([]recoveryCandidate, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT c.external_id,c.gaggle,c.provider,c.run_id,c.workflow,
 		       c.claimed_at,c.renewed_at,c.expires_at,c.verification,c.owner_token,
 		       c.expires_at<=clock_timestamp(), coalesce(k.terminal,false)
 		FROM control.claim AS c
 		LEFT JOIN journal.run_checkpoint AS k ON k.instance_id=c.instance_id AND k.run_id=c.run_id
-		WHERE c.instance_id=$1 AND (c.expires_at<=clock_timestamp() OR k.terminal)
+		WHERE c.instance_id=$1 AND (c.expires_at<=clock_timestamp() OR ($3 AND k.terminal))
 		ORDER BY c.gaggle,c.provider,c.external_id
 		LIMIT $2`,
-		p.instanceID, MaxClaims,
+		p.instanceID, MaxClaims, terminal,
 	)
 	if err != nil {
 		return nil, err
@@ -84,12 +93,12 @@ func (p *Plane) recoveryCandidates(ctx context.Context) ([]recoveryCandidate, er
 	for rows.Next() {
 		var candidate recoveryCandidate
 		var verification []byte
-		var terminal bool
+		var runTerminal bool
 		err := rows.Scan(
 			&candidate.entry.ItemID, &candidate.entry.Gaggle, &candidate.entry.Provider,
 			&candidate.entry.RunID, &candidate.entry.Workflow, &candidate.entry.ClaimedAt,
 			&candidate.entry.RenewedAt, &candidate.entry.ExpiresAt, &verification,
-			&candidate.token, &candidate.expired, &terminal,
+			&candidate.token, &candidate.expired, &runTerminal,
 		)
 		if err != nil {
 			rows.Close()

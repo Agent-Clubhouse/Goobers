@@ -1,0 +1,127 @@
+package claims
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/localscheduler"
+)
+
+// RecoveryGate reports whether expiry reaping may run for an epoch; the
+// localscheduler RecoveryGate satisfies it.
+type RecoveryGate interface {
+	RecoveryPermitted() bool
+}
+
+// AdoptAll moves every claim written under an earlier epoch to the handle's
+// epoch in one fenced statement. Every older epoch is adopted, not only the
+// immediate predecessor: several takeovers can happen between renewals. Plane
+// writes adopt lazily anyway; AdoptAll lets a new epoch take custody of every
+// live lease before it rebuilds renewals.
+func (p *Plane) AdoptAll(ctx context.Context, handle *cloudlease.Handle) (int64, error) {
+	var adopted int64
+	err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE control.claim SET owner_epoch=$2
+			WHERE instance_id=$1 AND owner_epoch<$2`,
+			p.instanceID, epoch,
+		)
+		adopted = tag.RowsAffected()
+		return err
+	})
+	return adopted, err
+}
+
+// RenewRuns renews every claim whose run is open, mirroring
+// localscheduler.ClaimLedger.RenewRuns (renewal.go): each claim of an open run
+// takes the RenewEntry path, so a publication lock is never renewed, a live
+// lease is extended under the handle's epoch, and an expired lease of an open
+// run is granted afresh, as ClaimScoped does. A claim released or taken by
+// another run since the read is left alone. It is the rebuild-before-reap pass
+// a new epoch runs before its recovery gate opens.
+func (p *Plane) RenewRuns(ctx context.Context, handle *cloudlease.Handle, open map[string]bool) ([]localscheduler.ClaimEntry, error) {
+	entries, err := p.selectEntries(ctx, p.pool, `true`)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []localscheduler.ClaimEntry
+	for _, entry := range entries {
+		if open[entry.RunID] && !entry.IsPublicationClaim() {
+			candidates = append(candidates, entry)
+		}
+	}
+	var renewed []localscheduler.ClaimEntry
+	for start := 0; start < len(candidates); start += recoverBatch {
+		batch := candidates[start:min(start+recoverBatch, len(candidates))]
+		var done []localscheduler.ClaimEntry
+		err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+			done = done[:0]
+			for _, entry := range batch {
+				ok, err := p.renewRow(ctx, tx, epoch, entry)
+				if err != nil {
+					return err
+				}
+				if ok {
+					done = append(done, entry)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return renewed, err
+		}
+		renewed = append(renewed, done...)
+	}
+	return renewed, nil
+}
+
+// renewRow renews one claim of an open run if it is still that run's.
+func (p *Plane) renewRow(ctx context.Context, tx pgx.Tx, epoch int64, entry localscheduler.ClaimEntry) (bool, error) {
+	key := storedKey(entry)
+	row, err := p.lockRow(ctx, tx, key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.entry.RunID != entry.RunID {
+		return false, nil
+	}
+	request := httpapi.ClaimRequest{
+		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID,
+		RunID: entry.RunID, Workflow: row.entry.Workflow,
+	}
+	if row.live {
+		response, err := p.extend(ctx, tx, epoch, key, row, request, p.defaultLease, true)
+		return response.Ok, err
+	}
+	if err := p.dropExpired(ctx, tx, epoch, key, row); err != nil {
+		return false, err
+	}
+	response, err := p.insert(ctx, tx, epoch, key, request, p.defaultLease)
+	return response.Ok, err
+}
+
+// RecoverExpired releases every expired claim as stall-swept, mirroring
+// localscheduler.ClaimLedger.RecoverExpired (claim.go), and returns the
+// released entries. It is a no-op until gate permits recovery: reaping before
+// the epoch's renewal rebuild would hand a live run's item to a second run
+// (DS6). Unlike the local nil-safe gate, a nil gate refuses, because every
+// cloud epoch has a renewal duty.
+func (p *Plane) RecoverExpired(ctx context.Context, handle *cloudlease.Handle, gate RecoveryGate) ([]localscheduler.ClaimEntry, error) {
+	if gate == nil || !gate.RecoveryPermitted() {
+		return nil, nil
+	}
+	candidates, err := p.recoveryCandidates(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	return p.releaseCandidates(ctx, handle, candidates)
+}
+
+var _ RecoveryGate = (*localscheduler.RecoveryGate)(nil)

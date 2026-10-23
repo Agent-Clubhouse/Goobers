@@ -76,7 +76,12 @@ func NewPlane(config PlaneConfig) (*Plane, error) {
 // fenced runs write under the live controller fence and the instance claims
 // lock, passing the epoch every row predicate and stamp must use.
 func (p *Plane) fenced(ctx context.Context, write func(context.Context, pgx.Tx, int64) error) error {
-	handle := p.owner()
+	return p.fencedWith(ctx, p.owner(), write)
+}
+
+// fencedWith is fenced on an explicit handle, for the epoch services that
+// hold the authority they act under.
+func (p *Plane) fencedWith(ctx context.Context, handle *cloudlease.Handle, write func(context.Context, pgx.Tx, int64) error) error {
 	if handle == nil {
 		return errAuthorityMoving(nil)
 	}

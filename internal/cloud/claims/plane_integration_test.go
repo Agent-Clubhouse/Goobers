@@ -403,3 +403,91 @@ func TestPlaneTwoReplicaConcurrency(t *testing.T) {
 		t.Fatalf("winner renew on the new leader = %+v, %v", got, err)
 	}
 }
+
+// TestPlaneEpochMaintenanceAcrossTwoTakeovers drives the epoch services'
+// takeover sequence on the third epoch after two consecutive takeovers:
+// adopt every older epoch, rebuild renewals for open runs, then reap expiry
+// only once the recovery gate opens.
+func TestPlaneEpochMaintenanceAcrossTwoTakeovers(t *testing.T) {
+	f := newPlaneFixture(t)
+	first := f.leader(t, "a")
+	ctx := t.Context()
+	publication := localscheduler.PublicationLockItemIDPrefix + "owner/repo/1"
+	for item, run := range map[string]string{"live": "run-open", "lapsed": "run-open", "closed": "run-closed", publication: "run-open"} {
+		if got, err := first.plane.Acquire(ctx, request(item, run)); err != nil || !got.Ok {
+			t.Fatalf("acquire %s = %+v, %v", item, got, err)
+		}
+	}
+	expire := func(item string) {
+		t.Helper()
+		if _, err := f.owner.Exec(ctx, `UPDATE control.claim SET expires_at=clock_timestamp()-interval '1 second'
+			WHERE instance_id=$1 AND external_id=$2`, pgtest.InstanceID, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expire("lapsed")
+	second := f.takeover(t, "b")
+	third := f.takeover(t, "c")
+	handle := third.handle.Load()
+
+	if adopted, err := third.plane.AdoptAll(ctx, handle); err != nil || adopted != 4 {
+		t.Fatalf("adopt = %d, %v; want all 4 epoch-1 rows", adopted, err)
+	}
+	for _, item := range []string{"live", "lapsed", "closed", publication} {
+		if epoch := ownerEpoch(t, f, item); epoch != handle.Epoch {
+			t.Fatalf("%s epoch = %d, want %d", item, epoch, handle.Epoch)
+		}
+	}
+	if adopted, err := third.plane.AdoptAll(ctx, handle); err != nil || adopted != 0 {
+		t.Fatalf("second adopt = %d, %v; want idempotent", adopted, err)
+	}
+	for name, stale := range map[string]*replica{"first": first, "second": second} {
+		if _, err := stale.plane.AdoptAll(ctx, stale.handle.Load()); planeCode(err) != "503 recovering" {
+			t.Fatalf("%s replica adopt = %v, want retryable 503 recovering", name, err)
+		}
+	}
+
+	gate := localscheduler.NewRecoveryGate()
+	for name, closed := range map[string]RecoveryGate{"closed": gate, "nil": nil} {
+		if released, err := third.plane.RecoverExpired(ctx, handle, closed); err != nil || released != nil {
+			t.Fatalf("%s gate recover = %+v, %v; want a no-op", name, released, err)
+		}
+	}
+
+	var claimedBefore time.Time
+	if err := f.owner.QueryRow(ctx, `SELECT claimed_at FROM control.claim WHERE instance_id=$1 AND external_id='lapsed'`,
+		pgtest.InstanceID).Scan(&claimedBefore); err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := third.plane.RenewRuns(ctx, handle, map[string]bool{"run-open": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, entry := range renewed {
+		got[entry.ItemID] = true
+	}
+	if len(got) != 2 || !got["live"] || !got["lapsed"] {
+		t.Fatalf("renewed = %v, want the open run's live and lapsed leases, never its publication lock or a closed run", got)
+	}
+	listed, err := third.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-open", Scope: httpapi.ClaimListScopeRun})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range listed.Entries {
+		if entry.ItemID == "lapsed" && (!entry.ExpiresAt.After(time.Now().Add(-time.Minute)) || !entry.ClaimedAt.After(claimedBefore)) {
+			t.Fatalf("lapsed lease after rebuild = %+v, want a fresh grant", entry)
+		}
+	}
+
+	expire("closed")
+	gate.MarkRenewalRebuilt()
+	released, err := third.plane.RecoverExpired(ctx, handle, gate)
+	if err != nil || len(released) != 1 || released[0].ItemID != "closed" {
+		t.Fatalf("recover after rebuild = %+v, %v; want only the closed run's expired lease", released, err)
+	}
+	history, err := third.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-closed", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+	if err != nil || len(history.History) != 1 || history.History[0].ReleaseReason.Disposition != claimrelease.StallSwept {
+		t.Fatalf("closed run history = %+v, %v", history, err)
+	}
+}
