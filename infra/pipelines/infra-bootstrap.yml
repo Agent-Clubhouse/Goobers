@@ -170,7 +170,19 @@ stages:
                       export ARGOCD_OPTS='--core'
                       # Wait for the root app to create the temporal Application.
                       until argocd app get temporal >/dev/null 2>&1; do sleep 5; done
+                      # Remove parameters persisted by chart 0.x before supplying
+                      # chart 1.x's datastore addresses.
+                      app_json=$(argocd app get temporal -o json)
+                      for obsolete in \
+                        server.config.persistence.default.sql.host \
+                        server.config.persistence.visibility.sql.host; do
+                        if jq -e --arg key "$obsolete" \
+                          '[.spec.source.helm.parameters[]?, .spec.sources[]?.helm.parameters[]?] | any(.name == $key)' \
+                          <<<"$app_json" >/dev/null; then
+                          argocd app unset temporal --parameter "$obsolete"
+                        fi
+                      done
                       argocd app set temporal \
-                        --helm-set server.config.persistence.default.sql.host="$(postgresFqdn)" \
-                        --helm-set server.config.persistence.visibility.sql.host="$(postgresFqdn)"
+                        --helm-set server.config.persistence.datastores.default.sql.connectAddr="$(postgresFqdn):5432" \
+                        --helm-set server.config.persistence.datastores.visibility.sql.connectAddr="$(postgresFqdn):5432"
                       argocd app sync temporal

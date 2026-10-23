@@ -38,7 +38,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -101,6 +100,7 @@ type Options struct {
 	BatchSize int
 	Logger    *slog.Logger
 	Now       func() time.Time
+	Journal   journal.ReaderBackend
 }
 
 const (
@@ -115,6 +115,7 @@ type Sweeper struct {
 	watermarks Watermarks
 	options    Options
 	stats      Stats
+	failures   map[string]*runFailure
 	stat       func(string) (os.FileInfo, error)
 }
 
@@ -181,6 +182,9 @@ func (s *Sweeper) Run(ctx context.Context) {
 // waiting on a ticker — a rate-bounded loop asserted with sleeps would be both
 // slow and flaky.
 func (s *Sweeper) Step(ctx context.Context) error {
+	if s.options.Journal != nil {
+		return s.stepBackend(ctx)
+	}
 	runsDirs, err := s.runsDirs(ctx)
 	if err != nil {
 		return err
@@ -276,7 +280,7 @@ func (s *Sweeper) sweepForwardRoot(
 	if cursor.CycleStartedAt.IsZero() {
 		cursor.CycleStartedAt = s.options.Now().UTC()
 	}
-	names, err := s.readBatch(cursor.Root, cursor.AfterName, limit)
+	names, err := s.readBatch(ctx, cursor.Root, cursor.AfterName, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -290,9 +294,7 @@ func (s *Sweeper) sweepForwardRoot(
 			// One directory's failure must not stop the walk; the cursor still
 			// advances past it, or a single bad directory would wedge repair
 			// forever at the same position.
-			s.stats.Failures++
-			s.options.Logger.Warn("repair reconcile failed",
-				"root", cursor.Root, "run_id", name, "error", err)
+			s.recordRunFailure(name, "repair reconcile failed", err, "root", cursor.Root)
 		}
 		cursor.AfterName = name
 	}
@@ -381,6 +383,10 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 		return err
 	}
 
+	return s.reconcilePublished(ctx, dir, runID)
+}
+
+func (s *Sweeper) reconcilePublished(ctx context.Context, dir, runID string) error {
 	if row, projected, err := s.store.GetRun(ctx, runID); err != nil {
 		return err
 	} else if projected {
@@ -403,7 +409,7 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 		return nil
 	}
 
-	projection, found, err := s.project(dir)
+	projection, found, err := s.project(ctx, dir)
 	if err != nil {
 		return err
 	}
@@ -480,7 +486,11 @@ func (s *Sweeper) refreshStaleRunning(ctx context.Context, dir, runID string, ro
 	if row.Phase != journal.PhaseRunning {
 		return nil
 	}
-	reader, err := journal.OpenRead(dir)
+	backend := s.options.Journal
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{filepath.Dir(dir)}})
+	}
+	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: runID})
 	if err != nil {
 		// Unreadable is not a disagreement. The reverse walk owns rows whose
 		// journal has gone missing; anything else is for the next cycle.
@@ -498,7 +508,7 @@ func (s *Sweeper) refreshStaleRunning(ctx context.Context, dir, runID string, ro
 	// phase column: the terminal event settles finishedAt, currentStage and the
 	// outcome fields together, and a row carrying a terminal phase beside
 	// running-shaped values would be a third state neither source describes.
-	projection, found, err := s.project(dir)
+	projection, found, err := s.project(ctx, dir)
 	if err != nil {
 		return err
 	}
@@ -545,8 +555,17 @@ func (s *Sweeper) sweepReverse(
 		}
 		s.stats.EntriesExamined++
 		examined++
-		_, found := s.locate(row.RunID, runsDirs)
-		if !found && !refreshedRoots && s.options.ResolveRunsDirs != nil {
+		found, err := s.runExists(ctx, row.RunID, runsDirs)
+		if err != nil {
+			if ctx.Err() != nil {
+				return examined, ctx.Err()
+			}
+			s.recordRunFailure(row.RunID, "repair journal lookup failed", fmt.Errorf("open journal: %w", err))
+			// An unreadable source is not evidence of deletion. Keep the row,
+			// but advance past it so other runs progress; retry next cycle.
+			found = true
+		}
+		if !found && s.options.Journal == nil && !refreshedRoots && s.options.ResolveRunsDirs != nil {
 			// A new root may have been projected after Step's snapshot.
 			// Refresh after selecting candidates before declaring a journal gone.
 			runsDirs, err = s.runsDirs(ctx)
@@ -580,14 +599,22 @@ func (s *Sweeper) sweepReverse(
 }
 
 // project reads a run directory into a projection. Never takes a journal lock.
-func (s *Sweeper) project(dir string) (readmodel.Projection, bool, error) {
-	reader, err := journal.OpenRead(dir)
-	if err != nil {
+func (s *Sweeper) project(ctx context.Context, dir string) (readmodel.Projection, bool, error) {
+	backend := s.options.Journal
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{filepath.Dir(dir)}})
+	}
+	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: filepath.Base(dir)})
+	if errors.Is(err, os.ErrNotExist) {
 		return readmodel.Projection{}, false, nil
+	}
+	if err != nil {
+		return readmodel.Projection{}, false, err
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return readmodel.Projection{}, false, nil
+		return readmodel.Projection{}, false,
+			fmt.Errorf("repair: read identity in %s: %w", dir, err)
 	}
 	events, err := reader.Events()
 	if err != nil {
@@ -638,23 +665,18 @@ func (s *Sweeper) runsDirs(ctx context.Context) ([]string, error) {
 // Sorting is what makes the cursor meaningful: os.ReadDir's order is not
 // specified across platforms, and a walk that resumed "after X" in an unsorted
 // listing could skip entries indefinitely.
-func (s *Sweeper) readBatch(root, after string, limit int) ([]string, error) {
-	entries, err := os.ReadDir(root)
+func (s *Sweeper) readBatch(ctx context.Context, root, after string, limit int) ([]string, error) {
+	backend := s.options.Journal
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{root}})
+	}
+	refs, err := backend.ListRuns(ctx, journal.RunFilter{After: after, Limit: limit})
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("repair: read %s: %w", root, err)
 	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() > after {
-			names = append(names, entry.Name())
-		}
-	}
-	sort.Strings(names)
-	if len(names) > limit {
-		names = names[:limit]
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		names = append(names, ref.ID)
 	}
 	return names, nil
 }

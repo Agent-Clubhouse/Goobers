@@ -13,10 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 const (
@@ -63,6 +65,8 @@ type claimAdminRequest struct {
 	ExpectedClaimedAt time.Time `json:"expectedClaimedAt,omitempty"`
 	Force             bool      `json:"force,omitempty"`
 	Actor             string    `json:"actor,omitempty"`
+	PublicationReason string    `json:"publicationReason,omitempty"`
+	Operator          string    `json:"operator,omitempty"`
 	CreatedAt         time.Time `json:"createdAt"`
 }
 
@@ -219,10 +223,12 @@ func runClaimsActive(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const claimsReleaseHelp = "Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n" +
+const claimsReleaseHelp = "Usage: goobers claims release [--publication-custody-reason=text] [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n" +
 	"Print the claim holder, age, and expiry, then force-release the item.\n" +
 	"--force is required while the holding run is non-terminal. The override\n" +
-	"is recorded as claim.force_released in the instance journal. Default\n" +
+	"is recorded as claim.force_released in the instance journal. Publication\n" +
+	"locks additionally require --publication-custody-reason and audit the OS\n" +
+	"operator identity before release. Default\n" +
 	"path is \".\". Scope flags are required when the item id exists in more\n" +
 	"than one namespace. Exit codes: 0 = released, 1 = refused/not found/\n" +
 	"ambiguous, 2 = usage/IO error.\n"
@@ -233,6 +239,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "gaggle owning the claim")
 	provider := fs.String("provider", "", "provider owning the claim")
 	force := fs.Bool("force", false, "release a claim held by a non-terminal run")
+	publicationReason := fs.String("publication-custody-reason", "", "explicitly override the named publication lock with an audited reason")
 	fs.Usage = helpUsage(stderr, "claims release")
 	itemID, root, ok := parseRequiredArgOptionalRoot(fs, args)
 	if !ok {
@@ -243,7 +250,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -283,7 +290,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 
 	// Tier 1 local filesystem access is the authorization boundary. Route this
 	// mutation through the tier-2 access-control seam when #172/#469 lands.
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(root), stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(root), stderr)
 	defer stopTelemetry()
 	resp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation:         claimAdminOperationRelease,
@@ -294,6 +301,8 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		ExpectedClaimedAt: entry.ClaimedAt,
 		Force:             *force,
 		Actor:             claimAdminActorCLI,
+		PublicationReason: *publicationReason,
+		Operator:          fmt.Sprintf("uid:%d", os.Getuid()),
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -408,6 +417,7 @@ func runClaimAdmin(root string, req claimAdminRequest) (claimAdminResponse, erro
 
 func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req claimAdminRequest) (claimAdminResponse, error) {
 	var resp claimAdminResponse
+	var sharedCleanup *localscheduler.ClaimEntry
 	operation := claimLockOperationAdminList
 	if req.Operation == claimAdminOperationRelease {
 		operation = claimLockOperationAdminRelease
@@ -453,16 +463,27 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 				resp.Error = fmt.Sprintf("claim is held by non-terminal run %s; --force is required", entry.RunID)
 				return nil
 			}
-			layout := instance.NewLayout(filepath.Dir(schedulerDir))
-			if err := forceReleaseClaim(context.Background(), ledger, localLifecycleSharedClaimResolver(layout), entry, req.Actor); err != nil {
+			needsCleanup, err := releaseAdminClaim(ledger, entry, req)
+			if err != nil {
 				return err
 			}
-			resp.Released = &entry
+			if needsCleanup {
+				sharedCleanup = &entry
+			} else if entry.SharedDeadline.IsZero() || entry.IsPublicationClaim() {
+				resp.Released = &entry
+			}
 		default:
 			return fmt.Errorf("claims: unknown admin operation %q", req.Operation)
 		}
 		return nil
 	})
+	if err == nil && sharedCleanup != nil {
+		layout := instance.NewLayout(filepath.Dir(schedulerDir))
+		err = forceReleaseClaim(context.Background(), layout, log, localLifecycleSharedClaimResolver(layout), *sharedCleanup, req.Actor)
+		if err == nil {
+			resp.Released = sharedCleanup
+		}
+	}
 	return resp, err
 }
 
@@ -615,4 +636,24 @@ func sweepPendingClaimAdminRequests(
 			return resp
 		},
 	)
+}
+
+// The generic force-release path deliberately cannot override publication
+// custody. This explicit operator request is the sole administrative opt-in.
+func releaseAdminClaim(ledger *localscheduler.ClaimLedger, entry localscheduler.ClaimEntry, req claimAdminRequest) (needsCleanup bool, err error) {
+	if entry.IsPublicationClaim() {
+		if strings.TrimSpace(req.PublicationReason) == "" {
+			return false, errors.New("publication custody requires --publication-custody-reason naming why early release is safe")
+		}
+		return false, ledger.ForceReleasePublicationEntry(entry, req.Operator, req.PublicationReason)
+	}
+	if req.PublicationReason != "" {
+		return false, errors.New("--publication-custody-reason requires an exact publication-lock key")
+	}
+	if !entry.SharedDeadline.IsZero() {
+		// Revoke under the claims lock before waiting for a transition or
+		// resolving provider credentials. Remote cleanup follows outside it.
+		return ledger.RevokeSharedExecution(claimsclient.KeyForEntry(entry), entry.SharedOwner, req.Actor)
+	}
+	return false, ledger.ForceReleaseEntry(entry, req.Actor)
 }

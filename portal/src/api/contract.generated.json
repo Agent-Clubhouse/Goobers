@@ -69,6 +69,17 @@
       "recoverySafe": false
     },
     {
+      "id": "configSnapshot",
+      "method": "GET",
+      "path": "/api/v1/config/snapshot",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "blob",
+      "budgetMs": 60000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workerConfigDivergence",
       "method": "POST",
       "path": "/api/v1/worker/config-divergence",
@@ -138,6 +149,17 @@
       "id": "gaggleWorkflows",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workflows",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "gaggleHealth",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/health",
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "bounded",
@@ -416,7 +438,7 @@
       "capability": "approve",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -428,7 +450,7 @@
       "capability": "override",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -440,7 +462,7 @@
       "capability": "rerun",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -572,7 +594,7 @@
       "actionClass": "maintenance",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },

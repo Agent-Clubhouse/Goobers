@@ -3,16 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/goobers/goobers/internal/avexclusion"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // #3480: the antivirus-exclusion declaration and advisory check, wired into
@@ -24,56 +23,13 @@ import (
 // internal/avexclusion, which derives it from the same path code the
 // processes use; nothing here retypes a path.
 
-// avExclusionDeps is the seam the advisory runs through: the host OS
-// (verification is Windows-only; elsewhere the set is listed and coverage
-// reported unknown), the exclusion-list reader, and the process temp
-// directory.
-type avExclusionDeps struct {
-	hostOS  string
-	query   avexclusion.Querier
-	tempDir string
-}
-
-func realAVExclusionDeps() avExclusionDeps {
-	return avExclusionDeps{hostOS: runtime.GOOS, query: avexclusion.QueryDefender, tempDir: filepath.Clean(os.TempDir())}
-}
-
 // realStagePodAVExclusionDeps is the pod's variant: the same reader under
 // avexclusion.StagePodQueryTimeout, because a stage pod pays the probe on
 // every attempt (see that constant's doc comment).
-func realStagePodAVExclusionDeps() avExclusionDeps {
-	deps := realAVExclusionDeps()
-	deps.query = avexclusion.QueryDefenderStagePod
+func realStagePodAVExclusionDeps() runtimewiring.AvExclusionDeps {
+	deps := runtimewiring.RealAVExclusionDeps()
+	deps.Query = avexclusion.QueryDefenderStagePod
 	return deps
-}
-
-// avExclusionReport verifies dirs against the host's exclusion list. Off
-// Windows there is nothing to read: every directory is reported unknown with
-// the reason, so a `doctor --av-exclusions` run on an operator's macOS
-// laptop still yields the list.
-func avExclusionReport(ctx context.Context, dirs []avexclusion.Directory, deps avExclusionDeps) avexclusion.Report {
-	dirs = avexclusion.Dedupe(dirs)
-	if deps.hostOS != "windows" {
-		return avexclusion.Verify(dirs, nil, false, fmt.Errorf("verification runs on Windows only (this host is %s)", deps.hostOS))
-	}
-	if deps.query == nil {
-		return avexclusion.Verify(dirs, nil, false, fmt.Errorf("no exclusion-list reader configured"))
-	}
-	exclusions, err := deps.query(ctx)
-	if err != nil {
-		return avexclusion.Verify(dirs, nil, false, err)
-	}
-	return avexclusion.Verify(dirs, exclusions, true, nil)
-}
-
-// hostAVExclusionAdvisory is the one-line startup advisory the daemon and
-// the worker print. Empty off Windows: a Linux daemon has no AV race to
-// warn about, and the existing large-repo preflight keeps the same silence.
-func hostAVExclusionAdvisory(ctx context.Context, label string, dirs []avexclusion.Directory, deps avExclusionDeps) string {
-	if deps.hostOS != "windows" {
-		return ""
-	}
-	return avexclusion.Summary(label, avExclusionReport(ctx, dirs, deps))
 }
 
 // daemonAVExclusionDirectories is the daemon's set for the instance rooted
@@ -88,12 +44,12 @@ func hostAVExclusionAdvisory(ctx context.Context, label string, dirs []avexclusi
 // cfg may be nil (no instance.yaml yet): the layout defaults stand. set may
 // be nil (no config directory, or one that would not load): the per-gaggle
 // entries are simply absent, and every caller that can say so says so.
-func daemonAVExclusionDirectories(layout instance.Layout, cfg *instance.Config, set *instance.ConfigSet, deps avExclusionDeps) []avexclusion.Directory {
+func daemonAVExclusionDirectories(layout instance.Layout, cfg *instance.Config, set *instance.ConfigSet, deps runtimewiring.AvExclusionDeps) []avexclusion.Directory {
 	instanceWide := layout
 	if effective, err := instance.EffectiveWorkcopiesLayout(layout, cfg, nil); err == nil {
 		instanceWide = effective
 	}
-	dirs := avexclusion.DaemonDirectories(instanceWide, deps.tempDir)
+	dirs := avexclusion.DaemonDirectories(instanceWide, deps.TempDir)
 	if set == nil {
 		return dirs
 	}
@@ -115,13 +71,6 @@ func daemonAVExclusionDirectories(layout instance.Layout, cfg *instance.Config, 
 	return dirs
 }
 
-// workerAVExclusionDirectories is `goobers worker`'s set under workRoot,
-// resolved through the same helpers workerEngineDepsForPlatform provisions
-// with.
-func workerAVExclusionDirectories(workRoot string, deps avExclusionDeps) []avexclusion.Directory {
-	return avexclusion.WorkerDirectories(workRoot, workerWorkcopiesDir(workRoot), workerScratchDir(workRoot), deps.tempDir)
-}
-
 // stagePodAVExclusionAdvisory is the line a Windows stage pod prints to its
 // own stderr before the stage runs — the far-side evidence #3480 asks for
 // (`kubectl logs <pod>` names the excluded and not-excluded directories).
@@ -130,18 +79,18 @@ func workerAVExclusionDirectories(workRoot string, deps avExclusionDeps) []avexc
 // class bound, the container user's profile, the image's instance root.
 // Empty off Windows. Never fails the stage: a hung or absent Defender is a
 // reported unknown, bounded by avexclusion.DefenderQueryTimeout.
-func stagePodAVExclusionAdvisory(ctx context.Context, deps avExclusionDeps, getwd func() (string, error), getenv func(string) string) string {
-	if deps.hostOS != "windows" {
+func stagePodAVExclusionAdvisory(ctx context.Context, deps runtimewiring.AvExclusionDeps, getwd func() (string, error), getenv func(string) string) string {
+	if deps.HostOS != "windows" {
 		return ""
 	}
 	workspace, err := getwd()
 	if err != nil {
 		workspace = dispatcher.WindowsWorkspacePath
 	}
-	tmp := firstNonEmpty(getenv("TMP"), getenv("TEMP"), deps.tempDir)
+	tmp := firstNonEmpty(getenv("TMP"), getenv("TEMP"), deps.TempDir)
 	home := firstNonEmpty(getenv("USERPROFILE"), getenv("HOME"))
 	dirs := avexclusion.StagePodDirectories(workspace, tmp, home, getenv("GOOBERS_INSTANCE_ROOT"))
-	return avexclusion.Summary("stage pod", avExclusionReport(ctx, dirs, deps))
+	return avexclusion.Summary("stage pod", runtimewiring.AvExclusionReport(ctx, dirs, deps))
 }
 
 // doctorAVExclusionsReport is the stable `--report json` shape of
@@ -175,7 +124,7 @@ type doctorAVExclusionsRunner struct {
 // whatever the coverage; only a usage/IO error exits 2. The instance.yaml
 // is loaded when present (for workcopies.root and the runners: inventory)
 // but not required: the layout is pure path arithmetic.
-func runDoctorAVExclusions(root, workRoot, reportFormat string, stdout, stderr io.Writer, deps avExclusionDeps) int {
+func runDoctorAVExclusions(root, workRoot, reportFormat string, stdout, stderr io.Writer, deps runtimewiring.AvExclusionDeps) int {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		pf(stderr, "error: resolve instance root %q: %v\n", root, err)
@@ -210,7 +159,7 @@ func runDoctorAVExclusions(root, workRoot, reportFormat string, stdout, stderr i
 			// which findings, so an operator reading a coverage report knows
 			// the inventory it was derived from is not one the daemon would
 			// accept — rather than trusting a list silently built on it.
-			if summary := validationIssueSummary(configReport); summary != "" {
+			if summary := runtimewiring.ValidationIssueSummary(configReport); summary != "" {
 				pf(stderr, "note: %s does not validate (%s); the gaggle roots below are read from it as-is\n", layout.ConfigDir(), summary)
 			}
 		case loadErr != nil:
@@ -218,17 +167,17 @@ func runDoctorAVExclusions(root, workRoot, reportFormat string, stdout, stderr i
 		}
 	}
 	if workRoot == "" {
-		workRoot = defaultWorkerRoot(deps.tempDir)
+		workRoot = runtimewiring.DefaultWorkerRoot(deps.TempDir)
 	}
-	dirs := append(daemonAVExclusionDirectories(layout, cfg, set, deps), workerAVExclusionDirectories(workRoot, deps)...)
+	dirs := append(daemonAVExclusionDirectories(layout, cfg, set, deps), runtimewiring.WorkerAVExclusionDirectories(workRoot, deps)...)
 	dirs = append(dirs, avexclusion.StagePodDirectories(
 		dispatcher.WindowsWorkspacePath, dispatcher.WindowsTmpPath, dispatcher.WindowsHomePath, "")...)
 
 	report := doctorAVExclusionsReport{
-		Host:         deps.hostOS,
+		Host:         deps.HostOS,
 		InstanceRoot: absRoot,
 		WorkRoot:     workRoot,
-		Report:       avExclusionReport(context.Background(), dirs, deps),
+		Report:       runtimewiring.AvExclusionReport(context.Background(), dirs, deps),
 	}
 	if cfg != nil {
 		for _, entry := range cfg.Runners {

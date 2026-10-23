@@ -80,7 +80,18 @@ func taskLedgerTouching(task apiv1.Task) bool {
 // diagnostic: green-lighting a run whose stage can never place would strand
 // it at schedule-to-start instead of telling the operator why.
 func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle string, def workflow.Definition) ([]engine.PinnedPlacement, error) {
-	inventory, required := placementPinInventory(cfg)
+	return pinStagePlacements(cfg, set, gaggle, def, false)
+}
+
+// PinChildStagePlacements retains explicit self pins for child execution custody,
+// including an implicit local inventory. Ordinary engine starts retain their
+// historical empty local plan through PinStagePlacements.
+func PinChildStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle string, def workflow.Definition) ([]engine.PinnedPlacement, error) {
+	return pinStagePlacements(cfg, set, gaggle, def, true)
+}
+
+func pinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle string, def workflow.Definition, requireLocalPins bool) ([]engine.PinnedPlacement, error) {
+	inventory, required := childPlacementPinInventory(cfg, requireLocalPins)
 	if !required {
 		return nil, nil
 	}

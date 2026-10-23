@@ -27,9 +27,9 @@
 # Bump trigger: a change to the `go` directive in go.mod — never a calendar.
 # `go run ./test/gotoolchain` (the go-toolchain merge-gate check) fails while
 # the two disagree, so the bump has to land in the same diff.
-ARG GO_IMAGE=docker.io/library/golang:1.26.9@sha256:f1f0bcc2c524a3ced375fcb4d1ecb7aa371aa7070e112599aaca45cc02d0101b
+ARG GO_IMAGE=docker.io/library/golang:1.26.10@sha256:3745f1aa11822297b79113f5e84ce2bffeb039734571c39855809cfe9e5d7be6
 ARG PORTAL_NODE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
-ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+ARG RUNTIME_IMAGE=docker.io/library/node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 ARG COPILOT_VERSION=1.0.83
 
 FROM ${PORTAL_NODE_IMAGE} AS portal-build
@@ -56,6 +56,12 @@ RUN go build -tags embed_portal -trimpath \
             -X github.com/goobers/goobers/internal/version.Commit=${COMMIT} \
             -X github.com/goobers/goobers/internal/version.Date=${DATE}" \
         -o /out/goobers ./cmd/goobers \
+    && go build -trimpath \
+        -ldflags "-s -w \
+            -X github.com/goobers/goobers/internal/version.Version=${VERSION} \
+            -X github.com/goobers/goobers/internal/version.Commit=${COMMIT} \
+            -X github.com/goobers/goobers/internal/version.Date=${DATE}" \
+        -o /out/goobers-cloud ./cmd/goobers-cloud \
     && go build -trimpath -ldflags "-s -w" -o /out/goobers-operator ./cmd/operator
 
 FROM ${RUNTIME_IMAGE}
@@ -71,7 +77,7 @@ RUN apt-get update \
     && copilot --version \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/goobers /out/goobers-operator /usr/local/bin/
+COPY --from=build /out/goobers /out/goobers-cloud /out/goobers-operator /usr/local/bin/
 # 65532 mirrors the conventional distroless "nonroot" uid/gid so pod
 # securityContexts (runAsNonRoot, runAsUser: 65532) hold across base images.
 RUN groupadd --gid 65532 nonroot \

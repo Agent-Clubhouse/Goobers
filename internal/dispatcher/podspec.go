@@ -198,6 +198,8 @@ const (
 	// EnvArtifactPublication carries runner-authored named-output authority.
 	// It is privileged and never inherited by the stage command.
 	EnvArtifactPublication = "GOOBERS_ARTIFACT_PUBLICATION"
+	// EnvStageOutbox carries the runner-owned declared outbox path list.
+	EnvStageOutbox = "GOOBERS_STAGE_OUTBOX"
 	// EnvStageTimeout carries the stage's effective timeout (Go duration
 	// string) so dispatch-exec bounds the command the same way the local
 	// executor bounds it, independent of the pod's activeDeadlineSeconds
@@ -376,7 +378,7 @@ var DispatcherPrivilegedEnv = []string{
 	EnvChildExecutionDigest,
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
-	EnvArtifactPublication,
+	EnvArtifactPublication, EnvStageOutbox,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
@@ -1202,6 +1204,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		{Name: EnvPodAttempt, Value: attempt.podAttemptEnv()},
 		// Explicit empty also shadows a template's EnvFrom for legacy stages.
 		{Name: EnvArtifactPublication, Value: literalPodEnv(artifactPublicationEnv(attempt))},
+		{Name: EnvStageOutbox, Value: literalPodEnv(stageOutboxEnv(attempt))},
 	}
 
 	if cfg.BlobEndpoint != "" {

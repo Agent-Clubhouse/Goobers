@@ -30,13 +30,19 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+
 	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -53,11 +59,14 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+
 	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
@@ -99,13 +108,13 @@ func TestIssueOwnershipScopeByGaggle(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "legacy"}},
 	}}
 
-	if got, want := issueOwnershipAssigneesByGaggle(set), map[string]string{
+	if got, want := runtimewiring.IssueOwnershipAssigneesByGaggle(set), map[string]string{
 		"cloud": "cloud-bot,cloud-alt",
 		"local": "local-bot",
 	}; !maps.Equal(got, want) {
 		t.Fatalf("assignees = %#v, want %#v", got, want)
 	}
-	if got, want := issueOwnershipUnassignedByGaggle(set), map[string]string{
+	if got, want := runtimewiring.IssueOwnershipUnassignedByGaggle(set), map[string]string{
 		"cloud": "refuse",
 		"local": "allow",
 	}; !maps.Equal(got, want) {
@@ -164,7 +173,7 @@ func (r runnerWiringArtifactRecorder) RecordArtifactBoundedWithIntegrity(name st
 func TestResolveOTLPHeaders(t *testing.T) {
 	t.Setenv("OTLP_AUTHORIZATION", "Bearer collector-secret")
 	registry := journal.NewRegistryScrubber()
-	headers, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+	headers, err := runtimewiring.ResolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
 		"authorization": {Env: "OTLP_AUTHORIZATION"},
 	}, registry, nil)
 	if err != nil {
@@ -179,7 +188,7 @@ func TestResolveOTLPHeaders(t *testing.T) {
 }
 
 func TestResolveOTLPHeadersFailsOnMissingCredential(t *testing.T) {
-	_, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+	_, err := runtimewiring.ResolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
 		"authorization": {Env: "UNSET_OTLP_AUTHORIZATION"},
 	}, journal.NewRegistryScrubber(), nil)
 	if err == nil || !strings.Contains(err.Error(), `env var "UNSET_OTLP_AUTHORIZATION" is not set`) {
@@ -205,7 +214,7 @@ func (f wiringFakeStoreResolver) FetchSecret(_ context.Context, ref string) (str
 // same way.
 func TestResolveOTLPHeadersStoreRef(t *testing.T) {
 	registry := journal.NewRegistryScrubber()
-	headers, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+	headers, err := runtimewiring.ResolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
 		"authorization": {Store: "prod-kv/otlp-authorization"},
 	}, registry, wiringFakeStoreResolver{"prod-kv/otlp-authorization": "Bearer store-collector-secret"})
 	if err != nil {
@@ -220,7 +229,7 @@ func TestResolveOTLPHeadersStoreRef(t *testing.T) {
 
 	// Without a store resolver the same ref fails closed instead of reading
 	// as an unconfigured header.
-	if _, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+	if _, err := runtimewiring.ResolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
 		"authorization": {Store: "prod-kv/otlp-authorization"},
 	}, journal.NewRegistryScrubber(), nil); err == nil {
 		t.Fatal("resolveOTLPHeaders: want fail-closed error for store ref without a store resolver, got nil")
@@ -356,7 +365,7 @@ func TestConfigureAzureMonitorResolvesAndRegistersConnectionString(t *testing.T)
 	t.Setenv("GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING", connectionString)
 	registry := journal.NewRegistryScrubber()
 	var cfg telemetry.Config
-	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+	err := runtimewiring.ConfigureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
 		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING"},
 	}, instance.TelemetryProfileStandard, t.TempDir(), registry, nil)
 	if err != nil {
@@ -387,7 +396,7 @@ func TestConfigureAzureMonitorCollectionProfiles(t *testing.T) {
 	} {
 		t.Run(string(tc.profile), func(t *testing.T) {
 			var cfg telemetry.Config
-			err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+			err := runtimewiring.ConfigureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
 				ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_PROFILE_CONNECTION"},
 			}, tc.profile, t.TempDir(), nil, nil)
 			if err != nil {
@@ -637,12 +646,12 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 // approval and milestone-command authorities to dedicated GOOBERS_CRED_*
 // variables, and other org-repo capabilities to GH_TOKEN.
 func TestBuildEnvCapabilities(t *testing.T) {
-	envCaps := buildEnvCapabilities()
+	envCaps := runtimewiring.BuildEnvCapabilities()
 	if got := envCaps["agent:model"]; got != "COPILOT_GITHUB_TOKEN" {
 		t.Fatalf("agent:model env = %q, want COPILOT_GITHUB_TOKEN", got)
 	}
-	for _, c := range credentialedCapabilities {
-		want := credentialGrantEnv
+	for _, c := range runtimewiring.CredentialedCapabilities {
+		want := runtimewiring.CredentialGrantEnv
 		if c == capability.GitHubIssuesApprove || c == capability.GitHubMilestonesWrite {
 			want = executor.CredentialEnvVar(string(c))
 		}
@@ -650,8 +659,8 @@ func TestBuildEnvCapabilities(t *testing.T) {
 			t.Fatalf("capability %s env = %q, want %q", c, got, want)
 		}
 	}
-	if envCaps["agent:model"] == credentialGrantEnv {
-		t.Fatalf("agent:model must map to a var distinct from the github-tool var %q, else the two tokens collide", credentialGrantEnv)
+	if envCaps["agent:model"] == runtimewiring.CredentialGrantEnv {
+		t.Fatalf("agent:model must map to a var distinct from the github-tool var %q, else the two tokens collide", runtimewiring.CredentialGrantEnv)
 	}
 	if got := envCaps["github:issues:approve"]; got != "GOOBERS_CRED_GITHUB_ISSUES_APPROVE" {
 		t.Fatalf("github:issues:approve env = %q, want dedicated approval variable", got)
@@ -689,7 +698,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	}
 
 	t.Run("repo push remains a legitimate stored-login authoring workflow", func(t *testing.T) {
-		err := validateStoredCopilotAuthBoundaries(
+		err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 			&instance.Config{},
 			configSetWithTask(apiv1.RepoRef{}, "agent:model", "repo:push"),
 			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
@@ -700,7 +709,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	})
 
 	t.Run("github tool token is rejected at admission", func(t *testing.T) {
-		err := validateStoredCopilotAuthBoundaries(
+		err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 			&instance.Config{Repos: []instance.RepoRef{{
 				Provider: "github",
 				Owner:    "acme",
@@ -723,7 +732,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	})
 
 	t.Run("explicit model credential preserves two-token behavior", func(t *testing.T) {
-		err := validateStoredCopilotAuthBoundaries(
+		err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 			&instance.Config{Credentials: []instance.CredentialGrant{{
 				Capability: "agent:model",
 				Token:      instance.TokenRef{Env: "COPILOT_TOKEN"},
@@ -737,7 +746,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	})
 
 	t.Run("unused goober authority does not overbroaden the stage boundary", func(t *testing.T) {
-		err := validateStoredCopilotAuthBoundaries(
+		err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 			&instance.Config{},
 			configSetWithTask(apiv1.RepoRef{}, "agent:model"),
 			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
@@ -750,7 +759,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	t.Run("claude stored auth is unaffected", func(t *testing.T) {
 		claudeGoober := copilotGoober
 		claudeGoober.Harness = apiv1.HarnessClaudeCode
-		err := validateStoredCopilotAuthBoundaries(
+		err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 			&instance.Config{},
 			configSetWithTask(apiv1.RepoRef{}, "agent:model", "github:issues:write"),
 			map[string]apiv1.GooberSpec{"implementer": claudeGoober},
@@ -766,7 +775,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 		instance.ADOAuthManagedIdentity,
 	} {
 		t.Run("tokenless ADO "+authKind+" auth is accepted", func(t *testing.T) {
-			err := validateStoredCopilotAuthBoundaries(
+			err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 				&instance.Config{Repos: []instance.RepoRef{
 					{
 						Provider: "github",
@@ -797,7 +806,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	}
 
 	t.Run("materialized ADO PAT is rejected", func(t *testing.T) {
-		err := validateStoredCopilotAuthBoundaries(
+		err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 			&instance.Config{Repos: []instance.RepoRef{{
 				Provider: "ado",
 				Owner:    "acme",
@@ -831,7 +840,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 				}},
 			},
 		}}
-		err := validateStoredCopilotAuthBoundaries(
+		err := runtimewiring.ValidateStoredCopilotAuthBoundaries(
 			&instance.Config{Repos: []instance.RepoRef{{
 				Provider: "github",
 				Owner:    "acme",
@@ -871,12 +880,12 @@ func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
 	}
 
 	adapterCalls := 0
-	previousAdapter := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	previousAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		adapterCalls++
 		return &harnesstest.FakeAdapter{}
 	}
-	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+	t.Cleanup(func() { runtimewiring.NewAgenticAdapter = previousAdapter })
 
 	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
 	if code == 0 ||
@@ -893,8 +902,8 @@ func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
 }
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
-	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, harness.EnvironmentConfig{}, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
+	envCaps := runtimewiring.BuildEnvCapabilities()
+	registry, err := runtimewiring.BuildHarnessRegistry(envCaps, harness.EnvironmentConfig{}, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -915,8 +924,8 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	if got, want := strings.Join(copilot.Command, " "), "copilot"; got != want {
 		t.Fatalf("copilot launcher = %q, want built-in default %q", got, want)
 	}
-	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
-		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
+	if copilot.EnvCapabilities[string(capability.AgentModel)] != runtimewiring.CopilotModelEnv {
+		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], runtimewiring.CopilotModelEnv)
 	}
 	if !copilot.OptionalCredentialCapabilities[string(capability.AgentModel)] {
 		t.Fatal("agent:model must allow stored Copilot CLI authentication when no token grant is configured")
@@ -942,14 +951,14 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	if claude.Name() != "claude-code" {
 		t.Fatalf("adapter Name = %q, want claude-code", claude.Name())
 	}
-	if claude.EnvCapabilities[string(capability.AgentModel)] != claudeModelEnv {
-		t.Fatalf("agent:model env = %q, want %q", claude.EnvCapabilities[string(capability.AgentModel)], claudeModelEnv)
+	if claude.EnvCapabilities[string(capability.AgentModel)] != runtimewiring.ClaudeModelEnv {
+		t.Fatalf("agent:model env = %q, want %q", claude.EnvCapabilities[string(capability.AgentModel)], runtimewiring.ClaudeModelEnv)
 	}
 	if !claude.OptionalCredentialCapabilities[string(capability.AgentModel)] {
 		t.Fatal("agent:model must allow stored Claude Code authentication when no token grant is configured")
 	}
-	if claude.EnvCapabilities[string(capability.GitHubIssuesWrite)] != credentialGrantEnv {
-		t.Fatalf("github:issues:write env = %q, want %q", claude.EnvCapabilities[string(capability.GitHubIssuesWrite)], credentialGrantEnv)
+	if claude.EnvCapabilities[string(capability.GitHubIssuesWrite)] != runtimewiring.CredentialGrantEnv {
+		t.Fatalf("github:issues:write env = %q, want %q", claude.EnvCapabilities[string(capability.GitHubIssuesWrite)], runtimewiring.CredentialGrantEnv)
 	}
 	if claude.InstanceRoot != "/instances/acme" {
 		t.Fatalf("adapter instance root = %q, want /instances/acme", claude.InstanceRoot)
@@ -969,8 +978,8 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	if codex.Name() != "codex" {
 		t.Fatalf("adapter Name = %q, want codex", codex.Name())
 	}
-	if codex.EnvCapabilities[string(capability.AgentModel)] != codexModelEnv {
-		t.Fatalf("agent:model env = %q, want %q", codex.EnvCapabilities[string(capability.AgentModel)], codexModelEnv)
+	if codex.EnvCapabilities[string(capability.AgentModel)] != runtimewiring.CodexModelEnv {
+		t.Fatalf("agent:model env = %q, want %q", codex.EnvCapabilities[string(capability.AgentModel)], runtimewiring.CodexModelEnv)
 	}
 	if codex.OptionalCredentialCapabilities[string(capability.AgentModel)] {
 		t.Fatal("agent:model must require an OpenAI API key for Codex")
@@ -993,7 +1002,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), harness.EnvironmentConfig{}, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
+	registry, err := runtimewiring.BuildHarnessRegistry(runtimewiring.BuildEnvCapabilities(), harness.EnvironmentConfig{}, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -1031,7 +1040,7 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 	}
-	adapter, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, override, nil)
+	adapter, err := runtimewiring.AdapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, override, nil)
 	if err != nil {
 		t.Fatalf("adapterFor: %v", err)
 	}
@@ -1054,7 +1063,7 @@ func TestAdapterForAppliesPreflightArgsOnlyToAuthProbe(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"forwarding-launcher", "copilot"},
 	}
-	adapter, err := adapterFor(apiv1.HarnessCopilot, environment, override, nil)
+	adapter, err := runtimewiring.AdapterFor(apiv1.HarnessCopilot, environment, override, nil)
 	if err != nil {
 		t.Fatalf("adapterFor: %v", err)
 	}
@@ -1083,7 +1092,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), harness.EnvironmentConfig{}, override, "", "", false, nil, false)
+	registry, err := runtimewiring.BuildHarnessRegistry(runtimewiring.BuildEnvCapabilities(), harness.EnvironmentConfig{}, override, "", "", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -1136,7 +1145,7 @@ func TestValidationAutomatedChecksGolden(t *testing.T) {
 		"queue-outcome",
 		"status-equals",
 	}
-	if got := knownAutomatedCheckNames(); !slices.Equal(got, want) {
+	if got := runtimewiring.KnownAutomatedCheckNames(); !slices.Equal(got, want) {
 		t.Fatalf("validation automated checks = %v, want %v", got, want)
 	}
 }
@@ -1189,7 +1198,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, err := compiledMachinesWithWarnings(
+			_, _, _, err := runtimewiring.CompiledMachinesWithWarnings(
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 				harness.EnvironmentConfig{},
@@ -1206,7 +1215,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 }
 
 func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
-	_, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
+	_, resolvedGoobers, warnings, err := runtimewiring.CompiledMachinesWithWarnings(
 		&instance.ConfigSet{},
 		map[string]apiv1.GooberSpec{
 			"coder": {
@@ -1253,12 +1262,12 @@ func TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery(t *testing
 	lister := &runnerWiringModelLister{responses: [][]harness.CopilotModelInfo{
 		{{ID: "gpt-5.4"}},
 	}}
-	previousLister := copilotModelLister
-	copilotModelLister = lister
-	t.Cleanup(func() { copilotModelLister = previousLister })
+	previousLister := runtimewiring.CopilotModelLister
+	runtimewiring.CopilotModelLister = lister
+	t.Cleanup(func() { runtimewiring.CopilotModelLister = previousLister })
 
 	credentialCalls := 0
-	_, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
+	_, resolvedGoobers, warnings, err := runtimewiring.CompiledMachinesWithWarnings(
 		&instance.ConfigSet{},
 		map[string]apiv1.GooberSpec{
 			"coder": {Harness: apiv1.HarnessCopilot, Model: "gpt-5.4"},
@@ -1293,12 +1302,12 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	lister := &runnerWiringModelLister{responses: [][]harness.CopilotModelInfo{
 		{{ID: "gpt-5.4"}},
 	}}
-	previousLister := copilotModelLister
-	copilotModelLister = lister
-	t.Cleanup(func() { copilotModelLister = previousLister })
+	previousLister := runtimewiring.CopilotModelLister
+	runtimewiring.CopilotModelLister = lister
+	t.Cleanup(func() { runtimewiring.CopilotModelLister = previousLister })
 	var runRequest harness.RunRequest
-	previousAdapter := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	previousAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			runRequest = req
 			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
@@ -1306,9 +1315,9 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 			})
 		}}
 	}
-	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+	t.Cleanup(func() { runtimewiring.NewAgenticAdapter = previousAdapter })
 
-	_, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
+	_, resolvedGoobers, warnings, err := runtimewiring.CompiledMachinesWithWarnings(
 		&instance.ConfigSet{},
 		map[string]apiv1.GooberSpec{
 			"coder": {
@@ -1408,7 +1417,7 @@ func TestBuildDeterministicExecutorIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+	got, err := runtimewiring.BuildDeterministicExecutor(runtimewiring.DeterministicExecutorInput{
 		Config:              &instance.Config{},
 		Resolver:            resolver,
 		SharedRegistry:      journal.NewRegistryScrubber(),
@@ -1450,7 +1459,7 @@ func TestBuildDeterministicExecutorWiresScratchDirToBuiltinErrorFile(t *testing.
 		t.Fatal(err)
 	}
 	rec := runnerWiringArtifactRecorder{}
-	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+	got, err := runtimewiring.BuildDeterministicExecutor(runtimewiring.DeterministicExecutorInput{
 		Config:           &instance.Config{},
 		Resolver:         resolver,
 		SharedRegistry:   journal.NewRegistryScrubber(),
@@ -1494,7 +1503,7 @@ func TestBuildAgenticExecutorIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	scrubber := journal.NewRegistryScrubber()
-	got, err := buildAgenticExecutor(agenticExecutorInput{
+	got, err := runtimewiring.BuildAgenticExecutor(runtimewiring.AgenticExecutorInput{
 		GooberName:      "coder",
 		Goobers:         map[string]apiv1.GooberSpec{"coder": {}},
 		Instructions:    map[string]string{"coder": "instructions"},
@@ -1516,7 +1525,7 @@ func TestBuildAgenticExecutorIndependently(t *testing.T) {
 }
 
 func TestBuildAgenticExecutorIndependentlyRejectsUnknownGoober(t *testing.T) {
-	_, err := buildAgenticExecutor(agenticExecutorInput{
+	_, err := runtimewiring.BuildAgenticExecutor(runtimewiring.AgenticExecutorInput{
 		GooberName: "missing",
 		Goobers:    map[string]apiv1.GooberSpec{},
 	})
@@ -1725,13 +1734,13 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
 
 	got := resolveGrants(t, resolver, grants)
-	for _, c := range credentialedCapabilities {
+	for _, c := range runtimewiring.CredentialedCapabilities {
 		if got[string(c)] != "tokenA" {
 			t.Fatalf("capability %s = %q, want repo token tokenA", c, got[string(c)])
 		}
@@ -1760,7 +1769,7 @@ func TestStageCredentialsCannotObtainWorkflowSourceToken(t *testing.T) {
 			Token: &instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1782,7 +1791,7 @@ func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
 		Capability: string(capability.ConfigRepoRead),
 		Token:      instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
 	}}}
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
+	if _, _, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), `"configrepo:read" cannot be stage-scoped`) {
 		t.Fatalf("buildCredentials error = %v, want runner-only override rejection", err)
 	}
@@ -1794,12 +1803,12 @@ func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
 		MCP:   "sharepoint",
 		Token: instance.TokenRef{Env: "SHAREPOINT_MCP_TOKEN"},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
 	key := mcpconfig.BYOCredentialKey("sharepoint")
-	gooberGrants := buildGooberCredentialGrants("knowledge", "", []string{key}, grants)
+	gooberGrants := runtimewiring.BuildGooberCredentialGrants("knowledge", "", []string{key}, grants)
 	injector, err := credentials.NewGooberInjectorWithCredentialKeys(
 		resolver,
 		"knowledge",
@@ -1819,7 +1828,7 @@ func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
 		t.Fatalf("BYO MCP token = %q, %v", token, err)
 	}
 
-	otherGrants := buildGooberCredentialGrants("coder", "", nil, grants)
+	otherGrants := runtimewiring.BuildGooberCredentialGrants("coder", "", nil, grants)
 	other, err := credentials.NewGooberInjector(resolver, "coder", otherGrants, &escTestRegistrar{})
 	if err != nil {
 		t.Fatalf("NewGooberInjector(other): %v", err)
@@ -1840,11 +1849,11 @@ func TestDeterministicCredentialsRejectForgedBYOMCPEnvelope(t *testing.T) {
 		{MCP: "sharepoint", Token: instance.TokenRef{Env: "SHAREPOINT_MCP_TOKEN"}},
 		{Capability: string(capability.RepoPush), Token: instance.TokenRef{Env: "PUSH_TOKEN"}},
 	}}
-	resolver, sources, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, sources, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
-	injector, err := credentials.NewInjector(resolver, deterministicCredentialGrants(sources), &escTestRegistrar{})
+	injector, err := credentials.NewInjector(resolver, runtimewiring.DeterministicCredentialGrants(sources), &escTestRegistrar{})
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
@@ -1874,7 +1883,7 @@ func TestBuildCredentialsStoreBackedRepoToken(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Store: "prod-kv/github-token"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg, wiringFakeStoreResolver{"prod-kv/github-token": "kv-repo-token"}, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, wiringFakeStoreResolver{"prod-kv/github-token": "kv-repo-token"}, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -1895,7 +1904,7 @@ func TestBuildCredentialsStoreBackedRepoToken(t *testing.T) {
 		t.Fatalf("scrubber registrations = %q, want exactly the store-resolved token", registrar.registered)
 	}
 
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil {
+	if _, _, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil); err == nil {
 		t.Fatal("buildCredentials: want fail-closed error for store ref without a store registry, got nil")
 	}
 }
@@ -1916,11 +1925,11 @@ func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T)
 			Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
 		},
 	}}
-	_, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web", nil, nil)
+	_, grants, err := runtimewiring.BuildCredentials(cfg, nil, "acme/widgets", "web", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != len(repoCredentialedCapabilityNames()) {
+	if len(grants) != len(runtimewiring.RepoCredentialedCapabilityNames()) {
 		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
 	}
 	for _, grant := range grants {
@@ -1939,7 +1948,7 @@ func TestBuildCredentialsScopesADOPATByProject(t *testing.T) {
 		Name:     "web",
 		Token:    instance.TokenRef{Env: "ADO_PAT"},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "acme/widgets", "web", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "acme/widgets", "web", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1963,7 +1972,7 @@ func TestBuildCredentialsGrantsReadOnlyAdditionalRepos(t *testing.T) {
 	}}
 	additional := []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "goobers"}}
 
-	resolver, grants, err := buildCredentials(cfg, nil, "example", "site", additional, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "example", "site", additional, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1995,7 +2004,7 @@ func TestADORepoForGaggleMatchesExplicitProject(t *testing.T) {
 		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI},
 	}
 	cfg := &instance.Config{Repos: []instance.RepoRef{want}}
-	got, ok := adoRepoForGaggle(cfg, apiv1.RepoRef{
+	got, ok := runtimewiring.AdoRepoForGaggle(cfg, apiv1.RepoRef{
 		Provider: apiv1.ProviderADO,
 		Owner:    "acme/widgets",
 		Name:     "web",
@@ -2016,7 +2025,7 @@ func TestGitHubRepoForGaggle(t *testing.T) {
 		{Provider: "github", Owner: "acme", Name: "other"},
 		want,
 	}}
-	got, ok := githubRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
+	got, ok := runtimewiring.GithubRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
 	if !ok || got.Owner != want.Owner || got.Name != want.Name || got.Token.Env != want.Token.Env {
 		t.Fatalf("githubRepoForGaggle() = %#v, %v", got, ok)
 	}
@@ -2024,11 +2033,11 @@ func TestGitHubRepoForGaggle(t *testing.T) {
 	// A legacy single-repo instance with an unqualified project falls back to
 	// the lone configured repo, mirroring adoRepoForGaggle.
 	single := &instance.Config{Repos: []instance.RepoRef{want}}
-	if got, ok := githubRepoForGaggle(single, apiv1.RepoRef{}); !ok || got.Name != want.Name {
+	if got, ok := runtimewiring.GithubRepoForGaggle(single, apiv1.RepoRef{}); !ok || got.Name != want.Name {
 		t.Fatalf("githubRepoForGaggle(single-repo fallback) = %#v, %v", got, ok)
 	}
 
-	if got, ok := githubRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Name: "web"}); ok {
+	if got, ok := runtimewiring.GithubRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Name: "web"}); ok {
 		t.Fatalf("githubRepoForGaggle(ado project) = %#v, want no match", got)
 	}
 }
@@ -2044,17 +2053,17 @@ func TestGiteaRepoForGaggle(t *testing.T) {
 		{Provider: "gitea", Owner: "acme", Name: "other"},
 		want,
 	}}
-	got, ok := giteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitea, Owner: "acme", Name: "web"})
+	got, ok := runtimewiring.GiteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitea, Owner: "acme", Name: "web"})
 	if !ok || got.Owner != want.Owner || got.Name != want.Name || got.Token.Env != want.Token.Env {
 		t.Fatalf("giteaRepoForGaggle() = %#v, %v", got, ok)
 	}
 
 	single := &instance.Config{Repos: []instance.RepoRef{want}}
-	if got, ok := giteaRepoForGaggle(single, apiv1.RepoRef{}); !ok || got.Name != want.Name {
+	if got, ok := runtimewiring.GiteaRepoForGaggle(single, apiv1.RepoRef{}); !ok || got.Name != want.Name {
 		t.Fatalf("giteaRepoForGaggle(single-repo fallback) = %#v, %v", got, ok)
 	}
 
-	if got, ok := giteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}); ok {
+	if got, ok := runtimewiring.GiteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}); ok {
 		t.Fatalf("giteaRepoForGaggle(github project) = %#v, want no match", got)
 	}
 }
@@ -2063,7 +2072,7 @@ func TestGiteaRepoForGaggle(t *testing.T) {
 
 func TestGitHubWorktreeGitEnvironmentNoTokenIsNoOp(t *testing.T) {
 	workcopies := t.TempDir()
-	resolve, err := githubWorktreeGitEnvironment(workcopies, instance.RepoRef{
+	resolve, err := runtimewiring.GithubWorktreeGitEnvironment(workcopies, instance.RepoRef{
 		Provider: "github", Owner: "acme", Name: "web",
 	}, nil, nil)
 	if err != nil {
@@ -2087,7 +2096,7 @@ func TestGitHubWorktreeGitEnvironmentStoreBackedToken(t *testing.T) {
 		Token: instance.TokenRef{Store: "prod-kv/github-token"},
 	}
 	registrar := &escTestRegistrar{}
-	resolve, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registrar,
+	resolve, err := runtimewiring.GithubWorktreeGitEnvironment(t.TempDir(), repo, registrar,
 		wiringFakeStoreResolver{"prod-kv/github-token": "kv-gh-token"})
 	if err != nil {
 		t.Fatalf("githubWorktreeGitEnvironment: %v", err)
@@ -2112,7 +2121,7 @@ func TestGitHubWorktreeGitEnvironmentStoreBackedToken(t *testing.T) {
 		t.Fatalf("scrubber registrations = %q, want exactly the store-resolved token", registrar.registered)
 	}
 
-	if _, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registrar, nil); err == nil {
+	if _, err := runtimewiring.GithubWorktreeGitEnvironment(t.TempDir(), repo, registrar, nil); err == nil {
 		t.Fatal("githubWorktreeGitEnvironment: want fail-closed error for store ref without a store resolver, got nil")
 	}
 }
@@ -2121,7 +2130,7 @@ func TestGitHubWorktreeGitEnvironmentInjectsAskpassForConfiguredRepoOnly(t *test
 	t.Setenv("GOOBERS_TEST_667_TOKEN", "gh-token-value")
 	workcopies := t.TempDir()
 	registrar := &escTestRegistrar{}
-	resolve, err := githubWorktreeGitEnvironment(workcopies, instance.RepoRef{
+	resolve, err := runtimewiring.GithubWorktreeGitEnvironment(workcopies, instance.RepoRef{
 		Provider: "github", Owner: "acme", Name: "web",
 		Token: instance.TokenRef{Env: "GOOBERS_TEST_667_TOKEN"},
 	}, registrar, nil)
@@ -2178,7 +2187,7 @@ func TestGitHubWorktreeGitEnvironmentFailsClosedOnUnresolvableToken(t *testing.T
 	// misconfiguration, and setting it makes the test hermetic regardless of
 	// the ambient environment.
 	t.Setenv("GOOBERS_TEST_667_EMPTY_TOKEN", "")
-	resolve, err := githubWorktreeGitEnvironment(t.TempDir(), instance.RepoRef{
+	resolve, err := runtimewiring.GithubWorktreeGitEnvironment(t.TempDir(), instance.RepoRef{
 		Provider: "github", Owner: "acme", Name: "web",
 		Token: instance.TokenRef{Env: "GOOBERS_TEST_667_EMPTY_TOKEN"},
 	}, nil, nil)
@@ -2198,17 +2207,17 @@ func TestGitHubWorktreeGitEnvironmentFailsClosedOnUnresolvableToken(t *testing.T
 // and re-resolution reaches the source again (its cache, not the resolver,
 // decides freshness).
 func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
-	prev := newGitHubAppTokenSource
+	prev := runtimewiring.NewGitHubAppTokenSource
 	mints := 0
 	var gotRepo instance.RepoRef
-	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	runtimewiring.NewGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		gotRepo = repo
 		return func(context.Context) (string, time.Time, error) {
 			mints++
 			return fmt.Sprintf("minted-token-%d", mints), time.Time{}, nil
 		}, nil
 	}
-	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewGitHubAppTokenSource = prev })
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{{
 		Provider: "github", Owner: "acme", Name: "web",
@@ -2217,7 +2226,7 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 			PrivateKey: &instance.TokenRef{File: "/run/secrets/app.pem"},
 		},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -2225,7 +2234,7 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 		t.Fatalf("minting source built for %+v, want the github-app repo", gotRepo)
 	}
 	got := resolveGrants(t, resolver, grants)
-	for _, c := range credentialedCapabilities {
+	for _, c := range runtimewiring.CredentialedCapabilities {
 		if !strings.HasPrefix(got[string(c)], "minted-token-") {
 			t.Fatalf("capability %s = %q, want a minted installation token", c, got[string(c)])
 		}
@@ -2239,16 +2248,16 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 }
 
 func TestBuildCredentialsGitHubAppMintsAgentModelTokenWithExpiry(t *testing.T) {
-	prev := newAgentModelGitHubAppTokenSource
+	prev := runtimewiring.NewAgentModelGitHubAppTokenSource
 	expiresAt := time.Now().Add(45 * time.Minute).UTC()
 	var gotApp *instance.AgentModelGitHubAppConfig
-	newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	runtimewiring.NewAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		gotApp = app
 		return func(context.Context) (string, time.Time, error) {
 			return "minted-copilot-token", expiresAt, nil
 		}, nil
 	}
-	t.Cleanup(func() { newAgentModelGitHubAppTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewAgentModelGitHubAppTokenSource = prev })
 
 	app := &instance.AgentModelGitHubAppConfig{
 		Name:           "copilot-primary",
@@ -2263,7 +2272,7 @@ func TestBuildCredentialsGitHubAppMintsAgentModelTokenWithExpiry(t *testing.T) {
 		Harness:    string(apiv1.HarnessCopilot),
 		GitHubApp:  app,
 	}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -2277,7 +2286,7 @@ func TestBuildCredentialsGitHubAppMintsAgentModelTokenWithExpiry(t *testing.T) {
 	if !ok {
 		t.Fatal("credential resolver does not propagate source expiry")
 	}
-	ref := credentialRefName(credentials.HarnessScopedCapability(string(capability.AgentModel), string(apiv1.HarnessCopilot)))
+	ref := runtimewiring.CredentialRefName(credentials.HarnessScopedCapability(string(capability.AgentModel), string(apiv1.HarnessCopilot)))
 	token, gotExpiry, err := expiring.ResolveWithExpiry(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("ResolveWithExpiry: %v", err)
@@ -2288,11 +2297,11 @@ func TestBuildCredentialsGitHubAppMintsAgentModelTokenWithExpiry(t *testing.T) {
 }
 
 func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
-	prev := newGitHubAppTokenSource
-	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	prev := runtimewiring.NewGitHubAppTokenSource
+	runtimewiring.NewGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		return nil, errors.New("store-backed key not resolvable here")
 	}
-	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewGitHubAppTokenSource = prev })
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{{
 		Provider: "github", Owner: "acme", Name: "web",
@@ -2301,7 +2310,7 @@ func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 			PrivateKey: &instance.TokenRef{Store: "kv/app-key"},
 		},
 	}}}
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
+	if _, _, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "repo acme/web") {
 		t.Fatalf("buildCredentials error = %v, want fail-closed repo diagnosis", err)
 	}
@@ -2312,11 +2321,11 @@ func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 // static-token ref already is at NewResolverWith), never silently collapse to
 // the last entry's minting source and hand it the first's grants.
 func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
-	prev := newGitHubAppTokenSource
-	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	prev := runtimewiring.NewGitHubAppTokenSource
+	runtimewiring.NewGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		return func(context.Context) (string, time.Time, error) { return "minted", time.Time{}, nil }, nil
 	}
-	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewGitHubAppTokenSource = prev })
 
 	appRepo := func() instance.RepoRef {
 		return instance.RepoRef{
@@ -2328,7 +2337,7 @@ func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
 		}
 	}
 	cfg := &instance.Config{Repos: []instance.RepoRef{appRepo(), appRepo()}}
-	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
+	if _, _, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "duplicate repository reference") {
 		t.Fatalf("buildCredentials error = %v, want duplicate-repo fail-closed", err)
 	}
@@ -2338,18 +2347,18 @@ func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
 // mirror clone/fetch environment mints per operation, so a refreshed
 // installation token reaches the next fetch without re-wiring (#667 + #686).
 func TestGitHubWorktreeGitEnvironmentMintsForGitHubAppRepo(t *testing.T) {
-	prev := newGitHubAppTokenSource
+	prev := runtimewiring.NewGitHubAppTokenSource
 	mints := 0
-	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	runtimewiring.NewGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		return func(context.Context) (string, time.Time, error) {
 			mints++
 			return fmt.Sprintf("ghs_minted_%d", mints), time.Time{}, nil
 		}, nil
 	}
-	t.Cleanup(func() { newGitHubAppTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewGitHubAppTokenSource = prev })
 
 	registrar := &escTestRegistrar{}
-	resolve, err := githubWorktreeGitEnvironment(t.TempDir(), instance.RepoRef{
+	resolve, err := runtimewiring.GithubWorktreeGitEnvironment(t.TempDir(), instance.RepoRef{
 		Provider: "github", Owner: "acme", Name: "web",
 		Auth: &instance.RepoAuthConfig{
 			Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42",
@@ -2431,31 +2440,31 @@ func TestPathLengthManagerLimits(t *testing.T) {
 	}
 	base := instance.RepoRef{Provider: "github", Owner: "acme", Name: "web"}
 
-	limits, err := pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	limits, err := runtimewiring.PathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
 	if err != nil || len(limits) != 0 {
 		t.Fatalf("unconfigured linux limits = %d, %v; want 0", len(limits), err)
 	}
-	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	limits, err = runtimewiring.PathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
 	if err != nil || len(limits) != 1 {
 		t.Fatalf("unconfigured windows limits = %d, %v; want 1", len(limits), err)
 	}
 	base.PathLength = &instance.RepoPathLengthConfig{MaxPathLength: 320, BuildOutputAllowance: 40}
-	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	limits, err = runtimewiring.PathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
 	if err != nil || len(limits) != 1 {
 		t.Fatalf("configured linux limits = %d, %v; want 1", len(limits), err)
 	}
 	base.PathLength.Disabled = true
-	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	limits, err = runtimewiring.PathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
 	if err != nil || len(limits) != 0 {
 		t.Fatalf("disabled windows limits = %d, %v; want 0", len(limits), err)
 	}
 }
 
 func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
-	previousCloneURL := repoCloneURL
+	previousCloneURL := runtimewiring.RepoCloneURL
 	origin := initBareOrigin(t)
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 
 	layout := instance.NewLayout(t.TempDir())
 	if err := layout.EnsureGaggleRuntime("example"); err != nil {
@@ -2477,7 +2486,7 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 			InstructionsByGoober: map[string]string{},
 			SharedRegistry:       journal.NewRegistryScrubber(),
 			WorktreeManager:      manager,
-			HarnessInfo:          harnessPreflightInfo{},
+			HarnessInfo:          runtimewiring.HarnessPreflightInfo{},
 			SandboxPosture:       instance.SandboxDisabled,
 		})
 		if err != nil {
@@ -2527,7 +2536,7 @@ func TestADORemoteGitQuotaGateConsumesADOWindow(t *testing.T) {
 	resetAt := time.Now().Add(time.Hour).UTC()
 	quota := localscheduler.NewProviderQuotaState()
 	quota.Record(apiv1.ProviderADO, 1, resetAt)
-	gate := adoRemoteGitQuotaGate(quota)
+	gate := runtimewiring.AdoRemoteGitQuotaGate(quota)
 
 	if err := gate(context.Background(), "https://github.com/acme/web.git"); err != nil {
 		t.Fatalf("GitHub remote admission: %v", err)
@@ -2596,14 +2605,14 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false,
+	machines, _, _, err := runtimewiring.CompiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false,
 		nil,
 		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	refs, err := repoRefsByWorkflow(set)
+	refs, err := runtimewiring.RepoRefsByWorkflow(set)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3106,7 +3115,7 @@ func TestBuildCredentialsAgentModel(t *testing.T) {
 			{Capability: "agent:model", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3114,7 +3123,7 @@ func TestBuildCredentialsAgentModel(t *testing.T) {
 	if got["agent:model"] != "copilottok" {
 		t.Fatalf("agent:model = %q, want copilottok", got["agent:model"])
 	}
-	for _, c := range credentialedCapabilities {
+	for _, c := range runtimewiring.CredentialedCapabilities {
 		if got[string(c)] != "tokenA" {
 			t.Fatalf("capability %s = %q, want repo token tokenA", c, got[string(c)])
 		}
@@ -3135,7 +3144,7 @@ func TestBuildCredentialsOverride(t *testing.T) {
 			{Capability: "repo:push", Token: instance.TokenRef{Env: "PUSH_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3160,7 +3169,7 @@ func TestBuildCredentialsApprovalOverride(t *testing.T) {
 			{Capability: "github:issues:approve", Token: instance.TokenRef{Env: "APPROVAL_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3187,12 +3196,12 @@ func TestBuildCredentialsDaemonIdentityPAT(t *testing.T) {
 		},
 		DaemonIdentity: &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "DAEMON_PAT"}},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
 	got := resolveGrants(t, resolver, grants)
-	for _, c := range daemonIdentityCapabilities {
+	for _, c := range runtimewiring.DaemonIdentityCapabilities {
 		if got[string(c)] != "daemon-token" {
 			t.Fatalf("capability %s = %q, want the daemon identity's own token", c, got[string(c)])
 		}
@@ -3222,7 +3231,7 @@ func TestBuildCredentialsDaemonIdentityExplicitOverrideWins(t *testing.T) {
 			{Capability: "github:pr:review", Token: instance.TokenRef{Env: "REVIEW_TOKEN"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3240,17 +3249,17 @@ func TestBuildCredentialsDaemonIdentityExplicitOverrideWins(t *testing.T) {
 // (#1780/#1779): a github-app-kind DaemonIdentity mints per resolve, scoped
 // to this gaggle's own repo name.
 func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
-	prev := newDaemonIdentityGitHubAppTokenSource
+	prev := runtimewiring.NewDaemonIdentityGitHubAppTokenSource
 	mints := 0
 	var gotRepoName string
-	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, _ string, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	runtimewiring.NewDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, _ string, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		gotRepoName = gaggleRepoName
 		return func(context.Context) (string, time.Time, error) {
 			mints++
 			return fmt.Sprintf("minted-daemon-token-%d", mints), time.Time{}, nil
 		}, nil
 	}
-	t.Cleanup(func() { newDaemonIdentityGitHubAppTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewDaemonIdentityGitHubAppTokenSource = prev })
 
 	t.Setenv("GH_TOKEN_A", "tokenA")
 	cfg := &instance.Config{
@@ -3262,7 +3271,7 @@ func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
 			PrivateKey: &instance.TokenRef{File: "/run/secrets/daemon-app.pem"},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "acme", "web", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "acme", "web", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3270,7 +3279,7 @@ func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
 		t.Fatalf("minting source scoped to repo %q, want %q", gotRepoName, "web")
 	}
 	got := resolveGrants(t, resolver, grants)
-	for _, c := range daemonIdentityCapabilities {
+	for _, c := range runtimewiring.DaemonIdentityCapabilities {
 		if !strings.HasPrefix(got[string(c)], "minted-daemon-token-") {
 			t.Fatalf("capability %s = %q, want a minted daemon-identity installation token", c, got[string(c)])
 		}
@@ -3288,12 +3297,12 @@ func TestBuildCredentialsWithoutDaemonIdentityUnchanged(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
 	got := resolveGrants(t, resolver, grants)
-	for _, c := range daemonIdentityCapabilities {
+	for _, c := range runtimewiring.DaemonIdentityCapabilities {
 		if got[string(c)] != "tokenA" {
 			t.Fatalf("capability %s = %q, want the plain repo token (no DaemonIdentity configured)", c, got[string(c)])
 		}
@@ -3306,7 +3315,7 @@ func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 		{Capability: "github:issues:write", Ref: "issues-token"},
 		{Capability: "configrepo:read", Ref: "workflow-source-token"},
 	}
-	grants := buildGooberCredentialGrants(
+	grants := runtimewiring.BuildGooberCredentialGrants(
 		"curator",
 		"",
 		[]string{"agent:model", "telemetry:read", "configrepo:read", "agent:model"},
@@ -3335,7 +3344,7 @@ func TestBuildCredentialsThreeHarnessesEachGetOwnGrant(t *testing.T) {
 			{Capability: "agent:model", Harness: "codex", Token: instance.TokenRef{Env: "OPENAI_KEY"}},
 		},
 	}
-	resolver, runnerGrants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, runnerGrants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3344,7 +3353,7 @@ func TestBuildCredentialsThreeHarnessesEachGetOwnGrant(t *testing.T) {
 		"claude-code": "claude-secret",
 		"codex":       "codex-secret",
 	} {
-		gooberGrants := buildGooberCredentialGrants("worker", harness, []string{"agent:model"}, runnerGrants)
+		gooberGrants := runtimewiring.BuildGooberCredentialGrants("worker", harness, []string{"agent:model"}, runnerGrants)
 		if len(gooberGrants) != 1 {
 			t.Fatalf("harness %s: grants = %+v, want exactly one", harness, gooberGrants)
 		}
@@ -3373,18 +3382,18 @@ func TestBuildCredentialsScopedGrantPreferredOverUnscoped(t *testing.T) {
 			{Capability: "agent:model", Harness: "claude-code", Token: instance.TokenRef{Env: "CLAUDE_TOKEN"}},
 		},
 	}
-	resolver, runnerGrants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, runnerGrants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
-	claudeGrants := buildGooberCredentialGrants("worker", "claude-code", []string{"agent:model"}, runnerGrants)
+	claudeGrants := runtimewiring.BuildGooberCredentialGrants("worker", "claude-code", []string{"agent:model"}, runnerGrants)
 	if len(claudeGrants) != 1 {
 		t.Fatalf("claude-code grants = %+v, want one", claudeGrants)
 	}
 	if got, _ := resolver.Resolve(context.Background(), claudeGrants[0].Ref); got != "claude-only-secret" {
 		t.Fatalf("claude-code agent:model = %q, want the harness-scoped grant to win", got)
 	}
-	copilotGrants := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, runnerGrants)
+	copilotGrants := runtimewiring.BuildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, runnerGrants)
 	if len(copilotGrants) != 1 {
 		t.Fatalf("copilot grants = %+v, want one", copilotGrants)
 	}
@@ -3404,12 +3413,12 @@ func TestBuildCredentialsSingleUnscopedGrantUnchanged(t *testing.T) {
 			{Capability: "agent:model", Token: instance.TokenRef{Env: "ONLY_TOKEN"}},
 		},
 	}
-	resolver, runnerGrants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, runnerGrants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
 	for _, harness := range []string{"copilot", "claude-code", "codex", ""} {
-		grants := buildGooberCredentialGrants("worker", harness, []string{"agent:model"}, runnerGrants)
+		grants := runtimewiring.BuildGooberCredentialGrants("worker", harness, []string{"agent:model"}, runnerGrants)
 		if len(grants) != 1 {
 			t.Fatalf("harness %q: grants = %+v, want one", harness, grants)
 		}
@@ -3439,7 +3448,7 @@ func TestBuildGooberCredentialGrantsHarnessPrecedence(t *testing.T) {
 		{"", "unscoped-ref"},
 	}
 	for _, tc := range cases {
-		grants := buildGooberCredentialGrants("worker", tc.harness, []string{"agent:model"}, sources)
+		grants := runtimewiring.BuildGooberCredentialGrants("worker", tc.harness, []string{"agent:model"}, sources)
 		if len(grants) != 1 || grants[0].Ref != tc.wantRef || grants[0].Capability != "agent:model" {
 			t.Fatalf("harness %q: grants = %+v, want one grant {agent:model, %s}", tc.harness, grants, tc.wantRef)
 		}
@@ -3447,15 +3456,15 @@ func TestBuildGooberCredentialGrantsHarnessPrecedence(t *testing.T) {
 }
 
 func TestBuildGooberCredentialGrantsIsIdempotentForSelectedGoober(t *testing.T) {
-	selected := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, []credentials.Grant{
+	selected := runtimewiring.BuildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, []credentials.Grant{
 		{Capability: credentials.HarnessScopedCapability("agent:model", "copilot"), Ref: "copilot-ref"},
 		{Capability: credentials.HarnessScopedCapability("agent:model", "claude-code"), Ref: "claude-ref"},
 	})
-	again := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, selected)
+	again := runtimewiring.BuildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, selected)
 	if len(again) != 1 || again[0].Goober != "worker" || again[0].Capability != "agent:model" || again[0].Ref != "copilot-ref" {
 		t.Fatalf("re-scoped grants = %+v, want the already-selected plain grant", again)
 	}
-	if got := buildGooberCredentialGrants("sibling", "copilot", []string{"agent:model"}, selected); len(got) != 0 {
+	if got := runtimewiring.BuildGooberCredentialGrants("sibling", "copilot", []string{"agent:model"}, selected); len(got) != 0 {
 		t.Fatalf("sibling reached worker-bound grant: %+v", got)
 	}
 }
@@ -3486,7 +3495,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
 	cfg := repoConfig()
 	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3494,7 +3503,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil, nil)
+	deterministic, err := runtimewiring.BuildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -3508,7 +3517,7 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
 	cfg := repoConfig()
 	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3517,18 +3526,18 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	giteaRepo := &instance.RepoRef{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "CI_POLL_TOKEN"}}
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil, nil)
+	exec, err := runtimewiring.BuildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
-	e, ok := exec.(*ciPollKindExecutor)
+	e, ok := exec.(*runtimewiring.CiPollKindExecutor)
 	if !ok {
 		t.Fatalf("executor type = %T, want *ciPollKindExecutor", exec)
 	}
-	if e.giteaRepo == nil || e.giteaRepo.BaseURL != "https://gitea.example.com" {
-		t.Fatalf("giteaRepo not wired into ci-poll executor: %+v", e.giteaRepo)
+	if e.GiteaRepo == nil || e.GiteaRepo.BaseURL != "https://gitea.example.com" {
+		t.Fatalf("giteaRepo not wired into ci-poll executor: %+v", e.GiteaRepo)
 	}
-	if e.adoRepo != nil {
+	if e.AdoRepo != nil {
 		t.Fatalf("adoRepo must be nil for a gitea ci-poll executor")
 	}
 }
@@ -3542,7 +3551,7 @@ func TestBuildCIPollExecutorWiresADOQuotaState(t *testing.T) {
 		Name:     "web",
 		Token:    instance.TokenRef{Env: "ADO_TEST_TOKEN"},
 	}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -3551,23 +3560,23 @@ func TestBuildCIPollExecutorWiresADOQuotaState(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	quota := localscheduler.NewProviderQuotaState()
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota, nil)
+	exec, err := runtimewiring.BuildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
-	e, ok := exec.(*ciPollKindExecutor)
+	e, ok := exec.(*runtimewiring.CiPollKindExecutor)
 	if !ok {
 		t.Fatalf("executor type = %T, want *ciPollKindExecutor", exec)
 	}
-	if e.quota == nil {
+	if e.Quota == nil {
 		t.Fatal("ADO ci-poll quota observer is nil")
 	}
 
 	resetAt := time.Now().Add(time.Hour).UTC()
-	e.quota.ObserveQuota(context.Background(), providers.QuotaObservation{
+	e.Quota.ObserveQuota(context.Background(), providers.QuotaObservation{
 		Provider: providers.ProviderADO, Remaining: 0, Reset: resetAt, Known: true,
 	})
-	err = adoRemoteGitQuotaGate(quota)(context.Background(), "https://dev.azure.com/acme/widgets/_git/web")
+	err = runtimewiring.AdoRemoteGitQuotaGate(quota)(context.Background(), "https://dev.azure.com/acme/widgets/_git/web")
 	var budgetErr *localscheduler.ProviderPollBudgetError
 	if !errors.As(err, &budgetErr) || !budgetErr.ResetAt.Equal(resetAt) {
 		t.Fatalf("ADO git admission error = %v, want quota exhaustion until %s", err, resetAt)
@@ -3588,12 +3597,12 @@ func ciPollTestEnvelope(capabilities []string) apiv1.InvocationEnvelope {
 func TestCIPollCredentialRequiresDeclaredCapability(t *testing.T) {
 	deterministic := newCIPollWiringTestExecutor(t, &escTestRegistrar{})
 	called := false
-	prev := newPRPoller
-	newPRPoller = func(string) executor.PRPoller {
+	prev := runtimewiring.NewPRPoller
+	runtimewiring.NewPRPoller = func(string) executor.PRPoller {
 		called = true
 		return &ciPollFakePoller{}
 	}
-	t.Cleanup(func() { newPRPoller = prev })
+	t.Cleanup(func() { runtimewiring.NewPRPoller = prev })
 
 	_, err := deterministic.Run(context.Background(), ciPollTestEnvelope(nil), apiv1.DeterministicRun{})
 	if !errors.Is(err, credentials.ErrUndeclaredCapability) {
@@ -3605,8 +3614,8 @@ func TestCIPollCredentialRequiresDeclaredCapability(t *testing.T) {
 }
 
 func TestADOCIPollRequiresProviderNeutralCapability(t *testing.T) {
-	exec := &ciPollKindExecutor{
-		adoRepo: &instance.RepoRef{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web"},
+	exec := &runtimewiring.CiPollKindExecutor{
+		AdoRepo: &instance.RepoRef{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web"},
 	}
 	_, err := exec.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.ADOPRWrite)}), apiv1.DeterministicRun{})
 	if !errors.Is(err, credentials.ErrUndeclaredCapability) {
@@ -3619,12 +3628,12 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	deterministic := newCIPollWiringTestExecutor(t, reg)
 	poller := &ciPollFakePoller{}
 	var gotToken string
-	prev := newPRPoller
-	newPRPoller = func(token string) executor.PRPoller {
+	prev := runtimewiring.NewPRPoller
+	runtimewiring.NewPRPoller = func(token string) executor.PRPoller {
 		gotToken = token
 		return poller
 	}
-	t.Cleanup(func() { newPRPoller = prev })
+	t.Cleanup(func() { runtimewiring.NewPRPoller = prev })
 
 	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)}), apiv1.DeterministicRun{})
 	if err != nil {
@@ -3667,7 +3676,7 @@ func TestCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	first, source, err := ciPollTokenSource(context.Background(), injector, string(capability.ProviderPRWrite), reg)
+	first, source, err := runtimewiring.CiPollTokenSource(context.Background(), injector, string(capability.ProviderPRWrite), reg)
 	if err != nil {
 		t.Fatalf("ciPollTokenSource: %v", err)
 	}
@@ -4041,7 +4050,13 @@ func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ provider
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return append([]providers.Comment(nil), f.comments...), nil
+	comments := append([]providers.Comment(nil), f.comments...)
+	for i := range comments {
+		if comments[i].Author == "" {
+			comments[i].Author = "report-bot"
+		}
+	}
+	return comments, nil
 }
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
@@ -5261,7 +5276,7 @@ func TestBranchNamespacesByGaggle(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: "no-slash"}, Spec: apiv1.GaggleSpec{BranchNamespace: "widgets"}},
 		},
 	}
-	got := branchNamespacesByGaggle(set)
+	got := runtimewiring.BranchNamespacesByGaggle(set)
 	want := map[string]string{
 		"default-gaggle": "goobers/", // omitted → providers.DefaultBranchNamespace
 		"acme":           "acme/",
@@ -5286,7 +5301,7 @@ func TestSelfIdentitiesByGaggle(t *testing.T) {
 		},
 	}
 
-	got := selfIdentitiesByGaggle(cfg, set)
+	got := runtimewiring.SelfIdentitiesByGaggle(cfg, set)
 	want := map[string]string{
 		"inherits":  "instance-bot",
 		"overrides": "gaggle-bot",
@@ -5304,7 +5319,7 @@ func TestRequireLabelsByGaggle(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: "billing"}, Spec: apiv1.GaggleSpec{RequireLabels: []string{"area:billing"}}},
 		},
 	}
-	got := requireLabelsByGaggle(set)
+	got := runtimewiring.RequireLabelsByGaggle(set)
 	want := map[string]string{
 		"no-default": "",
 		"frontend":   "goobers:ready,area:frontend",
@@ -5346,7 +5361,7 @@ func TestBuildDeterministicExecutorBindsSelfRunnerEphemeralTmp(t *testing.T) {
 			t.Fatal(err)
 		}
 		rec := runnerWiringArtifactRecorder{}
-		got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		got, err := runtimewiring.BuildDeterministicExecutor(runtimewiring.DeterministicExecutorInput{
 			Config:           cfg,
 			Resolver:         resolver,
 			SharedRegistry:   journal.NewRegistryScrubber(),
@@ -5440,7 +5455,7 @@ func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+	got, err := runtimewiring.BuildDeterministicExecutor(runtimewiring.DeterministicExecutorInput{
 		Config:           cfg,
 		Resolver:         resolver,
 		SharedRegistry:   journal.NewRegistryScrubber(),
@@ -5485,7 +5500,7 @@ func TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot(t *tes
 	dir := t.TempDir()
 	t.Chdir(dir)
 	var cfg telemetry.Config
-	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+	err := runtimewiring.ConfigureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
 		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_RELATIVE_ROOT_CONNECTION"},
 	}, instance.TelemetryProfileStandard, ".", nil, nil)
 	if err != nil {
@@ -5497,4 +5512,8 @@ func TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot(t *tes
 	if !strings.HasSuffix(cfg.AzureMonitorReplayRoot, filepath.Join("telemetry-export", "azure-monitor")) {
 		t.Fatalf("AzureMonitorReplayRoot = %q, want it under the instance root's telemetry-export/azure-monitor", cfg.AzureMonitorReplayRoot)
 	}
+}
+
+func (f *blockedHandlerFakeCommenter) AuthenticatedLogin(context.Context) (string, error) {
+	return "report-bot", nil
 }

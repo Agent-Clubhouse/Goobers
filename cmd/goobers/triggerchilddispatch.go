@@ -53,11 +53,15 @@ type childStartDeferred struct{ Reason string }
 func (e *childStartDeferred) Error() string { return e.Reason }
 
 func (s *durableTriggerService) childReference(ctx context.Context, record triggerqueue.Record) (childExecutionRef, error) {
+	return childReference(ctx, s.queue, record)
+}
+
+func childReference(ctx context.Context, queue *triggerqueue.Store, record triggerqueue.Record) (childExecutionRef, error) {
 	e, err := childworkflow.DecodeStartEnvelope(record.Payload)
 	if err != nil {
 		return childExecutionRef{}, err
 	}
-	c, err := s.queue.GetChild(ctx, e.Identity())
+	c, err := queue.GetChild(ctx, e.Identity())
 	if err != nil {
 		return childExecutionRef{}, err
 	}
@@ -114,7 +118,7 @@ func (s *durableTriggerService) drainChild(ctx context.Context, record triggerqu
 	if err != nil {
 		var deferred *childStartDeferred
 		if errors.As(err, &deferred) {
-			return s.queue.RequeueChild(ctx, ref.Child.Identity, deferred.Reason, s.dispatch.now())
+			return s.queue.RequeueChild(ctx, ref.Child.Identity, deferred.Reason, s.dispatch.Now())
 		}
 		// Keep uncertain custody even for an unexpected local error: only observed
 		// durable evidence, or strong startup absence, can resolve a claimed start.
@@ -124,10 +128,10 @@ func (s *durableTriggerService) drainChild(ctx context.Context, record triggerqu
 }
 
 func (s *durableTriggerService) auditChildDispatch(record triggerqueue.Record, ref childExecutionRef) error {
-	if s.auditLog == nil {
+	if s.AuditLog() == nil {
 		return nil
 	}
-	return s.auditLog.Append(journal.Event{Type: journal.EventRunnerAnnotation, Actor: record.Actor, Workflow: ref.Envelope.Workflow, Gaggle: ref.Envelope.Gaggle, RunID: ref.Child.RunID, Reason: "accepted child dispatch requested", Runner: map[string]any{
+	return s.AuditLog().Append(journal.Event{Type: journal.EventRunnerAnnotation, Actor: record.Actor, Workflow: ref.Envelope.Workflow, Gaggle: ref.Envelope.Gaggle, RunID: ref.Child.RunID, Reason: "accepted child dispatch requested", Runner: map[string]any{
 		"note": "child.dispatch.requested", "acceptanceId": record.ID, "parentRunId": ref.Envelope.ParentRunID, "stageOccurrence": ref.Envelope.StageOccurrence, "sourceDigest": ref.Envelope.SourceDigest,
 	}})
 }

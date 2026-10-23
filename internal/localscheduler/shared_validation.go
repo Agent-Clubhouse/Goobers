@@ -30,6 +30,9 @@ func (l *ClaimLedger) validateSharedClaims() error {
 
 func validateSharedClaimEntry(storageKey string, entry ClaimEntry) error {
 	if entry.SharedOwner == (sharedclaim.Owner{}) && entry.SharedDeadline.IsZero() {
+		if entry.SharedAdmissionPending {
+			return fmt.Errorf("pending shared admission requires persisted ownership")
+		}
 		return nil // legacy and explicitly local records remain compatible
 	}
 	if entry.SharedOwner == (sharedclaim.Owner{}) || entry.SharedDeadline.IsZero() || entry.SharedOwner.Run != entry.RunID {

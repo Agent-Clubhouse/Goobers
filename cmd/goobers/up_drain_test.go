@@ -2,15 +2,148 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
+
+type boundaryDrainDeterministic struct {
+	mu      sync.Mutex
+	calls   []string
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *boundaryDrainDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.mu.Lock()
+	d.calls = append(d.calls, env.TaskID)
+	first := len(d.calls) == 1
+	d.mu.Unlock()
+	if first {
+		close(d.started)
+		<-d.release
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (d *boundaryDrainDeterministic) called() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.calls...)
+}
+
+func TestLocalDaemonDrainDefaultRemainsUnbounded(t *testing.T) {
+	if localDaemonDrainTimeoutDefault != 0 {
+		t.Fatalf("local daemon drain default = %s, want 0 (unbounded)", localDaemonDrainTimeoutDefault)
+	}
+}
+
+func TestDaemonDrainStopsAtStageBoundary(t *testing.T) {
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "boundary-drain", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example",
+			Start:  "first",
+			Tasks: []apiv1.Task{
+				{Name: "first", Type: apiv1.TaskDeterministic, Goal: "finish during drain", Run: &apiv1.DeterministicRun{Command: []string{"first"}, Workspace: apiv1.WorkspaceScratch}, Next: "second"},
+				{Name: "second", Type: apiv1.TaskDeterministic, Goal: "resume after restart", Run: &apiv1.DeterministicRun{Command: []string{"second"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete},
+			},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &boundaryDrainDeterministic{started: make(chan struct{}), release: make(chan struct{})}
+	runRunner, err := runner.New(runner.Config{
+		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+			return executor, nil
+		},
+		Worktrees:  manager,
+		RunsDir:    filepath.Join(root, "runs"),
+		ScratchDir: filepath.Join(root, "scratch"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	registry := newDaemonRunnerRegistry()
+	var runs sync.WaitGroup
+	runs.Add(1)
+	startDone := make(chan runner.Result, 1)
+	untrack := registry.Track("boundary-drain-run", "boundary-drain", runRunner)
+	go func() {
+		defer runs.Done()
+		defer untrack()
+		result, startErr := runRunner.Start(ctx, runner.StartInput{
+			RunID:   "boundary-drain-run",
+			Machine: machine,
+			Gaggle:  "example",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		})
+		if startErr != nil {
+			t.Errorf("Start: %v", startErr)
+		}
+		startDone <- result
+	}()
+
+	select {
+	case <-executor.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first stage did not start")
+	}
+	cancel()
+	drained := make(chan daemonDrainResult, 1)
+	go func() {
+		drained <- drainDaemonRuns(&runs, func() {}, registry, 5*time.Second, nil, io.Discard, nil)
+	}()
+	select {
+	case result := <-drained:
+		t.Fatalf("drain returned before the active stage reached its boundary: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(executor.release)
+
+	if result := <-drained; result.forced {
+		t.Fatalf("boundary drain forced a hard stop: %+v", result)
+	}
+	start := <-startDone
+	if start.Phase != journal.PhaseRunning || start.FinalState != "second" {
+		t.Fatalf("Start = %+v, want a running checkpoint before second", start)
+	}
+	if got := executor.called(); !slices.Equal(got, []string{"boundary-drain-run:first"}) {
+		t.Fatalf("stages before restart = %v, want only first", got)
+	}
+
+	resumed, err := runRunner.Resume(context.Background(), runner.ResumeInput{
+		RunID:   "boundary-drain-run",
+		Machine: machine,
+	})
+	if err != nil || resumed.Phase != journal.PhaseCompleted {
+		t.Fatalf("Resume = %+v, %v, want completed", resumed, err)
+	}
+	if got := executor.called(); !slices.Equal(got, []string{"boundary-drain-run:first", "boundary-drain-run:second"}) {
+		t.Fatalf("stages after restart = %v, want first then second", got)
+	}
+}
 
 func TestDrainDaemonRunsWaitsForLateSchedulerRegistration(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

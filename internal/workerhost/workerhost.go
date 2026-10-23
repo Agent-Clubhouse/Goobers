@@ -1,4 +1,4 @@
-// Package workerhost hosts the Temporal engine worker behind `goobers worker`
+// Package workerhost hosts the Temporal engine worker behind `goobers-cloud worker`
 // (#632, v2-cloud-scale A1.6): task-queue selection, graceful drain on
 // shutdown, and a versioned worker identity, so tier-3 workers are a
 // deployable unit (k8s-infra-shape §2). The engine itself stays quarantined —
@@ -9,7 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,7 +27,9 @@ import (
 
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/temporaldial"
+	"github.com/goobers/goobers/internal/workerrollout"
 	"github.com/goobers/goobers/internal/workerrouting"
 )
 
@@ -43,9 +48,18 @@ const DefaultDrainTimeout = 30 * time.Second
 // It applies only to child dispatch/reconciliation still alive after SDK Stop.
 const ChildSettlementTimeout = 5 * time.Minute
 
+// DefaultMaxConcurrentActivities preserves the Temporal SDK default while
+// making the worker's activity capacity explicit and operator-configurable.
+const DefaultMaxConcurrentActivities = 1000
+
 const (
-	placementBuildEnv  = "GOOBERS_RUNNER_BUILD"
-	placementWorkerEnv = "GOOBERS_RUNNER_WORKER"
+	placementBuildEnv         = "GOOBERS_RUNNER_BUILD"
+	placementWorkerEnv        = "GOOBERS_RUNNER_WORKER"
+	temporalDeploymentNameEnv = "TEMPORAL_DEPLOYMENT_NAME"
+	temporalWorkerBuildIDEnv  = "TEMPORAL_WORKER_BUILD_ID"
+	podNamespaceEnv           = "POD_NAMESPACE"
+	autoUpgradeRetentionEnv   = "GOOBERS_AUTO_UPGRADE_RETENTION"
+	healthShutdownWait        = 5 * time.Second
 )
 
 // Config describes one worker process.
@@ -61,6 +75,11 @@ type Config struct {
 	// TaskQueues are the queues this process serves — one Temporal worker per
 	// queue, all registering the identical engine workflow/activity set.
 	TaskQueues []string
+	// HealthAddr serves process liveness and worker readiness when non-empty.
+	HealthAddr string
+	// MaxConcurrentActivities is the per-process activity execution capacity.
+	// Zero applies DefaultMaxConcurrentActivities.
+	MaxConcurrentActivities int
 	// DrainTimeout bounds graceful drain (worker.Options.WorkerStopTimeout).
 	// Zero applies DefaultDrainTimeout.
 	DrainTimeout time.Duration
@@ -71,6 +90,16 @@ type Config struct {
 	// as deployment "goobers", version BuildVersion (#5950). Off, the worker
 	// polls unversioned. It has no effect without a BuildVersion.
 	Versioning bool
+	// VersionRetention is the maximum number of live deployment versions.
+	// Zero disables retention reconciliation.
+	VersionRetention int
+	// RolloutNamespace contains the WorkerDeployment custom resource.
+	RolloutNamespace string
+	// AutoUpgradeRetention permits the retention reconciler to move pinned
+	// workflows across builds. It requires operator replay-compatibility
+	// evidence attested for this exact BuildVersion and is disabled by default.
+	AutoUpgradeRetention         bool
+	autoUpgradeRetentionMismatch string
 	// Logf receives the non-fatal deployment-routing health reports (#5950).
 	// Nil writes them to the process's stderr.
 	Logf func(format string, args ...any)
@@ -94,14 +123,26 @@ type Host struct {
 	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
 	// describeRouting and its cadence back the #5950 routing health check.
-	describeRouting        func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
-	routingDelay           time.Duration
-	routingInterval        time.Duration
-	childSettlementTimeout time.Duration
+	describeRouting             func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
+	newRolloutStatus            func() (workerrollout.StatusSource, error)
+	reconcileRollout            func(context.Context, workerrollout.StatusSource, workerrollout.TemporalClient, int, string) (workerrollout.Result, error)
+	routingDelay                time.Duration
+	routingInterval             time.Duration
+	routingRegistrationInterval time.Duration
+	rolloutInterval             time.Duration
+	childSettlementTimeout      time.Duration
+	pollersStarted              atomic.Bool
+	routed                      atomic.Bool
+	draining                    atomic.Bool
+	routingDescribeFailed       atomic.Bool
 }
 
 // New validates cfg and builds a Host.
 func New(cfg Config) (*Host, error) {
+	var err error
+	if cfg, err = applyDeploymentEnvironment(cfg, os.LookupEnv); err != nil {
+		return nil, err
+	}
 	if len(cfg.TaskQueues) == 0 {
 		return nil, errors.New("workerhost: at least one task queue is required")
 	}
@@ -113,10 +154,26 @@ func New(cfg Config) (*Host, error) {
 	if cfg.DrainTimeout <= 0 {
 		cfg.DrainTimeout = DefaultDrainTimeout
 	}
+	if cfg.MaxConcurrentActivities < 0 {
+		return nil, errors.New("workerhost: max concurrent activities must be positive")
+	}
+	if cfg.MaxConcurrentActivities == 0 {
+		cfg.MaxConcurrentActivities = DefaultMaxConcurrentActivities
+	}
+	if cfg.VersionRetention < 0 {
+		return nil, errors.New("workerhost: version retention must be positive")
+	}
+	if cfg.AutoUpgradeRetention && cfg.VersionRetention == 0 {
+		return nil, errors.New("workerhost: AUTO_UPGRADE retention requires a positive version limit")
+	}
+	if cfg.AutoUpgradeRetention && cfg.RolloutNamespace == "" {
+		return nil, errors.New("workerhost: rollout namespace is required when version retention is enabled")
+	}
 	h := &Host{cfg: cfg, tracker: &activityTracker{
 		buildID: cfg.BuildVersion,
 		worker:  Identity(cfg.BuildVersion),
 	}}
+	h.routed.Store(!h.versioned())
 	h.dial = func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error) {
 		return bootstrap.DialTemporal(hostPort, namespace, tls, cfg.DataConverter)
 	}
@@ -126,10 +183,93 @@ func New(cfg Config) (*Host, error) {
 		return w
 	}
 	h.describeRouting = workerrouting.DescribeRouting
+	h.newRolloutStatus = func() (workerrollout.StatusSource, error) {
+		return workerrollout.NewInClusterStatusSource(cfg.RolloutNamespace, DeploymentName)
+	}
+	h.reconcileRollout = workerrollout.Reconcile
 	h.routingDelay = routingCheckDelay
 	h.routingInterval = routingCheckInterval
+	h.routingRegistrationInterval = routingRegistrationCheckInterval
+	h.rolloutInterval = time.Minute
 	h.childSettlementTimeout = ChildSettlementTimeout
+	if cfg.autoUpgradeRetentionMismatch != "" {
+		h.logf("goobers-cloud worker: error: %s", cfg.autoUpgradeRetentionMismatch)
+	}
 	return h, nil
+}
+
+func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) (Config, error) {
+	binaryVersion := strings.TrimSpace(cfg.BuildVersion)
+	deployment, hasDeployment := lookup(temporalDeploymentNameEnv)
+	buildID, hasBuildID := lookup(temporalWorkerBuildIDEnv)
+	if !hasDeployment && !hasBuildID {
+		return cfg, nil
+	}
+	deployment = strings.TrimSpace(deployment)
+	buildID = strings.TrimSpace(buildID)
+	if !hasDeployment || !hasBuildID || deployment == "" || buildID == "" {
+		return Config{}, fmt.Errorf("workerhost: %s and %s must both be non-empty", temporalDeploymentNameEnv, temporalWorkerBuildIDEnv)
+	}
+	if deployment != DeploymentName {
+		return Config{}, fmt.Errorf("workerhost: %s=%q, want %q", temporalDeploymentNameEnv, deployment, DeploymentName)
+	}
+	if isPlaceholder(buildID) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; set a distinct immutable ID for this release", temporalWorkerBuildIDEnv, buildID)
+	}
+	if !developmentBuild(binaryVersion) && !buildIDContainsVersion(buildID, binaryVersion) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q does not contain release binary version %q; refuse an in-place code update under a reused build ID",
+			temporalWorkerBuildIDEnv, buildID, binaryVersion)
+	}
+	cfg.BuildVersion = buildID
+	cfg.Versioning = true
+	// Controller-managed retention is enabled only by an attestation for this
+	// exact injected build, never by a value carried in a shared config.
+	cfg.AutoUpgradeRetention = false
+	if cfg.VersionRetention == 0 {
+		cfg.VersionRetention = workerrollout.DefaultVersionLimit
+	}
+	if cfg.RolloutNamespace == "" {
+		namespace, _ := lookup(podNamespaceEnv)
+		cfg.RolloutNamespace = strings.TrimSpace(namespace)
+	}
+	if raw, ok := lookup(autoUpgradeRetentionEnv); ok {
+		attestedBuild := strings.TrimSpace(raw)
+		if isPlaceholder(attestedBuild) {
+			return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; omit it until replay qualification passes", autoUpgradeRetentionEnv, attestedBuild)
+		}
+		if attestedBuild == buildID {
+			cfg.AutoUpgradeRetention = true
+		} else {
+			cfg.AutoUpgradeRetention = false
+			cfg.autoUpgradeRetentionMismatch = fmt.Sprintf(
+				"%s=%q does not match %s=%q; AUTO_UPGRADE retention is disabled",
+				autoUpgradeRetentionEnv, attestedBuild, temporalWorkerBuildIDEnv, buildID)
+		}
+	}
+	return cfg, nil
+}
+
+func developmentBuild(version string) bool {
+	return version == "" || version == "dev"
+}
+
+func buildIDContainsVersion(buildID, binaryVersion string) bool {
+	if strings.Contains(buildID, binaryVersion) {
+		return true
+	}
+	normalized := strings.TrimPrefix(binaryVersion, "v")
+	return normalized != binaryVersion && strings.Contains(buildID, normalized)
+}
+
+func isPlaceholder(value string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(value))
+	return strings.Contains(upper, "CHANGE-ME") ||
+		strings.Contains(upper, "CHANGE_ME") ||
+		strings.Contains(upper, "CHANGEME") ||
+		strings.Contains(upper, "PLACEHOLDER") ||
+		strings.Contains(upper, "REPLACE-ME") ||
+		strings.Contains(upper, "REPLACE_ME") ||
+		(strings.HasPrefix(upper, "<") && strings.HasSuffix(upper, ">"))
 }
 
 // Identity is the versioned Temporal worker identity (#632): build version,
@@ -146,9 +286,11 @@ func Identity(buildVersion string) string {
 // workerOptions builds the one options set every queue's worker runs under.
 func (h *Host) workerOptions() worker.Options {
 	opts := worker.Options{
-		Identity:          Identity(h.cfg.BuildVersion),
-		WorkerStopTimeout: h.cfg.DrainTimeout,
-		Interceptors:      []interceptor.WorkerInterceptor{h.tracker},
+		Identity:                           Identity(h.cfg.BuildVersion),
+		WorkerStopTimeout:                  h.cfg.DrainTimeout,
+		MaxConcurrentActivityExecutionSize: h.cfg.MaxConcurrentActivities,
+		MaxHeartbeatThrottleInterval:       engine.DispatchHeartbeatThrottleInterval,
+		Interceptors:                       []interceptor.WorkerInterceptor{h.tracker},
 	}
 	if !h.versioned() {
 		return opts
@@ -175,12 +317,27 @@ func (h *Host) versioned() bool {
 // a clean drain and ErrAbandonedWork when work was cut short. Child dispatch
 // cleanup gets up to ChildSettlementTimeout after the SDK drain expires.
 func (h *Host) Run(ctx context.Context) error {
+	healthServer, healthErr, err := h.startHealthServer()
+	if err != nil {
+		return err
+	}
+	if healthServer != nil {
+		defer h.stopHealthServer(healthServer)
+	}
+
 	c, err := h.dial(h.cfg.HostPort, h.cfg.Namespace, h.cfg.TLS)
 	if err != nil {
 		return fmt.Errorf("workerhost: dial temporal %s (namespace %s): %w", h.cfg.HostPort, h.cfg.Namespace, err)
 	}
 	if c != nil {
 		defer c.Close()
+	}
+	var rolloutStatus workerrollout.StatusSource
+	if h.cfg.AutoUpgradeRetention {
+		rolloutStatus, err = h.newRolloutStatus()
+		if err != nil {
+			return fmt.Errorf("workerhost: initialize version retention: %w", err)
+		}
 	}
 
 	previousBuild, hadBuild := os.LookupEnv(placementBuildEnv)
@@ -227,22 +384,97 @@ func (h *Host) Run(ctx context.Context) error {
 		}
 		started = append(started, w)
 	}
+	h.pollersStarted.Store(true)
+	defer h.pollersStarted.Store(false)
 
 	// #5950: a routing mismatch leaves every poll succeeding with nothing to
 	// do, so report it rather than let the engine stall silently.
-	routingDone := make(chan struct{})
+	routingCtx, stopRouting := context.WithCancel(ctx)
+	defer stopRouting()
+	var background sync.WaitGroup
+	background.Add(1)
 	go func() {
-		defer close(routingDone)
-		h.checkRoutingLoop(ctx, c)
+		defer background.Done()
+		h.checkRoutingLoop(routingCtx, c)
 	}()
+	if rolloutStatus != nil {
+		background.Add(1)
+		go func() {
+			defer background.Done()
+			h.checkRolloutLoop(routingCtx, rolloutStatus, workerrollout.SDKClient{Client: c})
+		}()
+	}
 
-	<-ctx.Done()
-	<-routingDone
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case err := <-healthErr:
+		runErr = err
+		stopRouting()
+	}
+	h.pollersStarted.Store(false)
+	stopRouting()
+	background.Wait()
 	stopAll()
+	if runErr != nil {
+		return runErr
+	}
 	if n := h.tracker.inFlight(); n > 0 {
 		return fmt.Errorf("%w: %d abandoned", ErrAbandonedWork, n)
 	}
 	return nil
+}
+
+func (h *Host) startHealthServer() (*http.Server, <-chan error, error) {
+	if h.cfg.HealthAddr == "" {
+		return nil, nil, nil
+	}
+	listener, err := net.Listen("tcp", h.cfg.HealthAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("workerhost: listen for health checks on %s: %w", h.cfg.HealthAddr, err)
+	}
+	server := &http.Server{
+		Handler:           h.healthHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	errs := make(chan error, 1)
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- fmt.Errorf("workerhost: serve health checks: %w", err)
+		}
+	}()
+	return server, errs, nil
+}
+
+func (h *Host) stopHealthServer(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), healthShutdownWait)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		h.logf("goobers-cloud worker: error: stop health server: %v", err)
+	}
+}
+
+func (h *Host) healthHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", h.serveLiveness)
+	mux.HandleFunc("/readyz", h.serveReadiness)
+	return mux
+}
+
+func (h *Host) serveLiveness(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"healthy":true}`))
+}
+
+func (h *Host) serveReadiness(w http.ResponseWriter, _ *http.Request) {
+	ready := h.pollersStarted.Load() && h.routed.Load()
+	draining := h.draining.Load()
+	w.Header().Set("Content-Type", "application/json")
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_, _ = fmt.Fprintf(w, `{"ready":%t,"draining":%t}`, ready, draining)
 }
 
 // activityTracker counts in-flight activity executions across every worker in

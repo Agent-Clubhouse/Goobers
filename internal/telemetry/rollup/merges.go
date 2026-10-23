@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ const MaxMergeReportEvents = 10000
 type MergeReportQuery struct {
 	Since, Until                         time.Time
 	InstanceID, Gaggle, RepositoryAPIURL string
+	InstanceIDs                          []string
 }
 
 // ConfirmedMerge is one deduplicated, unambiguous retained landing receipt.
@@ -240,7 +242,11 @@ func canonicalMergeRepository(address string) bool {
 }
 
 func matchesMergeQuery(merge ConfirmedMerge, query MergeReportQuery) bool {
-	return (query.InstanceID == "" || query.InstanceID == merge.InstanceID) && (query.Gaggle == "" || query.Gaggle == merge.Gaggle) && (query.RepositoryAPIURL == "" || query.RepositoryAPIURL == merge.RepositoryAPIURL)
+	instanceMatches := query.InstanceID == "" || query.InstanceID == merge.InstanceID
+	if len(query.InstanceIDs) != 0 {
+		instanceMatches = slices.Contains(query.InstanceIDs, merge.InstanceID)
+	}
+	return instanceMatches && (query.Gaggle == "" || query.Gaggle == merge.Gaggle) && (query.RepositoryAPIURL == "" || query.RepositoryAPIURL == merge.RepositoryAPIURL)
 }
 
 func dailyMergeCounts(merges []ConfirmedMerge) []DailyMerges {

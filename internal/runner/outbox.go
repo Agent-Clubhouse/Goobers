@@ -14,10 +14,11 @@ import (
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/pathutil"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 const (
-	outboxExportFailureCode       = "outbox_export_failed"
+	outboxExportFailureCode       = runsemantics.OutboxExportFailureCode
 	outboxExportFailureAnnotation = "outbox.export.failed"
 	maxOutboxDiagnosticFiles      = 3
 )
@@ -151,8 +152,14 @@ func outboxExportFailureResult(commandResult apiv1.ResultEnvelope, exportErr err
 	return commandResult
 }
 
+// OutboxExportFailureResult preserves the command outcome while failing the
+// stage because its declared outbox evidence could not be exported.
+func OutboxExportFailureResult(commandResult apiv1.ResultEnvelope, exportErr error) apiv1.ResultEnvelope {
+	return outboxExportFailureResult(commandResult, exportErr)
+}
+
 func isOutboxExportFailure(result apiv1.ResultEnvelope) bool {
-	return result.Error != nil && result.Error.Code == outboxExportFailureCode
+	return runsemantics.IsOutboxExportFailure(result)
 }
 
 // taskDispatchError normalizes an outbox collection failure onto the same
@@ -163,7 +170,7 @@ func taskDispatchError(stage string, result apiv1.ResultEnvelope, dispatchErr er
 	if dispatchErr != nil || !isOutboxExportFailure(result) {
 		return dispatchErr
 	}
-	return codedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", stage, result.Error.Message))
+	return runsemantics.CodedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", stage, result.Error.Message))
 }
 
 func stageFinishedOutputs(result apiv1.ResultEnvelope, continueOnError bool) map[string]interface{} {
@@ -307,6 +314,7 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 		if _, dup := seen[relPath]; dup {
 			return nil
 		}
+
 		seen[relPath] = struct{}{}
 		candidates = append(candidates, outboxCandidate{relPath: relPath, absPath: absPath, size: size})
 		totalBytes += size
@@ -377,6 +385,12 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 		files = append(files, journal.OutboxFile{RelPath: candidate.relPath, Data: data})
 	}
 	return files, nil
+}
+
+// CollectOutboxFiles applies the runner's containment, deduplication, and
+// aggregate bounds to a stage workspace before a remote supervisor uploads it.
+func CollectOutboxFiles(workspaceRoot string, declared []string) ([]journal.OutboxFile, error) {
+	return collectOutboxFiles(workspaceRoot, declared)
 }
 
 // outboxRelPath returns p relative to the resolved workspace root, failing

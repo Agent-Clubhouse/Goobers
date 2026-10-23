@@ -15,7 +15,7 @@ and [`docs/VISION.md`](docs/VISION.md).
 ## Development setup
 
 All development requires the Go toolchain declared in [`go.mod`](go.mod)
-(currently Go 1.26.9), Git, and
+(currently Go 1.26.10), Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
 [`.golangci.yml`](.golangci.yml)). Node.js 24 with npm is required only for
 Portal work, complete dashboard-enabled binaries, and the merge/full validation
@@ -212,6 +212,7 @@ command instead. **CI:** each validation job maps to the same contract:
 | `dead-code analysis` | Reachability checks for Go and portal production code |
 | `checks (portal UX · contracts · package)` | Portal, canvas-extension, generated-contract, embedded-asset, package, and manifest slice of `make ci` |
 | `CI scope (portal-only or full)` | Classifies the complete PR merge-base diff; uncertainty retains full CI |
+| `cloud PostgreSQL and Azurite integration` | Path-conditional cloud package and shared-store integration smoke against PostgreSQL 16 and Azurite |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
 | `lint (${{ matrix.goos }})` | `golangci-lint` across Linux, macOS, and Windows |
 | `darwin gate (build · vet)` | Linux cross-compile `go build` + `go vet` (tests included) of the whole tree for darwin/arm64 and darwin/amd64, built with cgo off as the release builds macOS binaries; the only pre-merge macOS gate |
@@ -705,6 +706,11 @@ Use a short imperative subject (`area: do the thing`), a body explaining *why* w
 not obvious, and reference issues (`Closes #123`). Keep unrelated changes out of the commit.
 
 ### cmd/goobers growth baseline
+
+Control-plane extraction PRs follow the stricter
+[move-safe gate rules](docs/guides/control-plane-extraction-gates.md) for
+deadcode identities, complexity rows, coverage, and non-transferable command
+growth credit.
 
 `make cmdgoobers-growth` checks physical lines and file count of direct non-test
 Go files in `cmd/goobers`, including all build tags, comments, and blank lines.

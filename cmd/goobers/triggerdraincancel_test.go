@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -15,7 +16,7 @@ import (
 func TestDurableTriggerCancelledWaitDoesNotInterruptActiveDrain(t *testing.T) {
 	dispatch := newDaemonTriggerService()
 	barrier := &barrierTriggerer{entered: make(chan struct{}), release: make(chan struct{})}
-	dispatch.dispatch = barrier
+	dispatch.AttachDispatcher(barrier)
 	service := acceptedService(t, filepath.Join(t.TempDir(), "queue.db"), dispatch)
 	accepted, err := service.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "worker", RequestID: "first", Actor: "operator"})
 	if err != nil {
@@ -80,7 +81,7 @@ func TestDurableTriggerCancelledWaitDoesNotInterruptActiveDrain(t *testing.T) {
 func TestDurableTriggerAlreadyCancelledDrainDoesNotTouchQueue(t *testing.T) {
 	// No queue or dispatcher is needed: an already-cancelled pass must stop
 	// before retention, reconciliation, or cursor reservation can begin.
-	service := &durableTriggerService{}
+	service := &durableTriggerService{DurableTriggerService: &planes.DurableTriggerService{}}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := service.Drain(ctx); !errors.Is(err, context.Canceled) {

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/daemonclient"
@@ -23,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
@@ -106,7 +109,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// heartbeat must cover exactly the window in which there is something alive
 	// to report on, and no longer. Stop() waits for the goroutine, so nothing
 	// is still emitting when the surrender PUT below runs.
-	fence := remoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
+	fence := runtimewiring.RemoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
 	stageCtx, stopFence, fenceErr := fence(ctx, apiv1.InvocationEnvelope{RunID: runID})
 	defer stopFence()
 	if fenceErr != nil {
@@ -121,6 +124,17 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: journal.ErrorInfoFor("execution_authority_ended", cause, false)}
 	}
 	stopFence()
+	outboxDeclared := strings.TrimSpace(os.Getenv(dispatcher.EnvStageOutbox)) != ""
+	var outbox []dispatcher.SurrenderedOutboxFile
+	var outboxErr error
+	if outcome.OutboxEligible {
+		outbox, outboxErr = publishPodOutbox(ctx, outcome.OutboxScrubber)
+	}
+	if outboxErr != nil {
+		pf(stderr, "dispatch-exec: export outbox: %v\n", outboxErr)
+		outcome.Verdict = nil
+		outcome.Result = runner.OutboxExportFailureResult(outcome.Result, outboxErr)
+	}
 	// Surrender authorizes pod disposal. Include the complete receipt set,
 	// even when the stage failed, so the engine can project it after disposal.
 	mutations, receiptErr := podMutationReceipts()
@@ -177,11 +191,17 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
-		RecoveryAcknowledged: true,
-		Mutations:            mutations,
-		Result:               envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		ContractVersion:        dispatcher.SurrenderContractForOutbox(outboxDeclared),
+		ObservedUsage:          outcome.ObservedUsage,
+		ObservedUsageReported:  outcome.ObservedUsageReported,
+		Outbox:                 outbox,
+		OutboxExported:         outboxDeclared && outcome.OutboxEligible && outboxErr == nil,
+		OutboxExecutionStarted: outboxDeclared && outcome.OutboxEligible,
+		RecoveryAcknowledged:   true,
+		Mutations:              mutations,
+		Result:                 envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
-		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runner.WorkspaceHeadMovedErrorCode,
+		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runsemantics.WorkspaceHeadMovedErrorCode,
 		Verdict:                 outcome.Verdict,
 	})
 	if err != nil {
@@ -249,6 +269,14 @@ func surrenderRetryDeadline(stageTimeout time.Duration) time.Duration {
 type stageOutcome struct {
 	Result  apiv1.ResultEnvelope
 	Verdict *apiv1.Verdict
+	// OutboxScrubber is the exact credential-aware scrubber used for this
+	// attempt's other durable evidence.
+	OutboxScrubber journal.Scrubber
+	OutboxEligible bool
+	// ObservedUsage is populated only by the supervisor callback installed
+	// around an agentic harness. Result.Metrics is never a trusted substitute.
+	ObservedUsage         map[string]float64
+	ObservedUsageReported bool
 	// WorkspaceHeadMoved marks Result as this runtime's own provisioning
 	// refusal on a moved pull request head (#6019); see
 	// dispatcher.SurrenderedResult.WorkspaceHeadMoved.
@@ -272,15 +300,24 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
 		return runAgenticStage(ctx, stdout, stderr)
 	}
+	capture := &declaredStageOutboxCapture{}
+	ctx = context.WithValue(ctx, declaredStageOutboxCaptureKey{}, capture)
 	switch strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) {
 	case executor.KindCIPoll:
-		return stageOutcome{Result: runCIPollStage(ctx, stderr)}
+		return stageOutcome{Result: runCIPollStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: capture.eligible}
 	case executor.KindExternalTelemetry:
-		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr)}
+		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: capture.eligible}
 	}
 	var headMoved bool
 	result := runDeclaredStage(ctx, stdout, stderr, &headMoved)
-	return stageOutcome{Result: result, WorkspaceHeadMoved: headMoved}
+	return stageOutcome{Result: result, WorkspaceHeadMoved: headMoved, OutboxScrubber: capture.scrubber, OutboxEligible: capture.eligible}
+}
+
+type declaredStageOutboxCaptureKey struct{}
+
+type declaredStageOutboxCapture struct {
+	scrubber journal.Scrubber
+	eligible bool
 }
 
 // runDeclaredStage builds and runs the pinned Command/Script, and always
@@ -383,7 +420,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
-				Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
+				Error:   journal.ErrorInfoFor(runsemantics.BaseSyncConflictErrorCode, err, true),
 			}
 		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
@@ -479,7 +516,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *
 	// executor registers every token with a scrubber before the stage runs;
 	// without this a stage that echoes its token surrenders it into the
 	// journal, where it is durable and widely readable.
-	scrubber := podStageScrubber(resolved.withGrant(checkoutCreds), checkoutScheme)
+	scrubber := podStageScrubberAndCaptureOutbox(ctx, resolved.withGrant(checkoutCreds), checkoutScheme)
 	defer publishPodNamedResult(ctx, stderr, scrubber, &outcome)
 	outputs := map[string]interface{}{}
 	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
@@ -521,7 +558,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *
 	case runErr != nil:
 		exitCode = -1
 	}
-	stageMetrics := map[string]float64{"exitCode": float64(exitCode)}
+	stageMetrics := stageMetricsAndCaptureOutbox(ctx, exitCode, true)
 
 	// #4119: the result file is READ BEFORE the artifacts are emitted because
 	// it is one of them. The local executor records it (shell.go's
@@ -683,7 +720,7 @@ func logStageFailureEnvelope(stderr io.Writer, envelope apiv1.ResultEnvelope) {
 func provisionFailureEnvelope(err error, headMoved *bool) apiv1.ResultEnvelope {
 	code := workspaceProvisionFailureCode(err)
 	if headMoved != nil {
-		*headMoved = code == runner.WorkspaceHeadMovedErrorCode
+		*headMoved = code == runsemantics.WorkspaceHeadMovedErrorCode
 	}
 	return failureEnvelope(code, err.Error())
 }
@@ -1269,9 +1306,9 @@ const blobWriteThroughFailureArtifact = "blob-write-through.errors"
 // recordStageArtifacts call makes.
 //
 // ONE BUDGET FOR THE BATCH, not one per artifact, because the per-artifact
-// default is dispatcher.BlobClient's 60s (internal/dispatcher/blob.go) and the
+// default is dispatcher.BlobClient's 240s (internal/dispatcher/blob.go) and the
 // batch is not bounded to two: on the agentic path every span routes through
-// RecordSpanWithSchema -> RecordArtifact -> recordStageArtifacts. Serial 60s
+// RecordSpanWithSchema -> RecordArtifact -> recordStageArtifacts. Serial
 // stalls after the stage has already finished are how a pod that has done its
 // work fails to surrender for minutes and gets reclaimed by the disposal gate
 // as an infrastructure fault. A REFUSING endpoint is instant (connection
@@ -1298,7 +1335,7 @@ func (t artifactTiming) withDefaults() artifactTiming {
 		t.blobWriteThroughBudget = blobWriteThroughBudget
 	}
 	if t.journalRetryDeadline <= 0 {
-		t.journalRetryDeadline = 3 * time.Second
+		t.journalRetryDeadline = 240 * time.Second
 	}
 	return t
 }

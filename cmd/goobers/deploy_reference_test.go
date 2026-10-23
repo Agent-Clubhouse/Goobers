@@ -14,10 +14,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/app"
-	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/netpolrender"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -45,11 +45,9 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 			},
 		},
 		"goobers-worker": {
-			binary:  "goobers",
-			command: "worker",
-			validateArgs: func(args []string) error {
-				return validateManifestArgs(args, registeredCommandFlagSet(t, "worker"), []string{"instance"}, 0)
-			},
+			binary:       "goobers-cloud",
+			command:      "worker",
+			validateArgs: func([]string) error { return nil },
 		},
 	}
 
@@ -112,18 +110,6 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 		t.Fatalf("examined %d of %d contracted Deployments (%v); every CLI contract must be checked against a shipped manifest", len(examined), len(contracts), slices.Sorted(maps.Keys(examined)))
 	}
 
-	workerFlags := registeredCommandFlagSet(t, "worker")
-	if err := validateManifestArgs([]string{"--task-queue", "default"}, workerFlags, []string{"instance"}, 0); err == nil {
-		t.Error("worker args without --instance were accepted")
-	}
-	workerFlags = registeredCommandFlagSet(t, "worker")
-	if err := validateManifestArgs([]string{"--instance", "/instance", "--not-a-worker-flag"}, workerFlags, []string{"instance"}, 0); err == nil {
-		t.Error("unknown worker flag was accepted")
-	}
-	workerFlags = registeredCommandFlagSet(t, "worker")
-	if err := validateManifestArgs([]string{"--instance", "/instance", "--drain-timeout", "eventually"}, workerFlags, []string{"instance"}, 0); err == nil {
-		t.Error("invalid worker flag value was accepted")
-	}
 	if _, err := app.ParseArgs("operator", []string{"--version=eventually"}, io.Discard, true); err == nil {
 		t.Error("invalid operator flag value was accepted")
 	}
@@ -153,6 +139,43 @@ func TestDeployReferenceWorkerProvidesWritableHarnessHome(t *testing.T) {
 		return volume.Name == "harness-home" && volume.EmptyDir != nil
 	}) {
 		t.Error("harness-home is not backed by an emptyDir")
+	}
+}
+
+func TestDeployReferenceWorkerHealthAndConcurrency(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if len(deployment.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(deployment.Spec.Template.Spec.Containers))
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assertProbe := func(name string, probe *corev1.Probe, path string) {
+		t.Helper()
+		if probe == nil || probe.HTTPGet == nil {
+			t.Fatalf("%s is not an HTTP probe", name)
+		}
+		if probe.HTTPGet.Path != path || probe.HTTPGet.Port.StrVal != "health" {
+			t.Errorf("%s = %s on %v, want %s on health", name, probe.HTTPGet.Path, probe.HTTPGet.Port, path)
+		}
+	}
+	assertProbe("startupProbe", container.StartupProbe, "/healthz")
+	assertProbe("readinessProbe", container.ReadinessProbe, "/readyz")
+	assertProbe("livenessProbe", container.LivenessProbe, "/healthz")
+
+	args := container.Args
+	healthIndex := slices.Index(args, "--health-addr")
+	if healthIndex < 0 || healthIndex+1 >= len(args) || args[healthIndex+1] != ":8081" {
+		t.Errorf("worker args %v do not expose health on :8081", args)
+	}
+	concurrencyIndex := slices.Index(args, "--max-concurrent-activities")
+	if concurrencyIndex < 0 || concurrencyIndex+1 >= len(args) || args[concurrencyIndex+1] != "4" {
+		t.Errorf("worker args %v do not size activity concurrency to 4", args)
 	}
 }
 
@@ -246,9 +269,12 @@ func TestDeployReferenceAPIProbes(t *testing.T) {
 	checkProbe("startupProbe", container.StartupProbe, "/readyz")
 	checkProbe("readinessProbe", container.ReadinessProbe, "/readyz")
 	checkProbe("livenessProbe", container.LivenessProbe, "/healthz")
+	if grace := container.LivenessProbe.TerminationGracePeriodSeconds; grace == nil || *grace != 15 {
+		t.Errorf("livenessProbe terminationGracePeriodSeconds = %v, want 15", grace)
+	}
 }
 
-func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) {
+func TestDeployReferenceWorkerUsesNoSharedVolumeSeeder(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -259,29 +285,13 @@ func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) 
 	}
 
 	initContainers := deployment.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 1 {
-		t.Fatalf("got %d init containers, want 1", len(initContainers))
+	if len(initContainers) != 0 {
+		t.Fatalf("worker retained %d boot-time config seeder(s)", len(initContainers))
 	}
-	seed := initContainers[0]
-	if seed.Name != "seed-instance-root" {
-		t.Fatalf("init container name = %q, want %q", seed.Name, "seed-instance-root")
-	}
-	if seed.SecurityContext == nil {
-		t.Fatal("init container has no security context")
-	}
-	if seed.SecurityContext.AllowPrivilegeEscalation == nil || *seed.SecurityContext.AllowPrivilegeEscalation {
-		t.Error("init container allowPrivilegeEscalation = true, want false")
-	}
-	if seed.SecurityContext.ReadOnlyRootFilesystem == nil || !*seed.SecurityContext.ReadOnlyRootFilesystem {
-		t.Error("init container readOnlyRootFilesystem = false, want true")
-	}
-	if seed.SecurityContext.Capabilities == nil || !slices.Equal(seed.SecurityContext.Capabilities.Drop, []corev1.Capability{"ALL"}) {
-		t.Errorf("init container capabilities.drop = %v, want [ALL]", seed.SecurityContext.Capabilities)
-	}
-	if deployment.Spec.Template.Spec.SecurityContext == nil ||
-		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile == nil ||
-		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Error("init container does not inherit a RuntimeDefault seccomp profile")
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			t.Fatalf("worker retained shared PVC %q", volume.PersistentVolumeClaim.ClaimName)
+		}
 	}
 }
 
@@ -381,9 +391,9 @@ func TestDeployReferenceWorkerRolloutAndCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 		spec := deployment.Spec.Template.Spec
-		minimum := workerhost.DefaultDrainTimeout + dispatcher.DefaultDisposalTimeout
-		if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second <= minimum {
-			t.Errorf("%s: pod shutdown grace must exceed %s for worker drain and stage cleanup", name, minimum)
+		minimum := workerhost.DefaultDrainTimeout + workerhost.ChildSettlementTimeout
+		if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second < minimum {
+			t.Errorf("%s: pod shutdown grace must cover %s of worker drain and child settlement", name, minimum)
 		}
 		if name != "worker-deployment.yaml" {
 			continue
@@ -399,6 +409,55 @@ func TestDeployReferenceWorkerRolloutAndCleanup(t *testing.T) {
 		}) {
 			t.Error("worker temp must use bounded pod-private storage")
 		}
+	}
+}
+
+func TestDeployReferenceAPISingletonShutdownAndDisruption(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/api-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Errorf("strategy = %q, want %q for the lock-bearing RWO singleton", deployment.Spec.Strategy.Type, appsv1.RecreateDeploymentStrategyType)
+	}
+	spec := deployment.Spec.Template.Spec
+	if len(spec.Containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(spec.Containers))
+	}
+	args := spec.Containers[0].Args
+	flagIndex := slices.Index(args, "--drain-timeout")
+	if flagIndex < 0 || flagIndex+1 >= len(args) {
+		t.Fatalf("api args %v do not bound the otherwise-unbounded daemon drain", args)
+	}
+	drain, err := time.ParseDuration(args[flagIndex+1])
+	if err != nil {
+		t.Fatalf("parse daemon drain bound %q: %v", args[flagIndex+1], err)
+	}
+	if drain != time.Minute {
+		t.Errorf("manifest drain bound = %s, want 1m for remotely dispatched stages", drain)
+	}
+	const shutdownMargin = time.Minute
+	if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second < drain+shutdownMargin {
+		t.Errorf("pod shutdown grace %v must cover daemon drain bound %s plus %s shutdown margin", spec.TerminationGracePeriodSeconds, drain, shutdownMargin)
+	}
+
+	pdbRaw, err := os.ReadFile("../../deploy/reference/goobers-system/api-pdb.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pdb policyv1.PodDisruptionBudget
+	if err := yaml.Unmarshal(pdbRaw, &pdb); err != nil {
+		t.Fatal(err)
+	}
+	if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 {
+		t.Errorf("PDB maxUnavailable = %v, want 1 so singleton node drains are not blocked", pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Spec.Selector == nil || !maps.Equal(pdb.Spec.Selector.MatchLabels, deployment.Spec.Selector.MatchLabels) {
+		t.Errorf("PDB selector %v does not match Deployment selector %v", pdb.Spec.Selector, deployment.Spec.Selector)
 	}
 }
 

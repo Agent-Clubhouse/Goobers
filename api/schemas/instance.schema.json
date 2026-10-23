@@ -1002,7 +1002,7 @@
         "workerVersioning": {
           "type": "boolean",
           "default": false,
-          "description": "Opt-in Temporal worker-deployment versioning for `goobers worker`: pollers register as deployment `goobers`, version `goobers.<build>`, and pin each new workflow to that build. Off by default: the worker polls unversioned, which a reference Temporal expects. When on, the namespace must have worker versioning enabled and an operator must make each new build the deployment's current version after it rolls out (`temporal worker deployment set-current-version`); until then the new worker receives no tasks. In either mode the worker logs an error while the deployment's current version does not route to it."
+          "description": "Opt-in Temporal worker-deployment versioning for `goobers-cloud worker`: pollers register as deployment `goobers`, version `goobers.<build>`, and pin each new workflow to that build. Off by default: the worker polls unversioned, which a reference Temporal expects. When on, the namespace must have worker versioning enabled and an operator must make each new build the deployment's current version after it rolls out (`temporal worker deployment set-current-version`); until then the new worker receives no tasks. In either mode the worker logs an error while the deployment's current version does not route to it."
         }
       }
     },
@@ -1704,7 +1704,7 @@
         "podTokenKeyFile": {
           "type": "string",
           "minLength": 1,
-          "description": "Path to shared key material for STATELESS pod tokens. Set it when the mode-3 dispatcher runs in a different process from the daemon (the split `goobers up` / `goobers worker --dispatch-namespace` deployment): the in-memory token registry is daemon-local, so a token minted in the worker cannot otherwise be verified by the daemon receiving the surrender. A path only — key material never appears in this file. Unset keeps the in-memory registry, which is correct whenever daemon and dispatcher share a process.",
+          "description": "Path to shared key material for STATELESS pod tokens. Set it when the mode-3 dispatcher runs in a different process from the daemon (the split `goobers up` / `goobers-cloud worker --dispatch-namespace` deployment): the in-memory token registry is daemon-local, so a token minted in the worker cannot otherwise be verified by the daemon receiving the surrender. A path only — key material never appears in this file. Unset keeps the in-memory registry, which is correct whenever daemon and dispatcher share a process.",
           "examples": ["/mnt/secrets/pod-token.key"]
         },
         "tls": {

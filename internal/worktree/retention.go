@@ -138,17 +138,8 @@ type retentionRunBranch struct {
 // normalized before evaluation so map iteration and caller order cannot affect
 // the outcome.
 func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptions) ([]RetentionResult, []RetentionWarning, error) {
-	if opts.MaxRetainedBytes < 0 {
-		return nil, nil, fmt.Errorf("worktree: retained byte cap must not be negative")
-	}
-	if opts.MaxAge < 0 {
-		return nil, nil, fmt.Errorf("worktree: retention window must not be negative")
-	}
-	if opts.TerminalBranchMaxAge < 0 {
-		return nil, nil, fmt.Errorf("worktree: terminal branch age must not be negative")
-	}
-	if opts.JournalGraceAge < 0 {
-		return nil, nil, fmt.Errorf("worktree: journal grace age must not be negative")
+	if err := validateRetentionOptions(opts); err != nil {
+		return nil, nil, err
 	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
@@ -181,6 +172,33 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 		return retained[i].marker.RunID < retained[j].marker.RunID
 	})
 
+	results := pruneRetainedCandidates(ctx, retained, totalBytes, opts)
+
+	branchResults, branchWarnings, err := pruneMergedBranches(ctx, ordered, opts)
+	results = append(results, branchResults...)
+	warnings = append(warnings, branchWarnings...)
+	if err != nil {
+		return results, warnings, err
+	}
+	return results, warnings, nil
+}
+
+func validateRetentionOptions(opts RetentionOptions) error {
+	switch {
+	case opts.MaxRetainedBytes < 0:
+		return fmt.Errorf("worktree: retained byte cap must not be negative")
+	case opts.MaxAge < 0:
+		return fmt.Errorf("worktree: retention window must not be negative")
+	case opts.TerminalBranchMaxAge < 0:
+		return fmt.Errorf("worktree: terminal branch age must not be negative")
+	case opts.JournalGraceAge < 0:
+		return fmt.Errorf("worktree: journal grace age must not be negative")
+	default:
+		return nil
+	}
+}
+
+func pruneRetainedCandidates(ctx context.Context, retained []retainedWorktree, totalBytes int64, opts RetentionOptions) []RetentionResult {
 	var results []RetentionResult
 	attempted := make(map[string]bool, len(retained))
 	for i := range retained {
@@ -195,7 +213,6 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 			totalBytes -= candidate.bytes
 		}
 	}
-
 	if opts.MaxRetainedBytes > 0 {
 		for i := range retained {
 			if totalBytes <= opts.MaxRetainedBytes {
@@ -213,14 +230,11 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 			}
 		}
 	}
-
 	if opts.JournalGraceAge > 0 {
 		for i := range retained {
 			candidate := &retained[i]
-			if !candidate.journalMissing || attempted[candidate.markerPath] {
-				continue
-			}
-			if opts.Now.Sub(candidate.journalMissingSince) < opts.JournalGraceAge {
+			if !candidate.journalMissing || attempted[candidate.markerPath] ||
+				opts.Now.Sub(candidate.journalMissingSince) < opts.JournalGraceAge {
 				continue
 			}
 			attempted[candidate.markerPath] = true
@@ -231,14 +245,7 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 			}
 		}
 	}
-
-	branchResults, branchWarnings, err := pruneMergedBranches(ctx, ordered, opts)
-	results = append(results, branchResults...)
-	warnings = append(warnings, branchWarnings...)
-	if err != nil {
-		return results, warnings, err
-	}
-	return results, warnings, nil
+	return results
 }
 
 func uniqueManagers(managers []*Manager) []*Manager {

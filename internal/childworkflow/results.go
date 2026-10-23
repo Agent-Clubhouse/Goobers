@@ -7,27 +7,18 @@ import (
 	"errors"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// TerminalResultInput comes from the trusted execution observer after joining
-// all writers. Summary is already redacted; references are bounded artifact
-// identifiers, never instructions or authority. FinishedAt is durable journal
-// or queue time; cancellation of an already escalated execution uses the later
-// of its terminal event and the recorded family cancellation.
-type TerminalResultInput struct {
-	State      triggerqueue.ChildState `json:"state"`
-	FinishedAt time.Time               `json:"finishedAt"`
-	Summary    string                  `json:"summary,omitempty"`
-	References []string                `json:"references,omitempty"`
-}
+// TerminalResultInput retains the runner API and JSON shape while sharing the
+// bounded wire contract with engine child continuations.
+type TerminalResultInput = childresult.TerminalResultInput
 
 // TerminalResult identifies retained result custody, not an applied parent
 // disposition. The occurrence remains occupied until application is verified.
@@ -50,15 +41,7 @@ type terminalResultReceipt struct {
 }
 
 func validTerminalInput(input TerminalResultInput, child triggerqueue.ChildRecord) bool {
-	if !input.State.Terminal() || input.FinishedAt.IsZero() || input.FinishedAt.Before(child.AcceptedAt) || len(input.Summary) > 8192 || !utf8.ValidString(input.Summary) || strings.ContainsRune(input.Summary, 0) || len(input.References) > 16 {
-		return false
-	}
-	for _, ref := range input.References {
-		if !submissionText(ref, 1024) {
-			return false
-		}
-	}
-	return true
+	return input.Validate(child.AcceptedAt) == nil
 }
 
 // CaptureResult retains first terminal observation and optional isolated

@@ -27,6 +27,8 @@ package engine
 import (
 	"context"
 	"io"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +38,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	temporalworker "go.temporal.io/sdk/worker"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
@@ -163,7 +166,7 @@ func TestHITLAcceptedUpdateHistoryReplays(t *testing.T) {
 	handle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID:   run.GetID(),
 		RunID:        run.GetRunID(),
-		UpdateID:     intent.RequestID,
+		UpdateID:     HITLIntentUpdateID(intent),
 		UpdateName:   HITLUpdateName,
 		Args:         []interface{}{intent},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
@@ -237,7 +240,7 @@ func TestHITLPreProtocolHistoryReplays(t *testing.T) {
 	intent.Complete = true
 	handle, uerr := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID:   run.GetID(),
-		UpdateID:     intent.RequestID,
+		UpdateID:     HITLIntentUpdateID(intent),
 		UpdateName:   HITLUpdateName,
 		Args:         []interface{}{intent},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
@@ -324,4 +327,95 @@ func hitlHistoryHasUpdate(history *historypb.History) bool {
 		}
 	}
 	return false
+}
+
+// holdingGoober blocks the first implement invocation until released, so a
+// real server delivery lands while the run is still executing.
+type holdingGoober struct {
+	*scriptedExec
+	started, release chan struct{}
+	once             sync.Once
+}
+
+func (g *holdingGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	if env.Goal == "implement" {
+		g.once.Do(func() {
+			close(g.started)
+			select {
+			case <-g.release:
+			case <-ctx.Done():
+			}
+		})
+	}
+	return g.scriptedExec.Invoke(ctx, env)
+}
+
+// TestHITLReissueWithSameBoundUpdateIDAfterRefusalSucceeds is the router's
+// real retry on a real server: an intent refused mid-execution leaves no
+// trace, so the identical intent under the same bound UpdateID succeeds once
+// the run holds its terminal. Validator rejections are not deduplicated.
+func TestHITLReissueWithSameBoundUpdateIDAfterRefusalSucceeds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	c := hitlReplayServer(t, ctx)
+	const taskQueue = "hitl-reissue"
+	exec := hitlFailingExec()
+	goober := &holdingGoober{scriptedExec: exec, started: make(chan struct{}), release: make(chan struct{})}
+	w := temporalworker.New(c, taskQueue, temporalworker.Options{})
+	RegisterWith(w, &Activities{Goober: goober, Det: exec, Auto: gate.NewAutomatedEvaluator(), Workspaces: testWorkspaces(t)})
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	in := hitlInput(t)
+	in.RunID = "hitl-reissue"
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: in.RunID, TaskQueue: taskQueue}, Run, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-goober.started:
+	case <-ctx.Done():
+		t.Fatal("implement never started")
+	}
+	intent := baseIntent(HITLResolveEscalation, "reissue-req")
+	intent.RunID, intent.Gate, intent.Resolution, intent.Decision = in.RunID, "review", HITLResolutionApprove, "pass"
+	options := client.UpdateWorkflowOptions{WorkflowID: run.GetID(), RunID: run.GetRunID(), UpdateID: HITLIntentUpdateID(intent),
+		UpdateName: HITLUpdateName, Args: []interface{}{intent}, WaitForStage: client.WorkflowUpdateStageCompleted}
+	refused := func() error {
+		handle, err := c.UpdateWorkflow(ctx, options)
+		if err != nil {
+			return err
+		}
+		var ack HITLAck
+		return handle.Get(ctx, &ack)
+	}()
+	if refused == nil || !strings.Contains(refused.Error(), HITLErrRunExecuting) {
+		t.Fatalf("mid-execution delivery = %v, want the %s refusal", refused, HITLErrRunExecuting)
+	}
+	close(goober.release)
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		var state HITLState
+		if resp, qerr := c.QueryWorkflow(ctx, run.GetID(), run.GetRunID(), HITLStateQuery); qerr == nil && resp.Get(&state) == nil && state.Phase == hitlPhaseAwaiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("run never reached the operator hold")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	handle, err := c.UpdateWorkflow(ctx, options)
+	if err != nil {
+		t.Fatalf("reissue with the same bound UpdateID: %v", err)
+	}
+	var ack HITLAck
+	if err := handle.Get(ctx, &ack); err != nil || !ack.Resumed || ack.IntentDigest != HITLIntentDigest(intent) {
+		t.Fatalf("reissued ack = %+v %v, want an accepted resume bound to the intent", ack, err)
+	}
+	var result RunResult
+	if err := run.Get(ctx, &result); err != nil || result.Status != StatusCompleted {
+		t.Fatalf("resolved run = %+v %v", result, err)
+	}
+	hitlReplay(t, hitlFetchHistory(t, ctx, c, run.GetID(), run.GetRunID()))
 }

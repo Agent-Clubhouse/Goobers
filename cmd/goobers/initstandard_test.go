@@ -156,6 +156,52 @@ func TestInitStandardGitHubMergeReviewValidatesStrict(t *testing.T) {
 	}
 }
 
+func TestInitStandardWorkNominationCredentialsGoldens(t *testing.T) {
+	for _, auth := range []string{"env", "github-cli"} {
+		t.Run(auth, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "standard")
+			args := []string{"init", "--template=standard", "--repo=example-org/example-repo", "--workflows=work-nomination"}
+			if auth == "github-cli" {
+				args = append(args, "--github-cli-user=octocat")
+			}
+			args = append(args, root)
+			if code, stdout, stderr := runArgs(t, args...); code != 0 {
+				t.Fatalf("init code=%d stdout=%s stderr=%s", code, stdout, stderr)
+			}
+			data, err := os.ReadFile(instance.NewLayout(root).ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGoldenFile(t, filepath.Join("testdata", "scaffold", "work-nomination-"+auth+".golden.yaml"), string(data))
+			cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			set, report, err := instance.LoadConfigDir(filepath.Join(root, "config"))
+			if err != nil || report.HasErrors() {
+				t.Fatalf("load: %v report=%+v", err, report)
+			}
+			declared := 0
+			for _, task := range set.Workflows[0].Spec.Tasks {
+				for _, cap := range task.Capabilities {
+					if cap != "github:code-scanning:read" && cap != "github:dependabot-alerts:read" {
+						continue
+					}
+					declared++
+					if !slices.ContainsFunc(cfg.Credentials, func(c instance.CredentialGrant) bool {
+						return c.Capability == cap && c.Token.Configured()
+					}) {
+						t.Errorf("%s has no credential for %s", task.Name, cap)
+					}
+				}
+			}
+			if declared != 2 {
+				t.Fatalf("found %d alert capabilities, want 2", declared)
+			}
+		})
+	}
+}
+
 // TestInitStandardOpenPRWorkItemsWriteIsADOOnly pins the scaffold contract
 // for open-pr's native work-item link: on Azure DevOps every scaffolded stage
 // that runs the built-in open-pr declares ado:work-items:write (without it

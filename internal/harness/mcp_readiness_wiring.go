@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -14,7 +15,7 @@ import (
 
 func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex int, config, model string, options map[string]string, confinement *copilotConfinement) (ProcessRunner, func()) {
 	base := c.runner()
-	if !req.GoobersIORegistered {
+	if !req.GoobersIORegistered && len(req.MCPServers) == 0 {
 		return base, func() {}
 	}
 	// Custom launchers and process adapters do not promise the headless RPC
@@ -22,7 +23,7 @@ func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex in
 	// explicit; a disposable external probe must not masquerade as evidence.
 	direct := len(c.Command) == 1 && filepath.Base(c.Command[0]) == "copilot"
 	if !direct || c.Runner != nil && c.mcpSessionFactory == nil || c.RequireLauncherContract || c.ExtraArgs != nil || runtime.GOOS == "windows" && c.mcpSessionFactory == nil {
-		return &mcpUnobservableRunner{base: base, request: req}, func() {}
+		return &mcpUnobservableRunner{base: base, request: req, failClosed: true}, func() {}
 	}
 	controlled := &copilotControlledRunner{base: base, request: req, promptIndex: promptIndex, mcpConfig: config, model: model, options: options, factory: c.mcpSessionFactory,
 		settleTimeout: c.RequiredMCPSettleTimeout,
@@ -40,6 +41,10 @@ type mcpUnobservableRunner struct {
 	// "adapter-limitation".
 	source   string
 	reported bool
+	// failClosed is set for Copilot launch paths that cannot inspect the
+	// actual session before dispatch. Claude and Codex use their own startup
+	// evidence and retain this wrapper only for goobers-io annotations.
+	failClosed bool
 }
 
 func (r *mcpUnobservableRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
@@ -49,8 +54,21 @@ func (r *mcpUnobservableRunner) Run(ctx context.Context, req ProcessRequest) (Pr
 		if source == "" {
 			source = "adapter-limitation"
 		}
-		if err := emitMCPReadiness(r.request, MCPReadiness{Server: goobersIOServerName, Category: "check_unobservable", Source: source, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved}); err != nil {
-			return ProcessResult{ExitCode: -1}, err
+		required := requiredDeclaredMCPServerNames(r.request)
+		if r.request.GoobersIORegistered {
+			required = append(required, goobersIOServerName)
+		}
+		for _, server := range required {
+			report := MCPReadiness{Server: server, Category: "check_unobservable", Source: source, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved}
+			if err := emitMCPReadiness(r.request, report); err != nil {
+				return ProcessResult{ExitCode: -1}, err
+			}
+		}
+		if r.failClosed && len(requiredDeclaredMCPServerNames(r.request)) > 0 {
+			return ProcessResult{ExitCode: -1}, fmt.Errorf(
+				"%w: required MCP server startup cannot be observed before model dispatch with this Copilot launcher: %v",
+				errRequiredMCPUnavailable, required,
+			)
 		}
 	}
 	return r.base.Run(ctx, req)

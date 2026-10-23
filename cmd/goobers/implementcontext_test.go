@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,11 +11,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -219,14 +224,74 @@ func newConflictPlane(t *testing.T, status int, code string) {
 	setPlaneEnv(t, server.URL, "token", "0123456789abcdef", "acme-web")
 }
 
+type implementationContextTestTransport func(*http.Request) (*http.Response, error)
+
+func (f implementationContextTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+// stubConflictPlaneTransport keeps both journal and provider HTTP inside the
+// synctest bubble. The production overload retry remains enabled, but its
+// backoff advances virtual time instead of delaying every stress repetition.
+func stubConflictPlaneTransport(t *testing.T, status int, code string, github *fakeGitHubServer) map[string]int {
+	t.Helper()
+	t.Setenv("GOOBERS_DAEMON_CA", "")
+	setPlaneEnv(t, "http://conflict-plane.test", "token", "0123456789abcdef", "acme-web")
+	requests := map[string]int{}
+	previous := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	http.DefaultTransport = implementationContextTestTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Body != nil {
+			defer func() { _ = r.Body.Close() }()
+		}
+		w := httptest.NewRecorder()
+		switch {
+		case r.URL.Host == "conflict-plane.test":
+			requests[r.URL.Path]++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			if err := json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": "refused"}}); err != nil {
+				return nil, err
+			}
+		case github != nil && r.URL.Scheme+"://"+r.URL.Host == github.server.URL:
+			github.server.Config.Handler.ServeHTTP(w, r)
+		default:
+			return nil, fmt.Errorf("unexpected implementation-context test request: %s", r.URL)
+		}
+		response := w.Result()
+		response.Request = r
+		return response, nil
+	})
+	return requests
+}
+
 func TestRecentImplementationConflictsDegradesWhenPlaneRefusesForCapacity(t *testing.T) {
 	root := initDemo(t)
-	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusBadGateway} {
-		newConflictPlane(t, status, "request_budget_exceeded")
-		touches, reason, err := recentImplementationConflicts(root, "acme-web", time.Now().Add(-time.Hour))
-		if err != nil || len(touches) != 0 || !strings.Contains(reason, "request_budget_exceeded") {
-			t.Fatalf("status %d: touches=%v reason=%q err=%v, want empty + reason + nil error", status, touches, reason, err)
-		}
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				stubConflictPlaneTransport(t, status, "request_budget_exceeded", nil)
+				touches, reason, err := recentImplementationConflicts(root, "acme-web", time.Now().Add(-time.Hour))
+				if err != nil || len(touches) != 0 || !strings.Contains(reason, "request_budget_exceeded") {
+					t.Fatalf("touches=%v reason=%q err=%v, want empty + reason + nil error", touches, reason, err)
+				}
+			})
+		})
+	}
+}
+
+func TestRecentImplementationConflictsSurfacesPlaneRetryExhaustion(t *testing.T) {
+	root := initDemo(t)
+	for _, status := range []int{http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				stubConflictPlaneTransport(t, status, "request_budget_exceeded", nil)
+				_, _, err := recentImplementationConflicts(root, "acme-web", time.Now().Add(-time.Hour))
+				if !errors.Is(err, planehttp.ErrBudgetExhausted) {
+					t.Fatalf("status %d: err=%v, want retry exhaustion", status, err)
+				}
+			})
+		})
 	}
 }
 
@@ -247,27 +312,34 @@ func TestGatherImplementContextEmitsWarningWhenConflictHistoryRefused(t *testing
 		false, nil, []fakePRFile{{path: "internal/runner/run.go"}})
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-implementation-context")
 	t.Setenv("GOOBERS_GAGGLE", "acme-web")
-	newConflictPlane(t, http.StatusServiceUnavailable, "request_budget_exceeded")
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
-	code, _, stderr := runArgs(t, "gather-implement-context", root)
-	if code != 0 {
-		t.Fatalf("code = %d, stderr = %q, want success", code, stderr)
-	}
-	if !strings.Contains(stderr, "conflict history unavailable") {
-		t.Fatalf("stderr = %q, want a warning", stderr)
-	}
-	data, err := os.ReadFile(filepath.Join(workDir, implementationContextResultFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got implementationContext
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if !got.ConflictHistoryUnavailable || !strings.Contains(got.ConflictHistoryUnavailableReason, "request_budget_exceeded") ||
-		got.HotFileMap.RecentConflictRuns != 0 || got.HotFileMap.OpenPullRequests != 1 {
-		t.Fatalf("context = %+v", got)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		requests := stubConflictPlaneTransport(t, http.StatusTooManyRequests, "request_budget_exceeded", server)
+		code, _, stderr := runArgs(t, "gather-implement-context", root)
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q, want success", code, stderr)
+		}
+		if !strings.Contains(stderr, "conflict history unavailable") {
+			t.Fatalf("stderr = %q, want a warning", stderr)
+		}
+		data, err := os.ReadFile(filepath.Join(workDir, implementationContextResultFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got implementationContext
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.ConflictHistoryUnavailable || !strings.Contains(got.ConflictHistoryUnavailableReason, "request_budget_exceeded") ||
+			got.HotFileMap.RecentConflictRuns != 0 || got.HotFileMap.OpenPullRequests != 1 {
+			t.Fatalf("context = %+v", got)
+		}
+		for _, path := range []string{apicontract.JournalConflictTouchesPath, apicontract.JournalUnpushedWorkPath} {
+			if requests[path] != 1 {
+				t.Fatalf("capacity refusal made %d requests to %s, want one", requests[path], path)
+			}
+		}
+	})
 }

@@ -155,6 +155,34 @@ func readCopilotSessionTranscript(path string, limit int64) (transcriptCapture, 
 	return capture, ok
 }
 
+// Parse each bounded session independently: a tolerated incomplete EOF record
+// in one file must never become a malformed middle record in the next file.
+func readCopilotSessionTranscripts(paths []string, limit int64) (transcriptCapture, bool) {
+	var joined bytes.Buffer
+	var capture transcriptCapture
+	var dropped int64
+	converted := false
+	for _, path := range paths {
+		native, ok := readCopilotSessionTranscript(path, limit)
+		if !ok {
+			continue
+		}
+		_, _ = joined.Write(native.data)
+		dropped += native.droppedBytes
+		capture = native // Preserve final-session metadata, never sum snapshots here.
+		converted = true
+	}
+	if !converted {
+		return transcriptCapture{}, false
+	}
+	data, dropped, err := boundCanonicalTranscript(joined.Bytes(), limit, dropped)
+	if err != nil {
+		return transcriptCapture{}, false
+	}
+	capture.data, capture.droppedBytes, capture.truncated = data, dropped, dropped > 0
+	return capture, true
+}
+
 func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, bool) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), int(maxCopilotSessionEventBytes))

@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -12,17 +11,8 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
-
-type transcriptToolCall struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-}
-
-type transcriptEvent struct {
-	Role     string              `json:"role"`
-	ToolCall *transcriptToolCall `json:"tool_call,omitempty"`
-}
 
 type remediationEvidenceInspectionError struct {
 	info *apiv1.ErrorInfo
@@ -39,72 +29,12 @@ func (e *remediationEvidenceInspectionError) Error() string {
 	return e.info.Message
 }
 
-func normalizeInputToolName(name string) string {
-	return strings.TrimPrefix(name, "functions.")
-}
-
-func parseTranscriptInputInspection(transcript []byte, required map[string]struct{}) (bool, map[string]bool) {
-	inspected := make(map[string]bool, len(required))
-	var sawListInputs bool
-	for _, line := range bytes.Split(transcript, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		var event transcriptEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			continue
-		}
-		if event.Role != "assistant" || event.ToolCall == nil {
-			continue
-		}
-		toolName := normalizeInputToolName(event.ToolCall.Name)
-		switch toolName {
-		case "goobers-io-list_inputs":
-			sawListInputs = true
-		case "goobers-io-read_input", "goobers-io-grep_input":
-			var args struct {
-				Name string `json:"name"`
-			}
-			if err := json.Unmarshal(event.ToolCall.Arguments, &args); err != nil {
-				continue
-			}
-			if _, ok := required[args.Name]; ok {
-				inspected[args.Name] = true
-			}
-		}
-	}
-	return sawListInputs, inspected
-}
-
-func pointerValidationErrorMessage(missing []string, sawListInputs bool) string {
-	if len(missing) == 0 && sawListInputs {
-		return ""
-	}
-	listStatus := "not called"
-	if sawListInputs {
-		listStatus = "called"
-	}
-	return fmt.Sprintf(
-		"required context pointers were not inspected before DEPENDENCY_NOT_MET (list_inputs: %s; unread pointers: %s)",
-		listStatus,
-		strings.Join(missing, ", "),
-	)
-}
-
-func dependencyValidationMessage(validation string, result apiv1.ResultEnvelope) string {
-	if result.Error == nil || strings.TrimSpace(result.Error.Message) == "" {
-		return validation
-	}
-	return validation + "; original dependency error: " + result.Error.Message
-}
-
 func dependencyContextInspectionError(cause, validation string, result apiv1.ResultEnvelope) string {
 	message := cause
 	if validation != "" {
 		message += "; " + validation
 	}
-	return dependencyValidationMessage(message, result)
+	return runsemantics.DependencyValidationMessage(message, result)
 }
 
 // validateDependencyNotMet checks whether a DEPENDENCY_NOT_MET failure in a
@@ -115,23 +45,23 @@ func dependencyContextInspectionError(cause, validation string, result apiv1.Res
 func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
 	if result.Transcript == nil {
 		return &apiv1.ErrorInfo{
-			Code: ContextNotInspectedCode,
+			Code: runsemantics.ContextNotInspectedCode,
 			Message: dependencyContextInspectionError(
 				"cannot inspect required context: result transcript pointer is missing",
-				pointerValidationErrorMessage(requiredContextPointerNames(requiredPointers), false),
+				runsemantics.PointerValidationErrorMessage(runsemantics.RequiredContextPointerNames(requiredPointers), false),
 				result,
 			),
 		}
 	}
-	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredNames := runsemantics.RequiredContextPointerNames(requiredPointers)
 
 	rd, err := journal.OpenRead(jr.Dir())
 	if err != nil {
 		return &apiv1.ErrorInfo{
-			Code: ContextNotInspectedCode,
+			Code: runsemantics.ContextNotInspectedCode,
 			Message: dependencyContextInspectionError(
 				fmt.Sprintf("cannot inspect required context: open run journal %q: %v", jr.Dir(), err),
-				pointerValidationErrorMessage(requiredNames, false),
+				runsemantics.PointerValidationErrorMessage(requiredNames, false),
 				result,
 			),
 		}
@@ -145,10 +75,10 @@ func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result 
 	transcript, err := rd.SpanBytes(transcriptRef)
 	if err != nil {
 		return &apiv1.ErrorInfo{
-			Code: ContextNotInspectedCode,
+			Code: runsemantics.ContextNotInspectedCode,
 			Message: dependencyContextInspectionError(
 				fmt.Sprintf("cannot inspect required context: read transcript %q: %v", transcriptRef.Path, err),
-				pointerValidationErrorMessage(requiredNames, false),
+				runsemantics.PointerValidationErrorMessage(requiredNames, false),
 				result,
 			),
 		}
@@ -157,25 +87,15 @@ func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result 
 	// (parity3882.go): this method's job is resolving the transcript bytes,
 	// which is the only part that differs between a run directory and a
 	// worker's span store.
-	return ValidateDependencyNotMetTranscript(transcript, requiredPointers, result)
+	return runsemantics.ValidateDependencyNotMetTranscript(transcript, requiredPointers, result)
 }
 
 func (r *Runner) validateDependencyResult(jr executionJournal, stage string, result apiv1.ResultEnvelope, invocationPointers []apiv1.ContextPointer) apiv1.ResultEnvelope {
-	if !AppliesDependencyValidation(result, invocationPointers) {
+	if !runsemantics.AppliesDependencyValidation(result, invocationPointers) {
 		return result
 	}
-	return RejectDependencyResult(result, r.validateDependencyNotMet(jr, stage, result, invocationPointers))
+	return runsemantics.RejectDependencyResult(result, r.validateDependencyNotMet(jr, stage, result, invocationPointers))
 }
-
-// ReceiptLineRange is one inclusive line span of an evidence artifact an
-// attempt is obliged to have read (or claims to have read). Exported with the
-// obligation it belongs to; receiptLineRange remains the in-package name.
-type ReceiptLineRange struct {
-	Start int `json:"start"`
-	End   int `json:"end"`
-}
-
-type receiptLineRange = ReceiptLineRange
 
 func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string, actionable map[string]actionableEvidence) (bool, map[string]bool, error) {
 	rd, err := journal.OpenRead(jr.Dir())
@@ -196,7 +116,7 @@ func parseReceiptInputInspection(jr executionJournal, stage string, required map
 		return false, nil, fmt.Errorf("stage %q has no invocation boundary", stage)
 	}
 	inspected := make(map[string]bool, len(required))
-	readRanges := make(map[string][]receiptLineRange, len(required))
+	readRanges := make(map[string][]runsemantics.ReceiptLineRange, len(required))
 	readTotals := make(map[string]int, len(required))
 	invalidReadTotals := make(map[string]bool, len(required))
 	var collected, sawListInputs bool
@@ -242,7 +162,7 @@ func parseReceiptInputInspection(jr executionJournal, stage string, required map
 					continue
 				}
 				readTotals[receipt.Input] = receipt.TotalLines
-				readRanges[receipt.Input] = append(readRanges[receipt.Input], receiptLineRange{
+				readRanges[receipt.Input] = append(readRanges[receipt.Input], runsemantics.ReceiptLineRange{
 					Start: receipt.StartLine,
 					End:   receipt.EndLine,
 				})
@@ -259,7 +179,7 @@ func parseReceiptInputInspection(jr executionJournal, stage string, required map
 		if inspected[input] || invalidReadTotals[input] {
 			continue
 		}
-		slices.SortFunc(ranges, func(a, b receiptLineRange) int {
+		slices.SortFunc(ranges, func(a, b runsemantics.ReceiptLineRange) int {
 			return a.Start - b.Start
 		})
 		coveredThrough := 0
@@ -282,7 +202,7 @@ func parseReceiptInputInspection(jr executionJournal, stage string, required map
 	return collected && sawListInputs, inspected, nil
 }
 
-func receiptRangesOverlap(received, required []receiptLineRange) bool {
+func receiptRangesOverlap(received, required []runsemantics.ReceiptLineRange) bool {
 	for _, got := range received {
 		for _, want := range required {
 			if got.Start <= want.End && want.Start <= got.End {
@@ -310,7 +230,7 @@ func receiptMatchesActionableEvidence(pattern string, requirement actionableEvid
 }
 
 func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
-	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredNames := runsemantics.RequiredContextPointerNames(requiredPointers)
 	requiredSet := make(map[string]string, len(requiredPointers))
 	for _, pointer := range requiredPointers {
 		if pointer.Artifact != nil {
@@ -324,7 +244,7 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 	if err != nil {
 		return &apiv1.ErrorInfo{
 			Code: gate.ReasonRemediationEvidenceNotInspected,
-			Message: dependencyValidationMessage(
+			Message: runsemantics.DependencyValidationMessage(
 				fmt.Sprintf("cannot inspect trusted goobers-io receipts: %v", err),
 				result,
 			),
@@ -340,16 +260,16 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 		if classificationErr := validateUnchangedRemediationClassification(result); classificationErr != "" {
 			return &apiv1.ErrorInfo{
 				Code:    gate.ReasonRemediationEvidenceNotInspected,
-				Message: dependencyValidationMessage(classificationErr, result),
+				Message: runsemantics.DependencyValidationMessage(classificationErr, result),
 			}
 		}
 		return nil
 	}
 	return &apiv1.ErrorInfo{
 		Code: gate.ReasonRemediationEvidenceNotInspected,
-		Message: dependencyValidationMessage(
+		Message: runsemantics.DependencyValidationMessage(
 			strings.Replace(
-				pointerValidationErrorMessage(missing, sawListInputs),
+				runsemantics.PointerValidationErrorMessage(missing, sawListInputs),
 				"before DEPENDENCY_NOT_MET",
 				"before accepting unchanged remediation",
 				1,
@@ -370,7 +290,7 @@ func remediationEvidenceRequirementsFromJournal(jr executionJournal, stage strin
 	}
 	requirements := make(map[string]actionableEvidence)
 	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != RemediationEvidenceRequiredKind ||
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != runsemantics.RemediationEvidenceRequiredKind ||
 			event.Stage != stage {
 			continue
 		}
@@ -406,25 +326,4 @@ func validateUnchangedRemediationClassification(result apiv1.ResultEnvelope) str
 		return "unchanged remediation must explain why the inspected failure is non-actionable in summary"
 	}
 	return ""
-}
-
-func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
-	if len(pointers) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(pointers))
-	names := make([]string, 0, len(pointers))
-	for _, pointer := range pointers {
-		name := strings.TrimSpace(pointer.Name)
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
 }

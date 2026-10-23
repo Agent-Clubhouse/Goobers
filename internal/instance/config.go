@@ -439,8 +439,8 @@ type RunnerConfig struct {
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
 	// keep the built-in default (["copilot"] / ["claude"]). Whatever the
-	// Copilot prefix, the adapter appends --no-remote-export to every Copilot
-	// session it launches, so an override cannot re-enable session export.
+	// Copilot prefix, the adapter appends a version-appropriate session export
+	// opt-out, so an override cannot re-enable session export.
 	//
 	// The launcher was always data on the adapter (harness.CopilotAdapter.Command)
 	// but hardcoded at the composition root, so pointing a harness at a
@@ -482,14 +482,16 @@ type APIConfig struct {
 	// PodTokenKeyFile is a path to shared key material for STATELESS pod
 	// tokens (Goobers#3701). Set it when the mode-3 dispatcher runs in a
 	// different process from the daemon — the split `goobers up` /
-	// `goobers worker --dispatch-namespace` deployment — because the
+	// `goobers-cloud worker --dispatch-namespace` deployment — because the
 	// in-memory token registry is daemon-local and a token minted in the
 	// worker cannot otherwise be verified by the daemon receiving the
 	// surrender.
 	//
 	// Path only; key material never appears in instance.yaml (CFG-009).
 	// Unset keeps the in-memory registry, which is correct whenever daemon
-	// and dispatcher share a process.
+	// and dispatcher share a process. The key is read at process startup;
+	// rotation requires a coordinated restart and invalidates outstanding pod
+	// tokens and credential-refresh grants until every replica uses the new key.
 	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty" credentialPath:"trimmed"`
 }
 
@@ -1513,7 +1515,7 @@ type OTLPConfig struct {
 // collector through a Service name other than the certificate's SAN).
 //
 // Validated SHAPE ONLY at load — no filesystem read happens here. The same
-// instance.yaml this loads is also loaded by `goobers worker --instance`,
+// instance.yaml this loads is also loaded by `goobers-cloud worker --instance`,
 // which builds no telemetry client at all, so a load-time file read here
 // would fail the worker over a file it has no reason to mount. The paths
 // are read only by telemetry.New, on the daemon, where a read/parse failure
@@ -1548,14 +1550,13 @@ type EngineConfig struct {
 	// Nil keeps the plaintext dial a local dev Temporal expects; every dial
 	// site builds its options through temporaldial.Options with this value.
 	TLS *temporaldial.TLS `json:"tls,omitempty" yaml:"tls,omitempty"`
-	// WorkerVersioning opts `goobers worker` into Temporal worker-deployment
+	// WorkerVersioning opts `goobers-cloud worker` into Temporal worker-deployment
 	// versioning (#5950): pollers register as deployment "goobers", version
-	// goobers.<build>, with Pinned as the default workflow behavior. It is
-	// OFF by default because nothing in the product sets the deployment's
-	// current version (#5407): a versioned worker whose build is not current
-	// receives no tasks, so every upgrade that changes the build ID would
-	// stall the engine until an operator ran set-current-version. Off, the
-	// worker polls unversioned, which is what a reference Temporal expects.
+	// goobers.<build>, with Pinned as the default workflow behavior. It remains
+	// OFF by default for local and manually managed workers. The reference
+	// rainbow deployment enables it; Temporal Worker Controller injects the
+	// authoritative build ID and promotes a version only after its pollers are
+	// healthy.
 	WorkerVersioning bool `json:"workerVersioning,omitempty" yaml:"workerVersioning,omitempty"`
 }
 

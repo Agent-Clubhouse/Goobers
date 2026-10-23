@@ -150,6 +150,11 @@ func Open(path string) (*Store, error) {
 		_ = writer.Close()
 		return nil, err
 	}
+	// This optional performance index does not change the schema version:
+	// older binaries reject newer versions, but can safely ignore extra indexes.
+	// Best-effort creation keeps queries correct if DDL fails, and recreates the
+	// index after an older binary rebuilds the projection during rollback.
+	_, _ = writer.ExecContext(context.Background(), continuationIndexDDL)
 	// The reader pool opens only after migrations: a read-only handle cannot
 	// create the database, switch it to WAL, or run a migration.
 	store.reader = resolveReadHandle(writer, openReaderPool(path))

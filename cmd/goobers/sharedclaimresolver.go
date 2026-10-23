@@ -107,7 +107,18 @@ func (r pinnedSharedClaimResolver) binding(ctx context.Context, key claimsclient
 	if err != nil {
 		return claimsclient.SharedClaimBinding{}, err
 	}
-	owner, err := sharedClaimOwnerFromIdentity(instanceID, identity, string(encoded))
+	ownerID := instanceID
+	if identity.InstanceID != "" {
+		matches, matchErr := instance.RootIdentityMatches(r.layout.Root, identity.InstanceID)
+		if matchErr != nil {
+			return claimsclient.SharedClaimBinding{}, matchErr
+		}
+		if !matches {
+			return claimsclient.SharedClaimBinding{}, fmt.Errorf("shared claim run belongs to a different instance")
+		}
+		ownerID = identity.InstanceID
+	}
+	owner, err := sharedClaimOwnerFromIdentity(ownerID, identity, string(encoded))
 	if err != nil {
 		return claimsclient.SharedClaimBinding{}, err
 	}

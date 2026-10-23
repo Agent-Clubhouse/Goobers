@@ -145,6 +145,17 @@ Apply the complete checklist in `references/dsl-reference.md`. In particular:
 - Give each workflow an explicit `dslVersion` from the selected binary's
   `versions --json` result. Confirm its required features with `features --json
   --dsl-version`; never target current `main`.
+- For new workflows, prefer DSL 3.0 when the selected release lists it as
+  supported. Preserve an existing workflow's pin unless migration is requested.
+  Before the 3.0 lock, use a preview 3.x pin only with the user's preview intent
+  and a per-Workflow acknowledgement; otherwise use the release's supported
+  version. Choose 3.1 for features that require it, not merely because its
+  number is higher. Follow the version and migration rules in the bundled
+  reference; never turn a 2.0 example into 3.x by changing only its pin.
+- Keep local workflows simple: omit `runsOn` unless the task needs placement
+  requirements. Do not invent scheduling tags, resource minimums, a `runners:`
+  block, or runner flags merely to author a 3.x workflow. Preserve any existing
+  isolation requirements and validate against the user's actual inventory.
 - Inspect `goobers examples list` and the closest `examples show` result from
   the selected binary. Use it as a shape baseline, not as a replacement for
   existing configuration.

@@ -5,17 +5,46 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
+type localPlacement struct {
+	containedParentStages  map[string]bool
+	parentHostCapabilities []string
+	refusal                string
+}
+
+func localPlacements(
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	machines map[localscheduler.WorkflowIdentity]*workflow.Machine,
+) map[localscheduler.WorkflowIdentity]localPlacement {
+	placements := make(map[localscheduler.WorkflowIdentity]localPlacement, len(machines))
+	for identity, machine := range machines {
+		if machine == nil || !hasChildParent(machine.Def.Spec) {
+			continue
+		}
+		placement, err := containedParentSelection(cfg, set, machine)
+		if err != nil {
+			placement.refusal = err.Error()
+		}
+		placements[identity] = placement
+	}
+	return placements
+}
+
 // Parent coordination runs the workflow driver locally while the existing
 // contained factory owns each opted-in agent stage. Only stages whose exact
 // placement was validated here are excluded from the daemon-host solve.
-func containedParentSelection(cfg *instance.Config, set *instance.ConfigSet, machine *workflow.Machine) (engineSelection, error) {
+func containedParentSelection(cfg *instance.Config, set *instance.ConfigSet, machine *workflow.Machine) (localPlacement, error) {
 	pins, err := containedParentPlacements(cfg, set, machine)
 	if err != nil {
-		return engineSelection{}, err
+		return localPlacement{}, err
+	}
+	if trustedLocalChildren(cfg) {
+		return localPlacement{}, nil
 	}
 	stages := make(map[string]bool, len(pins))
 	for _, pin := range pins {
@@ -28,7 +57,7 @@ func containedParentSelection(cfg *instance.Config, set *instance.ConfigSet, mac
 	// that only coordinates remote work. Ordinary stages retain that floor.
 	hasLocalStage := len(local.Spec.Tasks) != 0
 	for _, gate := range local.Spec.Gates {
-		hasLocalStage = hasLocalStage || agenticGate(gate)
+		hasLocalStage = hasLocalStage || gate.Evaluator == apiv1.EvaluatorAgentic
 	}
 	if hasLocalStage {
 		for _, gaggle := range set.Gaggles {
@@ -38,28 +67,26 @@ func containedParentSelection(cfg *instance.Config, set *instance.ConfigSet, mac
 			}
 		}
 	}
-	return engineSelection{
-		ReasonClass:            "contained_parent_coordinator",
-		FallbackReason:         "the daemon coordinates child-enabled stages through their pinned contained workers",
-		ContainedParentStages:  stages,
-		ParentHostCapabilities: hostCapabilities,
+	return localPlacement{
+		containedParentStages:  stages,
+		parentHostCapabilities: hostCapabilities,
 	}, nil
 }
 
-func (selection engineSelection) hostStageRequirements(requirements []runnersolve.StageRequirement) []runnersolve.StageRequirement {
-	if len(selection.ContainedParentStages) == 0 {
+func (selection localPlacement) hostStageRequirements(requirements []runnersolve.StageRequirement) []runnersolve.StageRequirement {
+	if len(selection.containedParentStages) == 0 {
 		return requirements
 	}
 	return slices.DeleteFunc(slices.Clone(requirements), func(stage runnersolve.StageRequirement) bool {
-		return selection.ContainedParentStages[stage.Stage]
+		return selection.containedParentStages[stage.Stage]
 	})
 }
 
 // The ordinary tracked starter keeps its complete capability floor; a contained
 // coordinator needs only the capabilities of stages that still execute locally.
-func (selection engineSelection) parentCoordinatorHostCapabilities(required []string) []string {
-	if len(selection.ContainedParentStages) == 0 {
+func (selection localPlacement) parentCoordinatorHostCapabilities(required []string) []string {
+	if len(selection.containedParentStages) == 0 {
 		return required
 	}
-	return selection.schedulerSelfCapabilities(required)
+	return append([]string(nil), selection.parentHostCapabilities...)
 }

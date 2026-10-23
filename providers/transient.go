@@ -87,7 +87,7 @@ func IsUnauthorizedError(err error) bool {
 // timeout that wraps context.DeadlineExceeded is transient, because it is the
 // provider request rather than the caller ending.
 func IsTransientError(err error) bool {
-	if err == nil {
+	if err == nil || isRequestAdmissionError(err) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) {

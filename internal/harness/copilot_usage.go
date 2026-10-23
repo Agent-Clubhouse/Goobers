@@ -9,7 +9,43 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/version"
+
+	"github.com/goobers/goobers/internal/diagnostictmp"
+	"github.com/goobers/goobers/internal/telemetry"
 )
+
+const copilotMissingUsageDiagnostic = "copilot_usage_missing: Copilot returned no token or billing usage after SDK, usage-file, and session capture fallbacks; usage is unknown"
+
+// Check after all capture fallbacks, including SDK metrics. Presence matters:
+// observed zero is usage, while a resolved model name alone is not accounting.
+func copilotUsageObserved(out Outcome) bool {
+	for _, key := range []string{
+		telemetry.AttrGenAIUsageInputTokens, telemetry.AttrGenAIUsageOutputTokens,
+		telemetry.AttrUsageCacheReadTokens, telemetry.AttrUsageCacheWriteTokens,
+		telemetry.AttrUsageReasoningTokens, telemetry.AttrUsageNanoAIU,
+		telemetry.AttrUsageCostUSD, telemetry.AttrCopilotPremiumRequests,
+	} {
+		if _, ok := out.Metrics[key]; ok {
+			return true
+		}
+	}
+	for _, usage := range out.ModelUsage {
+		if hasCopilotModelUsage(usage) || usage.CostUSD != nil {
+			return true
+		}
+	}
+	for _, event := range out.AgentEvents {
+		if event.Agent == nil {
+			continue
+		}
+		usage := event.Agent.Usage
+		if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil ||
+			usage.CacheWriteTokens != nil || usage.ReasoningTokens != nil || usage.NanoAIU != nil || usage.CostUSD != nil {
+			return true
+		}
+	}
+	return false
+}
 
 // The per-agent usage-file schema is documented in the upstream 1.0.81-1
 // release: https://github.com/github/copilot-cli/releases/tag/v1.0.81-1.
@@ -44,6 +80,11 @@ type copilotCapturePaths struct {
 }
 
 func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequest, argv, env []string, confinement *copilotConfinement) (copilotCapturePaths, error) {
+	for _, arg := range argv {
+		if arg == "--log-dir" || strings.HasPrefix(arg, "--log-dir=") {
+			return copilotCapturePaths{}, fmt.Errorf("copilot log directory is adapter-managed; remove --log-dir from harness arguments")
+		}
+	}
 	usageReq := req
 	if c.usageOutputDisabled() {
 		usageReq.HarnessVersion = ""
@@ -63,9 +104,7 @@ func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequ
 		cleanupUsage()
 		return copilotCapturePaths{}, err
 	}
-	if mcpLogPath != "" {
-		argv = append(argv, "--log-dir", mcpLogPath)
-	}
+	argv = append(argv, "--log-dir", mcpLogPath)
 	return copilotCapturePaths{
 		argv: argv, env: env, transcriptPath: transcriptPath, usagePath: usagePath, mcpLogPath: mcpLogPath,
 		cleanup: func() { cleanupMCPLog(); cleanupSession(); cleanupUsage() },
@@ -82,6 +121,9 @@ func (c *CopilotAdapter) usageOutputDisabled() bool {
 }
 
 func (c *CopilotAdapter) verifyLauncherUsageOutput(ctx context.Context, version string, versionArgs []string) {
+	if refuseChildConfigProbe(ctx) != nil {
+		return
+	}
 	if !c.DisableUsageOutput || !copilotSupportsUsageOutput(version) {
 		return
 	}
@@ -110,17 +152,73 @@ func (c *CopilotAdapter) verifyLauncherUsageOutput(ctx context.Context, version 
 }
 
 func prepareCopilotMCPLog(req RunRequest, confinement *copilotConfinement) (string, func(), error) {
-	if confinement != nil {
-		return confinement.logDir, func() {}, nil
-	}
-	if !req.GoobersIORegistered && len(req.MCPServers) == 0 {
-		return "", func() {}, nil
-	}
-	dir, err := os.MkdirTemp(filepath.Join(req.Workspace, ".goobers"), "copilot-log-")
+	// The CLI can log its complete environment, including credentials. Keep
+	// every invocation's raw logs outside the checkout, even without MCP,
+	// and discard them after extracting structured diagnostics.
+	dir, cleanup, err := copilotPrivateTempDir(req.Workspace)
 	if err != nil {
 		return "", func() {}, fmt.Errorf("prepare MCP diagnostics: %w", err)
 	}
-	return dir, func() { _ = os.RemoveAll(dir) }, nil
+	if confinement != nil {
+		// Grant only this invocation's private directory, never the temp root.
+		confinement.writableRoots = append(confinement.writableRoots, dir)
+	}
+	return dir, cleanup, nil
+}
+
+// copilotPrivateTempDir leases its directory so sweeping abandoned diagnostics
+// cannot remove another process's active capture in the same system temp root.
+func copilotPrivateTempDir(workspace string) (string, func(), error) {
+	parent, err := copilotDiagnosticTempRoot(workspace)
+	if err != nil {
+		return "", nil, err
+	}
+	scope, err := diagnostictmp.Establish(parent)
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = scope.Reclaim() }
+	return scope.Dir(), cleanup, nil
+}
+
+// copilotDiagnosticTempRoot refuses a TMPDIR (including a symlink alias) that
+// points back into the checkout. A private temp name alone does not keep raw
+// diagnostic data out of a repository when the daemon's temp root is local.
+func copilotDiagnosticTempRoot(workspace string) (string, error) {
+	canonical := func(path string) (string, error) {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return "", err
+		}
+		return filepath.EvalSymlinks(absolute)
+	}
+	root, err := canonical(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolve diagnostic workspace: %w", err)
+	}
+	parent, err := canonical(os.TempDir())
+	if err != nil {
+		return "", fmt.Errorf("resolve diagnostic temp directory: %w", err)
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return "", fmt.Errorf("inspect diagnostic workspace: %w", err)
+	}
+	// SameFile also handles case aliases on case-insensitive filesystems and
+	// workspaces on a different volume from the system temp directory.
+	for ancestor := parent; ; ancestor = filepath.Dir(ancestor) {
+		info, err := os.Stat(ancestor)
+		if err != nil {
+			return "", fmt.Errorf("inspect diagnostic temp ancestor: %w", err)
+		}
+		if os.SameFile(rootInfo, info) {
+			return "", fmt.Errorf("diagnostic temp directory must be outside the workspace")
+		}
+		if filepath.Dir(ancestor) == ancestor {
+			break
+		}
+	}
+	return parent, nil
 }
 
 func prepareCopilotUsageOutput(req RunRequest, argv []string) ([]string, string, func(), error) {

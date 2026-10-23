@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // TUT-A8 (#1220): the configrepo:write capability and the config-repo target of
@@ -35,10 +36,10 @@ func configWriteAppSource() *instance.WorkflowSource {
 
 func stubWorkflowSourceWriteMint(t *testing.T) *int {
 	t.Helper()
-	prev := newWorkflowSourceWriteTokenSource
+	prev := runtimewiring.NewWorkflowSourceWriteTokenSource
 	mints := 0
-	newWorkflowSourceWriteTokenSource = func(source instance.WorkflowSource, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
-		if repo, err := workflowSourceRepositoryName(source.URL); err != nil || repo != "workflows" {
+	runtimewiring.NewWorkflowSourceWriteTokenSource = func(source instance.WorkflowSource, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		if repo, err := runtimewiring.WorkflowSourceRepositoryName(source.URL); err != nil || repo != "workflows" {
 			t.Fatalf("write mint scoped to %q (%v), want the config repository", repo, err)
 		}
 		return func(context.Context) (string, time.Time, error) {
@@ -46,7 +47,7 @@ func stubWorkflowSourceWriteMint(t *testing.T) *int {
 			return "minted-config-write", time.Time{}, nil
 		}, nil
 	}
-	t.Cleanup(func() { newWorkflowSourceWriteTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewWorkflowSourceWriteTokenSource = prev })
 	return &mints
 }
 
@@ -61,7 +62,7 @@ func TestBuildCredentialsConfigRepoWriteIsIsolatedFromProductRepo(t *testing.T) 
 		Repos:          []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "PRODUCT_TOKEN"}}},
 		WorkflowSource: configWriteAppSource(),
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "acme", "web", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "acme", "web", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestBuildCredentialsConfigRepoWriteUnavailableWithoutAppAuth(t *testing.T) 
 	}
 	for name, source := range tests {
 		t.Run(name, func(t *testing.T) {
-			resolver, grants, err := buildCredentials(&instance.Config{Repos: repos, WorkflowSource: source}, nil, "acme", "web", nil, nil)
+			resolver, grants, err := runtimewiring.BuildCredentials(&instance.Config{Repos: repos, WorkflowSource: source}, nil, "acme", "web", nil, nil)
 			if err != nil {
 				t.Fatalf("buildCredentials: %v", err)
 			}
@@ -141,7 +142,7 @@ func TestBuildCredentialsConfigRepoWriteExplicitEntryWins(t *testing.T) {
 			Capability: string(capability.ConfigRepoWrite), Token: instance.TokenRef{Env: "CONFIG_WRITE_PAT"},
 		}},
 	}
-	resolver, grants, err := buildCredentials(cfg, nil, "acme", "web", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "acme", "web", nil, nil)
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -152,20 +153,20 @@ func TestBuildCredentialsConfigRepoWriteExplicitEntryWins(t *testing.T) {
 
 func TestWorkflowSourceWritePermissionsAreMinimal(t *testing.T) {
 	want := map[string]string{"contents": "write", "pull_requests": "write", "metadata": "read"}
-	if len(workflowSourceWritePermissions) != len(want) {
-		t.Fatalf("permissions = %v, want exactly %v", workflowSourceWritePermissions, want)
+	if len(runtimewiring.WorkflowSourceWritePermissions) != len(want) {
+		t.Fatalf("permissions = %v, want exactly %v", runtimewiring.WorkflowSourceWritePermissions, want)
 	}
 	for k, v := range want {
-		if workflowSourceWritePermissions[k] != v {
-			t.Fatalf("permissions[%s] = %q, want %q", k, workflowSourceWritePermissions[k], v)
+		if runtimewiring.WorkflowSourceWritePermissions[k] != v {
+			t.Fatalf("permissions[%s] = %q, want %q", k, runtimewiring.WorkflowSourceWritePermissions[k], v)
 		}
 	}
-	if _, err := newWorkflowSourceWriteTokenSource(*configWriteAppSource(), nil, nil); err != nil {
+	if _, err := runtimewiring.NewWorkflowSourceWriteTokenSource(*configWriteAppSource(), nil, nil); err != nil {
 		t.Fatalf("real constructor: %v", err)
 	}
 	token := configWriteAppSource()
 	token.Auth, token.Token = nil, &instance.TokenRef{Env: "X"}
-	if _, err := newWorkflowSourceWriteTokenSource(*token, nil, nil); err == nil {
+	if _, err := runtimewiring.NewWorkflowSourceWriteTokenSource(*token, nil, nil); err == nil {
 		t.Fatal("non-app workflowSource must not build a write minter")
 	}
 }
@@ -381,6 +382,8 @@ func TestOpenPRConfigTargetOpensInConfigRepoWithConfigCredential(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
 	t.Setenv(executor.InputEnvVar("actionRoots"), "gaggles/alpha,skills")
 	t.Setenv(executor.CredentialEnvVar(string(capability.ConfigRepoWrite)), "config-write")
+
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD")))
 
 	code, stdout, stderr := runArgs(t, "open-pr", "--config-repo", t.TempDir())
 	if code != 0 {

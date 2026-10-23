@@ -204,7 +204,7 @@ func TestImplementationOutcomesSurfacesTypedRefusals(t *testing.T) {
 
 func TestImplementationOutcomesPreservesFallbackError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("not an envelope"))
 	}))
 	t.Cleanup(server.Close)
@@ -214,7 +214,7 @@ func TestImplementationOutcomesPreservesFallbackError(t *testing.T) {
 	}
 	_, err = client.ImplementationOutcomes(t.Context(), time.Time{})
 	var planeErr *Error
-	if !errors.As(err, &planeErr) || planeErr.Code != "unknown" || planeErr.Message != http.StatusText(http.StatusBadGateway) {
+	if !errors.As(err, &planeErr) || planeErr.Code != "unknown" || planeErr.Message != http.StatusText(http.StatusInternalServerError) {
 		t.Fatalf("error = %#v", planeErr)
 	}
 }

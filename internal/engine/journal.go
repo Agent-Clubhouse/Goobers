@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -10,12 +11,14 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/attemptidentity"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runcontrol"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
@@ -42,6 +45,13 @@ const (
 
 // JournalOp is one journal write in a run's projection, in append order.
 type JournalOp struct {
+	// Receipt requests a durable per-op identity for a fan-out lifecycle event.
+	Receipt bool `json:"receipt,omitempty"`
+
+	// ChildStageStart is reserved for a version-gated child lifecycle caller.
+	// Existing stageStarted calls leave it nil and acquire no child authority.
+	ChildStageStart *livejournal.ChildStageStart `json:"childStageStart,omitempty"`
+
 	// Kind is opAppend, opArtifact, or opSpan.
 	Kind string `json:"kind"`
 	// Event is the append payload (Kind == opAppend). Seq and Schema are
@@ -70,12 +80,18 @@ type JournalOp struct {
 // journal.Run.RecordStageArtifact; a bare artifact (gate verdicts) leaves them
 // zero.
 type JournalArtifactOp struct {
-	Stage     string               `json:"stage,omitempty"`
-	Attempt   int                  `json:"attempt,omitempty"`
-	Class     journal.AttemptClass `json:"class,omitempty"`
-	Name      string               `json:"name"`
-	Data      []byte               `json:"data"`
-	Integrity apiv1.Integrity      `json:"integrity"`
+	Branch  int                  `json:"branch,omitempty"`
+	Stage   string               `json:"stage,omitempty"`
+	Attempt int                  `json:"attempt,omitempty"`
+	Class   journal.AttemptClass `json:"class,omitempty"`
+	Name    string               `json:"name"`
+	Data    []byte               `json:"data,omitempty"`
+	Ref     *journal.Ref         `json:"ref,omitempty"`
+	// OutboxRelPath and OutboxOccurrence route a referenced artifact into the
+	// path-preserving outbox namespace rather than stages/.
+	OutboxRelPath    string          `json:"outboxRelPath,omitempty"`
+	OutboxOccurrence uint64          `json:"outboxOccurrence,omitempty"`
+	Integrity        apiv1.Integrity `json:"integrity"`
 }
 
 // JournalSpanOp records one within-stage span (a harness transcript) the
@@ -87,6 +103,7 @@ type JournalArtifactOp struct {
 // deterministically knows from history, and the projection writer adopts the
 // span by fetching Ref.Digest rather than recomputing it (#2907).
 type JournalSpanOp struct {
+	Branch     int                  `json:"branch,omitempty"`
 	Stage      string               `json:"stage,omitempty"`
 	Attempt    int                  `json:"attempt,omitempty"`
 	Class      journal.AttemptClass `json:"class,omitempty"`
@@ -133,6 +150,17 @@ type JournalProjection struct {
 // (heartbeats, resume repairs, mutation sidecars) have no engine analogue and
 // are documented drift-ledger items where they matter.
 type runJournal struct {
+	// Receipts are separate from projection ordinals and remain workflow state
+	// reconstructed from recorded activity results, never mutable journal reads.
+	childOrigins map[string]livejournal.ChildOriginReceipt
+	children     *childFamily
+	receipts     map[string]livejournal.AppendReceipt
+
+	owner         *journalCommitOwner
+	branch        int
+	branchWalk    *branchWalkFrame
+	staticWalk    *staticWalkSession
+	stepBudget    *walkStepBudget
 	proj          JournalProjection
 	machine       *wf.Machine
 	terminalCause *journal.TerminalCause
@@ -159,7 +187,7 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 		return nil, err
 	}
 	if err := workflow.SetQueryHandler(ctx, JournalQuery, func() (JournalProjection, error) {
-		return rec.proj, nil
+		return rec.projectionSnapshot(), nil
 	}); err != nil {
 		return nil, fmt.Errorf("engine: register journal query: %w", err)
 	}
@@ -207,6 +235,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 		machine: m,
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
+				Child:           in.childLineage,
 				InstanceID:      in.InstanceID,
 				RunID:           in.RunID,
 				Workflow:        in.WorkflowName,
@@ -235,7 +264,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 			Definition:             definition,
 			GateGooberCapabilities: gateGooberCapabilities,
 		},
-		usesRepo: runner.MachineUsesRepo(m),
+		usesRepo: runsemantics.MachineUsesRepo(m),
 		live:     in.LiveJournal,
 		branchRef: &journal.ExternalRef{
 			Provider: string(in.RepoRef.Provider),
@@ -255,17 +284,56 @@ func (r *runJournal) append(ctx workflow.Context, ev journal.Event) {
 
 func (r *runJournal) appendAt(at time.Time, ev journal.Event) {
 	e := ev
+	if e.Branch == 0 {
+		e.Branch = r.branch
+	}
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opAppend, Event: &e, Time: at})
+	r.trackOwnedOp()
 }
 
 func (r *runJournal) artifactAt(at time.Time, op JournalArtifactOp) {
 	o := op
+	if o.Branch == 0 {
+		o.Branch = r.branch
+	}
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opArtifact, Artifact: &o, Time: at})
+	r.trackOwnedOp()
+}
+
+func (r *runJournal) outbox(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, files []dispatcher.SurrenderedOutboxFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	occurrence := uint64(len(r.projectionSnapshot().Ops) + 1)
+	at := workflow.Now(ctx)
+	for _, file := range files {
+		artifactPath, err := journal.ArtifactPath(file.Digest)
+		if err != nil {
+			return fmt.Errorf("engine: address outbox file %q: %w", file.RelPath, err)
+		}
+		ref := journal.Ref{
+			Path:      artifactPath,
+			Digest:    file.Digest,
+			Size:      file.Size,
+			Integrity: apiv1.IntegrityDerived,
+		}
+		r.artifactAt(at, JournalArtifactOp{
+			Stage: stage, Attempt: attempt, Class: class,
+			Name: path.Join("outbox", file.RelPath), Ref: &ref,
+			OutboxRelPath: file.RelPath, OutboxOccurrence: occurrence,
+			Integrity: apiv1.IntegrityDerived,
+		})
+	}
+	return nil
 }
 
 func (r *runJournal) spanAt(at time.Time, op JournalSpanOp) {
 	o := op
+	if o.Branch == 0 {
+		o.Branch = r.branch
+	}
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opSpan, Span: &o, Time: at})
+	r.trackOwnedOp()
 }
 
 // runStarted mirrors journal.Create's own opening append.
@@ -593,7 +661,7 @@ func (r *runJournal) lastFinishedAttempt(stage string) (int, journal.AttemptClas
 func (r *runJournal) workspaceHeadMoved(ctx workflow.Context, stage, message string) {
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: runner.WorkspaceHeadMovedErrorCode, Message: message},
+		Error: &journal.ErrorDetail{Code: runsemantics.WorkspaceHeadMovedErrorCode, Message: message},
 	})
 }
 
@@ -663,7 +731,7 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	at := workflow.Now(ctx)
 	ev := journal.Event{
 		Type: journal.EventGateEvaluated,
-		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated,
+		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated, Actor: gr.Actor,
 		Runner: map[string]any{
 			"repassAttempt":   gr.Attempt,
 			"gateAttempt":     gr.GateAttempt,
@@ -744,6 +812,14 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	}
 	r.appendAt(at, ev)
 	return artifact, nil
+}
+
+func (r *runJournal) humanGateExpired(ctx workflow.Context, gateName string, occurrence uint64, err error) {
+	r.append(ctx, journal.Event{
+		Type: journal.EventError, Gate: gateName,
+		Error:  journal.ErrorDetailFor(HumanGateWindowExpiredCode, err),
+		Runner: map[string]any{"gateOccurrence": occurrence},
+	})
 }
 
 // runFailedCause mirrors failTerminal/finishStageFailure's run_failed cause
@@ -898,5 +974,5 @@ func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
 func (r *runJournal) taskAttemptEnvelope(env apiv1.InvocationEnvelope, task apiv1.Task, attempt int) apiv1.InvocationEnvelope {
 	env.Attempt = int32(attempt)
 	env.ArtifactPublication = r.artifactPublication(task)
-	return env
+	return r.childAttemptEnvelope(env, task)
 }

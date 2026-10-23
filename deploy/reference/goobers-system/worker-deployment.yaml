@@ -11,9 +11,9 @@ metadata:
     app.kubernetes.io/component: worker
     goobers.dev/role: worker
 spec:
-  replicas: 1
-  # The lock-bearing RWO instance must be released before its replacement
-  # starts; a surge replica can block disk attachment or share live locks.
+  replicas: 2
+  # The ../workers overlay replaces this compatibility Deployment with a
+  # WorkerDeployment that owns one Recreate Deployment per build ID.
   strategy:
     type: Recreate
   selector:
@@ -27,70 +27,51 @@ spec:
         goobers.dev/role: worker
     spec:
       serviceAccountName: goobers-worker
-      # Allow the default 30s Temporal drain, 5m child custody settlement, and exit.
-      # Increase this when overriding --drain-timeout.
+      # Keep the staged 360s bound until ChildSettlementTimeout is lowered and
+      # rainbow re-attachment passes CHAOS-13 qualification.
       terminationGracePeriodSeconds: 360
+      priorityClassName: goobers-control-plane
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: goobers-worker
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
-        # Journal volume group ownership so the nonroot worker can append (§4).
+        # Pod-private emptyDir ownership for config, workspaces and temp files.
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
-      # PSS restricted evaluates initContainers as well as app containers.
-      # Seed the per-worker instance root without requiring elevated privileges.
-      initContainers:
-        - name: seed-instance-root
-          image: goobers # rewritten by your overlay's images: transformer (#3287)
-          command: ["sh", "-c"]
-          args:
-            - mkdir -p /var/lib/goobers/config /var/lib/goobers/runs
-          volumeMounts:
-            - name: journal
-              mountPath: /var/lib/goobers
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
       containers:
         - name: worker
           # The shipped image includes the Copilot CLI default agent harness.
           # Set runner.harnessCommand in instance.yaml when selecting another
           # installed harness.
           image: goobers # rewritten by your overlay's images: transformer (#3287)
-          # `goobers worker` is the v2-cloud-scale A1.6 worker entrypoint
+          # `goobers-cloud worker` is the cloud worker entrypoint
           # (#632): it serves the named task queue(s) until SIGTERM, then
           # drains. One task queue per Deployment — set the queue to the one
           # this gaggle/workflow dispatches to (default "goobers-engine").
           #
-          # --instance IS REQUIRED TO EXECUTE ANYTHING. Without it the worker
-          # wires no executors: it serves workspaces and automated gates, and
-          # every real stage fails closed with "not configured". This manifest
-          # predates the flag and silently started nothing.
+          # --config-endpoint fetches a complete sanitized instance snapshot by
+          # content digest before polling. The same signing key configured by
+          # the daemon's api.podTokenKeyFile authenticates the worker identity;
+          # config repository and provider credentials never enter this pod.
           #
-          # --blob-store is required only when a run's stages are served by
-          # MORE THAN ONE worker. Stage artifacts are content-addressed into
-          # the node-local staging area; without a shared store the first
-          # ContextPointer resolved on a different node finds no file and the
-          # stage fails closed on an integrity fault. Point it at a
-          # ReadWriteMany volume (see the blobs volume below) or omit it and
-          # accept single-worker runs.
+          # --blob-endpoint carries content-addressed artifacts over the
+          # authenticated API plane. The API owns the blobs PVC; workers never
+          # mount shared storage.
           #
-          # --config-reload-interval is how often the worker re-reads
-          # --instance's config/ tree and rebuilds the gaggle, credential, and
-          # agentic-kit seams whose config changed (#3912). It defaults to 10s
-          # and is left implicit here. Set it to 0 only to deliberately freeze
-          # a worker on its boot-time tree. NOTE the reload only sees content
-          # that actually changes underneath the mount: a config/ directory
-          # seeded once by an initContainer copy into an emptyDir never
-          # changes, for the same reason a subPath ConfigMap mount never does
-          # (../README.md, "subPath ConfigMap mounts never receive updates").
-          # Here the tree lives on the journal PVC, so whatever writes it is
-          # what the worker converges on.
+          # --config-reload-interval is how often the worker asks for the
+          # current digest and fetches a changed snapshot. It defaults to 10s.
+          # A rejected or unavailable snapshot leaves the last-known-good tree
+          # in force.
           #
           # --config-history-depth is how many SUPERSEDED config trees the
           # worker keeps after a reload, so an in-flight run pinned to one is
@@ -103,28 +84,32 @@ spec:
           # every superseded pin immediately, or higher if you roll config
           # forward while multi-hour runs are in flight — each retained tree
           # costs one snapshot of instructions and skill files in memory.
-          # Startup blob-plane probe (#6466/#6649): with --blob-store plus
-          # --dispatch-namespace the worker PUTs a probe blob to the daemon
-          # before polling. While the daemon is still starting (503 or
-          # unreachable; a rollout takes 4-9 minutes) the worker WAITS, logging
-          # INFO progress, for up to --blob-probe-wait (env
-          # GOOBERS_WORKER_BLOB_PROBE_WAIT, default 20m) instead of
-          # crash-looping. A real failure (4xx, non-503 5xx, read-back
-          # mismatch) exits at once with WORKER_BLOB_STORE_MISMATCH and the
-          # daemon's error body. This container deliberately declares NO
-          # liveness/readiness/startup probe, so the wait is never killed by
-          # the kubelet; do not add a liveness probe that requires startup to
-          # have completed without a startupProbe that covers the wait bound.
+          # Initial config fetches wait through an API restart. The startup
+          # probe below suppresses liveness/readiness until the worker opens
+          # its health listener.
+          command:
+            - "goobers-cloud"
           args:
             - "worker"
             - "--task-queue"
             - "goobers-engine"
             - "--work-root"
             - "/var/lib/goobers-worker"
-            - "--instance"
-            - "/var/lib/goobers"
-            - "--blob-store"
-            - "/var/lib/goobers-blobs"
+            - "--health-addr"
+            - ":8081"
+            # Long-running dispatch activities hold a slot for the whole stage.
+            # Keep the 1 CPU / 2Gi pod bounded instead of inheriting the SDK's
+            # 1000-activity process default.
+            - "--max-concurrent-activities"
+            - "4"
+            - "--config-endpoint"
+            - "https://goobers-api.goobers-system.svc:8080"
+            - "--config-key-file"
+            - "/var/run/secrets/goobers/key"
+            - "--blob-endpoint"
+            - "https://goobers-api.goobers-system.svc:8080"
+            - "--daemon-api"
+            - "https://goobers-api.goobers-system.svc:8080"
             # #4286: enables the dispatcher-backed pod-per-stage seam (mode
             # 3) — without it, the worker serves workspaces/gates but every
             # real stage fails closed with "not configured". As of #4897,
@@ -149,23 +134,39 @@ spec:
             # reads GOOBERS_TEMPORAL_HOSTPORT (falls back to 127.0.0.1:7233).
             - name: GOOBERS_TEMPORAL_HOSTPORT
               value: temporal-frontend.goobers-temporal:7233
+          ports:
+            - name: health
+              containerPort: 8081
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 180
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
           volumeMounts:
-            # Lock-bearing instance root: same on-disk layout as tiers 1-2
-            # (§4), on the RWO block volume mounted by a single node.
-            - name: journal
-              mountPath: /var/lib/goobers
-            # Worktrees are pod-private: their PID ownership records are not
-            # meaningful across pod process namespaces.
+            # Config generations, worktrees and scratch state are pod-private.
             - name: workspaces
               mountPath: /var/lib/goobers-worker
-            # The fleet artifact store. ReadWriteMany because it is the one
-            # volume more than one worker touches at once — that is the whole
-            # point of it. A content-addressed store never locks (a digest is
-            # written once, by rename, and two writers racing on one digest
-            # are writing identical bytes), so unlike the journal it is safe
-            # on storage classes without dependable POSIX locking (cf. #2854).
-            - name: blobs
-              mountPath: /var/lib/goobers-blobs
+            # CHANGE-ME: provision the same signing key configured by the
+            # daemon's api.podTokenKeyFile.
+            - name: config-key
+              mountPath: /var/run/secrets/goobers
+              readOnly: true
             # Copilot keeps runtime state under $HOME/.copilot. The container
             # root stays read-only; this state lasts for the life of the pod.
             - name: harness-home
@@ -189,21 +190,13 @@ spec:
               cpu: "1"
               memory: 2Gi
       volumes:
-        - name: journal
-          persistentVolumeClaim:
-            claimName: goobers-journal
         - name: workspaces
           emptyDir: {}
+        - name: config-key
+          secret:
+            secretName: goobers-pod-token-key
         - name: harness-home
           emptyDir: {}
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi
-        # ReadWriteMany, because more than one worker mounts it. Provision it
-        # with a filesystem your platform can serve RWX (Azure Files, EFS,
-        # Filestore, CephFS, NFS). If you only ever run ONE worker, drop this
-        # volume, its mount, and the --blob-store flag together — a single
-        # worker resolves every ContextPointer from its own staging area.
-        - name: blobs
-          persistentVolumeClaim:
-            claimName: goobers-blobs

@@ -47,6 +47,41 @@ func (m *Manager) FinalizeRun(ctx context.Context, runID string) ([]FinalizeResu
 }
 
 func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]FinalizeResult, error) {
+	ids, err := m.finalizeCandidates(key)
+	if err != nil {
+		return nil, err
+	}
+	lock := m.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+
+	var results []FinalizeResult
+	var finalizeErr error
+	for _, worktreeID := range ids {
+		result, handled, err := m.finalizeWorktree(ctx, key, runID, worktreeID)
+		if handled {
+			results = append(results, result)
+		}
+		finalizeErr = errors.Join(finalizeErr, err)
+	}
+	// Failed handoffs leave worktrees alive. Keep their branch-acquisition
+	// evidence too, so retries cannot treat retained work as a fresh branch.
+	if finalizeErr != nil {
+		return results, finalizeErr
+	}
+
+	acquisitionDir := m.branchAcquisitionRunDir(key, runID)
+	if err := os.RemoveAll(acquisitionDir); err != nil {
+		finalizeErr = errors.Join(finalizeErr,
+			fmt.Errorf("worktree: finalize run %s: remove branch acquisitions: %w", runID, err))
+	} else if err := fsyncDir(filepath.Dir(acquisitionDir)); err != nil && !os.IsNotExist(err) {
+		finalizeErr = errors.Join(finalizeErr,
+			fmt.Errorf("worktree: finalize run %s: sync branch acquisitions: %w", runID, err))
+	}
+	return results, finalizeErr
+}
+
+func (m *Manager) finalizeCandidates(key string) ([]string, error) {
 	candidates := make(map[string]struct{})
 	if entries, err := os.ReadDir(m.runsDirForKey(key)); err == nil {
 		for _, entry := range entries {
@@ -72,77 +107,53 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	return ids, nil
+}
 
-	lock := m.lockFor(key)
-	lock.Lock()
-	defer lock.Unlock()
+func (m *Manager) finalizeWorktree(ctx context.Context, key, runID, worktreeID string) (FinalizeResult, bool, error) {
+	markerPath := m.markerPath(key, worktreeID)
+	mk, markerErr := readMarker(markerPath)
+	switch {
+	case markerErr == nil:
+		if !ownedByRun(mk, worktreeID, runID) {
+			return FinalizeResult{}, false, nil
+		}
+		preserved, result, err := m.finalizePreservedMarker(key, worktreeID, mk)
+		if err != nil {
+			return FinalizeResult{}, false,
+				fmt.Errorf("worktree: finalize run %s: resolve marker %s: %w", runID, markerPath, err)
+		}
+		if preserved {
+			return result, true, nil
+		}
+	case os.IsNotExist(markerErr):
+		if !legacyWorktreeOwnedByRun(worktreeID, runID) {
+			return FinalizeResult{}, false, nil
+		}
+	default:
+		if legacyWorktreeOwnedByRun(worktreeID, runID) {
+			return FinalizeResult{}, false,
+				fmt.Errorf("worktree: finalize run %s: read marker %s: %w", runID, markerPath, markerErr)
+		}
+		return FinalizeResult{}, false, nil
+	}
 
-	var results []FinalizeResult
-	var finalizeErr error
-	for _, worktreeID := range ids {
-		markerPath := m.markerPath(key, worktreeID)
-		mk, markerErr := readMarker(markerPath)
-		switch {
-		case markerErr == nil:
-			if !ownedByRun(mk, worktreeID, runID) {
-				continue
-			}
-			preserved, result, err := m.finalizePreservedMarker(key, worktreeID, mk)
-			if err != nil {
-				finalizeErr = errors.Join(finalizeErr,
-					fmt.Errorf("worktree: finalize run %s: resolve marker %s: %w", runID, markerPath, err))
-				continue
-			}
-			if preserved {
-				results = append(results, result)
-				continue
-			}
-		case os.IsNotExist(markerErr):
-			if !legacyWorktreeOwnedByRun(worktreeID, runID) {
-				continue
-			}
-		default:
-			if legacyWorktreeOwnedByRun(worktreeID, runID) {
-				finalizeErr = errors.Join(finalizeErr,
-					fmt.Errorf("worktree: finalize run %s: read marker %s: %w", runID, markerPath, markerErr))
-			}
-			continue
-		}
-
-		directory := worktreeID
-		if markerErr == nil {
-			directory, _ = mk.directoryName()
-		}
-		path := filepath.Join(m.runsDirForKey(key), directory)
-		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
-		if err := m.forceClear(ctx, key, path, worktreeID); err != nil {
-			m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
-			if result, retained := finalizeRetainedResult(worktreeID, path, err); retained {
-				results = append(results, result)
-				continue
-			}
-			finalizeErr = errors.Join(finalizeErr,
-				fmt.Errorf("worktree: finalize run %s worktree %s: %w", runID, worktreeID, err))
-			continue
-		}
+	directory := worktreeID
+	if markerErr == nil {
+		directory, _ = mk.directoryName()
+	}
+	path := filepath.Join(m.runsDirForKey(key), directory)
+	worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
+	if err := m.forceClear(ctx, key, path, worktreeID); err != nil {
 		m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
-		results = append(results, FinalizeResult{WorktreeID: worktreeID, Path: path})
+		if result, retained := finalizeRetainedResult(worktreeID, path, err); retained {
+			return result, true, nil
+		}
+		return FinalizeResult{}, false,
+			fmt.Errorf("worktree: finalize run %s worktree %s: %w", runID, worktreeID, err)
 	}
-	// Failed handoffs leave worktrees alive. Keep their branch-acquisition
-	// evidence too, so retries cannot treat retained work as a fresh branch.
-	if finalizeErr != nil {
-		return results, finalizeErr
-	}
-
-	acquisitionDir := m.branchAcquisitionRunDir(key, runID)
-	if err := os.RemoveAll(acquisitionDir); err != nil {
-		finalizeErr = errors.Join(finalizeErr,
-			fmt.Errorf("worktree: finalize run %s: remove branch acquisitions: %w", runID, err))
-	} else if err := fsyncDir(filepath.Dir(acquisitionDir)); err != nil && !os.IsNotExist(err) {
-		finalizeErr = errors.Join(finalizeErr,
-			fmt.Errorf("worktree: finalize run %s: sync branch acquisitions: %w", runID, err))
-	}
-	return results, finalizeErr
+	m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
+	return FinalizeResult{WorktreeID: worktreeID, Path: path}, true, nil
 }
 
 func (m *Manager) finalizePreservedMarker(key, worktreeID string, mk marker) (bool, FinalizeResult, error) {

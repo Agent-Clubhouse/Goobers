@@ -10,6 +10,12 @@
 > remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
 Program: [Human operations and advanced workflows](hitl-advanced-workflows-program.md).
+The [trusted-local execution extension](trusted-local-child-workflows.md)
+delivers preview host-process children for self-only macOS/Linux instances while
+preserving this lifecycle contract. The existing preview annotation is required;
+Windows strict custody remains refused. See the
+[operational guide](../guides/trusted-local-child-workflows.md) for selection,
+credentials and qualification limits.
 Companions: `interactive-factory-operations.md`,
 `gaggle-events-and-durable-start-queues.md`, and
 `source-owned-backlog-workbench.md`. The generated design index links each as it

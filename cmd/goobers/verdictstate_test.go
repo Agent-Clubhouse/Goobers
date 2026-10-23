@@ -13,7 +13,7 @@ import (
 
 func newVerdictTestRoot(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := initDemo(t)
 	if err := os.MkdirAll(filepath.Join(root, "scheduler"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -212,4 +212,12 @@ func TestVerdictStateRestartDurability(t *testing.T) {
 	if err != nil || !ok || got.Decision != apiv1.VerdictPass {
 		t.Fatalf("read after restart = %+v, %v, %v; want pass, true, nil", got, ok, err)
 	}
+}
+
+func writeVerdictState(root string, repo providers.RepositoryRef, number int, verdict apiv1.Verdict) error {
+	store, err := openStageStateStore(instance.NewLayout(root))
+	if err != nil {
+		return err
+	}
+	return updateVerdictRecord(stateContext(), store, verdictRecordKey(repo, number), func(apiv1.Verdict, bool) (apiv1.Verdict, bool, error) { return verdict, true, nil })
 }

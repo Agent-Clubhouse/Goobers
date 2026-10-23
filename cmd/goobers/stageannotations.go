@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // stageannotations.go is the INSTANCE-ANNOTATION seam (Goobers#3898), the
@@ -97,7 +98,7 @@ func journalPlaneSelected() bool {
 // openFileAnnotator is the type-1/type-2 path, byte-for-byte what the
 // claiming path did inline before this seam existed.
 func openFileAnnotator(l instance.Layout) (stageAnnotator, error) {
-	stopTelemetry := startCommandJournalTelemetry(l, os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(l, os.Stderr)
 	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
 	if err != nil {
 		stopTelemetry()

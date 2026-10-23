@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +71,7 @@ func TestReconcileBacklogMetadataLeavesForeignInstanceClaimEpochs(t *testing.T) 
 	if err != nil || !claim.Claimed {
 		t.Fatalf("instance A claim: claimed=%v err=%v", claim.Claimed, err)
 	}
+
 	ledgerA, err := localscheduler.OpenClaimLedger(filepath.Join(rootA, "scheduler", claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)
@@ -131,4 +133,41 @@ func TestReconcileBacklogMetadataLeavesForeignInstanceClaimEpochs(t *testing.T) 
 	}
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelClaimed}, nil)
 	assertFakeIssueLabels(t, server, 9, []string{providers.LabelClaimed}, nil)
+}
+
+func TestReconcileBacklogMetadataRecognizesLegacyClaimAfterUpgrade(t *testing.T) {
+	root := initDemo(t)
+	layout := layoutFor(root)
+	canonical, err := layout.ReadIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Repeat("c", 32)
+	if legacy == canonical {
+		legacy = strings.Repeat("d", 32)
+	}
+	if err := os.WriteFile(filepath.Join(root, "instance-id"), []byte(legacy+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.EnsureIdentity(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Legacy claim", "goobers:approved", providers.LabelClaimed)
+	provider := server.newGitHubProvider("token")
+	provider.SetAttribution(providers.Attribution{
+		InstanceID: legacy, Gaggle: "goobers", Workflow: "implementation",
+		Task: "claim", Goober: "deterministic", Run: "legacy-run",
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	if claim, err := provider.ClaimWorkItem(t.Context(), providers.ClaimWorkItemRequest{
+		Repository: repo, ID: "7", RunID: "legacy-run",
+	}); err != nil || !claim.Claimed {
+		t.Fatalf("seed legacy provider claim: %+v, %v", claim, err)
+	}
+	t.Setenv(executor.InstanceIDEnvVar, canonical)
+	runID, owned, err := ownedProviderClaimEpoch(t.Context(), layout, provider, repo, "7", nil)
+	if err != nil || !owned || runID != "legacy-run" {
+		t.Fatalf("legacy provider claim = %q, %v, %v; want owned legacy-run", runID, owned, err)
+	}
 }

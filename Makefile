@@ -74,6 +74,8 @@ CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CO
 SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 GOVULNCHECK    := $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 KUBECONFORM    := $(GO) run github.com/yannh/kubeconform/cmd/kubeconform@$(KUBECONFORM_VERSION)
+# Vendored CRD schemas for operator-owned kinds (CloudNativePG); see the README there.
+CRD_SCHEMA_CATALOG := test/fixtures/crd-schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
 
 ## help: Show this help.
 .PHONY: help
@@ -101,6 +103,11 @@ generate:
 	$(CONTROLLER_GEN) object paths=./api/v1alpha1/...
 	$(GO) generate ./internal/apicontract
 
+## generate-check: Fail if committed DeepCopy methods or portal contracts drift.
+.PHONY: generate-check
+generate-check: generate
+	git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go portal/src/api/contract.generated.ts portal/src/api/wire.generated.ts
+
 ## manifests: Regenerate CRD YAML manifests from the CRD types.
 .PHONY: manifests
 manifests:
@@ -118,6 +125,7 @@ manifests-check: manifests
 .PHONY: docs
 docs:
 	$(GO) run ./cmd/goobers __generate-docs docs
+	$(GO) run ./cmd/goobers-cloud __generate-docs docs
 	$(GO) run ./test/designstatus -write
 	$(GO) run ./test/markdownlinks -write
 
@@ -235,6 +243,11 @@ complexity:
 complexity-update:
 	$(GO) run ./test/complexitygate -update
 
+## complexity-move-update: Move baseline rows for byte-identical function moves from HEAD.
+.PHONY: complexity-move-update
+complexity-move-update:
+	$(GO) run ./test/complexitygate -update-moves
+
 ## flake-policy: Reject anonymous flake skips and workflow retries.
 .PHONY: flake-policy
 flake-policy:
@@ -273,6 +286,7 @@ deploy-validate:
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check >/dev/null
 	kubectl kustomize deploy/reference/temporal >/dev/null
+	kubectl kustomize deploy/reference/workers >/dev/null
 	kubectl kustomize deploy/reference/examples/goobers-system-registry >/dev/null
 	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/config-mirror | $(KUBECONFORM) -strict -summary
@@ -280,7 +294,10 @@ deploy-validate:
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/temporal | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/workers | $(KUBECONFORM) -strict -ignore-missing-schemas -summary
+	kubectl kustomize deploy/reference/goobers-cloud/cnpg | $(KUBECONFORM) -strict -summary -schema-location default -schema-location '$(CRD_SCHEMA_CATALOG)'
 	kubectl kustomize deploy/reference/examples/goobers-system-registry | $(KUBECONFORM) -strict -summary
+	$(GO) test ./deploy/reference/workers -count=1
 	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1
 	@echo "deploy/reference kustomize builds, schemas, value formats (#3310), and rendered-together cross-base assertion (#3301) OK"
 
@@ -336,9 +353,9 @@ test: schema-description-coverage
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
 
-## portal-audit: Fail when portal dependencies have known vulnerabilities.
+## portal-audit: Fail on known vulnerabilities; warn when advisory data remains unavailable.
 portal-audit: portal-install
-	$(NPM) --prefix portal audit --audit-level=low
+	$(GO) run ./test/ci portal-audit "$(NPM)"
 
 ## portal-typecheck: Install and type-check the portal.
 portal-typecheck: portal-install

@@ -18,33 +18,44 @@ import (
 )
 
 func TestDispatchCancellationOptionsPreserveLegacyAndLocalStages(t *testing.T) {
-	for _, version := range []workflow.Version{workflow.DefaultVersion, 1} {
-		var suite testsuite.WorkflowTestSuite
-		env := temporaltest.NewWorkflowEnvironment(&suite)
-		env.OnGetVersion(dispatchCancellationChange, workflow.DefaultVersion, 1).Return(version)
-		env.ExecuteWorkflow(func(ctx workflow.Context) error {
-			limits := apiv1.Limits{MaxDurationSeconds: 45}
-			local := stageActivityOptions(limits, "queue")
-			remote := workflow.GetActivityOptions(dispatchActivityContext(ctx, limits, "queue"))
-			if local.WaitForCancellation || local.HeartbeatTimeout != 0 {
-				t.Fatal("local activities inherited dispatch heartbeats")
+	for _, tc := range []struct {
+		name             string
+		cancellation     workflow.Version
+		heartbeat        workflow.Version
+		wantHeartbeat    time.Duration
+		wantCancellation bool
+	}{
+		{name: "legacy", cancellation: workflow.DefaultVersion},
+		{name: "legacy heartbeat contract", cancellation: 1, heartbeat: workflow.DefaultVersion, wantHeartbeat: dispatchHeartbeatTimeout, wantCancellation: true},
+		{name: "current", cancellation: 1, heartbeat: 1, wantHeartbeat: dispatchHeartbeatTimeoutV2, wantCancellation: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var suite testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&suite)
+			env.OnGetVersion(dispatchCancellationChange, workflow.DefaultVersion, 1).Return(tc.cancellation)
+			if tc.cancellation != workflow.DefaultVersion {
+				env.OnGetVersion(dispatchHeartbeatContractChange, workflow.DefaultVersion, 1).Return(tc.heartbeat)
 			}
-			if remote.StartToCloseTimeout != local.StartToCloseTimeout || remote.ScheduleToStartTimeout != local.ScheduleToStartTimeout || remote.TaskQueue != local.TaskQueue || remote.RetryPolicy.MaximumAttempts != 1 {
-				t.Fatal("dispatch changed existing routing/limits/retry ownership")
-			}
-			if version == workflow.DefaultVersion {
-				if remote.WaitForCancellation || remote.HeartbeatTimeout != 0 {
-					t.Fatal("legacy history changed cancellation options")
+			env.ExecuteWorkflow(func(ctx workflow.Context) error {
+				limits := apiv1.Limits{MaxDurationSeconds: 45}
+				local := stageActivityOptions(limits, "queue")
+				remote := workflow.GetActivityOptions(dispatchActivityContext(ctx, limits, "queue"))
+				if local.WaitForCancellation || local.HeartbeatTimeout != 0 {
+					t.Fatal("local activities inherited dispatch heartbeats")
 				}
-			} else if !remote.WaitForCancellation || remote.HeartbeatTimeout != dispatchHeartbeatTimeout {
-				t.Fatal("new dispatch does not await heartbeating cleanup")
+				if remote.StartToCloseTimeout != local.StartToCloseTimeout || remote.ScheduleToStartTimeout != local.ScheduleToStartTimeout || remote.TaskQueue != local.TaskQueue || remote.RetryPolicy.MaximumAttempts != 1 {
+					t.Fatal("dispatch changed existing routing/limits/retry ownership")
+				}
+				if remote.WaitForCancellation != tc.wantCancellation || remote.HeartbeatTimeout != tc.wantHeartbeat {
+					t.Fatalf("dispatch cancellation=%t heartbeat=%s, want %t and %s", remote.WaitForCancellation, remote.HeartbeatTimeout, tc.wantCancellation, tc.wantHeartbeat)
+				}
+				return nil
+			})
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
 			}
-			return nil
+			env.AssertExpectations(t)
 		})
-		if err := env.GetWorkflowError(); err != nil {
-			t.Fatal(err)
-		}
-		env.AssertExpectations(t)
 	}
 }
 
@@ -75,7 +86,7 @@ func TestReviewerDispatchReceivesCancellationOptions(t *testing.T) {
 		if err := args.Get(&input); err != nil {
 			t.Fatal(err)
 		}
-		if !input.Review || info.HeartbeatTimeout != dispatchHeartbeatTimeout {
+		if !input.Review || info.HeartbeatTimeout != dispatchHeartbeatTimeoutV2 {
 			t.Fatalf("review dispatch heartbeat=%s, input=%+v", info.HeartbeatTimeout, input)
 		}
 	})
@@ -85,6 +96,52 @@ func TestReviewerDispatchReceivesCancellationOptions(t *testing.T) {
 	}
 	if dispatches != 1 {
 		t.Fatalf("review dispatch count = %d", dispatches)
+	}
+}
+
+func TestDispatchHeartbeatCarriesGenerationDiagnostic(t *testing.T) {
+	var got dispatchHeartbeatDetails
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
+		if err := details.Get(&got); err != nil {
+			t.Fatal(err)
+		}
+	})
+	env.RegisterActivityWithOptions(func(ctx context.Context) error {
+		stop := heartbeatDispatch(ctx)
+		stop()
+		return nil
+	}, activity.RegisterOptions{Name: "diagnostic-heartbeat"})
+	if _, err := env.ExecuteActivity("diagnostic-heartbeat"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Sequence != 1 || got.GeneratedAt.IsZero() {
+		t.Fatalf("heartbeat details = %+v, want sequence and generation time", got)
+	}
+}
+
+func TestDispatchHeartbeatV3CarriesPodCustody(t *testing.T) {
+	want := dispatcher.PodCustody{Namespace: "gaggle-web", Pod: "run-build-a1", UID: "uid-1", Attempt: 1, Custody: true}
+	var got dispatchHeartbeatDetails
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
+		if err := details.Get(&got); err != nil {
+			t.Fatal(err)
+		}
+	})
+	env.RegisterActivityWithOptions(func(ctx context.Context) error {
+		stop := heartbeatDispatchCustody(ctx, func() *dispatcher.PodCustody { return &want })
+		stop()
+		return nil
+	}, activity.RegisterOptions{Name: "custody-heartbeat-v3"})
+	if _, err := env.ExecuteActivity("custody-heartbeat-v3"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Namespace != want.Namespace || got.Pod != want.Pod || got.UID != want.UID ||
+		got.Attempt != want.Attempt || !got.Custody {
+		t.Fatalf("heartbeat details = %+v, want custody %+v", got, want)
 	}
 }
 

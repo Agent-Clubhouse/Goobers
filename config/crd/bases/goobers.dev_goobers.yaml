@@ -176,6 +176,11 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
+                    required:
+                      description: |-
+                        Required controls whether failure to register or start this server stops
+                        the stage before the model turn. Omission defaults to required.
+                      type: boolean
                     url:
                       description: URL is an HTTP(S) remote MCP endpoint.
                       minLength: 1

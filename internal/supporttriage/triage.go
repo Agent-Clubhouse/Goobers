@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/diagnostics"
+	"github.com/goobers/goobers/internal/stringpolicy"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
@@ -147,13 +148,13 @@ func collectSignals(bundle diagnostics.Bundle) []signal {
 	for _, run := range bundle.Runs {
 		for _, decision := range run.Decisions {
 			lower := lowerJoined(decision.Reason)
-			if containsAny(lower, "known issue", "duplicate of") {
+			if stringpolicy.ContainsAny(lower, "known issue", "duplicate of") {
 				signals = append(signals, signal{disposition: DispositionDuplicateOrKnown, evidence: Evidence{Kind: "selector_decision", Subject: run.RunID, Detail: decision.Reason}})
 			}
-			if containsAny(lower, "not reproduced", "could not reproduce", "cannot reproduce") {
+			if stringpolicy.ContainsAny(lower, "not reproduced", "could not reproduce", "cannot reproduce") {
 				signals = append(signals, signal{disposition: DispositionNotReproduced, evidence: Evidence{Kind: "selector_decision", Subject: run.RunID, Detail: decision.Reason}})
 			}
-			if containsAny(lower, "insufficient evidence", "ambiguous", "cannot determine") {
+			if stringpolicy.ContainsAny(lower, "insufficient evidence", "ambiguous", "cannot determine") {
 				signals = append(signals, signal{disposition: DispositionInsufficientEvidence, evidence: Evidence{Kind: "selector_decision", Subject: run.RunID, Detail: decision.Reason}})
 			}
 		}
@@ -173,19 +174,19 @@ func classifyError(runID string, err diagnostics.ErrorInfo, allowProductCandidat
 	}
 	evidence := Evidence{Kind: "error", Subject: runID, Detail: strings.TrimSpace(err.Code + ": " + err.Message)}
 	switch {
-	case containsAny(text, "insufficient_evidence", "insufficient evidence", "ambiguous", "contradict"):
+	case stringpolicy.ContainsAny(text, "insufficient_evidence", "insufficient evidence", "ambiguous", "contradict"):
 		return []signal{{disposition: DispositionInsufficientEvidence, evidence: evidence}}
-	case containsAny(text, "panic", "should never happen", "internal invariant") && !isGoobersOwnedDefect(text):
+	case stringpolicy.ContainsAny(text, "panic", "should never happen", "internal invariant") && !isGoobersOwnedDefect(text):
 		return nil
-	case containsAny(text, "config", "validation", "schema", "workflow"):
+	case stringpolicy.ContainsAny(text, "config", "validation", "schema", "workflow"):
 		return []signal{{disposition: DispositionWorkflowConfiguration, evidence: evidence}}
-	case containsAny(text, "auth", "credential", "unauthorized", "forbidden", "401", "403"):
+	case stringpolicy.ContainsAny(text, "auth", "credential", "unauthorized", "forbidden", "401", "403"):
 		return []signal{{disposition: DispositionHarnessAuthentication, evidence: evidence}}
-	case containsAny(text, "enoent", "not on path", "permission denied", "disk", "local environment", "workspace"):
+	case stringpolicy.ContainsAny(text, "enoent", "not on path", "permission denied", "disk", "local environment", "workspace"):
 		return []signal{{disposition: DispositionLocalEnvironment, evidence: evidence}}
-	case containsAny(text, "rate limit", "provider", "external", "outage", "service unavailable", "bad gateway"):
+	case stringpolicy.ContainsAny(text, "rate limit", "provider", "external", "outage", "service unavailable", "bad gateway"):
 		return []signal{{disposition: DispositionExternalDependency, evidence: evidence}}
-	case containsAny(text, "timeout", "temporarily", "transient", "try again", "connection reset"):
+	case stringpolicy.ContainsAny(text, "timeout", "temporarily", "transient", "try again", "connection reset"):
 		return []signal{{disposition: DispositionTransientFailure, evidence: evidence}}
 	case isGoobersOwnedDefect(text):
 		if !allowProductCandidate {
@@ -218,11 +219,11 @@ func runErrors(run diagnostics.RunInfo) []diagnostics.ErrorInfo {
 }
 
 func isGoobersOwnedDefect(text string) bool {
-	if containsAny(text, "workflow", "provider", "subprocess", "external", "credential", "auth", "environment") {
+	if stringpolicy.ContainsAny(text, "workflow", "provider", "subprocess", "external", "credential", "auth", "environment") {
 		return false
 	}
-	owned := containsAny(text, "goobers-owned", "goobers owned", "goobers invariant")
-	reproduced := containsAny(text, "clean reproduction", "reproduced on supported", "regression comparison")
+	owned := stringpolicy.ContainsAny(text, "goobers-owned", "goobers owned", "goobers invariant")
+	reproduced := stringpolicy.ContainsAny(text, "clean reproduction", "reproduced on supported", "regression comparison")
 	return owned && reproduced
 }
 
@@ -478,15 +479,6 @@ func nextActionFor(disposition Disposition) string {
 
 func lowerJoined(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
-}
-
-func containsAny(value string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(value, needle) {
-			return true
-		}
-	}
-	return false
 }
 
 func dedupeSorted(values []string) []string {

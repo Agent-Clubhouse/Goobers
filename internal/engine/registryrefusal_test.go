@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/engineadmission"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/instance"
-	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // r9Task returns a minimal deterministic task the registry accepts, so each
@@ -28,17 +28,14 @@ func r9Spec(tasks ...apiv1.Task) apiv1.WorkflowSpec {
 	}
 }
 
-// TestStartInputRefusesUnsupportedEngineFeatures is the R9 refusal table: each
+// TestAdmissionRefusesUnsupportedEngineFeatures is the R9 refusal table: each
 // declaration the engine walk does not implement is refused at run start with
 // its own named sentinel, naming the declaring stage. Loud, not silent — the
 // walk would otherwise execute the definition as if the declaration were
 // absent.
-func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
+func TestAdmissionRefusesUnsupportedEngineFeatures(t *testing.T) {
 	experiment := r9Task("implement")
 	experiment.Experiment = &apiv1.BanditExperiment{}
-
-	outbox := r9Task("implement")
-	outbox.Outbox = []string{"dist/report.json"}
 
 	cases := []struct {
 		name     string
@@ -47,18 +44,13 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 		wantIn   string
 	}{
 		{"bandit experiment", r9Spec(experiment), ErrExperimentUnsupported, "task.experiment"},
-		{"outbox export", r9Spec(outbox), ErrOutboxUnsupported, "task.outbox"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewRegistryWithPreviewFeatures(true)
-			if _, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: tc.spec}); err != nil {
-				t.Fatalf("RegisterDefinition: %v", err)
-			}
-			_, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"})
+			err := engineadmission.RefuseDefinition("flow", tc.spec)
 			if err == nil {
-				t.Fatalf("StartInput admitted a definition declaring %s — the engine walk ignores it silently", tc.wantIn)
+				t.Fatalf("RefuseDefinition admitted a definition declaring %s — the engine walk ignores it silently", tc.wantIn)
 			}
 			if !errors.Is(err, tc.sentinel) {
 				t.Errorf("error does not wrap the named sentinel %v: %v", tc.sentinel, err)
@@ -80,22 +72,18 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 	}
 }
 
-// TestStartInputRefusesShippedParallels pins the spec-level half of R9 against
+// TestAdmissionRefusesShippedParallels pins the spec-level half of R9 against
 // the REAL declaration rather than a synthetic one: quality-sprint.yaml is the
 // lane finding 002's grep found, so a hand-rolled Parallel{} that the compiler
 // would reject anyway proves nothing about the refusal that matters.
-func TestStartInputRefusesShippedParallels(t *testing.T) {
+func TestAdmissionRefusesShippedParallels(t *testing.T) {
 	lane := loadProductionLane(t, "goobers", "quality-sprint")
 	if len(lane.Spec.Parallels) == 0 {
 		t.Fatal("quality-sprint no longer declares parallels — retarget this guard at whichever lane does, do not delete it")
 	}
-	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: lane.Name, DSLVersion: lane.DSLVersion, Spec: lane.Spec}); err != nil {
-		t.Fatalf("RegisterDefinition: %v", err)
-	}
-	_, err := r.StartInput(lane.Name, StartSpec{RunID: "run-1", Gaggle: "goobers"})
+	err := engineadmission.RefuseDefinition(lane.Name, lane.Spec)
 	if err == nil {
-		t.Fatal("StartInput admitted a lane declaring parallels — the engine walk would run only its root path")
+		t.Fatal("RefuseDefinition admitted a lane declaring parallels — the engine walk would run only its root path")
 	}
 	if !errors.Is(err, ErrParallelsUnsupported) {
 		t.Errorf("error does not wrap ErrParallelsUnsupported: %v", err)
@@ -123,13 +111,9 @@ func TestStartInputRefusesShippedParallels(t *testing.T) {
 // about the defect (a doubled prefix) instead of freezing the wording.
 func TestRefusalMessageReadsAsOneSentence(t *testing.T) {
 	lane := loadProductionLane(t, "goobers", "quality-sprint")
-	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: lane.Name, DSLVersion: lane.DSLVersion, Spec: lane.Spec}); err != nil {
-		t.Fatalf("RegisterDefinition: %v", err)
-	}
-	_, err := r.StartInput(lane.Name, StartSpec{RunID: "run-1", Gaggle: "goobers"})
+	err := engineadmission.RefuseDefinition(lane.Name, lane.Spec)
 	if err == nil {
-		t.Fatal("StartInput admitted the shipped parallels lane")
+		t.Fatal("RefuseDefinition admitted the shipped parallels lane")
 	}
 	msg := err.Error()
 	if got := strings.Count(msg, "engine:"); got != 1 {
@@ -147,9 +131,7 @@ func TestRefusalMessageReadsAsOneSentence(t *testing.T) {
 	t.Logf("operator-facing refusal: %s", msg)
 	// Each sentinel must still read as a whole sentence standalone, which is
 	// how an errors.Is caller that prints the sentinel sees it.
-	for _, sentinel := range []error{
-		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrOutboxUnsupported,
-	} {
+	for _, sentinel := range []error{ErrParallelsUnsupported, ErrExperimentUnsupported} {
 		if strings.Contains(sentinel.Error(), "engine:") {
 			t.Errorf("sentinel %q carries its own \"engine:\" prefix, which doubles when wrapped", sentinel)
 		}
@@ -159,13 +141,13 @@ func TestRefusalMessageReadsAsOneSentence(t *testing.T) {
 	}
 }
 
-// TestStartInputRefusalReportsEveryDeclaration pins the multi-refusal shape: a
+// TestAdmissionRefusalReportsEveryDeclaration pins the multi-refusal shape: a
 // definition declaring several R9 features is refused once, with all of them
 // named and each reachable through errors.Is, so an operator sees the whole
 // set instead of fixing them one deploy at a time. It starts from the shipped
 // parallels lane so the spec-level and task-level halves are exercised
 // together on a definition the compiler actually admits.
-func TestStartInputRefusalReportsEveryDeclaration(t *testing.T) {
+func TestAdmissionRefusalReportsEveryDeclaration(t *testing.T) {
 	lane := loadProductionLane(t, "goobers", "quality-sprint")
 	spec := *lane.Spec.DeepCopy()
 	if len(spec.Tasks) == 0 {
@@ -175,17 +157,11 @@ func TestStartInputRefusalReportsEveryDeclaration(t *testing.T) {
 	spec.Tasks[0].Limits = &apiv1.Limits{MaxCostUSD: 2}
 	spec.Tasks[0].Outbox = []string{"out.json"}
 
-	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: "flow", DSLVersion: lane.DSLVersion, Spec: spec}); err != nil {
-		t.Fatalf("RegisterDefinition: %v", err)
-	}
-	_, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "goobers"})
+	err := engineadmission.RefuseDefinition("flow", spec)
 	if err == nil {
-		t.Fatal("StartInput admitted a definition declaring three unsupported features")
+		t.Fatal("RefuseDefinition admitted a definition declaring unsupported features")
 	}
-	for _, sentinel := range []error{
-		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrOutboxUnsupported,
-	} {
+	for _, sentinel := range []error{ErrParallelsUnsupported, ErrExperimentUnsupported} {
 		if !errors.Is(err, sentinel) {
 			t.Errorf("refusal does not reach sentinel %v: %v", sentinel, err)
 		}
@@ -194,95 +170,24 @@ func TestStartInputRefusalReportsEveryDeclaration(t *testing.T) {
 	if !errors.As(err, &multi) {
 		t.Fatalf("error is not an *UnsupportedFeaturesError: %v", err)
 	}
-	if len(multi.Refusals) != 3 {
-		t.Errorf("refusal names %d declarations, want 3: %v", len(multi.Refusals), err)
+	if len(multi.Refusals) != 2 {
+		t.Errorf("refusal names %d declarations, want 2: %v", len(multi.Refusals), err)
 	}
 }
 
-// TestStartInputAdmitsSupportedLimits guards duration enforcement support.
-func TestStartInputAdmitsSupportedLimits(t *testing.T) {
+func TestAdmissionAdmitsOutbox(t *testing.T) {
+	task := r9Task("implement")
+	task.Outbox = []string{"reports/result.json"}
+	if err := engineadmission.RefuseDefinition("flow", r9Spec(task)); err != nil {
+		t.Fatalf("outbox definition refused after engine support landed: %v", err)
+	}
+}
+
+// TestAdmissionAdmitsSupportedLimits guards duration enforcement support.
+func TestAdmissionAdmitsSupportedLimits(t *testing.T) {
 	task := r9Task("implement")
 	task.Limits = &apiv1.Limits{MaxDurationSeconds: 600}
-	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: r9Spec(task)}); err != nil {
-		t.Fatalf("RegisterDefinition: %v", err)
-	}
-	if _, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"}); err != nil {
-		t.Fatalf("StartInput refused a duration-only limit the engine does enforce: %v", err)
-	}
-}
-
-// TestRegisterDefinitionStillAdmitsUnsupportedFeatures is the blast-radius
-// guard, and the reason the refusal lives at StartInput rather than at
-// registration.
-//
-// internal/bootstrap.RegisterGaggleWorkflows registers EVERY workflow of a
-// gaggle into one registry and returns on the first error. The goobers gaggle
-// ships quality-sprint.yaml, which declares parallels. Refusing at
-// registration would therefore fail the whole registry build and take
-// backlog-curation — the first lane scheduled to move to the engine — offline
-// along with it. This test pins that a gaggle containing an unsupported lane
-// still builds a registry whose OTHER lanes start.
-func TestRegisterDefinitionStillAdmitsUnsupportedFeatures(t *testing.T) {
-	lane := loadProductionLane(t, "goobers", "quality-sprint")
-
-	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: lane.Name, DSLVersion: lane.DSLVersion, Spec: lane.Spec}); err != nil {
-		t.Fatalf("RegisterDefinition must not refuse — refusing here fails the whole gaggle registry build: %v", err)
-	}
-	if _, err := r.RegisterDefinition(wf.Definition{Name: "backlog-curation", Spec: r9Spec(r9Task("query-backlog"))}); err != nil {
-		t.Fatalf("RegisterDefinition: %v", err)
-	}
-	if _, err := r.StartInput("backlog-curation", StartSpec{RunID: "run-1", Gaggle: "web"}); err != nil {
-		t.Fatalf("an unsupported lane in the same registry must not block a supported one: %v", err)
-	}
-	if _, err := r.StartInput(lane.Name, StartSpec{RunID: "run-2", Gaggle: "goobers"}); !errors.Is(err, ErrParallelsUnsupported) {
-		t.Fatalf("StartInput on the unsupported lane must refuse with the named sentinel, got %v", err)
-	}
-}
-
-// TestShippedGaggleRegistersAndRefusesOnlyDeclaringLanes runs the guard above
-// against the REAL shipped config tree rather than a synthetic pair: the
-// goobers gaggle's registry must build, backlog-curation and implementation
-// must start, and only the lanes that actually declare an R9 feature are
-// refused. This is what would have caught the outage shape at review time.
-func TestShippedGaggleRegistersAndRefusesOnlyDeclaringLanes(t *testing.T) {
-	set, report, err := instance.LoadConfigDir(referenceWorkflowsRoot())
-	if err != nil {
-		t.Fatalf("load reference-workflows: %v\n%v", err, report)
-	}
-	r := NewRegistryWithPreviewFeatures(true)
-	var names []string
-	for i := range set.Workflows {
-		w := set.Workflows[i]
-		if w.Spec.Gaggle != "goobers" {
-			continue
-		}
-		if _, err := r.RegisterDefinition(wf.Definition{Name: w.Name, DSLVersion: w.DSLVersion, Spec: w.Spec}); err != nil {
-			t.Fatalf("registering shipped lane %q failed — RegisterGaggleWorkflows would abort the whole gaggle: %v", w.Name, err)
-		}
-		names = append(names, w.Name)
-	}
-	if len(names) < 2 {
-		t.Fatalf("expected the goobers gaggle to ship several lanes, got %v", names)
-	}
-
-	refused := map[string]bool{}
-	for _, name := range names {
-		if _, err := r.StartInput(name, StartSpec{RunID: "run-" + name, Gaggle: "goobers"}); err != nil {
-			var multi *UnsupportedFeaturesError
-			if !errors.As(err, &multi) {
-				t.Fatalf("shipped lane %q refused for a non-R9 reason: %v", name, err)
-			}
-			refused[name] = true
-		}
-	}
-	for _, mustStart := range []string{"backlog-curation", "implementation"} {
-		if refused[mustStart] {
-			t.Errorf("lane %q is on the engine cutover path and must start, but the R9 refusal rejected it", mustStart)
-		}
-	}
-	if !refused["quality-sprint"] {
-		t.Error("quality-sprint declares parallels and must be refused; if the lane changed, retarget this guard rather than deleting it")
+	if err := engineadmission.RefuseDefinition("flow", r9Spec(task)); err != nil {
+		t.Fatalf("RefuseDefinition refused a duration-only limit the engine does enforce: %v", err)
 	}
 }

@@ -926,7 +926,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	invokeName, invokeArgs := commandInvocation(name, command[1:])
 	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
-	cmd.Env = stageEnv
+	cmd.Env = credentials.TrustedLocalEnvironment(ctx, stageEnv)
 	if result, refused := e.refuseGuardedCredentialAccess(run, cmd.Env, env.TaskID); refused {
 		return result, nil
 	}
@@ -948,7 +948,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	tree, memoryBound, err := proc.StartBounded(cmd, e.StageMemoryLimitBytes, e.AllowStageMemoryAddressSpaceFallback)
+	tree, memoryBound, err := proc.StartBounded(cmd, e.StageMemoryLimitBytes, e.AllowStageMemoryAddressSpaceFallback, proc.StartOptions{RequireQuiescence: invoke.RequiresWorkspaceQuiescence(runCtx)})
 	if err != nil {
 		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{

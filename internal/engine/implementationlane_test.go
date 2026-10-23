@@ -18,7 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -158,7 +158,7 @@ func TestCachedVerdictShortCircuitsTheReviewer(t *testing.T) {
 		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
-				Outputs: map[string]interface{}{runner.CachedVerdictOutputKey: string(cached)},
+				Outputs: map[string]interface{}{runsemantics.CachedVerdictOutputKey: string(cached)},
 			}, nil
 		},
 		review: func(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
@@ -211,7 +211,7 @@ func TestCachedVerdictIsSuppressedByAnInstructionAddendum(t *testing.T) {
 	}
 	subject := apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{runner.CachedVerdictOutputKey: string(cached)},
+		Outputs: map[string]interface{}{runsemantics.CachedVerdictOutputKey: string(cached)},
 	}
 	if got := cachedVerdictFor(subject, ""); got == nil {
 		t.Fatal("no addendum: want the cached verdict honoured")
@@ -249,7 +249,7 @@ func TestContextNotInspectedRedispatchesExactlyOnce(t *testing.T) {
 			addenda = append(addenda, env.InstructionAddendum)
 			return apiv1.ResultEnvelope{
 				Status: apiv1.ResultBlocked,
-				Error:  &apiv1.ErrorInfo{Code: runner.ContextNotInspectedCode, Message: "no receipts"},
+				Error:  &apiv1.ErrorInfo{Code: runsemantics.ContextNotInspectedCode, Message: "no receipts"},
 			}, nil
 		},
 		review: func(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
@@ -307,11 +307,11 @@ func TestReviewerReceivesTheSubjectDiff(t *testing.T) {
 	if diffPointer.Integrity != apiv1.IntegrityDerived {
 		t.Errorf("review.diff integrity = %q, want derived", diffPointer.Integrity)
 	}
-	if diffPointer.Artifact == nil || diffPointer.Artifact.MediaType != runner.ReviewerDiffMediaType {
-		t.Fatalf("review.diff artifact = %+v, want media type %q", diffPointer.Artifact, runner.ReviewerDiffMediaType)
+	if diffPointer.Artifact == nil || diffPointer.Artifact.MediaType != runsemantics.ReviewerDiffMediaType {
+		t.Fatalf("review.diff artifact = %+v, want media type %q", diffPointer.Artifact, runsemantics.ReviewerDiffMediaType)
 	}
 	proj := laneJournal(t, env)
-	name := runner.ReviewerDiffArtifactName("run-gated", "review")
+	name := runsemantics.ReviewerDiffArtifactName("run-gated", "review")
 	recorded := laneArtifact(t, proj, name)
 	if string(recorded) != patch {
 		t.Errorf("recorded diff artifact = %q, want %q", recorded, patch)
@@ -590,7 +590,7 @@ func TestRepassJournalsTheRemediationEvidenceObligation(t *testing.T) {
 	// The obligation annotation is only written when the cause names failure
 	// evidence pointers the repass must read; the verdict pointer this fixture
 	// injects is exactly such a pointer.
-	reqs := laneAnnotations(proj, runner.RemediationEvidenceRequiredKind)
+	reqs := laneAnnotations(proj, runsemantics.RemediationEvidenceRequiredKind)
 	if len(reqs) != 1 {
 		t.Fatalf("remediation-evidence obligations = %d, want 1: %v", len(reqs), reqs)
 	}
@@ -672,7 +672,7 @@ func TestFirstPassJournalsNoObligation(t *testing.T) {
 	env.ExecuteWorkflow(Run, runInput("gated", laneSpec()))
 
 	proj := laneJournal(t, env)
-	if reqs := laneAnnotations(proj, runner.RemediationEvidenceRequiredKind); len(reqs) != 0 {
+	if reqs := laneAnnotations(proj, runsemantics.RemediationEvidenceRequiredKind); len(reqs) != 0 {
 		t.Fatalf("first-pass obligations = %v, want none", reqs)
 	}
 	evals := laneGateEvaluations(proj)
@@ -744,7 +744,7 @@ func TestSendBackInjectsALearningEpisode(t *testing.T) {
 		t.Errorf("episode pointer integrity = %q, want derived", episodePointer.Integrity)
 	}
 	proj := laneJournal(t, env)
-	injections := laneAnnotations(proj, runner.LearningEpisodeInjectedKind)
+	injections := laneAnnotations(proj, runsemantics.LearningEpisodeInjectedKind)
 	if len(injections) != 1 {
 		t.Fatalf("learning injections = %d, want 1", len(injections))
 	}
@@ -799,7 +799,7 @@ func TestPassingGateInjectsNoEpisode(t *testing.T) {
 	env.ExecuteWorkflow(Run, runInput("gated", laneSpec()))
 
 	proj := laneJournal(t, env)
-	if got := laneAnnotations(proj, runner.LearningEpisodeInjectedKind); len(got) != 0 {
+	if got := laneAnnotations(proj, runsemantics.LearningEpisodeInjectedKind); len(got) != 0 {
 		t.Fatalf("learning injections on a passing gate = %v, want none", got)
 	}
 	for _, name := range laneArtifactNames(proj) {
@@ -886,7 +886,7 @@ func TestSalvageOnTimeoutKeepsCommittedWork(t *testing.T) {
 				t.Fatalf("status = %q (%s: %s), want completed: a salvaged timeout keeps the work", res.Status, res.FailureCode, res.FailureMessage)
 			}
 			proj := laneJournal(t, env)
-			marker := laneArtifact(t, proj, runner.SalvageOnTimeoutArtifactName("implement"))
+			marker := laneArtifact(t, proj, runsemantics.SalvageOnTimeoutArtifactName("implement"))
 			var decoded map[string]any
 			if err := json.Unmarshal(marker, &decoded); err != nil {
 				t.Fatalf("decode salvage marker: %v", err)
@@ -919,7 +919,7 @@ func TestTimeoutWithoutSalvagePolicyStillFails(t *testing.T) {
 		}
 	}
 	proj := laneJournal(t, env)
-	if laneHasArtifact(proj, runner.SalvageOnTimeoutArtifactName("implement")) {
+	if laneHasArtifact(proj, runsemantics.SalvageOnTimeoutArtifactName("implement")) {
 		t.Error("salvage marker recorded for a task that never declared the policy")
 	}
 }
@@ -940,7 +940,7 @@ func TestSalvageRefusesAnEmptyTree(t *testing.T) {
 	env.ExecuteWorkflow(Run, runInput("linear", spec))
 
 	proj := laneJournal(t, env)
-	if laneHasArtifact(proj, runner.SalvageOnTimeoutArtifactName("implement")) {
+	if laneHasArtifact(proj, runsemantics.SalvageOnTimeoutArtifactName("implement")) {
 		t.Error("an empty tree was salvaged; salvage requires committed work")
 	}
 }
@@ -966,17 +966,17 @@ func TestUnpushedDiffIsCapturedBeforeTeardown(t *testing.T) {
 		t.Fatalf("status = %q, want completed", res.Status)
 	}
 	proj := laneJournal(t, env)
-	captured := laneArtifact(t, proj, runner.UnpushedDiffPatchArtifactName("implement"))
+	captured := laneArtifact(t, proj, runsemantics.UnpushedDiffPatchArtifactName("implement"))
 	if string(captured) != patch {
 		t.Errorf("captured patch = %q, want %q", captured, patch)
 	}
-	metaBytes := laneArtifact(t, proj, runner.UnpushedDiffMetaArtifactName("implement"))
-	var meta runner.UnpushedDiffMetadata
+	metaBytes := laneArtifact(t, proj, runsemantics.UnpushedDiffMetaArtifactName("implement"))
+	var meta runsemantics.UnpushedDiffMetadata
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
 		t.Fatalf("decode unpushed-diff metadata: %v", err)
 	}
-	if meta.Schema != runner.UnpushedDiffSchemaVersion {
-		t.Errorf("metadata schema = %q, want %q", meta.Schema, runner.UnpushedDiffSchemaVersion)
+	if meta.Schema != runsemantics.UnpushedDiffSchemaVersion {
+		t.Errorf("metadata schema = %q, want %q", meta.Schema, runsemantics.UnpushedDiffSchemaVersion)
 	}
 	if meta.Stage != "implement" || meta.Branch == "" || meta.BaseRef == "" {
 		t.Errorf("metadata = %+v, want stage/branch/base populated", meta)
@@ -1034,7 +1034,7 @@ func TestArtifactRetryAttemptPreservesWorkspaceWorkBeforeRetry(t *testing.T) {
 		t.Fatalf("workspace delta publications = %v, want failed attempt and retry attempt published", published)
 	}
 	proj := laneJournal(t, env)
-	captured := laneArtifact(t, proj, runner.UnpushedDiffPatchArtifactName("implement"))
+	captured := laneArtifact(t, proj, runsemantics.UnpushedDiffPatchArtifactName("implement"))
 	if string(captured) != patch {
 		t.Fatalf("captured patch = %q, want artifact-failed attempt patch %q", captured, patch)
 	}
@@ -1056,8 +1056,8 @@ func TestNoUnpushedDiffRecordsNothing(t *testing.T) {
 
 	proj := laneJournal(t, env)
 	for _, name := range []string{
-		runner.UnpushedDiffPatchArtifactName("implement"),
-		runner.UnpushedDiffMetaArtifactName("implement"),
+		runsemantics.UnpushedDiffPatchArtifactName("implement"),
+		runsemantics.UnpushedDiffMetaArtifactName("implement"),
 	} {
 		if laneHasArtifact(proj, name) {
 			t.Errorf("artifact %q recorded for a stage that changed nothing", name)
@@ -1106,8 +1106,8 @@ func TestPriorEngineRunsUnpushedWorkIsDiscoverable(t *testing.T) {
 	// same function, into a real instance layout, with no test-only shaping.
 	root := t.TempDir()
 	layout := instance.NewLayout(root).ForGaggle("web")
-	if _, err := ProjectRun(layout.RunsDir(), laneJournal(t, env)); err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+	if _, err := writeTestJournal(t, layout.RunsDir(), laneJournal(t, env)); err != nil {
+		t.Fatalf("write live journal: %v", err)
 	}
 
 	reader := journalclient.NewFileCrossRun(instance.NewLayout(root))
@@ -1167,12 +1167,12 @@ func TestBaseSyncConflictRoutesAsBusinessFailureWithDetail(t *testing.T) {
 	if res.Status == StatusCompleted {
 		t.Fatalf("status = %q, want a routed failure", res.Status)
 	}
-	if res.FailureCode != runner.BaseSyncConflictErrorCode {
-		t.Errorf("failure code = %q, want %q", res.FailureCode, runner.BaseSyncConflictErrorCode)
+	if res.FailureCode != runsemantics.BaseSyncConflictErrorCode {
+		t.Errorf("failure code = %q, want %q", res.FailureCode, runsemantics.BaseSyncConflictErrorCode)
 	}
 	proj := laneJournal(t, env)
-	detail := laneArtifact(t, proj, runner.BaseSyncConflictArtifactName("sync"))
-	var decoded runner.BaseSyncConflictDetail
+	detail := laneArtifact(t, proj, runsemantics.BaseSyncConflictArtifactName("sync"))
+	var decoded runsemantics.BaseSyncConflictDetail
 	if err := json.Unmarshal(detail, &decoded); err != nil {
 		t.Fatalf("decode conflict detail: %v", err)
 	}
@@ -1280,9 +1280,9 @@ func TestProjectedEventSeqMatchesProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectedEvents: %v", err)
 	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	actual := readJournalEvents(t, dir)
 	// run.started is op 0's projection and is present on both sides, so the
@@ -1323,7 +1323,7 @@ func TestGateEvidenceSkipsNonAgenticGates(t *testing.T) {
 	}
 	subject := apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{runner.CachedVerdictOutputKey: string(cached)},
+		Outputs: map[string]interface{}{runsemantics.CachedVerdictOutputKey: string(cached)},
 	}
 	ev, err := collectGateEvidence(nil, machine,
 		apiv1.Gate{Name: "review", Evaluator: apiv1.EvaluatorAutomated},

@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/workflow"
@@ -57,24 +58,24 @@ func TestEngineCancelDuringGateInfraRetry(t *testing.T) {
 	var finished *journal.Event
 	for i := range events {
 		switch {
-		case events[i].Type == journal.EventRunnerAnnotation && events[i].Runner["kind"] == runner.RetryDecisionKind:
+		case events[i].Type == journal.EventRunnerAnnotation && events[i].Runner["kind"] == runsemantics.RetryDecisionKind:
 			decision = &events[i]
 		case events[i].Type == journal.EventRunFinished:
 			finished = &events[i]
 		}
 	}
-	if decision == nil || decision.Runner[runner.RetryFailureClassKey] != string(journal.AttemptInfra) {
+	if decision == nil || decision.Runner[runsemantics.RetryFailureClassKey] != string(journal.AttemptInfra) {
 		t.Fatalf("precondition: want local-gate's infra retry decision, events = %v", hitlEventTypes(events))
 	}
-	if finished == nil || finished.TerminalCause == nil || finished.TerminalCause.Code != runner.RunCanceledErrorCode ||
+	if finished == nil || finished.TerminalCause == nil || finished.TerminalCause.Code != runsemantics.RunCanceledErrorCode ||
 		finished.TerminalCause.Phase != journal.PhaseAborted {
 		t.Fatalf("precondition: want the engine's run_canceled aborted terminal, got %+v", finished)
 	}
 
 	for interruption, want := range map[string]runner.TerminalFault{
-		runner.RunDurationExceededErrorCode: runner.TerminalFaultItemInfrastructure,
-		runner.RunStalledErrorCode:          runner.TerminalFaultItemInfrastructure,
-		"":                                  runner.TerminalFaultUnclassified, // an operator's cancel
+		runsemantics.RunDurationExceededErrorCode: runner.TerminalFaultItemInfrastructure,
+		runsemantics.RunStalledErrorCode:          runner.TerminalFaultItemInfrastructure,
+		"":                                        runner.TerminalFaultUnclassified, // an operator's cancel
 	} {
 		if got := runner.JournaledTerminalFault(events, interruption); got != want {
 			t.Errorf("interruption %q: class = %q, want %q", interruption, got, want)

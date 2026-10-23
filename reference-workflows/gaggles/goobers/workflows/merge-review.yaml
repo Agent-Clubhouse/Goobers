@@ -62,6 +62,8 @@ spec:
         maxPullRequests: "10"
         lookback: "168h"
       capabilities:
+        # Withdraw stale-base native verdicts with the owning review identity.
+        - github:pr:review
         - github:pr:write
         - github:issues:write
         - github:branch:delete
@@ -486,6 +488,8 @@ spec:
       inputs:
         resultFile: "post-merge-result.json"
       capabilities:
+        # Withdraw stale-base native verdicts with the owning review identity.
+        - github:pr:review
         - github:pr:write
         - github:issues:write
       policyActions:

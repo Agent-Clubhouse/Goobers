@@ -10,11 +10,8 @@ import (
 	"testing"
 	"time"
 
-	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
-	workflowpb "go.temporal.io/api/workflow/v1"
-	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
@@ -163,57 +160,6 @@ func TestDispatchOne(t *testing.T) {
 		if got.Runner != want.Runner || got.Pod != want.Pod || got.Image != want.Image || got.Node != want.Node || got.OS != want.OS ||
 			!got.QueuedAt.Equal(want.QueuedAt) || !got.PodStartedAt.Equal(want.PodStartedAt) {
 			t.Fatalf("placement = %+v, want %+v (lifted verbatim from dispatcher.Report)", got, want)
-		}
-	})
-
-	t.Run("carries no run gaggle memo, so the projection reconciler ignores it", func(t *testing.T) {
-		info := awaitClosedExecution(ctx, t, temporalClient, dispatchOneWorkflowID)
-		if memo := info.GetMemo().GetFields()[RunGaggleMemoKey]; memo != nil {
-			t.Fatalf("DispatchOne visibility record carries %s; the reconciler and DS6 liveness both key off it", RunGaggleMemoKey)
-		}
-
-		runsDir := t.TempDir()
-		var observed []string
-		reconciler, err := NewCompletedRunReconciler(temporalClient, "default", map[string]string{"web": runsDir},
-			func(_ context.Context, runID string, _ uint64) error {
-				observed = append(observed, runID)
-				return nil
-			})
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The reconciler runs against the LIVE namespace this DispatchOne just
-		// closed in, so it walks the real visibility page the daemon's
-		// reconciler would walk.
-		projected, err := reconciler.Reconcile(ctx)
-		if err != nil {
-			t.Fatalf("Reconcile over a namespace holding one DispatchOne: %v", err)
-		}
-		if projected != 0 || len(observed) != 0 {
-			t.Fatalf("projected = %d, observed = %v, want the dispatch workflow ignored entirely", projected, observed)
-		}
-		if entries, err := os.ReadDir(runsDir); err != nil || len(entries) != 0 {
-			t.Fatalf("runs dir entries = %v (err %v), want nothing written for a dispatch workflow", entries, err)
-		}
-
-		// Non-vacuity: the SAME visibility record, with the gaggle memo
-		// stamped on, is not ignored — the reconciler reaches
-		// completedRunDir and refuses the id as a path segment. So the memo's
-		// absence is doing the work, not the id's shape or an empty page.
-		gaggle, err := converter.GetDefaultDataConverter().ToPayload("web")
-		if err != nil {
-			t.Fatal(err)
-		}
-		withMemo := &completedRunFake{executions: []*workflowpb.WorkflowExecutionInfo{{
-			Execution: &commonpb.WorkflowExecution{WorkflowId: dispatchOneWorkflowID},
-			Memo:      &commonpb.Memo{Fields: map[string]*commonpb.Payload{RunGaggleMemoKey: gaggle}},
-		}}}
-		control, err := NewCompletedRunReconciler(withMemo, "default", map[string]string{"web": t.TempDir()}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := control.Reconcile(ctx); !errors.Is(err, ErrUnprojectable) {
-			t.Fatalf("control Reconcile error = %v, want %v — with the memo the reconciler DOES attempt the dispatch workflow", err, ErrUnprojectable)
 		}
 	})
 
@@ -418,29 +364,6 @@ func TestDispatchOneFailuresClassifyAsTheActivitysDo(t *testing.T) {
 // awaitClosedExecution returns the visibility record for workflowID once it is
 // closed and indexed. The dev server's visibility store is eventually
 // consistent with the history store, so this polls rather than reading once.
-func awaitClosedExecution(ctx context.Context, t *testing.T, c client.Client, workflowID string) *workflowpb.WorkflowExecutionInfo {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		response, err := c.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-			Namespace: "default",
-			PageSize:  completedRunPageSize,
-			Query:     "ExecutionStatus != 'Running'",
-		})
-		if err != nil {
-			t.Fatalf("list closed workflows: %v", err)
-		}
-		for _, info := range response.GetExecutions() {
-			if info.GetExecution().GetWorkflowId() == workflowID {
-				return info
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("workflow %q never appeared as closed in visibility", workflowID)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
 
 // TestRecordedDispatchStageHistoryReplays is the wire-contract guard decision
 // 003 plan step 3 requires: "engine.DispatchStageInput (JSON unchanged)".

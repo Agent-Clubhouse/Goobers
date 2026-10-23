@@ -84,24 +84,9 @@ type Result struct {
 // hop when no direct one-step Edge is registered — multi-version upgrades are
 // chained by invoking fix repeatedly, never silently skipped.
 func Migrate(source []byte, to string) (*Result, error) {
-	var doc yaml.Node
-	decoder := yaml.NewDecoder(bytes.NewReader(source))
-	if err := decoder.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("dslmigrate: parse workflow: %w", err)
-	}
-	var extra yaml.Node
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return nil, fmt.Errorf("dslmigrate: parse trailing document: %w", err)
-		}
-		return nil, errors.New("dslmigrate: multiple YAML documents are not supported; split resources into separate files before migrating")
-	}
-	root := documentRoot(&doc)
-	if root == nil || root.Kind != yaml.MappingNode {
-		return nil, errors.New("dslmigrate: workflow document has no top-level mapping")
-	}
-	if err := validateMigrationNodes(root); err != nil {
-		return nil, fmt.Errorf("dslmigrate: %w", err)
+	doc, root, err := parseMigrationDocument(source)
+	if err != nil {
+		return nil, err
 	}
 
 	from := supportmatrix.V1DSLVersion
@@ -133,7 +118,7 @@ func Migrate(source []byte, to string) (*Result, error) {
 	var after string
 	if transformed {
 		setScalar(root, "dslVersion", to, "!!str")
-		rendered, err := marshalDocument(&doc)
+		rendered, err := marshalDocument(doc)
 		if err != nil {
 			return nil, fmt.Errorf("dslmigrate: render migrated document: %w", err)
 		}
@@ -146,6 +131,56 @@ func Migrate(source []byte, to string) (*Result, error) {
 		after = string(pinned)
 	}
 	return &Result{Before: before, After: after, Changed: before != after, Notes: notes}, nil
+}
+
+// MigrateGaggleToV3 migrates the shared placement floor without adding a
+// dslVersion: Gaggles are unversioned. Callers must upgrade every workflow in
+// the gaggle before persisting this result, since 2.0 cannot read runsOn.
+func MigrateGaggleToV3(source []byte) (*Result, error) {
+	doc, root, err := parseMigrationDocument(source)
+	if err != nil {
+		return nil, err
+	}
+	kind, _ := mapValue(root, "kind")
+	if kind == nil || kind.Value != "Gaggle" {
+		return nil, errors.New("dslmigrate: expected a Gaggle document")
+	}
+	changed, notes, err := applyV20ToV30(source, root)
+	if err != nil {
+		return nil, err
+	}
+	after := string(source)
+	if changed {
+		after, err = marshalDocument(doc)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &Result{Before: string(source), After: after, Changed: changed, Notes: notes}, nil
+}
+
+func parseMigrationDocument(source []byte) (*yaml.Node, *yaml.Node, error) {
+	var doc yaml.Node
+	decoder := yaml.NewDecoder(bytes.NewReader(source))
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, nil, fmt.Errorf("dslmigrate: parse workflow: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, nil, fmt.Errorf("dslmigrate: parse trailing document: %w", err)
+		}
+		return nil, nil, errors.New("dslmigrate: multiple YAML documents are not supported; split resources into separate files before migrating")
+	}
+	root := documentRoot(&doc)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return nil, nil, errors.New("dslmigrate: workflow document has no top-level mapping")
+	}
+	if err := validateMigrationNodes(root); err != nil {
+		return nil, nil, fmt.Errorf("dslmigrate: %w", err)
+	}
+
+	return &doc, root, nil
 }
 
 // The transforms edit explicit mapping entries. Aliases and merge keys can

@@ -584,7 +584,7 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	}
 
 	t.Setenv("GOOBERS_INPUT_HEAD", prBranch)
-	if code, stdout, stderr := runArgs(t, "open-pr", instanceRoot); code != 0 {
+	if code, stdout, stderr := runOpenPRArgs(t, instanceRoot); code != 0 {
 		t.Fatalf("open-pr after escalation: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	implementationServer.mu.Lock()

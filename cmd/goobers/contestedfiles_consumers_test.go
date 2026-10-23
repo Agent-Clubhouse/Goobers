@@ -117,6 +117,13 @@ func TestGatherImplementContextProviderFailureWritesTypedFailureWithoutPartialEv
 		false, nil, []fakePRFile{{path: "second.go"}})
 	server.setPullRequestFilesFailure(11, http.StatusServiceUnavailable, "provider unavailable")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-implementation-context-failure")
+	// Keep the typed 503 failure while testing the stage's result boundary;
+	// provider retry tests cover the backoff ladder. providerCmdEnv restores
+	// the factory after this test.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
 
 	workDir := t.TempDir()
 	resultFile := filepath.Join(workDir, "implementation-context-result.json")

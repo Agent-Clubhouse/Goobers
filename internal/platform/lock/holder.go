@@ -17,6 +17,7 @@ const holderSuffix = ".holder"
 type Holder struct {
 	Operation  string    `json:"operation"`
 	PID        int       `json:"pid"`
+	Host       string    `json:"host,omitempty"`
 	AcquiredAt time.Time `json:"acquiredAt"`
 }
 
@@ -34,7 +35,8 @@ func (h *Handle) Announce(operation string) error {
 	if h.file == nil {
 		return errors.New("lock: announce on released handle")
 	}
-	data, err := json.Marshal(Holder{Operation: operation, PID: os.Getpid(), AcquiredAt: time.Now().UTC()})
+	host, _ := os.Hostname()
+	data, err := json.Marshal(Holder{Operation: operation, PID: os.Getpid(), Host: host, AcquiredAt: time.Now().UTC()})
 	if err != nil {
 		return fmt.Errorf("lock: encode holder: %w", err)
 	}

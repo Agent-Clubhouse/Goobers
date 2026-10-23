@@ -3,7 +3,6 @@ package harness
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -25,6 +24,9 @@ const MCPDiagnosticTimeout = 60 * time.Second
 // The caller must not treat these local-process facts as worker attestation.
 func (c *CopilotAdapter) ProbeMCPReadiness(ctx context.Context, req RunRequest) []MCPDiagnostic {
 	reports := ConfiguredMCPDiagnostics(req.MCPServers, req.Tools)
+	if refuseChildConfigProbe(ctx) != nil {
+		return failedMCPDiagnostics(reports, "authentication_failure")
+	}
 	// An external declaration cannot replace the adapter-owned safe probe.
 	if slices.ContainsFunc(req.MCPServers, func(server apiv1.MCPServer) bool { return server.Name == goobersIOServerName }) {
 		return failedMCPDiagnostics(reports, "server_identity_mismatch")
@@ -34,11 +36,11 @@ func (c *CopilotAdapter) ProbeMCPReadiness(ctx context.Context, req RunRequest) 
 	}
 	ctx, cancel := context.WithTimeout(ctx, MCPDiagnosticTimeout)
 	defer cancel()
-	workspace, err := os.MkdirTemp("", "goobers-mcp-readiness-")
+	workspace, cleanupWorkspace, err := copilotPrivateTempDir(req.Workspace)
 	if err != nil {
 		return failedMCPDiagnostics(reports, "transport_failure")
 	}
-	defer func() { _ = os.RemoveAll(workspace) }()
+	defer cleanupWorkspace()
 	req.Workspace, req.Envelope.Workspace = workspace, workspace
 	req.Envelope.RunID = "readiness"
 	req.ContextPaths, req.Envelope.Inputs = nil, nil

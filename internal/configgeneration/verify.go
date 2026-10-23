@@ -13,6 +13,7 @@ import (
 	"runtime"
 
 	"github.com/goobers/goobers/internal/configtree"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
@@ -20,6 +21,20 @@ import (
 // manifest. Windows cannot reproduce Unix mode bits; the archive identity remains
 // unchanged while every representable permission, path, type and byte is checked.
 func VerifyDirectory(ctx context.Context, configDir, digest, instanceID string) error {
+	return verifyDirectoryOwner(ctx, configDir, digest, func(owner string) (bool, error) {
+		return owner == instanceID, nil
+	})
+}
+
+// VerifyDirectoryForRoot accepts a retained generation owned by either the
+// canonical identity or a persisted historical alias of the same root.
+func VerifyDirectoryForRoot(ctx context.Context, configDir, digest, root string) error {
+	return verifyDirectoryOwner(ctx, configDir, digest, func(owner string) (bool, error) {
+		return instance.RootIdentityMatches(root, owner)
+	})
+}
+
+func verifyDirectoryOwner(ctx context.Context, configDir, digest string, owns func(string) (bool, error)) error {
 	absolute, err := filepath.Abs(configDir)
 	if err != nil {
 		return err
@@ -28,7 +43,11 @@ func VerifyDirectory(ctx context.Context, configDir, digest, instanceID string) 
 	if err != nil {
 		return err
 	}
-	if archive.InstanceID != instanceID {
+	owned, err := owns(archive.InstanceID)
+	if err != nil {
+		return err
+	}
+	if !owned {
 		return errors.New("config generation belongs to a different instance")
 	}
 	return verifyRetainedTree(ctx, absolute, archive)

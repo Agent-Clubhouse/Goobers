@@ -20,7 +20,8 @@ func TestAnnouncedHolderIsReadableWhileHeldAndClearedOnRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	holder, ok := ReadHolder(path)
-	if !ok || holder.Operation != "test.section" || holder.PID != os.Getpid() || holder.AcquiredAt.IsZero() {
+	host, _ := os.Hostname()
+	if !ok || holder.Operation != "test.section" || holder.PID != os.Getpid() || holder.Host != host || holder.AcquiredAt.IsZero() {
 		t.Fatalf("ReadHolder = %+v, %v; want this process's announced section", holder, ok)
 	}
 

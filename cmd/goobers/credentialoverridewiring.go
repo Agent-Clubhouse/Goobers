@@ -7,6 +7,7 @@ import (
 	"github.com/goobers/goobers/internal/credentialoverride"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // Wiring for internal/credentialoverride (#2744): hand it the runner's own
@@ -16,12 +17,12 @@ import (
 // buildRoleCredentials uses.
 func credentialOverrideRunner() credentialoverride.Runner {
 	return credentialoverride.Runner{
-		RepoCapabilities: repoCredentialedCapabilityNames(),
-		StorageKey:       credentialGrantStorageKey,
-		BacklogRole:      gaggleBacklogRole,
-		FilterGrants:     withoutNonADORepoGrants,
-		ProjectRepo:      configuredRepoForProject,
-		MintsCredential:  adoRepositoryMintsCredential,
+		RepoCapabilities: runtimewiring.RepoCredentialedCapabilityNames(),
+		StorageKey:       runtimewiring.CredentialGrantStorageKey,
+		BacklogRole:      runtimewiring.GaggleBacklogRole,
+		FilterGrants:     runtimewiring.WithoutNonADORepoGrants,
+		ProjectRepo:      runtimewiring.ConfiguredRepoForProject,
+		MintsCredential:  runtimewiring.AdoRepositoryMintsCredential,
 	}
 }
 

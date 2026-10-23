@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -34,9 +35,8 @@ func fanOutEngineDefinition(withMap bool) wf.Definition {
 	return wf.Definition{Name: "fanout", DSLVersion: "3.1", Spec: spec}
 }
 
-// TestFanOutRefusedAtEngineBoundaries pins design §13 for the engine walk:
-// spec.maps and parallels[].selection are named unsupported features at run
-// start, in the daemon preflight, and inside a direct Temporal invocation.
+// TestFanOutRefusedAtEngineBoundaries pins design §13 for maps at run start,
+// in the daemon preflight, and inside a direct Temporal invocation.
 func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -47,17 +47,10 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 		direct   error
 	}{
 		{"map", fanOutEngineDefinition(true), ErrMapsUnsupported, "spec.maps", "items", wf.ErrMapUnsupported},
-		{"selective parallel", fanOutEngineDefinition(false), ErrSelectiveParallelUnsupported, "spec.parallels.selection", "review", wf.ErrSelectiveParallelUnsupported},
+		{"selective parallel", fanOutEngineDefinition(false), ErrParallelsUnsupported, "spec.parallels", "", wf.ErrParallelsUnsupported},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reg := NewRegistryWithPreviewFeatures(true)
-			if _, err := reg.RegisterDefinition(tc.def); err != nil {
-				t.Fatalf("registration must stay possible: %v", err)
-			}
-			_, err := reg.StartInput(tc.def.Name, StartSpec{RunID: "fanout-guard", Gaggle: "web"})
-			if !errors.Is(err, tc.sentinel) {
-				t.Fatalf("StartInput = %v, want %v", err, tc.sentinel)
-			}
+			err := engineadmission.RefuseDefinition(tc.def.Name, tc.def.Spec)
 			found := false
 			var refusals *UnsupportedFeaturesError
 			if errors.As(err, &refusals) {
@@ -68,7 +61,7 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 			if !found {
 				t.Fatalf("StartInput refusal %v does not name %s on %q", err, tc.feature, tc.state)
 			}
-			if err := RefuseDefinition(tc.def.Name, tc.def.Spec); !errors.Is(err, tc.sentinel) {
+			if err := engineadmission.RefuseDefinition(tc.def.Name, tc.def.Spec); !errors.Is(err, tc.sentinel) {
 				t.Fatalf("daemon preflight: %v", err)
 			}
 			var ts testsuite.WorkflowTestSuite
@@ -78,5 +71,22 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 				t.Fatalf("direct Temporal run: %v", err)
 			}
 		})
+	}
+}
+
+func TestSelectiveParallelHasNoFeatureSpecificEngineRefusal(t *testing.T) {
+	def := fanOutEngineDefinition(false)
+	err := engineadmission.RefuseDefinition(def.Name, def.Spec)
+	var refusals *UnsupportedFeaturesError
+	if !errors.As(err, &refusals) {
+		t.Fatalf("RefuseDefinition = %v, want base parallel refusal", err)
+	}
+	for _, refusal := range refusals.Refusals {
+		if refusal.Feature == "spec.parallels.selection" {
+			t.Fatalf("selection remains refused after engine support: %v", refusal)
+		}
+	}
+	if !errors.Is(err, ErrParallelsUnsupported) {
+		t.Fatalf("base parallel refusal changed before #7753: %v", err)
 	}
 }

@@ -10,18 +10,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 type authPreflightRunner struct {
-	authExit       int
-	authTranscript string
-	authEnv        []string
-	authCommand    []string
-	authConfig     bool
+	authExit             int
+	authTranscript       string
+	authEnv              []string
+	authCommand          []string
+	authConfig           bool
+	authDir              string
+	authWorkConfigAbsent bool
 }
 
 func (r *authPreflightRunner) Run(_ context.Context, req harness.ProcessRequest) (harness.ProcessResult, error) {
@@ -31,6 +36,11 @@ func (r *authPreflightRunner) Run(_ context.Context, req harness.ProcessRequest)
 	}
 	r.authCommand = slices.Clone(req.Command)
 	r.authEnv = slices.Clone(req.Env)
+	r.authDir = req.Dir
+	if req.Dir != "" {
+		_, err := os.Stat(filepath.Join(req.Dir, "config.json"))
+		r.authWorkConfigAbsent = errors.Is(err, os.ErrNotExist)
+	}
 	if home, ok := envValue(req.Env, "COPILOT_HOME"); ok {
 		_, err := os.Stat(filepath.Join(home, "config.json"))
 		r.authConfig = err == nil
@@ -205,6 +215,9 @@ func TestHarnessAuthCopilotLogoutFailsClearlyForDirectNativeHarness(t *testing.T
 }
 
 func TestHarnessAuthCopilotStatusUsesRealPreflightForPersistedLogin(t *testing.T) {
+	for _, name := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+		t.Setenv(name, "")
+	}
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"oauthToken":"stored-login"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -219,7 +232,7 @@ func TestHarnessAuthCopilotStatusUsesRealPreflightForPersistedLogin(t *testing.T
 		return &harness.CopilotAdapter{
 			Command:           []string{program},
 			Runner:            runner,
-			AuthCheckArgs:     copilotAuthCheckArgs,
+			AuthCheckArgs:     runtimewiring.CopilotAuthCheckArgs,
 			ExtraEnvAllowlist: []string{"COPILOT_HOME"},
 		}, nil
 	})
@@ -234,11 +247,17 @@ func TestHarnessAuthCopilotStatusUsesRealPreflightForPersistedLogin(t *testing.T
 		t.Fatalf("auth probe command = %v, want unattended status probe", runner.authCommand)
 	}
 	authHome, ok := envValue(runner.authEnv, "COPILOT_HOME")
-	if !ok || authHome == home {
-		t.Fatalf("auth probe COPILOT_HOME = %q, %v; want isolated copy", authHome, ok)
+	if !ok || authHome != home {
+		t.Fatalf("auth probe COPILOT_HOME = %q, %v; want original stored-login home %q", authHome, ok, home)
 	}
 	if !runner.authConfig {
-		t.Fatal("persisted login was not copied into isolated preflight home")
+		t.Fatal("persisted login was not available in its original home")
+	}
+	if runner.authDir == "" || runner.authDir == home {
+		t.Fatalf("auth probe working directory = %q, want private directory outside the login home", runner.authDir)
+	}
+	if !runner.authWorkConfigAbsent {
+		t.Fatal("auth probe copied stored login into its private working directory")
 	}
 }
 
@@ -249,7 +268,7 @@ func TestHarnessAuthCopilotStatusRefusesSignedOutWithoutInteractivePrompt(t *tes
 	}
 	runner := &authPreflightRunner{authExit: 1, authTranscript: "not signed in"}
 	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
-		return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: copilotAuthCheckArgs}, nil
+		return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs}, nil
 	})
 	code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
 	if code != 1 {
@@ -272,7 +291,7 @@ func TestHarnessAuthCopilotStatusClassifiesExpiredAndInaccessiblePreflightState(
 		t.Run(transcript, func(t *testing.T) {
 			runner := &authPreflightRunner{authExit: 1, authTranscript: transcript}
 			withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
-				return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: copilotAuthCheckArgs}, nil
+				return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs}, nil
 			})
 			code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
 			if code != 1 || !strings.Contains(stdout, "HARNESS copilot auth: signed-out") {
@@ -292,7 +311,7 @@ func TestHarnessAuthCopilotStatusUsesExplicitCredentialFallback(t *testing.T) {
 		return &harness.CopilotAdapter{
 			Command:       []string{program},
 			Runner:        runner,
-			AuthCheckArgs: copilotAuthCheckArgs,
+			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			ModelCredential: func(context.Context) (string, error) {
 				return "explicit-token", nil
 			},

@@ -426,7 +426,21 @@ func TestReconcilePostMergeRejectsUnboundedBatch(t *testing.T) {
 
 func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 	var polls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/contoso/_apis/connectionData" {
+			writeJSONResp(t, w, map[string]interface{}{"authenticatedUser": map[string]string{"id": "goobers-guid", "providerDisplayName": "goobers"}})
+			return
+		}
+		switch r.URL.Path {
+		case "/contoso/project/_apis/policy/evaluations", "/contoso/project/_apis/git/repositories/repo/pullrequests/359/threads":
+			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		}
+		if r.URL.Path != "/contoso/project/_apis/git/repositories/repo/pullrequests/359" {
+			t.Errorf("unexpected ADO request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
 		polls++
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"pullRequestId": 359, "status": "completed", "description": "No work item reference",
@@ -489,9 +503,26 @@ func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 func TestReconcilePostMergeADOReturnsCloseOutFailure(t *testing.T) {
 	var workItemCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/contoso/_apis/connectionData" {
+			writeJSONResp(t, w, map[string]interface{}{"authenticatedUser": map[string]string{"id": "goobers-guid", "providerDisplayName": "goobers"}})
+			return
+		}
 		if strings.Contains(r.URL.Path, "/wit/workitems/") {
 			workItemCalls++
 			http.Error(w, "work item id is not valid", http.StatusBadRequest)
+			return
+		}
+		switch r.URL.Path {
+		case "/contoso/project/_apis/policy/evaluations", "/contoso/project/_apis/git/repositories/repo/pullrequests/359/threads":
+			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		case "/contoso/project/_apis/wit/workItems/42/comments":
+			writeJSONResp(t, w, map[string]interface{}{"comments": []interface{}{}})
+			return
+		}
+		if r.URL.Path != "/contoso/project/_apis/git/repositories/repo/pullrequests/359" {
+			t.Errorf("unexpected ADO request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{

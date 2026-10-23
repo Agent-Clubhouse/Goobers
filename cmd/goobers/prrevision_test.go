@@ -512,7 +512,8 @@ func TestPRClaimAcceptsOwnPublishedHead(t *testing.T) {
 
 func TestPRClaimProviderErrorKeepsClaim(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
+		// Claim retention depends on the failed read, not transport backoff.
+		http.Error(w, "boom", http.StatusForbidden)
 	}))
 	t.Cleanup(server.Close)
 	root := remediationCheckpointEnv(t, server.URL, false)

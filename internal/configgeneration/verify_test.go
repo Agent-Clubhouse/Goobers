@@ -7,14 +7,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // This fixture is explicitly Unix-authored even on Windows; capturing the host
 // filesystem would conceal NTFS's inability to preserve the source mode bits.
-func unixGenerationFixture(t *testing.T) (Store, string, string) {
+func unixGenerationFixture(t *testing.T, instanceIDs ...string) (Store, string, string) {
 	t.Helper()
-	archive := Archive{Version: 1, InstanceID: "source-instance", Files: []file{
+	instanceID := "source-instance"
+	if len(instanceIDs) != 0 {
+		instanceID = instanceIDs[0]
+	}
+	archive := Archive{Version: 1, InstanceID: instanceID, Files: []file{
 		{Path: "config", Mode: 0755, Directory: true},
 		{Path: "config/run.sh", Mode: 0755, Data: []byte("echo original\n")},
 		{Path: "goobers", Mode: 0755, Directory: true},
@@ -24,6 +31,7 @@ func unixGenerationFixture(t *testing.T) (Store, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	sum := sha256.Sum256(data)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
 	store := Store{Root: filepath.Join(t.TempDir(), "generations"), LocalCache: true}
@@ -32,6 +40,31 @@ func unixGenerationFixture(t *testing.T) (Store, string, string) {
 		t.Fatal(err)
 	}
 	return store, directory, digest
+}
+
+func TestVerifyDirectoryForRootAcceptsLegacyAlias(t *testing.T) {
+	root := t.TempDir()
+	canonical := strings.Repeat("a", 32)
+	legacy := strings.Repeat("b", 32)
+	for name, id := range map[string]string{
+		instance.RootIdentityFileName: canonical,
+		"instance-id":                 legacy,
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(id+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := instance.NewLayout(root).EnsureIdentity(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, directory, digest := unixGenerationFixture(t, legacy)
+	if err := VerifyDirectoryForRoot(t.Context(), directory, digest, root); err != nil {
+		t.Fatalf("legacy generation rejected after upgrade: %v", err)
+	}
+	_, foreignDirectory, foreignDigest := unixGenerationFixture(t, strings.Repeat("c", 32))
+	if err := VerifyDirectoryForRoot(t.Context(), foreignDirectory, foreignDigest, root); err == nil {
+		t.Fatal("foreign generation accepted")
+	}
 }
 
 func TestUnixSourceGenerationKeepsIdentityAcrossNativeExtraction(t *testing.T) {

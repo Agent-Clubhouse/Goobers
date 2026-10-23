@@ -42,7 +42,7 @@ func demandFixture(t *testing.T) (*Sources, localscheduler.WorkflowEntry, *deman
 	}
 	return source, entry, counter, time.Now().UTC().Truncate(time.Hour)
 }
-func finishDemandStarts(t *testing.T, q *triggerqueue.Store, records []triggerqueue.Record) {
+func finishDemandStarts(t *testing.T, q triggerqueue.SchedulerPolicyStore, records []triggerqueue.Record) {
 	t.Helper()
 	for _, r := range records {
 		if err := q.BeginDispatch(t.Context(), r.ID); err != nil {

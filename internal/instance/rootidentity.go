@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -51,7 +50,7 @@ func ReadRootIdentity(root string) (string, error) {
 		return "", fmt.Errorf("invalid instance identity encoding")
 	}
 	id := string(data[:32])
-	if _, err := hex.DecodeString(id); err != nil || strings.ToLower(id) != id {
+	if !ValidIdentity(id) {
 		return "", fmt.Errorf("invalid instance identity encoding")
 	}
 	return id, nil
@@ -63,12 +62,66 @@ func EnsureRootIdentity(ctx context.Context, root string) (string, error) {
 	return ensureRootIdentity(ctx, root, true)
 }
 
+// InstallRootIdentity installs an externally authoritative identity into a
+// private empty root. It never invents or replaces an identity.
+func InstallRootIdentity(ctx context.Context, root, id string) error {
+	if !ValidIdentity(id) {
+		return errors.New("invalid authoritative instance identity")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	handle, err := acquireRootIdentityLock(ctx, filepath.Join(root, RootIdentityFileName+".lock"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = handle.Release() }()
+	existing, err := ReadRootIdentity(root)
+	switch {
+	case err == nil && existing == id:
+		return nil
+	case err == nil:
+		return errors.New("worker root belongs to a different instance")
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	return journal.WriteFileAtomic(filepath.Join(root, RootIdentityFileName), []byte(id+"\n"), 0o644)
+}
+
 func ensureRootIdentity(ctx context.Context, root string, requireConfig bool) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if id, err := ReadRootIdentity(root); err == nil || (!errors.Is(err, os.ErrNotExist) && !rootIdentityReadContended(err)) {
-		return id, err
+	handle, err := acquireRootIdentityLock(ctx, filepath.Join(root, RootIdentityFileName+".lock"))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = handle.Release() }()
+
+	canonical, canonicalErr := ReadRootIdentity(root)
+	if canonicalErr != nil && !errors.Is(canonicalErr, os.ErrNotExist) {
+		return "", canonicalErr
+	}
+	legacy, legacyErr := readLegacyIdentity(root)
+	if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
+		return "", legacyErr
+	}
+	if _, aliasErr := ReadRootIdentityAliases(root); aliasErr != nil && !errors.Is(aliasErr, os.ErrNotExist) {
+		return "", aliasErr
+	}
+	if canonicalErr == nil {
+		if legacyErr == nil {
+			if err := ensureRootIdentityAlias(root, canonical, legacy); err != nil {
+				return "", err
+			}
+		}
+		return canonical, nil
+	}
+	if legacyErr == nil {
+		if err := journal.WriteFileAtomic(filepath.Join(root, RootIdentityFileName), []byte(legacy+"\n"), 0o644); err != nil {
+			return "", err
+		}
+		return legacy, nil
 	}
 	if _, err := os.Lstat(filepath.Join(root, RootDecommissionFileName)); !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("cannot adopt an unidentified historical root; restore its original identity")
@@ -77,14 +130,6 @@ func ensureRootIdentity(ctx context.Context, root string, requireConfig bool) (s
 		if info, err := os.Stat(NewLayout(root).ConfigFile()); err != nil || !info.Mode().IsRegular() {
 			return "", fmt.Errorf("instance identity requires an existing instance.yaml")
 		}
-	}
-	handle, err := acquireRootIdentityLock(ctx, filepath.Join(root, RootIdentityFileName+".lock"))
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = handle.Release() }()
-	if id, err := ReadRootIdentity(root); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return id, err
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {

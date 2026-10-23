@@ -90,6 +90,19 @@ func pythonProbeBin(goos string) string {
 // are satisfied. An empty required set is trivially satisfied, so a run that
 // declares no requirement is never touched (no behavior change).
 func (v *Verifier) Verify(ctx context.Context, required []string) error {
+	return v.verify(ctx, required, v.run)
+}
+
+// VerifyIn probes from the repository checkout so toolchains resolve directory-
+// scoped pins, including global.json sdk.version and rollForward, themselves.
+// It never changes the daemon's process-wide working directory.
+func (v *Verifier) VerifyIn(ctx context.Context, required []string, dir string) error {
+	return v.verify(ctx, required, func(ctx context.Context, name string, args ...string) (string, error) {
+		return execInWithBaseEnv(ctx, dir, name, args...)
+	})
+}
+
+func (v *Verifier) verify(ctx context.Context, required []string, run ExecFunc) error {
 	var problems []string
 	seen := make(map[string]struct{}, len(required))
 	for _, token := range required {
@@ -106,7 +119,7 @@ func (v *Verifier) Verify(ctx context.Context, required []string) error {
 			// toolchains we know how to probe.
 			continue
 		}
-		if err := prober.Verify(ctx, v.run, constraint); err != nil {
+		if err := prober.Verify(ctx, run, constraint); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", token, err))
 		}
 	}
@@ -250,9 +263,14 @@ func plural(n int) string {
 // would) and a timeout, returning combined stdout+stderr — some tools print
 // their version to stderr.
 func execWithBaseEnv(ctx context.Context, name string, args ...string) (string, error) {
+	return execInWithBaseEnv(ctx, "", name, args...)
+}
+
+func execInWithBaseEnv(ctx context.Context, dir, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
 	cmd.Env = procenv.BaseEnv()
 	out, err := cmd.CombinedOutput()
 	return string(out), err

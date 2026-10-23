@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
@@ -25,8 +27,8 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 	if cfg == nil || currentSet == nil || parent.Child != nil || parent.ConfigGeneration == "" || parent.Gaggle == "" || parent.Workflow == "" {
 		return childworkflow.Authority{}, childworkflow.ErrAuthorityUnavailable
 	}
-	owner, err := layout.ReadIdentity()
-	if err != nil || parent.InstanceID != owner {
+	matches, err := instance.RootIdentityMatches(layout.Root, parent.InstanceID)
+	if err != nil || !matches {
 		return childworkflow.Authority{}, fmt.Errorf("child parent instance identity unavailable or mismatched: %w", errors.Join(childworkflow.ErrAuthorityUnavailable, err))
 	}
 	store, err := executionGenerationStore(layout)
@@ -40,7 +42,7 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 	defer func() { _ = lease.Release() }()
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
-		return childworkflow.Authority{}, fmt.Errorf("load child parent generation: %w (%s)", err, validationIssueSummary(report))
+		return childworkflow.Authority{}, fmt.Errorf("load child parent generation: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	backend := childworkflow.BackendRunner
 	if parent.EngineDriven() {
@@ -109,7 +111,7 @@ func childStageCatalog(cfg *instance.Config, source *instance.ConfigSet, parent 
 	}
 	// Use the same structural compiler and raw Goober selection as normal daemon
 	// admission. Resolved model/options are used only in the Goober identity pin.
-	machines, err := compileWorkflowMachines(selected, goobersByName(selected), input.KnownHarnesses, cfg.ExternalTelemetryConnectorNames())
+	machines, err := runtimewiring.CompileWorkflowMachines(selected, runtimewiring.GoobersByName(selected), input.KnownHarnesses, cfg.ExternalTelemetryConnectorNames())
 	if err != nil {
 		return childworkflow.AdmissionContext{}, nil, err
 	}
@@ -158,11 +160,11 @@ func childSelectedConfig(source *instance.ConfigSet, parent childworkflow.Parent
 }
 
 func verifyChildParentGoobers(directory string, set *instance.ConfigSet, input childworkflow.AdmissionContext, machine *workflow.Machine, expected string) error {
-	instructions, err := loadGooberInstructions(directory, set, input.Goobers)
+	instructions, err := runtimewiring.LoadGooberInstructions(directory, set, input.Goobers)
 	if err != nil {
 		return err
 	}
-	skills, err := loadGooberSkillPackages(directory, input.Gaggle.Name, input.Goobers)
+	skills, err := runtimewiring.LoadGooberSkillPackages(directory, input.Gaggle.Name, input.Goobers)
 	if err != nil {
 		return err
 	}

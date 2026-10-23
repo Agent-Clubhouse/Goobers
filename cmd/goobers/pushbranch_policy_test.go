@@ -111,7 +111,7 @@ func TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush(t *testing.T) {
 	runGitT(t, wt.Path, "commit", "-m", "implement")
 
 	var stderr bytes.Buffer
-	pushErr := pushBranchWithRetry(wt.Path, branch, nil, &stderr)
+	pushErr := pushBranchWithRetry(wt.Path, branch, stageBaseBranch(), nil, &stderr)
 	if pushErr == nil {
 		t.Fatal("pushBranchWithRetry: err = nil, want a policy-protected push error")
 	}

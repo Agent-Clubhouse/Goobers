@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"fixture-thread"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"check-completion","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"check-completion","aggregated_output":"completion needed","exit_code":1,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Repaired completion."}}
+{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":60,"cache_write_input_tokens":4,"output_tokens":12,"reasoning_output_tokens":3}}

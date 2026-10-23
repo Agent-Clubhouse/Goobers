@@ -88,6 +88,22 @@ type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// RequestAdmissionError is a local refusal before an HTTP request is sent,
+// such as an exhausted caller-owned request budget. Transport backoff cannot
+// change that admission decision, so providers return it without retrying.
+// Err must be non-nil and remains available through errors.Is/errors.As.
+type RequestAdmissionError struct {
+	Err error
+}
+
+func (e *RequestAdmissionError) Error() string { return e.Err.Error() }
+func (e *RequestAdmissionError) Unwrap() error { return e.Err }
+
+func isRequestAdmissionError(err error) bool {
+	var admissionErr *RequestAdmissionError
+	return errors.As(err, &admissionErr)
+}
+
 type providerResponseError struct {
 	method             string
 	endpoint           string
@@ -233,6 +249,20 @@ func MergeRefusalReason(err error) (string, bool) {
 		}
 	}
 	return "provider rejected the merge request", true
+}
+
+// IsConfirmedMergeRefusal identifies an explicit provider rejection, rather
+// than a transport failure that may hide an accepted mutation.
+func IsConfirmedMergeRefusal(err error) bool {
+	var moved PullRequestHeadMovedError
+	var policy PullRequestPolicyNotMetError
+	if errors.As(err, &moved) || errors.As(err, &policy) || errors.Is(err, ErrMergeConflict) {
+		return true
+	}
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) &&
+		(responseErr.method == http.MethodPut || responseErr.method == http.MethodPost || responseErr.method == http.MethodPatch) &&
+		(responseErr.statusCode == http.StatusMethodNotAllowed || responseErr.statusCode == http.StatusConflict)
 }
 
 // mentionsMergeConflict reports whether a provider response body names a

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
@@ -107,7 +109,7 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, gooberCapabilities: []string{"agent:model", "repo:push", "provider:pr:write"}, parent: parentSource, source: publicationChildSource, workspace: func(s *daemonCredentialService, c triggerqueue.ChildRecord, m *worktree.Manager) *runner.ChildWorkspaceAdmission {
 		set, report, err := loadConfigDirectory(s.layout.ConfigDir())
 		if err != nil {
-			t.Fatalf("load publication fixture: %v (%s)", err, validationIssueSummary(report))
+			t.Fatalf("load publication fixture: %v (%s)", err, runtimewiring.ValidationIssueSummary(report))
 		}
 		project = set.Gaggles[0].Spec.Project
 		url, err := childRepoCloneURL(project)
@@ -118,7 +120,16 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 		if err = coordinator.Capture(t.Context(), c, childworkflow.YieldedWorkspace{Path: parent, RepoURL: url, RepositoryKey: childRepoKey(project), Policy: recovery.SnapshotPolicy{ExcludedPaths: []string{"private.txt"}}}); err != nil {
 			t.Fatal(err)
 		}
-		if err = m.WithRecoveryMirror(t.Context(), url, func(mirror string) error { recoveryCLIGit(t, mirror, "fetch", parent, "main"); return nil }); err != nil {
+		if err = m.WithRecoveryMirror(t.Context(), url, func(mirror string) error {
+			// Match a populated production mirror: retain the actual publication
+			// remote's base ref, not just FETCH_HEAD or the parent's fork snapshot.
+			recoveryCLIGit(t, mirror, "fetch", remote, "refs/heads/main:refs/heads/main")
+			want := recoveryCLIGit(t, parent, "--git-dir="+remote, "rev-parse", "refs/heads/main")
+			if got := recoveryCLIGit(t, mirror, "rev-parse", "refs/heads/main"); got != want {
+				t.Fatal("publication mirror base differs from remote", got, want)
+			}
+			return nil
+		}); err != nil {
 			t.Fatal(err)
 		}
 		admission, err := coordinator.Prepare(t.Context(), c, url)

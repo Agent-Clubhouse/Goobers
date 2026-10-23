@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,11 +28,11 @@ const MinSignedKeyBytes = 32
 var ErrMalformedToken = errors.New("podauth: malformed signed pod token")
 
 // SignedKey mints and verifies stateless per-run tokens from a shared secret.
-// Safe for concurrent use: it holds no mutable state.
+// Safe for concurrent minting, verification, and key-file reload.
 //
 // WHY THIS EXISTS (Goobers#3701): the in-memory Registry is daemon-local, which
 // is sound when the dispatcher shares the daemon's process. Mode-3 splits them:
-// `goobers up` and `goobers worker --dispatch-namespace` are separate processes
+// `goobers up` and `goobers-cloud worker --dispatch-namespace` are separate processes
 // (separate Deployments in-cluster), so a token minted in the worker's memory is
 // unverifiable by the daemon that receives the surrender.
 //
@@ -44,8 +45,10 @@ var ErrMalformedToken = errors.New("podauth: malformed signed pod token")
 // Revoke is a no-op in this mode and TTL is the only bound. That is why the
 // default TTL is short and why Mint refuses an over-long one.
 type SignedKey struct {
-	key []byte
-	now func() time.Time
+	keys             atomic.Pointer[signingKeys]
+	now              func() time.Time
+	keyFile          string
+	derivationDomain string
 }
 
 // NewSignedKey constructs a signer from raw key material.
@@ -55,7 +58,9 @@ func NewSignedKey(key []byte) (*SignedKey, error) {
 	}
 	dup := make([]byte, len(key))
 	copy(dup, key)
-	return &SignedKey{key: dup, now: time.Now}, nil
+	s := &SignedKey{now: time.Now}
+	s.keys.Store(&signingKeys{current: SigningKey{Key: dup}})
+	return s, nil
 }
 
 // WithClock overrides the time source for deterministic tests.
@@ -100,7 +105,7 @@ func (s *SignedKey) MintScoped(runID string, ttl time.Duration, scopes ...string
 	}
 	exp := s.now().Add(ttl).UTC().Unix()
 	payload := signedPayload(runID, checked, exp)
-	return tokenPrefix + payload + "." + s.sign(payload), nil
+	return s.encodeToken(tokenPrefix, "", payload), nil
 }
 
 // maxSignedTokenBytes bounds every signed bearer before any MAC work is done.
@@ -121,10 +126,14 @@ func (s *SignedKey) verifyMAC(token, prefix, domain string) (string, error) {
 	payload, mac := rest[:idx], rest[idx+1:]
 	// Constant-time compare: a byte-wise early return here leaks how much of a
 	// forged MAC was correct.
-	if subtle.ConstantTimeCompare([]byte(mac), []byte(s.sign(domain+payload))) != 1 {
+	key, claims, err := s.verificationKey(payload)
+	if err != nil {
+		return "", err
+	}
+	if subtle.ConstantTimeCompare([]byte(mac), []byte(signWith(key, domain+payload))) != 1 {
 		return "", ErrUnknownToken
 	}
-	return payload, nil
+	return claims, nil
 }
 
 func (s *SignedKey) unexpired(exp int64) bool {
@@ -147,8 +156,8 @@ func (s *SignedKey) verifySigned(token string) (string, []string, error) {
 	return runID, scopes, nil
 }
 
-func (s *SignedKey) sign(payload string) string {
-	mac := hmac.New(sha256.New, s.key)
+func signWith(key []byte, payload string) string {
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(payload))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

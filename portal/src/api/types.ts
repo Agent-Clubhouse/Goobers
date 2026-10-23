@@ -597,6 +597,43 @@ export interface RecoveryInventoryStatus {
   policySource?: string;
   error?: string;
   observedAt: string;
+  /**
+   * Oldest slot-holding snapshots of terminal runs, with the exact commands
+   * that inspect, restore or abandon each one. Only on warning/exhausted.
+   */
+  reclaimCandidates?: RecoveryReclaimCandidate[];
+  /** Every actionable snapshot; reclaimCandidates is its oldest prefix. */
+  reclaimCandidatesTotal?: number;
+  /** Retention setting stopping abandoned snapshots from being deleted. */
+  reclaimHold?: RecoveryReclaimHold;
+  /** Lists every retained snapshot per run. */
+  statusCommand?: string;
+}
+
+export interface RecoveryReclaimCandidate {
+  runId: string;
+  phase: string;
+  ref: string;
+  patchDigest: string;
+  repositoryKey: string;
+  createdAt: string;
+  retainUntil: string;
+  /** Already abandoned; waiting for a retention pass to delete it. */
+  abandoned?: boolean;
+  inspectCommand: string;
+  /** Absent once the retention deadline has passed: restore refuses it. */
+  restoreCommand?: string;
+  /** Absent once abandoned. */
+  abandonCommand?: string;
+}
+
+export interface RecoveryReclaimHold {
+  reason: "disabled" | "dry-run" | "grace";
+  /** End of the first-enable grace window, when it has started. */
+  until?: string;
+  /** instance.yaml change that releases the hold. */
+  setting: string;
+  configFile?: string;
 }
 
 export interface TelemetryRetentionStatus {
@@ -1037,6 +1074,10 @@ export interface RunLineage {
     source?: string;
   }>;
   historicalRepassCount: number;
+  historicalRepassCountPartial?: boolean;
+  continuationsTruncated?: boolean;
+  continuationsNextCursor?: string;
+  continuationsIncomplete?: boolean;
 }
 
 export interface LineageRun {
@@ -2122,7 +2163,7 @@ export interface DaemonClient {
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
-  getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;

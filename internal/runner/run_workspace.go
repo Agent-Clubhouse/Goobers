@@ -349,7 +349,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// from base instead would hand the stage a pristine checkout
 			// wearing the PR's branch name. Fail loudly instead.
 			RequireExistingBranch: workspaceBranch != "",
-			AcquireRemoteBranch:   workspaceBranch != "",
+			AcquireRemoteBranch:   workspaceBranch != "" && (!in.requireExistingWorkspace || workspaceBranch != in.WorkspaceBranch),
 			Sparse:                sparse,
 		})
 		if err != nil {
@@ -445,12 +445,16 @@ func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal
 		baseRef = "main"
 	}
 	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	if in.requireExistingWorkspace && in.WorkspaceBranch != "" {
+		branch = in.WorkspaceBranch
+	}
 	lease, err := r.cfg.Worktrees.AcquirePinned(stalledAttemptContext(ctx), worktree.PinnedOptions{
-		RepoURL:     repoURL,
-		RunID:       in.RunID,
-		BaseRef:     baseRef,
-		Branch:      branch,
-		CleanPolicy: worktree.PinnedCleanPolicy(r.cfg.PinnedCleanPolicy),
+		RequireExistingBranch: in.requireExistingWorkspace,
+		RepoURL:               repoURL,
+		RunID:                 in.RunID,
+		BaseRef:               baseRef,
+		Branch:                branch,
+		CleanPolicy:           worktree.PinnedCleanPolicy(r.cfg.PinnedCleanPolicy),
 		OnQueuePosition: func(position int) error {
 			return jr.Append(journal.Event{
 				Type: journal.EventRunnerAnnotation,

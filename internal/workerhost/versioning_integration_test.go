@@ -22,6 +22,7 @@ import (
 
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/workerrollout"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -306,6 +307,7 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 					return true
 				}
 			}
+
 		}
 		return signalRecorded && taskScheduled
 	})
@@ -347,5 +349,92 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 		attempts[0].Identity.BuildID != "build-new" || attempts[0].Identity.WorkerIdentity != "new-worker" || attempts[0].Failed ||
 		attempts[1].Identity.BuildID != "build-new" || attempts[1].Identity.WorkerIdentity != "new-worker" || attempts[1].Failed {
 		t.Fatalf("new build attempts = %+v, want exactly the successful unpinned probe activities on build-new/new-worker", attempts)
+	}
+}
+
+type integrationRolloutStatus struct {
+	status workerrollout.DeploymentStatus
+}
+
+func (s integrationRolloutStatus) Status(context.Context) (workerrollout.DeploymentStatus, error) {
+	return s.status, nil
+}
+
+func TestIntegrationUpgradeHITLResumesNMinus3OnCurrentVersion(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_TEMPORAL_CLI")
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+		LogLevel: "error",
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
+		ExtraArgs: []string{
+			"--dynamic-config-value", "frontend.enableWorkerVersioning=true",
+			"--dynamic-config-value", "system.enableWorkerVersioning=true",
+			"--dynamic-config-value", "frontend.workerVersioningDataAPIs=true",
+			"--dynamic-config-value", "frontend.workerVersioningRuleAPIs=true",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	queue := "workerhost-upgrade-hitl"
+	oldRecords := &versioningRecorder{}
+	currentRecords := &versioningRecorder{}
+	oldWorker := startVersionedWorker(t, server.Client(), queue, "build-n-minus-3", "worker-n-minus-3", oldRecords)
+	deployment := server.Client().WorkerDeploymentClient().GetHandle(DeploymentName)
+	waitForCurrentVersion(t, ctx, deployment, "build-n-minus-3")
+	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: "upgrade-hitl-n-minus-3", TaskQueue: queue,
+	}, versioningWorkflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForVersioning(t, func() bool { return len(oldRecords.snapshot()) == 2 })
+	oldWorker.Stop()
+
+	for _, build := range []string{"build-n-minus-2", "build-n-minus-1"} {
+		recorder := &versioningRecorder{}
+		w := startVersionedWorker(t, server.Client(), queue, build, "worker-"+build, recorder)
+		waitForCurrentVersion(t, ctx, deployment, build)
+		w.Stop()
+	}
+	startVersionedWorker(t, server.Client(), queue, "build-n", "worker-n", currentRecords)
+	waitForCurrentVersion(t, ctx, deployment, "build-n")
+
+	source := integrationRolloutStatus{status: workerrollout.DeploymentStatus{
+		TargetBuildID:      "build-n-plus-1",
+		CurrentBuildID:     "build-n",
+		VersionCount:       3,
+		Generation:         7,
+		ObservedGeneration: 7,
+		Deprecated: []workerrollout.DeprecatedVersion{{
+			BuildID: "build-n-minus-3",
+			Status:  "Draining",
+		}},
+	}}
+	var retention workerrollout.Result
+	waitForVersioning(t, func() bool {
+		retention, err = workerrollout.Reconcile(ctx, source, workerrollout.SDKClient{Client: server.Client()}, workerrollout.DefaultVersionLimit, "build-n")
+		return err == nil && retention.Updated == 1
+	})
+	if retention.RetiredBuild != "build-n-minus-3" {
+		t.Fatalf("retention = %+v", retention)
+	}
+
+	if err := server.Client().SignalWorkflow(ctx, run.GetID(), run.GetRunID(), "resume", nil); err != nil {
+		t.Fatal(err)
+	}
+	var result []versioningActivityResult
+	if err := run.Get(ctx, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 2 ||
+		result[0].BuildID != "build-n-minus-3" ||
+		result[1].BuildID != "build-n" ||
+		result[1].WorkerIdentity != "worker-n" {
+		t.Fatalf("HITL result = %+v, want N-3 before hold and N after resume", result)
 	}
 }

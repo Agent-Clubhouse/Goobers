@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -153,7 +154,7 @@ func TestEscalateStalledUsesTerminalPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(events) < 2 || events[len(events)-2].Error == nil ||
-		events[len(events)-2].Error.Code != RunStalledErrorCode ||
+		events[len(events)-2].Error.Code != runsemantics.RunStalledErrorCode ||
 		events[len(events)-1].Type != journal.EventRunFinished ||
 		events[len(events)-1].Status != string(journal.PhaseEscalated) {
 		t.Fatalf("terminal events = %+v", events)
@@ -437,7 +438,7 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 	}
 	if len(events) < 2 ||
 		events[len(events)-2].Error == nil ||
-		events[len(events)-2].Error.Code != RunCanceledErrorCode ||
+		events[len(events)-2].Error.Code != runsemantics.RunCanceledErrorCode ||
 		events[len(events)-1].Type != journal.EventRunFinished ||
 		events[len(events)-1].Status != string(journal.PhaseAborted) {
 		t.Fatalf("terminal events = %+v, want run_canceled + run.finished(aborted)", events)
@@ -528,7 +529,7 @@ func TestInterruptStageEscalatesLiveRun(t *testing.T) {
 	note := events[len(events)-2]
 	if len(events) < 2 ||
 		note.Error == nil ||
-		note.Error.Code != StageInterruptedErrorCode ||
+		note.Error.Code != runsemantics.StageInterruptedErrorCode ||
 		note.Stage != "implement" ||
 		note.Actor != actor ||
 		events[len(events)-1].Type != journal.EventRunFinished ||
@@ -661,7 +662,7 @@ func TestExpireRunAbortsLiveRunDespiteActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(events) < 2 || events[len(events)-2].Error == nil ||
-		events[len(events)-2].Error.Code != RunDurationExceededErrorCode {
+		events[len(events)-2].Error.Code != runsemantics.RunDurationExceededErrorCode {
 		t.Fatalf("terminal events = %+v, want duration-exceeded + run.finished(aborted)", events)
 	}
 }
@@ -995,7 +996,7 @@ func TestEscalateStalledDoesNotTakeOverNormalTerminalPreparation(t *testing.T) {
 				t.Fatalf("run.finished status = %q, want completed", event.Status)
 			}
 		}
-		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == RunStalledErrorCode {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == runsemantics.RunStalledErrorCode {
 			t.Fatalf("normal terminal path was also escalated: %+v", event)
 		}
 	}

@@ -11,7 +11,7 @@ import (
 // key without recording the same transcript twice or fetching it from an
 // optional fleet store. Reading durable history also makes this work after a
 // daemon restart and for runner-owned, adopted journals.
-func (run *liveRun) adoptCompletedTranscript(runID string, branch int, op Op) (bool, error) {
+func (w *Writer) adoptCompletedTranscript(run *liveRun, runID string, branch int, op Op) (bool, error) {
 	span := op.Span
 	if span == nil || (span.Name != "transcript" && !strings.HasSuffix(span.Name, ".transcript")) {
 		return false, nil
@@ -35,13 +35,13 @@ func (run *liveRun) adoptCompletedTranscript(runID string, branch int, op Op) (b
 		if _, err := reader.ArtifactBytesBounded(*event.Ref, journal.MaxCheckpointScrubBytes); err != nil {
 			return true, err // A marker alone is not proof of durable custody.
 		}
-		if err := run.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Stage: span.Stage,
+		if err := w.appendRun(run, journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Stage: span.Stage,
 			Attempt: span.Attempt, AttemptClass: span.Class, Runner: map[string]any{
 				EmitKeyRunnerField: op.Key, "transcriptCaptureAdopted": capture, "transcriptSeq": event.Seq,
 			}}); err != nil {
 			return true, err
 		}
-		run.keys[op.Key] = run.jr.Seq()
+		run.keys[op.Key] = w.seq(run)
 		return true, nil
 	}
 	return false, nil

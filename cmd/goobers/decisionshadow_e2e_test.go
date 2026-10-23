@@ -97,7 +97,7 @@ func runShadowE2E(t *testing.T, cfg *instance.Config, observer harness.Observer,
 	rc := runner.Config{
 		Worktrees: manager,
 		RunsDir:   runsDir, ScratchDir: filepath.Join(root, "scratch"),
-		HandoffSchemaLoader: newHandoffSchemaLoader(cfg, "../../reference-workflows"),
+		HandoffSchemaLoader: shadowRunnerConfig(t, cfg).HandoffSchemaLoader,
 		NewDeterministic: func(rec runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Deterministic, error) {
 			return shadowE2EProducer{rec: rec, payload: payload}, nil
 		},

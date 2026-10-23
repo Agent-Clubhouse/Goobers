@@ -11,10 +11,6 @@ import (
 	"testing"
 	"time"
 
-	commonpb "go.temporal.io/api/common/v1"
-	workflowpb "go.temporal.io/api/workflow/v1"
-	workflowservice "go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -24,42 +20,6 @@ import (
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
-
-type completedRunFake struct {
-	projection JournalProjection
-	executions []*workflowpb.WorkflowExecutionInfo
-	queries    int
-	// onQuery, when set, runs at the top of each QueryWorkflow — a hook for
-	// interleaving concurrent work with the reconciler's mid-pass query.
-	onQuery func()
-}
-
-type projectionValue struct {
-	projection JournalProjection
-}
-
-func (v projectionValue) HasValue() bool { return true }
-
-func (v projectionValue) Get(valuePtr interface{}) error {
-	out, ok := valuePtr.(*JournalProjection)
-	if !ok {
-		return errors.New("unexpected projection destination")
-	}
-	*out = v.projection
-	return nil
-}
-
-func (f *completedRunFake) ListWorkflow(_ context.Context, _ *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error) {
-	return &workflowservice.ListWorkflowExecutionsResponse{Executions: f.executions}, nil
-}
-
-func (f *completedRunFake) QueryWorkflow(_ context.Context, _, _, _ string, _ ...interface{}) (converter.EncodedValue, error) {
-	f.queries++
-	if f.onQuery != nil {
-		f.onQuery()
-	}
-	return projectionValue{projection: f.projection}, nil
-}
 
 // executeForProjection runs one engine fixture in the Temporal test
 // environment and returns its queried journal projection. wantWorkflowErr
@@ -93,222 +53,6 @@ func projectionInput(name string, spec apiv1.WorkflowSpec) RunInput {
 	in := runInput(name, spec)
 	in.TriggerKind = string(journal.TriggerManual)
 	return in
-}
-
-func TestCompletedRunReconcilerRetriesObservationForRecordedJournal(t *testing.T) {
-	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
-	proj := executeForProjection(t, projectionInput("project-automatic", spec), &Activities{
-		Det:        &scriptedStages{},
-		Workspaces: testWorkspaces(t),
-	}, false)
-	payload, err := converter.GetDefaultDataConverter().ToPayload("web")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fake := &completedRunFake{
-		projection: proj,
-		executions: []*workflowpb.WorkflowExecutionInfo{{
-			Execution: &commonpb.WorkflowExecution{WorkflowId: proj.Identity.RunID},
-			Memo:      &commonpb.Memo{Fields: map[string]*commonpb.Payload{RunGaggleMemoKey: payload}},
-		}},
-	}
-	runsDir := filepath.Join(t.TempDir(), "runs")
-	var (
-		observeCalls int
-		observedSeq  uint64
-	)
-	reconciler, err := NewCompletedRunReconciler(fake, "default", map[string]string{"web": runsDir}, func(_ context.Context, runID string, seq uint64) error {
-		observeCalls++
-		if runID != proj.Identity.RunID {
-			t.Errorf("observed run id = %q, want %q", runID, proj.Identity.RunID)
-		}
-		observedSeq = seq
-		if observeCalls == 1 {
-			return errors.New("intake unavailable")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count, err := reconciler.Reconcile(context.Background()); err == nil || count != 0 {
-		t.Fatalf("first Reconcile = (%d, %v), want (0, observer error)", count, err)
-	}
-	if observedSeq == 0 || !journal.Recorded(filepath.Join(runsDir, proj.Identity.RunID)) {
-		t.Fatalf("projection was not published and observed: seq=%d", observedSeq)
-	}
-	if count, err := reconciler.Reconcile(context.Background()); err != nil || count != 0 {
-		t.Fatalf("second Reconcile = (%d, %v), want idempotent (0, nil)", count, err)
-	}
-	if fake.queries != 2 {
-		t.Fatalf("projection queries = %d, want 2 (identity validation plus projection)", fake.queries)
-	}
-	if observeCalls != 2 {
-		t.Fatalf("observer calls = %d, want 2", observeCalls)
-	}
-}
-
-func TestCompletedRunReconcilerReplacesInterruptedProjection(t *testing.T) {
-	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
-	proj := executeForProjection(t, projectionInput("project-interrupted", spec), &Activities{
-		Det:        &scriptedStages{},
-		Workspaces: testWorkspaces(t),
-	}, false)
-	payload, err := converter.GetDefaultDataConverter().ToPayload("web")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fake := &completedRunFake{
-		projection: proj,
-		executions: []*workflowpb.WorkflowExecutionInfo{{
-			Execution: &commonpb.WorkflowExecution{WorkflowId: proj.Identity.RunID},
-			Memo:      &commonpb.Memo{Fields: map[string]*commonpb.Payload{RunGaggleMemoKey: payload}},
-		}},
-	}
-	runsDir := filepath.Join(t.TempDir(), "runs")
-	partial, err := journal.Create(runsDir, proj.Identity, map[string][]byte{
-		journal.PinnedWorkflowGraphInputName: []byte(proj.Graph),
-	})
-	if err != nil {
-		t.Fatalf("create interrupted projection: %v", err)
-	}
-	if err := partial.Close(); err != nil {
-		t.Fatalf("close interrupted projection: %v", err)
-	}
-
-	var observedSeq uint64
-	reconciler, err := NewCompletedRunReconciler(fake, "default", map[string]string{"web": runsDir}, func(_ context.Context, runID string, seq uint64) error {
-		if runID != proj.Identity.RunID {
-			t.Errorf("observed run id = %q, want %q", runID, proj.Identity.RunID)
-		}
-		observedSeq = seq
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count, err := reconciler.Reconcile(context.Background()); err != nil || count != 1 {
-		t.Fatalf("Reconcile = (%d, %v), want (1, nil)", count, err)
-	}
-	if fake.queries != 2 {
-		t.Fatalf("projection queries = %d, want 2", fake.queries)
-	}
-	rd, err := journal.OpenRead(filepath.Join(runsDir, proj.Identity.RunID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != len(proj.Ops) || events[len(events)-1].Type != journal.EventRunFinished {
-		t.Fatalf("replacement events = %d ending in %s, want %d ending in run.finished", len(events), events[len(events)-1].Type, len(proj.Ops))
-	}
-	if observedSeq != events[len(events)-1].Seq {
-		t.Fatalf("observed seq = %d, want terminal seq %d", observedSeq, events[len(events)-1].Seq)
-	}
-}
-
-func TestProjectCompletedRunForGaggleObservesRecordedJournal(t *testing.T) {
-	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
-	proj := executeForProjection(t, projectionInput("project-manual-existing", spec), &Activities{
-		Det:        &scriptedStages{},
-		Workspaces: testWorkspaces(t),
-	}, false)
-	runsDir := filepath.Join(t.TempDir(), "runs")
-	dir, err := ProjectRun(runsDir, proj)
-	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
-	}
-	fake := &completedRunFake{projection: proj}
-	var observedSeq uint64
-	gotDir, err := ProjectCompletedRunForGaggle(context.Background(), fake, proj.Identity.RunID, "web", runsDir, func(_ context.Context, runID string, seq uint64) error {
-		if runID != proj.Identity.RunID {
-			t.Errorf("observed run id = %q, want %q", runID, proj.Identity.RunID)
-		}
-		observedSeq = seq
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ProjectCompletedRunForGaggle: %v", err)
-	}
-	if gotDir != dir {
-		t.Fatalf("projected dir = %q, want %q", gotDir, dir)
-	}
-	if observedSeq == 0 {
-		t.Fatal("recorded journal was not observed")
-	}
-	if fake.queries != 0 {
-		t.Fatalf("projection queries = %d, want 0 for recorded journal", fake.queries)
-	}
-}
-
-func TestCompletedRunRecordedJournalFastPathsRejectTraversal(t *testing.T) {
-	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
-	proj := executeForProjection(t, projectionInput("escaped-run", spec), &Activities{
-		Det:        &scriptedStages{},
-		Workspaces: testWorkspaces(t),
-	}, false)
-	payload, err := converter.GetDefaultDataConverter().ToPayload("web")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, tc := range []struct {
-		name string
-		run  func(context.Context, *completedRunFake, string, ProjectionObserver) error
-	}{
-		{
-			name: "reconciler",
-			run: func(ctx context.Context, fake *completedRunFake, runsDir string, observe ProjectionObserver) error {
-				fake.executions = []*workflowpb.WorkflowExecutionInfo{{
-					Execution: &commonpb.WorkflowExecution{WorkflowId: filepath.Join("..", proj.Identity.RunID)},
-					Memo:      &commonpb.Memo{Fields: map[string]*commonpb.Payload{RunGaggleMemoKey: payload}},
-				}}
-				reconciler, err := NewCompletedRunReconciler(fake, "default", map[string]string{"web": runsDir}, observe)
-				if err != nil {
-					return err
-				}
-				count, err := reconciler.Reconcile(ctx)
-				if count != 0 {
-					t.Errorf("Reconcile count = %d, want 0", count)
-				}
-				return err
-			},
-		},
-		{
-			name: "manual",
-			run: func(ctx context.Context, fake *completedRunFake, runsDir string, observe ProjectionObserver) error {
-				_, err := ProjectCompletedRunForGaggle(
-					ctx, fake, filepath.Join("..", proj.Identity.RunID), "web", runsDir, observe,
-				)
-				return err
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			runsDir := filepath.Join(root, "runs")
-			if _, err := ProjectRun(root, proj); err != nil {
-				t.Fatalf("create escaped recorded journal: %v", err)
-			}
-			fake := &completedRunFake{projection: proj}
-			observeCalls := 0
-			err := tc.run(context.Background(), fake, runsDir, func(context.Context, string, uint64) error {
-				observeCalls++
-				return nil
-			})
-			if !errors.Is(err, ErrUnprojectable) {
-				t.Fatalf("err = %v, want ErrUnprojectable", err)
-			}
-			if observeCalls != 0 {
-				t.Fatalf("observer calls = %d, want 0", observeCalls)
-			}
-			if fake.queries != 0 {
-				t.Fatalf("projection queries = %d, want 0", fake.queries)
-			}
-		})
-	}
 }
 
 func TestProjectionJournalsTypedIntegrityRefusal(t *testing.T) {
@@ -376,362 +120,10 @@ func TestProjectionDefaultsMissingItemIntegrityConservatively(t *testing.T) {
 		t.Fatalf("projected item = %+v, want unapproved integrity", projection.Item)
 	}
 
-	legacyProjection := projection
-	legacyItem := *projection.Item
-	legacyItem.Integrity = ""
-	legacyProjection.Item = &legacyItem
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), legacyProjection)
-	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
-	}
-	rd, err := journal.OpenRead(dir)
-	if err != nil {
-		t.Fatalf("OpenRead: %v", err)
-	}
-	identity, err := rd.Identity()
-	if err != nil {
-		t.Fatalf("Identity: %v", err)
-	}
-	var itemRef *journal.InputRef
-	for i := range identity.Inputs {
-		if identity.Inputs[i].Name == "item" {
-			itemRef = &identity.Inputs[i]
-			break
-		}
-	}
-	if itemRef == nil || itemRef.Integrity != apiv1.IntegrityUnapproved {
-		t.Fatalf("item input ref = %+v, want unapproved integrity", itemRef)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, itemRef.Ref.Path))
-	if err != nil {
-		t.Fatalf("read item snapshot: %v", err)
-	}
-	var snapshot apiv1.BacklogItem
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		t.Fatalf("decode item snapshot: %v", err)
-	}
-	if snapshot.Integrity != apiv1.IntegrityUnapproved {
-		t.Fatalf("item snapshot integrity = %q, want unapproved", snapshot.Integrity)
-	}
 }
 
 // readDirBytes reads every regular file under dir into a path→content map, so
 // two projected journals can be compared byte-for-byte.
-func readDirBytes(t *testing.T, dir string) map[string][]byte {
-	t.Helper()
-	out := map[string][]byte{}
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		rel, rerr := filepath.Rel(dir, path)
-		if rerr != nil {
-			return rerr
-		}
-		out[rel] = data
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", dir, err)
-	}
-	return out
-}
-
-// TestProjectRunDeterministic is #629's determinism criterion: projecting the
-// same history twice yields byte-identical journals — event times, run.yaml,
-// state.json, and artifact blobs all come from the deterministic workflow
-// clock, never the projector's wall clock.
-func TestProjectRunDeterministic(t *testing.T) {
-	spec := crSpec("implement",
-		[]apiv1.Task{crTask("implement", "review")},
-		[]apiv1.Gate{crGate("review", map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort})})
-	proj := executeForProjection(t, projectionInput("proj-det", spec), &Activities{
-		Det:        &scriptedStages{},
-		Auto:       gate.NewAutomatedEvaluator(),
-		Workspaces: testWorkspaces(t),
-	}, false)
-
-	dirA, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
-	if err != nil {
-		t.Fatalf("first projection: %v", err)
-	}
-	dirB, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
-	if err != nil {
-		t.Fatalf("second projection: %v", err)
-	}
-
-	a, b := readDirBytes(t, dirA), readDirBytes(t, dirB)
-	if len(a) != len(b) {
-		t.Fatalf("projected file sets differ: %d vs %d files", len(a), len(b))
-	}
-	for rel, dataA := range a {
-		dataB, ok := b[rel]
-		if !ok {
-			t.Fatalf("second projection is missing %s", rel)
-		}
-		if string(dataA) != string(dataB) {
-			t.Errorf("projected %s differs between runs:\nA: %s\nB: %s", rel, dataA, dataB)
-		}
-	}
-
-	// The projected journal reads back through the standard reader with the
-	// journal's own structural invariant intact.
-	rd, err := journal.OpenRead(dirA)
-	if err != nil {
-		t.Fatalf("OpenRead: %v", err)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatalf("Events: %v", err)
-	}
-	if err := journal.MonotonicSeq(events); err != nil {
-		t.Fatalf("projected journal violates seq monotonicity: %v", err)
-	}
-	id, err := rd.Identity()
-	if err != nil {
-		t.Fatalf("Identity: %v", err)
-	}
-	if id.WorkflowDigest == "" || id.Workflow != "proj-det" || id.Trigger.Kind != journal.TriggerManual {
-		t.Errorf("projected identity incomplete: %+v", id)
-	}
-	if len(id.Inputs) == 0 {
-		t.Errorf("projected run.yaml pins no input snapshots (want the workflow graph)")
-	}
-}
-
-// TestProjectRunFailedRunStillProjects covers the failed-workflow arm: a
-// dispatch-exhausted run's history projects a journal ending run_failed +
-// run.finished(failed), exactly like the local runner's failTerminal.
-func TestProjectRunFailedRunStillProjects(t *testing.T) {
-	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
-	proj := executeForProjection(t, projectionInput("proj-fail", spec), &Activities{
-		Det:        &scriptedErrors{err: errors.New("tool exploded")},
-		Workspaces: testWorkspaces(t),
-	}, true)
-
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
-	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
-	}
-	rd, err := journal.OpenRead(dir)
-	if err != nil {
-		t.Fatalf("OpenRead: %v", err)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatalf("Events: %v", err)
-	}
-	last := events[len(events)-1]
-	if last.Type != journal.EventRunFinished || last.Status != string(journal.PhaseFailed) {
-		t.Fatalf("last event = %+v, want run.finished failed", last)
-	}
-	cause := events[len(events)-2]
-	if cause.Type != journal.EventError || cause.Error == nil || cause.Error.Code != "run_failed" {
-		t.Fatalf("penultimate event = %+v, want the run_failed cause", cause)
-	}
-	st, err := rd.State()
-	if err != nil {
-		t.Fatalf("State: %v", err)
-	}
-	if st.Phase != journal.PhaseFailed {
-		t.Fatalf("state phase = %q, want failed", st.Phase)
-	}
-}
-
-// TestProjectRunProjectsPlacementProvenance: a history carrying a
-// runner.placement op projects. Placement is excluded from CONFORMANCE
-// (goobernetes-architecture.md §7, D14), but projectable and
-// conformance-normative are different questions — span.recorded is the
-// standing precedent, also excluded from conformance and also projected.
-// Without runner.placement in projectableEventTypes, every repair/backfill
-// re-projection of a history carrying placement — the ops the engine emits
-// once #3529 lands — fails closed with ErrUnprojectable, and the engine
-// readiness this event shape claims is false at exactly the repair path that
-// needs it.
-func TestProjectRunProjectsPlacementProvenance(t *testing.T) {
-	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
-	base := executeForProjection(t, projectionInput("proj-placement", spec), &Activities{
-		Det:        &scriptedStages{},
-		Workspaces: testWorkspaces(t),
-	}, false)
-
-	// Insert the placement op immediately after the stage.started it describes,
-	// exactly where the local runner writes it.
-	proj := base
-	proj.Ops = nil
-	var inserted int
-	for _, op := range base.Ops {
-		proj.Ops = append(proj.Ops, op)
-		if op.Kind != opAppend || op.Event == nil || op.Event.Type != journal.EventStageStarted {
-			continue
-		}
-		placement := journal.PlacementEvent(op.Event.Stage, op.Event.Attempt, op.Event.AttemptClass, journal.Placement{
-			Runner: "linux-large",
-			Node:   "aks-linux-0001",
-			Host:   "goobers-stage-implement-4x2vq",
-			OS:     "linux",
-			Pod:    "goobers-stage-implement-4x2vq",
-		})
-		proj.Ops = append(proj.Ops, JournalOp{Kind: opAppend, Event: &placement, Time: op.Time})
-		inserted++
-	}
-	if inserted == 0 {
-		t.Fatal("fixture history has no stage.started to attach placement to")
-	}
-
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
-	if err != nil {
-		t.Fatalf("ProjectRun rejected a history carrying placement provenance: %v", err)
-	}
-	rd, err := journal.OpenRead(dir)
-	if err != nil {
-		t.Fatalf("OpenRead: %v", err)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatalf("Events: %v", err)
-	}
-	var projected int
-	for _, event := range events {
-		if event.Type != journal.EventRunnerPlacement {
-			continue
-		}
-		projected++
-		if event.IsConformanceNormative() {
-			t.Errorf("projected placement reports conformance-normative: %+v", event)
-		}
-		placement, ok := journal.PlacementFromEvent(event)
-		if !ok || placement.Runner != "linux-large" || placement.Node != "aks-linux-0001" ||
-			placement.Host != "goobers-stage-implement-4x2vq" {
-			t.Errorf("projected placement payload = %+v ok=%t", placement, ok)
-		}
-	}
-	if projected != inserted {
-		t.Fatalf("projected %d runner.placement events, want %d", projected, inserted)
-	}
-}
-
-// scriptedErrors is an invoke.Deterministic that always fails dispatch.
-type scriptedErrors struct{ err error }
-
-func (s *scriptedErrors) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	return apiv1.ResultEnvelope{}, s.err
-}
-
-// TestProjectRunFailsClosed pins the #629 fail-closed contract: history that
-// cannot be projected to a normative journal is an error naming the offending
-// op, never a silently skipped event.
-func TestProjectRunFailsClosed(t *testing.T) {
-	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
-	base := executeForProjection(t, projectionInput("proj-closed", spec), &Activities{
-		Det:        &scriptedStages{},
-		Workspaces: testWorkspaces(t),
-	}, false)
-
-	mutate := func(f func(p *JournalProjection)) JournalProjection {
-		clone := base
-		clone.Ops = append([]JournalOp(nil), base.Ops...)
-		f(&clone)
-		return clone
-	}
-
-	cases := []struct {
-		name string
-		proj JournalProjection
-		want string
-	}{
-		{
-			name: "unknown op kind",
-			proj: mutate(func(p *JournalProjection) {
-				p.Ops[1].Kind = "mystery"
-			}),
-			want: "unknown kind",
-		},
-		{
-			name: "unknown event type",
-			proj: mutate(func(p *JournalProjection) {
-				ev := *p.Ops[1].Event
-				ev.Type = "stage.morphed"
-				p.Ops[1].Event = &ev
-			}),
-			want: "unknown event type",
-		},
-		{
-			name: "unknown attempt class",
-			proj: mutate(func(p *JournalProjection) {
-				ev := *p.Ops[1].Event
-				ev.AttemptClass = "cosmic"
-				p.Ops[1].Event = &ev
-			}),
-			want: "unknown attempt class",
-		},
-		{
-			name: "no terminal event",
-			proj: mutate(func(p *JournalProjection) {
-				p.Ops = p.Ops[:len(p.Ops)-1]
-			}),
-			want: "no terminal run.finished",
-		},
-		{
-			name: "unknown terminal status",
-			proj: mutate(func(p *JournalProjection) {
-				ev := *p.Ops[len(p.Ops)-1].Event
-				ev.Status = "shrugged"
-				p.Ops[len(p.Ops)-1].Event = &ev
-			}),
-			want: "unknown terminal status",
-		},
-		{
-			name: "missing run.started",
-			proj: mutate(func(p *JournalProjection) {
-				p.Ops = p.Ops[1:]
-			}),
-			want: "first op is not the run.started",
-		},
-		{
-			name: "empty ops",
-			proj: mutate(func(p *JournalProjection) {
-				p.Ops = nil
-			}),
-			want: "no journal ops",
-		},
-		{
-			name: "missing pinned workflow definition",
-			proj: mutate(func(p *JournalProjection) {
-				p.Definition = nil
-			}),
-			want: "no pinned workflow definition",
-		},
-		{
-			name: "gate verdict references unrecorded artifact",
-			proj: mutate(func(p *JournalProjection) {
-				at := p.Ops[1].Time
-				ghost := journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass", Target: wf.TerminalComplete, Name: "verdict/review-0.json"}
-				terminal := p.Ops[len(p.Ops)-1]
-				p.Ops = append(append(p.Ops[:len(p.Ops)-1:len(p.Ops)-1], JournalOp{Kind: opAppend, Event: &ghost, Time: at}), terminal)
-			}),
-			want: "unrecorded artifact",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), tc.proj)
-			if err == nil {
-				t.Fatalf("ProjectRun accepted an unprojectable history")
-			}
-			if !errors.Is(err, ErrUnprojectable) && !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want ErrUnprojectable mentioning %q", err, tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want mention of %q", err, tc.want)
-			}
-		})
-	}
-}
 
 // TestProjectionOpTimesAreWorkflowClock guards against wall-clock leakage: op
 // times come from workflow.Now, so replaying the same fixture yields the same
@@ -893,9 +285,9 @@ func TestProjectionScrubsVerdictBeforeHistoryAndPointerAddressing(t *testing.T) 
 	if pointer == nil || pointer.Artifact == nil {
 		t.Fatalf("repass context = %+v, want verdict artifact", repass[1].ContextPointers)
 	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	data, err := pointer.Artifact.Resolve(dir)
 	if err != nil {
@@ -927,9 +319,9 @@ func TestProjectionPinsGateGooberCapabilities(t *testing.T) {
 		t.Fatal("projection carries no pinned gate-goober capabilities")
 	}
 
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
@@ -945,5 +337,85 @@ func TestProjectionPinsGateGooberCapabilities(t *testing.T) {
 	}
 	if got := pinned["reviewer"]; len(got) != 1 || got[0] != "github:issues:write" {
 		t.Fatalf("pinned reviewer capabilities = %v, want [github:issues:write]", got)
+	}
+}
+
+// A failed workflow must still record its cause and terminal for journal readers.
+func TestFailedWorkflowJournalRecordsTerminalCause(t *testing.T) {
+	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
+	proj := executeForProjection(t, projectionInput("proj-fail", spec), &Activities{
+		Det: &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+			return apiv1.ResultEnvelope{}, errors.New("tool exploded")
+		}},
+		Workspaces: testWorkspaces(t),
+	}, true)
+
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
+	if err != nil {
+		t.Fatalf("write live journal: %v", err)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Type != journal.EventRunFinished || last.Status != string(journal.PhaseFailed) {
+		t.Fatalf("last event = %+v, want run.finished failed", last)
+	}
+	cause := events[len(events)-2]
+	if cause.Type != journal.EventError || cause.Error == nil || cause.Error.Code != "run_failed" {
+		t.Fatalf("penultimate event = %+v, want the run_failed cause", cause)
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Phase != journal.PhaseFailed {
+		t.Fatalf("state phase = %q, want failed", st.Phase)
+	}
+}
+
+// Preserve workflow identity and immutable input coverage independently of host repair.
+func TestWorkflowJournalPinsIdentityAndInputs(t *testing.T) {
+	spec := crSpec("implement",
+		[]apiv1.Task{crTask("implement", "review")},
+		[]apiv1.Gate{crGate("review", map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort})})
+	proj := executeForProjection(t, projectionInput("proj-det", spec), &Activities{
+		Det:        &scriptedStages{},
+		Auto:       gate.NewAutomatedEvaluator(),
+		Workspaces: testWorkspaces(t),
+	}, false)
+
+	dirA, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
+	if err != nil {
+		t.Fatalf("write live journal: %v", err)
+	}
+
+	// The projected journal reads back through the standard reader with the
+	// journal's own structural invariant intact.
+	rd, err := journal.OpenRead(dirA)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if err := journal.MonotonicSeq(events); err != nil {
+		t.Fatalf("projected journal violates seq monotonicity: %v", err)
+	}
+	id, err := rd.Identity()
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	if id.WorkflowDigest == "" || id.Workflow != "proj-det" || id.Trigger.Kind != journal.TriggerManual {
+		t.Errorf("projected identity incomplete: %+v", id)
+	}
+	if len(id.Inputs) == 0 {
+		t.Errorf("projected run.yaml pins no input snapshots (want the workflow graph)")
 	}
 }

@@ -42,6 +42,7 @@ const (
 	GagglesPath                  = V1Prefix + "/gaggles"
 	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
 	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
+	GaggleHealthPath             = V1Prefix + "/gaggles/{gaggle}/health"
 	GaggleConnectionsPath        = V1Prefix + "/gaggles/{gaggle}/connections"
 	GaggleBundleExportPath       = V1Prefix + "/gaggles/{gaggle}/bundle"
 	GaggleBundleImportPath       = V1Prefix + "/gaggles/import"
@@ -149,6 +150,10 @@ const (
 	// kept to booleans and timestamps so its unauthenticated fail-open
 	// exception cannot become an information-disclosure surface.
 	ConfigDigestPath = V1Prefix + "/config/digest"
+	// ConfigSnapshotPath is the worker-only configuration plane. Without a
+	// digest query it returns the current sanitized snapshot digest; with
+	// ?digest=sha256:... it streams that exact retained snapshot.
+	ConfigSnapshotPath = V1Prefix + "/config/snapshot"
 	// WorkerConfigDivergencePath accepts the worker's transition reports into
 	// the daemon-owned instance journal; it is the write half of the same
 	// narrow config-observability capability.
@@ -284,12 +289,20 @@ const DigestHeader = "X-Goobers-Digest"
 // RouteID is the stable cross-adapter identity of a versioned route.
 type RouteID string
 
+// ConfigSnapshotCurrent identifies the sanitized worker snapshot currently in
+// force and the durable instance identity every worker replica must share.
+type ConfigSnapshotCurrent struct {
+	Digest     string `json:"digest"`
+	InstanceID string `json:"instanceID"`
+}
+
 // Stable V1 route IDs.
 const (
 	RouteDiscovery                RouteID = "discovery"
 	RouteOpenAPI                  RouteID = "openapi"
 	RouteCapabilities             RouteID = "capabilities"
 	RouteConfigDigest             RouteID = "configDigest"
+	RouteConfigSnapshot           RouteID = "configSnapshot"
 	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
 	RouteInstanceReadiness        RouteID = "readiness"
@@ -299,6 +312,7 @@ const (
 	RouteGaggles                  RouteID = "gaggles"
 	RouteGaggleGoobers            RouteID = "gaggleGoobers"
 	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
+	RouteGaggleHealth             RouteID = "gaggleHealth"
 	RouteGaggleConnections        RouteID = "gaggleConnections"
 	RouteGaggleBundleExport       RouteID = "gaggleBundleExport"
 	RouteGaggleBundleImport       RouteID = "gaggleBundleImport"
@@ -465,9 +479,14 @@ const (
 	// transfer rather than query. A large artifact over a slow link legitimately
 	// takes longer than any query should.
 	BlobBudget = 60 * time.Second
-	// MutationBudget covers approve/override/rerun. Kept at the bounded budget:
-	// a mutation that cannot be accepted in 8s is not going to be accepted.
+	// MutationBudget covers ordinary bounded mutations: work that cannot be
+	// accepted in 8s is not going to be accepted.
 	MutationBudget = 8 * time.Second
+	// InterventionBudget contains one engine HITL update (60s) plus response
+	// margin. Engine-driven approve/override/rerun/resolve wait for the
+	// workflow's durable decision, rather than reporting success after only
+	// enqueueing it.
+	InterventionBudget = 65 * time.Second
 	// CredentialResolveBudget covers the credential plane's resolve route. Its
 	// time is an outbound token mint, not a query: a GitHub App installation
 	// token exchange is bounded at 30s (internal/githubapp mintTimeout), and
@@ -536,6 +555,7 @@ var v1Routes = []Route{
 	// recovery completes) the way every other read route here does.
 	{ID: RouteInstanceReadiness, Method: http.MethodGet, Path: InstanceReadinessPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteConfigSnapshot, Method: http.MethodGet, Path: ConfigSnapshotPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	// A worker's divergence report is a machine-to-daemon journal seam, not an
 	// operator mutation that every product surface must expose. Class it with
 	// the journal emit plane and pool its append with mutations.
@@ -546,6 +566,7 @@ var v1Routes = []Route{
 	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleHealth, Method: http.MethodGet, Path: GaggleHealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleBundleExport, Method: http.MethodGet, Path: GaggleBundleExportPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleBundleImport, Method: http.MethodPost, Path: GaggleBundleImportPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
@@ -573,9 +594,9 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
-	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: InterventionBudget},
 
 	// RouteWorkflowEnabled edits a workflow definition source atomically to
 	// toggle the scheduler's honor bit for its non-manual triggers. It is
@@ -608,7 +629,7 @@ var v1Routes = []Route{
 	{ID: RouteClaimsActive, Method: http.MethodGet, Path: ClaimsActivePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerStatus, Method: http.MethodGet, Path: TriggerStatusPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: InterventionBudget},
 	// Cancelling a live run is operator recovery, like `run abort` and the
 	// HITL resolution above — maintenance, outside the runtime parity
 	// contract.

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -243,7 +245,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 	// installed — call it to get the identical fixture repo path, so the
 	// orphaned worktree below is keyed against the exact repo the resumed
 	// run's worktree.Manager will resolve to.
-	fixtureRepo, err := repoCloneURL(apiv1.RepoRef{})
+	fixtureRepo, err := runtimewiring.RepoCloneURL(apiv1.RepoRef{})
 	if err != nil {
 		t.Fatalf("repoCloneURL: %v", err)
 	}
@@ -541,7 +543,7 @@ spec:
 	}
 
 	outcome, err := resumeInterruptedRunsWithRunners(
-		context.Background(), layout, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, nil, setup.Machines,
+		context.Background(), layout, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, setup.Machines,
 		setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg, nil,
 	)
 	if err != nil {
@@ -653,7 +655,7 @@ func TestRunAbortRejectsAmbiguousRunIDPrefix(t *testing.T) {
 	}
 	want := `error: ambiguous prefix "dd57a3c2" matches 2 runs: ` + first + ", " + second + "\n"
 	var banner strings.Builder
-	if err := prepareManualRoot(instance.NewLayout(root), &banner); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), &banner); err != nil {
 		t.Fatal(err)
 	}
 	want = banner.String() + want
