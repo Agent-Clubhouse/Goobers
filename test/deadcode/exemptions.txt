@@ -488,6 +488,7 @@ github.com/goobers/goobers/internal/cloud/migrate.DropInstanceEventPartition # H
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Ensure # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Run # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 
+<<<<<<< HEAD
 # HA-P3-15 telemetry store awaits controller composition; no package-pattern exemptions supported.
 github.com/goobers/goobers/internal/cloud/telemetrypg.New # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/telemetrypg.Store.AdvanceStreamCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
@@ -507,3 +508,8 @@ github.com/goobers/goobers/internal/cloud/telemetrypg.normalizeTimestamp # HA-P3
 github.com/goobers/goobers/internal/cloud/telemetrypg.nullableTime # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/telemetrypg.telemetryBatchFingerprint # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/telemetryclient.FindingPassesThresholds # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+=======
+# #7818 start-input composition: the config loader fills Candidate.Pins with startpin.Compute and the webhook and trigger planes pin through Configuration.PinFor once the control assembly composes them. Remove on wiring.
+github.com/goobers/goobers/internal/cloud/config.Configuration.PinFor # Admission digest pinning for cloud starts (#7818); exercised by internal/cloud/config and internal/cloud/startpin tests. expires=2026-11-30
+github.com/goobers/goobers/internal/cloud/startpin.Compute # Admission digest pinning for cloud starts (#7818); exercised by internal/cloud/config and internal/cloud/startpin tests. expires=2026-11-30
+>>>>>>> origin/main

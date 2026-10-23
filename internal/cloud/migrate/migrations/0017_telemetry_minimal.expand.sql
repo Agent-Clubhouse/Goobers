@@ -27,8 +27,12 @@ CREATE TABLE telemetry.defect_aggregate (
     source_stream text NOT NULL,
     source_seq bigint NOT NULL CHECK (source_seq > 0),
     owner_epoch bigint NOT NULL,
+    -- One row per (aggregate identity, source stream): stream sequences have no
+    -- shared order, so each source keeps its own contribution and watermark and
+    -- the reader merges them (latest observed_at wins; ties by stream name).
     PRIMARY KEY (
-        instance_id,gaggle,workflow,aggregate,kind,subject,error_class,signature
+        instance_id,gaggle,workflow,aggregate,kind,subject,error_class,signature,
+        source_stream
     )
 );
 

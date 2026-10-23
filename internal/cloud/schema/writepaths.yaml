@@ -1580,7 +1580,6 @@ tables:
     update:
     - observed_at
     - finding
-    - source_stream
     - source_seq
     - owner_epoch
 - schema: telemetry

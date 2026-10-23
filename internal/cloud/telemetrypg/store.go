@@ -121,10 +121,9 @@ func (s *Store) Apply(ctx context.Context, batch Batch) error {
 				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 				ON CONFLICT (
 					instance_id,gaggle,workflow,aggregate,kind,subject,
-					error_class,signature
+					error_class,signature,source_stream
 				) DO UPDATE
 				SET observed_at=excluded.observed_at,finding=excluded.finding,
-				    source_stream=excluded.source_stream,
 				    source_seq=excluded.source_seq,owner_epoch=excluded.owner_epoch
 				WHERE telemetry.defect_aggregate.instance_id=$1
 				  AND telemetry.defect_aggregate.owner_epoch<=$13
@@ -393,6 +392,12 @@ func (s *Store) AdvanceStreamCursor(
 		if err := s.checkCursor(txCtx, tx, consumer, cursor, epoch); err != nil {
 			return err
 		}
+		if next == cursor.Seq {
+			// A no-op advance changes nothing, and must not clear the committed
+			// batch's fingerprint: that receipt is how an exact Apply replay
+			// (a lost response) is recognized.
+			return nil
+		}
 		return s.advanceCursor(txCtx, tx, consumer, cursor, next, "", epoch)
 	})
 }
@@ -441,12 +446,21 @@ func (s *Store) DefectAggregates(
 				fmt.Errorf("telemetrypg: aggregate %q is unavailable in cloud", aggregate)
 		}
 	}
+	// Each source stream contributes its own row per aggregate identity, with a
+	// watermark in that stream's own sequence domain. Reading merges them: for
+	// one identity the contribution observed latest wins (ties by stream name),
+	// the same single-finding-per-identity shape the local rollup returns.
 	rows, err := s.pool.Query(ctx, `
-		SELECT aggregate,finding
-		FROM telemetry.defect_aggregate
-		WHERE instance_id=$1 AND gaggle=$2
-		  AND ($3='' OR workflow=$3)
-		  AND observed_at>=$4
+		SELECT aggregate,finding FROM (
+			SELECT DISTINCT ON (gaggle,workflow,aggregate,kind,subject,error_class,signature)
+			       aggregate,finding,kind,subject,error_class,signature
+			FROM telemetry.defect_aggregate
+			WHERE instance_id=$1 AND gaggle=$2
+			  AND ($3='' OR workflow=$3)
+			  AND observed_at>=$4
+			ORDER BY gaggle,workflow,aggregate,kind,subject,error_class,signature,
+			         observed_at DESC,source_stream ASC
+		) merged
 		ORDER BY aggregate,kind,subject,error_class,signature`,
 		s.instanceID, request.Gaggle, request.Workflow, request.Since.UTC(),
 	)
