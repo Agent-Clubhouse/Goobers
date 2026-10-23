@@ -192,7 +192,8 @@ func (b *Builder) copyBatch(
 		if catchupSeq == sourceSeq {
 			complete := fmt.Sprintf(`
 				UPDATE %s.meta
-				SET ready=true, min_change_seq=$1, next_change_seq=$2,
+				SET ready=true, min_change_seq=GREATEST(min_change_seq,$1),
+				    next_change_seq=$2,
 				    catchup_seq=$2, owner_epoch=$3
 				WHERE singleton AND owner_epoch<=$3`, targetID)
 			tag, err := tx.Exec(ctx, complete, sourceFloor, sourceSeq, epoch)

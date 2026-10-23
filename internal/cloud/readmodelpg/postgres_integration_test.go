@@ -450,6 +450,54 @@ func TestRebuildFlipIsAtomic(t *testing.T) {
 	}
 }
 
+func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
+	pool := testPool(t)
+	applyMigrations(t, pool)
+	resetReadmodel(t, pool)
+	fence := testFence{pool: pool, epoch: 7}
+	source, err := readmodelpg.New(t.Context(), pool, fence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.UpsertRun(t.Context(), testProjection("baseline", 1)); err != nil {
+		t.Fatal(err)
+	}
+	builder, _ := readmodelpg.NewBuilder(pool, fence)
+	if err := builder.Build(t.Context(), "readmodel_v2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.Flip(t.Context(), "readmodel", 2); err != nil {
+		t.Fatal(err)
+	}
+	active, err := readmodelpg.New(t.Context(), pool, fence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := active.State(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := active.LatestChangeSeq(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := active.Changes(t.Context(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != 1 || state.MinChangeSeq != 2 || len(changes) != 0 {
+		t.Fatalf("rebuilt feed: latest=%d floor=%d changes=%v, want 1/2/empty",
+			latest, state.MinChangeSeq, changes)
+	}
+	condition := readmodel.EvaluateCursor(readmodel.Cursor{
+		SchemaVersion: state.SchemaVersion, Epoch: state.Epoch, Seq: latest,
+	}, state)
+	if condition != readmodel.CursorFeedTruncated {
+		t.Fatalf("resume at discarded baseline = %q, want %q",
+			condition, readmodel.CursorFeedTruncated)
+	}
+}
+
 func TestStaleOwnerRejectedAfterTakeover(t *testing.T) {
 	pool := testPool(t)
 	applyMigrations(t, pool)
