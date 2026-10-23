@@ -8,10 +8,10 @@ import (
 // Keep the engine API's sentinel identity and errors.As types while sharing
 // the same fail-closed policy with child admission.
 var (
-	ErrExperimentUnsupported        = engineadmission.ErrExperimentUnsupported
-	ErrOutboxUnsupported            = engineadmission.ErrOutboxUnsupported
-	ErrParallelsUnsupported         = engineadmission.ErrParallelsUnsupported
-	ErrMapsUnsupported              = engineadmission.ErrMapsUnsupported
+	ErrExperimentUnsupported = engineadmission.ErrExperimentUnsupported
+	ErrOutboxUnsupported     = engineadmission.ErrOutboxUnsupported
+	ErrParallelsUnsupported  = engineadmission.ErrParallelsUnsupported
+	ErrMapsUnsupported       = engineadmission.ErrMapsUnsupported
 )
 
 // UnsupportedFeatureError names a refused declaration and wraps its sentinel.
