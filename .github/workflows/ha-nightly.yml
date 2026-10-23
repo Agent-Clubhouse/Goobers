@@ -40,6 +40,7 @@ env:
   TOXIPROXY_API_URL: http://127.0.0.1:8474/version
   TEMPORAL_UPGRADE_ADDRESS: 127.0.0.1:17233
   TEMPORAL_WORKER_CONTROLLER_CHART_VERSION: 0.32.0
+  CERT_MANAGER_CHART_VERSION: v1.18.2
 
 jobs:
   smoke:
@@ -132,6 +133,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          helm upgrade --install cert-manager \
+            oci://quay.io/jetstack/charts/cert-manager \
+            --version "$CERT_MANAGER_CHART_VERSION" \
+            --namespace cert-manager --create-namespace \
+            --set crds.enabled=true --wait --timeout 5m
           helm upgrade --install temporal-worker-controller-crds \
             oci://docker.io/temporalio/temporal-worker-controller-crds \
             --version "$TEMPORAL_WORKER_CONTROLLER_CHART_VERSION" \

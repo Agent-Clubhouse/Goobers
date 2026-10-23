@@ -144,6 +144,7 @@ func TestHANightlyWiresCloudStackAndWorkerController(t *testing.T) {
 	all := joined.String()
 	for _, want := range []string{
 		"Install Temporal Worker Controller",
+		"oci://quay.io/jetstack/charts/cert-manager",
 		"temporal-worker-controller-crds",
 		"workerdeployment.temporal.io/goobers",
 		"app.kubernetes.io/name: azurite",
