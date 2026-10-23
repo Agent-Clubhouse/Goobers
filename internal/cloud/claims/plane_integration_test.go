@@ -3,9 +3,12 @@
 package claims
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"reflect"
@@ -649,5 +652,122 @@ func TestPlaneExpiredOverwriteKeepsOwnerHistory(t *testing.T) {
 	}
 	if pg, file := shapes(got.History), localShapes(local.HistoryForRun("old")); !reflect.DeepEqual(pg, file) || len(pg) != 1 {
 		t.Fatalf("overwritten owner history PG=%+v file=%+v; want its one unreleased record", pg, file)
+	}
+}
+
+// commitReplyLoss drops the first successful COMMIT reply after PostgreSQL
+// has committed, the protocol boundary where the outcome becomes unknown.
+type commitReplyLoss struct {
+	net.Conn
+	armed, dropped *atomic.Bool
+}
+
+func (c *commitReplyLoss) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 && bytes.Contains(p[:n], []byte("COMMIT\x00")) && c.armed.CompareAndSwap(true, false) {
+		c.dropped.Store(true)
+		return 0, io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
+// TestPlaneLostCommitIsAmbiguous: a write that committed but lost its reply
+// must not be advertised as safely replayable (503 recovering); it is an
+// ambiguous budget overrun.
+func TestPlaneLostCommitIsAmbiguous(t *testing.T) {
+	f := newPlaneFixture(t)
+	config := f.controller.Config()
+	dial := config.ConnConfig.DialFunc
+	var armed, dropped atomic.Bool
+	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &commitReplyLoss{Conn: conn, armed: &armed, dropped: &dropped}, nil
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	manager := pgtest.Manager(t, pool, "lost-commit", 0)
+	handle := pgtest.Acquire(t, manager)
+	plane, err := NewPlane(PlaneConfig{Pool: pool, InstanceID: pgtest.InstanceID, Lease: manager,
+		Owner: func() *cloudlease.Handle { return handle }, DefaultLease: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	armed.Store(true)
+	_, writeErr := plane.Acquire(t.Context(), request("committed", "run-a"))
+	if !dropped.Load() {
+		t.Fatalf("premise: no COMMIT reply was dropped: %v", writeErr)
+	}
+	var count int
+	if err := f.owner.QueryRow(t.Context(), `SELECT count(*) FROM control.claim WHERE instance_id=$1 AND external_id='committed'`,
+		pgtest.InstanceID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("premise: the server committed, count=%d (%v), write error %v", count, err, writeErr)
+	}
+	if !errors.Is(writeErr, cloudlease.ErrCommitUnknown) || planeCode(writeErr) != "503 request_budget_exceeded" {
+		t.Fatalf("committed write answered %q (%v), want the ambiguous 503 request_budget_exceeded", planeCode(writeErr), writeErr)
+	}
+}
+
+// TestPlaneHistoryRetentionMatchesFileLedger: retention is per run, as
+// ClaimLedger.retainedHistory keeps it. A run holding any lease keeps every
+// record however old; a run holding nothing keeps them only while its newest
+// activity is within ClaimHistoryTTL, and the next claim prunes them.
+func TestPlaneHistoryRetentionMatchesFileLedger(t *testing.T) {
+	f := newPlaneFixture(t)
+	p := f.leader(t, "a").plane
+	ctx := t.Context()
+	for _, step := range []struct{ item, run string }{{"old", "active"}, {"old", "quiet"}, {"recent", "recent"}} {
+		if _, err := p.Acquire(ctx, request(step.item+"-"+step.run, step.run)); err != nil {
+			t.Fatal(err)
+		}
+		release := request(step.item+"-"+step.run, step.run)
+		release.Reason = claimrelease.Completed.Reason()
+		if _, err := p.Release(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := p.Acquire(ctx, request("held", "active")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.owner.Exec(ctx, `
+		UPDATE control.claim_history
+		SET claimed_at=claimed_at-$2::interval, renewed_at=renewed_at-$2::interval, released_at=released_at-$2::interval
+		WHERE instance_id=$1 AND external_id LIKE 'old-%'`,
+		pgtest.InstanceID, localscheduler.ClaimHistoryTTL+time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	items := func(run string) map[string]bool {
+		t.Helper()
+		got, err := p.List(ctx, httpapi.ClaimListRequest{RunID: run, Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, entry := range got.History {
+			out[entry.ItemID] = true
+		}
+		return out
+	}
+	if got := items("active"); !got["old-active"] || !got["held"] {
+		t.Fatalf("active run history = %v, want its expired-TTL record kept while it holds a lease", got)
+	}
+	if got := items("quiet"); len(got) != 0 {
+		t.Fatalf("quiet run history = %v, want nothing past the TTL", got)
+	}
+	if got := items("recent"); !got["recent-recent"] {
+		t.Fatalf("recent run history = %v, want its record within the TTL", got)
+	}
+	if _, err := p.Acquire(ctx, request("trigger-prune", "other")); err != nil {
+		t.Fatal(err)
+	}
+	var stored int
+	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.claim_history WHERE instance_id=$1 AND run_id='quiet'`,
+		pgtest.InstanceID).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("quiet run rows after prune = %d (%v), want 0", stored, err)
 	}
 }
