@@ -207,6 +207,9 @@ func SafeDiagnostic(err error) string {
 	}
 	var postgresError *pgconn.PgError
 	if errors.As(err, &postgresError) {
+		if !validSQLState(postgresError.Code) {
+			return "database server rejected operation (malformed SQLSTATE)"
+		}
 		return postgresErrorClass(postgresError.Code) + " (SQLSTATE " + postgresError.Code + ")"
 	}
 	var dnsError *net.DNSError
@@ -228,6 +231,23 @@ func SafeDiagnostic(err error) string {
 	default:
 		return "database operation failed"
 	}
+}
+
+// validSQLState reports whether code is a well-formed SQLSTATE: exactly five
+// characters from [0-9A-Z]. pgx copies the server's field verbatim, so a
+// malformed or hostile server could otherwise smuggle arbitrary text (such as
+// a reflected password) into a diagnostic that is meant to be secret-free.
+func validSQLState(code string) bool {
+	if len(code) != 5 {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 func postgresErrorClass(code string) string {
