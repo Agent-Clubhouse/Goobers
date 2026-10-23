@@ -185,14 +185,15 @@ or generation gets nothing.
 the journal identity is the worker's `CreateRun`. Control resolves the run's
 `engine.RunInput` immediately before `starter.Start`
 (`control.Runtime.drain` → `StartInputResolver`). The start fence now records
-its pins in `control.run_pin`, a sibling table keyed `(instance_id, run_id)` with
-a cascade from the acceptance row, inside the **same fenced transaction** that
+its pins in `control.run_pin`, a sibling table keyed `(instance_id, run_id)`,
+inside the **same fenced transaction** that
 confirms or adopts the Temporal start (`ConfirmStart`/`AdoptStart`). The row
 holds exactly:
 - `acceptance_id`, `gaggle`, `workflow`, `workflow_version`;
 - `workflow_digest`, `goober_digest`, `config_generation`;
 - `repo_ref` (JSON), `branch_namespace`;
-- `input_digest` (the start-owner memo digest), `owner_epoch`.
+- `input_digest` (the start-owner memo digest), `owner_epoch`;
+- `terminal_at` (NULL while the run may still be running; see retention below).
 
 `driver` is not stored, because it is the constant above. The classified start
 runs exactly that `RunInput`: an existing workflow is adopted only when its
@@ -200,12 +201,45 @@ start-owner memo carries the same input digest. So a retry or a successor adopt
 writes identical pins, and different pins for a recorded run refuse
 (`ErrRunPinsDiffer`).
 
+**Retention: pins outlive their run, not their acceptance.** The acceptance row
+is pruned `ReplayRetention` (7 days) after the start finished. A parent can
+still be running then (long HITL or durable child waits). If its pins went with
+the acceptance, every bind, renewal and `Resolve` would refuse and stall its
+child families. So `run_pin` has **no** foreign key to `control.acceptance` and
+its own **terminal-keyed** retention:
+- A controller retention sweep (the L2 maintenance tick, under the fence) finds
+  pins with `terminal_at IS NULL` that are older than `ReplayRetention`. It
+  describes each run's Temporal workflow. A closed execution, or one Temporal no
+  longer knows (its history was retention-deleted), sets `terminal_at`; a
+  `RUNNING` execution is left alone.
+- Pins with `terminal_at` older than `ReplayRetention` are deleted.
+- A running parent's pins therefore never expire, however long it runs.
+  Temporal is the authoritative engine run status, and control already holds
+  the client (§5).
+
+Prune skipping non-terminal acceptances (the alternative) was rejected. It would
+change acceptance retention for every run to serve one consumer, and it still
+needs the same terminal signal. #8085 (d) carries a test that a parent older
+than `ReplayRetention` and still running keeps its pins and keeps binding.
+
 **Pins are evidence, never a start gate.** Refusing to confirm a Temporal start
 because a pin is empty would wedge legitimate runs; a prototype did exactly that
 in the control failover tests. So the start fence records whatever the started
 input carries and requires only the run and acceptance identity. The bind
 refuses its own operation when a pin it needs is empty. #8085 (b) carries a test
-per required pin.
+per required pin. It also:
+- sets the parent identity's `WorkspaceRepository` explicitly to
+  `run_pin.repo_ref`, so `ExecutionBindingFor` can never fall back to the
+  gaggle's `Project`, with a test whose pinned repository differs from the
+  gaggle project;
+- cross-checks `run_pin.branch_namespace` against the namespace the pinned
+  generation derives for the gaggle (`providers.NormalizeBranchNamespace` of
+  its `BranchNamespace`), and refuses on a mismatch.
+
+A start whose Temporal memo predates `InputDigest` (a pre-digest start-owner
+memo) cannot satisfy the bound-execution check (§5), so its parent's grants
+refuse. That is the intended fail-closed outcome for runs started by builds
+older than the pins.
 
 This is much smaller than #7818: one migration, a writepaths row and a
 start-fence change, already built on a branch. It does **not** remove the #7818
@@ -342,6 +376,8 @@ backends.
 5. **#8085 (c).** `ChildWorkflowService` on control over `ChildQueue`, with
    `Resolve` = §5 checks, and per-child generation pins.
 6. **#8085 (d).** End-to-end, including:
+   - a parent older than `ReplayRetention`, still running, that keeps its
+     `run_pin` row and keeps binding grants after its acceptance is pruned;
    - a worker kill mid-stage (the grant goes inert at parent completion or TTL);
    - a control failover between bind and submit, where the successor adopts
      every earlier epoch's custody and then serves the submit;
