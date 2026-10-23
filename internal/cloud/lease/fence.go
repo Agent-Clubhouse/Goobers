@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -122,6 +123,11 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 }
 
 func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handle *Handle) error {
+	return m.maintainRenewals(ctx, cancel, handle, m.Renew)
+}
+
+func (m *Manager) maintainRenewals(ctx context.Context, cancel context.CancelFunc, handle *Handle, renew func(context.Context, *Handle) error) error {
+	retry := false
 	for {
 		remaining := m.selfFenceRemaining(handle)
 		if remaining <= 0 {
@@ -129,6 +135,10 @@ func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handl
 			return fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter)
 		}
 		wait := min(m.config.RenewInterval, remaining)
+		if retry {
+			// Leave time for another attempt without moving the last-success deadline.
+			wait = min(max(time.Millisecond, min(m.config.RenewInterval/5, remaining/2)), remaining)
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -141,7 +151,7 @@ func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handl
 		renewCtx, renewCancel := context.WithCancel(ctx)
 		renewed := make(chan error, 1)
 		go func() {
-			renewed <- m.Renew(renewCtx, handle)
+			renewed <- renew(renewCtx, handle)
 		}()
 		remaining = m.selfFenceRemaining(handle)
 		select {
@@ -158,6 +168,7 @@ func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handl
 				cancel()
 				return err
 			}
+			retry = err != nil
 			// Transient renew failures retry, but the next loop is capped by
 			// the unchanged last-success self-fence deadline.
 		}
