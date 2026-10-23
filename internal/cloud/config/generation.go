@@ -18,8 +18,8 @@ func (c *Configuration) AdmitApplied(gaggle, workflow string) (string, error) {
 	if gen == nil {
 		return "", fmt.Errorf("%w: %w", ErrIneligible, ErrNoAppliedGeneration)
 	}
-	if _, ok := gen.eligible[workflowKey(gaggle, workflow)]; !ok {
-		return "", fmt.Errorf("%w: workflow %s was not assessed eligible in generation %q", ErrIneligible, workflowKey(gaggle, workflow), gen.digest)
+	if err := gen.admits(gaggle, workflow); err != nil {
+		return "", err
 	}
 	return gen.digest, nil
 }
