@@ -15,7 +15,6 @@ import (
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
-	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -866,8 +865,7 @@ func completedDispatchStageResult(result stageActivityResult, err error, report 
 }
 
 func dispatchExecutionObserved(report dispatcher.Report) bool {
-	return report.SurrenderConfirmed ||
-		(report.Phase != "" && report.Phase != corev1.PodPending)
+	return report.SurrenderConfirmed || report.PodCreateAttempted || report.Pod != ""
 }
 
 func validateRemoteUsageAllowance(input DispatchStageInput) error {

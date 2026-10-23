@@ -58,6 +58,7 @@ func withDispatchFailureEvidence(classified error, report dispatcher.Report, usa
 	if usage != nil {
 		copy := *usage
 		copy.Metrics = maps.Clone(usage.Metrics)
+		copy.Unavailable = copy.Unavailable || usageUnavailable
 		evidence.Usage = &copy
 	}
 	evidence.UsageUnavailable = evidence.UsageUnavailable || usageUnavailable

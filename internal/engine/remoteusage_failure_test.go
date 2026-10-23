@@ -92,6 +92,48 @@ func TestPostExecutionFailureChargesKnownUsage(t *testing.T) {
 	}
 }
 
+func TestPostExecutionFailureWithEmptyUsageFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		version int
+	}{
+		{"v1", dispatcher.SurrenderContractV1},
+		{"v2", dispatcher.SurrenderContractV2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := surrenderStore(t)
+			putSurrendered(t, store, "empty-usage", "build", 1, dispatcher.SurrenderedResult{
+				ContractVersion: test.version,
+				Result:          apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+				Verdict:         &apiv1.Verdict{Decision: apiv1.VerdictPass},
+			})
+			putSurrendered(t, store, "empty-usage", "build", 2, dispatcher.SurrenderedResult{
+				ContractVersion: dispatcher.SurrenderContractV2,
+				ObservedUsage:   usageMetrics(7, 0), ObservedUsageReported: true,
+				Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+			})
+			fake := &fakeStageDispatcher{report: dispatcher.Report{
+				Runner: "linux", Pod: "spent-pod", Phase: corev1.PodSucceeded,
+				SurrenderConfirmed: true, Disposed: true,
+			}}
+			var allowances []int64
+			result := runRemoteUsageFailureWorkflow(t, &Activities{Dispatcher: fake, Surrenders: store}, func(ctx workflow.Context, attempt int, allowance *usageallowance.Allowance) (stageActivityResult, error) {
+				allowances = append(allowances, *allowance.MaxTokens)
+				input := dispatchInput("empty-usage", "build", attempt)
+				input.Envelope.Limits.MaxTokens = 10
+				input.UsageAllowance = versionedRemoteUsageAllowance(ctx, allowance)
+				return executeDispatchActivity(dispatchActivityContext(ctx, input.Envelope.Limits, ""), input)
+			})
+			if len(allowances) != 1 || fake.calls.Load() != 1 {
+				t.Fatalf("allowances=%v dispatches=%d, want no free retry", allowances, fake.calls.Load())
+			}
+			if result.Error == nil || result.Error.Code != runner.BudgetExceededErrorCode {
+				t.Fatalf("result=%+v, want fail-closed budget result", result)
+			}
+		})
+	}
+}
+
 type preExecutionRetryDispatcher struct {
 	calls int
 }
@@ -128,30 +170,42 @@ func TestPreExecutionFailureRetainsFullAllowance(t *testing.T) {
 	}
 }
 
-type startedFailureDispatcher struct{ calls int }
+type startedFailureDispatcher struct {
+	calls  int
+	report dispatcher.Report
+}
 
 func (d *startedFailureDispatcher) Dispatch(_ context.Context, _ dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
 	d.calls++
-	return dispatcher.Report{
-		Runner: "linux", Pod: "started-pod", Phase: corev1.PodRunning,
-	}, invoke.InfrastructureFailure(errors.New("supervision lost after start"))
+	return d.report, invoke.InfrastructureFailure(errors.New("supervision lost after create"))
 }
 
 func TestStartedExecutionWithUnknownUsageFailsClosed(t *testing.T) {
-	fake := &startedFailureDispatcher{}
-	var allowances []int64
-	result := runRemoteUsageFailureWorkflow(t, &Activities{Dispatcher: fake, Surrenders: surrenderStore(t)}, func(ctx workflow.Context, attempt int, allowance *usageallowance.Allowance) (stageActivityResult, error) {
-		allowances = append(allowances, *allowance.MaxTokens)
-		input := dispatchInput("started-usage", "build", attempt)
-		input.Envelope.Limits.MaxTokens = 10
-		input.UsageAllowance = versionedRemoteUsageAllowance(ctx, allowance)
-		return executeDispatchActivity(dispatchActivityContext(ctx, input.Envelope.Limits, ""), input)
-	})
-	if len(allowances) != 1 || fake.calls != 1 {
-		t.Fatalf("allowances=%v dispatches=%d, want no retry after observed execution", allowances, fake.calls)
-	}
-	if result.Error == nil || result.Error.Code != runner.BudgetExceededErrorCode {
-		t.Fatalf("result=%+v, want fail-closed budget result", result)
+	for _, test := range []struct {
+		name   string
+		report dispatcher.Report
+	}{
+		{"running", dispatcher.Report{Runner: "linux", Pod: "started-pod", PodCreateAttempted: true, Phase: corev1.PodRunning}},
+		{"created with empty phase", dispatcher.Report{Runner: "linux", Pod: "created-pod", PodCreateAttempted: true}},
+		{"ambiguous create", dispatcher.Report{Runner: "linux", PodCreateAttempted: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &startedFailureDispatcher{report: test.report}
+			var allowances []int64
+			result := runRemoteUsageFailureWorkflow(t, &Activities{Dispatcher: fake, Surrenders: surrenderStore(t)}, func(ctx workflow.Context, attempt int, allowance *usageallowance.Allowance) (stageActivityResult, error) {
+				allowances = append(allowances, *allowance.MaxTokens)
+				input := dispatchInput("started-usage", "build", attempt)
+				input.Envelope.Limits.MaxTokens = 10
+				input.UsageAllowance = versionedRemoteUsageAllowance(ctx, allowance)
+				return executeDispatchActivity(dispatchActivityContext(ctx, input.Envelope.Limits, ""), input)
+			})
+			if len(allowances) != 1 || fake.calls != 1 {
+				t.Fatalf("allowances=%v dispatches=%d, want no retry after possible execution", allowances, fake.calls)
+			}
+			if result.Error == nil || result.Error.Code != runner.BudgetExceededErrorCode {
+				t.Fatalf("result=%+v, want fail-closed budget result", result)
+			}
+		})
 	}
 }
 
