@@ -14,21 +14,35 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 	if handle == nil || write == nil {
 		return errors.New("cloud fenced transaction requires a lease handle and write")
 	}
-	if m.SelfFenced(handle) {
+	remaining := m.selfFenceRemaining(handle)
+	if remaining <= 0 {
 		return ErrSelfFenced
 	}
-	tx, err := m.config.Pool.BeginTx(ctx, pgx.TxOptions{})
+	timeout := min(FencedTransactionTimeout, remaining)
+	timeoutCause := ErrFencedTransactionTimeout
+	if remaining <= FencedTransactionTimeout {
+		timeoutCause = ErrSelfFenced
+	}
+	txCtx, cancel := context.WithTimeoutCause(ctx, timeout, timeoutCause)
+	defer cancel()
+	tx, err := m.config.Pool.BeginTx(txCtx, pgx.TxOptions{})
 	if err != nil {
+		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
+			return deadlineErr
+		}
 		return fmt.Errorf("begin fenced transaction: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
+	defer func() { _ = tx.Rollback(txCtx) }()
+	if _, err := tx.Exec(txCtx, `
 		SET LOCAL statement_timeout = '2s';
 		SET LOCAL idle_in_transaction_session_timeout = '2s'`); err != nil {
+		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
+			return deadlineErr
+		}
 		return fmt.Errorf("bound fenced transaction: %w", err)
 	}
 	var one int
-	err = tx.QueryRow(ctx, `
+	err = tx.QueryRow(txCtx, `
 		SELECT 1 FROM control.lease
 		WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4
 		FOR SHARE`,
@@ -38,16 +52,36 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 		return ErrStale
 	}
 	if err != nil {
+		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
+			return deadlineErr
+		}
 		return fmt.Errorf("validate fenced transaction: %w", err)
 	}
-	if err := write(ctx, tx); err != nil {
+	if err := write(txCtx, tx); err != nil {
+		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
+			return deadlineErr
+		}
 		return err
+	}
+	if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
+		return deadlineErr
 	}
 	if m.SelfFenced(handle) {
 		return ErrSelfFenced
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(txCtx); err != nil {
+		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
+			return deadlineErr
+		}
 		return fmt.Errorf("commit fenced transaction: %w", err)
+	}
+	return nil
+}
+
+func fencedDeadlineError(ctx context.Context) error {
+	cause := context.Cause(ctx)
+	if errors.Is(cause, ErrSelfFenced) || errors.Is(cause, ErrFencedTransactionTimeout) {
+		return cause
 	}
 	return nil
 }
@@ -88,27 +122,43 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 
 func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handle *Handle) error {
 	for {
+		remaining := m.selfFenceRemaining(handle)
+		if remaining <= 0 {
+			cancel()
+			return fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter)
+		}
+		wait := min(m.config.RenewInterval, remaining)
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-m.config.After(m.config.RenewInterval):
-			if m.SelfFenced(handle) {
-				cancel()
-				return fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter)
-			}
-			renewCtx, renewCancel := context.WithTimeout(ctx, FencedTransactionTimeout)
-			err := m.Renew(renewCtx, handle)
+		case <-m.config.After(wait):
+		}
+		if m.SelfFenced(handle) {
+			cancel()
+			return fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter)
+		}
+		renewCtx, renewCancel := context.WithCancel(ctx)
+		renewed := make(chan error, 1)
+		go func() {
+			renewed <- m.Renew(renewCtx, handle)
+		}()
+		remaining = m.selfFenceRemaining(handle)
+		select {
+		case <-ctx.Done():
 			renewCancel()
-			if err != nil {
-				if errors.Is(err, ErrStale) {
-					cancel()
-					return err
-				}
-				if m.SelfFenced(handle) {
-					cancel()
-					return fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter)
-				}
+			return nil
+		case <-m.config.After(remaining):
+			renewCancel()
+			cancel()
+			return fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter)
+		case err := <-renewed:
+			renewCancel()
+			if errors.Is(err, ErrStale) {
+				cancel()
+				return err
 			}
+			// Transient renew failures retry, but the next loop is capped by
+			// the unchanged last-success self-fence deadline.
 		}
 	}
 }

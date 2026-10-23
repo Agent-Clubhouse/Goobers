@@ -19,7 +19,7 @@ const (
 	DefaultRenewInterval = 5 * time.Second
 	// DefaultSelfFenceAfter bounds operation without a successful renew.
 	DefaultSelfFenceAfter = 10 * time.Second
-	// FencedTransactionTimeout bounds statements and idle transactions.
+	// FencedTransactionTimeout bounds the whole transaction, statements, and idle time.
 	FencedTransactionTimeout = 2 * time.Second
 	// MaxFencedConnections bounds concurrent share locks on a lease row.
 	MaxFencedConnections int32 = 4
@@ -32,6 +32,8 @@ var (
 	ErrStale = errors.New("cloud lease epoch is stale")
 	// ErrSelfFenced means renew has not succeeded inside the monotonic safety window.
 	ErrSelfFenced = errors.New("cloud lease self-fenced")
+	// ErrFencedTransactionTimeout means a fenced transaction exceeded its bound.
+	ErrFencedTransactionTimeout = errors.New("cloud fenced transaction timed out")
 )
 
 // Config identifies a single named lease.
@@ -112,7 +114,7 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 	var epoch int64
 	var expired bool
 	err = tx.QueryRow(ctx, `
-		SELECT holder, epoch, expires_at < now()
+		SELECT holder, epoch, expires_at < clock_timestamp()
 		FROM control.lease_heartbeat
 		WHERE instance_id=$1 AND name=$2
 		FOR UPDATE`,
@@ -146,14 +148,6 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 		return nil, fmt.Errorf("take over lease: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE control.lease_heartbeat
-		SET holder=$3, epoch=$4, expires_at=now()+$5
-		WHERE instance_id=$1 AND name=$2`,
-		m.config.InstanceID, m.config.Name, m.config.Holder, newEpoch, m.config.TTL,
-	); err != nil {
-		return nil, fmt.Errorf("initialize lease heartbeat: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
 		INSERT INTO control.lease_history
 			(instance_id, name, epoch, holder, acquired_at)
 		VALUES ($1, $2, $3, $4, now())`,
@@ -161,8 +155,28 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 	); err != nil {
 		return nil, fmt.Errorf("record lease acquisition: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE control.lease_heartbeat
+		SET holder=$3, epoch=$4, expires_at=clock_timestamp()+$5
+		WHERE instance_id=$1 AND name=$2`,
+		m.config.InstanceID, m.config.Name, m.config.Holder, newEpoch, m.config.TTL,
+	); err != nil {
+		return nil, fmt.Errorf("initialize lease heartbeat: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit lease acquisition: %w", err)
+	}
+	var valid bool
+	if err := m.config.Pool.QueryRow(ctx, `
+		SELECT holder=$3 AND epoch=$4 AND expires_at > clock_timestamp()
+		FROM control.lease_heartbeat
+		WHERE instance_id=$1 AND name=$2`,
+		m.config.InstanceID, m.config.Name, m.config.Holder, newEpoch,
+	).Scan(&valid); err != nil {
+		return nil, fmt.Errorf("verify acquired lease expiry: %w", err)
+	}
+	if !valid {
+		return nil, ErrStale
 	}
 	return &Handle{
 		InstanceID: m.config.InstanceID, Name: m.config.Name,
@@ -172,18 +186,18 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 
 func (m *Manager) ensureRows(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO control.lease (instance_id, name, holder, epoch)
-		VALUES ($1, $2, '', 0) ON CONFLICT DO NOTHING`,
-		m.config.InstanceID, m.config.Name,
-	); err != nil {
-		return fmt.Errorf("initialize lease authority: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
 		INSERT INTO control.lease_heartbeat (instance_id, name, holder, epoch, expires_at)
 		VALUES ($1, $2, '', 0, '-infinity') ON CONFLICT DO NOTHING`,
 		m.config.InstanceID, m.config.Name,
 	); err != nil {
 		return fmt.Errorf("initialize lease heartbeat: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO control.lease (instance_id, name, holder, epoch)
+		VALUES ($1, $2, '', 0) ON CONFLICT DO NOTHING`,
+		m.config.InstanceID, m.config.Name,
+	); err != nil {
+		return fmt.Errorf("initialize lease authority: %w", err)
 	}
 	return nil
 }
@@ -192,7 +206,7 @@ func (m *Manager) ensureRows(ctx context.Context, tx pgx.Tx) error {
 func (m *Manager) Renew(ctx context.Context, handle *Handle) error {
 	tag, err := m.config.Pool.Exec(ctx, `
 		UPDATE control.lease_heartbeat
-		SET expires_at=now()+$5
+		SET expires_at=clock_timestamp()+$5
 		WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4`,
 		handle.InstanceID, handle.Name, handle.Holder, handle.Epoch, m.config.TTL,
 	)
@@ -210,10 +224,14 @@ func (m *Manager) Renew(ctx context.Context, handle *Handle) error {
 
 // SelfFenced reports whether the monotonic renew safety window elapsed.
 func (m *Manager) SelfFenced(handle *Handle) bool {
+	return m.selfFenceRemaining(handle) <= 0
+}
+
+func (m *Manager) selfFenceRemaining(handle *Handle) time.Duration {
 	handle.mu.RLock()
 	lastRenew := handle.lastRenew
 	handle.mu.RUnlock()
-	return m.config.Now().Sub(lastRenew) >= m.config.SelfFenceAfter
+	return m.config.SelfFenceAfter - m.config.Now().Sub(lastRenew)
 }
 
 // Release voluntarily gives up authority and bumps the epoch.
@@ -223,6 +241,21 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 		return fmt.Errorf("begin lease release: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var heartbeatHolder string
+	var heartbeatEpoch int64
+	err = tx.QueryRow(ctx, `
+		SELECT holder, epoch
+		FROM control.lease_heartbeat
+		WHERE instance_id=$1 AND name=$2
+		FOR UPDATE`,
+		handle.InstanceID, handle.Name,
+	).Scan(&heartbeatHolder, &heartbeatEpoch)
+	if err != nil {
+		return fmt.Errorf("lock lease heartbeat for release: %w", err)
+	}
+	if heartbeatHolder != handle.Holder || heartbeatEpoch != handle.Epoch {
+		return ErrStale
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE control.lease
 		SET holder='', epoch=epoch+1
