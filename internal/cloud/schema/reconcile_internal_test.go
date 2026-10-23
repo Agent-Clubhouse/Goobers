@@ -104,10 +104,10 @@ func TestFunctionStatementsRevokeAndRefuseDefiners(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		`REVOKE ALL ON FUNCTION "control"."allowed"(integer) FROM PUBLIC, goobers_api, goobers_controller`,
-		`GRANT EXECUTE ON FUNCTION "control"."allowed"(integer) TO goobers_controller`,
-		`REVOKE ALL ON FUNCTION "control"."guard"() FROM PUBLIC, goobers_api, goobers_controller`,
-		`REVOKE ALL ON FUNCTION "control"."definer"() FROM PUBLIC, goobers_api, goobers_controller`,
+		`REVOKE ALL ON ROUTINE "control"."allowed"(integer) FROM PUBLIC, goobers_api, goobers_controller`,
+		`GRANT EXECUTE ON ROUTINE "control"."allowed"(integer) TO goobers_controller`,
+		`REVOKE ALL ON ROUTINE "control"."guard"() FROM PUBLIC, goobers_api, goobers_controller`,
+		`REVOKE ALL ON ROUTINE "control"."definer"() FROM PUBLIC, goobers_api, goobers_controller`,
 	}
 	if !slices.Equal(statements, want) {
 		t.Fatalf("statements:\n%s\nwant:\n%s", strings.Join(statements, "\n"), strings.Join(want, "\n"))

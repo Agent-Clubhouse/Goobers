@@ -24,13 +24,19 @@ import (
 // that holds ADMIN on the runtime roles, as the provisioning administrator
 // would, and drop only the databases they create.
 const (
-	instance = "pgroles-test"
-	admin    = "pgroles_admin"
+	instance    = "pgroles-test"
+	admin       = "pgroles_admin"
+	maintenance = "pgroles_maintenance"
 )
 
 type cluster struct {
 	admin, superuser *pgx.Conn
 	url              func(user, password, database string) string
+	// maintenance is the administrator-owned database Provision runs on;
+	// platform is the superuser-owned one, as on a managed server.
+	maintenance, platform string
+	// superuserIn connects as the superuser to a database.
+	superuserIn func(t *testing.T, database string) *pgx.Conn
 }
 
 func setup(t *testing.T) cluster {
@@ -48,7 +54,7 @@ func setup(t *testing.T) cluster {
 		t.Fatal(err)
 	}
 	dropDatabases := func() {
-		for _, database := range append(databases, pgroles.Database{Name: "pgroles_foreign"}) {
+		for _, database := range append(databases, pgroles.Database{Name: "pgroles_foreign"}, pgroles.Database{Name: maintenance}) {
 			_, _ = superuser.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgx.Identifier{database.Name}.Sanitize()+" WITH (FORCE)")
 		}
 	}
@@ -64,6 +70,9 @@ func setup(t *testing.T) cluster {
 				GRANT `+role+` TO pgroles_admin WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;
 			END IF; END $$`)
 	}
+	// Provision runs on a maintenance database the administrator owns, so it
+	// can close it to the contract roles (as a self-managed server allows).
+	exec(t, superuser, "CREATE DATABASE "+maintenance+" OWNER pgroles_admin")
 	base, err := url.Parse(databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -74,12 +83,23 @@ func setup(t *testing.T) cluster {
 		u.Path = "/" + database
 		return u.String()
 	}
-	adminConn, err := pgx.Connect(t.Context(), urlFor(admin, "admin", strings.TrimPrefix(base.Path, "/")))
+	adminConn, err := pgx.Connect(t.Context(), urlFor(admin, "admin", maintenance))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = adminConn.Close(context.Background()) })
-	return cluster{admin: adminConn, superuser: superuser, url: urlFor}
+	superuserIn := func(t *testing.T, database string) *pgx.Conn {
+		u := *base
+		u.Path = "/" + database
+		conn, err := pgx.Connect(t.Context(), u.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+		return conn
+	}
+	return cluster{admin: adminConn, superuser: superuser, url: urlFor, maintenance: maintenance,
+		platform: strings.TrimPrefix(base.Path, "/"), superuserIn: superuserIn}
 }
 
 func exec(t *testing.T, conn *pgx.Conn, statement string) {
@@ -135,6 +155,9 @@ func assertConnectMatrix(t *testing.T, c cluster) {
 		{pgroles.Temporal, "temporal_visibility", true},
 		{pgroles.API, "temporal", false},
 		{pgroles.Owner, "temporal_visibility", false},
+		{pgroles.API, c.maintenance, false},
+		{pgroles.Owner, c.maintenance, false},
+		{pgroles.Temporal, c.maintenance, false},
 	} {
 		if got := connects(t, c.url(check.role, "pw", check.database)); got != check.want {
 			t.Fatalf("%s connecting to %s = %v, want %v", check.role, check.database, got, check.want)
@@ -152,6 +175,9 @@ func TestProvisionIsolatesRolesAndIsIdempotent(t *testing.T) {
 	}
 	setPasswords(t, c)
 	assertConnectMatrix(t, c)
+	if !connects(t, c.url(admin, "admin", c.maintenance)) {
+		t.Fatal("closing the maintenance database to the contract roles locked out the administrator")
+	}
 	var privileged int
 	if err := c.admin.QueryRow(t.Context(), `
 		SELECT count(*) FROM pg_roles
@@ -205,7 +231,10 @@ func TestProvisionConvergesOrRefusesDrift(t *testing.T) {
 	c := setup(t)
 	provision(t, c)
 	exec(t, c.superuser, "ALTER ROLE goobers_controller NOLOGIN CREATEDB")
-	if _, err := pgroles.Provision(t.Context(), c.superuser, pgroles.Plan{Instance: instance}); err != nil {
+	// The superuser runs on the test's maintenance database too, never on the
+	// shared default database, which Provision would close.
+	superuser := c.superuserIn(t, c.maintenance)
+	if _, err := pgroles.Provision(t.Context(), superuser, pgroles.Plan{Instance: instance}); err != nil {
 		t.Fatalf("superuser Provision did not converge drifted attributes: %v", err)
 	}
 	var login, createdb bool
@@ -225,7 +254,7 @@ func TestProvisionConvergesOrRefusesDrift(t *testing.T) {
 
 	exec(t, c.superuser, "GRANT pg_read_all_data TO goobers_api")
 	t.Cleanup(func() { _, _ = c.superuser.Exec(context.Background(), "REVOKE pg_read_all_data FROM goobers_api") })
-	for name, conn := range map[string]*pgx.Conn{"superuser": c.superuser, "administrator": c.admin} {
+	for name, conn := range map[string]*pgx.Conn{"superuser": superuser, "administrator": c.admin} {
 		if _, err := pgroles.Provision(t.Context(), conn, pgroles.Plan{Instance: instance}); !errors.Is(err, pgroles.ErrRoleDrift) {
 			t.Fatalf("%s Provision over a role membership = %v, want ErrRoleDrift", name, err)
 		}
@@ -271,7 +300,8 @@ func TestCreatesEntraPrincipals(t *testing.T) {
 	c := setup(t)
 	const probe = "pgroles_entra_probe"
 	exec(t, c.superuser, "DROP ROLE IF EXISTS "+probe)
-	exec(t, c.superuser, `
+	stub := c.superuserIn(t, c.maintenance)
+	exec(t, stub, `
 		CREATE TABLE IF NOT EXISTS public.pgroles_entra_calls (role text, object_id text, kind text);
 		TRUNCATE public.pgroles_entra_calls;
 		GRANT SELECT, INSERT ON public.pgroles_entra_calls TO pgroles_admin;
@@ -282,12 +312,8 @@ func TestCreatesEntraPrincipals(t *testing.T) {
 			INSERT INTO public.pgroles_entra_calls VALUES (role, object_id, kind);
 			RETURN 'Created role for ' || role;
 		END $$`)
-	t.Cleanup(func() {
-		ctx := context.Background()
-		_, _ = c.superuser.Exec(ctx, "DROP ROLE IF EXISTS "+probe)
-		_, _ = c.superuser.Exec(ctx, "DROP FUNCTION IF EXISTS public.pgaadauth_create_principal_with_oid(text, text, text, boolean, boolean)")
-		_, _ = c.superuser.Exec(ctx, "DROP TABLE IF EXISTS public.pgroles_entra_calls")
-	})
+	// The stub lives in the maintenance database, which setup drops.
+	t.Cleanup(func() { _, _ = c.superuser.Exec(context.Background(), "DROP ROLE IF EXISTS "+probe) })
 	if _, err := pgroles.EnsureRoleForTest(t.Context(), c.admin, probe, "oid-probe"); err != nil {
 		t.Fatal(err)
 	}
@@ -316,4 +342,23 @@ func openPool(t *testing.T, connString string) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// TestProvisionOnPlatformOwnedMaintenanceDatabase: where the platform owns
+// the maintenance database (managed servers), Provision cannot close it and
+// still succeeds; the contract databases stay isolated.
+func TestProvisionOnPlatformOwnedMaintenanceDatabase(t *testing.T) {
+	c := setup(t)
+	platform, err := pgx.Connect(t.Context(), c.url(admin, "admin", c.platform))
+	if err != nil {
+		t.Skipf("administrator cannot reach the platform database: %v", err)
+	}
+	defer func() { _ = platform.Close(context.Background()) }()
+	if _, err := pgroles.Provision(t.Context(), platform, pgroles.Plan{Instance: instance}); err != nil {
+		t.Fatalf("Provision on a platform-owned maintenance database: %v", err)
+	}
+	setPasswords(t, c)
+	if !connects(t, c.url(pgroles.API, "pw", c.platform)) {
+		t.Fatal("Provision closed a platform-owned maintenance database it cannot act for")
+	}
 }

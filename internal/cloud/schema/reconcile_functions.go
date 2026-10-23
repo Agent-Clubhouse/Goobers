@@ -43,7 +43,8 @@ func loadFunctions(ctx context.Context, tx pgx.Tx) ([]function, error) {
 	return functions, nil
 }
 
-// functionStatements revokes EXECUTE on every function from PUBLIC and the
+// functionStatements revokes EXECUTE on every routine (function, procedure or
+// aggregate; ON ROUTINE accepts each kind) from PUBLIC and the
 // runtime roles, then grants it as the inventory lists. Functions default to
 // PUBLIC EXECUTE, and a SECURITY DEFINER one runs with its owner's rights, so
 // it is refused unless the inventory declares it as such.
@@ -62,9 +63,9 @@ func functionStatements(inventory Inventory, functions []function) ([]string, er
 		if f.securityDefiner && (!listed || !policy.SecurityDefiner) {
 			return nil, fmt.Errorf("cloud function %s is SECURITY DEFINER without a write-path inventory entry declaring it", f.signature())
 		}
-		statements = append(statements, fmt.Sprintf("REVOKE ALL ON FUNCTION %s FROM PUBLIC, %s", f.target(), roles))
+		statements = append(statements, fmt.Sprintf("REVOKE ALL ON ROUTINE %s FROM PUBLIC, %s", f.target(), roles))
 		if listed && len(policy.Execute) > 0 {
-			statements = append(statements, fmt.Sprintf("GRANT EXECUTE ON FUNCTION %s TO %s", f.target(), strings.Join(policy.Execute, ", ")))
+			statements = append(statements, fmt.Sprintf("GRANT EXECUTE ON ROUTINE %s TO %s", f.target(), strings.Join(policy.Execute, ", ")))
 		}
 	}
 	return statements, nil
