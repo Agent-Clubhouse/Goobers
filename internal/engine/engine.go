@@ -1013,9 +1013,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 			activityName := ActInvokeGoober
+			if cancelSafeStageJournal(ctx) {
+				activityName = actInvokeGooberCancelSafe
+			}
 			args := []any{attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout}
 			if len(bindings.Exact) > 0 {
 				activityName = ActInvokeGooberExact
+				if cancelSafeStageJournal(ctx) {
+					activityName = actInvokeGooberExactCancelSafe
+				}
 				args = append(args, bindings.Exact)
 			}
 			err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
@@ -1046,9 +1052,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		activityName := ActRunDeterministic
+		if cancelSafeStageJournal(ctx) {
+			activityName = actRunDeterministicCancelSafe
+		}
 		args := []any{attemptEnv, run, workspaceBranch, workspaceDelta}
 		if len(bindings.Exact) > 0 {
 			activityName = ActRunDeterministicExact
+			if cancelSafeStageJournal(ctx) {
+				activityName = actRunDeterministicExactCancelSafe
+			}
 			args = append(args, bindings.Exact)
 		}
 		err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
@@ -1108,7 +1120,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		var outcome string
 		if err := evaluateWithInfraRetry(ctx, g, rec, "", func(ctx workflow.Context, _ journal.AttemptClass) error {
-			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
+			activityName := ActEvaluateAutomated
+			if cancelSafeStageJournal(ctx) {
+				activityName = actEvaluateAutomatedCancelSafe
+			}
+			return workflow.ExecuteActivity(
+				ctx, activityName, conf, env).Get(ctx, &outcome)
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
 		}
@@ -1216,7 +1233,11 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 				if number, ok := reviewerNumber(ctx); ok {
 					attemptEnv.Attempt = int32(number)
 				}
-				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
+				activityName := ActReviewGoober
+				if cancelSafeStageJournal(ctx) {
+					activityName = actReviewGooberCancelSafe
+				}
+				return workflow.ExecuteActivity(ctx, activityName, attemptEnv, workspaceBranch, workspaceDelta,
 					g.EffectiveWorkspace(), priorDiffDigest, ev.RequireDiff).Get(ctx, &review)
 			})
 		}); err != nil {
@@ -1360,6 +1381,7 @@ func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Co
 	options := stageActivityOptions(limits, "")
 	if cancelSafeStageJournal(ctx) {
 		options.WaitForCancellation = true
+		options.HeartbeatTimeout = dispatchHeartbeatTimeout
 	}
 	return workflow.WithActivityOptions(ctx, options)
 }
@@ -1406,6 +1428,7 @@ func stageActivityContextOn(ctx workflow.Context, limits apiv1.Limits, capabilit
 		limits, stageTaskQueue(ctx, capabilities))
 	if cancelSafeStageJournal(ctx) {
 		options.WaitForCancellation = true
+		options.HeartbeatTimeout = dispatchHeartbeatTimeout
 	}
 	return workflow.WithActivityOptions(ctx, options)
 }

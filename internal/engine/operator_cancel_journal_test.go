@@ -204,6 +204,13 @@ func TestCancelSafeStageWaitsForActivityCancellationOutcome(t *testing.T) {
 				if options.WaitForCancellation != test.want {
 					return errors.New("unexpected WaitForCancellation")
 				}
+				if test.gate &&
+					options.HeartbeatTimeout != dispatchHeartbeatTimeout {
+					return errors.New("unexpected HeartbeatTimeout")
+				}
+				if !test.gate && options.HeartbeatTimeout != 0 {
+					return errors.New("legacy activity gained heartbeat timeout")
+				}
 				return nil
 			})
 			if err := env.GetWorkflowError(); err != nil {

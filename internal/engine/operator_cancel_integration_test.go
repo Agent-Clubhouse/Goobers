@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	temporalworker "go.temporal.io/sdk/worker"
 
@@ -22,7 +21,9 @@ type cancelOutcomeExecutor struct {
 	acknowledge bool
 	started     chan struct{}
 	release     chan struct{}
+	cancelSeen  chan struct{}
 	once        sync.Once
+	cancelOnce  sync.Once
 }
 
 func (e *cancelOutcomeExecutor) Run(
@@ -32,13 +33,14 @@ func (e *cancelOutcomeExecutor) Run(
 ) (apiv1.ResultEnvelope, error) {
 	e.once.Do(func() { close(e.started) })
 	if e.acknowledge {
-		for {
-			activity.RecordHeartbeat(ctx, "waiting for cancel")
-			select {
-			case <-ctx.Done():
-				return apiv1.ResultEnvelope{}, ctx.Err()
-			case <-time.After(10 * time.Millisecond):
-			}
+		select {
+		case <-ctx.Done():
+			e.cancelOnce.Do(func() { close(e.cancelSeen) })
+			return apiv1.ResultEnvelope{}, ctx.Err()
+		case <-time.After(25 * time.Second):
+			return apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			}, nil
 		}
 	}
 	<-e.release
@@ -63,6 +65,7 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 				acknowledge: test.acknowledge,
 				started:     make(chan struct{}),
 				release:     make(chan struct{}),
+				cancelSeen:  make(chan struct{}),
 			}
 			writer, runsDir := newLiveWriter(t)
 			w := temporalworker.New(c, queue, temporalworker.Options{})
@@ -104,6 +107,7 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			<-executor.started
+			cancelStarted := time.Now()
 			if err := c.CancelWorkflow(
 				ctx, run.GetID(), run.GetRunID()); err != nil {
 				t.Fatal(err)
@@ -114,6 +118,17 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 			if err := run.Get(ctx, nil); err == nil ||
 				!strings.Contains(err.Error(), "canceled") {
 				t.Fatalf("workflow error = %v, want canceled", err)
+			}
+			if elapsed := time.Since(cancelStarted); elapsed >= 2*dispatchHeartbeatTimeout {
+				t.Fatalf("cancel-to-terminal = %s, want <%s",
+					elapsed, 2*dispatchHeartbeatTimeout)
+			}
+			if test.acknowledge {
+				select {
+				case <-executor.cancelSeen:
+				default:
+					t.Fatal("non-heartbeating executor never observed ctx.Done")
+				}
 			}
 			events := liveEvents(t, runsDir, runID)
 			finished := 0

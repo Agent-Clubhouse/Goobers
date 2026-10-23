@@ -173,8 +173,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			activityResult, err = rec.dispatchChargedAttempt(dispatchCtx, in, t, step, &usageBudget, dispatch)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
-			if stopsAttemptLoop(ctx, err) &&
-				(!cancelSafeStageJournal(ctx) || err != nil) {
+			if stopBeforeStageCompletion(ctx, err) {
 				return apiv1.ResultEnvelope{}, err
 			}
 			if errors.Is(err, errChildContinued) {
@@ -323,6 +322,14 @@ func winningAttemptDelta(attempt int, result stageActivityResult) deltaPublicati
 		Tip: result.WorkspaceDeltaTip, Unchanged: result.WorkspaceDeltaUnchanged,
 		PushedBranches: pushedBranches(result.Mutations),
 	}
+}
+
+func stopBeforeStageCompletion(
+	ctx workflow.Context,
+	err error,
+) bool {
+	return stopsAttemptLoop(ctx, err) &&
+		(!cancelSafeStageJournal(ctx) || err != nil)
 }
 
 func stageRetryPolicy(t apiv1.Task) (int32, time.Duration) {
