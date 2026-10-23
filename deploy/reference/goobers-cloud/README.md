@@ -31,6 +31,16 @@ this base.
 `database-auth` is `entra` in the base and applies to both migrate and control;
 the migrate Job and the NetworkPolicy `allow-migrate-identity` assume it.
 
+## Provisioning
+
+Roles and the database exist before migrate runs (the owner role needs its
+database, and grant reconciliation needs the API/controller roles). Production
+uses `goobers-cloud bootstrap` (`pgroles.Provision` as the server admin). The
+nightly kind job does not call it yet (#7869 refuses until its steps ship); it
+runs the equivalent idempotent SQL as the CNPG superuser — roles and
+`goobers_<instance-id>` created if missing, passwords re-set each run with
+statement logging off — and swaps to `bootstrap` once that works.
+
 ## Rollout order
 
 The migrate Job must finish before `control` rolls.

@@ -61,7 +61,7 @@
       ".github/workflows/ci.yml#windows-smoke/Build Windows validation binary:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Collect evidence:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run kind environment smoke:go-modules",
-      ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control role:go-modules",
+      ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control assembly:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Render Temporal HA values:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Validate Windows daemon and implementation workflow:go-modules",

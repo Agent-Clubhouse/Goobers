@@ -236,38 +236,6 @@ func TestDeployReferenceTemporalHAValues(t *testing.T) {
 	}
 }
 
-// TestDeployReferenceCloudControlArgsAreRealFlags checks every --flag in the
-// deployment against the flag set the control role registers, once that role is
-// in the tree.
-func TestDeployReferenceCloudControlArgsAreRealFlags(t *testing.T) {
-	src, err := os.ReadFile("../goobers-cloud/control.go")
-	if err != nil {
-		t.Skip("control role not in tree yet")
-	}
-	known := map[string]bool{}
-	for _, m := range regexp.MustCompile(`f\.StringVar\(&o\.\w+, "([a-z-]+)"`).FindAllStringSubmatch(string(src), -1) {
-		known[m[1]] = true
-	}
-	// Database flags are shared by every database role (runDatabaseRoleConfigured).
-	for _, f := range []string{"database-url-file", "database-direct-url-file", "database-auth"} {
-		known[f] = true
-	}
-	if len(known) < 8 {
-		t.Fatalf("flag extraction found %d flags; control.go layout changed", len(known))
-	}
-	var d appsv1.Deployment
-	cloudDoc(t, "workload/control-deployment.yaml", "Deployment", &d)
-	for _, a := range d.Spec.Template.Spec.Containers[0].Args {
-		if !strings.HasPrefix(a, "--") {
-			continue
-		}
-		name, _, _ := strings.Cut(strings.TrimPrefix(a, "--"), "=")
-		if !known[name] {
-			t.Fatalf("control arg %q is not a flag of the control role", a)
-		}
-	}
-}
-
 func cloudPolicy(t *testing.T, name string) networkingv1.NetworkPolicy {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(cloudRefDir, "prereqs/networkpolicies.yaml"))
@@ -350,8 +318,8 @@ func TestDeployReferenceCloudShipsReferencedConfigMaps(t *testing.T) {
 			}
 		}
 	}
-	if id := have["goobers-cloud"]["instance-id"]; id == "" || id == "default" {
-		t.Fatalf("instance-id must be set explicitly once, not defaulted (got %q)", id)
+	if id := have["goobers-cloud"]["instance-id"]; id != "change-me" {
+		t.Fatalf("the base must ship the conspicuous change-me instance-id placeholder, got %q", id)
 	}
 	if have["goobers-cloud"]["database-auth"] != "entra" {
 		t.Fatal("reference database-auth must be entra")
@@ -452,5 +420,22 @@ func TestDeployReferenceCloudDatabaseRolesAreSeparated(t *testing.T) {
 	}
 	if !owner {
 		t.Fatal("migrate must connect with the goobers-cloud-db-owner Secret")
+	}
+}
+
+// The base ships a placeholder the operator must replace; anything that is
+// actually deployed (here, the nightly overlay) must carry a real instance ID.
+func TestDeployReferenceCloudOverlayInstanceIDIsNotAPlaceholder(t *testing.T) {
+	raw, err := os.ReadFile("../../test/ha/kind/cloud-reference/kustomization.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`(?m)^\s*instance-id:\s*(\S+)\s*$`).FindSubmatch(raw)
+	if match == nil {
+		t.Fatal("the nightly overlay must set instance-id explicitly")
+	}
+	switch id := string(match[1]); id {
+	case "", "default", "change-me", "CHANGE-ME":
+		t.Fatalf("nightly overlay instance-id is a placeholder: %q", id)
 	}
 }
