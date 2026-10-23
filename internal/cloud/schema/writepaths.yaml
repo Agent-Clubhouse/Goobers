@@ -1279,6 +1279,37 @@ tables:
     - owner_epoch
     delete: true
 - schema: control
+  table: child_engine_start
+  provisioned: true
+  fence: owner_epoch
+  rationale: "Engine-owned child start intents (HA-P4-10, migration 0018) are bound and adopted only inside the controller lease
+    fence; rows are immutable after insert except owner_epoch, and are removed by cascade with their lineage. API and worker
+    paths never read or write them."
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - child_id
+    - manifest_digest
+    - parent_workflow
+    - parent_workflow_id
+    - parent_temporal_run_id
+    - deadline
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - child_id
+    - manifest_digest
+    - parent_workflow
+    - parent_workflow_id
+    - parent_temporal_run_id
+    - deadline
+    - owner_epoch
+    update:
+    - owner_epoch
+- schema: control
   table: child_publication
   provisioned: true
   fence: owner_epoch
