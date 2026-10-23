@@ -65,3 +65,10 @@ func (e Effect) Apply(ctx context.Context, poster gate.Commenter) error {
 		return fmt.Errorf("terminal report: unsupported comment kind %q", e.Kind)
 	}
 }
+
+// Key returns the outbox key every backend uses for this projection.
+func (e Effect) Key() string { return effectKey(e) }
+
+// Identity distinguishes report contents that must keep a frozen body on
+// re-admission from a new report that needs a fresh rendering.
+func (e Effect) Identity() string { return reportIdentity(e) }

@@ -93,7 +93,7 @@ func (s *Store) Close() error { return s.db.Close() }
 // Begin atomically binds a key to the actor and exact payload. Only fresh=true
 // authorizes execution. Unfinished reservations are never aged out or evicted.
 func (s *Store) Begin(ctx context.Context, key, actor string, payload []byte, now time.Time) (receipt Receipt, fresh bool, err error) {
-	if !validKey(key) || len(actor) > 1024 || len(payload) == 0 || len(payload) > MaxBytes || now.IsZero() {
+	if !ValidKey(key) || len(actor) > 1024 || len(payload) == 0 || len(payload) > MaxBytes || now.IsZero() {
 		return Receipt{}, false, errors.New("cancelreceipt: invalid request")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -132,7 +132,8 @@ func (s *Store) Begin(ctx context.Context, key, actor string, payload []byte, no
 	return Receipt{}, true, nil
 }
 
-func validKey(key string) bool {
+// ValidKey reports whether key is a bounded, printable receipt key.
+func ValidKey(key string) bool {
 	if key == "" || len(key) > 200 || strings.TrimSpace(key) != key {
 		return false
 	}
