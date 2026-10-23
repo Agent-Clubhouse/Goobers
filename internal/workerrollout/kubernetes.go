@@ -40,6 +40,7 @@ func NewInClusterStatusSource(namespace, name string) (*KubernetesStatusSource, 
 	return &KubernetesStatusSource{client: client, namespace: namespace, name: name}, nil
 }
 
+// Status returns the rollout status fields used by retention reconciliation.
 func (s *KubernetesStatusSource) Status(ctx context.Context) (DeploymentStatus, error) {
 	object, err := s.client.Resource(workerDeploymentResource).Namespace(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
 	if err != nil {

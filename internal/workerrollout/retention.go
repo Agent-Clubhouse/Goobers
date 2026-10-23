@@ -1,3 +1,5 @@
+// Package workerrollout coordinates Temporal worker-version retention without
+// taking ownership of current or ramping routing from Worker Controller.
 package workerrollout
 
 import (
@@ -144,10 +146,12 @@ type SDKClient struct {
 	Client client.Client
 }
 
+// DescribeRouting returns the managed deployment's routing and version lifecycle.
 func (s SDKClient) DescribeRouting(ctx context.Context) (workerrouting.Routing, error) {
 	return workerrouting.DescribeRouting(ctx, s.Client)
 }
 
+// ListPinned returns one visibility page of running workflows pinned to buildID.
 func (s SDKClient) ListPinned(ctx context.Context, buildID string, token []byte) ([]Execution, []byte, error) {
 	legacy := escapeVisibility(workerrouting.DeploymentName + "." + buildID)
 	current := escapeVisibility(workerrouting.DeploymentName + ":" + buildID)
@@ -177,6 +181,7 @@ func (s SDKClient) ListPinned(ctx context.Context, buildID string, token []byte)
 	return executions, response.NextPageToken, nil
 }
 
+// SetAutoUpgrade moves an execution to the current build on its next workflow task.
 func (s SDKClient) SetAutoUpgrade(ctx context.Context, execution Execution) error {
 	_, err := s.Client.UpdateWorkflowExecutionOptions(ctx, client.UpdateWorkflowExecutionOptionsRequest{
 		WorkflowId: execution.WorkflowID,

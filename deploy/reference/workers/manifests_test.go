@@ -26,8 +26,11 @@ func readObject(t *testing.T, path string) map[string]any {
 
 func nestedInt(object map[string]any, fields ...string) (int, error) {
 	value, found, err := unstructured.NestedFieldNoCopy(object, fields...)
-	if err != nil || !found {
-		return 0, fmt.Errorf("read %v: found=%v err=%v", fields, found, err)
+	if err != nil {
+		return 0, fmt.Errorf("read %v: %w", fields, err)
+	}
+	if !found {
+		return 0, fmt.Errorf("read %v: field not found", fields)
 	}
 	switch number := value.(type) {
 	case float64:
