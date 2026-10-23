@@ -163,8 +163,18 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 		Name: current.Name, Version: 1, DSLVersion: current.DSLVersion, Spec: current.Spec,
 	}
 	blockers := unsupportedFeatureBlockers(current.Spec)
-	placements, err := bootstrap.PinChildStagePlacements(cfg, set, current.Spec.Gaggle, def)
-	if err == nil {
+	placements, err := bootstrap.PinChildStagePlacements(cloudAssessmentConfig(cfg), set, current.Spec.Gaggle, def)
+	if err != nil {
+		// A workflow the inventory cannot place would fall back to the
+		// control-plane host, which the cloud does not have: fail closed.
+		blockers = append(blockers, Blocker{
+			Code: CodePlacement, Path: "/spec", Message: err.Error(),
+			Action: Action{
+				Kind:        "config",
+				Description: "declare a non-self runner that satisfies the workflow's placement requirements",
+			},
+		})
+	} else {
 		blockers = append(blockers, placementBlockers(current.Spec, placements)...)
 	}
 	if current.DSLVersion != supportmatrix.V3DSLVersion &&
@@ -371,4 +381,21 @@ func summarize(workflows []Workflow) (Summary, []BlockerGroup) {
 		out = append(out, *groups[key])
 	}
 	return summary, out
+}
+
+// cloudAssessmentConfig returns cfg with every self runner that declares no OS
+// pinned to Linux. The solver otherwise substitutes the OS of the machine
+// running the assessment, so the same instance would report different
+// blockers on a laptop and in CI. Cloud workers are Linux pods, and the
+// self runner is only ever assessed as a blocker, so the host's OS is
+// irrelevant to cloud eligibility.
+func cloudAssessmentConfig(cfg *instance.Config) *instance.Config {
+	out := *cfg
+	out.Runners = append([]instance.RunnerEntry(nil), cfg.ResolvedRunners()...)
+	for i := range out.Runners {
+		if out.Runners[i].Host == instance.RunnerHostSelfName && out.Runners[i].Provides.OS == "" {
+			out.Runners[i].Provides.OS = instance.RunnerOSLinux
+		}
+	}
+	return &out
 }

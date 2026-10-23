@@ -182,3 +182,21 @@ func TestWriteTextCloudReady(t *testing.T) {
 		t.Fatalf("output = %q", output.String())
 	}
 }
+
+func TestUnplaceableWorkflowFailsClosed(t *testing.T) {
+	set := blockerFixture()
+	set.Workflows = set.Workflows[:1]
+	set.Workflows[0].DSLVersion = supportmatrix.V3DSLVersion
+	set.Workflows[0].Spec.Tasks[0].RunsOn = &apiv1.RunsOn{Capabilities: []string{"no-such-capability"}}
+	cfg := &instance.Config{
+		Placement: &instance.PlacementConfig{SelfExecution: "deny"},
+		Runners: []instance.RunnerEntry{{
+			Name: "worker", Host: "ghcr.io/example/worker:v1",
+			Provides: instance.RunnerProvides{OS: instance.RunnerOSLinux, Shell: true},
+		}},
+	}
+	result := Assess(cfg, set)
+	if result.CloudReady || len(result.Workflows) != 1 || result.Workflows[0].Blockers[0].Code != CodePlacement {
+		t.Fatalf("unplaceable workflow assessed ready: %+v", result)
+	}
+}

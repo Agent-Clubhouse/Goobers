@@ -275,6 +275,18 @@ goobers/quality-spot-check (DSL 3.1)
     unblock: wait for engine parity in #7753 (https://github.com/Agent-Clubhouse/Goobers/issues/7753)
   - RUNTIME001 stage "lenses" /spec/parallels/0/selection: engine does not support spec.parallels.selection
     unblock: wait for engine parity in #7754 (https://github.com/Agent-Clubhouse/Goobers/issues/7754)
+  - RUNTIME002 stage "select-lenses" /spec/tasks/0/runsOn: stage "select-lenses" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-maintainability" /spec/tasks/1/runsOn: stage "review-maintainability" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-security" /spec/tasks/2/runsOn: stage "review-security" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-test-coverage" /spec/tasks/3/runsOn: stage "review-test-coverage" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-dependencies" /spec/tasks/4/runsOn: stage "review-dependencies" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "collate" /spec/tasks/5/runsOn: stage "collate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
 
 goobers/quality-sprint (DSL 2.0)
   - RUNTIME001 stage "focus-areas" /spec/parallels/0: engine does not support spec.parallels
@@ -461,6 +473,12 @@ Blockers grouped by remedy:
     - goobers/pr-remediation stage "park-invalid-finding-responses" /spec/tasks/26/runsOn
     - goobers/pr-remediation stage "park-stale-feedback" /spec/tasks/27/runsOn
     - goobers/pr-remediation stage "park-unresolved-review-threads" /spec/tasks/28/runsOn
+    - goobers/quality-spot-check stage "select-lenses" /spec/tasks/0/runsOn
+    - goobers/quality-spot-check stage "review-maintainability" /spec/tasks/1/runsOn
+    - goobers/quality-spot-check stage "review-security" /spec/tasks/2/runsOn
+    - goobers/quality-spot-check stage "review-test-coverage" /spec/tasks/3/runsOn
+    - goobers/quality-spot-check stage "review-dependencies" /spec/tasks/4/runsOn
+    - goobers/quality-spot-check stage "collate" /spec/tasks/5/runsOn
     - goobers/quality-sprint stage "churn-analysis" /spec/tasks/0/runsOn
     - goobers/quality-sprint stage "review-security" /spec/tasks/1/runsOn
     - goobers/quality-sprint stage "review-performance" /spec/tasks/2/runsOn
@@ -509,4 +527,4 @@ Blockers grouped by remedy:
     - goobers/tutor /dslVersion
     - goobers/work-nomination /dslVersion
 
-blocked: 17 workflows, 156 blockers (153 config fixes, 3 waiting on P4 items: #7753, #7754)
+blocked: 17 workflows, 162 blockers (159 config fixes, 3 waiting on P4 items: #7753, #7754)
