@@ -16,8 +16,8 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 	if !ok || len(dispatch.Content) != 0 {
 		t.Fatal("CI must support manual dispatch without checkout/skip inputs")
 	}
-	if w.Concurrency.Group != "ci-${{ github.workflow }}-${{ github.ref }}" || !w.Concurrency.CancelInProgress {
-		t.Fatal("CI concurrency must isolate frozen refs while preserving same-ref cancellation")
+	if w.Concurrency.Group != "" || w.Concurrency.CancelInProgress {
+		t.Fatal("workflow concurrency must not cancel the required aggregate")
 	}
 	if !maps.Equal(w.Permissions, map[string]string{"actions": "read", "contents": "read", "pull-requests": "read"}) {
 		t.Fatal("manual CI must retain read-only default permissions")
@@ -46,7 +46,7 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 		}
 	}
 	gate := aggregate.step(t, "Verify required gates")
-	if gate.If != "" || gate.ContinueOnError || !strings.Contains(gate.Run, `if [ "$2" != "success" ]; then`) {
+	if gate.If != "always()" || gate.ContinueOnError || !strings.Contains(gate.Run, `if [ "$2" != "success" ]; then`) {
 		t.Fatal("manual aggregate must reject missing, skipped, cancelled, and failed gates")
 	}
 }

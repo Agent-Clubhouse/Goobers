@@ -56,6 +56,20 @@ Use the smallest relevant command while iterating, then run the validation tier
 required by [CONTRIBUTING.md](CONTRIBUTING.md#validation-tier-contract) before
 opening a pull request.
 
+Pull requests and merge groups targeting `main` or any `release/**` branch run
+the same complete CI matrix defined on their branch. Push CI remains limited to
+`main`. Validation jobs cancel stale work per ref and matrix leg; the required
+aggregate is never in a cancelling concurrency group and rejects failed,
+skipped, or cancelled validation. Title and body edits do not restart CI.
+Open release work against its intended base rather than relying on retargeting
+an already-green PR; if the base changes, synchronize the head to validate the
+new merge. Manual dispatch on a dedicated, unchanged branch can qualify a fixed
+candidate without cancellation by unrelated pushes.
+
+Repository administrators must separately require
+`make ci (fmt-check · vet · build · test · lint)` in the ruleset covering release
+branches. Enabling workflow triggers does not itself protect merges.
+
 ## Binaries
 
 The shipped product binary is `goobers`. It runs the local scheduler and runner

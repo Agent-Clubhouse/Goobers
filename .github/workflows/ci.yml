@@ -50,7 +50,9 @@ name: CI
 # green for the required `make ci` check (the required-ci aggregator, whose NAME
 # is pinned by the branch ruleset) to pass.
 #
-# Pull requests, merge groups, and manual dispatches run that complete matrix.
+# Pull requests and merge groups targeting main or release/**, and manual
+# dispatches, run that complete matrix. Release pushes do not start another
+# copy of CI or reuse main's failure escalation.
 # For a frozen candidate, dispatch on a dedicated, never-updated validation
 # branch; its ref-scoped concurrency cannot be cancelled by pushes to main.
 # A push to main also validates the exact landed SHA with checks, lint, the Linux
@@ -67,7 +69,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     # No `edited`: a PR title/body edit changes no code, and re-running this
     # workflow for it used to cancel the in-flight run on the same SHA
     # (51 of 61 edit-triggered runs, Sep 2026). The only body-dependent check,
@@ -75,7 +77,7 @@ on:
     # in design-delivery.yml instead.
     types: [opened, synchronize, reopened]
   merge_group:
-    branches: [main]
+    branches: [main, 'release/**']
 
 # Least privilege: CI only needs to read the checkout.
 permissions:
@@ -83,10 +85,8 @@ permissions:
   contents: read
   pull-requests: read
 
-# One in-flight run per ref; newer pushes cancel stale runs.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# Cancel stale validation per job, not the workflow: the always() aggregate
+# must remain eligible to report failure for cancelled dependencies.
 
 env:
   # Pin lint to the version the Makefile/ADO pipeline targeted (schema v2 config).
@@ -136,6 +136,9 @@ jobs:
   # so preflight's full module and build cache is what gets saved. Un-gating a
   # short Linux job would let it win and pin a near-empty cache.
   preflight:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-preflight
+      cancel-in-progress: true
     name: preflight (lint · format · policy · vet · build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -182,6 +185,9 @@ jobs:
   # platform-qualified exemptions — no actual windows-latest/macos-latest
   # runner is needed.
   deadcode:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-deadcode
+      cancel-in-progress: true
     name: dead-code analysis
     needs: [preflight]
     if: ${{ github.event_name != 'push' }}
@@ -218,6 +224,9 @@ jobs:
   # Preflight already owns the Node-free format, policy, vet, build, and config
   # slice, so this job does not repeat it.
   checks:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-checks
+      cancel-in-progress: true
     name: checks
     needs: [preflight]
     runs-on: ubuntu-latest
@@ -334,6 +343,9 @@ jobs:
         run: go run ./test/ci group checks
 
   deploy-reference:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-deploy-reference
+      cancel-in-progress: true
     name: deploy reference manifests
     needs: [preflight]
     runs-on: ubuntu-latest
@@ -362,6 +374,9 @@ jobs:
   # gap the repo has already been bitten by once (SA4032 via build-tag-dead
   # branches).
   lint:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-lint-${{ matrix.goos }}
+      cancel-in-progress: true
     name: lint (${{ matrix.goos }})
     needs: [preflight]
     strategy:
@@ -422,6 +437,9 @@ jobs:
   # behavioural runtime (unit suite, shipped-workflow contracts, native
   # Seatbelt) runs nightly in macos-nightly.yml, off the PR critical path.
   darwin-build:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-darwin-build
+      cancel-in-progress: true
     name: darwin gate (build · vet)
     needs: [preflight]
     runs-on: ubuntu-latest
@@ -494,6 +512,9 @@ jobs:
   # Full git history is required — the DSL SemVer-compatibility tests read the
   # latest reachable tag.
   unit:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-unit-${{ matrix.shard }}
+      cancel-in-progress: true
     name: unit race shard ${{ matrix.shard }} (linux)
     # Not gated on preflight: the shards are the long pole, and waiting for
     # preflight added its ~4.4 min to every run's wall clock. A preflight
@@ -641,6 +662,9 @@ jobs:
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-unit-linux-coverage
+      cancel-in-progress: true
     name: unit coverage gate (linux)
     needs: [preflight]
     runs-on: ubuntu-latest
@@ -768,6 +792,9 @@ jobs:
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
   # it without -race. The macOS leg runs nightly in macos-nightly.yml.
   shipped:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-shipped-${{ matrix.os }}
+      cancel-in-progress: true
     name: shipped workflow contracts (${{ matrix.os }})
     needs: [preflight]
     strategy:
@@ -815,6 +842,9 @@ jobs:
         run: go run ./test/ci group shipped
 
   integration:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-integration
+      cancel-in-progress: true
     name: declared-dependency integration
     needs: [preflight]
     if: ${{ github.event_name != 'push' }}
@@ -1035,6 +1065,9 @@ jobs:
   # main, it is absent from required-ci and from the main-failure escalation,
   # and every consumer falls back to the mirrors on a miss.
   dependency-cache-warm:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-dependency-cache-warm
+      cancel-in-progress: true
     name: warm declared-dependency apt cache
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
@@ -1157,6 +1190,9 @@ jobs:
   # absent from required-ci and escalate-main-failure, and a shard that misses
   # simply compiles as it did before.
   race-build-cache-warm:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-race-build-cache-warm
+      cancel-in-progress: true
     name: warm race build cache
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
@@ -1262,6 +1298,9 @@ jobs:
   # Separate from the warm job so the token that can delete caches never sits
   # in a job that compiles repository code.
   race-build-cache-prune:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-race-build-cache-prune
+      cancel-in-progress: true
     name: prune superseded race build caches
     needs: [race-build-cache-warm]
     if: ${{ needs.race-build-cache-warm.outputs.saved-key != '' }}
@@ -1347,6 +1386,9 @@ jobs:
   # still does not run, so the gap stays a reviewed artifact instead of an
   # accident — is tracked separately in #2791.
   windows-smoke:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-windows-smoke
+      cancel-in-progress: true
     name: windows gate (build · vet · runtime smoke)
     needs: [preflight]
     runs-on: windows-latest
@@ -1586,6 +1628,9 @@ jobs:
           if-no-files-found: warn
 
   vulnerability-scan:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-vulnerability-scan
+      cancel-in-progress: true
     name: Go vulnerability scan
     needs: [preflight]
     if: ${{ github.event_name != 'push' }}
@@ -1632,6 +1677,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Verify required gates
+        if: always()
         env:
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
@@ -1677,7 +1723,16 @@ jobs:
           check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
           exit "$fail"
 
+      - name: Reject cancelled validation
+        if: cancelled()
+        run: |
+          echo "::error::Validation was cancelled; this run cannot satisfy the merge gate."
+          exit 1
+
   sandbox:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-sandbox
+      cancel-in-progress: true
     name: sandbox confinement (ubuntu-latest)
     needs: [preflight]
     if: ${{ github.event_name != 'push' }}
@@ -1737,6 +1792,9 @@ jobs:
   # actually makes it a required gate — this comment previously claimed that
   # while the job was still excluded from required-ci's needs list.
   linux-validation:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}-linux-validation
+      cancel-in-progress: true
     name: linux node validation (#636/#639)
     needs: [preflight]
     if: ${{ github.event_name != 'push' }}
