@@ -907,7 +907,7 @@ jobs:
           GOOBERS_TEST_AZURITE_ACCOUNT: devstoreaccount1
           GOOBERS_TEST_AZURITE_KEY: Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
           GOOBERS_TEST_AZURITE_URL: http://127.0.0.1:10000/devstoreaccount1
-        run: go test -tags=integration,cloudpg -timeout 12m -count=1 ./internal/cloud/...
+        run: go test -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 ./internal/cloud/...
 
       - name: Stop Azurite
         if: always()

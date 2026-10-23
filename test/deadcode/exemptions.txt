@@ -358,3 +358,12 @@ github.com/goobers/goobers/internal/cloud/readmodelpg.truncateVersion # HA-P3-11
 github.com/goobers/goobers/internal/cloud/readmodelpg.validateFilters # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.versionDDL # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.versionSchema # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+
+# HA-P3-17 cloud assembly awaits HA-P3-18 role composition.
+github.com/goobers/goobers/internal/cloud/podauth.New # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/podauth.Auth.Authenticate # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/podauth.Auth.VerifyCredentialGrant # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/podauth.Auth.RunKeyReload # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/podauth.Revocations.Revoke # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/podauth.Revocations.IsRevoked # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/podauth.Revocations.validate # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
