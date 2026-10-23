@@ -83,6 +83,16 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   (default `<namespace>implementation/`). Passing CI is eligible by default;
   a workflow MAY explicitly admit pending CI, but known failures and unknown
   states remain ineligible. *(All tiers)*
+
+  `pr-select` accepts `provider:pr:write` or its explicit legacy alternative
+  `github:pr:write` at validation and runtime, preserving existing DSL 2
+  workflows on GitHub, Gitea, and Azure DevOps. A delivered
+  `provider:pr:write` takes precedence when both are present. The selected
+  capability supplies its credential, authentication scheme, expiry, and
+  refresh grant; a failed authorization or refresh never switches to the
+  other capability. This is a per-command contract, not a global alias, and
+  neither PR-write capability confers merge authority.
+
 - **PRL-002 (MUST, Shipped):** The selected PR MUST be **leased in a claim
   namespace shared by `merge-review` and `pr-remediation`**, so the two
   workflows can never concurrently act on the same PR; distinct-PR concurrency
