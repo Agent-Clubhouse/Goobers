@@ -13,6 +13,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	"github.com/goobers/goobers/internal/blobstore"
+	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
@@ -20,6 +21,7 @@ import (
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -160,6 +162,7 @@ var (
 	newCloudPools             = cloudpg.NewPools
 	newAzureObjectStore       = objstore.NewAzure
 	newObjectMetadata         = objstore.NewMetadataWithOptions
+	newAcceptanceStore        = cloudacceptance.New
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
 		return azidentity.NewDefaultAzureCredential(nil)
 	}
@@ -183,6 +186,7 @@ type databaseServices struct {
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
 	Objects             *objstore.Metadata
+	Acceptances         triggerqueue.SchedulerPolicyStore
 	SchemaCompatibility error
 	NewClaims           func(*cloudlease.Manager, *cloudlease.Handle) (cloudclaims.Services, error)
 }
@@ -279,8 +283,16 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)
 		return 1
 	}
+	acceptances, err := newAcceptanceStore(
+		pools.Transaction,
+		environmentOr("GOOBERS_INSTANCE_ID", "default"),
+	)
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
+		return 1
+	}
 	services := databaseServices{
-		Pools: pools, Blobs: blobs, Objects: objects,
+		Pools: pools, Blobs: blobs, Objects: objects, Acceptances: acceptances,
 		SchemaCompatibility: compatibilityErr,
 		Surrenders: objstore.SurrenderPlane{
 			Metadata: objects, InstanceID: environmentOr("GOOBERS_INSTANCE_ID", "default"),
