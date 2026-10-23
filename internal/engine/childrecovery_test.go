@@ -270,6 +270,11 @@ func TestEngineChildRecovery(t *testing.T) {
 	t.Run("child stage heartbeat loss retries on infrastructure budget", func(t *testing.T) {
 		h := newChildRecoveryHarness(t, ctx, c, "heartbeat")
 		queue := childDispatchQueue + "-heartbeat"
+		// Detect the partitioned worker in seconds rather than the minute
+		// production waits; the loss path is otherwise identical.
+		previous := dispatchHeartbeatTimeoutV2
+		dispatchHeartbeatTimeoutV2 = 3 * time.Second
+		t.Cleanup(func() { dispatchHeartbeatTimeoutV2 = previous })
 		root := h.startRoot("root")
 		defer root.Stop()
 		lost := make(chan struct{})
@@ -295,6 +300,17 @@ func TestEngineChildRecovery(t *testing.T) {
 		h.assertSingleFamily(run)
 		if retried.Load() != 1 {
 			t.Fatalf("replacement ran %d attempts", retried.Load())
+		}
+		var starts []string
+		for _, b := range h.f.bindings {
+			for _, e := range liveEvents(t, h.dir, b.Child.RunID) {
+				if e.Type == journal.EventStageStarted && e.Stage == "work" {
+					starts = append(starts, fmt.Sprintf("%d/%s", e.Attempt, e.AttemptClass))
+				}
+			}
+		}
+		if fmt.Sprint(starts) != "[1/ 2/infra]" {
+			t.Fatalf("child journal starts = %v, want attempt 1 then attempt 2 class infra", starts)
 		}
 	})
 
