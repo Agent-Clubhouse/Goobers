@@ -110,8 +110,8 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	config := cloudpg.Config{TransactionURL: directURL, DirectURL: directURL}
-	if !configureDatabaseAuth("migrate", *authMode, &config, stderr) {
-		return 2
+	if code := configureDatabaseAuth("migrate", *authMode, &config, stderr); code != 0 {
+		return code
 	}
 	ctx, stop := signalContext()
 	defer stop()
@@ -205,8 +205,8 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		TransactionURL: transactionURL, DirectURL: directURL,
 		MaxConnections: int32(*maxConnections), DirectMaxConnections: int32(*directConnections),
 	}
-	if !configureDatabaseAuth(role, *authMode, &config, stderr) {
-		return 2
+	if code := configureDatabaseAuth(role, *authMode, &config, stderr); code != 0 {
+		return code
 	}
 	ctx, stop := signalContext()
 	defer stop()
@@ -226,7 +226,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	}
 	compatibilityErr := checkCloudSchema(ctx, pools.Transaction, version.Get().Version)
 	if compatibilityErr != nil && !cloudmigrate.IsIncompatible(compatibilityErr) {
-		writef(stderr, "goobers-cloud %s: check database schema compatibility: %v\n", role, compatibilityErr)
+		writef(stderr, "goobers-cloud %s: check database schema compatibility: %s\n", role, cloudpg.SafeDiagnostic(compatibilityErr))
 		return 1
 	}
 	if err := serve(ctx, pools, compatibilityErr); err != nil {
@@ -259,21 +259,21 @@ func databaseURL(argument, filename, environment string) (string, error) {
 	return "", fmt.Errorf("set the corresponding flag, file, or %s", environment)
 }
 
-func configureDatabaseAuth(role, authMode string, config *cloudpg.Config, stderr io.Writer) bool {
+func configureDatabaseAuth(role, authMode string, config *cloudpg.Config, stderr io.Writer) int {
 	switch authMode {
 	case "password":
 	case "entra":
 		credential, err := newDefaultAzureCredential()
 		if err != nil {
 			writef(stderr, "goobers-cloud %s: Entra credential initialization failed\n", role)
-			return false
+			return 1
 		}
 		config.TokenProvider = cloudpg.EntraTokenProvider{Credential: credential}
 	default:
 		writef(stderr, "goobers-cloud %s: invalid --database-auth %q (want password or entra)\n", role, authMode)
-		return false
+		return 2
 	}
-	return true
+	return 0
 }
 
 func environmentOr(name, fallback string) string {
