@@ -32,6 +32,10 @@ type DirSource struct {
 	// InstanceID owns the archive: identical definitions from separate instances
 	// must not share a deletable pin.
 	InstanceID string
+
+	// afterCapture and beforeRecapture are test seams between the real read
+	// stages; production leaves them nil.
+	afterCapture, beforeRecapture func()
 }
 
 // resolved is one view of the mounted directory with every symlink followed.
@@ -66,30 +70,46 @@ func (s DirSource) resolve() (resolved, error) {
 // candidate is built from, instance.yaml included (the archive excludes it, but
 // placement.selfExecution decides eligibility), and applies nothing.
 func (s DirSource) Fingerprint(ctx context.Context) (string, error) {
-	_, digest, err := s.capture(ctx)
-	return digest, err
-}
-
-func (s DirSource) capture(ctx context.Context) (archive []byte, fingerprint string, err error) {
 	view, err := s.resolve()
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
-	archive, digest, err := configgeneration.CaptureForInstance(ctx, view.configDir, s.InstanceID)
-	if err != nil {
-		return nil, "", fmt.Errorf("capture config generation: %w", err)
-	}
-	cfg, err := os.ReadFile(view.instanceFile)
-	if err != nil {
-		return nil, "", fmt.Errorf("read instance config: %w", err)
-	}
-	sum := sha256.Sum256(append([]byte(digest+"\n"), cfg...))
-	return archive, "sha256:" + hex.EncodeToString(sum[:]), nil
+	snap, err := s.read(ctx, view)
+	return snap.fingerprint, err
 }
 
-// Load reads one whole, stable, valid view of the directory. A directory with
-// validation errors is refused here (fail closed): it would silently drop
-// workflows from the eligibility assessment.
+// snapshot is everything a candidate is built from, read once.
+type snapshot struct {
+	archive     []byte
+	instance    []byte
+	fingerprint string
+}
+
+// read captures the archive and instance.yaml of one resolved view. The view's
+// paths are concrete directories, never re-resolved, so both inputs come from
+// the same version.
+func (s DirSource) read(ctx context.Context, view resolved) (snapshot, error) {
+	archive, digest, err := configgeneration.CaptureForInstance(ctx, view.configDir, s.InstanceID)
+	if err != nil {
+		return snapshot{}, fmt.Errorf("capture config generation: %w", err)
+	}
+	policy, err := os.ReadFile(view.instanceFile)
+	if err != nil {
+		return snapshot{}, fmt.Errorf("read instance config: %w", err)
+	}
+	sum := sha256.Sum256(append([]byte(digest+"\n"), policy...))
+	return snapshot{archive: archive, instance: policy, fingerprint: "sha256:" + hex.EncodeToString(sum[:])}, nil
+}
+
+// Load builds one candidate that is consistent by construction: the archive and
+// the instance policy bytes are read once from a single resolved version, and
+// the parsed definitions and policy are produced from exactly those bytes (the
+// archive is extracted into a private directory and loaded from there), never
+// from the mutable source. A swap during the read therefore cannot pair one
+// version's archive with another's policy, even an A to B to A swap whose
+// before and after hashes agree. A directory with validation errors is refused
+// (fail closed): it would silently drop workflows from the eligibility
+// assessment.
 func (s DirSource) Load(ctx context.Context) (Candidate, error) {
 	if s.Root == "" || s.InstanceID == "" {
 		return Candidate{}, errors.New("cloud config source requires a directory and an instance")
@@ -98,29 +118,78 @@ func (s DirSource) Load(ctx context.Context) (Candidate, error) {
 	if err != nil {
 		return Candidate{}, err
 	}
-	archive, before, err := s.capture(ctx)
+	first, err := s.read(ctx, view)
 	if err != nil {
 		return Candidate{}, err
 	}
-	cfg, err := instance.LoadConfig(view.instanceFile)
+	if s.afterCapture != nil {
+		s.afterCapture()
+	}
+	candidate, err := s.parse(ctx, first)
+	if err != nil {
+		return Candidate{}, err
+	}
+	if s.beforeRecapture != nil {
+		s.beforeRecapture()
+	}
+	// Detect a source that moved under us: a different resolved version, or (for
+	// a plain directory edited in place) different captured content. The
+	// candidate above is coherent either way; this only declines to apply a
+	// snapshot that is already stale, so the next poll converges.
+	now, err := s.resolve()
+	if err != nil || now != view {
+		return Candidate{}, ErrUnstable
+	}
+	second, err := s.read(ctx, view)
+	if err != nil || second.fingerprint != first.fingerprint {
+		return Candidate{}, ErrUnstable
+	}
+	return candidate, nil
+}
+
+// parse loads the definitions and policy from the captured bytes alone.
+func (s DirSource) parse(ctx context.Context, snap snapshot) (Candidate, error) {
+	digest := archiveDigest(snap.archive)
+	archive, err := configgeneration.Decode(snap.archive, digest)
+	if err != nil {
+		return Candidate{}, fmt.Errorf("decode captured generation: %w", err)
+	}
+	dir, err := os.MkdirTemp("", "goobers-config-candidate-")
+	if err != nil {
+		return Candidate{}, err
+	}
+	defer removeTree(dir)
+	if err := archive.Extract(ctx, dir); err != nil {
+		return Candidate{}, fmt.Errorf("extract captured generation: %w", err)
+	}
+	policy := filepath.Join(dir, instance.ConfigFileName)
+	if err := os.WriteFile(policy, snap.instance, 0o600); err != nil {
+		return Candidate{}, err
+	}
+	cfg, err := instance.LoadConfig(policy)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load instance config: %w", err)
 	}
-	set, report, err := instance.LoadConfigDir(view.configDir)
+	set, report, err := instance.LoadConfigDir(filepath.Join(dir, instance.ConfigDirName))
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load config definitions: %w%s", err, issueSummary(report))
 	}
 	if report != nil && report.HasErrors() {
 		return Candidate{}, fmt.Errorf("config definitions have validation errors%s", issueSummary(report))
 	}
-	_, after, err := s.capture(ctx)
-	if err != nil {
-		return Candidate{}, err
-	}
-	if before != after {
-		return Candidate{}, ErrUnstable
-	}
-	return Candidate{Digest: archiveDigest(archive), Archive: archive, Config: cfg, Set: set}, nil
+	return Candidate{Digest: digest, Archive: snap.archive, Config: cfg, Set: set}, nil
+}
+
+// removeTree deletes a private extraction whose files and directories carry the
+// archived (possibly read-only) modes.
+func removeTree(dir string) {
+	_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && entry.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	_ = os.RemoveAll(dir)
 }
 
 // archiveDigest is the configgeneration content address of the archive bytes.

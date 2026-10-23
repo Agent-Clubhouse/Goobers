@@ -346,3 +346,104 @@ func TestDirConfigurationReportsAnUnreadableDirectoryWithoutFailingTheTick(t *te
 		t.Fatalf("recovery after the directory returned: err=%v applied=%q", err, cfg.Status().Applied)
 	}
 }
+
+// TestDirSourceNeverPairsOneVersionsArchiveWithAnothersPolicy swaps the source
+// between the real read stages. A single swap must be refused as unstable; an
+// A to B to A swap, where the before and after content hashes agree, must still
+// yield a candidate whose digest and policy belong to the same version.
+func TestDirSourceNeverPairsOneVersionsArchiveWithAnothersPolicy(t *testing.T) {
+	t.Parallel()
+	for _, rollback := range []bool{false, true} {
+		name := "one swap"
+		if rollback {
+			name = "A to B to A"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, b := demoDir(t), demoDir(t)
+			// A allows cloud execution, B denies it; their definitions differ too.
+			file := filepath.Join(a, "instance.yaml")
+			raw, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte(strings.Replace(string(raw), "selfExecution: deny", "selfExecution: allow", 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			touchDefinition(t, b)
+			versionA, err := (DirSource{Root: a, InstanceID: "i"}).Load(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			versionB, err := (DirSource{Root: b, InstanceID: "i"}).Load(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if versionA.Digest == versionB.Digest || versionA.Config.SelfExecutionPolicy() == versionB.Config.SelfExecutionPolicy() {
+				t.Fatal("fixture versions must differ in archive and policy")
+			}
+
+			root := filepath.Join(t.TempDir(), "current")
+			if err := os.Symlink(a, root); err != nil {
+				t.Fatal(err)
+			}
+			swap := func(target string) {
+				next := root + ".next"
+				if err := os.Symlink(target, next); err != nil {
+					t.Error(err)
+					return
+				}
+				if err := os.Rename(next, root); err != nil {
+					t.Error(err)
+				}
+			}
+			source := DirSource{Root: root, InstanceID: "i", afterCapture: func() { swap(b) }, beforeRecapture: func() {
+				if rollback {
+					swap(a)
+				}
+			}}
+			got, err := source.Load(t.Context())
+			if !rollback {
+				if !errors.Is(err, ErrUnstable) {
+					t.Fatalf("a single swap = %+v, %v; want ErrUnstable", got.Digest, err)
+				}
+				return
+			}
+			if errors.Is(err, ErrUnstable) {
+				return // declining a moving source is allowed
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			coherentA := got.Digest == versionA.Digest && got.Config.SelfExecutionPolicy() == versionA.Config.SelfExecutionPolicy()
+			coherentB := got.Digest == versionB.Digest && got.Config.SelfExecutionPolicy() == versionB.Config.SelfExecutionPolicy()
+			if !coherentA && !coherentB {
+				t.Fatalf("torn candidate: digest %q with policy %q (A=%q/%q B=%q/%q)", got.Digest, got.Config.SelfExecutionPolicy(),
+					versionA.Digest, versionA.Config.SelfExecutionPolicy(), versionB.Digest, versionB.Config.SelfExecutionPolicy())
+			}
+		})
+	}
+}
+
+func TestDirSourceParsesOnlyFromTheCapturedBytes(t *testing.T) {
+	t.Parallel()
+	root := demoDir(t)
+	// Edit the source after the capture but before the parse: the candidate must
+	// still describe the captured version, and the move is then declined.
+	source := DirSource{Root: root, InstanceID: "i"}
+	original, err := source.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.afterCapture = func() {
+		file := filepath.Join(root, "instance.yaml")
+		raw, _ := os.ReadFile(file)
+		_ = os.WriteFile(file, []byte(strings.Replace(string(raw), "selfExecution: deny", "selfExecution: allow", 1)), 0o600)
+	}
+	if _, err := source.Load(t.Context()); !errors.Is(err, ErrUnstable) {
+		t.Fatalf("an in-place edit during the read = %v, want ErrUnstable", err)
+	}
+	if original.Config.SelfExecutionPolicy() != "deny" {
+		t.Fatalf("baseline policy = %q", original.Config.SelfExecutionPolicy())
+	}
+}
