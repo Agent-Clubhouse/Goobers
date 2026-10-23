@@ -10,3 +10,9 @@ resources:
   - serviceaccounts.yaml
   - configmaps.yaml
   - networkpolicies.yaml
+configMapGenerator:
+  - name: goobers-cloud-instance
+    files:
+      - instance.yaml=config/instance.yaml
+generatorOptions:
+  disableNameSuffixHash: true

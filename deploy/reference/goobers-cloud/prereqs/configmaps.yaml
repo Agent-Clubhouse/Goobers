@@ -11,6 +11,10 @@ data:
   instance-id: change-me # CHANGE-ME
   # entra (reference) or password. Applies to both migrate and control.
   database-auth: entra
+  # CHANGE-ME: Azure Blob endpoint, container, and account identity.
+  object-store-url: https://CHANGE-ME.blob.core.windows.net
+  object-store-container: goobers
+  object-store-account-name: CHANGE-ME
 ---
 apiVersion: v1
 kind: ConfigMap

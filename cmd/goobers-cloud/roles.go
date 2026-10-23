@@ -142,12 +142,13 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 }
 
 var (
-	signalContext             = signals.SetupSignalContext
-	newCloudPools             = cloudpg.NewPools
-	newAzureObjectStore       = objstore.NewAzure
-	newObjectMetadata         = objstore.NewMetadataWithOptions
-	newAcceptanceStore        = cloudacceptance.New
-	newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
+	signalContext                = signals.SetupSignalContext
+	newCloudPools                = cloudpg.NewPools
+	newAzureObjectStore          = objstore.NewAzure
+	newAzureSharedKeyObjectStore = objstore.NewAzureSharedKey
+	newObjectMetadata            = objstore.NewMetadataWithOptions
+	newAcceptanceStore           = cloudacceptance.New
+	newDefaultAzureCredential    = func() (azcore.TokenCredential, error) {
 		return azidentity.NewDefaultAzureCredential(nil)
 	}
 	runAPIHost         = unavailableDatabaseRole

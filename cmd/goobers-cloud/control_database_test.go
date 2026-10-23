@@ -149,14 +149,14 @@ func TestBindControlObjectStoreIsRequiredAndControllerOnly(t *testing.T) {
 		"blank url":    {"  ", "goobers"},
 		"no container": {"https://store.invalid", ""},
 	} {
-		if err := bindControlObjectStore(&controller, tc.url, tc.container); err == nil || controller.Blobs != nil || controller.Objects != nil {
+		if err := bindControlObjectStore(&controller, tc.url, tc.container, "", ""); err == nil || controller.Blobs != nil || controller.Objects != nil {
 			t.Fatalf("%s: bound an object store (%v)", name, err)
 		}
 	}
 	priorCredential := newDefaultAzureCredential
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) { return fakeTokenCredential{}, nil }
 	t.Cleanup(func() { newDefaultAzureCredential = priorCredential })
-	if err := bindControlObjectStore(&controller, "https://store.invalid", "goobers"); err != nil {
+	if err := bindControlObjectStore(&controller, "https://store.invalid", "goobers", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if controller.Blobs == nil || controller.Objects == nil {

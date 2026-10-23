@@ -26,7 +26,9 @@ this base.
 | `goobers-cloud-db-api`, `goobers-cloud-db-controller` | Secrets | keys `url` (PgBouncer) and `direct-url` as roles `goobers_api` / `goobers_controller`; both mounted as files into `control`, which holds two pools. Never in argv. |
 | `goobers-cloud-control-tls` | Secret (`kubernetes.io/tls`) | the `control` role requires TLS off loopback; workers and stage pods must trust the issuer. |
 | `goobers-cloud-pod-key` | Secret | key `keyring.json`: `{"current":{"id":"k1","key":"<base64, >=32 bytes>"}}`. |
-| `goobers-cloud`, `goobers-cloud-migration` | ConfigMaps | shipped in `prereqs/configmaps.yaml` (`instance-id`, `database-auth`, `backup-ref`); patch the values in your overlay. Set `instance-id` once (no default; it also names the database `goobers_<instance-id>`). |
+| `goobers-cloud-object-store` | Secret | key `account-key` for shared-key/private-emulator use. An Entra-only overlay may remove the shared-key args and mount. |
+| `goobers-cloud`, `goobers-cloud-migration` | ConfigMaps | shipped in `prereqs/configmaps.yaml` (`instance-id`, `database-auth`, object-store URL/container/account, `backup-ref`); patch the CHANGE-ME values. Set `instance-id` once (it also names `goobers_<instance-id>`). |
+| `goobers-cloud-instance` | ConfigMap | generated from `prereqs/config/instance.yaml` and mounted read-only at `/etc/goobers/config`; replace that reference instance with the configuration generation source your controller applies. |
 
 `database-auth` is `entra` in the base and applies to both migrate and control;
 the migrate Job and the NetworkPolicy `allow-migrate-identity` assume it.
