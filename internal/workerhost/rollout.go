@@ -21,9 +21,9 @@ func (h *Host) checkRolloutLoop(ctx context.Context, status workerrollout.Status
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			h.logf("goobers worker: error: reconcile worker-version retention: %v", err)
+			h.logf("goobers-cloud worker: error: reconcile worker-version retention: %v", err)
 		case result.RetiredBuild != "":
-			h.logf("goobers worker: changed %d workflow(s) pinned to goobers.%s to AUTO_UPGRADE so the blocked target version can start",
+			h.logf("goobers-cloud worker: changed %d workflow(s) pinned to goobers.%s to AUTO_UPGRADE so the blocked target version can start",
 				result.Updated, result.RetiredBuild)
 		}
 		timer.Reset(h.rolloutInterval)

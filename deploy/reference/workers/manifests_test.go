@@ -68,6 +68,10 @@ func TestCurrentVersionNeverSetWithoutPollers(t *testing.T) {
 		t.Fatalf("worker containers = %d, found=%v err=%v", len(containers), found, err)
 	}
 	container := containers[0].(map[string]any)
+	command, found, err := unstructured.NestedStringSlice(container, "command")
+	if err != nil || !found || len(command) != 1 || command[0] != "goobers-cloud" {
+		t.Fatalf("worker command = %v, found=%v err=%v", command, found, err)
+	}
 	for _, probe := range []string{"startupProbe", "readinessProbe"} {
 		path, found, err := unstructured.NestedString(container, probe, "httpGet", "path")
 		if err != nil || !found || path == "" {

@@ -37,6 +37,8 @@ spec:
         containers:
           - name: worker
             image: goobers
+            command:
+              - goobers-cloud
             args:
               - worker
               - --task-queue

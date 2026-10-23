@@ -1,4 +1,4 @@
-// Package workerhost hosts the Temporal engine worker behind `goobers worker`
+// Package workerhost hosts the Temporal engine worker behind `goobers-cloud worker`
 // (#632, v2-cloud-scale A1.6): task-queue selection, graceful drain on
 // shutdown, and a versioned worker identity, so tier-3 workers are a
 // deployable unit (k8s-infra-shape §2). The engine itself stays quarantined —
