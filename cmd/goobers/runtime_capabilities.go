@@ -389,7 +389,7 @@ func init() {
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --target cloud", "goobers validate --target cloud --format json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).

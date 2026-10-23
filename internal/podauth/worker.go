@@ -72,7 +72,7 @@ func (s *SignedKey) mintWorkerToken(kind workerTokenKind, workerID string, ttl t
 		return "", fmt.Errorf("podauth: worker token TTL must be positive and at most %s", MaxWorkerTokenTTL)
 	}
 	payload := base64.RawURLEncoding.EncodeToString([]byte(workerID)) + "." + strconv.FormatInt(s.now().Add(ttl).Unix(), 10)
-	return kind.prefix + payload + "." + s.sign(kind.macDomain+payload), nil
+	return s.encodeToken(kind.prefix, kind.macDomain, payload), nil
 }
 
 func validWorkerID(id string) bool {
