@@ -656,13 +656,16 @@ tables:
   provisioned: true
   fence: epoch
   rationale: Prune marks candidates. Publish and pin cancel them under a per-digest advisory lock. The gc-lease fenced sweep
-    stamps the delete intent, and completion is compare-and-set on intent_id.
+    records the first observation of an unreferenced candidate (0020), stamps the delete intent once that observation is old
+    enough and its etag unchanged, and completes by compare-and-set on intent_id.
   readers:
   - role: goobers_controller
     columns:
     - digest
     - unreferenced_at
     - intent_id
+    - first_observed_at
+    - first_observed_etag
   writers:
   - role: goobers_controller
     insert:
@@ -672,7 +675,22 @@ tables:
     - delete_started_at
     - intent_id
     - intent_etag
+    - first_observed_at
+    - first_observed_etag
     delete: true
+- schema: control
+  table: blob_reference_writer_protocol
+  provisioned: true
+  fence: none-by-design
+  rationale: Migration 0020 creates the registry of writer classes that take part in the storage mutation protocol; registration
+    is a later migration (owner), never a runtime write. control.blob_is_referenced reads it on the controller's GC paths and
+    treats every digest as referenced until each class is registered.
+  readers:
+  - role: goobers_controller
+    columns:
+    - writer_class
+    - protocol_version
+  writers: []
 - schema: control
   table: recovery_record
   provisioned: true
@@ -817,4 +835,22 @@ sequences:
   rationale: Terminal-report admission and supersession draw a never-reused generation with explicit nextval under the controller-lease
     fence.
   usage:
+  - goobers_controller
+functions:
+- schema: control
+  function: blob_column_referenced
+  arguments: table_name text, column_name text, candidate_digest text
+  rationale: SECURITY INVOKER reference probe used by blob_is_referenced; it runs SELECT on the probed column as the caller, so
+    the controller holds SELECT on each probed column that exists (config_generation.blob_digest,
+    recovery_record.patch_digest and archive_digest). It returns true for a table that does not exist yet.
+  security_definer: false
+  execute:
+  - goobers_controller
+- schema: control
+  function: blob_is_referenced
+  arguments: candidate_digest text
+  rationale: SECURITY INVOKER fail-closed reference check called by the controller's blob GC (config prune, observe, intent,
+    forget and complete paths in objstore/metadata.go).
+  security_definer: false
+  execute:
   - goobers_controller
