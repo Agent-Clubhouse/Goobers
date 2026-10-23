@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/workerhost"
 )
 
@@ -98,6 +99,32 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	}
 	if value != "postgres://file-secret@localhost/goobers" {
 		t.Fatalf("file URL = %q", value)
+	}
+}
+
+func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
+	originalPools, originalRun, originalSignal := newCloudPools, runCloudMigrations, signalContext
+	t.Cleanup(func() {
+		newCloudPools, runCloudMigrations, signalContext = originalPools, originalRun, originalSignal
+	})
+	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
+		return &cloudpg.Pools{}, nil
+	}
+	var backupRef string
+	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup string) error {
+		backupRef = backup
+		return nil
+	}
+
+	if code, _, _ := runForTest("migrate", "apply"); code != 2 {
+		t.Fatalf("migrate without backup code = %d, want 2", code)
+	}
+	t.Setenv("GOOBERS_MIGRATION_BACKUP_REF", "pitr:2026-10-22T20:00:00Z")
+	code, stdout, stderr := runForTest("migrate", "apply")
+	if code != 0 || stderr != "" || backupRef != "pitr:2026-10-22T20:00:00Z" {
+		t.Fatalf("migrate: code=%d stdout=%q stderr=%q backup=%q", code, stdout, stderr, backupRef)
 	}
 }
 
