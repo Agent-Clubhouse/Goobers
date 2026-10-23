@@ -2,10 +2,11 @@ package runsemantics
 
 import (
 	"fmt"
+	"strings"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
-	"strings"
 )
 
 // BranchInputSource is the settled branch state used by both execution lanes.

@@ -1,11 +1,11 @@
 package runner
 
 import (
-	"github.com/goobers/goobers/internal/runsemantics"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func TestBranchInputResolutionPreservesValueAndProvenance(t *testing.T) {
