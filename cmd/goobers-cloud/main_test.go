@@ -76,6 +76,31 @@ func TestWorkerMapsHostErrors(t *testing.T) {
 	}
 }
 
+func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
+	const password = "do-not-log-this-password"
+	t.Setenv("GOOBERS_DATABASE_URL", "postgres://user:"+password+"@[invalid/goobers")
+	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	code, _, stderr := runForTest("api")
+	if code != 1 {
+		t.Fatalf("api code = %d, stderr = %q", code, stderr)
+	}
+	if strings.Contains(stderr, password) {
+		t.Fatalf("api parse error exposed password: %q", stderr)
+	}
+
+	urlFile := filepath.Join(t.TempDir(), "database-url")
+	if err := os.WriteFile(urlFile, []byte("postgres://file-secret@localhost/goobers\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := databaseURL("", urlFile, "UNSET_DATABASE_URL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "postgres://file-secret@localhost/goobers" {
+		t.Fatalf("file URL = %q", value)
+	}
+}
+
 func TestGeneratedDocs(t *testing.T) {
 	root := t.TempDir()
 	if err := writeDocs(root); err != nil {
