@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// InvokeGooberExact restores exact JSON map-item inputs before invoking a goober.
 func (a *Activities) InvokeGooberExact(
 	ctx context.Context,
 	env apiv1.InvocationEnvelope,
@@ -25,6 +26,7 @@ func (a *Activities) InvokeGooberExact(
 	return a.InvokeGoober(ctx, env, workspaceBranch, workspaceDelta, workspace, onTimeout)
 }
 
+// RunDeterministicExact restores exact JSON map-item inputs before deterministic execution.
 func (a *Activities) RunDeterministicExact(
 	ctx context.Context,
 	env apiv1.InvocationEnvelope,

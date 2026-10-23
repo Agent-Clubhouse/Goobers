@@ -18,7 +18,7 @@ func (r *runJournal) fanOutSource(
 		return journal.FanOutSourceRef{}, 0, fmt.Errorf("engine: fan-out producer %q is not a task", source.Task)
 	}
 	slotIndex := -1
-	limit := int64(fanout.MaxSourceBytes)
+	limit := fanout.MaxSourceBytes
 	for i, slot := range task.ArtifactSlots {
 		if slot.Name != source.Slot {
 			continue
