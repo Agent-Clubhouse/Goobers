@@ -141,20 +141,23 @@ func TestWorkerControllerRejectsPlaceholderAttestation(t *testing.T) {
 
 func TestWorkerControllerBuildIDMustContainReleaseBinaryVersion(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		buildID string
-		wantErr bool
+		name          string
+		binaryVersion string
+		buildID       string
+		wantErr       bool
 	}{
-		{name: "reused previous release", buildID: "release-0.8.0", wantErr: true},
-		{name: "matching release", buildID: "release-0.9.0"},
+		{name: "reused previous release", binaryVersion: "0.9.0", buildID: "release-0.8.0", wantErr: true},
+		{name: "matching release", binaryVersion: "0.9.0", buildID: "release-0.9.0"},
+		{name: "matching release with workflow hash", binaryVersion: "0.9.0", buildID: "release-0.9.0-workflow-abcd"},
+		{name: "longer patch is not a match", binaryVersion: "0.9.1", buildID: "release-0.9.10", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(temporalDeploymentNameEnv, DeploymentName)
 			t.Setenv(temporalWorkerBuildIDEnv, tc.buildID)
 			t.Setenv(podNamespaceEnv, "goobers-system")
-			_, err := New(Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "0.9.0"})
+			_, err := New(Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: tc.binaryVersion})
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("New(build=%q, binary=0.9.0) error = %v, wantErr=%t", tc.buildID, err, tc.wantErr)
+				t.Fatalf("New(build=%q, binary=%s) error = %v, wantErr=%t", tc.buildID, tc.binaryVersion, err, tc.wantErr)
 			}
 			if tc.wantErr && !strings.Contains(err.Error(), "does not contain release binary version") {
 				t.Fatalf("mismatch error = %v", err)
