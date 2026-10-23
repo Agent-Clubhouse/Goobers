@@ -93,6 +93,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows offline diagnostic evidence:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows operator options:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows platform runtime:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows rainbow worker contracts:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows read model and stores:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows recovery publication custody:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows release packaging:go-modules",
@@ -122,6 +123,7 @@
       "Makefile#cover-gate::go-modules",
       "Makefile#deadcode::go-modules",
       "Makefile#deploy-validate::go-modules",
+      "Makefile#deploy-validate:[2]:go-modules",
       "Makefile#docs::go-modules",
       "Makefile#docs:[2]:go-modules",
       "Makefile#docs:[3]:go-modules",
@@ -487,7 +489,8 @@
       "Makefile#deploy-validate:[5]:kubernetes-schemas",
       "Makefile#deploy-validate:[6]:kubernetes-schemas",
       "Makefile#deploy-validate:[7]:kubernetes-schemas",
-      "Makefile#deploy-validate:[8]:kubernetes-schemas"
+      "Makefile#deploy-validate:[8]:kubernetes-schemas",
+      "Makefile#deploy-validate:[9]:kubernetes-schemas"
     ]
   },
   {
