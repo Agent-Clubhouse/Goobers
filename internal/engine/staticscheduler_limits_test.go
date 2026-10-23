@@ -42,9 +42,11 @@ func TestStaticSchedulerUnsupportedVisitAndBindingFailClosed(t *testing.T) {
 			writer, dir := newLiveWriter(t)
 			exec := newScriptedExec(map[string][]scriptedCall{"seed": {succeed(map[string]interface{}{"value": "frozen-root", "parallel.alpha.alpha.value": "must not bind a literal root key"})}})
 			out := executeScheduler(t, in, &Activities{Journal: writer, Workspaces: testWorkspaces(t), Det: exec}, func(env *testsuite.TestWorkflowEnvironment) {
+				change := staticParallelVisitsVersion
 				if mode == "binding" {
-					env.OnGetVersion(staticBranchInputsVersion, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+					change = staticBranchInputsVersion
 				}
+				env.OnGetVersion(change, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 			})
 			if !strings.Contains(out.Error, want) {
 				t.Fatalf("error=%s want=%s", out.Error, want)

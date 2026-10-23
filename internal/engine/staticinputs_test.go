@@ -9,7 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func TestConformanceStaticBranchQualifiedJoinInputs(t *testing.T) {
@@ -31,7 +31,7 @@ func TestConformanceStaticBranchQualifiedJoinInputs(t *testing.T) {
 			in.Run.Spec.Tasks[1].ExpectedOutputs = []string{"value", "missing"}
 			join := &in.Run.Spec.Tasks[3]
 			join.InputsFrom = map[string]string{"implicit": "parallel.alpha.value", "explicit": "parallel.alpha.alpha.value"}
-			join.Inputs = map[string]string{"implicit": "FORGED", "explicit": "FORGED", runner.BranchCompletenessInput: "FORGED"}
+			join.Inputs = map[string]string{"implicit": "FORGED", "explicit": "FORGED", runsemantics.BranchCompletenessInput: "FORGED"}
 			join.MinimumIntegrity = tc.minimum
 			if tc.missing {
 				join.InputsFrom["explicit"] = "parallel.alpha.alpha.missing"
@@ -51,7 +51,7 @@ func TestConformanceStaticBranchQualifiedJoinInputs(t *testing.T) {
 					if stage == "join" {
 						got = maps.Clone(env.Inputs)
 						result.Outputs = maps.Clone(env.Inputs)
-						delete(result.Outputs, runner.BranchCompletenessInput)
+						delete(result.Outputs, runsemantics.BranchCompletenessInput)
 						// An executor's stronger stamp cannot launder the input.
 						result.Integrity = apiv1.IntegrityTrusted
 					}
@@ -86,7 +86,7 @@ func TestConformanceStaticBranchQualifiedJoinInputs(t *testing.T) {
 						t.Fatalf("%s %s=%v present=%t", lane, key, value, present)
 					}
 				}
-				if got[runner.BranchCompletenessInput] == "FORGED" {
+				if got[runsemantics.BranchCompletenessInput] == "FORGED" {
 					t.Fatalf("%s accepted forged completeness", lane)
 				}
 				var joinEvents []journal.Event

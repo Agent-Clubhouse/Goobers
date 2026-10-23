@@ -471,6 +471,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	}
 
 	for {
+		rec.advanceStaticJoin(state)
 		if out, err, stop := rec.branchBoundary(ctx, state, upstream, steps); stop {
 			return out, err
 		}

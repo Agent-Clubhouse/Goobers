@@ -15,14 +15,15 @@ import (
 )
 
 // staticWalkSession is assembled only by the versioned test entry. Production
-// Run still refuses fan-out before the walk. Visits cannot yet be repeated:
-// per-visit dispatch identity remains a separate slice.
+// Run still refuses fan-out before the walk. New histories retain each
+// committed visit identity; legacy histories keep their single-visit refusal.
 type staticWalkSession struct {
-	seen         map[string]bool
-	join         string
-	completeness []journal.BranchOutcome
-	parallel     string
-	branches     map[string]runsemantics.BranchInputSource
+	currentVisits bool
+	seen          map[string]bool
+	join          string
+	completeness  []journal.BranchOutcome
+	parallel      string
+	branches      map[string]runsemantics.BranchInputSource
 }
 
 type staticBranchOutcome struct {
@@ -54,7 +55,8 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if r.staticWalk == nil || !ok {
 		return "", false, nil
 	}
-	if r.staticWalk.seen[state] {
+	repeatable := workflow.GetVersion(ctx, staticParallelVisitsVersion, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	if r.staticWalk.seen[state] && !repeatable {
 		return "", true, fmt.Errorf("engine: repeated static parallel visit %q is not supported", state)
 	}
 	if r.owner == nil || r.stepBudget == nil {
@@ -98,7 +100,12 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 		r.staticWalk.parallel = p.Name
 		r.staticWalk.branches = pwalk.joinSources()
 	}
-	pwalk.merge()
+	r.staticWalk.currentVisits = repeatable
+	if repeatable {
+		pwalk.mergeVisit()
+	} else {
+		pwalk.merge()
+	}
 	return result.Target, true, nil
 }
 
@@ -142,6 +149,7 @@ func (p *staticParallelWalk) launch() {
 	frame.bind = branch.Bind
 	frame.started = p.started
 	frame.results = nil
+	frame.visited = nil
 	if p.spec.BranchTimeoutSeconds > 0 {
 		frame.deadline = workflow.Now(p.ctx).Add(time.Duration(p.spec.BranchTimeoutSeconds) * time.Second)
 	}
