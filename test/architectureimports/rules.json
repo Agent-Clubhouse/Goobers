@@ -100,6 +100,19 @@
           "rationale": "Existing worker workspace default only; remove under #7848 after #7837 runtimewiring extraction. No engine or controller exception."
         }
       ]
+    },
+    {
+      "name": "engine-excludes-local-runner",
+      "roots": [
+        "github.com/goobers/goobers/internal/engine",
+        "github.com/goobers/goobers/internal/runsemantics"
+      ],
+      "forbidden": [
+        {
+          "path": "github.com/goobers/goobers/internal/runner",
+          "rationale": "Shared engine semantics must not link local executor construction (HA-P3-18, D-2)."
+        }
+      ]
     }
   ],
   "lanes": [

@@ -386,8 +386,8 @@ func TestFanOutResultsKeepRepeatedTaskOccurrencesDistinct(t *testing.T) {
 
 	// The stage-name store would keep only the last item, so it never holds
 	// a mapped result at all.
-	if byName := reconstructStageOutputs(events, machine); byName["item"].outputs != nil {
-		t.Fatalf("stage-name store kept a mapped result: %v", byName["item"].outputs)
+	if byName := reconstructStageOutputs(events, machine); byName["item"].Outputs != nil {
+		t.Fatalf("stage-name store kept a mapped result: %v", byName["item"].Outputs)
 	}
 
 	store := reconstructFanOutResults(runID, events, machine)

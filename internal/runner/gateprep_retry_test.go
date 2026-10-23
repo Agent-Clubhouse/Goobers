@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -152,7 +153,7 @@ func TestImplementationCloseOutWaitsForMergeReviewOnSameBranch(t *testing.T) {
 			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
 				mergeRunID + ":select-pr": {
 					status:  apiv1.ResultSuccess,
-					outputs: map[string]interface{}{WorkspaceBranchOutput: rebindBranch},
+					outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: rebindBranch},
 				},
 			}}, nil
 		},
@@ -171,7 +172,7 @@ func TestImplementationCloseOutWaitsForMergeReviewOnSameBranch(t *testing.T) {
 			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
 				implementationRunID + ":select-pr": {
 					status:  apiv1.ResultSuccess,
-					outputs: map[string]interface{}{WorkspaceBranchOutput: rebindBranch},
+					outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: rebindBranch},
 				},
 				implementationRunID + ":close-out": {status: apiv1.ResultSuccess},
 			}}, nil

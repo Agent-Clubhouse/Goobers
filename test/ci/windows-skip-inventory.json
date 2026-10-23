@@ -859,6 +859,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/runsemantics",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure shared workflow rules move with existing runner tests and run in Linux unit/race suites; no platform-specific behavior."
+    },
+    {
       "package": "internal/runtimeplan",
       "coverage": "none",
       "category": "not-selected",

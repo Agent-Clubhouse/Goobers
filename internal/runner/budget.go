@@ -2,29 +2,17 @@ package runner
 
 import (
 	"fmt"
-	"math"
-	"math/big"
-	"strconv"
-	"strings"
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
-	"github.com/goobers/goobers/internal/usageallowance"
 )
-
-const budgetExceededErrorCode = "budget-exceeded"
 
 type attemptUsageCollector struct {
 	mu       sync.Mutex
 	metrics  map[string]float64
 	reported bool
-}
-
-type stageUsageTotals struct {
-	metrics     map[string]float64
-	costUSD     *big.Rat
-	invalidCost bool
 }
 
 func (c *attemptUsageCollector) report(metrics map[string]float64) {
@@ -51,116 +39,6 @@ func (c *attemptUsageCollector) snapshot() (map[string]float64, bool) {
 	return metrics, c.reported
 }
 
-func newStageUsageTotals() *stageUsageTotals {
-	return &stageUsageTotals{metrics: make(map[string]float64)}
-}
-
-func accumulateStageUsage(total *stageUsageTotals, attempt map[string]float64) {
-	for name, value := range attempt {
-		if !telemetry.IsCanonicalAgentUsageMetric(name) {
-			continue
-		}
-		if name != telemetry.AttrUsageCostUSD {
-			total.metrics[name] += value
-			continue
-		}
-
-		valueDecimal, ok := decimalFloat64(value)
-		if !ok || total.invalidCost {
-			total.metrics[name] += value
-			total.invalidCost = true
-			continue
-		}
-		if total.costUSD == nil {
-			total.costUSD = new(big.Rat)
-		}
-		total.costUSD.Add(total.costUSD, valueDecimal)
-		total.metrics[name], _ = total.costUSD.Float64()
-	}
-}
-
-func decimalFloat64(value float64) (*big.Rat, bool) {
-	return new(big.Rat).SetString(strconv.FormatFloat(value, 'f', -1, 64))
-}
-
-func enforceStageBudget(limits apiv1.Limits, attempt map[string]float64, total *stageUsageTotals, result apiv1.ResultEnvelope) (apiv1.ResultEnvelope, bool) {
-	var violations []string
-	if limits.MaxTokens > 0 {
-		attemptInput, hasInput := attempt[telemetry.AttrGenAIUsageInputTokens]
-		attemptOutput, hasOutput := attempt[telemetry.AttrGenAIUsageOutputTokens]
-		switch {
-		case !hasInput || !hasOutput:
-			var missing []string
-			if !hasInput {
-				missing = append(missing, telemetry.AttrGenAIUsageInputTokens)
-			}
-			if !hasOutput {
-				missing = append(missing, telemetry.AttrGenAIUsageOutputTokens)
-			}
-			violations = append(violations, fmt.Sprintf(
-				"cannot enforce maxTokens %d: missing %s",
-				limits.MaxTokens, strings.Join(missing, ", "),
-			))
-		case !validTokenUsage(attemptInput) || !validTokenUsage(attemptOutput):
-			violations = append(violations, fmt.Sprintf(
-				"cannot enforce maxTokens %d: invalid token usage input=%g output=%g",
-				limits.MaxTokens, attemptInput, attemptOutput,
-			))
-		default:
-			input := total.metrics[telemetry.AttrGenAIUsageInputTokens]
-			output := total.metrics[telemetry.AttrGenAIUsageOutputTokens]
-			switch {
-			case !validTokenUsage(input) || !validTokenUsage(output) || math.IsInf(input+output, 0):
-				violations = append(violations, fmt.Sprintf(
-					"cannot enforce maxTokens %d: invalid cumulative token usage input=%g output=%g",
-					limits.MaxTokens, input, output,
-				))
-			case input+output > float64(limits.MaxTokens):
-				violations = append(violations, fmt.Sprintf(
-					"token usage %.0f exceeds maxTokens %d",
-					input+output, limits.MaxTokens,
-				))
-			}
-		}
-	}
-	if limits.MaxCostUSD > 0 {
-		attemptCost, ok := attempt[telemetry.AttrUsageCostUSD]
-		switch {
-		case !ok:
-			violations = append(violations, fmt.Sprintf(
-				"cannot enforce maxCostUSD %g: missing %s",
-				limits.MaxCostUSD, telemetry.AttrUsageCostUSD,
-			))
-		case math.IsNaN(attemptCost) || math.IsInf(attemptCost, 0) || attemptCost < 0:
-			violations = append(violations, fmt.Sprintf(
-				"cannot enforce maxCostUSD %g: invalid cost usage %g",
-				limits.MaxCostUSD, attemptCost,
-			))
-		default:
-			cost := total.metrics[telemetry.AttrUsageCostUSD]
-			limit, validLimit := decimalFloat64(limits.MaxCostUSD)
-			switch {
-			case total.invalidCost || math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0:
-				violations = append(violations, fmt.Sprintf(
-					"cannot enforce maxCostUSD %g: invalid cumulative cost usage %g",
-					limits.MaxCostUSD, cost,
-				))
-			case !validLimit:
-				violations = append(violations, fmt.Sprintf(
-					"cannot enforce invalid maxCostUSD %g",
-					limits.MaxCostUSD,
-				))
-			case total.costUSD.Cmp(limit) > 0:
-				violations = append(violations, fmt.Sprintf(
-					"cost usage $%g exceeds maxCostUSD $%g",
-					cost, limits.MaxCostUSD,
-				))
-			}
-		}
-	}
-	return budgetFailure(result, violations), len(violations) > 0
-}
-
 func interruptedStageBudgetFailure(limits apiv1.Limits) apiv1.ResultEnvelope {
 	var violations []string
 	if limits.MaxTokens > 0 {
@@ -175,95 +53,12 @@ func interruptedStageBudgetFailure(limits apiv1.Limits) apiv1.ResultEnvelope {
 			limits.MaxCostUSD,
 		))
 	}
-	return budgetFailure(apiv1.ResultEnvelope{}, violations)
-}
-
-func budgetFailure(result apiv1.ResultEnvelope, violations []string) apiv1.ResultEnvelope {
-	if len(violations) == 0 {
-		return result
-	}
-	result.Status = apiv1.ResultFailure
-	result.Error = &apiv1.ErrorInfo{
-		Code:      budgetExceededErrorCode,
-		Message:   "stage budget exceeded: " + strings.Join(violations, "; "),
-		Retryable: false,
-	}
-	return result
+	return runsemantics.BudgetFailure(apiv1.ResultEnvelope{}, violations)
 }
 
 func usageBudgetConfigured(limits apiv1.Limits) bool {
 	return limits.MaxTokens > 0 || limits.MaxCostUSD > 0
 }
 
-func validTokenUsage(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value == math.Trunc(value)
-}
-
 // BudgetExceededErrorCode is the shared non-retryable usage failure code.
-const BudgetExceededErrorCode = budgetExceededErrorCode
-
-// StageUsageBudget applies the local runner's canonical cumulative arithmetic
-// to trusted adapter usage. Its zero value is ready for one task dispatch loop.
-// It contains only deterministic state and may also be used by Temporal replay.
-type StageUsageBudget struct{ totals *stageUsageTotals }
-
-// Allowance returns the deterministic remaining budget for the next remote
-// attempt. Nil fields are unlimited; explicit zero means exhausted.
-func (b *StageUsageBudget) Allowance(limits apiv1.Limits) usageallowance.Allowance {
-	var allowance usageallowance.Allowance
-	if limits.MaxTokens > 0 {
-		remaining := limits.MaxTokens
-		if b.totals != nil {
-			input := b.totals.metrics[telemetry.AttrGenAIUsageInputTokens]
-			output := b.totals.metrics[telemetry.AttrGenAIUsageOutputTokens]
-			if !validTokenUsage(input) || !validTokenUsage(output) || math.IsInf(input+output, 0) {
-				remaining = 0
-			} else {
-				used := input + output
-				if used >= float64(remaining) {
-					remaining = 0
-				} else {
-					remaining -= int64(used)
-				}
-			}
-		}
-		allowance.MaxTokens = &remaining
-	}
-	if limits.MaxCostUSD > 0 {
-		remaining := limits.MaxCostUSD
-		limit, valid := decimalFloat64(limits.MaxCostUSD)
-		if !valid {
-			remaining = 0
-		} else if b.totals != nil {
-			switch {
-			case b.totals.invalidCost:
-				remaining = 0
-			case b.totals.costUSD != nil:
-				left := new(big.Rat).Sub(limit, b.totals.costUSD)
-				if left.Sign() <= 0 {
-					remaining = 0
-				} else {
-					remaining, _ = left.Float64()
-				}
-			}
-		}
-		allowance.MaxCostUSD = &remaining
-	}
-	return allowance
-}
-
-// Apply charges this attempt, then checks configured limits. An error before
-// the adapter reported usage is not evidence that the adapter consumed budget.
-func (b *StageUsageBudget) Apply(limits apiv1.Limits, metrics map[string]float64, reported bool, result *apiv1.ResultEnvelope, dispatchErr *error) {
-	if b.totals == nil {
-		b.totals = newStageUsageTotals()
-	}
-	accumulateStageUsage(b.totals, metrics)
-	if *dispatchErr == nil || reported {
-		var exceeded bool
-		*result, exceeded = enforceStageBudget(limits, metrics, b.totals, *result)
-		if exceeded {
-			*dispatchErr = nil
-		}
-	}
-}
+const BudgetExceededErrorCode = runsemantics.BudgetExceededErrorCode

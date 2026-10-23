@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -86,9 +87,9 @@ func fanInMachine(t *testing.T, failedPerformance bool) *workflow.Machine {
 		"performance": "fan.performance.summary",
 	}
 	if failedPerformance {
-		inputsFrom[BranchCompletenessInput] = "fan.performance.summary"
+		inputsFrom[runsemantics.BranchCompletenessInput] = "fan.performance.summary"
 	} else {
-		inputsFrom[BranchCompletenessInput] = "fan.security.summary"
+		inputsFrom[runsemantics.BranchCompletenessInput] = "fan.security.summary"
 		tasks = append(tasks, branchTask("review-reliability", false))
 		branches = append(branches, apiv1.Branch{Name: "reliability", Start: "review-reliability"})
 		inputsFrom["reliability"] = "fan.reliability.review-reliability.summary"
@@ -382,9 +383,9 @@ func TestRunnerFansInThreeBranchScalarsAndArtifacts(t *testing.T) {
 			t.Errorf("pointer %d = %+v, want artifact tagged branch %d/%q", i, pointer, i+1, branch)
 		}
 	}
-	completeness, ok := first.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+	completeness, ok := first.Inputs[runsemantics.BranchCompletenessInput].([]journal.BranchOutcome)
 	if !ok || len(completeness) != 3 {
-		t.Fatalf("branch completeness = %#v, want three outcomes", first.Inputs[BranchCompletenessInput])
+		t.Fatalf("branch completeness = %#v, want three outcomes", first.Inputs[runsemantics.BranchCompletenessInput])
 	}
 	for i, branch := range completeness {
 		if branch.Branch != i+1 || branch.Status != journal.BranchSucceeded || branch.Artifacts != 1 {
@@ -454,9 +455,9 @@ func TestRunnerPassingBranchGateClearsTaskFailure(t *testing.T) {
 	if _, recovered := envs["branch-gate:recover"]; recovered {
 		t.Fatalf("passing branch gate incorrectly routed through recovery")
 	}
-	completeness, ok := join.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+	completeness, ok := join.Inputs[runsemantics.BranchCompletenessInput].([]journal.BranchOutcome)
 	if !ok || len(completeness) != 2 || completeness[0].Status != journal.BranchNoOutput {
-		t.Fatalf("branch completeness = %#v, want cleared security failure", join.Inputs[BranchCompletenessInput])
+		t.Fatalf("branch completeness = %#v, want cleared security failure", join.Inputs[runsemantics.BranchCompletenessInput])
 	}
 }
 
@@ -564,9 +565,9 @@ func TestRunnerOmitsFailedBranchInputAndReportsCompleteness(t *testing.T) {
 	if got := join.Inputs["security"]; got != "security" {
 		t.Errorf("successful branch input = %#v, want security", got)
 	}
-	completeness, ok := join.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+	completeness, ok := join.Inputs[runsemantics.BranchCompletenessInput].([]journal.BranchOutcome)
 	if !ok || len(completeness) != 2 || completeness[1].Status != journal.BranchFailed {
-		t.Errorf("branch completeness = %#v, want failed performance branch", join.Inputs[BranchCompletenessInput])
+		t.Errorf("branch completeness = %#v, want failed performance branch", join.Inputs[runsemantics.BranchCompletenessInput])
 	}
 }
 
@@ -946,7 +947,7 @@ func TestRunnerResumeBranchTransitionKeepsBranchAttribution(t *testing.T) {
 		t.Fatalf("read events: %v", err)
 	}
 	for _, event := range events {
-		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == runsemantics.ToleratedFailureErrorCode {
 			if event.Branch != 1 {
 				t.Fatalf("tolerated failure branch = %d, want 1", event.Branch)
 			}
