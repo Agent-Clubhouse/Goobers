@@ -42,18 +42,6 @@ import (
 // credentialRefreshMarker identifies a mid-stage re-resolve's audit record.
 const credentialRefreshMarker = "credentials.refreshed"
 
-// grantRefreshBurst and grantRefreshInterval bound how often one grant may
-// mint. A stage refreshes a capability when it nears expiry or after a 401,
-// so a handful of calls an hour is the expected rate; the burst leaves room
-// for several capabilities expiring together.
-func newStageGrantIssuer(endpoint string) (*planes.StageGrantIssuer, error) {
-	key, err := podauth.CredentialGrantSigningKey("")
-	if err != nil {
-		return nil, err
-	}
-	return planes.NewStageGrantIssuer(key, endpoint)
-}
-
 const grantRefreshBurst = 6
 
 // withStageGrants enables mid-stage credential refresh on this daemon's
