@@ -128,6 +128,10 @@ type Activities struct {
 // Placement is additive and omitempty, so a history written before it existed
 // decodes with a nil Placement rather than failing.
 type DispatchStageResult struct {
+	// RecordedArtifacts are trusted staging-recorder receipts. Older results
+	// omit them; pod paths already journal their artifacts directly.
+	RecordedArtifacts []invoke.ArtifactReceipt `json:"recordedArtifacts,omitempty"`
+
 	// ChildWait is authored by a trusted stopped-dispatch adapter, never decoded from a stage result.
 	ChildWait *journal.ChildHandoffRequest `json:"childWait,omitempty"`
 	// Usage is trusted adapter accounting, independent of result metrics.
@@ -519,6 +523,8 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 // (TestContinuityPreChangeHistoryReplays). A struct in the second position
 // would fail to decode those payloads.
 func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (out stageActivityResult, outErr error) {
+	ctx, receipts := collectArtifactReceipts(ctx)
+	defer func() { finishArtifactReceipts(receipts, &out, &outErr) }()
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
 			var refusal *runsemantics.SelfExecutionRefusal
@@ -819,7 +825,9 @@ func captureGateDiff(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode
 // dispatch (Task.EffectiveWorkspace), so a task-level `workspace:` reaches
 // this provisioner too. workspaceDelta is a trailing positional for the
 // replay reason InvokeGoober documents.
-func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
+func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (out stageActivityResult, outErr error) {
+	ctx, receipts := collectArtifactReceipts(ctx)
+	defer func() { finishArtifactReceipts(receipts, &out, &outErr) }()
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
 			var refusal *runsemantics.SelfExecutionRefusal

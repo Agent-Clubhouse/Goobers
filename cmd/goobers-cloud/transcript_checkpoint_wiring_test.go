@@ -16,7 +16,7 @@ func TestWorkerTranscriptCheckpointRecorderWiring(t *testing.T) {
 	}
 	emitter := &checkpointWiringEmitter{}
 	seams := &workerSeams{store: store, scrubber: journal.NewPatternScrubber(), checkpointEmitter: emitter}
-	recorder, _ := seams.recorderFor(&gaggleSeams{runsDir: t.TempDir()}, "run-a", "gaggle-a")
+	recorder, _ := seams.recorderFor(t.Context(), &gaggleSeams{runsDir: t.TempDir()}, "run-a", "gaggle-a")
 	wired, ok := recorder.(*checkpointWorkerArtifacts)
 	if !ok {
 		t.Fatalf("worker recorder has no checkpoint transport: %T", recorder)
@@ -40,7 +40,7 @@ func TestWorkerTranscriptCheckpointRecorderWiring(t *testing.T) {
 		}
 	}
 	seams.store = nil
-	withoutBlobs, _ := seams.recorderFor(&gaggleSeams{runsDir: t.TempDir()}, "run-b", "gaggle-b")
+	withoutBlobs, _ := seams.recorderFor(t.Context(), &gaggleSeams{runsDir: t.TempDir()}, "run-b", "gaggle-b")
 	inline, ok := withoutBlobs.(*checkpointWorkerArtifacts)
 	if !ok || inline.Blobs != nil {
 		t.Fatal("worker without a blob store lost the inline checkpoint transport")

@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -45,6 +46,10 @@ import (
 // but do not appear in the projected journal. That is the artifact/transcript
 // projection gap, not something this type can close on its own.
 type StagingArtifacts struct {
+	// ReportArtifact carries successful ordinary recorder writes to the owning
+	// activity. Spans and prepared named-output blobs have separate protocols.
+	ReportArtifact func(invoke.ArtifactReceipt)
+
 	// root is the per-run staging root, e.g. <runs>/.staging-artifacts/<runID>.
 	root string
 	// Scrubber redacts secrets before bytes are written, matching the journal's
@@ -232,6 +237,9 @@ func (s *StagingArtifacts) recordUnder(kind, name string, data []byte, integrity
 		if err := s.Store.Put(context.Background(), ref.Digest, data); err != nil {
 			s.putErrs = append(s.putErrs, err)
 		}
+	}
+	if kind == "artifacts" && s.ReportArtifact != nil {
+		s.ReportArtifact(invoke.ArtifactReceipt{Name: name, Ref: apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType, Integrity: ref.Integrity}})
 	}
 	return ref, nil
 }
