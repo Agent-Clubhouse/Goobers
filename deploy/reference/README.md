@@ -820,11 +820,15 @@ The controller waits for the new build's pollers before making it current. An
 older build stays at two replicas while Temporal has workflows pinned to it,
 then scales to zero as soon as it is drained. The controller is configured to
 block a target that would exceed three live versions. While blocked, workers
-change workflows pinned to the oldest draining build to `AUTO_UPGRADE`; their
-next workflow task runs on the current build, including a HITL run that resumes
-after the old Deployment has scaled down. This frees the slot without replaying
-or restarting the stage. At the cap, budget for at least six worker pods and
-keep all three images pullable until their versions drain.
+leave the target blocked by default. `AUTO_UPGRADE` replays each pinned
+workflow's complete history on the current build, so enable automatic retention
+only after captured histories from every retained build replay successfully
+against the release candidate. Set `GOOBERS_AUTO_UPGRADE_RETENTION=true` on the
+worker pod template to attest to that evidence; the worker then changes
+workflows pinned to the oldest draining build to `AUTO_UPGRADE`. Their next
+workflow task replays on the current build, including a HITL run that resumes
+after the old Deployment has scaled down. At the cap, budget for at least six
+worker pods and keep all three images pullable until their versions drain.
 
 Terminating one replica does not consume a stage attempt. The replacement
 worker adopts the exact live stage pod by UID, preserving the attempt number

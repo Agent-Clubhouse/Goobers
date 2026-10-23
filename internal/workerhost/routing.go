@@ -56,7 +56,14 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 		return reported
 	}
 	finding := workerrouting.Check(h.versioned(), h.cfg.BuildVersion, routing, err)
-	h.routed.Store(finding.Problem == "")
+	ready := finding.Problem == ""
+	if h.cfg.VersionRetention > 0 {
+		// Worker Controller cannot promote an inactive target until its
+		// Deployment is Available. Registration, not current traffic share,
+		// is therefore the rainbow readiness boundary.
+		ready = finding.Registered
+	}
+	h.routed.Store(ready)
 	h.draining.Store(finding.Draining)
 	// Temporal Worker Controller scales a version down only after it is
 	// drained. Readiness keeps a still-draining version protected meanwhile.

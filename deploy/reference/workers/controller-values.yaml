@@ -22,8 +22,8 @@ containerSecurityContext:
     drop: ["ALL"]
 
 # Two deprecated versions plus the current version is the three-live-version
-# ceiling. A blocked target makes the Goobers worker retention reconciler
-# change workflows pinned to the oldest draining version to AUTO_UPGRADE.
+# ceiling. A blocked target remains blocked unless the worker pods carry the
+# explicit AUTO_UPGRADE compatibility attestation documented in the README.
 extraEnv:
   - name: CONTROLLER_MAX_DEPLOYMENT_VERSIONS_INELIGIBLE_FOR_DELETION
     value: "2"

@@ -61,6 +61,23 @@ func TestWorkerOptionsUseControllerDeploymentVersion(t *testing.T) {
 	if h.cfg.VersionRetention != workerrollout.DefaultVersionLimit || h.cfg.RolloutNamespace != "goobers-system" {
 		t.Fatalf("controller rollout config = retention %d namespace %q", h.cfg.VersionRetention, h.cfg.RolloutNamespace)
 	}
+	if h.cfg.AutoUpgradeRetention {
+		t.Fatal("AUTO_UPGRADE retention enabled without compatibility attestation")
+	}
+}
+
+func TestWorkerControllerAutoUpgradeRetentionRequiresAttestation(t *testing.T) {
+	t.Setenv(temporalDeploymentNameEnv, DeploymentName)
+	t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
+	t.Setenv(podNamespaceEnv, "goobers-system")
+	t.Setenv(autoUpgradeRetentionEnv, "true")
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.cfg.AutoUpgradeRetention {
+		t.Fatal("AUTO_UPGRADE retention compatibility attestation was ignored")
+	}
 }
 
 func TestWorkerControllerDeploymentVersionFailsClosed(t *testing.T) {
@@ -314,6 +331,64 @@ func TestWorkerReadinessKeepsDrainingVersionReady(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"draining":true`) {
 		t.Fatalf("GET /readyz body = %s, want draining=true", response.Body.String())
+	}
+}
+
+func TestRainbowWorkerReadinessRequiresRegistrationNotRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		routing workerrouting.Routing
+		want    int
+	}{
+		{
+			name: "first install registered without current",
+			routing: workerrouting.Routing{
+				Registered: map[string]bool{"v2": true},
+			},
+			want: http.StatusOK,
+		},
+		{
+			name: "newer registered build not current",
+			routing: workerrouting.Routing{
+				WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+					CurrentVersion: deploymentVersion("v1"),
+				},
+				Registered: map[string]bool{"v1": true, "v2": true},
+			},
+			want: http.StatusOK,
+		},
+		{
+			name: "unregistered build",
+			routing: workerrouting.Routing{
+				WorkerDeploymentRoutingConfig: client.WorkerDeploymentRoutingConfig{
+					CurrentVersion: deploymentVersion("v1"),
+				},
+				Registered: map[string]bool{"v1": true},
+			},
+			want: http.StatusServiceUnavailable,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHost(t, Config{
+				TaskQueues:       []string{"goobers-engine"},
+				BuildVersion:     "v2",
+				Versioning:       true,
+				VersionRetention: workerrollout.DefaultVersionLimit,
+				RolloutNamespace: "goobers-system",
+			}, &fakeFleet{})
+			h.pollersStarted.Store(true)
+			h.describeRouting = func(context.Context, client.Client) (workerrouting.Routing, error) {
+				return tc.routing, nil
+			}
+			if problem := h.checkRoutingOnce(context.Background(), nil, ""); problem == "" && tc.want == http.StatusOK {
+				t.Fatal("registered inactive build lost its routing mismatch diagnostic")
+			}
+			response := httptest.NewRecorder()
+			h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			if response.Code != tc.want {
+				t.Fatalf("GET /readyz = %d, want %d; body=%s", response.Code, tc.want, response.Body.String())
+			}
+		})
 	}
 }
 

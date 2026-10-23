@@ -42,7 +42,7 @@ func nestedInt(object map[string]any, fields ...string) (int, error) {
 	}
 }
 
-func TestCurrentVersionNeverSetWithoutPollers(t *testing.T) {
+func TestRainbowManifestUsesHealthGatedAllAtOnce(t *testing.T) {
 	object := readObject(t, "worker-deployment.yaml")
 	if object["apiVersion"] != "temporal.io/v1alpha1" || object["kind"] != "WorkerDeployment" {
 		t.Fatalf("rainbow resource = %v %v", object["apiVersion"], object["kind"])

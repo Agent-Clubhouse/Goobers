@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,7 @@ const (
 	temporalDeploymentNameEnv = "TEMPORAL_DEPLOYMENT_NAME"
 	temporalWorkerBuildIDEnv  = "TEMPORAL_WORKER_BUILD_ID"
 	podNamespaceEnv           = "POD_NAMESPACE"
+	autoUpgradeRetentionEnv   = "GOOBERS_AUTO_UPGRADE_RETENTION"
 	healthShutdownWait        = 5 * time.Second
 )
 
@@ -94,6 +96,10 @@ type Config struct {
 	VersionRetention int
 	// RolloutNamespace contains the WorkerDeployment custom resource.
 	RolloutNamespace string
+	// AutoUpgradeRetention permits the retention reconciler to move pinned
+	// workflows across builds. It requires operator replay-compatibility
+	// evidence and is disabled by default.
+	AutoUpgradeRetention bool
 	// Logf receives the non-fatal deployment-routing health reports (#5950).
 	// Nil writes them to the process's stderr.
 	Logf func(format string, args ...any)
@@ -155,7 +161,10 @@ func New(cfg Config) (*Host, error) {
 	if cfg.VersionRetention < 0 {
 		return nil, errors.New("workerhost: version retention must be positive")
 	}
-	if cfg.VersionRetention > 0 && cfg.RolloutNamespace == "" {
+	if cfg.AutoUpgradeRetention && cfg.VersionRetention == 0 {
+		return nil, errors.New("workerhost: AUTO_UPGRADE retention requires a positive version limit")
+	}
+	if cfg.AutoUpgradeRetention && cfg.RolloutNamespace == "" {
 		return nil, errors.New("workerhost: rollout namespace is required when version retention is enabled")
 	}
 	h := &Host{cfg: cfg, tracker: &activityTracker{
@@ -205,6 +214,13 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 	if cfg.RolloutNamespace == "" {
 		namespace, _ := lookup(podNamespaceEnv)
 		cfg.RolloutNamespace = strings.TrimSpace(namespace)
+	}
+	if raw, ok := lookup(autoUpgradeRetentionEnv); ok {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return Config{}, fmt.Errorf("workerhost: parse %s: %w", autoUpgradeRetentionEnv, err)
+		}
+		cfg.AutoUpgradeRetention = enabled
 	}
 	return cfg, nil
 }
@@ -270,7 +286,7 @@ func (h *Host) Run(ctx context.Context) error {
 		defer c.Close()
 	}
 	var rolloutStatus workerrollout.StatusSource
-	if h.cfg.VersionRetention > 0 {
+	if h.cfg.AutoUpgradeRetention {
 		rolloutStatus, err = h.newRolloutStatus()
 		if err != nil {
 			return fmt.Errorf("workerhost: initialize version retention: %w", err)
