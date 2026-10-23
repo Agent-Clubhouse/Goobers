@@ -144,12 +144,25 @@ func NewDirConfiguration(assess Assessor, activator Activator, source DirSource)
 	if _, err := source.Load(context.Background()); err != nil && !errors.Is(err, ErrUnstable) {
 		return nil, fmt.Errorf("cloud config directory %q: %w", source.Root, err)
 	}
-	inner, err := NewConfiguration(assess, activator, source.Load)
+	inner, err := NewConfiguration(assess, activator, func(ctx context.Context) (Candidate, error) {
+		candidate, err := source.Load(ctx)
+		if err != nil && !errors.Is(err, ErrUnstable) {
+			return candidate, &loadError{err}
+		}
+		return candidate, err
+	})
 	if err != nil {
 		return nil, err
 	}
 	return &DirConfiguration{Configuration: inner, source: source, interval: DefaultPollInterval, now: time.Now, report: func(error) {}}, nil
 }
+
+// loadError marks a failure to read or validate the directory, as opposed to a
+// failure to publish an assessed candidate.
+type loadError struct{ err error }
+
+func (e *loadError) Error() string { return e.err.Error() }
+func (e *loadError) Unwrap() error { return e.err }
 
 // SetReporter installs the sink for refusals and unstable reads. nil clears it.
 func (d *DirConfiguration) SetReporter(report func(error)) {
@@ -190,6 +203,13 @@ func (d *DirConfiguration) Reload(ctx context.Context) error {
 		return nil
 	case errors.Is(err, ErrUnstable):
 		d.checked = time.Time{}
+		d.report(err)
+		return nil
+	case errors.As(err, new(*loadError)):
+		// An invalid or unreadable directory is not the controller's failure: the
+		// running generation stays in force (and before the first apply nothing
+		// admits), the problem is reported, and the next poll re-reads it. It is
+		// not remembered, so a transient read error cannot stick.
 		d.report(err)
 		return nil
 	default:

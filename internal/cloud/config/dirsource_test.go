@@ -207,3 +207,33 @@ func TestDirConfigurationKeepsTheRunningGenerationWhenACandidateIsRefused(t *tes
 		t.Fatalf("refused content re-reported: %v %v", reported, err)
 	}
 }
+
+func TestDirConfigurationReportsAnInvalidDirectoryAndKeepsTheRunningGeneration(t *testing.T) {
+	t.Parallel()
+	root := demoDir(t)
+	activator := &countingActivator{}
+	cfg, err := NewDirConfiguration(acceptAll, activator, DirSource{Root: root, InstanceID: "instance-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cfg.now = func() time.Time { return clock }
+	var reported []error
+	cfg.SetReporter(func(err error) { reported = append(reported, err) })
+	if err := cfg.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	good := cfg.Status().Applied
+	if err := os.WriteFile(filepath.Join(root, "config", "manifest.yaml"), []byte("not: [valid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		clock = clock.Add(DefaultPollInterval + time.Second)
+		if err := cfg.Reload(t.Context()); err != nil {
+			t.Fatalf("an invalid directory failed the tick: %v", err)
+		}
+	}
+	if cfg.Status().Applied != good || activator.count() != 1 || len(reported) != 2 {
+		t.Fatalf("applied=%q activations=%d reported=%d, want the good generation kept and the problem re-reported each poll", cfg.Status().Applied, activator.count(), len(reported))
+	}
+}
