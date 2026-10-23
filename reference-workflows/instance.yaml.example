@@ -200,3 +200,19 @@ runner:
 #   enabled: true
 #   sharedRepairLane: false
 #   probeTimeoutSeconds: 2400
+# Optional decisionGate block (off by default; nothing is sent anywhere while
+# omitted). In shadow mode each consumer's decisiongate.shadow record carries
+# inputValid from deterministic handoff validation. The implementation workflow
+# is DSL 2.0 and cannot declare schema-bound artifactSlots, so bind its
+# query-backlog result to the shipped schema or every record stays unknown. See
+# docs/guides/decision-gate-ab-harness.md.
+# decisionGate:
+#   mode: shadow
+#   baseURLEnv: DECISION_GATE_BASE_URL
+#   keyEnv: DECISION_GATE_API_KEY
+#   modelEnv: DECISION_GATE_MODEL
+#   fallback: agent
+#   handoffSchemas:
+#     - workflow: implementation
+#       stage: query-backlog
+#       schemaPath: gaggles/goobers/schemas/claimed-item.schema.json
