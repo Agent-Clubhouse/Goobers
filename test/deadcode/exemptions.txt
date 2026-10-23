@@ -592,3 +592,4 @@ github.com/goobers/goobers/internal/enginechildplane.planeError # Engine child-a
 
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunRecorded # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.OpenRunReader # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/config.Configuration.Generation # Applied-generation accessor the cloud trigger plane (#7818) reads through the Configuration seam; reached once the control assembly composes Configuration. expires=2026-11-30
