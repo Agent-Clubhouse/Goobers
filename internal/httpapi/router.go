@@ -22,6 +22,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -248,6 +249,7 @@ func podPlanePath(path string) (scope string, ok bool) {
 	case apicontract.CredentialResolvePath:
 		return ScopeCredential, true
 	case apicontract.JournalRunPhasePath,
+		apicontract.BanditObservationsPath,
 		apicontract.JournalConflictTouchesPath,
 		apicontract.JournalUnpushedWorkPath,
 		apicontract.JournalEscalationCandidatesPath,
@@ -671,6 +673,7 @@ type handlerConfig struct {
 	escalations               EscalationService
 	cancels                   CancelService
 	journal                   JournalService
+	bandit                    bandit.ObservationPlane
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService
@@ -1352,6 +1355,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
+	registerBanditPlaneRoutes(router, config)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, config.workflowParentBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{

@@ -174,6 +174,8 @@ const (
 	// by the daemon's single writer. Span adoption by digest rides the same
 	// route as a span-kind op rather than a second endpoint.
 	RunJournalEmitPath = V1Prefix + "/runs/{run}/journal/emit"
+	// BanditObservationsPath reads or records bounded experiment observations.
+	BanditObservationsPath = V1Prefix + "/bandit/observations"
 
 	// CredentialResolvePath is the credential plane's resolve endpoint
 	// (distributed-state-and-coordination.md §11, DS9/DS10): a stage pod,
@@ -368,6 +370,7 @@ const (
 	RouteResolveEscalation  RouteID = "resolveEscalation"
 	RouteCancelRun          RouteID = "cancelRun"
 	RouteJournalEmit        RouteID = "journalEmit"
+	RouteBanditObservations RouteID = "banditObservations"
 	RouteCredentialResolve  RouteID = "credentialResolve"
 	RouteCredentialRefresh  RouteID = "credentialRefresh"
 	RouteStageSurrender     RouteID = "stageSurrender"
@@ -639,6 +642,7 @@ var v1Routes = []Route{
 	// a machine seam like the claims plane, not an operator capability, so it
 	// shares the workflow-execution class and stays outside runtime parity.
 	{ID: RouteJournalEmit, Method: http.MethodPost, Path: RunJournalEmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteBanditObservations, Method: http.MethodPost, Path: BanditObservationsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The credential plane (§11, DS9/DS10) is a machine seam like the claims
 	// plane — a stage pod advancing its own execution — so it shares the
