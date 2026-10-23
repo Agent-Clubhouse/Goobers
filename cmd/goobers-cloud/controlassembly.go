@@ -35,7 +35,7 @@ func requiresObjectStore(o controlOptions) string {
 // pending, never a successful no-op constructor.
 var controlAssembly = []controlAssemblySeam{
 	{field: "EngineChildAdmissions", label: "engine child admissions", issue: "#7879", present: func(p controlPlanes) bool { return p.EngineChildAdmissions != nil }},
-	{field: "Configuration", label: "admission guard", issue: "#7860", controller: true, present: func(p controlPlanes) bool { return p.Configuration != nil }},
+	{field: "Configuration", label: "admission guard", issue: "#7860", controller: true, present: func(p controlPlanes) bool { return p.Configuration != nil }, construct: constructConfiguration},
 	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
 	{field: "Claims", issue: "#7808", present: func(p controlPlanes) bool { return p.Claims != nil }},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }},

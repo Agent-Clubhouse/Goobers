@@ -181,6 +181,8 @@ type databaseServices struct {
 	NewStarter          func(client.Client, string) engine.Starter
 	Pools               *cloudpg.Pools
 	InstanceID          string
+	// ConfigDir is the control role's mounted instance configuration directory.
+	ConfigDir           string
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
 	Objects             *objstore.Metadata

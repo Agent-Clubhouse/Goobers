@@ -60,15 +60,17 @@ Options:
   --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
                                  journal span source and config generations live there
   --object-store-container NAME  Azure Blob container (default goobers)
+  --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
+                                 optional goobers/ (or GOOBERS_CONFIG_DIR); required
 
 Readiness requires schema compatibility, complete plane/recovery wiring, and a
 live controller lease. SIGTERM stops controller loops and releases authority.
 `
 
 type controlOptions struct {
-	listen, cert, key, podKey, selfExecution, host, namespace, queue string
-	objectStoreURL, objectStoreContainer                             string
-	checkAssembly                                                    bool
+	listen, cert, key, podKey, selfExecution, host, namespace, queue, configDir string
+	objectStoreURL, objectStoreContainer                                        string
+	checkAssembly                                                               bool
 }
 
 func (o *controlOptions) flags(f *flag.FlagSet) {
@@ -83,6 +85,7 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
 	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
 	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	f.StringVar(&o.configDir, "config-dir", environmentOr("GOOBERS_CONFIG_DIR", ""), "mounted instance config directory")
 }
 func runControlRole(args []string, stdout, stderr io.Writer) int {
 	return runControlConfigured(args, stdout, stderr)
@@ -183,6 +186,9 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	}
 	defer temporal.Close()
 	report := func(err error) { logger.Printf("%v", err) }
+	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
+		reporter.SetReporter(report)
+	}
 	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Report: report}
 	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
 		return checkCloudSchema(ctx, db.Controller.Pools.Transaction, version.Get().Version)
