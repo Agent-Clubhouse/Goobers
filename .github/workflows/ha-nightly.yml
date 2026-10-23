@@ -95,6 +95,13 @@ jobs:
           HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
         run: go run ./test/ha/kind/cmd/nightly run
 
+      - name: Run chaos harness
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: |
+          go test -race ./test/ha/invariants/... ./test/ha/chaos/...
+          go run ./test/ha/chaos/cmd/chaos run | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}
         run: |
