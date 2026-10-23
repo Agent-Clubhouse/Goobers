@@ -21,6 +21,7 @@ import (
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	sharedauth "github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/version"
@@ -119,6 +120,11 @@ type controlPlanes struct {
 	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
 	RunnerHosts           []string
 
+	// journalReader and projectorWake connect the journal plane to the
+	// read-model projector: it reads committed history through the former and is
+	// nudged by the latter when an append commits.
+	journalReader journal.ReaderBackend
+	projectorWake chan struct{}
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
 }
@@ -207,7 +213,11 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		return err
 	}
 	logger.Printf("serving %s://%s", server.Scheme(), server.Address())
-	return runControlLifetime(ctx, cancel, host, auth, server, report)
+	projector, err := projectorService(db.Controller, services, report)
+	if err != nil {
+		return err
+	}
+	return runControlLifetime(ctx, cancel, host, auth, server, report, projector)
 }
 
 func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, host *control.Host, logger *log.Logger) (http.Handler, error) {
@@ -234,10 +244,16 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	}), nil
 }
 
-func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *control.Host, auth *cloudauth.Auth, server *httpapi.Server, report func(error)) error {
-	done := make(chan error, 2)
+// runControlLifetime runs the controller host, key reload and any background
+// services (the read-model projector) until one stops or the server fails.
+func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *control.Host, auth *cloudauth.Auth, server *httpapi.Server, report func(error), background ...func(context.Context) error) error {
+	total := 2 + len(background)
+	done := make(chan error, total)
 	go func() { done <- host.Run(ctx) }()
 	go func() { done <- auth.RunKeyReload(ctx, report) }()
+	for _, service := range background {
+		go func() { done <- service(ctx) }()
+	}
 	var err error
 	completed := 0
 	select {
@@ -253,7 +269,7 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 	shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
 	err = errors.Join(err, server.Shutdown(shutdown))
-	for completed < 2 {
+	for completed < total {
 		select {
 		case result := <-done:
 			completed++
