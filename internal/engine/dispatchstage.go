@@ -330,35 +330,19 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		if executor.StageRequiresInstanceConfig(t.Run.Command) {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q runs %v, which reads the instance config directory; a stage pod has no config directory — place this stage on a self runner", t.Name, t.Run.Command)
 		}
-		// Decision 003 ruling 3: a ledger-touching, journal-reading, or
-		// telemetry-rollup-reading command — or a built-in stage KIND with no
-		// pod-side execution path (external-telemetry; ci-poll gained one in
-		// #3881, decision 005 step C5, and is no longer refused here) — needs the
-		// daemon's instance root, which a stage pod does not have. Unlike the
-		// guards above (a misdeclared workspace, an empty command — bugs in
-		// how the stage was built), this is refused as a normal, JOURNALED
-		// stage outcome: dispatchInstanceRootRefusal routes it through
-		// dispatchWithRetry so stage.finished carries the named code and
-		// Task.ContinueOnError / gate branching apply exactly as they would
-		// to a real executor failure, rather than hard-failing the whole run
-		// over a placement the substrate cannot yet honour. No activity is
-		// executed, so ActDispatchStage's dispatcher is never reached and no
-		// pod is ever created.
-		//
-		// Read from env.Inputs, not t.Inputs: a stage may declare its kind
-		// dynamically via inputsFrom (internal/workflow/v_3_0/timeoutcoherence.go
-		// treats task.InputsFrom[boundedwait.InputKind] as legal-but-unprovable
-		// statically), and runTask has already resolved that overlay into
-		// env.Inputs immediately before routing here — t.Inputs alone would
-		// miss a dynamically-resolved external-telemetry kind and let
-		// a pod be created for it.
-		if kind := resolvedKindInput(env); executor.StageRequiresInstanceRoot(t.Run.Command, kind) {
-			return dispatchInstanceRootRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
-		}
+
 	}
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
-		taskDispatches[t.Name]++
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
+		// Check resolved inputs for this attempt: an experiment can change kind,
+		// and inputsFrom can override that variant. Both overlays must precede
+		// the decision that a pod can execute the stage without instance files.
+		if t.Type == apiv1.TaskDeterministic {
+			if kind := resolvedKindInput(attemptEnv); executor.StageRequiresInstanceRoot(t.Run.Command, kind) {
+				return instanceRootRefusalResult(instanceRootRefusalReason(t.Name, t.Run.Command, kind)), nil
+			}
+		}
+		taskDispatches[t.Name]++
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
@@ -407,30 +391,19 @@ func instanceRootRefusalReason(taskName string, command []string, kind string) s
 	)
 }
 
-// dispatchInstanceRootRefusal journals a stage.finished FAILURE for a stage
-// refused before dispatch — the ActDispatchStage activity is never executed,
-// so the dispatcher is never consulted and no pod is ever created. Routed
-// through dispatchWithRetry (rather than returned as a plain error, as the
-// workspace/config/empty-command guards above do) so the outcome is a
-// normal, journaled ResultEnvelope: it respects Task.ContinueOnError and
-// gate branching exactly as a real executor failure would, instead of
-// hard-failing the whole run over a placement choice the substrate cannot
-// yet honour. The retry loop never actually fires: dispatchWithRetry only
-// retries a non-nil ACTIVITY error, and this synthesizes a clean (err ==
-// nil) ResultFailure on the first attempt — exactly the same shape a real
-// executor's ordinary command failure returns (shell.go's Run doc comment).
-// The delta out-param is threaded through unchanged so the refusal's synthetic
-// attempt reports the same "published nothing" publication any non-writable
-// stage does: a refused stage never ran, so it has no commits to hand on, and
-// the walk's continuity record must see an empty digest rather than inherit the
-// previous stage's by omission.
-func dispatchInstanceRootRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, reason string) (apiv1.ResultEnvelope, error) {
-	return dispatchRefusal(ctx, in, t, rec, pointers, deltaOut, executor.StageRequiresInstanceRootCode,
-		"stage requires the daemon's instance root; refused before a pod was created", reason)
+// instanceRootRefusalResult is returned from the attempt closure so the usual
+// retry loop journals the refusal without creating a pod. It is a normal stage
+// failure: ContinueOnError and gate routing apply as for an executor result.
+func instanceRootRefusalResult(reason string) stageActivityResult {
+	return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Summary: "stage requires the daemon's instance root; refused before a pod was created",
+		Error:   &apiv1.ErrorInfo{Code: executor.StageRequiresInstanceRootCode, Message: reason},
+	}}
 }
 
 // dispatchRefusal journals a stage.finished FAILURE with the given code for a
-// stage refused before dispatch; see dispatchInstanceRootRefusal for why the
+// stage refused before dispatch; see instanceRootRefusalResult for why the
 // refusal is a normal, journaled stage outcome.
 func dispatchRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, code, summary, reason string) (apiv1.ResultEnvelope, error) {
 	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
