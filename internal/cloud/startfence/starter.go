@@ -1,3 +1,4 @@
+// Package startfence starts cloud engine workflows under durable acceptance authority.
 package startfence
 
 import (
