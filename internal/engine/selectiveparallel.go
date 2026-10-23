@@ -13,6 +13,8 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
+const staticSelectionVersion = "engine-static-selection-v1"
+
 func (r *runJournal) selectiveFanOutPlan(
 	ctx workflow.Context,
 	in RunInput,

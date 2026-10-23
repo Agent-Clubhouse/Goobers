@@ -58,6 +58,10 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if r.owner == nil || r.stepBudget == nil {
 		return "", true, fmt.Errorf("engine: static parallel requires commit owner and shared budget")
 	}
+	if p.Selection != nil &&
+		workflow.GetVersion(ctx, staticSelectionVersion, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		return "", true, fmt.Errorf("engine: selective parallel execution is refused")
+	}
 	if err := refuseStaticJoinBindings(in.Spec, p.Name); err != nil {
 		return "", true, err
 	}

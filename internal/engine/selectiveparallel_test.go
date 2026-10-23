@@ -2,13 +2,18 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
+
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 func TestStaticSchedulerSelectiveParallelUsesFrozenSelection(t *testing.T) {
@@ -105,6 +110,31 @@ func TestStaticSchedulerSelectiveParallelSourceFailureRoutesOnFailure(t *testing
 		}
 	}
 	t.Fatal("selection source failure did not record fanout_source_invalid")
+}
+
+func TestStaticSchedulerSelectiveParallelLegacyVersionRefusesBeforeFreeze(t *testing.T) {
+	in, acts, _ := selectiveParallelFixture(t, `{"schemaVersion":1,"branches":[]}`)
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	env.OnGetVersion(staticSelectionVersion, workflow.DefaultVersion, 1).
+		Return(workflow.DefaultVersion)
+	env.RegisterActivity(acts)
+	env.ExecuteWorkflow(staticScheduler, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var out staticSchedulerResult
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Error, "selective parallel execution is refused") {
+		t.Fatalf("legacy selection version = %+v", out)
+	}
+	for _, op := range out.Projection.Ops {
+		if op.Event != nil && op.Event.Type == journal.EventParallelStarted {
+			t.Fatalf("legacy selection recorded parallel.started: %+v", op.Event)
+		}
+	}
 }
 
 type selectiveCalls struct {
