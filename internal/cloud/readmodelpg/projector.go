@@ -36,6 +36,8 @@ func NewProjector(
 	if err != nil {
 		return nil, err
 	}
+	store.feed = readmodel.NewFeedWithWakeup(
+		NewActiveFeedStore(store.pool), notifier)
 	return &Projector{store: store, notifier: notifier}, nil
 }
 
@@ -51,10 +53,7 @@ func (p *Projector) Commit(ctx context.Context, projection readmodel.Projection)
 }
 
 // Feed returns a restart-safe durable feed with a one-second polling fallback.
-func (p *Projector) Feed() *readmodel.Feed {
-	return readmodel.NewFeedWithWakeup(
-		NewActiveFeedStore(p.store.pool), p.notifier)
-}
+func (p *Projector) Feed() *readmodel.ChangeFeed { return p.store.feed }
 
 // Store exposes the backend for read paths.
 func (p *Projector) Store() *Store { return p.store }

@@ -78,6 +78,50 @@ func TestPostgresConformance(t *testing.T) {
 	})
 }
 
+func TestChangeFeedAsControllerRole(t *testing.T) {
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	config := admin.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	controller, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(controller.Close)
+	store, err := readmodelpg.New(
+		t.Context(), controller, testFence{pool: controller, epoch: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := store.ChangeFeed(), store.ChangeFeed()
+	if first != second {
+		t.Fatalf("ChangeFeed identity changed: %p != %p", first, second)
+	}
+	state, err := store.State(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PublishDefinitionsChanged(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	position, err := first.Since(t.Context(), readmodel.Cursor{
+		SchemaVersion: state.SchemaVersion,
+		Epoch:         state.Epoch,
+		Seq:           state.MinChangeSeq,
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(position.Changes) != 1 ||
+		position.Changes[0].Kind != readmodel.ChangeDefinitionsChanged {
+		t.Fatalf("definitions changes = %+v", position.Changes)
+	}
+}
+
 func TestRetiredWriterRejectsPostFlipWrite(t *testing.T) {
 	pool := testPool(t)
 	applyMigrations(t, pool)

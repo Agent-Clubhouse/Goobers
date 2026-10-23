@@ -425,9 +425,11 @@ tables:
   - role: goobers_controller
     columns:
     - singleton
+    - epoch
     - ready
     - min_change_seq
     - next_change_seq
+    - built_at
     - owner_epoch
   writers:
   - role: goobers_controller
@@ -551,6 +553,11 @@ tables:
   - role: goobers_controller
     columns:
     - seq
+    - changed_at
+    - kind
+    - run_id
+    - gaggle
+    - workflow
     - owner_epoch
   writers:
   - role: goobers_controller

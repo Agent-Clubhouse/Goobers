@@ -250,7 +250,7 @@ func TestFeedStreamDeliversCommittedChanges(t *testing.T) {
 	defer cancel()
 
 	commitRun(t, store, 1)
-	stream.feed.Notify()
+	store.Feed().Notify()
 
 	select {
 	case event := <-events:

@@ -59,7 +59,7 @@ type eventSource interface {
 
 // feedStream serves SSE from the read model's change feed.
 type feedStream struct {
-	feed  *readmodel.Feed
+	feed  readmodel.Feed
 	store interface {
 		State(context.Context) (readmodel.State, error)
 	}
@@ -78,7 +78,7 @@ func newFeedStream(store *readmodel.Store) *feedStream {
 }
 
 func newFeedStreamWithFeed(
-	feed *readmodel.Feed,
+	feed readmodel.Feed,
 	store interface {
 		State(context.Context) (readmodel.State, error)
 	},

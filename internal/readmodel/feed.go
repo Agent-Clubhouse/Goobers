@@ -53,8 +53,14 @@ type FeedWakeup interface {
 	Subscribe() (<-chan struct{}, func())
 }
 
-// Feed tails committed changes.
-type Feed struct {
+// Feed is the bounded change-feed read surface used by SSE callers.
+type Feed interface {
+	Since(context.Context, Cursor, int) (FeedPosition, error)
+	Head(context.Context) (Cursor, error)
+}
+
+// ChangeFeed tails committed changes.
+type ChangeFeed struct {
 	store FeedStore
 
 	mu sync.Mutex
@@ -80,14 +86,14 @@ const DefaultFeedPollInterval = time.Second
 // one instance while a subscriber waits on another and the wakeup is simply
 // lost (#2458). This constructor remains for tests that want an isolated feed
 // over a store they own, and for the store's own lazily-built singleton.
-func NewFeed(store *Store) *Feed {
-	return &Feed{store: store, readChanges: store.Changes}
+func NewFeed(store *Store) *ChangeFeed {
+	return &ChangeFeed{store: store, readChanges: store.Changes}
 }
 
 // NewFeedWithWakeup constructs a backend-neutral durable feed. The wakeup is a
 // latency optimization; a one-second poll remains the correctness path.
-func NewFeedWithWakeup(store FeedStore, wakeup FeedWakeup) *Feed {
-	return &Feed{
+func NewFeedWithWakeup(store FeedStore, wakeup FeedWakeup) *ChangeFeed {
+	return &ChangeFeed{
 		store: store, readChanges: store.Changes,
 		wakeup: wakeup, poll: DefaultFeedPollInterval,
 	}
@@ -99,7 +105,7 @@ func NewFeedWithWakeup(store FeedStore, wakeup FeedWakeup) *Feed {
 // whole point: a subscriber woken before the commit would read the feed, find
 // nothing, and go back to sleep — and the change it was woken for would then
 // wait for the next unrelated commit to be noticed.
-func (f *Feed) Notify() {
+func (f *ChangeFeed) Notify() {
 	f.mu.Lock()
 	waiters := f.waiters
 	f.waiters = nil
@@ -116,7 +122,7 @@ func (f *Feed) Notify() {
 // removal is by key under the same mutex, so it either happens before Notify
 // detaches the set (and the waiter is never closed) or after (and the delete
 // finds nothing) — never a double close and never a lost wakeup.
-func (f *Feed) wait() (<-chan struct{}, func()) {
+func (f *ChangeFeed) wait() (<-chan struct{}, func()) {
 	waiter := make(chan struct{})
 	f.mu.Lock()
 	if f.waiters == nil {
@@ -142,7 +148,7 @@ func (f *Feed) wait() (<-chan struct{}, func()) {
 // means take a snapshot, and `schema_changed` means the client's own decoding
 // may be wrong. Collapsing them into one code would make a rebuilt store and a
 // pruned feed indistinguishable from a client that is simply too old.
-func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPosition, error) {
+func (f *ChangeFeed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPosition, error) {
 	for {
 		if err := f.validateCursor(ctx, cursor); err != nil {
 			return FeedPosition{}, err
@@ -210,7 +216,7 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 	}
 }
 
-func (f *Feed) validateCursor(ctx context.Context, cursor Cursor) error {
+func (f *ChangeFeed) validateCursor(ctx context.Context, cursor Cursor) error {
 	state, err := f.store.State(ctx)
 	if err != nil {
 		return err
@@ -222,7 +228,7 @@ func (f *Feed) validateCursor(ctx context.Context, cursor Cursor) error {
 }
 
 // Head returns the current end of the feed, for a client with no cursor.
-func (f *Feed) Head(ctx context.Context) (Cursor, error) {
+func (f *ChangeFeed) Head(ctx context.Context) (Cursor, error) {
 	state, err := f.store.State(ctx)
 	if err != nil {
 		return Cursor{}, err

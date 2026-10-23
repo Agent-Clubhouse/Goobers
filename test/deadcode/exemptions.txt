@@ -381,7 +381,11 @@ github.com/goobers/goobers/internal/cloud/readmodelpg.NewProjector # HA-P3-12 Po
 github.com/goobers/goobers/internal/cloud/readmodelpg.Projector.Commit # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.Projector.Feed # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.Projector.Store # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Store.ChangeFeed # HA-P3-12 PostgreSQL backend compatibility for #7884 remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Store.PublishDefinitionsChanged # HA-P3-12 PostgreSQL backend compatibility for #7884 remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
 github.com/goobers/goobers/internal/readmodel.NewFeedWithWakeup # HA-P3-12 PostgreSQL projector feed remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/readmodel/conformance.changeFeedIdentityIsStable # Backend conformance helper is invoked only from tests for #7865/#7884. expires=2026-11-22
+github.com/goobers/goobers/internal/readmodel/conformance.definitionsChangeJoinsOrderedFeed # Backend conformance helper is invoked only from tests for #7865/#7884. expires=2026-11-22
 github.com/goobers/goobers/internal/blobstore.TouchReference # Safe physical blob GC writer qualification (#7843) exposes the shared digest-only reference seam before journal/recovery/child writers adopt it. expires=2026-11-22
 
 # HA-P3-14 (#7814) PostgreSQL recovery, cancel-receipt and terminal-report stores

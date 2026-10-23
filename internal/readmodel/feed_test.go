@@ -240,7 +240,7 @@ func TestFeedRegistersBeforeReading(t *testing.T) {
 	}
 }
 
-func waiterCount(feed *Feed) int {
+func waiterCount(feed *ChangeFeed) int {
 	feed.mu.Lock()
 	defer feed.mu.Unlock()
 	return len(feed.waiters)
