@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 
@@ -230,6 +231,7 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *jou
 	var deleted bool
 	api.PrependReactor("create", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
 		pod = action.(kubetesting.CreateAction).GetObject().(*corev1.Pod)
+		pod.UID = types.UID("uid-" + pod.Name)
 		pod.Status.Phase = corev1.PodPending
 		observations = 0
 		deleted = false
