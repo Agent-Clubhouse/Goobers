@@ -256,7 +256,8 @@ func runUpgradeProbe(ctx context.Context, env []string, evidence string, step te
 }
 
 func assertPersistenceConfig(ctx context.Context, env []string, evidence, serverVersion string) error {
-	config, err := output(ctx, env, "kubectl", "get", "configmap/temporal-config", "-n", "goobers-temporal", "-o", "yaml")
+	config, err := output(ctx, env, "kubectl", "get", "configmap", "-n", "goobers-temporal",
+		"-l", "app.kubernetes.io/instance=temporal", "-o", "yaml")
 	if err != nil {
 		return err
 	}
