@@ -139,6 +139,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	var usageBudget runsemantics.StageUsageBudget
 	var policyAttempts, infrastructureFailures, priorAttemptDeferrals int32
 	var lastErr error
+	var infraCommittedWork bool
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
 		// The first attempt carries no class (normative); a retry carries the
@@ -292,7 +293,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if identity == nil {
 			identity = attemptIdentityFromError(err)
 		}
-		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity)
+		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity, &infraCommittedWork)
 		if isWorkerLoss(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}
