@@ -7,7 +7,7 @@ spec:
   deployment:
     template:
       spec:
-        terminationGracePeriodSeconds: 90
+        terminationGracePeriodSeconds: 360
         priorityClassName: goobers-control-plane
         topologySpreadConstraints:
           - maxSkew: 1

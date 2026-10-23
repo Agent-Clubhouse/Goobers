@@ -1,8 +1,11 @@
 # Worker high-availability component
 
 Include this component from the rainbow worker overlay after
-`components/worker-base`. It applies the shared worker priority, 90-second
+`components/worker-base`. It applies the shared worker priority, staged 360-second
 termination grace and zone spread to the `goobers` `WorkerDeployment`.
+
+Do not lower the grace to 90 seconds until `workerhost.ChildSettlementTimeout`
+is lowered in the same change and CHAOS-13 qualifies rainbow re-attachment.
 
 `worker-pdb-template.yaml` is a Temporal Worker Controller
 `WorkerResourceTemplate`. The controller injects the exact build ID selector

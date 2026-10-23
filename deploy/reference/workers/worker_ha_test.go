@@ -32,8 +32,8 @@ func TestLegacyWorkerHAContract(t *testing.T) {
 	if podSpec["priorityClassName"] != "goobers-control-plane" {
 		t.Fatalf("priorityClassName = %v", podSpec["priorityClassName"])
 	}
-	if podSpec["terminationGracePeriodSeconds"] != int64(90) &&
-		podSpec["terminationGracePeriodSeconds"] != float64(90) {
+	if podSpec["terminationGracePeriodSeconds"] != int64(360) &&
+		podSpec["terminationGracePeriodSeconds"] != float64(360) {
 		t.Fatalf("termination grace = %v", podSpec["terminationGracePeriodSeconds"])
 	}
 	assertZoneSpread(t, podSpec)
@@ -58,7 +58,7 @@ func TestRainbowWorkerHAContract(t *testing.T) {
 		t.Fatalf("worker patch pod spec: found=%v err=%v", found, err)
 	}
 	if podSpec["priorityClassName"] != "goobers-control-plane" ||
-		manifestInt(t, podSpec, "terminationGracePeriodSeconds") != 90 {
+		manifestInt(t, podSpec, "terminationGracePeriodSeconds") != 360 {
 		t.Fatalf("worker patch = %+v", podSpec)
 	}
 	assertZoneSpread(t, podSpec)
