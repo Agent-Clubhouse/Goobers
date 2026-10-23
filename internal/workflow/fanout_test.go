@@ -358,7 +358,7 @@ func TestRefuseUnsupportedFanOutIsTyped(t *testing.T) {
 		feature  string
 		state    string
 	}{
-		{"selective parallel", selectiveParallelDefinition().Spec, ErrSelectiveParallelUnsupported, "spec.parallels.selection", "review"},
+		{"selective parallel", selectiveParallelDefinition().Spec, ErrParallelsUnsupported, "spec.parallels", "review"},
 		{"map", mapDefinition().Spec, ErrMapUnsupported, "spec.maps", "run-shards"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -377,7 +377,7 @@ func TestRefuseUnsupportedFanOutIsTyped(t *testing.T) {
 	for i := range plain.Parallels[0].Branches {
 		plain.Parallels[0].Branches[i].Optional = false
 	}
-	if err := RefuseUnsupportedFanOut(plain); err != nil {
-		t.Fatalf("plain parallel refused: %v", err)
+	if err := RefuseUnsupportedFanOut(plain); !errors.Is(err, ErrParallelsUnsupported) {
+		t.Fatalf("plain parallel refusal = %v", err)
 	}
 }

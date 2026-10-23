@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
@@ -172,7 +174,7 @@ func terminalGaggleProject(l instance.Layout) (apiv1.RepoRef, error) {
 		// This helper runs outside any CLI surface (one-shot abort, stalled-run
 		// sweep), so the report's errors travel inside the returned error
 		// rather than to a stderr this scope does not own.
-		if summary := validationIssueSummary(report); summary != "" {
+		if summary := runtimewiring.ValidationIssueSummary(report); summary != "" {
 			return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w (%s)", l.Gaggle(), err, summary)
 		}
 		return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w", l.Gaggle(), err)
@@ -220,7 +222,7 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		gaggleOwner += "/" + project.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}
@@ -231,7 +233,7 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 	repo := terminalRepositoryRefForProject(cfg, project)
 	// A credentials: entry for github:branch:delete is a PAT, sent as Basic
 	// even on an Entra-authenticated repository (#5957).
-	adoScheme := adoCredentialSchemes(cfg, project, grants)[string(capability.GitHubBranchDelete)]
+	adoScheme := runtimewiring.AdoCredentialSchemes(cfg, project, grants)[string(capability.GitHubBranchDelete)]
 	deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 		if err := terminalBranchDeleteSupported(repo.Provider); err != nil {
 			return providers.DeleteBranchResult{}, err

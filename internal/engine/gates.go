@@ -26,6 +26,8 @@ type gateResult struct {
 	Gate string
 	// Outcome is the evaluator outcome.
 	Outcome string
+	// Actor is the authenticated principal for a human decision.
+	Actor string
 	// Target is the branch actually taken — the gate's configured branch for
 	// Outcome, unless the repass budget was exhausted, in which case it is
 	// the optional escalate control branch or wf.TargetEscalate.

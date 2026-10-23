@@ -6,12 +6,11 @@ import (
 )
 
 // Keep the engine API's sentinel identity and errors.As types while sharing
-// the same fail-closed policy with child admission. No refusal is lifted.
+// the same fail-closed policy with child admission.
 var (
 	ErrExperimentUnsupported        = engineadmission.ErrExperimentUnsupported
 	ErrRemoteUsageLimitsUnsupported = engineadmission.ErrRemoteUsageLimitsUnsupported
 	ErrParallelsUnsupported         = engineadmission.ErrParallelsUnsupported
-	ErrSelectiveParallelUnsupported = engineadmission.ErrSelectiveParallelUnsupported
 	ErrMapsUnsupported              = engineadmission.ErrMapsUnsupported
 )
 

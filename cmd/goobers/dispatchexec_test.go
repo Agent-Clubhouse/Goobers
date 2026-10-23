@@ -24,8 +24,8 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func fastArtifactTiming() artifactTiming {
@@ -1405,8 +1405,8 @@ func TestDispatchExecClassifiesSyncBaseConflictAsRetryableInfra(t *testing.T) {
 	if got.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %q, want failure", got.Status)
 	}
-	if got.Error == nil || got.Error.Code != runner.BaseSyncConflictErrorCode {
-		t.Fatalf("error = %+v, want code %q (the self arms' classification, so failure-class routes to remediation instead of an implementation repass)", got.Error, runner.BaseSyncConflictErrorCode)
+	if got.Error == nil || got.Error.Code != runsemantics.BaseSyncConflictErrorCode {
+		t.Fatalf("error = %+v, want code %q (the self arms' classification, so failure-class routes to remediation instead of an implementation repass)", got.Error, runsemantics.BaseSyncConflictErrorCode)
 	}
 	if !got.Error.Retryable {
 		t.Fatal("a base_sync_conflict must be Retryable, matching internal/engine/activities.go's RunDeterministic and internal/runner/run.go — failure-class's isRecognizedInfrastructureFailure never matches this code, so Retryable is the only thing that routes it OutcomeInfra")

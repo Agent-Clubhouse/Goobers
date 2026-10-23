@@ -1,0 +1,18 @@
+apiVersion: temporal.io/v1alpha1
+kind: WorkerDeployment
+metadata:
+  name: goobers
+  namespace: goobers-system
+spec:
+  deployment:
+    template:
+      spec:
+        terminationGracePeriodSeconds: 360
+        priorityClassName: goobers-control-plane
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector:
+              matchLabels:
+                goobers.dev/role: worker

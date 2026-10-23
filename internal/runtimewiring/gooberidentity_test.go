@@ -1,0 +1,314 @@
+package runtimewiring_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/workflow"
+)
+
+func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
+	configDir := t.TempDir()
+	instructionsDir := filepath.Join(configDir, "gaggles", "alpha", "goobers", "coder")
+	if err := os.MkdirAll(instructionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	instructionsPath := filepath.Join(instructionsDir, "instructions.md")
+	if err := os.WriteFile(instructionsPath, []byte("first instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {
+			Gaggle:       "alpha",
+			Instructions: "instructions.md",
+			Harness:      apiv1.HarnessCopilot,
+			Model:        "claude-sonnet-4.5",
+			Capabilities: []string{"agent:model"},
+		},
+	}
+	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implement"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "alpha",
+			Start:  "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
+				Goober: "coder", Next: workflow.TerminalComplete,
+				Capabilities: []string{"agent:model"},
+			}},
+		},
+	}}}
+	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
+	firstInstructions, err := runtimewiring.LoadGooberInstructions(configDir, nil, goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, firstDigests, _, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, firstInstructions, harness.EnvironmentConfig{}, nil,
+		false,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(instructionsPath, []byte("second instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secondInstructions, err := runtimewiring.LoadGooberInstructions(configDir, nil, goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondDigests, _, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, secondInstructions, harness.EnvironmentConfig{}, nil,
+		false,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigests[identity] == secondDigests[identity] {
+		t.Fatalf("goober digest did not change with instruction content: %s", firstDigests[identity])
+	}
+	if first[identity].Digest() != second[identity].Digest() {
+		t.Fatalf("workflow digest changed with instruction content: %s != %s", first[identity].Digest(), second[identity].Digest())
+	}
+}
+
+func TestLoadGooberInstructionsUsesDefinitionSourceDirectory(t *testing.T) {
+	root := initDemo(t)
+	configDir := instance.NewLayout(root).ConfigDir()
+	canonicalDir := filepath.Join(configDir, "gaggles", "example", "goobers", "coder")
+	sourceDir := filepath.Join(configDir, "gaggles", "example", "goobers", "deps-coder")
+	if err := os.Rename(canonicalDir, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sourceDir, gooberassets.SourceDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, gooberassets.SourceDir, "notes.txt"), []byte("asset\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := instance.LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	goobers := runtimewiring.GoobersByName(set)
+	instructions, err := runtimewiring.LoadGooberInstructions(configDir, set, goobers)
+	if err != nil {
+		t.Fatalf("loadGooberInstructions: %v", err)
+	}
+	if instructions["coder"] == "" {
+		t.Fatal("coder instructions were not loaded from the goober definition source directory")
+	}
+	// Assets live beside the definition too; the runner and the agentic kit
+	// writer load them through the same resolution.
+	if got := runtimewiring.ResolvedGooberDefinitionDir(configDir, set, goobers["coder"], "coder"); got != sourceDir {
+		t.Fatalf("resolved goober definition dir = %q, want %q", got, sourceDir)
+	}
+	bundle, err := gooberassets.Load(filepath.Join(runtimewiring.ResolvedGooberDefinitionDir(configDir, set, goobers["coder"], "coder"), gooberassets.SourceDir))
+	if err != nil {
+		t.Fatalf("load assets: %v", err)
+	}
+	if bundle == nil {
+		t.Fatal("coder assets were not loaded from the goober definition source directory")
+	}
+}
+
+func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
+	configDir := t.TempDir()
+	instructionsDir := filepath.Join(configDir, "gaggles", "alpha", "goobers", "coder")
+	if err := os.MkdirAll(instructionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(instructionsDir, "instructions.md"), []byte("instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(filepath.Dir(configDir), "skills", "testing")
+	if err := os.MkdirAll(filepath.Join(skillDir, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("Use the references."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	referencePath := filepath.Join(skillDir, "references", "cases.md")
+	if err := os.WriteFile(referencePath, []byte("original cases"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {
+			Gaggle: "alpha", Instructions: "instructions.md", Skills: []string{"testing"},
+			Harness: apiv1.HarnessCopilot, Model: "claude-sonnet-4.5", Capabilities: []string{"agent:model"},
+		},
+	}
+	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implement"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "alpha", Start: "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
+				Goober: "coder", Next: workflow.TerminalComplete,
+				Capabilities: []string{"agent:model"},
+			}},
+		},
+	}}}
+	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
+	instructions, err := runtimewiring.LoadGooberInstructions(configDir, nil, goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, before, _, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
+		false,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(referencePath, []byte("updated cases"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, after, _, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
+		false,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[identity] == after[identity] {
+		t.Fatalf("goober digest did not change with skill support file: %s", after[identity])
+	}
+}
+
+func TestLoadGooberSkillPackagesPrefersGagglePackageWithSharedFallback(t *testing.T) {
+	instanceRoot := t.TempDir()
+	configDir := filepath.Join(instanceRoot, "config")
+	sharedDir := filepath.Join(instanceRoot, "skills", "testing")
+	scopedDir := filepath.Join(configDir, "gaggles", "alpha", "skills", "testing")
+	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedDir, "SKILL.md"), []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"alpha-coder": {Gaggle: "alpha", Skills: []string{"testing"}},
+		"beta-coder":  {Gaggle: "beta", Skills: []string{"testing"}},
+		"reviewer":    {Skills: []string{"testing"}},
+	}
+
+	packages, err := runtimewiring.LoadGooberSkillPackages(configDir, "alpha", goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := packages["testing"]; len(got) != 1 || got[0].Content != "shared" {
+		t.Fatalf("shared fallback package = %+v", got)
+	}
+
+	if err := os.MkdirAll(scopedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scopedDir, "SKILL.md"), []byte("scoped"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packages, err = runtimewiring.LoadGooberSkillPackages(configDir, "alpha", goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := packages["testing"]; len(got) != 1 || got[0].Content != "scoped" {
+		t.Fatalf("gaggle package = %+v", got)
+	}
+	if got := packages[workflow.SharedSkillPackageKey("testing")]; len(got) != 1 || got[0].Content != "shared" {
+		t.Fatalf("shared persona inherited gaggle override: %+v", got)
+	}
+
+	packages, err = runtimewiring.LoadGooberSkillPackages(configDir, "beta", goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := packages["testing"]; len(got) != 1 || got[0].Content != "shared" {
+		t.Fatalf("other gaggle fallback package = %+v", got)
+	}
+}
+
+func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
+	configDir := t.TempDir()
+	instructionsDir := filepath.Join(configDir, "gaggles", "alpha", "goobers", "coder")
+	if err := os.MkdirAll(instructionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instructionsDir, "instructions.md"), []byte("instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {
+			Gaggle:       "alpha",
+			Instructions: "instructions.md",
+			Harness:      apiv1.HarnessCopilot,
+			Model:        "retired-model",
+			Capabilities: []string{"agent:model"},
+			HarnessOptions: map[string]apiextensionsv1.JSON{
+				"fallback-to-default": {Raw: []byte("true")},
+			},
+		},
+	}
+	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implement"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "alpha",
+			Start:  "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
+				Goober: "coder", Next: workflow.TerminalComplete,
+				Capabilities: []string{"agent:model"},
+			}},
+		},
+	}}}
+	instructions, err := runtimewiring.LoadGooberInstructions(configDir, nil, goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines, digests, resolvedGoobers, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
+		false,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
+	resolvedDigest, err := workflow.ComputeGooberDigest(machines[identity].Def, resolvedGoobers, instructions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaredDigest, err := workflow.ComputeGooberDigest(machines[identity].Def, goobers, instructions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digests[identity] != resolvedDigest || digests[identity] == declaredDigest {
+		t.Fatalf("goober digest = %s, resolved = %s, declared = %s", digests[identity], resolvedDigest, declaredDigest)
+	}
+}

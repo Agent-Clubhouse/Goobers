@@ -8,9 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -243,10 +246,10 @@ func TestScaffoldedWorkflowRunsEndToEnd(t *testing.T) {
 	}
 
 	fixtureRepo := newDaemonFixtureRepo(t)
-	prevRepo := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
-	prevAdapter := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	prevRepo := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
+	prevAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
@@ -255,8 +258,8 @@ func TestScaffoldedWorkflowRunsEndToEnd(t *testing.T) {
 		}}
 	}
 	t.Cleanup(func() {
-		repoCloneURL = prevRepo
-		newAgenticAdapter = prevAdapter
+		runtimewiring.RepoCloneURL = prevRepo
+		runtimewiring.NewAgenticAdapter = prevAdapter
 	})
 
 	code, stdout, stderr := runArgs(t, "run", "my-flow", root)

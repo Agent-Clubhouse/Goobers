@@ -317,7 +317,7 @@ func (h *Host) stopHealthServer(server *http.Server) {
 	ctx, cancel := context.WithTimeout(context.Background(), healthShutdownWait)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		h.logf("goobers worker: error: stop health server: %v", err)
+		h.logf("goobers-cloud worker: error: stop health server: %v", err)
 	}
 }
 

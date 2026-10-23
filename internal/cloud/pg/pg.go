@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +17,30 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// DatabaseURL resolves one URL from an argument, mounted file, or environment.
+func DatabaseURL(argument, filename, environment string) (string, error) {
+	if strings.TrimSpace(argument) != "" && strings.TrimSpace(filename) != "" {
+		return "", errors.New("choose either the URL argument or file, not both")
+	}
+	if value := strings.TrimSpace(argument); value != "" {
+		return value, nil
+	}
+	if strings.TrimSpace(filename) != "" {
+		content, err := os.ReadFile(filename)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", filename, err)
+		}
+		if value := strings.TrimSpace(string(content)); value != "" {
+			return value, nil
+		}
+		return "", fmt.Errorf("%s is empty", filename)
+	}
+	if value := strings.TrimSpace(os.Getenv(environment)); value != "" {
+		return value, nil
+	}
+	return "", fmt.Errorf("set the corresponding flag, file, or %s", environment)
+}
 
 const (
 	// DefaultMaxConnections is the default total pool budget.

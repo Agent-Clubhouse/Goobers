@@ -8,16 +8,17 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationRecoveryExpirySweepAppliesContentlessJustifications is the
 // #5359 follow-up #5366 left open: recoveryRetirementEligible must apply
-// recoveryContentlessJustification exactly as the on-demand eviction hook
+// runtimewiring.RecoveryContentlessJustification exactly as the on-demand eviction hook
 // does, so the periodic sweep and the hook cannot disagree about what counts
 // as contentless. Every case here seeds an entry well INSIDE its retain-until
 // window (29 days out), so a retirement can only be explained by
-// recoveryContentlessJustification, never by the sweep's own time-based
+// runtimewiring.RecoveryContentlessJustification, never by the sweep's own time-based
 // policy.
 func TestIntegrationRecoveryExpirySweepAppliesContentlessJustifications(t *testing.T) {
 	testdep.Require(t, "git")
@@ -38,7 +39,7 @@ func testSweepStoredNoDiff(t *testing.T) {
 		t.Fatal("a stored-no-diff entry inside the retain window was not retired by the sweep")
 	}
 	justification, found := f.reclamationJustification("nodiff-sweep")
-	if !found || justification != reclaimStoredNoDiff {
+	if !found || justification != runtimewiring.ReclaimStoredNoDiff {
 		t.Fatalf("sweep retirement was not journaled with the stored-no-diff justification: found=%v justification=%q", found, justification)
 	}
 }
@@ -55,7 +56,7 @@ func testSweepBookkeepingOnly(t *testing.T) {
 		t.Fatal("a bookkeeping-only entry inside the retain window was not retired by the sweep")
 	}
 	justification, found := f.reclamationJustification("bookkeeping-sweep")
-	if !found || justification != reclaimBookkeepingOnly {
+	if !found || justification != runtimewiring.ReclaimBookkeepingOnly {
 		t.Fatalf("sweep retirement was not journaled with the bookkeeping-only justification: found=%v justification=%q", found, justification)
 	}
 }
@@ -78,7 +79,7 @@ func testSweepSupersededDuplicate(t *testing.T) {
 		t.Fatal("the newest member of a duplicate set was retired instead of the older copy it protects")
 	}
 	justification, found := f.reclamationJustification("dup-oldest-sweep")
-	if !found || justification != reclaimSupersededDuplicate {
+	if !found || justification != runtimewiring.ReclaimSupersededDuplicate {
 		t.Fatalf("sweep retirement was not journaled with the superseded-duplicate justification: found=%v justification=%q", found, justification)
 	}
 }
@@ -113,7 +114,7 @@ func testSweepDryRunReportsOnly(t *testing.T) {
 	if !active["nodiff-dry"] || !active["bookkeeping-dry"] {
 		t.Fatal("dry-run deleted a candidate instead of only reporting it")
 	}
-	for _, want := range []string{reclaimStoredNoDiff, reclaimBookkeepingOnly} {
+	for _, want := range []string{runtimewiring.ReclaimStoredNoDiff, runtimewiring.ReclaimBookkeepingOnly} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("dry-run output did not name candidate rule %q: %s", want, stdout)
 		}
@@ -146,7 +147,7 @@ func (f *reclaimFixture) runExpirySweep(dryRun bool) (string, error) {
 
 // reclamationJustification reports the recoveryReclamationJustification a
 // recovery-reclaimed annotation recorded for runID, if the sweep journaled
-// one. The sweep must journal exactly like recoveryEvictionScope.
+// one. The sweep must journal exactly like runtimewiring.RecoveryEvictionScope.
 // journalReclamation does for the on-demand hook (recoveryevict.go), so a
 // contentless retirement is equally explainable regardless of which path
 // retired it.

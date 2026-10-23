@@ -20,7 +20,9 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 func TestEngineOutboxUsesProjectionSequenceAsOccurrence(t *testing.T) {
@@ -142,7 +144,7 @@ func TestDispatchRetryJournalsOutboxBeforeStageFinished(t *testing.T) {
 		task := apiv1.Task{Name: "build", Type: apiv1.TaskAgentic, Outbox: []string{"reports"}}
 		_, err := dispatchWithRetry(
 			ctx, RunInput{}, task, rec, nil,
-			func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
+			func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error) {
 				return stageActivityResult{
 					ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
 					Outbox:         manifest,
@@ -340,7 +342,7 @@ func TestOutboxExportFailureIgnoresContinueOnError(t *testing.T) {
 		nil, nil, task, result,
 		map[string]apiv1.ResultEnvelope{"build": result}, nil, 1, nil,
 	)
-	if !terminal || out.Status != StatusFailed || out.FailureCode != runner.OutboxExportFailureCode {
+	if !terminal || out.Status != StatusFailed || out.FailureCode != runsemantics.OutboxExportFailureCode {
 		t.Fatalf("terminal=%v result=%+v", terminal, out)
 	}
 }

@@ -14,14 +14,65 @@ Run one cloud control-plane role per process.
 \fBgoobers-cloud api\fR
 Serve the cloud control-plane API.
 .TP
+\fBgoobers-cloud approve\fR
+Approve a paused stage through the API.
+.TP
+\fBgoobers-cloud bootstrap\fR
+Prepare a new cloud install for cutover.
+.TP
+\fBgoobers-cloud cancel\fR
+Cancel a live run through the API.
+.TP
+\fBgoobers-cloud claims list\fR
+List active claims through the API.
+.TP
+\fBgoobers-cloud claims release\fR
+Release a cloud claim.
+.TP
 \fBgoobers-cloud completion\fR
 Generate a shell completion script.
+.TP
+\fBgoobers-cloud config apply\fR
+Apply cloud configuration.
+.TP
+\fBgoobers-cloud config status\fR
+Show cloud configuration status.
 .TP
 \fBgoobers-cloud controller\fR
 Run cloud control-plane reconciliation.
 .TP
+\fBgoobers-cloud cutover\fR
+Check cutover readiness of a cloud install.
+.TP
+\fBgoobers-cloud deny\fR
+Deny an escalated run through the API.
+.TP
+\fBgoobers-cloud lease status\fR
+Show cloud controller lease status.
+.TP
 \fBgoobers-cloud migrate\fR
 Apply cloud data-store migrations.
+.TP
+\fBgoobers-cloud migrate status\fR
+Show cloud schema migration status.
+.TP
+\fBgoobers-cloud override\fR
+Override a paused stage through the API.
+.TP
+\fBgoobers-cloud runs list\fR
+List runs through the API.
+.TP
+\fBgoobers-cloud runs logs\fR
+Read one run's journal events through the API.
+.TP
+\fBgoobers-cloud runs show\fR
+Show one run through the API.
+.TP
+\fBgoobers-cloud status\fR
+Show cloud instance status through the API.
+.TP
+\fBgoobers-cloud triggers\fR
+Submit a durable workflow trigger through the API.
 .TP
 \fBgoobers-cloud worker\fR
 Run a Temporal engine worker.
@@ -29,7 +80,24 @@ Run a Temporal engine worker.
 .SS Workflow-stage and connector commands
 .SH SEE ALSO
 \fBgoobers-cloud-api\fR(1),
+\fBgoobers-cloud-approve\fR(1),
+\fBgoobers-cloud-bootstrap\fR(1),
+\fBgoobers-cloud-cancel\fR(1),
+\fBgoobers-cloud-claims-list\fR(1),
+\fBgoobers-cloud-claims-release\fR(1),
 \fBgoobers-cloud-completion\fR(1),
+\fBgoobers-cloud-config-apply\fR(1),
+\fBgoobers-cloud-config-status\fR(1),
 \fBgoobers-cloud-controller\fR(1),
+\fBgoobers-cloud-cutover\fR(1),
+\fBgoobers-cloud-deny\fR(1),
+\fBgoobers-cloud-lease-status\fR(1),
 \fBgoobers-cloud-migrate\fR(1),
+\fBgoobers-cloud-migrate-status\fR(1),
+\fBgoobers-cloud-override\fR(1),
+\fBgoobers-cloud-runs-list\fR(1),
+\fBgoobers-cloud-runs-logs\fR(1),
+\fBgoobers-cloud-runs-show\fR(1),
+\fBgoobers-cloud-status\fR(1),
+\fBgoobers-cloud-triggers\fR(1),
 \fBgoobers-cloud-worker\fR(1)

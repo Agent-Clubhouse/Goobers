@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"sync"
 
 	"github.com/goobers/goobers/internal/configgeneration"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
@@ -17,18 +15,13 @@ import (
 // construction. Only the retainer needs closing, including on any later error.
 // The caller drains dispatched work before closing a successful runtime.
 type schedulerRuntime struct {
-	capacityRejection     string
-	recoveredConfigDigest string
-
-	generations     *configgeneration.Retainer
+	*scheduling.Runtime
 	definitions     *schedulerDefinitions
 	legacyRunner    *runner.Runner
 	legacyWorktrees *worktree.Manager
 	providerQuota   *localscheduler.ProviderQuotaState
 	runnerRegistry  *daemonRunnerRegistry
 	interventions   *interventionDefinitionRegistry
-	closeOnce       sync.Once
-	closeErr        error
 }
 
 func openSchedulerRuntime(input schedulerDefinitionsInput) (*schedulerRuntime, error) {
@@ -41,80 +34,61 @@ func openSchedulerRuntime(input schedulerDefinitionsInput) (*schedulerRuntime, e
 
 // open registers the generation retainer before any definitions can acquire a
 // lease. Failed owners have released all leases and must not be reused.
-func (owned *schedulerRuntime) open(input schedulerDefinitionsInput) (err error) {
-	defer func() {
-		if err != nil {
-			_ = owned.Close()
-		}
-	}()
-	// #712: shared with the Scheduler via SchedulerOptions below — see
-	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
-	// not a Scheduler-owned field, is needed here.
+func (owned *schedulerRuntime) open(input schedulerDefinitionsInput) error {
+	owned.Runtime = &scheduling.Runtime{}
 	owned.providerQuota = localscheduler.NewProviderQuotaState()
 	owned.runnerRegistry = newDaemonRunnerRegistry()
-	owned.generations, err = newExecutionGenerationRetainer(input.Layout)
-	if err != nil {
-		return err
-	}
-	input.RunnerRegistry = owned.runnerRegistry
-	input.ProviderQuota = owned.providerQuota
-	input.Generations = []*configgeneration.Retainer{owned.generations}
-	if input.RecoveryGeneration != "" {
-		owned.capacityRejection = "operator restored a verified retained catalog; live candidate configuration was not admitted"
-		input, owned.recoveredConfigDigest, err = recoverStartupGeneration(context.Background(), input, owned.generations)
-		if err != nil {
-			return fmt.Errorf("explicit retained catalog recovery refused: %w", err)
-		}
-	}
-	owned.definitions, err = buildSchedulerDefinitions(input)
-	if errors.Is(err, configgeneration.ErrCapacity) && input.RecoverAtCapacity {
-		owned.capacityRejection = generationCapacityMessage(err)
-		input, owned.recoveredConfigDigest, err = recoverStartupGeneration(context.Background(), input, owned.generations)
-		if err != nil {
-			return fmt.Errorf("%s; retained catalog recovery refused: %w", owned.capacityRejection, err)
-		}
-		reportStartupProgress(input.StartupProgress, "candidate rejected at retention capacity; rebuilding verified retained catalog")
-		owned.definitions, err = buildSchedulerDefinitions(input)
-	}
+	return owned.Open(scheduling.RuntimeDependencies{
+		NewRetainer: func() (*configgeneration.Retainer, error) { return newExecutionGenerationRetainer(input.Layout) },
+		Bind: func(retainer *configgeneration.Retainer) {
+			input.RunnerRegistry = owned.runnerRegistry
+			input.ProviderQuota = owned.providerQuota
+			input.Generations = []*configgeneration.Retainer{retainer}
+		},
+		ExplicitRecovery:  input.RecoveryGeneration != "",
+		RecoverAtCapacity: func() bool { return input.RecoverAtCapacity },
+		Recover: func() (string, error) {
+			var digest string
+			var err error
+			input, digest, err = recoverStartupGeneration(context.Background(), input, owned.Generations)
+			return digest, err
+		},
+		Build: func() error { var err error; owned.definitions, err = buildSchedulerDefinitions(input); return err },
+		Install: func() error {
+			owned.runnerRegistry.Replace(owned.definitions.Runners)
+			reportStartupProgress(input.StartupProgress, "initializing retained legacy runtime")
+			var err error
+			owned.legacyRunner, owned.legacyWorktrees, err = buildRetainedLegacyRunner(retainedLegacyRunnerInput{
+				Layout:               input.Layout,
+				Config:               input.Config,
+				Definitions:          input.Definitions,
+				Goobers:              owned.definitions.Goobers,
+				InstructionsByGoober: owned.definitions.Instructions,
+				InstructionFailures:  owned.definitions.InstructionFailures,
+				Telemetry:            input.Telemetry,
+				InstanceLog:          input.InstanceLog,
+				SharedRegistry:       input.SharedRegistry,
+				ProviderQuota:        owned.providerQuota,
+				Watermarks:           input.Watermarks,
+				TerminalNotifier:     input.TerminalNotifier,
+				HarnessInfo:          owned.definitions.HarnessPreflight,
+				CredentialStores:     input.CredentialStores,
+			})
+			if err != nil {
+				return err
+			}
+			owned.interventions = newInterventionDefinitionRegistry(interventionDefinitions(owned.definitions, owned.legacyRunner))
 
-	if err != nil {
-		return err
-	}
-	owned.runnerRegistry.Replace(owned.definitions.Runners)
-	reportStartupProgress(input.StartupProgress, "initializing retained legacy runtime")
-	owned.legacyRunner, owned.legacyWorktrees, err = buildRetainedLegacyRunner(retainedLegacyRunnerInput{
-		Layout:               input.Layout,
-		Config:               input.Config,
-		Definitions:          input.Definitions,
-		Goobers:              owned.definitions.Goobers,
-		InstructionsByGoober: owned.definitions.Instructions,
-		InstructionFailures:  owned.definitions.InstructionFailures,
-		Telemetry:            input.Telemetry,
-		InstanceLog:          input.InstanceLog,
-		SharedRegistry:       input.SharedRegistry,
-		ProviderQuota:        owned.providerQuota,
-		Watermarks:           input.Watermarks,
-		TerminalNotifier:     input.TerminalNotifier,
-		HarnessInfo:          owned.definitions.HarnessPreflight,
-		CredentialStores:     input.CredentialStores,
+			owned.runnerRegistry.setGenerationResolver(owned.definitions.GenerationResolver)
+			return nil
+		},
+		CapacityMessage: generationCapacityMessage,
+		Progress:        func(message string) { reportStartupProgress(input.StartupProgress, message) },
 	})
-	if err != nil {
-		return err
-	}
-	owned.interventions = newInterventionDefinitionRegistry(interventionDefinitions(owned.definitions, owned.legacyRunner))
-
-	owned.runnerRegistry.setGenerationResolver(owned.definitions.GenerationResolver)
-	return nil
 }
-
 func (owned *schedulerRuntime) Close() error {
 	if owned == nil {
 		return nil
 	}
-	owned.closeOnce.Do(func() {
-		if owned.generations != nil {
-			owned.closeErr = owned.generations.Close()
-		}
-	})
-	return owned.closeErr
+	return owned.Runtime.Close()
 }

@@ -273,8 +273,6 @@ goobers/pr-remediation (DSL 2.0)
 goobers/quality-spot-check (DSL 3.1)
   - RUNTIME001 stage "lenses" /spec/parallels/0: engine does not support spec.parallels
     unblock: wait for engine parity in #7753 (https://github.com/Agent-Clubhouse/Goobers/issues/7753)
-  - RUNTIME001 stage "lenses" /spec/parallels/0/selection: engine does not support spec.parallels.selection
-    unblock: wait for engine parity in #7754 (https://github.com/Agent-Clubhouse/Goobers/issues/7754)
   - RUNTIME002 stage "select-lenses" /spec/tasks/0/runsOn: stage "select-lenses" is pinned to the control-plane host
     unblock: add runsOn that selects a non-self runner
   - RUNTIME002 stage "review-maintainability" /spec/tasks/1/runsOn: stage "review-maintainability" is pinned to the control-plane host
@@ -362,8 +360,6 @@ Blockers grouped by remedy:
   RUNTIME001 spec.parallels — wait for engine parity in #7753
     - goobers/quality-spot-check stage "lenses" /spec/parallels/0
     - goobers/quality-sprint stage "focus-areas" /spec/parallels/0
-  RUNTIME001 spec.parallels.selection — wait for engine parity in #7754
-    - goobers/quality-spot-check stage "lenses" /spec/parallels/0/selection
   RUNTIME002 — add runsOn that selects a non-self runner
     - goobers/backlog-curation stage "reconcile-backlog" /spec/tasks/0/runsOn
     - goobers/backlog-curation stage "implementation-feedback" /spec/tasks/1/runsOn
@@ -527,4 +523,4 @@ Blockers grouped by remedy:
     - goobers/tutor /dslVersion
     - goobers/work-nomination /dslVersion
 
-blocked: 17 workflows, 162 blockers (159 config fixes, 3 waiting on P4 items: #7753, #7754)
+blocked: 17 workflows, 161 blockers (159 config fixes, 2 waiting on P4 items: #7753)

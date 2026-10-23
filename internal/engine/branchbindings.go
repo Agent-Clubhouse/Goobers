@@ -9,7 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // fanOutBindingContext identifies the admitted visit before any body dispatch.
@@ -43,7 +43,7 @@ func (r *runJournal) branchBindings(stage string) (fanOutBindings, error) {
 			return fanOutBindings{}, fmt.Errorf("engine: branch binding %q has no valid provenance", key)
 		}
 		switch key {
-		case runner.BranchCompletenessInput, runner.MapCompletenessInput, runner.MapResultsInput:
+		case runsemantics.BranchCompletenessInput, runsemantics.MapCompletenessInput, runsemantics.MapResultsInput:
 			return fanOutBindings{}, fmt.Errorf("engine: branch binding %q is host-owned", key)
 		}
 	}

@@ -607,7 +607,7 @@ type runCursor struct {
 }
 
 type runRead struct {
-	reader   *journal.Reader
+	reader   journal.RunReader
 	identity journal.RunIdentity
 	records  []journal.EventRecord
 }
@@ -775,7 +775,7 @@ func (s *Local) latestTerminalWorkflowOutcome(
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			run, err := s.openRun(ref.RunID)
+			run, err := s.openRun(ctx, ref.RunID)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					continue
@@ -1119,7 +1119,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		}
 		for _, ref := range refs {
 			keyStarted, keyRunID = ref.StartedAt, ref.RunID
-			run, err := s.openRun(ref.RunID)
+			run, err := s.openRun(ctx, ref.RunID)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					continue
@@ -1184,44 +1184,31 @@ func (s *Local) runSummariesForStage(
 	skipUnreadable bool,
 	attemptStage string,
 ) ([]RunSummary, error) {
-	runDirs, err := s.sources.Layout.RunDirs()
-	if err != nil {
-		return nil, err
-	}
-
 	observedAt := s.now().UTC()
 	var summaries []RunSummary
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
+	refs, err := s.journalReader().ListRuns(ctx, journal.RunFilter{})
+	if err != nil {
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		run, err := s.openRun(ctx, ref.ID)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if skipUnreadable || errors.Is(err, ErrNotFound) {
 				continue
 			}
-			return nil, fmt.Errorf("read runs directory: %w", err)
+			return nil, err
 		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if !entry.IsDir() {
+		summary, err := summarizeRunForStage(run, observedAt, attemptStage)
+		if err != nil {
+			if skipUnreadable {
 				continue
 			}
-			run, err := s.openRun(entry.Name())
-			if err != nil {
-				if skipUnreadable || errors.Is(err, ErrNotFound) {
-					continue
-				}
-				return nil, err
-			}
-			summary, err := summarizeRunForStage(run, observedAt, attemptStage)
-			if err != nil {
-				if skipUnreadable {
-					continue
-				}
-				return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
-			}
-			summaries = append(summaries, summary)
+			return nil, fmt.Errorf("summarize run %q: %w", ref.ID, err)
 		}
+		summaries = append(summaries, summary)
 	}
 
 	sort.Slice(summaries, func(i, j int) bool {
@@ -1246,27 +1233,13 @@ func (s *Local) RunIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	runDirs, err := s.sources.Layout.RunDirs()
+	refs, err := s.journalReader().ListRuns(ctx, journal.RunFilter{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read runs directory: %w", err)
 	}
-	var ids []string
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("read runs directory: %w", err)
-		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
-				ids = append(ids, entry.Name())
-			}
-		}
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
 	}
 	sort.Strings(ids)
 	return ids, nil
@@ -1277,7 +1250,7 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err := ctx.Err(); err != nil {
 		return RunDetail{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -1337,7 +1310,7 @@ func (s *Local) RunMetadata(ctx context.Context, runID string) (journal.RunIdent
 	if err := ctx.Err(); err != nil {
 		return journal.RunIdentity{}, nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return journal.RunIdentity{}, nil, err
 	}
@@ -1353,7 +1326,7 @@ func (s *Local) runEventsUnannotated(ctx context.Context, runID string) (EventLi
 	if err := ctx.Err(); err != nil {
 		return EventList{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return EventList{}, err
 	}
@@ -1373,7 +1346,7 @@ func (s *Local) stageAttemptsUnannotated(ctx context.Context, runID, stage strin
 	if stage == "" {
 		return AttemptList{}, fmt.Errorf("%w: stage is required", ErrInvalidArgument)
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return AttemptList{}, err
 	}
@@ -1445,7 +1418,7 @@ func (s *Local) RunTelemetryStageAttempts(ctx context.Context, runID string) ([]
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.openRun(runID); err != nil {
+	if _, err := s.openRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	attempts, err := s.telemetryStageAttempts(ctx, runID)
@@ -1463,7 +1436,7 @@ func (s *Local) Artifact(ctx context.Context, runID, digest string) (ArtifactCon
 	if err := ctx.Err(); err != nil {
 		return ArtifactContent{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -1484,7 +1457,7 @@ func (s *Local) Transcript(ctx context.Context, runID string, seq uint64) (Trans
 	if err := ctx.Err(); err != nil {
 		return TranscriptContent{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return TranscriptContent{}, err
 	}
@@ -1511,7 +1484,7 @@ func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]Tran
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1602,7 +1575,7 @@ func (s *Local) RunSpans(ctx context.Context, runID string) ([]rollup.SpanSummar
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.openRun(runID); err != nil {
+	if _, err := s.openRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	empty := []rollup.SpanSummary{}
@@ -1624,7 +1597,7 @@ func (s *Local) RunEscalation(ctx context.Context, runID string) (*TraceEscalati
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1663,7 +1636,7 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return 0, err
 	}
@@ -1692,7 +1665,7 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 // production.
 var openRunObserver func(runID string)
 
-func (s *Local) openRun(runID string) (runRead, error) {
+func (s *Local) openRun(ctx context.Context, runID string) (runRead, error) {
 	readprobe.RecordJournalOpen()
 	if openRunObserver != nil {
 		openRunObserver(runID)
@@ -1700,24 +1673,7 @@ func (s *Local) openRun(runID string) (runRead, error) {
 	if !apiv1.ValidRunID(runID) {
 		return runRead{}, fmt.Errorf("%w: invalid run id", ErrInvalidArgument)
 	}
-	dir, err := s.sources.Layout.FindRunDir(runID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-		}
-		return runRead{}, err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-		}
-		return runRead{}, fmt.Errorf("inspect run %q: %w", runID, err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-	}
-	reader, err := journal.OpenRead(dir)
+	reader, err := s.journalReader().OpenRun(ctx, journal.RunRef{ID: runID})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
@@ -2593,7 +2549,7 @@ func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {
 	return count, nil
 }
 
-func lastNeedsChangesReason(reader *journal.Reader, records []journal.EventRecord, gate string) (string, error) {
+func lastNeedsChangesReason(reader journal.RunReader, records []journal.EventRecord, gate string) (string, error) {
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
 		if !event.KnownSchema() ||

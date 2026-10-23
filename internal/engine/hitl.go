@@ -338,10 +338,11 @@ type hitlResumePlan struct {
 // derived from history: pinned input, the compiled machine, and the walk's own
 // deterministic progress.
 type hitlSession struct {
-	policy *HITLPolicy
-	runID  string
-	m      *wf.Machine
-	rec    *runJournal
+	policy        *HITLPolicy
+	runID         string
+	m             *wf.Machine
+	rec           *runJournal
+	gateDecisions *gateDecisionSession
 
 	mu workflow.Mutex
 

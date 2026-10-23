@@ -3,6 +3,7 @@ package runner
 import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // TerminalFault is the failure-streak disposition of an escalated or aborted
@@ -81,7 +82,7 @@ func JournaledTerminalFault(events []journal.Event, engineInterruption string) T
 		return TerminalFaultSubstrate
 	}
 	code := cause.Code
-	if code == RunCanceledErrorCode && isWatchdogInterruption(engineInterruption) {
+	if code == runsemantics.RunCanceledErrorCode && isWatchdogInterruption(engineInterruption) {
 		code = engineInterruption
 	}
 	if !isWatchdogInterruption(code) {
@@ -97,14 +98,14 @@ func EndedByCancellation(events []journal.Event) bool {
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type == journal.EventRunFinished {
 			cause := events[i].TerminalCause
-			return cause != nil && cause.Code == RunCanceledErrorCode
+			return cause != nil && cause.Code == runsemantics.RunCanceledErrorCode
 		}
 	}
 	return false
 }
 
 func isWatchdogInterruption(code string) bool {
-	return code == RunDurationExceededErrorCode || code == RunStalledErrorCode
+	return code == runsemantics.RunDurationExceededErrorCode || code == runsemantics.RunStalledErrorCode
 }
 
 // interruptedRetryFault walks back from the terminal to the most recent
@@ -123,15 +124,15 @@ func interruptedRetryFault(events []journal.Event) TerminalFault {
 		case journal.EventRunFinished, journal.EventStageFinished, journal.EventGateEvaluated, journal.EventGateOverridden:
 			return TerminalFaultUnclassified
 		case journal.EventRunnerAnnotation:
-			if e.Runner["kind"] != RetryDecisionKind {
+			if e.Runner["kind"] != runsemantics.RetryDecisionKind {
 				continue
 			}
-			if e.Runner[RetryFailureClassKey] == string(journal.AttemptInfra) {
+			if e.Runner[runsemantics.RetryFailureClassKey] == string(journal.AttemptInfra) {
 				return TerminalFaultItemInfrastructure
 			}
 			return TerminalFaultUnclassified
 		case journal.EventError:
-			class, ok := e.Runner[RetryFailureClassKey].(string)
+			class, ok := e.Runner[runsemantics.RetryFailureClassKey].(string)
 			if !ok {
 				continue
 			}

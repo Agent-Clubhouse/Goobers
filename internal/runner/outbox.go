@@ -14,17 +14,14 @@ import (
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/pathutil"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 const (
-	outboxExportFailureCode       = "outbox_export_failed"
+	outboxExportFailureCode       = runsemantics.OutboxExportFailureCode
 	outboxExportFailureAnnotation = "outbox.export.failed"
 	maxOutboxDiagnosticFiles      = 3
 )
-
-// OutboxExportFailureCode is the stable terminal code for missing declared
-// outbox evidence.
-const OutboxExportFailureCode = outboxExportFailureCode
 
 type outboxFileDiagnostic struct {
 	Path string `json:"path"`
@@ -162,13 +159,7 @@ func OutboxExportFailureResult(commandResult apiv1.ResultEnvelope, exportErr err
 }
 
 func isOutboxExportFailure(result apiv1.ResultEnvelope) bool {
-	return result.Error != nil && result.Error.Code == outboxExportFailureCode
-}
-
-// IsOutboxExportFailure reports a failed declared-evidence export. It is
-// terminal even when the task otherwise allows command failures to continue.
-func IsOutboxExportFailure(result apiv1.ResultEnvelope) bool {
-	return isOutboxExportFailure(result)
+	return runsemantics.IsOutboxExportFailure(result)
 }
 
 // taskDispatchError normalizes an outbox collection failure onto the same
@@ -179,7 +170,7 @@ func taskDispatchError(stage string, result apiv1.ResultEnvelope, dispatchErr er
 	if dispatchErr != nil || !isOutboxExportFailure(result) {
 		return dispatchErr
 	}
-	return codedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", stage, result.Error.Message))
+	return runsemantics.CodedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", stage, result.Error.Message))
 }
 
 func stageFinishedOutputs(result apiv1.ResultEnvelope, continueOnError bool) map[string]interface{} {

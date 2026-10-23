@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/daemonclient"
@@ -23,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
@@ -106,7 +109,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// heartbeat must cover exactly the window in which there is something alive
 	// to report on, and no longer. Stop() waits for the goroutine, so nothing
 	// is still emitting when the surrender PUT below runs.
-	fence := remoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
+	fence := runtimewiring.RemoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
 	stageCtx, stopFence, fenceErr := fence(ctx, apiv1.InvocationEnvelope{RunID: runID})
 	defer stopFence()
 	if fenceErr != nil {
@@ -198,7 +201,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		Mutations:              mutations,
 		Result:                 envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
-		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runner.WorkspaceHeadMovedErrorCode,
+		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runsemantics.WorkspaceHeadMovedErrorCode,
 		Verdict:                 outcome.Verdict,
 	})
 	if err != nil {
@@ -417,7 +420,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
-				Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
+				Error:   journal.ErrorInfoFor(runsemantics.BaseSyncConflictErrorCode, err, true),
 			}
 		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
@@ -717,7 +720,7 @@ func logStageFailureEnvelope(stderr io.Writer, envelope apiv1.ResultEnvelope) {
 func provisionFailureEnvelope(err error, headMoved *bool) apiv1.ResultEnvelope {
 	code := workspaceProvisionFailureCode(err)
 	if headMoved != nil {
-		*headMoved = code == runner.WorkspaceHeadMovedErrorCode
+		*headMoved = code == runsemantics.WorkspaceHeadMovedErrorCode
 	}
 	return failureEnvelope(code, err.Error())
 }

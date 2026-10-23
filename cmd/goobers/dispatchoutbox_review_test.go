@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -24,8 +25,8 @@ func TestCIPollOutboxUsesResolvedCredentialScrubber(t *testing.T) {
 	t.Setenv(dispatcher.EnvAgenticKitDigest, "")
 	t.Setenv(dispatcher.EnvStageOutbox, `["report.txt"]`)
 	var token string
-	previous := newPRPoller
-	newPRPoller = func(value string) executor.PRPoller {
+	previous := runtimewiring.NewPRPoller
+	runtimewiring.NewPRPoller = func(value string) executor.PRPoller {
 		token = value
 		if err := os.WriteFile("report.txt", []byte("diagnostic payload: "+value), 0o600); err != nil {
 			t.Fatal(err)
@@ -33,7 +34,7 @@ func TestCIPollOutboxUsesResolvedCredentialScrubber(t *testing.T) {
 
 		return &recordingPRPoller{result: providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}}
 	}
-	t.Cleanup(func() { newPRPoller = previous })
+	t.Cleanup(func() { runtimewiring.NewPRPoller = previous })
 	uploaded := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)

@@ -642,7 +642,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.parallels.join` | 3.1 | ga | supported | supported | preview | dev |
 | `workflow.spec.parallels.maxConcurrentBranches` | 3.1 | ga | supported | supported | preview | dev |
 | `workflow.spec.parallels.onFailure` | 3.1 | ga | supported | supported | preview | dev |
-| `workflow.spec.parallels.selection` | 3.1 | preview | supported | unsupported | preview | dev |
+| `workflow.spec.parallels.selection` | 3.1 | preview | supported | supported | preview | dev |
 | `workflow.spec.parallels.selection.source` | 3.1 | preview | supported | supported | preview | dev |
 | `workflow.spec.readiness` | 3.1 | ga | supported | supported | preview | dev |
 | `workflow.spec.readiness.claimVisibility` | 3.1 | ga | supported | supported | preview | dev |

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -71,7 +71,7 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 		}
 		events = append(events, e)
 	}
-	c, err := runner.BuildTerminalCause(events, phase, finalState, r.terminalCause, r.machine, r.proj.Identity.RunControls, func(ref journal.Ref) ([]byte, error) {
+	c, err := runsemantics.BuildTerminalCause(events, phase, finalState, r.terminalCause, r.machine, r.proj.Identity.RunControls, func(ref journal.Ref) ([]byte, error) {
 		data, ok := artifacts[ref.Digest]
 		if !ok {
 			return nil, errors.New("engine: terminal verdict artifact missing")

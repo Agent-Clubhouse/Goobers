@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -21,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -73,11 +76,11 @@ func buildPodAgenticExecutorForTest(t *testing.T, runsDir string, act func(conte
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{Act: act}); err != nil {
 		t.Fatal(err)
 	}
-	previous := podHarnessRegistry
-	podHarnessRegistry = func(map[string]string, harness.EnvironmentConfig, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
+	previous := runtimewiring.PodHarnessRegistry
+	runtimewiring.PodHarnessRegistry = func(map[string]string, harness.EnvironmentConfig, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
 		return registry, nil
 	}
-	t.Cleanup(func() { podHarnessRegistry = previous })
+	t.Cleanup(func() { runtimewiring.PodHarnessRegistry = previous })
 
 	kit := &agentickit.Kit{
 		Envelope:     apiv1.InvocationEnvelope{Goober: "coder"},
@@ -756,11 +759,11 @@ func TestPodAppliesRepositoryCredentialsOnlyForTheirProvider(t *testing.T) {
 			if err := registry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{}); err != nil {
 				t.Fatal(err)
 			}
-			previous := podHarnessRegistry
-			podHarnessRegistry = func(map[string]string, harness.EnvironmentConfig, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
+			previous := runtimewiring.PodHarnessRegistry
+			runtimewiring.PodHarnessRegistry = func(map[string]string, harness.EnvironmentConfig, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
 				return registry, nil
 			}
-			t.Cleanup(func() { podHarnessRegistry = previous })
+			t.Cleanup(func() { runtimewiring.PodHarnessRegistry = previous })
 
 			kit := &agentickit.Kit{
 				Envelope: apiv1.InvocationEnvelope{

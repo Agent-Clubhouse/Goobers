@@ -18,7 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runcontrol"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
@@ -262,7 +262,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 			Definition:             definition,
 			GateGooberCapabilities: gateGooberCapabilities,
 		},
-		usesRepo: runner.MachineUsesRepo(m),
+		usesRepo: runsemantics.MachineUsesRepo(m),
 		live:     in.LiveJournal,
 		branchRef: &journal.ExternalRef{
 			Provider: string(in.RepoRef.Provider),
@@ -659,7 +659,7 @@ func (r *runJournal) lastFinishedAttempt(stage string) (int, journal.AttemptClas
 func (r *runJournal) workspaceHeadMoved(ctx workflow.Context, stage, message string) {
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: runner.WorkspaceHeadMovedErrorCode, Message: message},
+		Error: &journal.ErrorDetail{Code: runsemantics.WorkspaceHeadMovedErrorCode, Message: message},
 	})
 }
 
@@ -729,7 +729,7 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	at := workflow.Now(ctx)
 	ev := journal.Event{
 		Type: journal.EventGateEvaluated,
-		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated,
+		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated, Actor: gr.Actor,
 		Runner: map[string]any{
 			"repassAttempt":   gr.Attempt,
 			"gateAttempt":     gr.GateAttempt,
@@ -810,6 +810,14 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	}
 	r.appendAt(at, ev)
 	return artifact, nil
+}
+
+func (r *runJournal) humanGateExpired(ctx workflow.Context, gateName string, occurrence uint64, err error) {
+	r.append(ctx, journal.Event{
+		Type: journal.EventError, Gate: gateName,
+		Error:  journal.ErrorDetailFor(HumanGateWindowExpiredCode, err),
+		Runner: map[string]any{"gateOccurrence": occurrence},
+	})
 }
 
 // runFailedCause mirrors failTerminal/finishStageFailure's run_failed cause

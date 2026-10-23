@@ -10,7 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -152,7 +152,7 @@ func priorRepassCause(rec *runJournal, subjectStage string) (*gate.RepassCause, 
 	if err != nil {
 		return nil, err
 	}
-	return runner.PriorRepassCause(events, subjectStage, resolve)
+	return runsemantics.PriorRepassCause(events, subjectStage, resolve)
 }
 
 // reviewerContextPointers withholds validation evidence the agentic subject
@@ -167,7 +167,7 @@ func reviewerContextPointers(rec *runJournal, m *wf.Machine, subjectStage string
 	if err != nil {
 		return pointers
 	}
-	return runner.ReviewerContextPointers(events, subjectStage, func(stage string) bool {
+	return runsemantics.ReviewerContextPointers(events, subjectStage, func(stage string) bool {
 		task, ok := m.Task(stage)
 		return ok && task.Type == apiv1.TaskDeterministic
 	}, pointers)
@@ -187,7 +187,7 @@ func cachedVerdictFor(subject apiv1.ResultEnvelope, instructionAddendum string) 
 	if instructionAddendum != "" {
 		return nil
 	}
-	return runner.CachedVerdictFromOutputs(subject.Outputs)
+	return runsemantics.CachedVerdictFromOutputs(subject.Outputs)
 }
 
 // learningEpisodeTargetAttemptChange / learningEpisodeTargetAttempt are the
@@ -239,7 +239,7 @@ const (
 // selects BuildLearningEpisode's pre-#3931 fallback — SourceAttempt+1, the
 // arithmetic that history was written with. New runs record the marker and
 // address the correction to the target's own next attempt.
-func learningEpisodeTargetAttemptFor(version workflow.Version, addressing runner.LearningEpisodeAddressing) int {
+func learningEpisodeTargetAttemptFor(version workflow.Version, addressing runsemantics.LearningEpisodeAddressing) int {
 	if version < learningEpisodeTargetAttempt {
 		return 0
 	}
@@ -271,7 +271,7 @@ func (r *runJournal) learningEpisode(
 	if err != nil {
 		return nil, err
 	}
-	addressing := runner.ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, verdict != nil)
+	addressing := runsemantics.ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, verdict != nil)
 	sourceAttempt := addressing.SourceAttempt
 	if sourceAttempt == 0 {
 		sourceAttempt = gr.Attempt
@@ -282,7 +282,7 @@ func (r *runJournal) learningEpisode(
 			workflow.DefaultVersion, learningEpisodeTargetAttempt),
 		addressing,
 	)
-	episode := runner.BuildLearningEpisode(runner.LearningEpisodeInput{
+	episode := runsemantics.BuildLearningEpisode(runsemantics.LearningEpisodeInput{
 		RunID:             in.RunID,
 		Workflow:          in.WorkflowName,
 		WorkflowDigest:    r.proj.Identity.WorkflowDigest,
@@ -304,7 +304,7 @@ func (r *runJournal) learningEpisode(
 		return nil, fmt.Errorf("engine: address learning episode for gate %q: %w", gateName, err)
 	}
 	at := workflow.Now(ctx)
-	name := runner.LearningEpisodeArtifactName(gateName, addressing.SourceSeq)
+	name := runsemantics.LearningEpisodeArtifactName(gateName, addressing.SourceSeq)
 	r.artifactAt(at, JournalArtifactOp{Name: name, Data: data, Integrity: apiv1.IntegrityDerived})
 	r.appendAt(at, journal.Event{
 		Type: journal.EventRunnerAnnotation,
@@ -317,10 +317,10 @@ func (r *runJournal) learningEpisode(
 		Name:      name,
 		Ref:       &ref,
 		Integrity: apiv1.IntegrityDerived,
-		Runner:    runner.LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest),
+		Runner:    runsemantics.LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest),
 	})
 	return &apiv1.ContextPointer{
-		Name:      runner.LearningEpisodePointerName(addressing.SourceSeq),
+		Name:      runsemantics.LearningEpisodePointerName(addressing.SourceSeq),
 		Integrity: apiv1.IntegrityDerived,
 		Artifact: &apiv1.ArtifactPointer{
 			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
@@ -372,7 +372,7 @@ func (r *runJournal) recordSalvage(
 		return nil
 	}
 	_, err := r.stageArtifact(ctx, stage, attempt, class,
-		runner.SalvageOnTimeoutArtifactName(stage), marker, "application/json")
+		runsemantics.SalvageOnTimeoutArtifactName(stage), marker, "application/json")
 	return err
 }
 
@@ -390,7 +390,7 @@ func (r *runJournal) recordBaseSyncConflict(
 		return nil
 	}
 	_, err := r.stageArtifact(ctx, stage, attempt, class,
-		runner.BaseSyncConflictArtifactName(stage), detail, "application/json")
+		runsemantics.BaseSyncConflictArtifactName(stage), detail, "application/json")
 	return err
 }
 
@@ -415,12 +415,12 @@ func (r *runJournal) recordUnpushedDiff(
 		return nil
 	}
 	patch, err := r.stageArtifact(ctx, stage, attempt, class,
-		runner.UnpushedDiffPatchArtifactName(stage), capture.Diff, runner.ReviewerDiffMediaType)
+		runsemantics.UnpushedDiffPatchArtifactName(stage), capture.Diff, runsemantics.ReviewerDiffMediaType)
 	if err != nil {
 		return err
 	}
-	meta := runner.UnpushedDiffMetadata{
-		Schema:    runner.UnpushedDiffSchemaVersion,
+	meta := runsemantics.UnpushedDiffMetadata{
+		Schema:    runsemantics.UnpushedDiffSchemaVersion,
 		RunID:     in.RunID,
 		Workflow:  in.WorkflowName,
 		Stage:     stage,
@@ -437,7 +437,7 @@ func (r *runJournal) recordUnpushedDiff(
 		return fmt.Errorf("engine: encode unpushed-diff metadata for stage %q: %w", stage, err)
 	}
 	_, err = r.stageArtifact(ctx, stage, attempt, class,
-		runner.UnpushedDiffMetaArtifactName(stage), data, "application/json")
+		runsemantics.UnpushedDiffMetaArtifactName(stage), data, "application/json")
 	return err
 }
 
@@ -472,7 +472,7 @@ func (r *runJournal) recordReviewerDiff(
 	if len(diff) == 0 {
 		return nil, nil
 	}
-	name := runner.ReviewerDiffArtifactName(runID, gateName)
+	name := runsemantics.ReviewerDiffArtifactName(runID, gateName)
 	ref, err := journal.ArtifactRef(diff)
 	if err != nil {
 		return nil, fmt.Errorf("engine: address reviewer diff for gate %q: %w", gateName, err)
@@ -482,10 +482,10 @@ func (r *runJournal) recordReviewerDiff(
 	})
 	ptr := &apiv1.ArtifactPointer{
 		Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
-		MediaType: runner.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
+		MediaType: runsemantics.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
 	}
 	return &apiv1.ContextPointer{
-		Name: runner.ReviewerDiffPointerName(gateName), Integrity: apiv1.IntegrityDerived, Artifact: ptr,
+		Name: runsemantics.ReviewerDiffPointerName(gateName), Integrity: apiv1.IntegrityDerived, Artifact: ptr,
 	}, nil
 }
 
@@ -512,11 +512,11 @@ func (r *runJournal) remediationEvidenceRequirement(
 	r.append(ctx, journal.Event{
 		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
 		Runner: map[string]any{
-			"kind":                            runner.RemediationEvidenceRequiredKind,
+			"kind":                            runsemantics.RemediationEvidenceRequiredKind,
 			"triggeringGate":                  cause.Gate,
 			"triggeringStage":                 cause.Stage,
-			"requiredFailureEvidencePointers": runner.RequiredContextPointerNames(required),
-			"actionableEvidence": runner.RemediationEvidenceRequirements(
+			"requiredFailureEvidencePointers": runsemantics.RequiredContextPointerNames(required),
+			"actionableEvidence": runsemantics.RemediationEvidenceRequirements(
 				required, projectedArtifactBytes(resolve),
 			),
 		},
@@ -572,9 +572,9 @@ type gateEvidence struct {
 // exactly as on the local runner.
 func gateRequiresDiff(m *wf.Machine, g apiv1.Gate, subjectStage string) bool {
 	if writableWorkspace(g.EffectiveWorkspace()) {
-		return runner.RequiresReviewerDiff(m, g.Name, subjectStage)
+		return runsemantics.RequiresReviewerDiff(m, g.Name, subjectStage)
 	}
-	return runner.ReviewsImplementation(m, g.Name)
+	return runsemantics.ReviewsImplementation(m, g.Name)
 }
 
 // collectGateEvidence gathers the above. A free function over the walk's state
@@ -622,7 +622,7 @@ func collectGateEvidence(
 	// runner journals it, so it survives a crash: an obligation held only in
 	// memory would be silently dropped by a replay on another worker, and the
 	// receipt check on the far side would then have nothing to check against.
-	required := runner.RemediationFailureEvidencePointers(cause, pointers)
+	required := runsemantics.RemediationFailureEvidencePointers(cause, pointers)
 	if len(required) > 0 {
 		if err := rec.remediationEvidenceRequirement(ctx, subjectStage, g.Name, cause, required); err != nil {
 			return gateEvidence{}, err
@@ -784,12 +784,12 @@ type findingLifecycle struct {
 // answer is the blocked one.
 func contextNotInspectedRedispatch(t apiv1.Task, result apiv1.ResultEnvelope, rejected map[string]int) (bool, string) {
 	if result.Status != apiv1.ResultBlocked || result.Error == nil ||
-		result.Error.Code != runner.ContextNotInspectedCode {
+		result.Error.Code != runsemantics.ContextNotInspectedCode {
 		return false, ""
 	}
 	if rejected[t.Name] >= 1 {
 		return false, ""
 	}
 	rejected[t.Name]++
-	return true, runner.ContextNotInspectedAddendum(result.Error.Message)
+	return true, runsemantics.ContextNotInspectedAddendum(result.Error.Message)
 }

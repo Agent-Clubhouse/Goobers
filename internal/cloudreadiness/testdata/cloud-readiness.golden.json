@@ -4,12 +4,11 @@
   "cloudReady": false,
   "summary": {
     "blockedWorkflows": 2,
-    "totalBlockers": 12,
+    "totalBlockers": 11,
     "configFixes": 4,
-    "waitingOnP4": 8,
+    "waitingOnP4": 7,
     "p4Issues": [
       7753,
-      7754,
       7755,
       7758,
       7760,
@@ -34,19 +33,6 @@
             "description": "wait for engine parity in #7753",
             "issue": 7753,
             "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7753"
-          }
-        },
-        {
-          "code": "RUNTIME001",
-          "feature": "spec.parallels.selection",
-          "stage": "fan",
-          "path": "/spec/parallels/0/selection",
-          "message": "engine does not support spec.parallels.selection",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7754",
-            "issue": 7754,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7754"
           }
         },
         {
@@ -232,25 +218,6 @@
           "workflow": "all-features",
           "stage": "fan",
           "path": "/spec/parallels/0"
-        }
-      ]
-    },
-    {
-      "key": "RUNTIME001:spec.parallels.selection",
-      "code": "RUNTIME001",
-      "feature": "spec.parallels.selection",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7754",
-        "issue": 7754,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7754"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "fan",
-          "path": "/spec/parallels/0/selection"
         }
       ]
     },

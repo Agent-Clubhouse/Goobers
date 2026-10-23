@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
 const (
@@ -71,6 +72,10 @@ func (r Runner) Apply(ctx context.Context) error {
 	if err := ValidateCatalog(r.Catalog); err != nil {
 		return err
 	}
+	inventory, err := cloudschema.LoadWritePaths()
+	if err != nil {
+		return err
+	}
 	lease, err := acquireLock(ctx, r.Direct, migrateLeaseLock)
 	if err != nil {
 		return fmt.Errorf("cloud migration lease: %w", err)
@@ -115,21 +120,35 @@ func (r Runner) Apply(ctx context.Context) error {
 				return err
 			}
 		}
-		for _, index := range r.PartitionIndexes {
-			if err := CreatePartitionedIndex(runCtx, session.conn, index.Parent, index.Columns, index.Partitions); err != nil {
-				return err
-			}
-		}
-		if len(r.Readmodels) > 0 && r.ReadmodelBuilder == nil {
-			return errors.New("cloud migration read-model builder is required")
-		}
-		for _, readmodel := range r.Readmodels {
-			if err := RebuildReadmodel(runCtx, r.ReadmodelBuilder, readmodel.Name, readmodel.Version); err != nil {
-				return err
-			}
-		}
-		return nil
+		return r.finish(runCtx, manager, handle, session.conn, inventory)
 	})
+}
+
+// finish runs the steps after the versioned migrations: partition indexes,
+// read-model rebuilds, and the grant reconcile.
+func (r Runner) finish(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, inventory cloudschema.Inventory) error {
+	for _, index := range r.PartitionIndexes {
+		if err := CreatePartitionedIndex(ctx, conn, index.Parent, index.Columns, index.Partitions); err != nil {
+			return err
+		}
+	}
+	if len(r.Readmodels) > 0 && r.ReadmodelBuilder == nil {
+		return errors.New("cloud migration read-model builder is required")
+	}
+	for _, readmodel := range r.Readmodels {
+		if err := RebuildReadmodel(ctx, r.ReadmodelBuilder, readmodel.Name, readmodel.Version); err != nil {
+			return err
+		}
+	}
+	// Grants are not a versioned migration: every apply converges the
+	// runtime roles to the current write-path inventory, so a new table's
+	// grants never require rewriting an applied migration. The reconcile and
+	// its verification scale with the schema, so they run as a leased step,
+	// not inside the 2s fenced transaction.
+	return r.leasedStep(ctx, manager, handle, conn, "cloud grant reconcile",
+		func(stepCtx context.Context, tx pgx.Tx) error {
+			return cloudschema.ReconcileGrants(stepCtx, tx, inventory)
+		})
 }
 
 type heldLock struct {
@@ -189,13 +208,20 @@ func loadApplied(ctx context.Context, conn *pgxpool.Conn) (map[int]bool, error) 
 	return applied, nil
 }
 
-// applyLeased runs one step on the advisory-locked direct session. DDL must
-// not run inside a short WithFence transaction, so ownership is checked before
-// the step and confirmed again inside its transaction just before commit: a
-// lost or self-fenced lease rolls the step back and stops the remaining steps.
+// applyLeased runs one versioned migration as a leased step.
 func (r Runner) applyLeased(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, migration Migration) error {
+	return r.leasedStep(ctx, manager, handle, conn, fmt.Sprintf("cloud migration %d", migration.Version),
+		func(stepCtx context.Context, tx pgx.Tx) error { return applyInTx(stepCtx, tx, migration, r.BackupRef) })
+}
+
+// leasedStep runs step on the advisory-locked direct session. Migration work
+// must not run inside a short WithFence transaction, so ownership is checked
+// before the step and confirmed again inside its transaction just before
+// commit: a lost or self-fenced lease rolls the step back and stops the
+// remaining steps.
+func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, label string, step func(context.Context, pgx.Tx) error) error {
 	if err := manager.WithFence(ctx, handle, func(context.Context, pgx.Tx) error { return nil }); err != nil {
-		return fmt.Errorf("cloud migration %d: verify lease before step: %w", migration.Version, err)
+		return fmt.Errorf("%s: verify lease before step: %w", label, err)
 	}
 	timeout := r.StepTimeout
 	if timeout <= 0 {
@@ -205,23 +231,23 @@ func (r Runner) applyLeased(ctx context.Context, manager *cloudlease.Manager, ha
 	defer cancel()
 	tx, err := conn.Begin(stepCtx)
 	if err != nil {
-		return fmt.Errorf("begin cloud migration %d: %w", migration.Version, err)
+		return fmt.Errorf("begin %s: %w", label, err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(stepCtx)) }()
 	setting := fmt.Sprintf("%dms", timeout.Milliseconds())
 	for _, name := range []string{"statement_timeout", "idle_in_transaction_session_timeout"} {
 		if _, err := tx.Exec(stepCtx, "SELECT set_config($1, $2, true)", name, setting); err != nil {
-			return fmt.Errorf("bound cloud migration %d: %w", migration.Version, err)
+			return fmt.Errorf("bound %s: %w", label, err)
 		}
 	}
-	if err := applyInTx(stepCtx, tx, migration, r.BackupRef); err != nil {
+	if err := step(stepCtx, tx); err != nil {
 		return err
 	}
 	if err := manager.Confirm(stepCtx, tx, handle); err != nil {
-		return fmt.Errorf("cloud migration %d: confirm lease after step: %w", migration.Version, err)
+		return fmt.Errorf("%s: confirm lease after step: %w", label, err)
 	}
 	if err := tx.Commit(stepCtx); err != nil {
-		return fmt.Errorf("commit cloud migration %d: %w", migration.Version, err)
+		return fmt.Errorf("commit %s: %w", label, err)
 	}
 	return nil
 }

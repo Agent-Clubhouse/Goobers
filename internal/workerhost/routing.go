@@ -62,11 +62,11 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 	// executions finish; readiness must keep them protected by the PDB.
 	switch {
 	case finding.Problem != "":
-		h.logf("goobers worker: error: %s", finding.Problem)
+		h.logf("goobers-cloud worker: error: %s", finding.Problem)
 	case reported != "" && finding.Draining:
-		h.logf("goobers worker: worker deployment %q replaced this worker's version; it is draining", DeploymentName)
+		h.logf("goobers-cloud worker: worker deployment %q replaced this worker's version; it is draining", DeploymentName)
 	case reported != "":
-		h.logf("goobers worker: worker deployment %q now routes tasks to this worker", DeploymentName)
+		h.logf("goobers-cloud worker: worker deployment %q now routes tasks to this worker", DeploymentName)
 	}
 	return finding.Problem
 }

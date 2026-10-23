@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/providers"
@@ -88,7 +89,7 @@ func daemonSharedClaimProvider(ctx context.Context, cfg *instance.Config, repo p
 	if len(scoped.Repos) != 1 {
 		return nil, fmt.Errorf("shared claim requires exactly one configured pinned repository")
 	}
-	resolver, grants, err := buildCredentials(&scoped, stores, repo.Owner, repo.Name, nil, registrar)
+	resolver, grants, err := runtimewiring.BuildCredentials(&scoped, stores, repo.Owner, repo.Name, nil, registrar)
 	if err != nil {
 		return nil, scrubTerminalError(registrar, err)
 	}

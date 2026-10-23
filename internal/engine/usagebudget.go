@@ -10,11 +10,14 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
-// AttemptUsage carries trusted adapter usage through activity history, including
-// failed attempts. Envelope metrics are agent-authored and never charged.
+// AttemptUsage carries trusted adapter usage through activity history,
+// including failed attempts. Unavailable marks known execution whose trusted
+// usage could not be recovered. Envelope metrics are agent-authored and never
+// charged.
 type AttemptUsage struct {
-	Metrics  map[string]float64 `json:"metrics,omitempty"`
-	Reported bool               `json:"reported,omitempty"`
+	Metrics     map[string]float64 `json:"metrics,omitempty"`
+	Reported    bool               `json:"reported,omitempty"`
+	Unavailable bool               `json:"unavailable,omitempty"`
 }
 type activityUsageCollector struct {
 	mu    sync.Mutex
@@ -60,11 +63,24 @@ func agenticUsageError(err error, usage AttemptUsage) error {
 	})
 }
 func dispatchFailureUsage(err error) AttemptUsage {
-	var app *temporal.ApplicationError
-	var usage AttemptUsage
-	var retryAt time.Time
-	if errors.As(err, &app) && app.HasDetails() {
-		_ = app.Details(&retryAt, &usage)
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		var app *temporal.ApplicationError
+		if !errors.As(current, &app) || !app.HasDetails() {
+			continue
+		}
+		var retryAt time.Time
+		var evidence dispatchFailureEvidence
+		if readDispatchFailureDetails(app, &retryAt, &evidence) == nil &&
+			evidence.SchemaVersion == dispatchFailureEvidenceVersion {
+			if evidence.Usage != nil {
+				return *evidence.Usage
+			}
+			return AttemptUsage{Unavailable: evidence.UsageUnavailable}
+		}
+		var usage AttemptUsage
+		if readDispatchFailureDetails(app, &retryAt, &usage) == nil {
+			return usage
+		}
 	}
-	return usage
+	return AttemptUsage{}
 }

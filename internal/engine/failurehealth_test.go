@@ -14,7 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/planehttp"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
@@ -31,7 +31,7 @@ func TestDispatchFailureHealthClassification(t *testing.T) {
 	}{
 		{"recovered", []error{invoke.InfrastructureFailure(errors.New("pod vanished"))}, false, 2, "infra"},
 		{"plane deadline", []error{fmt.Errorf("%w: %w", context.DeadlineExceeded, planehttp.ErrBudgetExhausted)}, false, 2, "infra"},
-		{"exhausted", persistentFailures(invoke.InfrastructureFailure(errors.New("pod vanished")), 100), true, int(runner.DefaultMaxInfrastructureAttempts), "infra"},
+		{"exhausted", persistentFailures(invoke.InfrastructureFailure(errors.New("pod vanished")), 100), true, int(runsemantics.DefaultMaxInfrastructureAttempts), "infra"},
 		{"policy", []error{errors.New("GoobersInfrastructureFailure is only text")}, true, 1, "executor"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,7 +101,7 @@ func TestFullRunTerminalInfrastructureSurvivesFailureSerialization(t *testing.T)
 	if class, err := ClassifyDispatchFailure(wireErr); err != nil || class != journal.AttemptInfra {
 		t.Fatalf("serialized full Run failure class=%q err=%v: %v", class, err, wireErr)
 	}
-	if !strings.Contains(wireErr.Error(), fmt.Sprintf("attempt %d/%d", runner.DefaultMaxInfrastructureAttempts, runner.DefaultMaxInfrastructureAttempts)) {
+	if !strings.Contains(wireErr.Error(), fmt.Sprintf("attempt %d/%d", runsemantics.DefaultMaxInfrastructureAttempts, runsemantics.DefaultMaxInfrastructureAttempts)) {
 		t.Fatalf("exhaustion context lost: %v", wireErr)
 	}
 	policy := temporal.NewApplicationErrorWithCause("explicit policy refusal", FailureTypeStage, temporal.NewApplicationError("inner outage", FailureTypeInfrastructure))

@@ -35,9 +35,8 @@ func fanOutEngineDefinition(withMap bool) wf.Definition {
 	return wf.Definition{Name: "fanout", DSLVersion: "3.1", Spec: spec}
 }
 
-// TestFanOutRefusedAtEngineBoundaries pins design §13 for the engine walk:
-// spec.maps and parallels[].selection are named unsupported features at run
-// start, in the daemon preflight, and inside a direct Temporal invocation.
+// TestFanOutRefusedAtEngineBoundaries pins design §13 for maps at run start,
+// in the daemon preflight, and inside a direct Temporal invocation.
 func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -48,7 +47,7 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 		direct   error
 	}{
 		{"map", fanOutEngineDefinition(true), ErrMapsUnsupported, "spec.maps", "items", wf.ErrMapUnsupported},
-		{"selective parallel", fanOutEngineDefinition(false), ErrSelectiveParallelUnsupported, "spec.parallels.selection", "review", wf.ErrSelectiveParallelUnsupported},
+		{"selective parallel", fanOutEngineDefinition(false), ErrParallelsUnsupported, "spec.parallels", "", wf.ErrParallelsUnsupported},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := engineadmission.RefuseDefinition(tc.def.Name, tc.def.Spec)
@@ -72,5 +71,22 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 				t.Fatalf("direct Temporal run: %v", err)
 			}
 		})
+	}
+}
+
+func TestSelectiveParallelHasNoFeatureSpecificEngineRefusal(t *testing.T) {
+	def := fanOutEngineDefinition(false)
+	err := engineadmission.RefuseDefinition(def.Name, def.Spec)
+	var refusals *UnsupportedFeaturesError
+	if !errors.As(err, &refusals) {
+		t.Fatalf("RefuseDefinition = %v, want base parallel refusal", err)
+	}
+	for _, refusal := range refusals.Refusals {
+		if refusal.Feature == "spec.parallels.selection" {
+			t.Fatalf("selection remains refused after engine support: %v", refusal)
+		}
+	}
+	if !errors.Is(err, ErrParallelsUnsupported) {
+		t.Fatalf("base parallel refusal changed before #7753: %v", err)
 	}
 }
