@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -375,11 +376,15 @@ func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
 	}
 }
 
-func TestHumanGateRejectedBeforeSignal(t *testing.T) {
+func TestHumanGateRequiresEnabledDecisionPolicy(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
-		Start:    "approve",
+		Start:    "prepare",
+		Tasks: []apiv1.Task{{
+			Name: "prepare", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "approve",
+		}},
 		Gates: []apiv1.Gate{
 			{
 				Name:      "approve",
@@ -391,11 +396,16 @@ func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 	}
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
+	calls := 0
+	env.RegisterActivity(&Activities{Det: &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+		calls++
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}}})
 	env.ExecuteWorkflow(Run, runInput("human", spec))
 
 	err := env.GetWorkflowError()
-	if err == nil || !strings.Contains(err.Error(), temporalHumanGateUnsupported) {
-		t.Fatalf("workflow error = %v, want occurrence-bound signal rejection", err)
+	if err == nil || !strings.Contains(err.Error(), engineadmission.HumanGateUnsupported) || calls != 0 {
+		t.Fatalf("workflow error = %v calls=%d, want run-start human gate refusal", err, calls)
 	}
 }
 
