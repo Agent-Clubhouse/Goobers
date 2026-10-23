@@ -400,8 +400,7 @@ func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goo
 // engine's projection will later try to create itself.
 func (w *workerSeams) recorderFor(ctx context.Context, g *gaggleSeams, runID, gaggle string) (stageexec.ArtifactRecorder, stageexec.SecretRegistrar) {
 	dir := workerhost.StagingArtifactsDir(g.runsDir, runID)
-	recorder := workerhost.NewStagingArtifacts(dir, w.scrubber, w.store)
-	recorder.ReportArtifact = invoke.ArtifactReporter(ctx)
+	recorder := workerhost.NewStagingArtifactsForInvocation(ctx, dir, w.scrubber, w.store)
 	if w.checkpointEmitter != nil {
 		return &checkpointWorkerArtifacts{StagingArtifacts: recorder, TranscriptTransport: livejournal.TranscriptTransport{
 			RunID: runID, Gaggle: gaggle, Emitter: w.checkpointEmitter, Blobs: w.store,

@@ -87,6 +87,14 @@ func NewStagingArtifacts(dir string, scrubber journal.Scrubber, store blobstore.
 	return &StagingArtifacts{root: dir, Scrubber: scrubber, Store: store}
 }
 
+// NewStagingArtifactsForInvocation binds recorder receipts to the owning
+// invocation's reporter, when one is present in ctx.
+func NewStagingArtifactsForInvocation(ctx context.Context, dir string, scrubber journal.Scrubber, store blobstore.Store) *StagingArtifacts {
+	recorder := NewStagingArtifacts(dir, scrubber, store)
+	recorder.ReportArtifact = invoke.ArtifactReporter(ctx)
+	return recorder
+}
+
 // StagingArtifactsDir is the staging root for runID beneath a runs directory.
 // It is a dot-prefixed sibling of the run directories so it can never collide
 // with a run id (run ids are validated hex) and is skipped by anything that
