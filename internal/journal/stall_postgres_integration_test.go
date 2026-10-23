@@ -72,7 +72,7 @@ func TestCloudStallUsesLastAppend(t *testing.T) {
 	if result, err := sweeper.Sweep(t.Context()); err != nil || result.Cancelled != 0 {
 		t.Fatalf("fresh append sweep = %+v %v", result, err)
 	}
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE journal.run_seq
 		SET last_append_at=clock_timestamp()-interval '1 hour'
 		WHERE instance_id=$1 AND run_id=$2`,
@@ -101,7 +101,7 @@ func TestCloudMaxRunDurationIgnoresControllerDowntime(t *testing.T) {
 	now := databaseClock(t, config)
 	runID := "00000000000000000000000000017816"
 	createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE journal.run SET created_at=clock_timestamp()-interval '2 hours'
 		WHERE instance_id=$1 AND run_id=$2`,
 		config.InstanceID, runID,
@@ -124,7 +124,7 @@ func TestCloudStallTerminatesWhenNoWorkerServes(t *testing.T) {
 	now := databaseClock(t, config)
 	runID := "00000000000000000000000000027816"
 	createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now.Add(-time.Hour))
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE journal.run_seq
 		SET last_append_at=clock_timestamp()-interval '1 hour'
 		WHERE instance_id=$1 AND run_id=$2`,
@@ -184,7 +184,7 @@ func TestCloudStaleSweeperCannotTerminateAfterTakeover(t *testing.T) {
 	now := databaseClock(t, config)
 	runID := "00000000000000000000000000047816"
 	createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE journal.run_seq
 		SET last_append_at=clock_timestamp()-interval '1 hour'
 		WHERE instance_id=$1 AND run_id=$2`,
@@ -210,7 +210,7 @@ func TestCloudStaleSweeperCannotTerminateAfterTakeover(t *testing.T) {
 		oldDone <- err
 	}()
 	<-entered
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE control.lease_heartbeat
 		SET expires_at=clock_timestamp()-interval '1 second'
 		WHERE instance_id=$1 AND name='controller'`,
@@ -267,7 +267,7 @@ func TestCloudFailingRunDoesNotBlockFollowingRun(t *testing.T) {
 	for _, runID := range []string{first, second} {
 		createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
 	}
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE journal.run_seq
 		SET last_append_at=clock_timestamp()-interval '1 hour'
 		WHERE instance_id=$1`,
@@ -320,7 +320,7 @@ func TestCloudFailedTerminalCleanupIsRetried(t *testing.T) {
 	now := databaseClock(t, config)
 	runID := "00000000000000000000000000097816"
 	createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE journal.run_seq
 		SET last_append_at=clock_timestamp()-interval '1 hour'
 		WHERE instance_id=$1 AND run_id=$2`,
@@ -331,7 +331,7 @@ func TestCloudFailedTerminalCleanupIsRetried(t *testing.T) {
 	sweeper := cloudSweeper(t, config, backend,
 		&stallEngine{cancelErr: scheduling.ErrNoWorker}, 30*time.Minute, 0)
 	_, _ = sweeper.Sweep(t.Context())
-	if _, err := config.Pool.Exec(t.Context(), `
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
 		UPDATE control.stall_action
 		SET retry_at=clock_timestamp()-interval '1 second'
 		WHERE instance_id=$1 AND run_id=$2`,
