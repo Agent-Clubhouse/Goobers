@@ -1,5 +1,9 @@
-# CloudNativePG reference for goobers-cloud (HA-P3-21, design D-6). Kind and
-# nightly CHAOS-4 use it; Azure installs use infra/bicep/modules/postgres.bicep.
+# CloudNativePG reference for goobers-cloud (HA-P3-21, design D-6), for
+# self-managed multi-zone clusters; Azure installs use
+# infra/bicep/modules/postgres.bicep. The nightly kind job (CHAOS-4) applies its
+# own single-zone cluster, test/ha/kind/cnpg-cluster.yaml: this reference's
+# DoNotSchedule zone spread would leave pods Pending on kind nodes without zone
+# labels.
 # Requires the CNPG operator (>= 1.26 for dataDurability) and the Barman Cloud
 # plugin. Role password Secrets are created out of band; see README.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
