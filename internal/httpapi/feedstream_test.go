@@ -1,16 +1,165 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 )
+
+type sseActiveStore struct {
+	mu      sync.Mutex
+	state   readmodel.State
+	changes []readmodel.Change
+}
+
+func newSSEActiveStore() *sseActiveStore {
+	return &sseActiveStore{state: readmodel.State{
+		SchemaVersion: 1, Epoch: "v1", Ready: true,
+	}}
+}
+
+func (s *sseActiveStore) State(context.Context) (readmodel.State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state, nil
+}
+
+func (s *sseActiveStore) Changes(
+	_ context.Context,
+	after uint64,
+	limit int,
+) ([]readmodel.Change, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []readmodel.Change
+	for _, change := range s.changes {
+		if change.Seq > after && len(result) < limit {
+			result = append(result, change)
+		}
+	}
+	return result, nil
+}
+
+func (s *sseActiveStore) LatestChangeSeq(context.Context) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.changes) == 0 {
+		return 0, nil
+	}
+	return s.changes[len(s.changes)-1].Seq, nil
+}
+
+func (s *sseActiveStore) commit(runID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seq := uint64(len(s.changes) + 1)
+	s.changes = append(s.changes, readmodel.Change{
+		Seq: seq, Kind: readmodel.ChangeRunCreated, RunID: runID,
+		Gaggle: "g", Workflow: "w",
+	})
+}
+
+func (s *sseActiveStore) flip() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Epoch = "v2"
+	s.state.MinChangeSeq = 1
+	s.changes = nil
+}
+
+func TestSSELastEventIDResumesAcrossRestartAndFlip(t *testing.T) {
+	store := newSSEActiveStore()
+	open := func() (*feedStream, *httptest.Server) {
+		feed := readmodel.NewFeedWithWakeup(store, nil)
+		stream := newFeedStreamWithFeed(feed, store)
+		router, err := newRouter(&fakeAuthenticator{
+			principal: &Principal{Subject: "test", Roles: []Role{RoleView}},
+		}, AllowAll)
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerEventRoute(router, stream)
+		return stream, httptest.NewServer(router.Handler())
+	}
+
+	firstStream, firstServer := open()
+	response, err := http.Get(firstServer.URL + apicontract.EventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotID := readSSEID(t, response)
+	_ = response.Body.Close()
+	firstServer.Close()
+	firstStream.Close()
+
+	store.commit("after-restart")
+	restartedStream, restartedServer := open()
+	request, _ := http.NewRequest(
+		http.MethodGet, restartedServer.URL+apicontract.EventsPath, nil)
+	request.Header.Set("Last-Event-ID", snapshotID)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedID := readSSEID(t, response)
+	if resumedID == snapshotID {
+		t.Fatalf("resume cursor did not advance: %s", resumedID)
+	}
+	_ = response.Body.Close()
+	restartedServer.Close()
+	restartedStream.Close()
+
+	store.flip()
+	flippedStream, flippedServer := open()
+	defer flippedStream.Close()
+	defer flippedServer.Close()
+	request, _ = http.NewRequest(
+		http.MethodGet, flippedServer.URL+apicontract.EventsPath, nil)
+	request.Header.Set("Last-Event-ID", resumedID)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("post-flip status = %d, want 409", response.StatusCode)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "epoch_changed") {
+		t.Fatalf("post-flip body = %s", body)
+	}
+}
+
+func readSSEID(t *testing.T, response *http.Response) string {
+	t.Helper()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("SSE status = %d", response.StatusCode)
+	}
+	scanner := bufio.NewScanner(response.Body)
+	for scanner.Scan() {
+		if id, ok := strings.CutPrefix(scanner.Text(), "id: "); ok {
+			return id
+		}
+	}
+	t.Fatalf("SSE response ended without an id: %v", scanner.Err())
+	return ""
+}
 
 func feedTestStore(t *testing.T) *readmodel.Store {
 	t.Helper()

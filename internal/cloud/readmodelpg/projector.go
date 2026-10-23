@@ -3,7 +3,6 @@ package readmodelpg
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -46,16 +45,15 @@ func (p *Projector) Commit(ctx context.Context, projection readmodel.Projection)
 		return err
 	}
 	if p.notifier != nil {
-		if err := p.notifier.Notify(ctx); err != nil {
-			return fmt.Errorf("readmodelpg: projection committed, notify for retry: %w", err)
-		}
+		_ = p.notifier.Notify(ctx)
 	}
 	return nil
 }
 
 // Feed returns a restart-safe durable feed with a one-second polling fallback.
 func (p *Projector) Feed() *readmodel.Feed {
-	return readmodel.NewFeedWithWakeup(p.store, p.notifier)
+	return readmodel.NewFeedWithWakeup(
+		NewActiveFeedStore(p.store.pool), p.notifier)
 }
 
 // Store exposes the backend for read paths.

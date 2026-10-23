@@ -81,7 +81,7 @@ func TestNotifierWakesSubscribers(t *testing.T) {
 	applyMigrations(t, pool)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	notifier, err := readmodelpg.NewNotifier(ctx, pool)
+	notifier, err := readmodelpg.NewNotifier(ctx, notifierConfig(pool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestSSEResumesAcrossRestart(t *testing.T) {
 	resetReadmodel(t, pool)
 	instanceID := "projector-restart-" + t.Name()
 	serviceCtx, stopService := context.WithCancel(t.Context())
-	notifier, err := readmodelpg.NewNotifier(serviceCtx, pool)
+	notifier, err := readmodelpg.NewNotifier(serviceCtx, notifierConfig(pool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,8 @@ func TestSSEResumesAcrossRestart(t *testing.T) {
 
 	restartedCtx, stopRestarted := context.WithCancel(t.Context())
 	defer stopRestarted()
-	restartedNotifier, err := readmodelpg.NewNotifier(restartedCtx, pool)
+	restartedNotifier, err := readmodelpg.NewNotifier(
+		restartedCtx, notifierConfig(pool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +156,12 @@ type silentWakeup struct{}
 
 func (silentWakeup) Subscribe() (<-chan struct{}, func()) {
 	return make(chan struct{}), func() {}
+}
+
+func notifierConfig(pool *pgxpool.Pool) readmodelpg.NotifierConfig {
+	return readmodelpg.NotifierConfig{
+		Direct: pool.Config().ConnConfig.Copy(),
+	}
 }
 
 func testProjector(

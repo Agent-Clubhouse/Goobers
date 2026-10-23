@@ -143,15 +143,10 @@ func (f *Feed) wait() (<-chan struct{}, func()) {
 // may be wrong. Collapsing them into one code would make a rebuilt store and a
 // pruned feed indistinguishable from a client that is simply too old.
 func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPosition, error) {
-	state, err := f.store.State(ctx)
-	if err != nil {
-		return FeedPosition{}, err
-	}
-	if condition := EvaluateCursor(cursor, state); condition != CursorOK {
-		return FeedPosition{}, &CursorError{Condition: condition, Cursor: cursor, State: state}
-	}
-
 	for {
+		if err := f.validateCursor(ctx, cursor); err != nil {
+			return FeedPosition{}, err
+		}
 		// Register BEFORE reading. Registering after would drop a change that
 		// commits between the read and the registration — the subscriber would
 		// then block until the next unrelated commit, and a quiet instance could
@@ -169,8 +164,21 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 			unregister()
 			return FeedPosition{}, err
 		}
+		if err := f.validateCursor(ctx, cursor); err != nil {
+			unregister()
+			return FeedPosition{}, err
+		}
 		if len(changes) > 0 {
 			unregister()
+			if changes[0].Seq != cursor.Seq+1 {
+				state, stateErr := f.store.State(ctx)
+				if stateErr != nil {
+					return FeedPosition{}, stateErr
+				}
+				return FeedPosition{}, &CursorError{
+					Condition: CursorFeedTruncated, Cursor: cursor, State: state,
+				}
+			}
 			next := cursor
 			next.Seq = changes[len(changes)-1].Seq
 			return FeedPosition{Cursor: next, Changes: changes}, nil
@@ -200,6 +208,17 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 			unregister()
 		}
 	}
+}
+
+func (f *Feed) validateCursor(ctx context.Context, cursor Cursor) error {
+	state, err := f.store.State(ctx)
+	if err != nil {
+		return err
+	}
+	if condition := EvaluateCursor(cursor, state); condition != CursorOK {
+		return &CursorError{Condition: condition, Cursor: cursor, State: state}
+	}
+	return nil
 }
 
 // Head returns the current end of the feed, for a client with no cursor.
