@@ -51,7 +51,7 @@ func submissionFixture(t *testing.T) (*SubmissionService, *submissionAuthority, 
 	}
 	s := &SubmissionService{Queue: queue, Authority: resolver, Now: func() time.Time { return time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC) }}
 	bindSubmissionOrigin(t, s, authority.Origin, "")
-	t.Cleanup(func() { _ = s.Queue.Close() })
+	t.Cleanup(func() { _ = s.Queue.(*triggerqueue.Store).Close() })
 	return s, resolver, path
 }
 
@@ -99,11 +99,11 @@ func TestSubmissionRevalidatesAndReopensExactCustody(t *testing.T) {
 	if accepted.Envelope.Kind != ChildStartKind || accepted.Envelope.SourceDigest != digest(source) || accepted.Envelope.ConfigDigest != origin.ConfigDigest || accepted.Envelope.PolicyDigest != origin.PolicyDigest || accepted.Child.ProposalDigest != digest(source) {
 		t.Fatalf("pins=%+v", accepted)
 	}
-	receipt, err := s.Queue.Get(t.Context(), accepted.Child.AcceptanceID, resolver.current.Actor)
+	receipt, err := s.Queue.(*triggerqueue.Store).Get(t.Context(), accepted.Child.AcceptanceID, resolver.current.Actor)
 	if err != nil || len(receipt.Payload) > triggerqueue.MaxPayloadBytes || bytes.Contains(receipt.Payload, source) {
 		t.Fatalf("ordinary payload contains source or invalid receipt: %v", err)
 	}
-	if err := s.Queue.Close(); err != nil {
+	if err := s.Queue.(*triggerqueue.Store).Close(); err != nil {
 		t.Fatal(err)
 	}
 	s.Queue, err = triggerqueue.Open(path)
@@ -169,7 +169,7 @@ func TestSubmissionRequiresCurrentAuthorityBeforeCustodyReads(t *testing.T) {
 	}
 	resolver.revoked = true
 	// A closed database proves the denied operation never reaches custody reads.
-	if err := s.Queue.Close(); err != nil {
+	if err := s.Queue.(*triggerqueue.Store).Close(); err != nil {
 		t.Fatal(err)
 	}
 	for _, operation := range []func() error{
@@ -204,7 +204,7 @@ func TestSubmissionRechecksAuthorityImmediatelyBeforeAcceptance(t *testing.T) {
 				case "narrowed":
 					resolver.current.Admission.GrantedCapabilities = []string{"agent:model"}
 				case "cancelled":
-					if err := s.Queue.FenceChildParent(t.Context(), triggerqueue.ChildParent{Gaggle: resolver.current.Origin.Gaggle, ParentRunID: resolver.current.Origin.RunID}, "human", s.Now()); err != nil {
+					if err := s.Queue.(*triggerqueue.Store).FenceChildParent(t.Context(), triggerqueue.ChildParent{Gaggle: resolver.current.Origin.Gaggle, ParentRunID: resolver.current.Origin.RunID}, "human", s.Now()); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -224,7 +224,7 @@ func TestSubmissionRechecksAuthorityImmediatelyBeforeAcceptance(t *testing.T) {
 			if n := proposalCount(t, db); n != 0 {
 				t.Fatalf("failed acceptance retained %d blobs", n)
 			}
-			pending, err := s.Queue.Pending(t.Context(), 100)
+			pending, err := s.Queue.(*triggerqueue.Store).Pending(t.Context(), 100)
 			if err != nil || len(pending) != 0 {
 				t.Fatalf("failed acceptance retained starts: %+v, %v", pending, err)
 			}

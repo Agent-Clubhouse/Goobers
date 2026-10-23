@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 type childUnusedReader struct{ readservice.Reader }
@@ -85,7 +86,7 @@ func TestChildHTTPServiceUsesRealGrantAndDurableSubmission(t *testing.T) {
 			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &advisory) != nil || !advisory.Valid || !advisory.Advisory {
 				t.Fatalf("validate: %d %s", response.Code, response.Body)
 			}
-			pending, err := s.Queue.Pending(t.Context(), 100)
+			pending, err := s.Queue.(*triggerqueue.Store).Pending(t.Context(), 100)
 			if err != nil || len(pending) != 0 {
 				t.Fatalf("validation accepted execution: %+v %v", pending, err)
 			}
@@ -142,7 +143,7 @@ func TestChildHTTPServiceRejectsForgedGrantAndWrongParentBeforeEffects(t *testin
 	if response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("invalid start: %d %s", response.Code, response.Body)
 	}
-	pending, err := s.Queue.Pending(t.Context(), 100)
+	pending, err := s.Queue.(*triggerqueue.Store).Pending(t.Context(), 100)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("rejected operation retained a start: %+v %v", pending, err)
 	}

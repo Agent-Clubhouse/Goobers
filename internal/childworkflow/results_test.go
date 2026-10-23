@@ -14,7 +14,7 @@ func TestScratchTerminalResultIdentityAndImmutableObservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := WorkspaceCoordinator{Queue: service.Queue}
+	c := WorkspaceCoordinator{Queue: service.Queue.(*triggerqueue.Store)}
 	input := TerminalResultInput{State: triggerqueue.ChildFailed, FinishedAt: submission.Child.AcceptedAt.Add(time.Second), Summary: "Placement refused before execution"}
 	result, err := c.CaptureResult(t.Context(), submission.Child, nil, input)
 	if err != nil || result.ResultRef == "" || result.WorkspaceRef != "" {
