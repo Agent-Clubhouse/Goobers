@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -165,6 +167,9 @@ type DispatchStageInput struct {
 	// ActivityTaskScheduled payload Temporal already wrote decodes with it
 	// zero, which is exactly that unstamped case.
 	OwningWorkflowID string `json:"owningWorkflowID,omitempty"`
+	// UsageAllowance is the trusted remaining token/cost budget for this
+	// physical attempt. Additive and version-gated for replay compatibility.
+	UsageAllowance *usageallowance.Allowance `json:"usageAllowance,omitempty"`
 	// Custody asks a replacement worker to adopt this exact live pod instead
 	// of creating another one. Additive for recorded histories.
 	Custody *dispatcher.PodCustody `json:"custody,omitempty"`
@@ -356,7 +361,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			return dispatchInstanceRootRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
 		}
 	}
-	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass, allowance *usageallowance.Allowance) (stageActivityResult, error) {
 		taskDispatches[t.Name]++
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
@@ -373,10 +378,23 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			WorkspaceDelta:   workspaceDelta,
 			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			UsageAllowance:   versionedRemoteUsageAllowance(ctx, allowance),
 		})
 		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
+}
+
+func versionedRemoteUsageAllowance(
+	ctx workflow.Context,
+	allowance *usageallowance.Allowance,
+) *usageallowance.Allowance {
+	if allowance == nil ||
+		workflow.GetVersion(ctx, "remote-agent-usage-v1", workflow.DefaultVersion, 1) ==
+			workflow.DefaultVersion {
+		return nil
+	}
+	return usageallowance.Clone(allowance)
 }
 
 // resolvedKindInput reads the stage's resolved executor.InputKind ("kind")
@@ -433,7 +451,7 @@ func dispatchInstanceRootRefusal(ctx workflow.Context, in RunInput, t apiv1.Task
 // stage refused before dispatch; see dispatchInstanceRootRefusal for why the
 // refusal is a normal, journaled stage outcome.
 func dispatchRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, code, summary, reason string) (apiv1.ResultEnvelope, error) {
-	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error) {
 		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Summary: summary,
@@ -520,6 +538,9 @@ func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
 	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
 		return err
 	}
+	if err := validateRemoteUsageAllowance(input); err != nil {
+		return err
+	}
 	if input.Placement.Self {
 		if a.AdmitSelfExecution != nil {
 			if err := a.AdmitSelfExecution(input.Envelope.TaskID); err != nil {
@@ -547,13 +568,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	}
 	ctx, custody, stopHeartbeat := dispatchCustodyContext(ctx, input)
 	defer stopHeartbeat()
-	// input.Run is set exactly for a deterministic dispatch (agentic stages
-	// carry a nil Run and are unaffected below). Re-assert
+	// input.Run is set only for deterministic dispatch. Re-assert
 	// dispatchRemoteTask's v1-scope guards here too — the same "trust the
 	// workflow-side refusal happened, but re-check anyway" idiom the self-
 	// placement check above already applies, and the activity boundary is
 	// where a version-skewed or hand-built input would actually surface.
-	// NOT re-asserted at this boundary, deliberately, unlike the guards below.
 	// DispatchStageInput carries no task type, so the activity cannot tell an
 	// agentic stage from a deterministic one whose Run it simply was not given
 	// — the pod reads its command from the spec the dispatcher already stamped.
@@ -606,6 +625,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
 	attempt.Capabilities = input.Envelope.Capabilities
+	attempt.UsageAllowance = usageallowance.Clone(input.UsageAllowance)
 
 	// An agentic stage executes by invoking a goober rather than running a
 	// command, so the pod needs the whole invocation. It travels as a verified
@@ -807,6 +827,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
 	}
 	result, resultErr := a.scrubStageActivityResult(ctx, stageActivityResult{
+		Usage:              surrenderedAttemptUsage(surrendered),
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues:     surrendered.MutationIssues,
@@ -823,6 +844,25 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		Placement:               placementProvenance(report), WorkspaceHeadMoved: surrendered.WorkspaceHeadMoved,
 	})
 	return result, withDispatchFailurePlacement(resultErr, report)
+}
+
+func validateRemoteUsageAllowance(input DispatchStageInput) error {
+	if input.UsageAllowance == nil {
+		return nil
+	}
+	if input.Run != nil || input.Review {
+		return fmt.Errorf("engine: usage allowance is valid only for an agentic task attempt")
+	}
+	if err := input.UsageAllowance.Validate(); err != nil {
+		return fmt.Errorf("engine: invalid usage allowance: %w", err)
+	}
+	return nil
+}
+
+func surrenderedAttemptUsage(surrendered dispatcher.SurrenderedResult) *AttemptUsage {
+	return &AttemptUsage{
+		Metrics: maps.Clone(surrendered.ObservedUsage), Reported: surrendered.ObservedUsageReported,
+	}
 }
 
 // reviewActivityResult projects a REVIEW attempt's surrender (decision 001

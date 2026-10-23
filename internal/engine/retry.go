@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // Failure types stamped onto activity errors so an attempt's class survives
@@ -122,7 +123,7 @@ func supersededRunResult(state string, upstream map[string]apiv1.ResultEnvelope,
 // envelope because it is a fact about the attempt loop, not the stage's
 // result: a retried attempt's bundle describes a workspace that was thrown
 // away with its pod or worktree, and only the winner's may be carried.
-func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -171,7 +172,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if emitErr == nil {
 			var activityResult stageActivityResult
 			dispatchCtx := withDispatchAttemptStarted(ctx, startedAt)
-			activityResult, err = dispatch(dispatchCtx, int(attempt), class)
+			allowance := nextAttemptUsageAllowance(t, &usageBudget)
+			activityResult, err = dispatch(dispatchCtx, int(attempt), class, allowance)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
@@ -351,6 +353,18 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 		return backoff
 	}
 	return backoff
+}
+
+func nextAttemptUsageAllowance(
+	task apiv1.Task,
+	budget *runner.StageUsageBudget,
+) *usageallowance.Allowance {
+	if task.Type != apiv1.TaskAgentic || task.Limits == nil ||
+		(task.Limits.MaxTokens <= 0 && task.Limits.MaxCostUSD <= 0) {
+		return nil
+	}
+	allowance := budget.Allowance(*task.Limits)
+	return &allowance
 }
 
 // ClassifyDispatchFailure maps one failed dispatch to the journal attempt
