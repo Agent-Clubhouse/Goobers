@@ -3,13 +3,14 @@ package startfence
 import (
 	"testing"
 
+	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 )
 
 func TestReviewMissingMemoMustNotAdoptUnknownExecution(t *testing.T) {
-	f := &fakeStarter{err: serviceerror.NewWorkflowExecutionAlreadyStarted("exists", "r", "e"), desc: &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{}}}
+	f := &fakeStarter{err: serviceerror.NewWorkflowExecutionAlreadyStarted("exists", "r", "e"), desc: &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Type: &commonpb.WorkflowType{Name: "Run"}}}}
 	s := &TemporalStarter{client: f, taskQueue: "cloud", admission: testStartAdmission{}}
 	r, e := s.Start(t.Context(), cloudStartInput(9))
 	if e != nil || r.Adopt || !r.NotMine {
