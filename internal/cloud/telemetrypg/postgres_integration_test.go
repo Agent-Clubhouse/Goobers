@@ -18,6 +18,8 @@ import (
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgroles"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetryclient"
@@ -265,6 +267,7 @@ func telemetryTestStore(
 	}
 	database := "telemetry_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
 	identifier := pgx.Identifier{database}.Sanitize()
+	pgtest.EnsureRoles(t, admin)
 	if _, err := admin.Exec(t.Context(),
 		"DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)"); err != nil {
 		t.Fatal(err)
@@ -308,6 +311,9 @@ func telemetrySuccessor(
 	holder string,
 ) *Store {
 	t.Helper()
+	// The store and its lease run as the controller role production uses, so
+	// a write path missing from the grant inventory fails here.
+	pool = controllerPool(t, pool)
 	manager, err := cloudlease.New(cloudlease.Config{
 		Pool: pool, InstanceID: "test-instance",
 		Name: cloudlease.ControllerName, Holder: holder,
@@ -325,4 +331,21 @@ func telemetrySuccessor(
 	}
 	store.BindFence(manager, handle)
 	return store
+}
+
+// controllerPool opens a pool on base's database whose sessions act as the
+// controller role.
+func controllerPool(t *testing.T, base *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := base.Config()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{pgroles.Controller}.Sanitize())
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
