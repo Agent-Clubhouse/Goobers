@@ -9,8 +9,6 @@ package intervention
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -1037,23 +1035,10 @@ func gateEvaluatedInCurrentSegment(events []journal.Event, gate string) bool {
 const interventionIdempotencyMarker = "intervention.idempotency"
 
 func interventionFingerprint(action string, input httpapi.InterventionRequest) (string, error) {
-	payload := struct {
-		Action              string `json:"action"`
-		RunID               string `json:"runId"`
-		Stage               string `json:"stage"`
-		Actor               string `json:"actor"`
-		Decision            string `json:"decision"`
-		Rationale           string `json:"rationale"`
-		InstructionAddendum string `json:"instructionAddendum"`
-	}{
+	return runsemantics.InterventionFingerprint(runsemantics.InterventionContent{
 		Action: action, RunID: input.RunID, Stage: input.Stage, Actor: input.Actor,
 		Decision: input.Decision, Rationale: input.Rationale, InstructionAddendum: input.InstructionAddendum,
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("sha256:%x", sha256.Sum256(encoded)), nil
+	})
 }
 
 func recordInterventionMarker(resolved resolvedInterventionRun, action string, input httpapi.InterventionRequest) error {

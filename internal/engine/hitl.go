@@ -274,9 +274,11 @@ func HITLIntentUpdateID(intent HITLIntent) string {
 
 // HITLState is the HITLStateQuery answer.
 type HITLState struct {
-	Protocol string `json:"protocol"`
-	Version  int    `json:"version"`
-	Enabled  bool   `json:"enabled"`
+	Protocol                  string        `json:"protocol"`
+	Version                   int           `json:"version"`
+	Enabled                   bool          `json:"enabled"`
+	LiveTerminalInterventions bool          `json:"liveTerminalInterventions,omitempty"`
+	Delivery                  *HITLDelivery `json:"delivery,omitempty"`
 	// Phase is "executing", "awaiting-operator", or "settled".
 	Phase string `json:"phase"`
 	// TerminalGeneration is the number of terminals the run has produced. An
@@ -390,6 +392,9 @@ type hitlSession struct {
 	// wroteTerminal reports that settle journaled the run's FINAL terminal,
 	// so run() does not write a second one for the same outcome.
 	wroteTerminal bool
+	liveTerminal  bool
+	terminalSeq   uint64
+	delivery      *terminalDelivery
 }
 
 func newHITLSession(in RunInput, m *wf.Machine, rec *runJournal) *hitlSession {
@@ -412,6 +417,9 @@ func newHITLSession(in RunInput, m *wf.Machine, rec *runJournal) *hitlSession {
 // registration emits a history event, so this is invisible to replay of
 // histories recorded before the protocol existed.
 func (s *hitlSession) register(ctx workflow.Context) error {
+	if s.rec.live && s.policy.enabled() {
+		s.liveTerminal = workflow.GetVersion(ctx, hitlLiveTerminalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	}
 	if err := registerOperatorMessages(ctx, s.runID); err != nil {
 		return err
 	}
@@ -436,6 +444,10 @@ func (s *hitlSession) state() (HITLState, error) {
 		Enabled:            s.policy.enabled(),
 		Phase:              s.phase,
 		TerminalGeneration: s.generation,
+	}
+	st.LiveTerminalInterventions = s.liveTerminal
+	if s.delivery != nil {
+		st.Delivery = &HITLDelivery{RequestID: s.delivery.request.Transition.RequestID, Status: "intervention pending (journal delivery retrying)"}
 	}
 	if s.phase == hitlPhaseAwaiting {
 		st.TerminalStatus = s.terminal.Status
@@ -621,10 +633,17 @@ func (s *hitlSession) handle(ctx workflow.Context, intent HITLIntent) (HITLAck, 
 		return HITLAck{}, err
 	}
 	s.fingerprints[intent.RequestID] = fingerprint
+	if s.liveTerminal {
+		if err := s.commitTerminalIntent(ctx, intent, plan); err != nil {
+			return HITLAck{}, err
+		}
+	}
 
 	if plan == nil {
 		// A deny: journaled, and the run stays exactly as terminal as it was.
-		s.recordDenied(ctx, intent)
+		if !s.liveTerminal {
+			s.recordDenied(ctx, intent)
+		}
 		ack := HITLAck{
 			Protocol: HITLProtocol, Version: HITLProtocolVersion,
 			RunID: s.runID, RequestID: intent.RequestID, Kind: intent.Kind,
@@ -634,7 +653,9 @@ func (s *hitlSession) handle(ctx workflow.Context, intent HITLIntent) (HITLAck, 
 		return ack, nil
 	}
 
-	s.recordResumed(ctx, intent, *plan)
+	if !s.liveTerminal {
+		s.recordResumed(ctx, intent, *plan)
+	}
 	s.pending = plan
 	// Block until the walk has consumed the plan. The walk is parked in
 	// AwaitWithTimeout on exactly this condition, so it wakes within this same
@@ -804,8 +825,12 @@ func (s *hitlSession) resumableState(target, what string) (string, error) {
 // rationale — so the projected journal of an engine run an operator resolved
 // is indistinguishable from a local run's on the conformance surface.
 func (s *hitlSession) recordResumed(ctx workflow.Context, intent HITLIntent, plan hitlResumePlan) {
+	s.rec.append(ctx, s.resumedEvent(intent, plan))
+}
+
+func (s *hitlSession) resumedEvent(intent HITLIntent, plan hitlResumePlan) journal.Event {
 	if plan.kind == HITLRerunStage {
-		s.rec.append(ctx, journal.Event{
+		return journal.Event{
 			Type:                journal.EventStageRerunRequested,
 			Stage:               plan.stage,
 			Attempt:             plan.attempt,
@@ -813,8 +838,7 @@ func (s *hitlSession) recordResumed(ctx workflow.Context, intent HITLIntent, pla
 			Actor:               strings.TrimSpace(intent.Actor),
 			InstructionAddendum: plan.addendum,
 			Runner:              hitlProvenance(intent),
-		})
-		return
+		}
 	}
 	action := "resume"
 	if intent.Kind == HITLResolveEscalation {
@@ -837,7 +861,7 @@ func (s *hitlSession) recordResumed(ctx workflow.Context, intent HITLIntent, pla
 	if ev.Complete {
 		ev.Target = ""
 	}
-	s.rec.append(ctx, ev)
+	return ev
 }
 
 // recordDenied journals a deny exactly as the daemon's in-process path does:
@@ -971,7 +995,13 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 	s.phase = hitlPhaseAwaiting
 	s.deadline = workflow.Now(ctx).Add(s.policy.wait())
 
-	ok, awaitErr := workflow.AwaitWithTimeout(ctx, s.policy.wait(), func() bool { return s.pending != nil })
+	var ok bool
+	var awaitErr error
+	if s.liveTerminal {
+		ok, awaitErr = s.awaitTerminalIntent(ctx)
+	} else {
+		ok, awaitErr = workflow.AwaitWithTimeout(ctx, s.policy.wait(), func() bool { return s.pending != nil })
+	}
 	if awaitErr != nil {
 		// Cancellation while holding a terminal open. The run's terminal is
 		// already journaled; run()'s cancellation arm records the abort cause
@@ -1022,8 +1052,14 @@ func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) error 
 	if err := s.rec.runFinished(ctx, phase, journal.RunDispositionProduced, out.FinalState); err != nil {
 		return err
 	}
+	if s.liveTerminal {
+		if err := s.confirmTerminalBoundary(ctx); err != nil {
+			return err
+		}
+	} else {
+		s.rec.emitTerminal(ctx)
+	}
 	s.generation++
-	s.rec.emitTerminal(ctx)
 	return nil
 }
 

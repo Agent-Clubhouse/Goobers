@@ -364,6 +364,9 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		// are recorded.
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
+		if handled, reconcileErr := hitl.cancelTerminalDelivery(abortCtx); handled {
+			return RunResult{}, errors.Join(err, reconcileErr)
+		}
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
 		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runsemantics.RunCanceledErrorCode
 		if causeErr := rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced, ""); causeErr != nil {
