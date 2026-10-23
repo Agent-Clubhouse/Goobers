@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/goobers/goobers/internal/engine"
@@ -92,5 +94,24 @@ func TestPlaneRejectsUndecodableRequestsBeforeCustody(t *testing.T) {
 	}
 	if len(backend.admitted)+len(backend.loaded)+len(backend.cancelled) != 0 {
 		t.Fatalf("custody reached by undecodable requests: %+v", backend)
+	}
+}
+
+func TestPlaneErrorGivesEachCustodyClassItsStatus(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		status int
+	}{
+		{err: fmt.Errorf("failover: %w", engine.ErrChildCustodyUnavailable), status: http.StatusServiceUnavailable},
+		{err: fmt.Errorf("closed: %w", engine.ErrChildCustodyRefused), status: http.StatusConflict},
+	} {
+		var planeErr *httpapi.InterventionError
+		if got := planeError(tc.err); !errors.As(got, &planeErr) || planeErr.Status != tc.status || !errors.Is(got, tc.err) {
+			t.Fatalf("planeError(%v) = %#v, want status %d", tc.err, got, tc.status)
+		}
+	}
+	plain := errors.New("unexpected")
+	if got := planeError(plain); got != plain || planeError(nil) != nil { //nolint:errorlint // Identity: an unclassified error must pass through unwrapped.
+		t.Fatalf("unclassified error rewritten to %v", got)
 	}
 }

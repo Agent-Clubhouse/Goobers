@@ -22,6 +22,11 @@ import (
 
 const (
 	childCleanupTimeout = 5 * time.Minute
+	// childCustodyRetryCeiling caps backoff so retries keep probing through a
+	// control-plane failover (lease TTL plus self-fence plus readiness) inside
+	// childCleanupTimeout. Unclassified failures still stop after
+	// childUnclassifiedAttempts; refusals never retry.
+	childCustodyRetryCeiling = 10 * time.Second
 	// maxChildBindingBytes bounds the receipt carried in every child command.
 	maxChildBindingBytes = 16 << 10
 	// maxChildManifestBytes admits the largest retained proposal plus its pins.
@@ -170,7 +175,8 @@ func refuseGeneratedChildShape(child RunInput) error {
 }
 
 // AdmitEngineChild verifies and records one idempotent child start intent.
-func (a *Activities) AdmitEngineChild(ctx context.Context, in ChildAdmissionInput) (ChildRunBinding, error) {
+func (a *Activities) AdmitEngineChild(ctx context.Context, in ChildAdmissionInput) (_ ChildRunBinding, err error) {
+	defer func() { err = classifyChildCustody(ctx, err) }()
 	if a.EngineChildren == nil {
 		return ChildRunBinding{}, ErrNotConfigured
 	}
@@ -191,7 +197,8 @@ func (a *Activities) AdmitEngineChild(ctx context.Context, in ChildAdmissionInpu
 }
 
 // LoadEngineChild checks the exact manifest bytes and generated graph pins.
-func (a *Activities) LoadEngineChild(ctx context.Context, in ChildRunBinding) (RunInput, error) {
+func (a *Activities) LoadEngineChild(ctx context.Context, in ChildRunBinding) (_ RunInput, err error) {
+	defer func() { err = classifyChildCustody(ctx, err) }()
 	if a.EngineChildren == nil {
 		return RunInput{}, ErrNotConfigured
 	}
@@ -212,7 +219,8 @@ func (a *Activities) LoadEngineChild(ctx context.Context, in ChildRunBinding) (R
 }
 
 // CancelEngineChild fences the family and retains custody without resuming it.
-func (a *Activities) CancelEngineChild(ctx context.Context, in ChildRunBinding) error {
+func (a *Activities) CancelEngineChild(ctx context.Context, in ChildRunBinding) (err error) {
+	defer func() { err = classifyChildCustody(ctx, err) }()
 	if a.EngineChildren == nil {
 		return ErrNotConfigured
 	}
@@ -224,5 +232,5 @@ func (a *Activities) CancelEngineChild(ctx context.Context, in ChildRunBinding) 
 
 func childActivityContext(ctx workflow.Context) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute, ScheduleToCloseTimeout: childCleanupTimeout, WaitForCancellation: true,
-		RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, MaximumAttempts: 3}})
+		RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, MaximumInterval: childCustodyRetryCeiling}})
 }
