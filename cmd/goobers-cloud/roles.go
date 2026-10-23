@@ -11,6 +11,9 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/engine"
+	"go.temporal.io/sdk/client"
 
 	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
@@ -171,6 +174,11 @@ var (
 )
 
 type databaseServices struct {
+	RecoverStarts   func(context.Context, engine.Starter, cloudacceptance.StartInputResolver) error
+	StartStatusPage func(context.Context, string, int) ([]cloudacceptance.StartStatus, error)
+	// HA-P3-18 binds acquired controller authority before starting workflows.
+	BindControllerFence func(*cloudlease.Manager, *cloudlease.Handle)
+	NewStarter          func(client.Client, string) engine.Starter
 	Pools               *cloudpg.Pools
 	Acceptances         triggerqueue.SchedulerPolicyStore
 	SchemaCompatibility error
@@ -253,9 +261,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
 		return 1
 	}
-	services := databaseServices{
-		Pools: pools, Acceptances: acceptances, SchemaCompatibility: compatibilityErr,
-	}
+	services := newDatabaseServices(pools, acceptances, compatibilityErr)
 	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
 		return 1
