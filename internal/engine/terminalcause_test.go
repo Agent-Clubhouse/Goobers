@@ -29,7 +29,7 @@ func TestEngineTerminalCauseRetryAndInfrastructure(t *testing.T) {
 			if c == nil || c.Classification != class || c.Selector != "implement" || c.Retry == nil || c.Retry.Consumed != c.Retry.Allowed || c.CausalEventSeq != uint64(len(proj.Ops)-1) {
 				t.Fatalf("cause=%+v", c)
 			}
-			dir, err := ProjectRun(t.TempDir(), proj)
+			dir, err := writeTestJournal(t, t.TempDir(), proj)
 			if err != nil {
 				t.Fatal(err)
 			}

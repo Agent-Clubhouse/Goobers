@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -65,6 +66,17 @@ func (f *fakePodAPI) CreatePod(_ context.Context, pod *corev1.Pod) error {
 	f.pods[key] = copied
 	f.created = append(f.created, pod.Name)
 	return nil
+}
+
+func (f *fakePodAPI) CreatePodWithIdentity(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	if err := f.CreatePod(ctx, pod); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	created := f.pods[f.key(pod.Namespace, pod.Name)]
+	created.UID = types.UID("uid-" + pod.Name)
+	return created.DeepCopy(), nil
 }
 
 func (f *fakePodAPI) GetPod(_ context.Context, namespace, name string) (*corev1.Pod, error) {

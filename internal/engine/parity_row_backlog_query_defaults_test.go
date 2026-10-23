@@ -11,7 +11,7 @@ package engine
 // (run.go:4328-4374). Engine site, as of E1: runTask applies
 // internal/backlogdefaults.Apply over RunInput.BacklogQueryAssignedTo /
 // BacklogQueryRequireLabels, which Registry.StartInputVersion pins from
-// StartSpec.
+// RunInput.
 //
 // WHY IT MATTERS AND WHY A JOURNAL DIFF CANNOT SEE IT. Both journals say
 // stage.finished success; the divergence lives entirely in the envelope the

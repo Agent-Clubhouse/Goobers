@@ -169,7 +169,12 @@ func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: %q --version returned no version", bin)
 	}
 	if hasAPIKey {
-		return PreflightInfo{Version: version}, nil
+		capabilities, err := probeRequiredCLIFlags(ctx, c.runner(), c.Command, "codex", []string{"exec", "--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), codexRequiredPublicOptions)
+		if err != nil {
+			return PreflightInfo{}, err
+		}
+		return PreflightInfo{Version: version, Checks: []ReadinessCheck{capabilities,
+			readinessCheck("authentication", "harness_credential_present", "unobservable", "API key present; provider authentication and model entitlement were not probed")}}, nil
 	}
 	return PreflightInfo{}, fmt.Errorf("harness: codex: configure an OpenAI API key for agent:model; stored Codex login is not used because workspace-write commands can read CODEX_HOME")
 }
@@ -215,6 +220,11 @@ func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, option
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: %q --version returned no version", bin)
 	}
+	required := append(append([]string(nil), codexRequiredPublicOptions...), "--ignore-user-config")
+	capabilities, err := probeRequiredCLIFlags(ctx, c.runner(), c.Command, "codex", []string{"exec", "--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), required)
+	if err != nil {
+		return PreflightInfo{}, err
+	}
 	loginCommand := append(append([]string(nil), baseCommand...), "login", "status")
 	if !config.allowFileBackedCredentials {
 		// This makes the CLI retrieve the login through the OS store; no auth file
@@ -228,7 +238,8 @@ func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, option
 	if !strings.Contains(strings.ToLower(string(loginResult.Transcript)), "logged in using chatgpt") {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: ambient-chatgpt requires `codex login status` to report ChatGPT authentication; API-key, logged-out, or ambiguous status is refused")
 	}
-	return PreflightInfo{Version: version}, nil
+	return PreflightInfo{Version: version, Checks: []ReadinessCheck{capabilities,
+		readinessCheck("authentication", "harness_chatgpt_login_verified", "supported", "CLI login status reported ChatGPT authentication; model entitlement unverified")}}, nil
 }
 
 func ambientCodexEnv(extra, unset []string) []string {

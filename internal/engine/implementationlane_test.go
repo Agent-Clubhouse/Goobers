@@ -1106,8 +1106,8 @@ func TestPriorEngineRunsUnpushedWorkIsDiscoverable(t *testing.T) {
 	// same function, into a real instance layout, with no test-only shaping.
 	root := t.TempDir()
 	layout := instance.NewLayout(root).ForGaggle("web")
-	if _, err := ProjectRun(layout.RunsDir(), laneJournal(t, env)); err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+	if _, err := writeTestJournal(t, layout.RunsDir(), laneJournal(t, env)); err != nil {
+		t.Fatalf("write live journal: %v", err)
 	}
 
 	reader := journalclient.NewFileCrossRun(instance.NewLayout(root))
@@ -1280,9 +1280,9 @@ func TestProjectedEventSeqMatchesProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectedEvents: %v", err)
 	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	actual := readJournalEvents(t, dir)
 	// run.started is op 0's projection and is present on both sides, so the

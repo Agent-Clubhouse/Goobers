@@ -77,6 +77,24 @@ independently reviewable:
 | [`github.com/jackc/pgpassfile`](https://github.com/jackc/pgpassfile) `v1.0.0` | MIT. Stable, narrow module; last repository activity at review was 2023-08-22. | OSV reports no historical records. It parses a local PostgreSQL password file and performs no network I/O. |
 | [`github.com/jackc/pgservicefile`](https://github.com/jackc/pgservicefile) `v0.0.0-20240606120523-5a60cdf6a761` | MIT. Stable, narrow module; last repository activity at review was its 2024-06-06 revision. | OSV reports no historical records. It parses a local PostgreSQL service file and performs no network I/O. |
 
+The azblob graph selected by the first tagged cloud integration test is broader
+than its HTTP client surface. These modules are direct requirements of
+`azblob@v1.8.2` (confirmed by `go mod graph`), reached through
+`azblob/container/internal/arrow`; they are not unpruned test-only dependencies.
+`make vulncheck` reports no reachable vulnerability in the selected graph, and
+the `TestGoobersClosureExcludesCloudDeps` rule confirms none is reachable from
+the local `goobers` binary.
+
+| Module selected directly by azblob | Licence | Closure and phone-home evidence |
+|---|---|---|
+| [`github.com/apache/arrow-go/v18`](https://github.com/apache/arrow-go) `v18.7.0` | Apache-2.0 | Supplies Arrow arrays and IPC encoding used by azblob's container query path. It is an in-process data-format library and opens no endpoint or telemetry channel. |
+| [`github.com/google/flatbuffers`](https://github.com/google/flatbuffers) `v25.12.19+incompatible` | Apache-2.0 | Serialization runtime reached through Arrow IPC. It operates only on caller-provided memory/streams and performs no discovery, network access, or telemetry. |
+| [`github.com/pierrec/lz4/v4`](https://github.com/pierrec/lz4) `v4.1.28` | BSD-3-Clause | In-process LZ4 codec reached through Arrow IPC. It has no network or telemetry behavior. |
+| [`github.com/zeebo/xxh3`](https://github.com/zeebo/xxh3) `v1.1.0` | BSD-2-Clause | In-process hash implementation reached through Arrow arrays. It has no network or telemetry behavior. |
+| [`github.com/klauspost/compress`](https://github.com/klauspost/compress) `v1.19.2` | BSD-3-Clause | In-process compression codecs. The module was already reachable from the local operator metrics stack; azblob raises the selected version from 1.19.0 to 1.19.2 but does not add a network path. |
+| [`github.com/klauspost/cpuid/v2`](https://github.com/klauspost/cpuid) `v2.4.0` | MIT | Local CPU-feature detection used to select codec/hash implementations. It reads process/CPU state only and performs no network access or telemetry. |
+| [`github.com/goccy/go-json`](https://github.com/goccy/go-json) `v0.10.6` | MIT | In-process JSON codec reached through Arrow. It performs no discovery, network access, or telemetry. |
+
 ## Integration service tooling
 
 These are test processes, not Go module dependencies:

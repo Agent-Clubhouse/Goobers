@@ -82,7 +82,7 @@ func TestWorkspaceRevisionMalformedSurrenderIsNonRetryable(t *testing.T) {
 		if err := value.Get(&projection); err != nil {
 			t.Fatal(err)
 		}
-		dir, err := ProjectRun(t.TempDir(), projection)
+		dir, err := writeTestJournal(t, t.TempDir(), projection)
 		if err != nil {
 			t.Fatal(err)
 		}

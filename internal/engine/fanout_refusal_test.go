@@ -51,14 +51,7 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 		{"selective parallel", fanOutEngineDefinition(false), ErrSelectiveParallelUnsupported, "spec.parallels.selection", "review", wf.ErrSelectiveParallelUnsupported},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reg := NewRegistryWithPreviewFeatures(true)
-			if _, err := reg.RegisterDefinition(tc.def); err != nil {
-				t.Fatalf("registration must stay possible: %v", err)
-			}
-			_, err := reg.StartInput(tc.def.Name, StartSpec{RunID: "fanout-guard", Gaggle: "web"})
-			if !errors.Is(err, tc.sentinel) {
-				t.Fatalf("StartInput = %v, want %v", err, tc.sentinel)
-			}
+			err := engineadmission.RefuseDefinition(tc.def.Name, tc.def.Spec)
 			found := false
 			var refusals *UnsupportedFeaturesError
 			if errors.As(err, &refusals) {

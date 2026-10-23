@@ -27,7 +27,7 @@ func TestDurableTriggerJournalsAttributionBeforeDispatch(t *testing.T) {
 	defer release()
 	dispatch.AttachDispatcher(barrier)
 	s := acceptedService(t, filepath.Join(root, "accepted.db"), dispatch)
-	s.auditLog = log
+	s.SetAuditLog(log)
 	accepted, err := s.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "impl", Gaggle: "own", RequestID: "delivery", Actor: "operator", Force: true})
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestDurableTriggerAuditFailurePreservesPendingAcceptance(t *testing.T) {
 	recorder := &dispatchContextRecorder{}
 	dispatch.AttachDispatcher(recorder)
 	s := acceptedService(t, filepath.Join(root, "accepted.db"), dispatch)
-	s.auditLog = log
+	s.SetAuditLog(log)
 	accepted, err := s.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "impl", RequestID: "delivery", Actor: "operator"})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestDurableTriggerAuditFailurePreservesPendingAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	s.auditLog = reopened
+	s.SetAuditLog(reopened)
 	if err := s.Drain(t.Context()); err != nil {
 		t.Fatal(err)
 	}

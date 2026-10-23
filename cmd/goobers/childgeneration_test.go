@@ -104,7 +104,7 @@ func TestChildGenerationRecoveryRefusalDefersOnlyChildAtActualStartup(t *testing
 	var wg sync.WaitGroup
 	var released []string
 	release := func(runID, _ string) { released = append(released, runID) }
-	outcome, err := resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, nil, log, nil, nil, nil, release, &wg, nil, []string{dir})
+	outcome, err := resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, log, nil, nil, nil, release, &wg, nil, []string{dir})
 	if err != nil || len(outcome.Warned) != 1 || outcome.Warned[0] != id.RunID || len(outcome.Resumed) != 0 || len(released) != 1 || released[0] != id.RunID || f.executor.calls.Load() != 0 {
 		t.Fatalf("outcome=%+v release=%v calls=%d err=%v", outcome, released, f.executor.calls.Load(), err)
 	}
@@ -133,7 +133,7 @@ func TestChildGenerationRecoveryRefusalDefersOnlyChildAtActualStartup(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, nil, nil, nil, nil, nil, release, &wg, nil, []string{dir}); err == nil {
+	if _, err = resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, nil, nil, nil, nil, release, &wg, nil, []string{dir}); err == nil {
 		t.Fatal("ordinary archive error silently deferred")
 	}
 }
@@ -159,7 +159,7 @@ func TestStartupLeavesGeneratedChildResumeWithCustodyQueue(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	releases := 0
-	outcome, err := resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, nil, nil, nil, nil, nil, func(string, string) { releases++ }, &wg, nil, []string{dir})
+	outcome, err := resumeInterruptedRunsWithRunners(t.Context(), f.launcher.layout, nil, nil, registry, nil, nil, nil, nil, nil, nil, nil, func(string, string) { releases++ }, &wg, nil, []string{dir})
 	wg.Wait()
 	if err != nil || len(outcome.Resumed) != 0 || len(outcome.Reattached) != 1 || outcome.Reattached[0] != id.RunID || f.executor.calls.Load() != 0 || releases != 0 {
 		t.Fatalf("unsafe child resume: outcome=%+v calls=%d releases=%d error=%v", outcome, f.executor.calls.Load(), releases, err)

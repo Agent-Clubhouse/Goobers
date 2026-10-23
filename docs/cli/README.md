@@ -73,9 +73,6 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
 | [`goobers e2e kill-inject`](#goobers-e2e-kill-inject) | perform one live S6 kill-matrix cell (pod-kill) against a real cluster |
 | [`goobers e2e verify`](#goobers-e2e-verify) | verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data |
-| [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
-| [`goobers engine-queues`](#goobers-engine-queues) | report which workers poll this instance's engine and dispatch task queues (experimental) |
-| [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations resolve`](#goobers-escalations-resolve) | resolve an escalated run through the daemon's HITL plane |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
@@ -1771,111 +1768,6 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers elect-lander
-~~~
-
-## `goobers engine-project`
-
-write a completed engine run's journal into the instance (experimental)
-
-~~~text
-Usage: goobers engine-project [flags] <run-id> [path]
-
-Write a completed engine run's standard journal into the instance.
-
-Exit codes: 0 = projected or already present, 1 = query/write failure,
-2 = usage/config error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers engine-project --gaggle example <run-id>
-~~~
-
-## `goobers engine-queues`
-
-report which workers poll this instance's engine and dispatch task queues (experimental)
-
-~~~text
-Usage: goobers engine-queues [flags] [path]
-
-Report which workers poll this instance's engine task queues (experimental).
-The queue set is derived, not typed: the engine's workflow queue plus every
-goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
-declared gaggles imply — the same derivation `goobers worker
---dispatch-namespace` serves. Each queue is described for both task types
-(workflow and activity) and every poller's Temporal identity is printed.
-
-This is the evidence for the queue-ownership check: goobers-worker must poll
-the workflow queue and every dispatch queue, and goobers-api must poll none
-of them — the daemon dispatches as a Temporal client and is never a pod
-creator.
-
-Flags:
-  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
-  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
-  --task-queue <queue>       workflow queue to describe (default
-                             engine.taskQueue)
-  --timeout <duration>       bound on the whole describe (default 30s)
-  --json                     emit the report as JSON
-
-Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
-error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers engine-queues
-$ goobers engine-queues --json
-~~~
-
-## `goobers engine-start`
-
-dispatch one run onto the tier-3 engine via Temporal (experimental)
-
-~~~text
-Usage: goobers engine-start [flags] <workflow> [path]
-
-Dispatch one run onto the tier-3 engine (experimental).
-
-When a `goobers up` daemon holds this instance's lock the dispatch is
-DELEGATED to it: the daemon admits the run through the scheduler (so it
-takes a concurrency slot, records an instance-log run.started, reserves
-the run journal and fires the terminal hooks on completion) and starts
-the workflow through its own engine starter. The run id is the
-scheduler's, and --dedupe-key is refused, because the daemon mints a
-fresh run id per admission.
-
---direct bypasses scheduler admission and queues an exact input for
-Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
-workflow and --dedupe-key. That is the only mode in which --dedupe-key
-means anything: a direct start's run id IS its dedupe unit, whereas a
-delegated dispatch dedupes DELIVERIES (by request id) and not work.
-A direct start takes no scheduler slot and fires no terminal hooks.
---direct is implied when no daemon is running.
-
-Direct starts commit their complete input and exact frontend, namespace
-and task queue to the shared start ledger before contacting Temporal.
-Same-key retries reuse that input. Changed options or credential selectors
-refuse; no current workflow is substituted. The daemon can drain pending
-direct receipts and reconcile an uncertain reply. After any attempted
-start, missing or deleted history remains uncertain and is never resent.
-Confirmation requires the exact input and task queue in Temporal history.
-
---live-journal pins live journal authorship into the run: workers emit
-journal events through the daemon's journal plane as they happen, so the
-run is visible mid-flight; without it the journal is projected from
-history at close, as before. Requires the daemon's write API to be
-reachable from every worker serving the run (worker --daemon-api).
-
-Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers engine-start default-implement
 ~~~
 
 ## `goobers escalations`

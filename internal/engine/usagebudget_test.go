@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/engineadmission"
+
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
@@ -144,13 +146,13 @@ func TestFailedAgenticUsagePreservesInfrastructureRetry(t *testing.T) {
 func TestBudgetRefusalDependsOnAgenticPlacement(t *testing.T) {
 	spec := agenticRetrySpec(nil)
 	spec.Tasks[0].Limits = &apiv1.Limits{MaxTokens: 10}
-	if err := RefusePlacedDefinition("flow", spec, nil); err != nil {
+	if err := engineadmission.RefusePlacedDefinition("flow", spec, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := RefusePlacedDefinition("flow", spec, []PinnedPlacement{{Stage: "implement", Self: true}}); err != nil {
+	if err := engineadmission.RefusePlacedDefinition("flow", spec, []PinnedPlacement{{Stage: "implement", Self: true}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RefusePlacedDefinition("flow", spec, []PinnedPlacement{remotePin("implement")}); !errors.Is(err, ErrRemoteUsageLimitsUnsupported) {
+	if err := engineadmission.RefusePlacedDefinition("flow", spec, []PinnedPlacement{remotePin("implement")}); !errors.Is(err, ErrRemoteUsageLimitsUnsupported) {
 		t.Fatalf("remote refusal=%v", err)
 	}
 }

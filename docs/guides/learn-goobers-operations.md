@@ -295,10 +295,8 @@ Review any existing `engine.hitl` settings: they survive configuration loading
 and are now honored. With `engine.hitl.enabled: true`, a resumable failed or
 escalated engine run can remain open for operator intervention. Its Temporal
 workflow and scheduler concurrency slot stay occupied during that hold.
-Choose `engine.hitl.window` deliberately; the default hold is 24 hours.
-Omitted or disabled HITL remains off. See
-[engine operator interventions](../reference/engine-parity.md#operator-interventions-the-goobershitlv1-protocol-3883)
-and [the configuration-loading fix](https://github.com/Agent-Clubhouse/Goobers/pull/6001).
+`engine.hitl.window` is retained for the `goobers-cloud` control plane.
+The local `goobers` daemon no longer services engine-run interventions.
 
 ### v0.5 → v0.6: plan the DSL 3.x migration
 

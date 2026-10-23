@@ -5,15 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/sdk/client"
-
-	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // State is the fleet-level routing verdict.
@@ -117,26 +114,6 @@ type WorkerRouting struct {
 	TrafficPercent float32 `json:"trafficPercent"`
 }
 
-// Target names the Temporal frontend and engine task queue to assess.
-type Target struct {
-	HostPort  string
-	Namespace string
-	TaskQueue string
-	TLS       *temporaldial.TLS
-}
-
-// Probe dials target and assesses it. A frontend it cannot reach is
-// StateUnknown with the reason; ctx bounds the dial and both reads.
-func Probe(ctx context.Context, target Target, now time.Time) Assessment {
-	c, err := temporaldial.Dial(ctx, target.HostPort, target.Namespace, target.TLS)
-	if err != nil {
-		return Unknown(target.TaskQueue, fmt.Sprintf("cannot reach Temporal frontend %s over %s: %v",
-			target.HostPort, target.TLS.Transport(), err), now)
-	}
-	defer c.Close()
-	return Assess(ctx, NewClient(c), target.TaskQueue, now)
-}
-
 // Unknown is an assessment that could not run, with the reason.
 func Unknown(taskQueue, reason string, now time.Time) Assessment {
 	return Assessment{
@@ -206,23 +183,4 @@ func deploymentAbsent(err error) bool {
 	var notFound *serviceerror.NotFound
 	var unimplemented *serviceerror.Unimplemented
 	return errors.As(err, &notFound) || errors.As(err, &unimplemented)
-}
-
-// StatusLine renders the assessment for `goobers status` text output: a
-// warning with the remediation for a mismatch, the reason when it could not
-// be checked, and nothing when healthy.
-func (a Assessment) StatusLine() string {
-	switch a.State {
-	case StateHealthy:
-		return ""
-	case StateUnknown:
-		return fmt.Sprintf("Engine routing: unknown (%s)\n", a.Detail)
-	}
-	var line strings.Builder
-	fmt.Fprintf(&line, "Warning: engine routing %s: %s.", a.State, a.Detail)
-	if len(a.Remediation) > 0 {
-		fmt.Fprintf(&line, " Run: %s", strings.Join(a.Remediation, " (or) "))
-	}
-	line.WriteString("\n")
-	return line.String()
 }

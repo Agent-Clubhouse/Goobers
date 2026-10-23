@@ -47,6 +47,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/engineadmission"
+
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
@@ -418,7 +420,12 @@ func projectionEpisodes(t *testing.T, proj JournalProjection) []projectionDigest
 // live state.
 func mustQueryProjection(ctx context.Context, t *testing.T, c client.Client, workflowID string) JournalProjection {
 	t.Helper()
-	proj, err := queryProjection(ctx, c, workflowID)
+	value, err := c.QueryWorkflow(ctx, workflowID, "", JournalQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proj JournalProjection
+	err = value.Get(&proj)
 	if err != nil {
 		t.Fatalf("query journal projection: %v", err)
 	}
@@ -687,7 +694,7 @@ func TestLearningEpisodeParallelRouteIsRunnerOnly(t *testing.T) {
 		Name:     "fan",
 		Branches: []apiv1.Branch{{Name: "security", Start: "implement"}},
 	}}
-	err := refuseUnsupportedEngineFeatures("learning-parallel", spec)
+	err := engineadmission.RefuseFeatures("learning-parallel", spec)
 	if err == nil {
 		t.Fatal("the engine accepted a definition declaring spec.parallels.\n" +
 			"internal/runner's retry arm scopes the injected learning.episode pointer to the ACTIVE BRANCH " +

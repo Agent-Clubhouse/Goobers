@@ -1616,18 +1616,6 @@ func TestHITLRefusesUnresumableTargets(t *testing.T) {
 	}
 }
 
-// TestHITLDelivererRequiresAddressableRun covers the daemon-side client: a run
-// with no workflow is a not-found, distinct from a refusal.
-func TestHITLDelivererRequiresAddressableRun(t *testing.T) {
-	if _, err := NewHITLDeliverer(nil); err == nil {
-		t.Fatal("NewHITLDeliverer accepted a nil Temporal client")
-	}
-	var d *HITLDeliverer
-	if _, err := d.Deliver(t.Context(), HITLIntent{RunID: "run-x", RequestID: "k"}); err == nil {
-		t.Fatal("a nil deliverer accepted an intent")
-	}
-}
-
 // TestHITLRefusalCodeReadsProtocolCode pins that a refusal's stable code
 // survives the round trip a daemon does to map it onto an HTTP status.
 func TestHITLRefusalCodeReadsProtocolCode(t *testing.T) {

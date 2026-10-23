@@ -444,8 +444,7 @@ type parityCase struct {
 	EngineWorkspaceDiffs map[string][]byte
 	// RunControls is the run's already-resolved run-control policy, threaded
 	// through the SAME seam production uses on each side: runner.StartInput's
-	// RunControls field and engine.StartSpec's, which Registry.StartInputVersion
-	// pins into RunInput. Deliberately NOT runner.Config.MaxRepasses /
+	// RunControls field and engine.RunInput's RunControls field. Deliberately NOT runner.Config.MaxRepasses /
 	// RunInput.MaxRepasses — both are documented-deprecated compatibility
 	// fields, and a harness that pins policy through them proves nothing about
 	// the path a production run takes.
@@ -453,7 +452,7 @@ type parityCase struct {
 	// BacklogQueryAssignedTo / BacklogQueryRequireLabels are the gaggle's
 	// claim-partition defaults (MIRC-2), threaded through the seam each side
 	// takes in production: runner.Config for the local runner, and
-	// engine.StartSpec — pinned into RunInput by Registry.StartInputVersion —
+	// engine.RunInput — pinned before workflow execution —
 	// for the engine (#3873, plan item E1).
 	BacklogQueryAssignedTo    string
 	BacklogQueryRequireLabels string
@@ -998,41 +997,22 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 	return side
 }
 
-// runParityEngineSide walks the same fixture through the engine in Temporal's
-// test environment and projects its history into a journal (#629), exactly as
-// the conformance harness does.
-// parityEngineRunInput builds the engine side's RunInput the way PRODUCTION
-// builds it: register the fixture in a Registry and pin it through
-// StartInputVersion, rather than hand-filling the struct.
-//
-// Going through the registry is the point, not ceremony. StartInputVersion is
-// where preview-feature acknowledgement is pinned, where RunControls is pinned,
-// and where this PR's own R9 refusal lives — a hand-built RunInput routes around
-// all three, so a future parity row for a lane declaring spec.parallels would
-// have WALKED here while production refuses it at start. Building through the
-// registry means the compared engine path is the started path.
+// parityEngineRunInput pins the fixture directly at the worker workflow boundary.
 func parityEngineRunInput(t *testing.T, c parityCase, runID string) RunInput {
 	t.Helper()
-	reg := NewRegistryWithPreviewFeatures(true)
-	version, err := reg.RegisterDefinition(parityDefinition(c))
+	def := parityDefinition(c)
+	machine, err := wf.Compile(def, wf.WithPreviewFeatures(true))
 	if err != nil {
-		t.Fatalf("register fixture for row %s: %v", c.Row, err)
+		t.Fatalf("compile fixture for row %s: %v", c.Row, err)
 	}
-	in, err := reg.StartInputVersion(parityWorkflowName, version, StartSpec{
-		InstanceID:                parityInstanceID,
-		RunID:                     runID,
-		Gaggle:                    c.Spec.Gaggle,
-		RepoRef:                   parityRepoRef,
-		TriggerKind:               string(journal.TriggerManual),
-		BranchNamespace:           parityBranchNamespace,
-		RunControls:               c.RunControls,
-		BacklogQueryAssignedTo:    c.BacklogQueryAssignedTo,
-		BacklogQueryRequireLabels: c.BacklogQueryRequireLabels,
-	})
-	if err != nil {
-		t.Fatalf("pin start input for row %s: %v", c.Row, err)
+	return RunInput{
+		InstanceID: parityInstanceID, RunID: runID, Gaggle: c.Spec.Gaggle,
+		WorkflowName: def.Name, Version: def.Version, DSLVersion: def.DSLVersion,
+		WorkflowDigest: machine.Digest(), Spec: def.Spec, PreviewFeaturesEnabled: boolPointer(true),
+		RepoRef: parityRepoRef, TriggerKind: string(journal.TriggerManual),
+		BranchNamespace: parityBranchNamespace, RunControls: c.RunControls,
+		BacklogQueryAssignedTo: c.BacklogQueryAssignedTo, BacklogQueryRequireLabels: c.BacklogQueryRequireLabels,
 	}
-	return in
 }
 
 func runParityEngineSide(t *testing.T, c parityCase, runID string) paritySide {
@@ -1121,9 +1101,9 @@ func projectEngineJournal(t *testing.T, env *testsuite.TestWorkflowEnvironment) 
 	if err := val.Get(&proj); err != nil {
 		t.Fatalf("decode journal projection: %v", err)
 	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	return readJournalEvents(t, dir)
 }

@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/goobers/goobers/internal/livejournal"
+
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -241,38 +243,30 @@ func runProvisionParityEngine(t *testing.T, runID, repoURL, baseBranch string) p
 		RepoRef:                repoRef,
 		TriggerKind:            string(journal.TriggerManual),
 	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	writer, err := livejournal.NewWriter(func(string) (string, bool) { return runsDir, true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(writer.Close)
+	in.LiveJournal = true
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&engine.Activities{
-		Det:  exec,
-		Auto: gate.NewAutomatedEvaluator(),
+		Det:     exec,
+		Journal: writer,
+		Auto:    gate.NewAutomatedEvaluator(),
 		Workspaces: newProvisionParityWorkspaces(
 			wtMgr, filepath.Join(instanceRoot, "scratch"), repoURL),
 	})
 	env.ExecuteWorkflow(engine.Run, in)
 	out := provisionParityOutcome{driver: "engine", err: env.GetWorkflowError(), execCalls: exec.count()}
-	readProvisionParityJournal(t, projectProvisionParityJournal(t, env), &out)
+	readProvisionParityJournal(t, filepath.Join(runsDir, runID), &out)
 	return out
 }
 
 // projectProvisionParityJournal projects the engine run's history into a
 // journal directory, the same path every other engine fixture reads back.
-func projectProvisionParityJournal(t *testing.T, env *testsuite.TestWorkflowEnvironment) string {
-	t.Helper()
-	val, err := env.QueryWorkflow(engine.JournalQuery)
-	if err != nil {
-		t.Fatalf("query journal projection: %v", err)
-	}
-	var proj engine.JournalProjection
-	if err := val.Get(&proj); err != nil {
-		t.Fatalf("decode journal projection: %v", err)
-	}
-	dir, err := engine.ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
-	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
-	}
-	return dir
-}
 
 // readProvisionParityJournal fills in the stage's attempt classes and error
 // records from a projected run directory.

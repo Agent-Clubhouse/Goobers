@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
@@ -113,18 +114,17 @@ func appendRuntimeFindings(
 		if engineConfigured || target == validateTargetCloud {
 			placements, pinErr := bootstrap.PinChildStagePlacements(cfg, set, wf.Spec.Gaggle, def)
 			if pinErr == nil {
-				selection := selectEngineForPinnedEntry(def, placements)
-				if len(selection.SelfPinnedStages) > 0 || len(selection.UnpinnedGates) > 0 {
+				selfPinned, unpinnedGates := runtimePlacementBlockers(def, placements)
+				if len(selfPinned) > 0 || len(unpinnedGates) > 0 {
 					findings = append(findings, runtimeFinding{
 						code:     validate.RuntimeSelfExecutionRequired,
 						severity: runtimePlacementSeverity(target),
 						file:     file,
 						path:     "/spec",
 						workflow: wf.Name,
-						message:  runtimePlacementMessage(selection.SelfPinnedStages, selection.UnpinnedGates),
+						message:  runtimePlacementMessage(selfPinned, unpinnedGates),
 					})
 				}
-
 			}
 		}
 
@@ -159,6 +159,26 @@ func appendRuntimeFindings(
 		})
 	}
 	return findings
+}
+
+func runtimePlacementBlockers(def workflow.Definition, placements []engine.PinnedPlacement) ([]string, []string) {
+	pinned := make(map[string]bool, len(placements))
+	var selfPinned []string
+	for _, placement := range placements {
+		pinned[placement.Stage] = true
+		if placement.Self {
+			selfPinned = append(selfPinned, placement.Stage)
+		}
+	}
+	var unpinnedGates []string
+	for _, gate := range def.Spec.Gates {
+		if gate.Evaluator == apiv1.EvaluatorAgentic && !pinned[gate.Name] {
+			unpinnedGates = append(unpinnedGates, gate.Name)
+		}
+	}
+	sort.Strings(selfPinned)
+	sort.Strings(unpinnedGates)
+	return selfPinned, unpinnedGates
 }
 
 func declaredEngineRuntimeBlockers(spec apiv1.WorkflowSpec) []workflow.FeatureID {

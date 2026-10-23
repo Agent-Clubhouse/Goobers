@@ -46,6 +46,21 @@ timeoutSeconds: 900
 Retry blocks can appear on tasks and automated/agentic evaluator
 configurations. They apply only to their containing task or evaluator.
 
+### Worker handoffs preserve the attempt
+
+A worker handoff does not consume an attempt, emit another `stage.started`, or
+spend the task's retry budget. The replacement worker adopts the exact live
+stage pod by Kubernetes UID and continues the same journal attempt.
+
+The attempt's `timeoutSeconds` clock starts once, when that attempt first
+starts. Every handoff preserves that original deadline; it never gives the
+stage a fresh timeout window. The dispatch grace period allows a result that
+finishes at the boundary to settle, but does not create another attempt or
+extend the configured timeout. A single attempt permits at most five handoffs.
+If custody cannot be recovered or that bound is exhausted, the attempt ends as
+an infrastructure failure. Side-effecting stages are not blindly retried after
+such an unrecoverable worker loss.
+
 ## Data-flow primitives
 
 ### `inputs`

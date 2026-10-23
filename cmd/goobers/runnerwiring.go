@@ -473,10 +473,8 @@ func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) 
 // (#1671) into an effective policy: instance runConditions, then the matched
 // repo's override, then the gaggle's spec, then the workflow's own spec.
 //
-// Every starter must resolve through this one function. The daemon's
-// scheduler entry did this inline while `goobers engine-start` did it nowhere,
-// so the same workflow pinned a different watchdog budget depending on which
-// starter dispatched it (#3820) — a run identity must not depend on that.
+// Every local starter resolves through this one function so a run identity
+// never depends on its trigger path.
 func resolveWorkflowRunControls(cfg *instance.Config, project apiv1.RepoRef, gaggle apiv1.Gaggle, workflowCfg apiv1.Workflow) (runcontrol.Effective, error) {
 	var instanceControls apiv1.RunControls
 	if cfg != nil {

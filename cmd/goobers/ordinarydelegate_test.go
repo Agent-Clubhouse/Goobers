@@ -44,7 +44,7 @@ func TestOrdinaryFileTransferRecoversLostAckAndStartsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	id, err := writeTriggerRequestContext(t.Context(), layout.SchedulerDir(), "example", "default-implement")
+	id, err := writeTriggerRequestContextOptions(t.Context(), layout.SchedulerDir(), "example", "default-implement", false)
 	if err != nil {
 		t.Fatal(err)
 	}

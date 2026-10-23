@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
-func TestBranchJournalLiveAndProjectionPreserveAttribution(t *testing.T) {
+func TestBranchJournalLivePreservesAttribution(t *testing.T) {
 	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	rec := &runJournal{proj: JournalProjection{Identity: journal.RunIdentity{RunID: "branch-journal", Gaggle: "web", Workflow: "branches", WorkflowVersion: 1, WorkflowDigest: "sha256:test"}, Graph: json.RawMessage(`{}`), Definition: json.RawMessage(`{}`)}}
 	rec.appendAt(at, journal.Event{Type: journal.EventRunStarted, Status: string(journal.PhaseRunning)})
@@ -70,15 +69,7 @@ func TestBranchJournalLiveAndProjectionPreserveAttribution(t *testing.T) {
 	if response, err := writer.Emit(context.Background(), req); err != nil || response.Applied != 0 || response.Deduplicated != len(req.Ops) {
 		t.Fatalf("retry: %+v %v", response, err)
 	}
-	projected, err := ProjectRun(t.TempDir(), rec.proj, WithSpanSource(source))
-	if err != nil {
-		t.Fatal(err)
-	}
 	live := branchJournalView(t, filepath.Join(liveDir, req.RunID))
-	repaired := branchJournalView(t, projected)
-	if !reflect.DeepEqual(live, repaired) {
-		t.Fatalf("live/projection branch drift:\n%v\n%v", live, repaired)
-	}
 	for _, branch := range []int{1, 2} {
 		for _, kind := range []journal.EventType{journal.EventStageStarted, journal.EventArtifactRecorded, journal.EventSpanRecorded, journal.EventGateEvaluated} {
 			if live[fmt.Sprintf("%d/%s", branch, kind)] == "" {

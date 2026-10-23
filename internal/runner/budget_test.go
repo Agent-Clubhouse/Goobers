@@ -639,6 +639,53 @@ func TestRunnerFailsClosedOnInterruptedBudgetedAgenticStage(t *testing.T) {
 	}
 }
 
+func TestStageUsageBudgetAllowanceTracksCumulativeUsage(t *testing.T) {
+	limits := apiv1.Limits{MaxTokens: 100, MaxCostUSD: 0.3}
+	var budget StageUsageBudget
+	initial := budget.Allowance(limits)
+	if initial.MaxTokens == nil || *initial.MaxTokens != 100 ||
+		initial.MaxCostUSD == nil || *initial.MaxCostUSD != 0.3 {
+		t.Fatalf("initial allowance = %+v", initial)
+	}
+
+	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+	var dispatchErr error
+	budget.Apply(limits, map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  40,
+		telemetry.AttrGenAIUsageOutputTokens: 10,
+		telemetry.AttrUsageCostUSD:           0.1,
+	}, true, &result, &dispatchErr)
+	if dispatchErr != nil {
+		t.Fatalf("first attempt: %v", dispatchErr)
+	}
+	remaining := budget.Allowance(limits)
+	if remaining.MaxTokens == nil || *remaining.MaxTokens != 50 ||
+		remaining.MaxCostUSD == nil || *remaining.MaxCostUSD != 0.2 {
+		t.Fatalf("remaining allowance = %+v", remaining)
+	}
+
+	budget.Apply(limits, map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  30,
+		telemetry.AttrGenAIUsageOutputTokens: 20,
+		telemetry.AttrUsageCostUSD:           0.2,
+	}, true, &result, &dispatchErr)
+	if dispatchErr != nil {
+		t.Fatalf("second attempt at exact limit: %v", dispatchErr)
+	}
+	exhausted := budget.Allowance(limits)
+	if exhausted.MaxTokens == nil || *exhausted.MaxTokens != 0 ||
+		exhausted.MaxCostUSD == nil || *exhausted.MaxCostUSD != 0 {
+		t.Fatalf("exhausted allowance = %+v", exhausted)
+	}
+}
+
+func TestStageUsageBudgetAllowanceKeepsUnlimitedFieldsNil(t *testing.T) {
+	allowance := (&StageUsageBudget{}).Allowance(apiv1.Limits{})
+	if allowance.MaxTokens != nil || allowance.MaxCostUSD != nil {
+		t.Fatalf("unlimited allowance = %+v", allowance)
+	}
+}
+
 func budgetFixtureMachine(t *testing.T, limits apiv1.Limits, maxAttempts int32) *workflow.Machine {
 	t.Helper()
 	spec := apiv1.WorkflowSpec{

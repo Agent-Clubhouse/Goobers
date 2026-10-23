@@ -377,7 +377,8 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	return res, nil
 }
 
-func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (RunResult, error) {
+func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (walkOut RunResult, walkErr error) {
+	defer rec.reportSteps(&walkOut)
 	ctx = workflow.WithValue(ctx, podDispatchActivationKey{}, &podDispatchActivation{})
 	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
@@ -444,27 +445,27 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	completed := newCompletedStages()
 	state := in.Spec.Start
 	steps := 0
-
-	// settle is the terminal hook (#3883). Every path that would end the walk
-	// routes through it, so the HITL hold has exactly one site and cannot be
-	// bypassed by whichever terminal a run happens to reach. For a run with no
-	// HITL policy — and for every non-resumable terminal — it returns
-	// immediately and the walk ends exactly as it did before.
-	settle := func(out RunResult) (string, bool, error) {
-		plan, resumed, _, err := hitl.settle(ctx, out)
-		if err != nil || !resumed {
-			return "", false, err
-		}
-		if plan.stage != "" && plan.addendum != "" {
-			// The operator's instruction addendum reaches the re-dispatched
-			// stage through the same channel the #3374 re-dispatch uses, so
-			// there is one way a stage learns why it is running again.
-			addenda[plan.stage] = plan.addendum
-		}
-		return plan.state, true, nil
+	if frame := rec.branchWalk; frame != nil {
+		// Envelopes/recorded output values are immutable after dispatch;
+		// each walk owns the collections it grows or replaces.
+		upstream, evaluatedGates = maps.Clone(frame.upstream), maps.Clone(frame.evaluatedGates)
+		pointers, completed = slices.Clone(frame.pointers), maps.Clone(frame.completed)
+		lastStage, lastResult = frame.lastStage, frame.lastResult
+		workspaceBranch, continuity = frame.workspaceBranch, slices.Clone(frame.continuity)
+		state = frame.start
+		defer func() {
+			frame.finish(ctx, walkOut, walkErr, pointers)
+			frame.upstream, frame.evaluatedGates = upstream, evaluatedGates
+			frame.pointers, frame.completed = pointers, completed
+			frame.lastStage, frame.lastResult = lastStage, lastResult
+			frame.workspaceBranch, frame.continuity = workspaceBranch, continuity
+		}()
 	}
 
 	for {
+		if out, err, stop := rec.branchBoundary(ctx, state, upstream, steps); stop {
+			return out, err
+		}
 		switch state {
 		case wf.TerminalComplete:
 			return RunResult{Status: StatusCompleted, Outputs: upstream, Steps: steps}, nil
@@ -472,7 +473,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			return RunResult{Status: StatusBlocked, Outputs: upstream, Steps: steps}, nil
 		case wf.TargetEscalate:
 			out := RunResult{Status: StatusEscalated, Outputs: upstream, Steps: steps}
-			next, resumed, err := settle(out)
+			next, resumed, err := settleWalk(ctx, rec, hitl, out, addenda)
 			if err != nil {
 				return RunResult{}, err
 			}
@@ -484,8 +485,8 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 		}
 
 		steps++
-		if steps > maxSteps {
-			return RunResult{}, fmt.Errorf("workflow %q exceeded max steps (%d): possible loop", in.WorkflowName, maxSteps)
+		if err := rec.chargeStep(in.WorkflowName, steps); err != nil {
+			return RunResult{}, err
 		}
 
 		if t, ok := m.Task(state); ok {
@@ -542,9 +543,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				state = t.Name
 				continue
 			}
-			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, evaluatedGates, steps, rec)
+			next, out, terminal := walkTaskOutcome(ctx, m, t, res, upstream, evaluatedGates, steps, rec)
 			if terminal {
-				resumeState, resumed, serr := settle(out)
+				resumeState, resumed, serr := settleWalk(ctx, rec, hitl, out, addenda)
 				if serr != nil {
 					return RunResult{}, serr
 				}
@@ -681,9 +682,12 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				return RunResult{}, err
 			}
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
+			if err := rec.refuseBranchGateCompletion(gr); err != nil {
+				return RunResult{}, err
+			}
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
 			if terminal {
-				resumeState, resumed, serr := settle(out)
+				resumeState, resumed, serr := settleWalk(ctx, rec, hitl, out, addenda)
 				if serr != nil {
 					return RunResult{}, serr
 				}
@@ -693,57 +697,29 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				}
 				return out, nil
 			}
-			var injected *apiv1.ContextPointer
-			if verdictArtifact != nil {
-				// #412: the next dispatch — most commonly a repass back to the
-				// stage that produced the subject this gate just evaluated —
-				// must actually receive the reviewer's verdict as context, not
-				// infer "something needs to change" from git. The local
-				// runner's walk appends the same "<gate>.verdict" pointer on
-				// both its retry route and its advance path.
-				pointer := apiv1.ContextPointer{
-					Name: g.Name + ".verdict", Integrity: verdictArtifact.Integrity, Artifact: verdictArtifact,
-				}
-				injected = &pointer
-				pointers = append(pointers, pointer)
+			var continuationErr error
+			pointers, continuationErr = rec.gateContinuation(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, verdictArtifact, pointers)
+			if continuationErr != nil {
+				return RunResult{}, continuationErr
 			}
-			// #3843: a gate sending a stage BACK commits a learning episode
-			// and hands the repass a pointer to it, so the next attempt argues
-			// with the reviewer's finding instead of rediscovering it. Only on
-			// a true re-entry — an advancing gate has nothing to teach.
-			//
-			// #3929: "sending BACK" is the gate result's own repass attempt,
-			// the number resolveGateOutcome already charged to this target's
-			// budget and rec.retryDecision already journaled — not a second,
-			// independently re-derived reading of the upstream map. The engine
-			// used to ask `upstream[next] != nil` here (gateSendsBack), which
-			// was equal to gr.Attempt >= 1 by construction at this call site
-			// and so could drift from it without any test noticing.
-			//
-			// The injection is deliberately NOT conditioned on retryRoute.
-			// That flag carries the retry CLASSIFIER's answer — automated
-			// status-equals over nonzero_exit/base_sync_conflict, or `infra` —
-			// which is a different question from whether a stage is being
-			// asked to do its work again. An agentic reviewer resolving
-			// needs-changes back into implement is the canonical repass and
-			// the classifier declines it, so gating on retryRoute starved the
-			// main lane's reviewer→implement loop of exactly the correction
-			// internal/gate.reconcileLearningFindings exists to read back.
-			// The retry-decision annotation above stays on retryRoute: only
-			// the episode is widened.
-			if runner.LearningEpisodeAppliesToBranch(learningEpisodeBranchFor(gr)) {
-				episode, eerr := rec.learningEpisode(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, injected)
-				if eerr != nil {
-					return RunResult{}, fmt.Errorf("engine: journal learning episode for gate %q: %w", g.Name, eerr)
-				}
-				if episode != nil {
-					pointers = append(pointers, *episode)
-				}
+			if failed, unresolved := rec.branchGateJoinFailure(gr, lastStage, lastResult, upstream, steps); unresolved {
+				return failed, nil
 			}
 			state = next
 			continue
 		}
 
+		seed := branchWalkFrame{upstream: upstream, evaluatedGates: evaluatedGates, pointers: pointers, completed: completed, lastStage: lastStage, lastResult: lastResult, workspaceBranch: workspaceBranch, continuity: continuity}
+		next, handled, err := rec.staticParallel(ctx, in, m, state, &seed)
+		if handled {
+			if err != nil {
+				return RunResult{}, err
+			}
+			upstream, evaluatedGates, pointers, completed = seed.upstream, seed.evaluatedGates, seed.pointers, seed.completed
+			lastStage, lastResult = seed.lastStage, seed.lastResult
+			state = next
+			continue
+		}
 		return RunResult{}, fmt.Errorf("unknown state %q", state)
 	}
 }
@@ -967,6 +943,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
+	rec.staticJoinInputs(t.Name, env.Inputs)
 	env.Inputs, err = backlogdefaults.ApplyBacklogScopeToInvocation(t, env.Inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q backlog scope: %w", t.Name, err)
@@ -1078,6 +1055,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if err != nil {
 			return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
 		}
+		// Join completeness is host state; overwrite any subject output with
+		// the same key after flattening the automated inputs.
+		rec.staticJoinInputs(g.Name, env.Inputs)
 		ctx := stageActivityContext(ctx, env.Limits)
 		// An automated gate never dispatches a pod (podAttempt: 0, omitted).
 		rec.gateStarted(ctx, g, gatePolicyAttempts[g.Name]+1, 0)
@@ -1111,6 +1091,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			reviewerUpstream = ev.ReviewerPointers
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, reviewerUpstream, reviewerGoober)
+		rec.staticJoinInputs(g.Name, env.Inputs)
 		_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 		env.ReviewerMechanicalEscalationAllowed = gate.StructuredMechanicalEscalation(g)
 		env.InstructionAddendum = instructionAddendum

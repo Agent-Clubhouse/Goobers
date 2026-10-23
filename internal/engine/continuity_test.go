@@ -80,22 +80,6 @@ func TestSelectDelta(t *testing.T) {
 	})
 }
 
-func podTask(name, next string, extra func(*apiv1.Task)) apiv1.Task {
-	t := apiv1.Task{
-		Name: name, Type: apiv1.TaskDeterministic, Goal: name,
-		Run:  &apiv1.DeterministicRun{Command: []string{name + ".sh"}, Workspace: apiv1.WorkspaceRepo},
-		Next: next,
-	}
-	if extra != nil {
-		extra(&t)
-	}
-	return t
-}
-
-func remotePin(stage string) PinnedPlacement {
-	return PinnedPlacement{Stage: stage, Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"}
-}
-
 func surrenderDelta(t *testing.T, store *dispatcher.SurrenderDir, runID, stage string, attempt int, digest string) {
 	t.Helper()
 	putSurrendered(t, store, runID, stage, attempt, dispatcher.SurrenderedResult{
@@ -638,7 +622,7 @@ func TestWorkspaceDeltaJournaledOnLivePathAndProjection(t *testing.T) {
 	if got := count(live); got != 2 {
 		t.Fatalf("live journal has %d runner.workspace.delta events, want 2 (published by commit, selected by consume): live path half missing", got)
 	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
 		t.Fatalf("ProjectRun rejected a history carrying runner.workspace.delta: %v", err)
 	}
@@ -653,7 +637,7 @@ func TestWorkspaceDeltaJournaledOnLivePathAndProjection(t *testing.T) {
 	if got := count(projected); got != 2 {
 		t.Fatalf("projection has %d runner.workspace.delta events, want 2: projection half missing", got)
 	}
-	divergence, err := DiffLiveJournal(live, proj)
+	divergence, err := diffTestJournal(t, live, proj)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -360,3 +360,77 @@ func authorizeReadinessFixture(conn net.Conn, reader *bufio.Reader, tools ...str
 	}
 	return writeReadinessFrame(conn, map[string]any{"jsonrpc": "2.0", "id": decision.ID, "result": map[string]any{"success": true}})
 }
+
+func TestCopilotControlledRepairRetainsBothUsageSnapshots(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	done := make(chan error, 2)
+	go func() {
+		for range 2 {
+			conn, err := listener.Accept()
+			if err != nil {
+				done <- err
+				return
+			}
+			var sends atomic.Int32
+			done <- serveCopilotReadinessFixture(conn, &sends, "success")
+			_ = conn.Close()
+		}
+	}()
+	process := &fakeProcessRunner{act: func(req ProcessRequest) error {
+		_, err := fmt.Fprintf(req.StdoutCapture, "listening on port %d\n", listener.Addr().(*net.TCPAddr).Port)
+		return err
+	}}
+	base := copilotHeadlessArgvGuard{next: &readinessProtocolProcess{process: process}}
+	req := RunRequest{Workspace: t.TempDir(), Tools: goobersIOAvailableToolNames(), GoobersIORegistered: true}
+	req.Envelope = testEnvelope(req.Workspace)
+	config, err := goobersIOAdditionalMCPConfigArg(req, "/test/goobers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &copilotControlledRunner{base: base, request: req, promptIndex: 1, mcpConfig: config}
+	defer func() {
+		if runner.process != nil {
+			runner.close()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	processReq := ProcessRequest{Stdin: []byte("initial prompt"), Command: []string{"copilot", "-p=", "--session-id", "owned-test-session", "--allow-all-tools"}, Dir: req.Workspace, Env: baseEnv(nil, nil), Timeout: 8 * time.Second}
+	if _, err := runner.Run(ctx, processReq); err != nil {
+		t.Fatal(err)
+	}
+	usage := &copilotRepairUsage{}
+	processReq.Command, processReq.Env, err = usage.prepare(ctx, runner, req, processReq.Command, processReq.Env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.RestartCopilotForRepair(ctx, processReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	processReq.Stdin = []byte("repair prompt")
+	if _, err := runner.Run(ctx, processReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeControlledCopilot(ctx, runner); err != nil {
+		t.Fatal(err)
+	}
+	var out Outcome
+	applyControlledCopilotUsage(&out, runner)
+	usage.apply(&out)
+	if out.Metrics[telemetry.AttrGenAIUsageInputTokens] != 84 || out.Metrics[telemetry.AttrUsageNanoAIU] != 2e9 || len(out.ModelUsage) != 1 || *out.ModelUsage[0].InputTokens != 84 {
+		t.Fatalf("controlled repair usage = %v, models=%+v", out.Metrics, out.ModelUsage)
+	}
+	runner.close()
+	// The explicit close also lets the protocol fixture observe EOF.
+	runner.process = nil
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

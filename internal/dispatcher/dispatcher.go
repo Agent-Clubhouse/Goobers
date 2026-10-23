@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // Defaults for Config fields left zero. Each is a named constant so a
@@ -496,6 +497,10 @@ type Attempt struct {
 	// (agentickit.Kit.ReviewRequiresDiff), never the pod spec. Meaningless
 	// without Review.
 	ReviewRequiresDiff bool
+	// UsageAllowance is the trusted remaining token/cost budget for this
+	// physical attempt. Nil is the legacy/unlimited contract; explicit zero
+	// fields mean exhausted and must prevent harness start.
+	UsageAllowance *usageallowance.Allowance
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.
@@ -966,8 +971,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
 
-	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, &report)
+	return report, d.finishAttemptPod(ctx, attempt, pod, &report)
+}
+
+func (d *Dispatcher) finishAttemptPod(ctx context.Context, attempt Attempt, pod *corev1.Pod, report *Report) error {
+	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, report)
 	report.Phase = phase
+	if superviseErr != nil && ctx.Err() != nil && workerHandoffRequested(ctx) {
+		return ErrWorkerHandoff
+	}
 	settlementCtx, cancelSettlement := childSettlementContext(ctx, attempt)
 	defer cancelSettlement()
 
@@ -1013,13 +1025,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	}
 
 	if superviseErr != nil {
-		return report, superviseErr
+		return superviseErr
 	}
 	if phase == corev1.PodFailed {
-		return report, fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
+		return fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
 			ErrStageFailed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
 	}
-	return report, nil
+	return nil
 }
 
 // stageContainerImage reads the stage container's image off a rendered pod.

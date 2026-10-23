@@ -11,6 +11,10 @@ if (require.main === module && args.includes('--version')) {
   process.stdout.write('2.1.0 (qualification fixture)\n');
   process.exit(0);
 }
+if (require.main === module && codex && args.length === 2 && args[0] === 'exec' && args[1] === '--help') {
+  process.stdout.write('Options:\n  --json\n  --ignore-rules\n  --disable <FEATURE>\n  --sandbox <MODE>\n  --skip-git-repo-check\n  --cd <DIR>\n  --config <KEY=VALUE>\n');
+  process.exit(0);
+}
 if (require.main === module && args[0] === 'auth' && args[1] === 'status') {
   process.stdout.write('{"loggedIn":true,"authMethod":"api_key"}\n');
   process.exit(0);

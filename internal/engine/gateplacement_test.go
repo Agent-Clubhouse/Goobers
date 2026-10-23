@@ -24,7 +24,6 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
-	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // gateplacement_test.go is the engine half of decision 001 (rulings 7–8): an
@@ -38,62 +37,13 @@ import (
 // (deterministic, self): the gate sits between two self stages so both the
 // verdict pointer handed downstream and the absence of a worker-side attempt
 // for the gate are observable.
-func placedGateSpec() apiv1.WorkflowSpec {
-	return apiv1.WorkflowSpec{
-		Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "implement",
-		Tasks: []apiv1.Task{
-			{Name: "implement", Type: apiv1.TaskAgentic, Goal: "implement", Goober: "implementer", Next: "review"},
-			{Name: "land", Type: apiv1.TaskDeterministic, Goal: "land",
-				Run: &apiv1.DeterministicRun{Command: []string{"land.sh"}, Workspace: apiv1.WorkspaceScratch}},
-		},
-		Gates: []apiv1.Gate{{
-			Name: "review", Evaluator: apiv1.EvaluatorAgentic,
-			Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
-			RunsOn:   &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi"},
-			Branches: map[string]string{"pass": "land", "fail": wf.TargetAbort, "needs-changes": "implement"},
-		}},
-	}
-}
-
-func remoteGatePin() PinnedPlacement {
-	return PinnedPlacement{
-		Stage: "review", Queue: dispatcher.QueueName("web", "linux-agentic"),
-		Eligible: remoteEligible(), CPU: "1000m", Memory: "2Gi",
-	}
-}
-
-func placedGateInput(name string) RunInput {
-	in := projectionInput(name, placedGateSpec())
-	// gates[].runsOn is a 3.0 surface; the frozen 2.0 interpreter refuses it.
-	in.DSLVersion = "3.0"
-	in.GateGooberCapabilities = map[string][]string{"reviewer": {"agent:model"}}
-	return in
-}
 
 // reviewSurrender is what a review pod surrenders (dispatchexec.go): a bare
 // success status and the verdict.
-func reviewSurrender(verdict apiv1.Verdict) dispatcher.SurrenderedResult {
-	return dispatcher.SurrenderedResult{
-		Result:  apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "reviewer verdict surrendered"},
-		Verdict: &verdict,
-	}
-}
 
 // refusingReviewer is the self arm's reviewer seam for a run whose gate must
 // NEVER reach it: a pinned non-self gate that still called ActReviewGoober
 // would evaluate in the worker's process, outside its declared isolation.
-func refusingReviewer(t *testing.T) *fakeInvoker {
-	t.Helper()
-	return &fakeInvoker{
-		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}, nil
-		},
-		review: func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-			t.Errorf("ActReviewGoober ran for %s: a gate pinned to a non-self runner must evaluate in a pod, never in-process", env.TaskID)
-			return apiv1.Verdict{Decision: apiv1.VerdictFail}, nil
-		},
-	}
-}
 
 func gateEvaluatedEvents(proj JournalProjection) []journal.Event {
 	var out []journal.Event

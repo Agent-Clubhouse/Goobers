@@ -21,6 +21,21 @@ import (
 
 type restartClaimPoller struct{ entered chan struct{} }
 
+type stubProbe map[string]bool
+
+func (p stubProbe) RunLive(_ context.Context, runID string) (bool, error) {
+	return p[runID], nil
+}
+
+func newClaimTestLayout(t *testing.T) instance.Layout {
+	t.Helper()
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return layout
+}
+
 func (p *restartClaimPoller) PollPullRequest(ctx context.Context, _ providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
 	p.entered <- struct{}{}
 	<-ctx.Done()
@@ -183,7 +198,7 @@ func TestStartupLocalClaimGraceDoesNotRenewDeadRunsForever(t *testing.T) {
 	}
 	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "7"}
 	seedRestartClaim(t, l, key, runID, time.Now().Add(-2*time.Hour))
-	steady, closeProbe, err := buildClaimLivenessProbe(&instance.Config{}, nil, func() []string { return nil })
+	steady, closeProbe, err := buildClaimLivenessProbe(func() []string { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

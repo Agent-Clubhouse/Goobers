@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 
@@ -230,6 +231,7 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *jou
 	var deleted bool
 	api.PrependReactor("create", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
 		pod = action.(kubetesting.CreateAction).GetObject().(*corev1.Pod)
+		pod.UID = types.UID("uid-" + pod.Name)
 		pod.Status.Phase = corev1.PodPending
 		observations = 0
 		deleted = false
@@ -316,15 +318,9 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *jou
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
 		t.Fatal(err)
 	}
-	hooks := &engineTerminalHooks{
-		finalize: func(id string, _ journal.RunPhase) error {
-			return releaseClaimsForRun(layout, nil, id)
-		},
+	if err := releaseClaimsForRun(layout, nil, runID); err != nil {
+		t.Fatal(err)
 	}
-	hooks.run(context.Background(), engineTerminalOutcome{
-		RunID: runID, Gaggle: "goobers", Workflow: "implementation",
-		Phase: journal.PhaseFailed, Err: env.GetWorkflowError(),
-	})
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)
