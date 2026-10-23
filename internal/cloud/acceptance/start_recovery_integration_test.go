@@ -153,3 +153,38 @@ func TestPGRecoverySkipsLockedRowsAndBoundsReservations(t *testing.T) {
 		t.Fatalf("released lock=%+v err=%v", last, err)
 	}
 }
+
+func TestPGFreshPredecessorRetriesOncePerLeaseThenBacksOff(t *testing.T) {
+	first, pool := testStore(t, 1)
+	record, _, err := first.Accept(t.Context(), "fresh-predecessor", "operator", []byte("pinned"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.BeginDispatch(t.Context(), record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.manager.Release(t.Context(), first.handle); err != nil {
+		t.Fatal(err)
+	}
+	second := successorStore(t, pool)
+	rows, err := second.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("fresh predecessor was not retried: %v %v", rows, err)
+	}
+	rows, err = second.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("same epoch bypassed backoff: %v %v", rows, err)
+	}
+	if err := second.manager.Release(t.Context(), second.handle); err != nil {
+		t.Fatal(err)
+	}
+	third := successorStore(t, pool)
+	rows, err = third.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("new epoch did not retry immediately: %v %v", rows, err)
+	}
+	row, err := third.Get(t.Context(), record.ID, "operator")
+	if err != nil || row.State != triggerqueue.Dispatching {
+		t.Fatalf("recovery read changed custody: %+v %v", row, err)
+	}
+}
