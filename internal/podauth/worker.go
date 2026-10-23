@@ -16,6 +16,7 @@ const (
 	workerTokenPrefix          = "goobers-worker."
 	workerBlobTokenPrefix      = "goobers-worker-blob."
 	workerSurrenderTokenPrefix = "goobers-worker-surrender-read."
+	workerChildTokenPrefix     = "goobers-worker-child-admission."
 )
 
 // workerTokenKind parameterises one worker credential. The MAC domain is
@@ -32,10 +33,11 @@ var (
 	workerConfigDigestKind = workerTokenKind{workerTokenPrefix, "goobers/worker-config-digest/v1\x00", httpapi.WorkerPrincipalIssuer}
 	workerBlobKind         = workerTokenKind{workerBlobTokenPrefix, "goobers/worker-blob/v1\x00", httpapi.WorkerBlobPrincipalIssuer}
 	workerSurrenderKind    = workerTokenKind{workerSurrenderTokenPrefix, "goobers/worker-surrender-read/v1\x00", httpapi.WorkerSurrenderPrincipalIssuer}
+	workerChildKind        = workerTokenKind{workerChildTokenPrefix, "goobers/worker-child-admission/v1\x00", httpapi.WorkerChildAdmissionPrincipalIssuer}
 )
 
 // workerTokenKinds lists longer prefixes before the config-digest prefix they extend.
-var workerTokenKinds = []workerTokenKind{workerSurrenderKind, workerBlobKind, workerConfigDigestKind}
+var workerTokenKinds = []workerTokenKind{workerChildKind, workerSurrenderKind, workerBlobKind, workerConfigDigestKind}
 
 const maxWorkerTokenBodyBytes = 512
 
@@ -62,6 +64,13 @@ func (s *SignedKey) MintWorkerBlob(workerID string, ttl time.Duration) (string, 
 // Its wire prefix and MAC domain are separate from pod and config-digest tokens.
 func (s *SignedKey) MintWorkerSurrender(workerID string, ttl time.Duration) (string, error) {
 	return s.mintWorkerToken(workerSurrenderKind, workerID, ttl)
+}
+
+// MintWorkerChildAdmission grants a resident engine worker access only to the
+// engine child-admission plane. Its wire prefix and MAC domain are separate
+// from every pod and other worker credential.
+func (s *SignedKey) MintWorkerChildAdmission(workerID string, ttl time.Duration) (string, error) {
+	return s.mintWorkerToken(workerChildKind, workerID, ttl)
 }
 
 func (s *SignedKey) mintWorkerToken(kind workerTokenKind, workerID string, ttl time.Duration) (string, error) {
