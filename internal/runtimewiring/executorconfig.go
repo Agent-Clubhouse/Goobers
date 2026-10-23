@@ -5,7 +5,6 @@ import (
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/stageexec"
-	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -36,7 +35,7 @@ type ExecutorConfig struct {
 	LookPathFunc              func(string) (string, error)
 	SelfExecutionDenied       bool
 	SelfExecutionObserved     func(bool)
-	Telemetry                 *telemetry.Client
+	Telemetry                 stageexec.SpanStarter
 	IssueOwnershipAssignees   string
 	IssueOwnershipUnassigned  string
 }
