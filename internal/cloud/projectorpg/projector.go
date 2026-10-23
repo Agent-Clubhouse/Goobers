@@ -49,7 +49,12 @@ type Config struct {
 }
 
 // Runner projects journal history into the read model for one lease epoch.
-type Runner struct{ config Config }
+type Runner struct {
+	config Config
+	// failing remembers the last reported failure per run, so a run that stays
+	// unprojectable is retried every pass but reported once per distinct error.
+	failing map[string]string
+}
 
 // New validates the configuration.
 func New(config Config) (*Runner, error) {
@@ -68,7 +73,7 @@ func New(config Config) (*Runner, error) {
 	if config.Report == nil {
 		config.Report = func(error) {}
 	}
-	return &Runner{config: config}, nil
+	return &Runner{config: config, failing: map[string]string{}}, nil
 }
 
 // Run catches up, then repeats on every wakeup or poll until ctx ends. Authority
@@ -110,9 +115,13 @@ func (r *Runner) Sync(ctx context.Context) (int, error) {
 				if isAuthorityLoss(err) {
 					return projected, err
 				}
-				r.config.Report(fmt.Errorf("project run %s: %w", run.RunID, err))
+				if r.failing[run.RunID] != err.Error() {
+					r.failing[run.RunID] = err.Error()
+					r.config.Report(fmt.Errorf("project run %s: %w", run.RunID, err))
+				}
 				continue
 			}
+			delete(r.failing, run.RunID)
 			projected++
 		}
 		if len(stale) < r.config.Batch {
