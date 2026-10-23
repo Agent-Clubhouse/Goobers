@@ -121,6 +121,30 @@ func TestDispatchHeartbeatCarriesGenerationDiagnostic(t *testing.T) {
 	}
 }
 
+func TestDispatchHeartbeatV3CarriesPodCustody(t *testing.T) {
+	want := dispatcher.PodCustody{Namespace: "gaggle-web", Pod: "run-build-a1", UID: "uid-1", Attempt: 1, Custody: true}
+	var got dispatchHeartbeatDetails
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
+		if err := details.Get(&got); err != nil {
+			t.Fatal(err)
+		}
+	})
+	env.RegisterActivityWithOptions(func(ctx context.Context) error {
+		stop := heartbeatDispatchCustody(ctx, func() *dispatcher.PodCustody { return &want })
+		stop()
+		return nil
+	}, activity.RegisterOptions{Name: "custody-heartbeat-v3"})
+	if _, err := env.ExecuteActivity("custody-heartbeat-v3"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Namespace != want.Namespace || got.Pod != want.Pod || got.UID != want.UID ||
+		got.Attempt != want.Attempt || !got.Custody {
+		t.Fatalf("heartbeat details = %+v, want custody %+v", got, want)
+	}
+}
+
 func TestDispatchCancellationPreservesSurrenderAndDeadlineClassification(t *testing.T) {
 	for _, mode := range []string{"canceled", "active", "deadline", "surrendered"} {
 		t.Run(mode, func(t *testing.T) {

@@ -136,7 +136,28 @@ func childVolumesIsolated(s corev1.PodSpec, c corev1.Container) bool {
 
 func (d *Dispatcher) createAttemptPod(ctx context.Context, pod *corev1.Pod, attempt Attempt, report *Report) error {
 	if attempt.ChildExecutionDigest == "" {
-		return d.pods.CreatePod(ctx, pod)
+		api, ok := d.pods.(interface {
+			CreatePodWithIdentity(context.Context, *corev1.Pod) (*corev1.Pod, error)
+		})
+		if !ok {
+			return d.pods.CreatePod(ctx, pod)
+		}
+		created, err := api.CreatePodWithIdentity(ctx, pod)
+		if err != nil {
+			return err
+		}
+		if created == nil || created.UID == "" || created.Name != pod.Name || created.Namespace != pod.Namespace {
+			return errors.New("dispatcher: Kubernetes adapter returned invalid pod identity")
+		}
+		pod.UID = created.UID
+		observeCreatedPod(ctx, PodCustody{
+			Namespace: created.Namespace,
+			Pod:       created.Name,
+			UID:       string(created.UID),
+			Attempt:   attempt.IdentityAttempt(),
+			Custody:   true,
+		})
+		return nil
 	}
 	api, ok := d.pods.(childPodAPI)
 	if !ok {
