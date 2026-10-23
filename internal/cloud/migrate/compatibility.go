@@ -26,6 +26,16 @@ type Applied struct {
 
 // CheckCompatibility verifies whether a binary may serve the applied schema.
 func CheckCompatibility(binary string, applied []Applied, catalog []Migration) error {
+	return checkCompatibility(binary, applied, catalog, false)
+}
+
+func checkCompatibility(binary string, applied []Applied, catalog []Migration, allowDevelopment bool) error {
+	if binary == "dev" {
+		if !allowDevelopment {
+			return errors.New("development binary version is not valid for cloud schema compatibility")
+		}
+		binary = "999999.0.0"
+	}
 	self, err := version.NewVersion(binary)
 	if err != nil {
 		return fmt.Errorf("parse binary version %q: %w", binary, err)

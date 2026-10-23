@@ -5,8 +5,10 @@ import (
 	"errors"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -37,6 +39,18 @@ func TestMinCompatibleBinaryIsFirstNonReader(t *testing.T) {
 	}
 	if err := CheckCompatibility("1.9.9", applied, oldCatalog); !errors.Is(err, ErrBinaryTooOld) || !IsIncompatible(err) {
 		t.Fatalf("last reader error = %v, want ErrBinaryTooOld", err)
+	}
+}
+
+func TestDevelopmentVersionIsNewestOnlyInTests(t *testing.T) {
+	applied := []Applied{{
+		Version: 1, Kind: Expand, BinaryVersion: "2.0.0", MinCompatibleBinary: "2.0.0",
+	}}
+	if err := CheckCompatibility("dev", applied, nil); err == nil {
+		t.Fatal("production compatibility accepted an unstamped development binary")
+	}
+	if err := checkCompatibility("dev", applied, nil, true); err != nil {
+		t.Fatalf("test development version was not ordered newest: %v", err)
 	}
 }
 
@@ -89,9 +103,9 @@ func TestPartitionIndexesAreConcurrentThenAttached(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		`CREATE INDEX CONCURRENTLY "event_2026_10_created_idx" ON "event_2026_10" ("created_at")`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS "event_2026_10_created_idx" ON "event_2026_10" ("created_at")`,
 		`ALTER INDEX "event_created_idx" ATTACH PARTITION "event_2026_10_created_idx"`,
-		`CREATE INDEX CONCURRENTLY "event_2026_11_created_idx" ON "event_2026_11" ("created_at")`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS "event_2026_11_created_idx" ON "event_2026_11" ("created_at")`,
 		`ALTER INDEX "event_created_idx" ATTACH PARTITION "event_2026_11_created_idx"`,
 	}
 	if !reflect.DeepEqual(executor.statements, want) {
@@ -111,6 +125,25 @@ type recordingExecutor struct {
 func (e *recordingExecutor) Exec(_ context.Context, statement string, _ ...any) (pgconn.CommandTag, error) {
 	e.statements = append(e.statements, statement)
 	return pgconn.NewCommandTag("CREATE INDEX"), nil
+}
+
+func (e *recordingExecutor) QueryRow(_ context.Context, query string, _ ...any) pgx.Row {
+	if strings.Contains(query, "FROM pg_index") {
+		return fakeRow{err: pgx.ErrNoRows}
+	}
+	return fakeRow{}
+}
+
+type fakeRow struct {
+	err error
+}
+
+func (r fakeRow) Scan(destinations ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*destinations[0].(*bool) = false
+	return nil
 }
 
 func (b *recordingReadmodelBuilder) Build(_ context.Context, table string) error {
