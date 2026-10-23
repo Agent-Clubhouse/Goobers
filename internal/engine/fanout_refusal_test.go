@@ -47,7 +47,6 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 		state    string
 		direct   error
 	}{
-		{"map", fanOutEngineDefinition(true), ErrMapsUnsupported, "spec.maps", "items", wf.ErrMapUnsupported},
 		{"selective parallel", fanOutEngineDefinition(false), ErrParallelsUnsupported, "spec.parallels", "", wf.ErrParallelsUnsupported},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,6 +58,7 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 					found = found || (refusal.Feature == tc.feature && refusal.Stage == tc.state)
 				}
 			}
+
 			if !found {
 				t.Fatalf("StartInput refusal %v does not name %s on %q", err, tc.feature, tc.state)
 			}
@@ -75,6 +75,13 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 				t.Fatalf("direct Temporal run: %v", err)
 			}
 		})
+	}
+}
+
+func TestMapHasNoFeatureSpecificEngineRefusal(t *testing.T) {
+	def := fanOutEngineDefinition(true)
+	if err := engineadmission.RefuseDefinition(def.Name, def.Spec); err != nil {
+		t.Fatalf("map remains refused after engine support: %v", err)
 	}
 }
 

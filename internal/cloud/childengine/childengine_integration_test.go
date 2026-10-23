@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -75,6 +76,9 @@ func newFamily(t *testing.T) *family {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Roles are cluster-wide: provision them here rather than rely on another
+	// package having run first against the same server.
+	pgtest.EnsureRoles(t, pool)
 	if err := (migrate.Runner{Direct: pool, Catalog: catalog, BackupRef: "childengine-test", InstanceID: "migration", Holder: "migration"}).Apply(t.Context()); err != nil {
 		t.Fatal(err)
 	}

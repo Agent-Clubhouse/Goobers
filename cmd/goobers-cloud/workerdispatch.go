@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/goobers/goobers/internal/childadmissionclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
@@ -61,6 +62,9 @@ type stageDispatch struct {
 	// the narrow sweep interface. Two fields rather than a type assertion make
 	// the boot and worker-lifetime reconciliation wiring explicit.
 	Sweeper stageOrphanSweeper
+	// Children is the engine child-admission plane client, or nil when the
+	// instance has no signing key (the engine then refuses child custody).
+	Children engine.ChildService
 }
 
 // dispatchKubeClient builds the typed clientset for pod creation: in-cluster
@@ -226,7 +230,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
-	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d}, nil
+	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: childadmissionclient.ForWorker(daemonAPI, owner, signed)}, nil
 }
 
 // validateStageDispatchConfig checks the remote planes before the worker can

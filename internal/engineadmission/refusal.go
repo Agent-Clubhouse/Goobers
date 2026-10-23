@@ -46,8 +46,6 @@ var (
 	// parallel_run.go fan-out/fan-in, @join branches and branch-qualified
 	// inputs).
 	ErrParallelsUnsupported = errors.New("spec.parallels (fan-out/fan-in branches) are not implemented on the engine walk")
-	// ErrMapsUnsupported refuses DSL 3.1 spec.maps (data-driven fan-out).
-	ErrMapsUnsupported = errors.New("spec.maps (data-driven fan-out) is not implemented on the engine walk")
 	// ErrHumanGateUnsupported refuses evaluator: human until the engine owns
 	// the occurrence-bound decision protocol.
 	ErrHumanGateUnsupported = errors.New(HumanGateUnsupported)
@@ -127,9 +125,6 @@ func UnsupportedFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 	var out []*UnsupportedFeatureError
 	if len(spec.Parallels) > 0 {
 		out = append(out, &UnsupportedFeatureError{Feature: "spec.parallels", Err: ErrParallelsUnsupported})
-	}
-	for _, m := range spec.Maps {
-		out = append(out, &UnsupportedFeatureError{Stage: m.Name, Feature: "spec.maps", Err: ErrMapsUnsupported})
 	}
 	for _, t := range spec.Tasks {
 		if t.ChildWorkflows != nil {

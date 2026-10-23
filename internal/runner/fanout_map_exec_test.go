@@ -965,12 +965,10 @@ func TestMapEmptyRosterResumeJoinsOnce(t *testing.T) {
 	}
 }
 
-// The map's run-start refusal is lifted for the local runner only: the
-// engine walk keeps refusing a map, and the local runner admits one.
-func TestMapRefusalLiftedForLocalRunnerOnly(t *testing.T) {
+func TestMapAdmissionSupportedByBothRuntimes(t *testing.T) {
 	machine := mapExampleMachine(t, mapOptions{})
-	if err := workflow.RefuseUnsupportedFanOut(machine.Def.Spec); !errors.Is(err, workflow.ErrMapUnsupported) {
-		t.Fatalf("engine refusal = %v, want %v", err, workflow.ErrMapUnsupported)
+	if err := workflow.RefuseUnsupportedFanOut(machine.Def.Spec); err != nil {
+		t.Fatalf("engine admission refused a map: %v", err)
 	}
 	r := &Runner{cfg: Config{RunsDir: t.TempDir()}}
 	if err := r.admitExecution(context.Background(), machine); err != nil {

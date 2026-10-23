@@ -1,6 +1,7 @@
 package runsemantics
 
 import (
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -16,6 +17,17 @@ const (
 	// task's outputs and pointers per roster item, in identity order.
 	MapResultsInput = "mapResults"
 )
+
+// MapItemResult is one ordered mapResults join entry.
+type MapItemResult struct {
+	Identity  string                 `json:"identity"`
+	Digest    string                 `json:"digest"`
+	Branch    int                    `json:"branch"`
+	Status    journal.BranchStatus   `json:"status"`
+	Outputs   map[string]any         `json:"outputs,omitempty"`
+	Integrity apiv1.Integrity        `json:"integrity,omitempty"`
+	Pointers  []apiv1.ContextPointer `json:"pointers,omitempty"`
+}
 
 // SettledBranchStatus is the shared terminal classification for a branch that
 // ran to a boundary. Cancellation/skipping are explicit outcomes applied by

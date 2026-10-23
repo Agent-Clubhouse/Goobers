@@ -7,6 +7,8 @@ import (
 	"maps"
 	"slices"
 
+	"go.temporal.io/sdk/workflow"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runsemantics"
@@ -15,6 +17,7 @@ import (
 // fanOutBindingContext identifies the admitted visit before any body dispatch.
 // Started is the acknowledged lifecycle event, never a projection ordinal.
 type fanOutBindingContext struct {
+	Context workflow.Context
 	Stage   string
 	Branch  int
 	Started livejournal.AppendReceipt
@@ -25,13 +28,14 @@ type fanOutBindingContext struct {
 type fanOutBindings struct {
 	Values map[string]any
 	Grades map[string]apiv1.Integrity
+	Exact  map[string]json.RawMessage
 }
 
-func (r *runJournal) branchBindings(stage string) (fanOutBindings, error) {
+func (r *runJournal) branchBindings(ctx workflow.Context, stage string) (fanOutBindings, error) {
 	if r.branchWalk == nil || r.branchWalk.bind == nil {
 		return fanOutBindings{}, nil
 	}
-	bound, err := r.branchWalk.bind(fanOutBindingContext{Stage: stage, Branch: r.branch, Started: r.branchWalk.started})
+	bound, err := r.branchWalk.bind(fanOutBindingContext{Context: ctx, Stage: stage, Branch: r.branch, Started: r.branchWalk.started})
 	if err != nil {
 		return fanOutBindings{}, err
 	}
@@ -60,6 +64,7 @@ func (r *runJournal) branchBindings(stage string) (fanOutBindings, error) {
 		return fanOutBindings{}, err
 	}
 	bound.Grades = maps.Clone(bound.Grades)
+	bound.Exact = maps.Clone(bound.Exact)
 	return bound, nil
 }
 

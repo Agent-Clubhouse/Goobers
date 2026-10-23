@@ -36,10 +36,12 @@ the migrate Job and the NetworkPolicy `allow-migrate-identity` assume it.
 Roles and the database exist before migrate runs (the owner role needs its
 database, and grant reconciliation needs the API/controller roles). Production
 uses `goobers-cloud bootstrap` (`pgroles.Provision` as the server admin). The
-nightly kind job does not call it yet (#7869 refuses until its steps ship); it
-runs the equivalent idempotent SQL as the CNPG superuser — roles and
-`goobers_<instance-id>` created if missing, passwords re-set each run with
-statement logging off — and swaps to `bootstrap` once that works.
+nightly kind job does not call it yet (it refuses until #7813, #7818 and #7763
+ship). Its kind CNPG cluster already declares the production role contract
+(`goobers_owner`/`goobers_api`/`goobers_controller`/`temporal_app`, random
+passwords from Secrets the runner creates, never logged), so the one thing the
+nightly still does by hand is create `goobers_<instance-id>` with its CONNECT
+grants as the superuser. That step is the single flip point to `bootstrap`.
 
 ## Rollout order
 

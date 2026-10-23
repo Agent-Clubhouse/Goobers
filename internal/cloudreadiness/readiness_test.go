@@ -16,27 +16,28 @@ import (
 	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 func TestCloudReadinessKeepsUnmappedEngineRefusal(t *testing.T) {
-	set := mapReadinessFixture()
-	spec := set.Workflows[0].Spec
-	if err := engineadmission.RefusePlacedDefinition("all-features", spec, nil); !errors.Is(err, engineadmission.ErrMapsUnsupported) {
-		t.Fatalf("engine premise = %v, want map refusal", err)
+	set := blockerFixture()
+	spec := set.Workflows[1].Spec
+	if err := engineadmission.RefusePlacedDefinition("all-features", spec, nil); !errors.Is(err, engineadmission.ErrExperimentUnsupported) {
+		t.Fatalf("engine premise = %v, want experiment refusal", err)
 	}
-	saved := featureBlockers["workflow.spec.maps"]
-	delete(featureBlockers, "workflow.spec.maps")
-	t.Cleanup(func() { featureBlockers["workflow.spec.maps"] = saved })
+	saved := featureBlockers["task.experiment"]
+	delete(featureBlockers, "task.experiment")
+	t.Cleanup(func() { featureBlockers["task.experiment"] = saved })
 
 	result := Assess(readinessRemoteConfig(), set)
-	if result.CloudReady || len(result.Workflows) != 1 {
-		t.Fatalf("engine-refused map assessed ready: %+v", result)
+	if result.CloudReady {
+		t.Fatalf("engine-refused experiment assessed ready: %+v", result)
 	}
-	for _, blocker := range result.Workflows[0].Blockers {
-		if blocker.Code == CodeFeature && blocker.Feature == "spec.maps" &&
-			blocker.Action.Kind == "engine" && blocker.Action.Issue == 0 {
-			return
+	for _, assessed := range result.Workflows {
+		for _, blocker := range assessed.Blockers {
+			if blocker.Code == CodeFeature && blocker.Feature == "task.experiment" &&
+				blocker.Action.Kind == "engine" && blocker.Action.Issue == 0 {
+				return
+			}
 		}
 	}
 	t.Fatalf("unmapped engine refusal disappeared: %+v", result)
@@ -56,32 +57,6 @@ func TestTrustedRemoteUsageLimitsAreCloudReady(t *testing.T) {
 	}
 	if features["task.limits.maxTokens"] || features["task.limits.maxCostUSD"] {
 		t.Fatalf("trusted remote usage limits remain blocked: %+v", result)
-	}
-}
-
-func mapReadinessFixture() *instance.ConfigSet {
-	task := func(name, next string) apiv1.Task {
-		return apiv1.Task{
-			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
-			Run:    &apiv1.DeterministicRun{Command: []string{"true"}},
-			RunsOn: &apiv1.RunsOn{OS: "linux"}, Next: next,
-		}
-	}
-	plan, work, join := task("plan", "items"), task("work", workflow.TargetJoin), task("join", "")
-	plan.ArtifactSlots = []apiv1.ArtifactSlot{{Name: "roster", MediaType: "application/json"}}
-	return &instance.ConfigSet{
-		Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "g"}}},
-		Workflows: []apiv1.Workflow{{
-			ObjectMeta: metav1.ObjectMeta{Name: "mapped"},
-			DSLVersion: supportmatrix.V31DSLVersion,
-			Spec: apiv1.WorkflowSpec{
-				Gaggle: "g", Start: "plan", Tasks: []apiv1.Task{plan, work, join},
-				Maps: []apiv1.Map{{
-					Name: "items", Source: apiv1.FanOutSource{Task: "plan", Slot: "roster"},
-					Task: "work", FailurePolicy: apiv1.BranchContinueOnError, Join: "join",
-				}},
-			},
-		}},
 	}
 }
 
@@ -116,7 +91,7 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 		}
 	}
 	for _, feature := range []string{
-		"spec.parallels", "spec.maps",
+		"spec.parallels",
 		"task.childWorkflows",
 		"task.experiment",
 	} {
@@ -129,8 +104,8 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 		t.Error("human gates still reported as an engine blocker")
 	}
 	if result.Summary.ConfigFixes == 0 || result.Summary.WaitingOnP4 == 0 ||
-		len(result.Summary.P4Issues) != 4 {
-		t.Fatalf("summary = %+v, want config and all 4 remaining P4 issue groups", result.Summary)
+		len(result.Summary.P4Issues) != 3 {
+		t.Fatalf("summary = %+v, want config and all 3 remaining P4 issue groups", result.Summary)
 	}
 }
 

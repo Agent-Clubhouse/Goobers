@@ -22,20 +22,8 @@ import (
 // the journal and the per-occurrence result store, never from goroutine
 // completion order.
 
-// MapItemResult is one entry of the mapResults join input: the item's
-// identity, digest, branch and terminal status, and the newest result the
-// mapped task recorded for it in this visit. Outputs and Pointers are empty
-// for an item that never produced a result (cancelled before it started, or
-// a tolerated failure, which is forgotten as stageOutputs forgets it).
-type MapItemResult struct {
-	Identity  string                 `json:"identity"`
-	Digest    string                 `json:"digest"`
-	Branch    int                    `json:"branch"`
-	Status    journal.BranchStatus   `json:"status"`
-	Outputs   map[string]any         `json:"outputs,omitempty"`
-	Integrity apiv1.Integrity        `json:"integrity,omitempty"`
-	Pointers  []apiv1.ContextPointer `json:"pointers,omitempty"`
-}
+// MapItemResult remains the runner-facing name of the shared join contract.
+type MapItemResult = runsemantics.MapItemResult
 
 // mapVisit is the frozen roster one map execution expands.
 type mapVisit struct {

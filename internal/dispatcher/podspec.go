@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -40,6 +41,9 @@ const (
 	LabelAttempt = "goobers.dev/attempt"
 	// LabelPodAttempt is the optional physical dispatch ordinal across visits.
 	LabelPodAttempt = "goobers.dev/pod-attempt"
+	// LabelFanOutVisit and LabelFanOutBranch scope one branch occurrence.
+	LabelFanOutVisit  = "goobers.dev/fanout-visit"
+	LabelFanOutBranch = "goobers.dev/fanout-branch"
 	// LabelInstance scopes orphan reconciliation to one durable Goobers
 	// instance even when several instances share Kubernetes namespaces.
 	LabelInstance = "goobers.dev/instance"
@@ -643,6 +647,20 @@ func (e *WindowsIdentityError) Error() string {
 // new pod" holds by construction and a redelivered create of the SAME attempt
 // collides with its own pod instead of silently making a second one.
 func PodName(attempt Attempt) string {
+	if attempt.FanOutVisit > 0 && attempt.FanOutBranch > 0 {
+		suffix := fmt.Sprintf("-v%s-b%d-a%d",
+			strconv.FormatUint(attempt.FanOutVisit, 36),
+			attempt.FanOutBranch,
+			attempt.IdentityAttempt(),
+		)
+		const prefix = "gbn-"
+		budget := 63 - len(prefix) - len(suffix) - 1
+		stageBudget := max(1, min(16, budget/2))
+		runBudget := max(1, budget-stageBudget)
+		stage := sanitizeNameSegment(attempt.Stage, stageBudget)
+		run := sanitizeNameSegment(attempt.RunID, runBudget)
+		return prefix + stage + "-" + run + suffix
+	}
 	stage := sanitizeNameSegment(attempt.Stage, 20)
 	run := sanitizeNameSegment(attempt.RunID, 24)
 	return fmt.Sprintf("gbn-%s-%s-a%d", stage, run, attempt.IdentityAttempt())
@@ -813,6 +831,8 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 
 	labels := copyStringMap(template.Labels)
 	delete(labels, LabelPodAttempt)
+	delete(labels, LabelFanOutVisit)
+	delete(labels, LabelFanOutBranch)
 	for key, value := range attempt.ExtraLabels {
 		labels[key] = value
 	}
@@ -1099,6 +1119,10 @@ func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]st
 	}
 	if attempt.PodAttempt > 0 {
 		labels[LabelPodAttempt] = fmt.Sprint(attempt.PodAttempt)
+	}
+	if attempt.FanOutVisit > 0 && attempt.FanOutBranch > 0 {
+		labels[LabelFanOutVisit] = fmt.Sprint(attempt.FanOutVisit)
+		labels[LabelFanOutBranch] = fmt.Sprint(attempt.FanOutBranch)
 	}
 	// Absent owner stamps nothing rather than an "unknown" placeholder; owner
 	// is provenance, while LabelInstance is the sweep's stable safety scope.
