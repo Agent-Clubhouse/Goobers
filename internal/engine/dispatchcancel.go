@@ -18,10 +18,13 @@ const (
 	dispatchCancellationChange      = "dispatch-cancellation-v1"
 	dispatchHeartbeatContractChange = "dispatch-heartbeat-contract-v2"
 	dispatchHeartbeatTimeout        = 10 * time.Second
-	dispatchHeartbeatTimeoutV2      = time.Minute
 	dispatchHeartbeatInterval       = time.Second
 	dispatchSurrenderReadTimeout    = 30 * time.Second
 )
+
+// dispatchHeartbeatTimeoutV2 is a variable only so real-server recovery tests
+// can shorten worker-loss detection; production never assigns it.
+var dispatchHeartbeatTimeoutV2 = time.Minute
 
 // DispatchHeartbeatThrottleInterval keeps cancellation delivery at the prior
 // eight-second cadence even when the server heartbeat timeout is longer. The

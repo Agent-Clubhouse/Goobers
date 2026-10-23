@@ -164,6 +164,9 @@ func (r *runJournal) admitChild(ctx workflow.Context, plan childAdmissionPlan) (
 		return binding, err
 	}
 	if !binding.sameParent(plan.Input) {
+		if binding.restartedParent(plan.Input) {
+			return binding, errSealedChildRestart
+		}
 		return binding, errors.New("engine: admission receipt differs from parent intent")
 	}
 	return binding, nil
