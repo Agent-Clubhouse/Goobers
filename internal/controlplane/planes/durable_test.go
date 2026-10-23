@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -320,4 +321,86 @@ func TestCancelReceiptServiceErrorBranches(t *testing.T) {
 func isIntervention(err error, status int, code string) bool {
 	var intervention *httpapi.InterventionError
 	return errors.As(err, &intervention) && intervention.Status == status && intervention.Code == code
+}
+
+// releasingBackend frees the queue's write lock once the sweep's prune pass is
+// over, so the rest of the same Drain runs against an available queue.
+type releasingBackend struct {
+	durableBackendStub
+	release func()
+}
+
+func (b releasingBackend) SweepChildren(context.Context) error {
+	b.release()
+	return nil
+}
+
+func TestDrainTreatsPruneBudgetExhaustionAsResumeNextSweep(t *testing.T) {
+	dispatch := &triggerStub{}
+	trigger := NewTriggerService()
+	trigger.AttachDispatcher(dispatch)
+	path := filepath.Join(t.TempDir(), "accepted.db")
+	var unlock func()
+	backend := releasingBackend{release: func() {
+		if unlock != nil {
+			unlock()
+		}
+	}}
+	service, err := NewDurableTriggerService(path, trigger, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	service.pruneBudget = time.Millisecond
+
+	accepted, err := service.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "implementation", RequestID: "delivery", Actor: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An admission in flight holds the queue's single connection, as a child
+	// launch does, so the prune cannot acquire it inside its budget.
+	entered, held := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := service.queue.AcceptAdmitted(context.Background(), "holder", "operator", []byte(`{"kind":"holder"}`), time.Now(), func() error {
+			close(entered)
+			<-held
+			return errors.New("holder admission refused")
+		})
+		done <- err
+	}()
+	<-entered
+	var once sync.Once
+	unlock = func() { once.Do(func() { close(held) }) }
+	t.Cleanup(unlock)
+
+	if err := service.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain returned %v, want nil when only the prune budget was exhausted", err)
+	}
+	if dispatch.calls != 1 {
+		t.Fatalf("dispatch calls = %d, want the pending trigger dispatched", dispatch.calls)
+	}
+	status, err := service.TriggerStatus(t.Context(), httpapi.TriggerStatusRequest{AcceptanceID: accepted.AcceptanceID, Actor: "operator"})
+	if err != nil || status.State != string(triggerqueue.Dispatching) {
+		t.Fatalf("status = %+v, %v", status, err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("holder admission unexpectedly succeeded")
+	}
+}
+
+func TestDrainStillReportsParentCancellation(t *testing.T) {
+	trigger := NewTriggerService()
+	trigger.AttachDispatcher(&triggerStub{})
+	service, err := NewDurableTriggerService(filepath.Join(t.TempDir(), "accepted.db"), trigger, durableBackendStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := service.Drain(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Drain on a cancelled context = %v, want context.Canceled", err)
+	}
 }
