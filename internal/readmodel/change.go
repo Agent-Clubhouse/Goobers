@@ -135,7 +135,7 @@ func EvaluateCursor(cursor Cursor, state State) CursorCondition {
 		return CursorSchemaChanged
 	case cursor.Epoch != state.Epoch:
 		return CursorEpochChanged
-	case cursor.Seq < state.MinChangeSeq:
+	case state.MinChangeSeq > 0 && cursor.Seq < state.MinChangeSeq-1:
 		return CursorFeedTruncated
 	default:
 		return CursorOK

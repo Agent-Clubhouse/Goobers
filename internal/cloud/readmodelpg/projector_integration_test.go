@@ -17,15 +17,16 @@ import (
 )
 
 func TestProjectorFencedCommit(t *testing.T) {
-	pool := testPool(t)
-	applyMigrations(t, pool)
-	resetReadmodel(t, pool)
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	pool := controllerPool(t, admin)
 	instanceID := "projector-fence-" + t.Name()
 	old, _, oldHandle := testProjector(t, pool, instanceID, "old", nil)
 	if err := old.Commit(t.Context(), testProjection("old-commit", 1)); err != nil {
 		t.Fatal(err)
 	}
-	expireProjectorLease(t, pool, oldHandle)
+	expireProjectorLease(t, admin, oldHandle)
 	current, _, _ := testProjector(t, pool, instanceID, "current", nil)
 	if err := old.Commit(t.Context(), testProjection("stale-commit", 1)); !errors.Is(err, cloudlease.ErrStale) {
 		t.Fatalf("stale projector commit = %v, want ErrStale", err)

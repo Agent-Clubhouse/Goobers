@@ -48,29 +48,31 @@ func (f testFence) WithFence(
 }
 
 func TestPostgresConformance(t *testing.T) {
-	pool := testPool(t)
-	applyMigrations(t, pool)
-	resetReadmodel(t, pool)
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	pool := controllerPool(t, admin)
 	var version atomic.Int64
 	version.Store(1)
 	conformance.Run(t, func(t *testing.T) readmodel.Backend {
 		current := int(version.Add(1))
 		fence := testFence{pool: pool, epoch: int64(current)}
-		builder, err := readmodelpg.NewBuilder(pool, fence)
+		builder, err := readmodelpg.NewBuilder(
+			admin, testFence{pool: admin, epoch: int64(current)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := builder.CreateEmptyVersion(t.Context(), current); err != nil {
 			t.Fatal(err)
 		}
-		activateVersion(t, pool, current, int64(current))
+		activateVersion(t, admin, current, int64(current))
 		store, err := readmodelpg.NewVersion(t.Context(), pool, current, fence)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
 			schema := pgx.Identifier{fmt.Sprintf("readmodel_v%d", current)}.Sanitize()
-			if _, err := pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`); err != nil {
+			if _, err := admin.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`); err != nil {
 				t.Errorf("drop test schema: %v", err)
 			}
 		})
@@ -82,16 +84,7 @@ func TestChangeFeedAsControllerRole(t *testing.T) {
 	admin := testPool(t)
 	applyMigrations(t, admin)
 	resetReadmodel(t, admin)
-	config := admin.Config().Copy()
-	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
-		return err
-	}
-	controller, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(controller.Close)
+	controller := controllerPool(t, admin)
 	store, err := readmodelpg.New(
 		t.Context(), controller, testFence{pool: controller, epoch: 2})
 	if err != nil {
@@ -496,9 +489,10 @@ func TestRebuildFlipIsAtomic(t *testing.T) {
 }
 
 func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
-	pool := testPool(t)
-	applyMigrations(t, pool)
-	resetReadmodel(t, pool)
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	pool := controllerPool(t, admin)
 	fence := testFence{pool: pool, epoch: 7}
 	source, err := readmodelpg.New(t.Context(), pool, fence)
 	if err != nil {
@@ -507,7 +501,8 @@ func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
 	if err := source.UpsertRun(t.Context(), testProjection("baseline", 1)); err != nil {
 		t.Fatal(err)
 	}
-	builder, _ := readmodelpg.NewBuilder(pool, fence)
+	builder, _ := readmodelpg.NewBuilder(
+		admin, testFence{pool: admin, epoch: 7})
 	if err := builder.Build(t.Context(), "readmodel_v2"); err != nil {
 		t.Fatal(err)
 	}
@@ -534,12 +529,31 @@ func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
 		t.Fatalf("rebuilt feed: latest=%d floor=%d changes=%v, want 1/2/empty",
 			latest, state.MinChangeSeq, changes)
 	}
+	head, err := active.ChangeFeed().Head(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Seq != state.MinChangeSeq-1 {
+		t.Fatalf("rebuilt head seq = %d, want floor-1 = %d",
+			head.Seq, state.MinChangeSeq-1)
+	}
 	condition := readmodel.EvaluateCursor(readmodel.Cursor{
 		SchemaVersion: state.SchemaVersion, Epoch: state.Epoch, Seq: latest,
 	}, state)
-	if condition != readmodel.CursorFeedTruncated {
-		t.Fatalf("resume at discarded baseline = %q, want %q",
-			condition, readmodel.CursorFeedTruncated)
+	if condition != readmodel.CursorOK {
+		t.Fatalf("resume immediately before floor = %q, want %q",
+			condition, readmodel.CursorOK)
+	}
+	if err := active.PublishDefinitionsChanged(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	position, err := active.ChangeFeed().Since(t.Context(), head, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(position.Changes) != 1 ||
+		position.Changes[0].Kind != readmodel.ChangeDefinitionsChanged {
+		t.Fatalf("first post-flip change = %+v", position.Changes)
 	}
 }
 
@@ -613,6 +627,21 @@ func testPool(t *testing.T) *pgxpool.Pool {
 		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
 		admin.Close()
 	})
+	return pool
+}
+
+func controllerPool(t *testing.T, admin *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := admin.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	return pool
 }
 
