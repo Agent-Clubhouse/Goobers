@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,6 +176,8 @@ type DispatchStageInput struct {
 	// Custody asks a replacement worker to adopt this exact live pod instead
 	// of creating another one. Additive for recorded histories.
 	Custody *dispatcher.PodCustody `json:"custody,omitempty"`
+	// Outbox is the pinned workspace-relative export declaration.
+	Outbox []string `json:"outbox,omitempty"`
 }
 
 // gatePodAttempt names the pod attempt number for one dispatch of a reviewer
@@ -379,6 +383,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			WorkspaceDelta:   workspaceDelta,
 			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			Outbox:           append([]string(nil), t.Outbox...),
 			UsageAllowance:   versionedRemoteUsageAllowance(ctx, allowance),
 		})
 		result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
@@ -626,6 +631,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
 	attempt.Capabilities = input.Envelope.Capabilities
+	attempt.Outbox = append([]string(nil), input.Outbox...)
 	attempt.UsageAllowance = usageallowance.Clone(input.UsageAllowance)
 
 	// An agentic stage executes by invoking a goober rather than running a
@@ -801,8 +807,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return unreadableSurrenderFailure(input, attempt, report, rerr)
 	}
 	usage := surrenderedAttemptUsage(surrendered)
-	if surrendered.Result.Status == "" {
-		return dispatchFailureResultWithUsage(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report, usage, !usage.Reported)
+	if err := validateSurrenderedTaskResult(input, attempt.Number, surrendered); err != nil {
+		return dispatchFailureResultWithUsage(classifySeamError(err), report, usage, !usage.Reported)
 	}
 	if rejection := admitDistributedRevision(&surrendered.Result, input.Run != nil); rejection != nil {
 		return dispatchFailureResultWithUsage(classifySeamError(rejection), report, usage, !usage.Reported)
@@ -819,6 +825,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return dispatchFailureResultWithUsage(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report, usage, !usage.Reported)
 	}
 	result, resultErr := a.scrubStageActivityResult(ctx, stageActivityResult{
+		Outbox:             append([]dispatcher.SurrenderedOutboxFile(nil), surrendered.Outbox...),
 		Usage:              usage,
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
@@ -885,6 +892,56 @@ func surrenderedAttemptUsage(surrendered dispatcher.SurrenderedResult) *AttemptU
 	return &AttemptUsage{
 		Metrics: maps.Clone(surrendered.ObservedUsage), Reported: surrendered.ObservedUsageReported,
 	}
+}
+
+func validateSurrenderedTaskResult(input DispatchStageInput, attempt int, surrendered dispatcher.SurrenderedResult) error {
+	if err := validateSurrenderedOutbox(input, surrendered); err != nil {
+		return err
+	}
+	if surrendered.Result.Status == "" {
+		return fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt)
+	}
+	return nil
+}
+
+func validateSurrenderedOutbox(input DispatchStageInput, surrendered dispatcher.SurrenderedResult) error {
+	files := surrendered.Outbox
+	if input.Review && (len(files) > 0 || surrendered.OutboxExported) {
+		return errors.New("engine: reviewer surrender carries task outbox files")
+	}
+	if len(input.Outbox) == 0 {
+		if surrendered.OutboxExported {
+			return errors.New("engine: surrender acknowledges an undeclared task outbox")
+		}
+		return nil
+	}
+	if surrendered.ContractVersion < dispatcher.SurrenderContractV3 {
+		return fmt.Errorf("engine: task %q declares outbox paths but the surrender writer does not support contract v%d", input.Envelope.TaskID, dispatcher.SurrenderContractV3)
+	}
+	requiresExport := surrendered.OutboxExecutionStarted || surrendered.Result.Status == apiv1.ResultSuccess
+	if requiresExport && !surrendered.OutboxExported && !runsemantics.IsOutboxExportFailure(surrendered.Result) {
+		return fmt.Errorf("engine: task %q declares outbox paths but the surrender does not acknowledge export", input.Envelope.TaskID)
+	}
+	declared := make([]string, 0, len(input.Outbox))
+	for _, entry := range input.Outbox {
+		clean := path.Clean(filepath.ToSlash(entry))
+		if clean != ".." && !strings.HasPrefix(clean, "../") && !path.IsAbs(clean) {
+			declared = append(declared, clean)
+		}
+	}
+	for _, file := range files {
+		matched := false
+		for _, entry := range declared {
+			if entry == "." || file.RelPath == entry || strings.HasPrefix(file.RelPath, entry+"/") {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("engine: surrendered outbox file %q was not declared by task %q", file.RelPath, input.Envelope.TaskID)
+		}
+	}
+	return nil
 }
 
 // reviewActivityResult projects a REVIEW attempt's surrender (decision 001

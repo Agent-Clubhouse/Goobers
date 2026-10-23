@@ -49,6 +49,15 @@ func setup(t *testing.T) cluster {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var closed bool
+	if err := superuser.QueryRow(t.Context(), `SELECT NOT EXISTS (
+		SELECT 1 FROM pg_database d, aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a
+		WHERE d.datname = current_database() AND a.grantee = 0 AND a.privilege_type = 'CONNECT')`).Scan(&closed); err != nil {
+		t.Fatal(err)
+	}
+	if closed {
+		t.Fatal("the test server's default database is closed to PUBLIC (CONNECT revoked): an earlier test ran pgroles.Provision on it. Provision closes the database it runs on, so tests must provision against a scratch maintenance database")
+	}
 	databases, err := pgroles.Databases(instance)
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,14 @@ byte-identical copies of the files in
 `501527ab9c40c827144c8f45945b25a023e344ce`. The layout,
 `<group>/<kind>_<version>.json`, matches kubeconform's schema-location template.
 
+The `postgresql.cnpg.io` schemas at that commit are CloudNativePG **1.29.0**, so
+`make deploy-validate` checks the CNPG reference against the 1.29 API. The
+reference documents a minimum operator of **1.26** (the first release with
+`dataDurability`; see `deploy/reference/goobers-cloud/cnpg/README.md`). Nothing
+here validates against 1.26–1.28, so a field the reference uses that is newer
+than its documented minimum would still pass. The `barmancloud.cnpg.io` schema
+comes from the Barman Cloud plugin, not the operator release.
+
 | File | SHA-256 |
 |---|---|
 | `barmancloud.cnpg.io/objectstore_v1.json` | `bc4e8f8ad33e925b190e0697c49917193193d6d9f0324e2a02fb91152ce249ff` |

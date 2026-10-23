@@ -65,10 +65,19 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	// childLineage is derived only from a verified frozen binding during workflow execution.
+	childLineage *journal.ChildLineage
+	// FrozenChild is internal protocol data; the production Run entry refuses it.
+	FrozenChild *ChildRunBinding `json:"frozenChild,omitempty"`
 	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
-	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
-	InstanceID             string             `json:"instanceId,omitempty"`
-	RunID                  string             `json:"runId"`
+	SelfExecutionDenied bool   `json:"selfExecutionDenied,omitempty"`
+	InstanceID          string `json:"instanceId,omitempty"`
+	RunID               string `json:"runId"`
+	// StartPredecessorEpoch is admission-only proof, never serialized to Temporal.
+	StartPredecessorEpoch  int64              `json:"-"`
+	AcceptanceID           string             `json:"acceptanceId,omitempty"`
+	OwnerEpoch             int64              `json:"ownerEpoch,omitempty"`
+	StarterID              string             `json:"starterId,omitempty"`
 	Gaggle                 string             `json:"gaggle"`
 	WorkflowName           string             `json:"workflowName"`
 	Version                int                `json:"version"`
@@ -247,6 +256,9 @@ func HumanGateSignal(gateName string) string {
 // local runner journals its own, so the projected runs/<id>/ record is
 // indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
+	if in.FrozenChild != nil {
+		return runFrozenChild(ctx, in)
+	}
 	return run(ctx, in)
 }
 
@@ -263,9 +275,6 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
 	)
 	if err != nil {
-		return RunResult{}, err
-	}
-	if err := refuseRemoteUsage(in.WorkflowName, in.Spec, in.Placements); err != nil {
 		return RunResult{}, err
 	}
 	if !humanGateImplementationEnabled(ctx) {
@@ -772,6 +781,10 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		if workspaceHeadMovedResult(result) {
 			rec.workspaceHeadMoved(ctx, t.Name, result.Error.Message)
 			return "", supersededRunResult(t.Name, upstream, steps), true
+		}
+		if runsemantics.IsOutboxExportFailure(result) {
+			code, message := failureCause(result.Error)
+			return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
 		}
 		if t.ContinueOnError {
 			rec.toleratedFailure(ctx, t.Name)

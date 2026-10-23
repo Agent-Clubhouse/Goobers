@@ -31,8 +31,14 @@ it passes.
 Provision Postgres, a fresh HA Temporal and object storage, then:
 
 ```sh
-goobers-cloud bootstrap --instance-id ID --backup-ref REF
+goobers-cloud bootstrap --instance-id ID --backup-ref REF \
+  --admin-url-file ADMIN_URL --database-direct-url-file OWNER_URL
 ```
+
+Bootstrap uses two identities: the server administrator creates roles and
+databases, and the instance owner runs migrations. The api and controller
+roles are created without schema rights; they are the control role's two
+pools.
 
 Bootstrap first probes every dependency (database, bucket, roles) without
 changing anything, and refuses if any is down. It then creates the database and roles, applies migrations, creates the first
