@@ -27,6 +27,7 @@
       ".github/workflows/ci.yml#checks/fmt \u00b7 tidy \u00b7 no-phone-home \u00b7 vet \u00b7 build \u00b7 portal:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke[2]:go-modules",
+      ".github/workflows/ci.yml#cloud-pg/Run PostgreSQL journal conformance:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Record CI diagnostics:go-modules",
       ".github/workflows/ci.yml#cmdgoobers-growth/Enforce cmd/goobers growth ratchet:go-modules",
       ".github/workflows/ci.yml#darwin-build/Download modules:go-modules",
