@@ -113,13 +113,13 @@ func (b *Backend) previousOccurrence(ctx context.Context, tx pgx.Tx, r *runOwner
 
 func notificationIndex(event journal.Event) (string, string, int) {
 	if receipt := event.NotificationReceipt; receipt != nil {
-		return receipt.IdempotencyDigest, string(receipt.Sink.Kind), receipt.Attempt
+		return receipt.IdempotencyDigest, receipt.Sink.Kind, receipt.Attempt
 	}
 	return "", "", 0
 }
 func (b *Backend) latestNotification(ctx context.Context, tx pgx.Tx, runID string, receipt apiv1.NotificationReceipt) (*apiv1.NotificationReceipt, error) {
 	var raw []byte
-	err := tx.QueryRow(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND notification_key=$3 AND notification_sink=$4 AND notification_attempt<>0 ORDER BY seq DESC LIMIT 1`, b.config.InstanceID, runID, receipt.IdempotencyDigest, string(receipt.Sink.Kind)).Scan(&raw)
+	err := tx.QueryRow(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND notification_key=$3 AND notification_sink=$4 AND notification_attempt<>0 ORDER BY seq DESC LIMIT 1`, b.config.InstanceID, runID, receipt.IdempotencyDigest, receipt.Sink.Kind).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
