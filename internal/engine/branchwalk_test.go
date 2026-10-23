@@ -127,12 +127,12 @@ func staticBranchBodies(ctx workflow.Context, input branchWalkTestInput) (branch
 }
 
 func branchBodyInput(name string, gateBody, secondStage bool) branchWalkTestInput {
-	seed, a, b, after, join := r9Task("seed"), r9Task("alpha"), r9Task("beta"), r9Task("after"), r9Task("join")
+	seed, a, b, after, join := detTask("seed", ""), detTask("alpha", ""), detTask("beta", ""), detTask("after", ""), detTask("join", "")
 	seed.Next = "parallel"
 	a.Next, b.Next, after.Next = wf.TargetJoin, wf.TargetJoin, wf.TargetJoin
 	a.InputsFrom, b.InputsFrom = map[string]string{"root": "seed.value"}, map[string]string{"root": "seed.value"}
 	a.ContextFrom = []string{"seed"}
-	spec := r9Spec(seed, a, b, join)
+	spec := apiv1.WorkflowSpec{Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}, Start: seed.Name, Tasks: []apiv1.Task{seed, a, b, join}}
 	if secondStage {
 		spec.Tasks[1].Next = "after"
 		after.InputsFrom = map[string]string{"own": "alpha.value"}
