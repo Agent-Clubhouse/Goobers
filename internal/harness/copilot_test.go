@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 const (
@@ -2872,6 +2873,7 @@ func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var usageProbe bool
 	adapter := &CopilotAdapter{
 		Command:            []string{program, "forwarding-launcher"},
@@ -2892,6 +2894,23 @@ func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
 	}
 	if adapter.usageOutputDisabled() {
 		t.Fatal("verified launcher usage output remained disabled")
+	}
+}
+
+func TestApplyCopilotUsageDocumentReportsSink(t *testing.T) {
+	out := Outcome{Metrics: map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens: 9,
+	}}
+	var observed map[string]float64
+	applyCopilotUsageDocument(&out, filepath.Join(t.TempDir(), "missing.json"), func(metrics map[string]float64) {
+		observed = metrics
+	})
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 9 {
+		t.Fatalf("Copilot usage sink = %v", observed)
+	}
+	out.Metrics[telemetry.AttrGenAIUsageInputTokens] = 99
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 9 {
+		t.Fatal("Copilot usage sink retained a mutable metrics map")
 	}
 }
 

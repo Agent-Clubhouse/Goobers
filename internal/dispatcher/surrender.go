@@ -62,6 +62,13 @@ const (
 	// CodeAgenticKitUnavailable: the kit digest was stamped but the blob
 	// plane did not serve or did not verify it.
 	CodeAgenticKitUnavailable = "agentic_kit_unavailable"
+	// SurrenderContractV1 is the original result contract without trusted
+	// supervisor usage. Omitted contractVersion decodes as v1 for N-1 workers.
+	SurrenderContractV1 = 1
+	// SurrenderContractV2 adds trusted supervisor-observed usage.
+	SurrenderContractV2 = 2
+	// CurrentSurrenderContract is stamped by every current pod writer.
+	CurrentSurrenderContract = SurrenderContractV2
 )
 
 // SurrenderPlane stores and serves surrendered result documents by attempt
@@ -106,6 +113,9 @@ type SurrenderedMutation struct {
 // (ResultEnvelope + mutation facts + mutation issues), so the dispatch
 // activity can marshal it back into the identical stageActivityResult.
 type SurrenderedResult struct {
+	// ContractVersion is additive. Omitted means v1, so a current reader
+	// accepts an N-1 writer and an N-1 reader ignores this v2 field.
+	ContractVersion int `json:"contractVersion,omitempty"`
 	// ObservedUsage comes from the isolated harness adapter, not model-authored metrics.
 	ObservedUsage         map[string]float64 `json:"observedUsage,omitempty"`
 	ObservedUsageReported bool               `json:"observedUsageReported,omitempty"`
@@ -191,6 +201,16 @@ type SurrenderedResult struct {
 // they are, since those are routing decisions the engine — not the transport —
 // owns.
 func (r SurrenderedResult) Validate() error {
+	version := r.ContractVersion
+	if version == 0 {
+		version = SurrenderContractV1
+	}
+	if version != SurrenderContractV1 && version != SurrenderContractV2 {
+		return fmt.Errorf("dispatcher: unsupported surrender contract version %d", r.ContractVersion)
+	}
+	if version < SurrenderContractV2 && (r.ObservedUsageReported || len(r.ObservedUsage) > 0) {
+		return fmt.Errorf("dispatcher: observed usage requires surrender contract version %d", SurrenderContractV2)
+	}
 	if len(r.ObservedUsage) > 64 || (len(r.ObservedUsage) > 0 && !r.ObservedUsageReported) {
 		return fmt.Errorf("dispatcher: observed usage exceeds bound")
 	}

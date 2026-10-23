@@ -8,11 +8,10 @@ package main
 // ServiceAccount, or the standard kubeconfig loading rules outside a pod).
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/url"
-	"os"
+
 	"strconv"
 	"strings"
 	"time"
@@ -318,11 +317,7 @@ func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
 	if path == "" {
 		return nil, nil
 	}
-	key, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
-	}
-	signed, err := podauth.NewSignedKey(bytes.TrimSpace(key))
+	signed, err := podauth.LoadSignedKeyFile(path)
 	if err != nil {
 		return nil, err
 	}

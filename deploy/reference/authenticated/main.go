@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -560,60 +561,66 @@ func deployment(o options, bundle, initCommand string, data map[string][]byte, d
 	if err := readObject(filepath.Join(o.Reference, "goobers-system", name), &d); err != nil {
 		return nil, err
 	}
-	one := int32(1)
-	d.Spec.Replicas = &one
-	d.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 	p := &d.Spec.Template.Spec
-	if !daemon {
+	if daemon {
+		one := int32(1)
+		d.Spec.Replicas = &one
+		d.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	} else {
 		seconds := int64(workerTerminationGrace / time.Second)
 		p.TerminationGracePeriodSeconds = &seconds
 	}
-	d.Spec.Template.Annotations = map[string]string{"goobers.dev/config-bundle": bundle}
 	mode := int32(0440)
-	var modes map[string]int32
-	if err := json.Unmarshal(data["modes.json"], &modes); err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(modes))
-	for key := range modes {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	items := make([]corev1.KeyToPath, 0, len(keys))
-	for _, key := range keys {
-		mode := modes[key]
-		items = append(items, corev1.KeyToPath{Key: key, Path: key, Mode: &mode})
-	}
-	p.Volumes = append(p.Volumes, corev1.Volume{Name: "prepared-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		corev1.Volume{Name: "config-bundle", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: bundle, DefaultMode: &mode, Items: items}}},
+	p.Volumes = append(p.Volumes,
 		corev1.Volume{Name: "pod-auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: o.TokenSecret, DefaultMode: &mode}}},
 		corev1.Volume{Name: "api-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: o.CAConfigMap}}}})
 	no := false
 	yes := true
-	p.InitContainers = []corev1.Container{{Name: "prepare-config", Image: o.Image, Command: []string{"sh", "-c"}, Args: []string{initCommand}, SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &no, ReadOnlyRootFilesystem: &yes, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}, VolumeMounts: []corev1.VolumeMount{{Name: "prepared-config", MountPath: "/prepared"}, {Name: "config-bundle", MountPath: "/bundle", ReadOnly: true}}}}
-	if o.TemporalCodecKeySecret != "" {
-		mountTemporalCodecKey(p, o.TemporalCodecKeySecret)
-	}
 	c := &p.Containers[0]
 	c.Image = o.Image
-	c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/config", SubPath: "config", ReadOnly: true}, corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/goobers", SubPath: "goobers", ReadOnly: true}, corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/instance.yaml", SubPath: "instance.yaml", ReadOnly: true}, corev1.VolumeMount{Name: "pod-auth", MountPath: "/run/goobers/pod-auth", ReadOnly: true}, corev1.VolumeMount{Name: "api-ca", MountPath: "/run/goobers/ca", ReadOnly: true})
+	c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "pod-auth", MountPath: "/run/goobers/pod-auth", ReadOnly: true}, corev1.VolumeMount{Name: "api-ca", MountPath: "/run/goobers/ca", ReadOnly: true})
 	c.Env = append(c.Env, corev1.EnvVar{Name: "SSL_CERT_FILE", Value: "/run/goobers/ca/ca.crt"})
-	if o.CredentialsSecret != "" {
-		p.Volumes = append(p.Volumes, corev1.Volume{Name: "credentials", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: o.CredentialsSecret, DefaultMode: &mode}}})
-		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "credentials", MountPath: "/run/goobers/credentials", ReadOnly: true})
-	}
 	if daemon {
+		d.Spec.Template.Annotations = map[string]string{"goobers.dev/config-bundle": bundle}
+		var modes map[string]int32
+		if err := json.Unmarshal(data["modes.json"], &modes); err != nil {
+			return nil, err
+		}
+		keys := make([]string, 0, len(modes))
+		for key := range modes {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		items := make([]corev1.KeyToPath, 0, len(keys))
+		for _, key := range keys {
+			itemMode := modes[key]
+			items = append(items, corev1.KeyToPath{Key: key, Path: key, Mode: &itemMode})
+		}
+		p.Volumes = append(p.Volumes,
+			corev1.Volume{Name: "prepared-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			corev1.Volume{Name: "config-bundle", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: bundle, DefaultMode: &mode, Items: items}}})
+		p.InitContainers = []corev1.Container{{Name: "prepare-config", Image: o.Image, Command: []string{"sh", "-c"}, Args: []string{initCommand}, SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &no, ReadOnlyRootFilesystem: &yes, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}, VolumeMounts: []corev1.VolumeMount{{Name: "prepared-config", MountPath: "/prepared"}, {Name: "config-bundle", MountPath: "/bundle", ReadOnly: true}}}}
+		c.VolumeMounts = append(c.VolumeMounts,
+			corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/config", SubPath: "config", ReadOnly: true},
+			corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/goobers", SubPath: "goobers", ReadOnly: true},
+			corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/instance.yaml", SubPath: "instance.yaml", ReadOnly: true})
+		if o.CredentialsSecret != "" {
+			p.Volumes = append(p.Volumes, corev1.Volume{Name: "credentials", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: o.CredentialsSecret, DefaultMode: &mode}}})
+			c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "credentials", MountPath: "/run/goobers/credentials", ReadOnly: true})
+		}
 		p.AutomountServiceAccountToken = &no
 		p.Volumes = append(p.Volumes, corev1.Volume{Name: "api-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: o.TLSSecret, DefaultMode: &mode}}}, corev1.Volume{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "api-tls", MountPath: "/run/goobers/tls", ReadOnly: true}, corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
 	} else {
-		for i := range p.Volumes {
-			if p.Volumes[i].Name == "journal" {
-				p.Volumes[i].VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-			}
-		}
-		c.Args = []string{"worker", "--instance", "/var/lib/goobers", "--work-root", "/var/lib/goobers-worker", "--blob-store", "/var/lib/goobers-blobs", "--dispatch-namespace", o.StageNamespace, "--daemon-api", apiURL, "--task-queue", cfg.Engine.TaskQueue, "--temporal-hostport", cfg.Engine.HostPort, "--temporal-namespace", cfg.Engine.Namespace, "--config-reload-interval", "10s"}
-		c.Env = append(c.Env, corev1.EnvVar{Name: "GOOBERS_BLOB_ENDPOINT", Value: apiURL})
+		p.Volumes = slices.DeleteFunc(p.Volumes, func(v corev1.Volume) bool { return v.Name == "config-key" })
+		c.VolumeMounts = slices.DeleteFunc(c.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == "config-key" })
+		c.Args = []string{"worker", "--task-queue", cfg.Engine.TaskQueue, "--temporal-hostport", cfg.Engine.HostPort, "--temporal-namespace", cfg.Engine.Namespace,
+			"--work-root", "/var/lib/goobers-worker", "--health-addr", ":8081", "--max-concurrent-activities", "4",
+			"--config-endpoint", apiURL, "--config-key-file", "/run/goobers/pod-auth/pod-token.key",
+			"--blob-endpoint", apiURL, "--daemon-api", apiURL, "--dispatch-namespace", o.StageNamespace, "--config-reload-interval", "10s"}
+	}
+	if o.TemporalCodecKeySecret != "" {
+		mountTemporalCodecKey(p, o.TemporalCodecKeySecret, o.Image)
 	}
 	return &d, nil
 }

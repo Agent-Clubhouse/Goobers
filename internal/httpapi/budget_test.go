@@ -78,13 +78,13 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 			// abort", so the server decides rather than the client. RunArtifact
 			// and RunTranscript are the known defect (apicontract cost_test) —
 			// the portal DOES fetch them, through the same 10s client. The
-			// credential plane's resolve route and the blob plane's digest GET
-			// are exempt BY DESIGN rather than defect: both serve stage pods
-			// only (decision 010/012, DS9) and are never called through the
-			// portal client this rule is about, so there is no client to race
-			// in the first place. Credential resolve additionally contains an
+			// credential plane's resolve route, blob GET and worker config snapshot
+			// are exempt BY DESIGN rather than defect: they serve machine
+			// principals only (decision 010/012, DS9), never the portal client
+			// this rule is about. Credential resolve additionally contains an
 			// outbound GitHub App mint (30s ceiling); blob GET's budget is the
 			// shared CostBlob transfer-bound ceiling (apicontract.BlobBudget).
+			// Config snapshots are likewise fetched only by resident workers.
 			// Recovery delivery likewise uses a dedicated bounded archive
 			// transport, not the portal's 10s JSON client.
 			// Defect aggregates are read by nomination stage pods through a
@@ -94,7 +94,7 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 			// server budget; the Portal actions are not implemented.
 			if route.ID != apicontract.RouteRunArtifact && route.ID != apicontract.RouteRunTranscript &&
 				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteCredentialRefresh &&
-				route.ID != apicontract.RouteBlobGet &&
+				route.ID != apicontract.RouteBlobGet && route.ID != apicontract.RouteConfigSnapshot &&
 				route.ID != apicontract.RouteTelemetryDefectAggregates &&
 				route.ID != apicontract.RouteJournalEscalationCandidates &&
 				route.ID != apicontract.RouteRunRecovery &&

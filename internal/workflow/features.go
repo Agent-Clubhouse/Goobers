@@ -24,6 +24,15 @@ type SupportLevel = v20.SupportLevel
 // SupportTransition records when a feature entered a support level.
 type SupportTransition = v20.SupportTransition
 
+// Runtime identifies an executor that can implement a DSL feature.
+type Runtime = v20.Runtime
+
+// RuntimeSupportLevel describes whether one runtime implements a feature.
+type RuntimeSupportLevel = v20.RuntimeSupportLevel
+
+// RuntimeSupport records a feature's support on one executor.
+type RuntimeSupport = v20.RuntimeSupport
+
 // Feature records a DSL feature's support metadata.
 type Feature = v20.Feature
 
@@ -47,6 +56,14 @@ const (
 	SupportDeprecated = v20.SupportDeprecated
 	// SupportRemoved marks a feature validation rejects.
 	SupportRemoved = v20.SupportRemoved
+	// RuntimeRunner is the in-process local workflow runner.
+	RuntimeRunner = v20.RuntimeRunner
+	// RuntimeEngine is the distributed Temporal workflow engine.
+	RuntimeEngine = v20.RuntimeEngine
+	// RuntimeSupported marks a feature implemented by the runtime.
+	RuntimeSupported = v20.RuntimeSupported
+	// RuntimeUnsupported marks a feature refused by the runtime.
+	RuntimeUnsupported = v20.RuntimeUnsupported
 )
 
 // NewFeatureRegistry validates and copies feature entries for a pinned definition.
@@ -108,6 +125,9 @@ func AllFeatures() []Feature {
 				features[i].DSLVersions = append(features[i].DSLVersions, support)
 			}
 		}
+		if len(converted.Runtimes) > 0 {
+			features[i].Runtimes = slices.Clone(converted.Runtimes)
+		}
 	}
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
@@ -122,6 +142,7 @@ func AllFeatures() []Feature {
 	features = append(features, childWorkflowFeatures()...)
 	features = append(features, fanOutFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
+	features = ensureRuntimeSupport(features)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
 	})
@@ -172,8 +193,35 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
 		}
 	}
+	features = ensureRuntimeSupport(features)
 	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	return features, nil
+}
+
+func ensureRuntimeSupport(features []Feature) []Feature {
+	for i := range features {
+		if len(features[i].Runtimes) != 0 {
+			continue
+		}
+		engineLevel := RuntimeSupported
+		switch features[i].ID {
+		case "workflow.spec.parallels",
+			"workflow.spec.parallels.selection",
+			"workflow.spec.maps",
+			"task.childWorkflows",
+			"gate.evaluator.human",
+			"task.limits.maxTokens",
+			"task.limits.maxCostUSD",
+			"task.outbox",
+			"task.experiment":
+			engineLevel = RuntimeUnsupported
+		}
+		features[i].Runtimes = []RuntimeSupport{
+			{Runtime: RuntimeRunner, Level: RuntimeSupported, Since: features[i].SinceVersion},
+			{Runtime: RuntimeEngine, Level: engineLevel, Since: features[i].SinceVersion},
+		}
+	}
+	return features
 }
 
 // FeatureDefinitionsByDSLVersion collapses workflow definitions into one
@@ -242,6 +290,7 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 	if spec.Backprop != nil {
 		features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
 	}
+	features = ensureRuntimeSupport(features)
 	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil || spec.Backprop != nil {
 		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	}
@@ -369,7 +418,11 @@ func FeaturesForGoober(def Definition, spec apiv1.GooberSpec) ([]Feature, error)
 	if err != nil {
 		return nil, err
 	}
-	return interpreter.featuresForGoober(spec)
+	features, err := interpreter.featuresForGoober(spec)
+	if err != nil {
+		return nil, err
+	}
+	return ensureRuntimeSupport(features), nil
 }
 
 // CheckFeatureSupport applies the pinned definition's support policy.
@@ -504,9 +557,11 @@ func featureForNext(feature Feature) v20.Feature {
 		RemovalTargetVersion:  feature.RemovalTargetVersion,
 		LastSupportingVersion: feature.LastSupportingVersion,
 		DSLVersions:           make([]v20.DSLFeatureSupport, len(feature.DSLVersions)),
+		Runtimes:              make([]v20.RuntimeSupport, len(feature.Runtimes)),
 		History:               make([]v20.SupportTransition, len(feature.History)),
 	}
 	copy(out.DSLVersions, feature.DSLVersions)
+	copy(out.Runtimes, feature.Runtimes)
 	copy(out.History, feature.History)
 	return out
 }
@@ -520,9 +575,11 @@ func nextFeature(feature v20.Feature) Feature {
 		RemovalTargetVersion:  feature.RemovalTargetVersion,
 		LastSupportingVersion: feature.LastSupportingVersion,
 		DSLVersions:           make([]DSLFeatureSupport, len(feature.DSLVersions)),
+		Runtimes:              make([]RuntimeSupport, len(feature.Runtimes)),
 		History:               make([]SupportTransition, len(feature.History)),
 	}
 	copy(out.DSLVersions, feature.DSLVersions)
+	copy(out.Runtimes, feature.Runtimes)
 	copy(out.History, feature.History)
 	return out
 }
@@ -740,12 +797,20 @@ func featureForV30(feature Feature) v30.Feature {
 		RemovalTargetVersion:  feature.RemovalTargetVersion,
 		LastSupportingVersion: feature.LastSupportingVersion,
 		DSLVersions:           make([]v30.DSLFeatureSupport, len(feature.DSLVersions)),
+		Runtimes:              make([]v30.RuntimeSupport, len(feature.Runtimes)),
 		History:               make([]v30.SupportTransition, len(feature.History)),
 	}
 	for i, support := range feature.DSLVersions {
 		out.DSLVersions[i] = v30.DSLFeatureSupport{
 			Version: support.Version,
 			Level:   v30.SupportLevel(support.Level),
+		}
+	}
+	for i, support := range feature.Runtimes {
+		out.Runtimes[i] = v30.RuntimeSupport{
+			Runtime: v30.Runtime(support.Runtime),
+			Level:   v30.RuntimeSupportLevel(support.Level),
+			Since:   support.Since,
 		}
 	}
 	for i, transition := range feature.History {
@@ -766,12 +831,20 @@ func v30Feature(feature v30.Feature) Feature {
 		RemovalTargetVersion:  feature.RemovalTargetVersion,
 		LastSupportingVersion: feature.LastSupportingVersion,
 		DSLVersions:           make([]DSLFeatureSupport, len(feature.DSLVersions)),
+		Runtimes:              make([]RuntimeSupport, len(feature.Runtimes)),
 		History:               make([]SupportTransition, len(feature.History)),
 	}
 	for i, support := range feature.DSLVersions {
 		out.DSLVersions[i] = DSLFeatureSupport{
 			Version: support.Version,
 			Level:   SupportLevel(support.Level),
+		}
+	}
+	for i, support := range feature.Runtimes {
+		out.Runtimes[i] = RuntimeSupport{
+			Runtime: Runtime(support.Runtime),
+			Level:   RuntimeSupportLevel(support.Level),
+			Since:   support.Since,
 		}
 	}
 	for i, transition := range feature.History {
@@ -794,5 +867,6 @@ func featureRegistry(features []Feature) FeatureRegistry {
 func cloneFeature(feature Feature) Feature {
 	feature.History = slices.Clone(feature.History)
 	feature.DSLVersions = slices.Clone(feature.DSLVersions)
+	feature.Runtimes = slices.Clone(feature.Runtimes)
 	return feature
 }

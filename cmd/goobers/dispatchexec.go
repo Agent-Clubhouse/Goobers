@@ -177,9 +177,12 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
-		RecoveryAcknowledged: true,
-		Mutations:            mutations,
-		Result:               envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		ContractVersion:       dispatcher.CurrentSurrenderContract,
+		ObservedUsage:         outcome.ObservedUsage,
+		ObservedUsageReported: outcome.ObservedUsageReported,
+		RecoveryAcknowledged:  true,
+		Mutations:             mutations,
+		Result:                envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
 		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runner.WorkspaceHeadMovedErrorCode,
 		Verdict:                 outcome.Verdict,
@@ -249,6 +252,10 @@ func surrenderRetryDeadline(stageTimeout time.Duration) time.Duration {
 type stageOutcome struct {
 	Result  apiv1.ResultEnvelope
 	Verdict *apiv1.Verdict
+	// ObservedUsage is populated only by the supervisor callback installed
+	// around an agentic harness. Result.Metrics is never a trusted substitute.
+	ObservedUsage         map[string]float64
+	ObservedUsageReported bool
 	// WorkspaceHeadMoved marks Result as this runtime's own provisioning
 	// refusal on a moved pull request head (#6019); see
 	// dispatcher.SurrenderedResult.WorkspaceHeadMoved.

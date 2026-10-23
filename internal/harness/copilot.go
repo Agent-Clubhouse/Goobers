@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1341,7 +1342,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry))
 	applyControlledCopilotUsage(&out, runner)
-	applyCopilotUsageDocument(&out, usageOutputPath)
+	applyCopilotUsageDocument(&out, usageOutputPath, req.UsageSink)
 	if runErr != nil {
 		return out, runErr
 	}
@@ -1485,10 +1486,13 @@ func envHasName(env []string, target string) bool {
 	return false
 }
 
-func applyCopilotUsageDocument(out *Outcome, path string) {
+func applyCopilotUsageDocument(out *Outcome, path string, usageSink func(map[string]float64)) {
 	if metrics, models, ok := readCopilotUsageDocument(path); ok {
 		out.Metrics = metrics
 		out.ModelUsage = models
+	}
+	if usageSink != nil {
+		usageSink(maps.Clone(out.Metrics))
 	}
 }
 

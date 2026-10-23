@@ -34,7 +34,7 @@ import (
 // runAgenticStage executes an agentic stage inside a pod and returns what it
 // owes the surrender plane: the envelope for an invocation, the envelope plus
 // the Verdict for a review (agentickit.ModeReview — decision 001 rulings 7–8).
-func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
+func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOutcome) {
 	digest := strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest))
 	if digest == "" {
 		// These first two refusals precede the kit, so they precede
@@ -51,6 +51,10 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		// would run with no instructions at all.
 		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitUnavailable, err.Error())}
 	}
+	ctx, usage := newSupervisedUsageContext(ctx, kit.Envelope.Limits)
+	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
+	ctx = invoke.WithAgentUsageStream(ctx, usage.report)
+	defer func() { settleSupervisedUsage(&out, usage) }()
 	// fail shapes every refusal past this point. For a REVIEW the class
 	// matters in a way it does not for an invocation: a task's surrendered
 	// failure is a business outcome the workflow branches on, but a gate has

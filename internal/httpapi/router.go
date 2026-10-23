@@ -422,7 +422,7 @@ func telemetryPlanePath(path string) bool {
 // convention.
 //
 // Resident worker principals use a separate identity and may only GET the
-// config digest or POST their own divergence report. Dedicated blob-worker
+// config digest/snapshot or POST their own divergence report. Dedicated blob-worker
 // principals may only GET/PUT blobs; surrender-worker principals may only
 // read surrender results and presence. Pod scopes and roles broaden none.
 func RequireRoles() Authorizer {
@@ -436,6 +436,12 @@ func RequireRoles() Authorizer {
 				return nil
 			}
 			return errors.New("only an authenticated worker may report config divergence")
+		}
+		if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigSnapshotPath {
+			if principal.Issuer == WorkerPrincipalIssuer {
+				return nil
+			}
+			return errors.New("only an authenticated worker may fetch configuration")
 		}
 		if principal.Issuer == WorkflowParentPrincipalIssuer {
 			return authorizeWorkflowParent(request, principal)
@@ -476,10 +482,11 @@ func RequireRoles() Authorizer {
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == WorkerPrincipalIssuer {
-			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
+			if request.Method == http.MethodGet &&
+				(request.URL.Path == apicontract.ConfigDigestPath || request.URL.Path == apicontract.ConfigSnapshotPath) {
 				return nil
 			}
-			return errors.New("worker principal may only read config digest or report config divergence")
+			return errors.New("worker principal may only read config state or report config divergence")
 		}
 		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
 			return nil
@@ -684,6 +691,7 @@ type handlerConfig struct {
 	telemetryDefects          TelemetryDefectAggregateService
 	podRunGaggle              func(context.Context, string) (string, error)
 	configDigest              func() string
+	configSnapshots           ConfigSnapshotService
 	workerConfigDivergence    func(journal.Event) error
 	instanceReadiness         InstanceReadinessService
 	portalAssets              http.Handler
@@ -1238,6 +1246,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 
 func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig, discovery *discoveryState) {
 	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog, discovery)
+	registerConfigSnapshotRoute(router, config.configSnapshots)
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
