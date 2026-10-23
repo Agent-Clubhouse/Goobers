@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -219,5 +221,63 @@ func TestPostgresTranscriptCleanupAndRecovery(t *testing.T) {
 	}
 	if err := reopened.Retire(t.Context(), h, o); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPostgresRecoveryMatchesFileLifecycle(t *testing.T) {
+	config := postgresJournalConfig(t)
+	pg := postgresBackend(t, config)
+	runs := filepath.Join(t.TempDir(), "runs")
+	file := journal.NewFileBackend(journal.FileBackendConfig{RunsDir: runs})
+	fixed := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	options := journal.RunWriterOptions{Clock: func() time.Time { return fixed }}
+	request := journal.CreateRunRequest{Identity: journal.RunIdentity{RunID: "run-replay", Gaggle: "g", Workflow: "implementation"}, Options: options}
+	events := []journal.Event{
+		{Type: journal.EventRunFinished, Status: "failed"},
+		{Type: journal.EventRunResumed, Target: "retry"},
+		{Type: journal.EventStageRerunRequested, Stage: "again"},
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "left", Stage: "left-work"},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 2, BranchName: "right", Stage: "right-work"},
+		{Type: journal.EventStageStarted, Branch: 1, Stage: "left-next"},
+	}
+	var reports []journal.RecoverReport
+	for _, backend := range []journal.Backend{file, pg} {
+		h, o, err := backend.CreateRun(t.Context(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backend.AppendBatch(t.Context(), h, o, events); err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.Retire(t.Context(), h, o); err != nil {
+			t.Fatal(err)
+		}
+		h, o, report, err := backend.RecoverRun(t.Context(), journal.RunKey{RunID: "run-replay", Gaggle: "g"}, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reports = append(reports, report)
+		if err := backend.Retire(t.Context(), h, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(reports[0], reports[1]) {
+		t.Fatalf("recovery reports differ:\nfile=%+v\npg=%+v", reports[0], reports[1])
+	}
+	var states []journal.State
+	for _, backend := range []journal.ReaderBackend{journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{runs}}), pg} {
+		reader, err := backend.OpenRun(t.Context(), journal.RunRef{ID: "run-replay", ReadOnly: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := reader.State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		states = append(states, state)
+	}
+	if !reflect.DeepEqual(states[0], states[1]) {
+		t.Fatalf("recovered states differ:\nfile=%+v\npg=%+v", states[0], states[1])
 	}
 }

@@ -21,6 +21,7 @@ import (
 )
 
 func postgresJournalConfig(t testing.TB) journalpg.Config {
+	t.Helper()
 	return postgresJournalConfigRenew(t, true)
 }
 
@@ -57,7 +58,7 @@ func postgresJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	}
 	migration := migrate.Runner{Direct: pool, Catalog: catalog, BackupRef: "local-test", InstanceID: "migration", Holder: "test"}
 	if err := migration.Apply(t.Context()); err != nil {
-		t.Fatal(err)
+		t.Fatalf("apply journal fixture migrations: %v", err)
 	}
 	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "test-instance", Name: "controller", Holder: "test"})
 	if err != nil {
