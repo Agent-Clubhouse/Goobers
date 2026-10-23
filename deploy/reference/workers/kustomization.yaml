@@ -1,0 +1,15 @@
+# Rainbow worker overlay. Install Temporal Worker Controller v1.13.0 and its
+# CRDs before applying this kustomization; see ../README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goobers-system
+
+resources:
+  - ../goobers-system
+  - connection.yaml
+  - networkpolicy-apiserver.yaml
+  - worker-deployment.yaml
+
+patches:
+  - path: delete-legacy-worker.yaml

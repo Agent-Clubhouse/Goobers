@@ -10,6 +10,7 @@ engine:
   hostPort: temporal-frontend.temporal.svc.cluster.local:7233
   namespace: default
   taskQueue: goobers-engine
+  workerVersioning: true
 runners:
   - name: linux-work
     host: goobers-work

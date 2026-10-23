@@ -1,0 +1,7 @@
+# The WorkerDeployment below owns one apps/v1 Deployment per build ID.
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-worker
+  namespace: goobers-system

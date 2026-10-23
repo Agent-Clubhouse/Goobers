@@ -2405,6 +2405,9 @@ jobs:
       - name: Windows shared runtime wiring
         run: go test ./internal/runtimewiring
 
+      - name: Windows rainbow worker contracts
+        run: go test ./internal/workerrollout ./deploy/reference/workers
+
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
 
