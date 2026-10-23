@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
 const (
@@ -65,6 +66,10 @@ func (r Runner) Apply(ctx context.Context) error {
 		return errors.New("cloud migration direct pool is required")
 	}
 	if err := ValidateCatalog(r.Catalog); err != nil {
+		return err
+	}
+	inventory, err := cloudschema.LoadWritePaths()
+	if err != nil {
 		return err
 	}
 	lease, err := acquireLock(ctx, r.Direct, migrateLeaseLock)
@@ -127,7 +132,12 @@ func (r Runner) Apply(ctx context.Context) error {
 				return err
 			}
 		}
-		return nil
+		// Grants are not a versioned migration: every apply converges the
+		// runtime roles to the current write-path inventory, so a new table's
+		// grants never require rewriting an applied migration.
+		return manager.WithFence(runCtx, handle, func(txCtx context.Context, tx pgx.Tx) error {
+			return cloudschema.ReconcileGrants(txCtx, tx, inventory)
+		})
 	})
 }
 
