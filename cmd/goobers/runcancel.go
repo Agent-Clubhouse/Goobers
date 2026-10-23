@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/cancelreceipt"
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -214,7 +215,7 @@ func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)
 
 func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
 	if s.receipts != nil {
-		return s.cancelWithReceipt(ctx, input)
+		return planes.NewCancelReceiptService(s.receipts, s.cancelOnce).Cancel(ctx, input)
 	}
 	return s.cancelOnce(ctx, input)
 }
@@ -356,8 +357,8 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 // cancelReceiptUnavailableCode means the daemon could not record the outcome
 // it reached and asks for a replay under the same key.
 const (
-	cancelOutcomeUnknownCode     = "cancel_outcome_unknown"
-	cancelReceiptUnavailableCode = "cancel_receipt_unavailable"
+	cancelOutcomeUnknownCode     = planes.CancelOutcomeUnknownCode
+	cancelReceiptUnavailableCode = planes.CancelReceiptUnavailableCode
 )
 
 // cancelReconcileWindow bounds how long `run cancel` keeps re-asking the daemon

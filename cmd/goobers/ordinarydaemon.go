@@ -104,7 +104,7 @@ func (s *durableTriggerService) drainOrdinary(ctx context.Context, record trigge
 		}
 		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", err.Error(), s.dispatch.Now())
 	}
-	if err = s.auditDispatch(record, r); err != nil {
+	if err = s.AuditDispatch(record, r); err != nil {
 		return err
 	}
 	admission, cancel := context.WithTimeout(ctx, 30*time.Second)

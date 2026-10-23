@@ -365,7 +365,9 @@ func drainRealQueuedChild(t *testing.T, f childKitFixture, afterDispatch func(*d
 	dispatch := newDaemonTriggerService()
 	dispatch.AttachDispatchContext(t.Context())
 	dispatch.AttachScheduler(localscheduler.New([]localscheduler.WorkflowEntry{{Gaggle: f.child.Identity.Gaggle, Workflow: f.writer.identity.Child.ParentWorkflow, RepoRef: f.parent.applied.Gaggles[0].Spec.Project, Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1, MaxRunsPerHour: 3}}}, s.log))
-	triggers := &durableTriggerService{queue: s.childQueue, dispatch: dispatch, observeChild: acceptedChildObserver(s.layout), childFamilies: &childFamilyLifecycle{layout: s.layout, queue: s.childQueue, runners: registry}}
+	triggers := durableTriggerServiceForQueue(t, s.childQueue, dispatch)
+	triggers.observeChild = acceptedChildObserver(s.layout)
+	triggers.childFamilies = &childFamilyLifecycle{layout: s.layout, queue: s.childQueue, runners: registry}
 	build := func(layout instance.Layout, generation string, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
 		return buildSchedulerDefinitions(schedulerDefinitionsInput{Layout: layout, Config: s.config, Definitions: set, Validation: report, RunnerRegistry: registry, ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer}, PinnedGeneration: generation})
 	}

@@ -23,7 +23,8 @@ func TestChildDaemonInstallsRecoveryCredentialsAndDefersMissingBackend(t *testin
 	t.Cleanup(func() { _ = log.Close() })
 	dispatch := newDaemonTriggerService()
 	dispatch.AttachScheduler(localscheduler.New(nil, log))
-	triggers := &durableTriggerService{queue: f.queue, dispatch: dispatch, observeChild: acceptedChildObserver(f.service.layout)}
+	triggers := durableTriggerServiceForQueue(t, f.queue, dispatch)
+	triggers.observeChild = acceptedChildObserver(f.service.layout)
 	setup := &schedulerSetup{RunnerRegistry: newDaemonRunnerRegistry(), ChildRuntime: func(context.Context, childExecutionStart) (preparedChildRuntime, error) {
 		t.Fatal("missing backend built a local runtime")
 		return preparedChildRuntime{}, nil

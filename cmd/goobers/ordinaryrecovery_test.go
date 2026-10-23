@@ -103,7 +103,7 @@ func TestOrdinaryRecoveryRetriesOnlyAbsentPriorProcessStarts(t *testing.T) {
 					t.Fatal("absent prior start not retried")
 				}
 			}
-			if len(starter.ids) != 0 || len(s.bootUncertain) != 0 {
+			if len(starter.ids) != 0 {
 				t.Fatal("replayed current or published execution")
 			}
 			record, err := s.queue.Get(t.Context(), accepted.AcceptanceID, "operator")
