@@ -12,6 +12,9 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"go.temporal.io/sdk/client"
+
+	"github.com/goobers/goobers/internal/engine"
 
 	"github.com/goobers/goobers/internal/blobstore"
 	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
@@ -167,6 +170,11 @@ var (
 )
 
 type databaseServices struct {
+	RecoverStarts   func(context.Context, engine.Starter, cloudacceptance.StartInputResolver) error
+	StartStatusPage func(context.Context, string, int) ([]cloudacceptance.StartStatus, error)
+	// HA-P3-18 binds acquired controller authority before starting workflows.
+	BindControllerFence func(*cloudlease.Manager, *cloudlease.Handle)
+	NewStarter          func(client.Client, string) engine.Starter
 	Pools               *cloudpg.Pools
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
@@ -313,6 +321,7 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
 		return 1
 	}
+	services = newDatabaseServices(pools, acceptances, compatibilityErr)
 	services.Blobs, services.Objects, services.Acceptances = blobs, objects, acceptances
 	services.Surrenders = objstore.SurrenderPlane{
 		Metadata: objects, InstanceID: environmentOr("GOOBERS_INSTANCE_ID", "default"),

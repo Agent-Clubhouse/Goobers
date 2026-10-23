@@ -66,9 +66,14 @@ const (
 // re-registrations (WF-016).
 type RunInput struct {
 	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
-	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
-	InstanceID             string             `json:"instanceId,omitempty"`
-	RunID                  string             `json:"runId"`
+	SelfExecutionDenied bool   `json:"selfExecutionDenied,omitempty"`
+	InstanceID          string `json:"instanceId,omitempty"`
+	RunID               string `json:"runId"`
+	// StartPredecessorEpoch is admission-only proof, never serialized to Temporal.
+	StartPredecessorEpoch  int64              `json:"-"`
+	AcceptanceID           string             `json:"acceptanceId,omitempty"`
+	OwnerEpoch             int64              `json:"ownerEpoch,omitempty"`
+	StarterID              string             `json:"starterId,omitempty"`
 	Gaggle                 string             `json:"gaggle"`
 	WorkflowName           string             `json:"workflowName"`
 	Version                int                `json:"version"`

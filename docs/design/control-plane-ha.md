@@ -556,9 +556,11 @@ Today Temporal runs every stage activity with `MaximumAttempts: 1`, and StartToC
    - same `acceptance_id` and `owner_epoch` ⇒ *mine* (a retry of my own start whose response was lost); proceed idempotently, every following write is keyed;
    - same `acceptance_id`, older `owner_epoch`, seen by the **current** leader during reconciliation ⇒ *adopt*: a fenced write moves the acceptance row to `dispatched, owner_epoch = mine`; the slot is rebuilt from open workflows (rebuild-before-reap); the predecessor's reservation emit dedups by key;
    - any other case, including a **newer** `owner_epoch` ⇒ **not mine**: no claim write, no slot accounting, no `run.started` emit, no terminal-hook registration; the caller re-validates its lease and demotes if stale (`StartResult{NotMine: true}`);
-   - memo absent (a run started by a pre-memo binary) ⇒ *adopt*, only by the lease holder.
+   - missing or malformed memo ⇒ refuse; absent evidence never proves ownership.
 3. **Fenced acceptance transition.** `accepted → dispatching` is a fenced write stamping `owner_epoch`, so a zombie with a stale epoch can't reach step 2 at all. The memo check covers the window in which the zombie passed the fence just before losing it.
-4. **Local.** `goobers` sets the memo too (harmless); the "not mine" branch is unreachable with one daemon; `StartResult.NotMine` is additive.
+4. **Cloud-only after #7783.** Local `goobers` no longer starts engine workflows. `cmd/goobers-cloud` supplies a durable-admission starter factory, lease binding, recovery and status seams. HA-P3-18 (#7818) connects them to the controller loop; continue/child admission entrypoints remain part of that wiring.
+5. **Two-phase custody.** `BeginDispatch` is the provisional reservation. Durable `run_id` and the live handle supply start authority before Temporal. Only mine/adopt confirms `dispatched`; adoption compares the exact predecessor epoch observed before Temporal. NotMine leaves ownership unchanged, even if lease revalidation also fails.
+6. **Quarantine and recovery.** Dispatches uncertain for one minute appear as `start ownership uncertain`. A fenced sweep reserves at most 32 retry attempts using `SKIP LOCKED`, with four concurrent attempts, ten-second attempt deadlines, and durable exponential backoff capped at one minute beyond the attempt deadline. A failed attempt leaves its row dispatching; other runs proceed. Status pages contain identity and retry time, never pinned payloads.
 
 Tests: `TestZombieStartIsNotMine` (two starters, epochs E and E+1, one acceptance row ⇒ exactly one claim row, one slot, one `run.started`), `TestLostStartResponseIsMine`, `TestReconcileAdoptsPredecessorStart`; CHAOS-3 end to end.
 
