@@ -9,64 +9,58 @@
 # Application is synced. The DB password is never stored here either: it is supplied via
 # the `temporal-postgres-credentials` secret the pipeline creates from Key Vault (SEC-010).
 
-# Do not deploy the chart's bundled datastores.
-cassandra:
-  enabled: false
-mysql:
-  enabled: false
-postgresql:
-  enabled: false
-elasticsearch:
-  enabled: false
-prometheus:
-  enabled: false
-grafana:
-  enabled: false
-
+# Chart 1.x has no bundled datastore subcharts. Persistence points only at the
+# externally provisioned PostgreSQL server below.
 server:
   replicaCount: 1
+  dynamicConfig:
+    frontend.workerVersioningWorkflowAPIs:
+      - value: true
+    system.enableDeploymentVersions:
+      - value: true
   config:
     persistence:
       defaultStore: default
       visibilityStore: visibility
-      # Basic (SQL) visibility only — Elasticsearch deferred (DEP-011).
-      additionalStores: {}
-      default:
-        driver: sql
-        sql:
-          driver: postgres12
-          # host: injected by the bootstrap pipeline as a Helm parameter (see header).
-          port: 5432
-          database: temporal
-          user: gooberadmin
-          # Password injected via a CSI-synced k8s secret (Key Vault, SEC-010).
-          existingSecret: temporal-postgres-credentials
-          tls:
-            enabled: true
-            enableHostVerification: true
-          maxConns: 20
-          maxIdleConns: 20
-      visibility:
-        driver: sql
-        sql:
-          driver: postgres12
-          # host: injected by the bootstrap pipeline as a Helm parameter (see header).
-          port: 5432
-          database: temporal_visibility
-          user: gooberadmin
-          existingSecret: temporal-postgres-credentials
-          tls:
-            enabled: true
-            enableHostVerification: true
-          maxConns: 10
-          maxIdleConns: 10
+      datastores:
+        default:
+          sql:
+            createDatabase: false
+            manageSchema: true
+            pluginName: postgres12
+            driverName: postgres12
+            databaseName: temporal
+            # connectAddr: injected by the bootstrap pipeline as HOST:5432.
+            user: gooberadmin
+            existingSecret: temporal-postgres-credentials
+            tls:
+              enabled: true
+              enableHostVerification: true
+            maxConns: 20
+            maxIdleConns: 20
+        visibility:
+          sql:
+            createDatabase: false
+            manageSchema: true
+            pluginName: postgres12
+            driverName: postgres12
+            databaseName: temporal_visibility
+            # connectAddr: injected by the bootstrap pipeline as HOST:5432.
+            user: gooberadmin
+            existingSecret: temporal-postgres-credentials
+            tls:
+              enabled: true
+              enableHostVerification: true
+            maxConns: 10
+            maxIdleConns: 10
 
-# Run the schema setup/update jobs (temporal-sql-tool) against the external DB.
+# Run temporal-sql-tool as a pre-install/pre-upgrade hook before server pods.
 schema:
-  setup:
-    enabled: true
-  update:
-    enabled: true
+  useHelmHooks: true
+
+shims:
+  dockerize: false
+  elasticsearchTool: false
 
 # Web UI; access is fronted by the portal / Entra SSO at the ingress layer (SEC-020).
 web:

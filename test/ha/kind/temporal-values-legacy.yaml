@@ -1,0 +1,67 @@
+cassandra:
+  enabled: false
+mysql:
+  enabled: false
+postgresql:
+  enabled: false
+elasticsearch:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+
+server:
+  replicaCount: 1
+  dynamicConfig:
+    frontend.workerVersioningWorkflowAPIs:
+      - value: true
+    system.enableDeploymentVersions:
+      - value: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  config:
+    persistence:
+      defaultStore: default
+      visibilityStore: visibility
+      additionalStores: {}
+      default:
+        driver: sql
+        sql:
+          driver: postgres12
+          host: temporal-postgres-rw.goobers-temporal.svc
+          port: 5432
+          database: temporal
+          user: app
+          existingSecret: temporal-postgres-app
+          tls:
+            enabled: false
+            enableHostVerification: false
+      visibility:
+        driver: sql
+        sql:
+          driver: postgres12
+          host: temporal-postgres-rw.goobers-temporal.svc
+          port: 5432
+          database: temporal_visibility
+          user: app
+          existingSecret: temporal-postgres-app
+          tls:
+            enabled: false
+            enableHostVerification: false
+
+schema:
+  createDatabase:
+    enabled: false
+  setup:
+    enabled: true
+  update:
+    enabled: true
+
+web:
+  enabled: false

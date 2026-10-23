@@ -13,6 +13,20 @@ import (
 	"time"
 )
 
+type temporalStep struct {
+	server string
+	chart  string
+	values []string
+}
+
+var temporalLadder = []temporalStep{
+	{server: "1.27.2", chart: "temporal.tgz", values: []string{"test/ha/kind/temporal-values-legacy.yaml"}},
+	{server: "1.28.0", chart: "temporal-0.64.0.tgz", values: []string{"test/ha/kind/temporal-values-legacy.yaml"}},
+	{server: "1.29.0", chart: "temporal-0.68.1.tgz", values: []string{"test/ha/kind/temporal-values-legacy.yaml"}},
+	{server: "1.30.3", chart: "temporal-0.74.0.tgz", values: []string{"test/ha/kind/temporal-values-legacy.yaml"}},
+	{server: "1.31.0", chart: "temporal-1.3.0.tgz", values: []string{"deploy/reference/temporal/values.yaml", "test/ha/kind/temporal-values.yaml"}},
+}
+
 func main() {
 	if len(os.Args) != 2 {
 		exitf("usage: nightly run|collect")
@@ -54,7 +68,7 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 	path := bin + string(os.PathListSeparator) + os.Getenv("PATH")
-	env := append(os.Environ(), "PATH="+path)
+	env := append(os.Environ(), "PATH="+path, "GOOBERS_TEMPORAL_CLI="+filepath.Join(bin, "temporal"))
 	commands := [][]string{
 		{"kind", "create", "cluster", "--name", "goobers-ha-nightly", "--config", "test/ha/kind/kind.yaml", "--image", "kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a", "--wait", "5m"},
 		{"kubectl", "apply", "--server-side", "-f", filepath.Join(assets, "calico.yaml")},
@@ -65,13 +79,15 @@ func run() error {
 		{"kubectl", "create", "namespace", "goobers-temporal"},
 		{"kubectl", "apply", "-f", "test/ha/kind/cnpg-cluster.yaml"},
 		{"kubectl", "wait", "--for=condition=Ready", "cluster/temporal-postgres", "-n", "goobers-temporal", "--timeout=10m"},
-		{"helm", "upgrade", "--install", "temporal", filepath.Join(assets, "temporal.tgz"), "--namespace", "goobers-temporal", "--values", "deploy/reference/temporal/values.yaml", "--values", "test/ha/kind/temporal-values.yaml", "--wait", "--timeout", "15m"},
 		{"kind", "load", "docker-image", "goobers:ha-nightly", "--name", "goobers-ha-nightly"},
-		{"kubectl", "apply", "-k", "test/ha/kind/reference"},
-		{"kubectl", "wait", "--for=condition=Complete", "job/goobers-reference-smoke", "-n", "goobers-system", "--timeout=5m"},
 	}
 	for _, args := range commands {
 		if err := command(ctx, env, args...); err != nil {
+			return err
+		}
+	}
+	for _, step := range temporalLadder {
+		if err := runTemporalStep(ctx, env, assets, evidence, step); err != nil {
 			return err
 		}
 	}
@@ -79,6 +95,51 @@ func run() error {
 		return err
 	}
 	return verifyAndSummarize(ctx, env, evidence)
+}
+
+func runTemporalStep(ctx context.Context, env []string, assets, evidence string, step temporalStep) error {
+	args := []string{"helm", "upgrade", "--install", "temporal", filepath.Join(assets, step.chart),
+		"--namespace", "goobers-temporal", "--wait", "--timeout", "15m"}
+	for _, values := range step.values {
+		args = append(args, "--values", values)
+	}
+	if err := command(ctx, env, args...); err != nil {
+		return fmt.Errorf("upgrade temporal %s: %w", step.server, err)
+	}
+	image, err := output(ctx, env, "kubectl", "get", "deployment/temporal-frontend", "-n", "goobers-temporal",
+		"-o", "jsonpath={.spec.template.spec.containers[0].image}")
+	if err != nil {
+		return err
+	}
+	if !strings.HasSuffix(strings.TrimSpace(image), ":"+step.server) {
+		return fmt.Errorf("temporal frontend image = %q after %s step", strings.TrimSpace(image), step.server)
+	}
+	if err := command(ctx, env, "kubectl", "exec", "-n", "goobers-temporal", "deployment/temporal-admintools",
+		"--", "temporal", "--address", "temporal-frontend:7233", "operator", "cluster", "health"); err != nil {
+		return fmt.Errorf("temporal %s cluster smoke: %w", step.server, err)
+	}
+	if err := command(ctx, env, "kubectl", "delete", "job/goobers-reference-smoke", "-n", "goobers-system", "--ignore-not-found"); err != nil {
+		return err
+	}
+	if err := command(ctx, env, "kubectl", "apply", "-k", "test/ha/kind/reference"); err != nil {
+		return err
+	}
+	if err := command(ctx, env, "kubectl", "wait", "--for=condition=Complete", "job/goobers-reference-smoke",
+		"-n", "goobers-system", "--timeout=5m"); err != nil {
+		return fmt.Errorf("temporal %s D11 reference smoke: %w", step.server, err)
+	}
+	replay := exec.CommandContext(ctx, "go", "test", "./internal/engine",
+		"-run", `Test(E2|E4|E11)WalkHistoryReplays$`, "-count=1")
+	replay.Env = env
+	output, err := replay.CombinedOutput()
+	if writeErr := os.WriteFile(filepath.Join(evidence, "temporal-"+step.server+"-replay.log"), output, 0o644); writeErr != nil {
+		return writeErr
+	}
+	if err != nil {
+		return fmt.Errorf("temporal %s replay suites: %w", step.server, err)
+	}
+	return os.WriteFile(filepath.Join(evidence, "temporal-"+step.server+"-smoke.txt"),
+		[]byte("schema hook, server rollout, cluster health, reference smoke, and E2/E4/E11 replay passed\n"), 0o644)
 }
 
 func toxiproxySmoke(ctx context.Context, env []string, bin, evidence, endpoint string) error {
@@ -137,6 +198,8 @@ func verifyAndSummarize(ctx context.Context, env []string, evidence string) erro
 	summary := "### HA nightly kind\n\n" +
 		"- Owner rotation: `" + envDefault("HA_NIGHTLY_OWNER_ROTATION", "control-plane-ha-maintainers") + "`\n" +
 		"- Calico enforcing CNI: ready\n- CNPG instances: 3\n- Temporal frontend: ready\n" +
+		"- Temporal ladder: 1.27.2 -> 1.28.0 -> 1.29.0 -> 1.30.3 -> 1.31.0 (Worker Deployment GA)\n" +
+		"- Schema-first hooks, D11 reference smoke, and E2/E4/E11 replay: passed at every step\n" +
 		"- Reference image smoke: passed\n- Toxiproxy: ready\n" +
 		"- Benchmarks: not yet registered; future benchmark values are reported, never asserted\n"
 	if err := os.WriteFile(filepath.Join(evidence, "summary.md"), []byte(summary), 0o644); err != nil {

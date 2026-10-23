@@ -257,11 +257,32 @@ Run the same render and schema gate locally with:
 ```sh
 make deploy-validate
 
-# Temporal values render (pinned chart version — see temporal/values.yaml header):
+# Temporal values render (pinned GA-target chart — see temporal/values.yaml header):
 helm repo add temporal https://go.temporal.io/helm-charts
-helm template temporal temporal/temporal --version 0.62.0 \
+helm template temporal temporal/temporal --version 1.3.0 \
   --namespace goobers-temporal -f deploy/reference/temporal/values.yaml >/dev/null
 ```
+
+### Temporal server upgrade ladder
+
+Worker Deployment APIs first became GA in Temporal Server 1.31.0. Upgrade the
+reference's original 1.27.2 installation one minor at a time:
+
+| Step | Chart | Server | Before changing server pods | Validation | Rollback |
+|---|---:|---:|---|---|---|
+| baseline | 0.62.0 | 1.27.2 | Record a database backup and current Helm values | cluster health, D11 reference smoke, E2/E4/E11 replay | restore the backup and chart 0.62.0 |
+| 1 | 0.64.0 | 1.28.0 | Delete any Worker Deployments created on 1.27, then let the chart's pre-upgrade schema hook finish | same | restore the pre-step backup and chart 0.62.0 |
+| 2 | 0.68.1 | 1.29.0 | Let the pre-upgrade schema hook finish | same | restore the pre-step backup and chart 0.64.0 |
+| 3 | 0.74.0 | 1.30.3 | Let the pre-upgrade schema hook finish; 1.30 removes tools from server images | same | restore the pre-step backup and chart 0.68.1 |
+| 4 | 1.3.0 | 1.31.0 | Migrate to chart 1.x datastore values and let the pre-upgrade schema hook finish | same; Worker Deployment APIs are GA | restore the pre-step backup and chart 0.74.0 with legacy values |
+
+Database schema migrations are not downgraded in place. A rollback restores the
+backup taken immediately before that step, then installs the preceding chart
+and its values. Never skip a minor or roll only the server image backward over
+a newer schema. Both shipped values files explicitly enable
+`frontend.workerVersioningWorkflowAPIs` and `system.enableDeploymentVersions`.
+The nightly kind lane runs this full ladder and retains per-step smoke and
+replay evidence.
 
 For consumer overlay pins and actual image contents, add `--overlay-dir` and
 the image requirements described in [overlay/image preflight](../../docs/guides/overlay-image-preflight.md).

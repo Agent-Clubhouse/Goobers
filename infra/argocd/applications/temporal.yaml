@@ -14,7 +14,7 @@ spec:
   sources:
     - repoURL: https://go.temporal.io/helm-charts
       chart: temporal
-      targetRevision: 0.62.0
+      targetRevision: 1.3.0
       helm:
         valueFiles:
           - $infra/infra/temporal/values.yaml
@@ -26,7 +26,8 @@ spec:
     namespace: temporal
   # Manual sync on purpose: the bootstrap pipeline must inject the PostgreSQL `host`
   # Helm parameter (instance-specific infra output) and create the DB-credential secret
-  # BEFORE the first sync. The pipeline runs `argocd app set ... --helm-set host=...`
+  # BEFORE the first sync. The pipeline sets both
+  # `server.config.persistence.datastores.{default,visibility}.sql.connectAddr`
   # then `argocd app sync temporal`. After bootstrap, ops can enable automated sync.
   syncPolicy:
     syncOptions:

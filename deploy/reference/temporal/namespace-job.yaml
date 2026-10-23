@@ -30,12 +30,8 @@ spec:
         kubernetes.io/os: linux
       containers:
         - name: register-namespace
-          # CHANGE-ME: pin to the admin-tools image matching the Temporal
-          # server version this chart deploys (values.yaml header — chart
-          # 0.62.0 at time of writing). The chart's own admintools: pod (also
-          # configured in values.yaml) already carries a compatible tctl; this
-          # image tag should track it.
-          image: temporalio/admin-tools:1.25.1
+          # Keep this at the server version selected by values.yaml.
+          image: temporalio/admin-tools:1.31.0@sha256:3e68adcd54195a7c1222e99f2dbc32a4fdbf44ad69e3bb48e21e85c4bf417c2e
           env:
             # Same default the worker/engine connect to
             # (internal/instance/config.go: DefaultTemporalNamespace) unless

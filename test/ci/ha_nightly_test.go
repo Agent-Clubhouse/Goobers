@@ -74,9 +74,14 @@ func TestHANightlyDeclaresRequiredTopologyAndOperations(t *testing.T) {
 		"calico.yaml",
 		"instances: 3",
 		"temporal.tgz",
+		"temporal-0.64.0.tgz",
+		"temporal-0.68.1.tgz",
+		"temporal-0.74.0.tgz",
+		"temporal-1.3.0.tgz",
 		"toxiproxy-server",
 		`"kind", "load", "docker-image", "goobers:ha-nightly"`,
 		`"kubectl", "apply", "-k", "test/ha/kind/reference"`,
+		`Test(E2|E4|E11)WalkHistoryReplays$`,
 		"Benchmarks: not yet registered; future benchmark values are reported, never asserted",
 	} {
 		if !strings.Contains(all, want) {

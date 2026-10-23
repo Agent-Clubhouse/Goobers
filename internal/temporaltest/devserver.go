@@ -23,7 +23,8 @@ const CLIEnvVar = temporalcli.EnvVar
 // temporal.download floats to the newest release: v1.9.1 (Server 1.32.0),
 // published 2026-09-14, rejects this suite's schedule reconciliation with
 // "Not enough time to schedule next run", failing every PR's CI without a
-// code change. Bump deliberately, alongside the linux-ci image pin.
+// code change. v1.9.0 carries Server 1.31 for the Worker Deployment GA ladder.
+// Bump deliberately, alongside the hosted CI pin.
 const CLIVersion = temporalcli.Version
 
 // StartDevServer starts a Temporal CLI dev server, centralizing how the
