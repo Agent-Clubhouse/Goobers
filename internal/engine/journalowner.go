@@ -23,6 +23,7 @@ type journalCommitOwner struct {
 	emitted   int
 	submitted int
 	ordinals  map[string]int
+	receipts  map[string]livejournal.AppendReceipt
 }
 
 type branchJournalEntry struct {
@@ -96,6 +97,9 @@ func (o *journalCommitOwner) emitPending(ctx workflow.Context) error {
 	count := len(req.Ops)
 	if resp.Applied < 0 || resp.Applied > count || resp.Deduplicated < 0 || resp.Deduplicated > count || resp.Applied+resp.Deduplicated != count {
 		return fmt.Errorf("engine: incomplete owned journal acknowledgement for run %s", req.RunID)
+	}
+	if err := o.preserveAppendReceipts(req.Ops, resp.AppendReceipts, resp.Seq); err != nil {
+		return err
 	}
 	for _, entry := range o.entries[o.emitted:pending] {
 		entry.recorder.emitted = max(entry.recorder.emitted, entry.index+1)
