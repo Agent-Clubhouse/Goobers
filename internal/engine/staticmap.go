@@ -45,7 +45,7 @@ func (r *runJournal) staticMap(
 	if err != nil {
 		r.append(ctx, journal.Event{
 			Type: journal.EventError, Parallel: def.Name,
-			Error: journal.ErrorDetailFor(runsemantics.FanOutSourceInvalidCode, err),
+			Error: domainErrorDetailFor(runsemantics.FanOutSourceInvalidCode, err),
 		})
 		if emitErr := r.emitPending(ctx); emitErr != nil {
 			return "", true, emitErr

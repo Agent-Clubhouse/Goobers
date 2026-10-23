@@ -29,6 +29,7 @@ func TestClassifyDispatchFailureTypesEveryKnownCause(t *testing.T) {
 		wantCode  string
 		wantClass telemetry.ErrorClass
 	}{
+		{name: "untyped infrastructure marker", err: invoke.InfrastructureFailure(errors.New("unavailable")), wantCode: telemetry.ErrCodeInfraFailure, wantClass: telemetry.ErrorClassInfra},
 		{
 			// The seam across package boundaries: internal/executor's own
 			// typed failure, wrapped for infrastructure retry exactly as the

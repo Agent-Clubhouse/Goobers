@@ -16,6 +16,7 @@ import (
 // instant; slot one is an explicitly versioned extension. Older consumers can
 // still read slot zero.
 type dispatchFailureEvidence struct {
+	Domain           *domainFailure  `json:"domain,omitempty"`
 	SchemaVersion    int             `json:"schemaVersion"`
 	Placement        *StagePlacement `json:"placement,omitempty"`
 	Usage            *AttemptUsage   `json:"usage,omitempty"`
