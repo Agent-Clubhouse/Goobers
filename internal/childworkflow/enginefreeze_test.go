@@ -1,0 +1,198 @@
+package childworkflow
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"reflect"
+	"testing"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/childresult"
+	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/triggerqueue"
+)
+
+const engineFreezeGolden = "testdata/engine-freeze.golden.json"
+
+// freezeFixture is one accepted engine child: the pinned context, its start
+// envelope as AcceptChild retained it, the lineage and the handoff request.
+type freezeFixture struct {
+	pinned  EngineFreezeContext
+	payload []byte
+	source  []byte
+	child   triggerqueue.ChildRecord
+	request journal.ChildHandoffRequest
+}
+
+func engineAdmission() AdmissionContext {
+	context := testContext()
+	context.Backend = BackendEngine
+	context.ConfigDigest = journal.Digest([]byte("pinned config"))
+	return context
+}
+
+func newFreezeFixture(t *testing.T) freezeFixture {
+	t.Helper()
+	admission := engineAdmission()
+	source := []byte(validProposal)
+	proposal, err := validator(t, admission).Validate(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occurrence := journal.StageAttemptID("parent-run", 0, "plan", 5)
+	authority := Authority{
+		Origin:           Origin{Gaggle: "web", RunID: "parent-run", StageOccurrence: occurrence, AttemptID: occurrence},
+		Admission:        admission,
+		ConfigGeneration: journal.Digest([]byte("config generation")), ParentWorkflow: "parent",
+		ParentWorkflowDigest: journal.Digest([]byte("parent workflow")), ParentGooberDigest: journal.Digest([]byte("goober kit")),
+	}
+	envelope, err := childStartEnvelope(authority, proposal, "call-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := triggerqueue.ChildRecord{Identity: envelope.Identity(), AcceptanceID: "trigger-child-run-1", RunID: "child-run-1", ProposalDigest: proposal.SourceDigest,
+		AcceptedAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)}
+	request := journal.ChildHandoffRequest{Gaggle: "web", ParentRunID: "parent-run", RequestID: journal.Digest([]byte("request")), Action: "wait", ChildRunID: child.RunID,
+		AcceptanceID: child.AcceptanceID, InvocationKey: "call-1", SourceDigest: proposal.SourceDigest, Origin: apiv1.ChildWorkflowOrigin{StageOccurrence: occurrence, AttemptID: occurrence}}
+	pinned := EngineFreezeContext{Admission: admission, InstanceID: "instance-a", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}, BranchNamespace: "goobers"}
+	return freezeFixture{pinned: pinned, payload: payload, source: source, child: child, request: request}
+}
+
+func (f freezeFixture) freezer() EngineFreezer {
+	return EngineFreezer{Resolve: func(context.Context, ChildStartEnvelope) (EngineFreezeContext, error) { return f.pinned, nil }}
+}
+
+func (f freezeFixture) freeze(t *testing.T) ([]byte, engine.FrozenChildManifest) {
+	t.Helper()
+	manifest, err := f.freezer().Freeze(t.Context(), f.request, f.child, f.payload, f.source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data, manifest
+}
+
+func TestEngineFreezeIsDeterministicAndMatchesGolden(t *testing.T) {
+	fixture := newFreezeFixture(t)
+	first, _ := fixture.freeze(t)
+	// A lease successor re-runs the freezer from the same retained inputs.
+	second, _ := newFreezeFixture(t).freeze(t)
+	if !bytes.Equal(first, second) {
+		t.Fatal("freezing the same accepted child produced different bytes")
+	}
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, first, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	indented.WriteByte('\n')
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(engineFreezeGolden, indented.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	golden, err := os.ReadFile(engineFreezeGolden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(golden, indented.Bytes()) {
+		t.Fatalf("frozen manifest changed; a digest-stable encoding change needs a new manifest version (UPDATE_GOLDEN=1 to refresh)\n%s", indented.String())
+	}
+}
+
+// manifestStore returns exactly the frozen bytes to the engine's own loader.
+type manifestStore struct{ data []byte }
+
+func (m manifestStore) Admit(context.Context, engine.ChildAdmissionInput) (engine.ChildRunBinding, error) {
+	return engine.ChildRunBinding{}, errors.New("unused")
+}
+func (m manifestStore) Load(context.Context, engine.ChildRunBinding) ([]byte, error) {
+	return m.data, nil
+}
+func (m manifestStore) Cancel(context.Context, engine.ChildRunBinding) error { return nil }
+func (m manifestStore) Park(context.Context, engine.ChildParkInput) error    { return nil }
+func (m manifestStore) Finalize(context.Context, engine.ChildFinalizeInput) (childresult.TerminalReturn, error) {
+	return childresult.TerminalReturn{}, nil
+}
+func (m manifestStore) Complete(context.Context, engine.ChildCompletionInput) (apiv1.ContextPointer, error) {
+	return apiv1.ContextPointer{}, nil
+}
+
+func TestFrozenBytesMatchTheAdmittedDigestThroughTheEngine(t *testing.T) {
+	fixture := newFreezeFixture(t)
+	data, manifest := fixture.freeze(t)
+	binding := engine.ChildRunBinding{Request: fixture.request, Child: fixture.child, ManifestDigest: journal.Digest(data), ParentWorkflow: "parent",
+		ParentWorkflowID: "parent-wf", ParentTemporalRunID: "parent-trun", Deadline: fixture.child.AcceptedAt.Add(time.Hour)}
+	loaded, err := (&engine.Activities{EngineChildren: manifestStore{data}}).LoadEngineChild(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("engine refused the freezer's own manifest: %v", err)
+	}
+	if !reflect.DeepEqual(loaded, manifest.Input) {
+		t.Fatalf("engine loaded a different input:\n got %+v\nwant %+v", loaded, manifest.Input)
+	}
+	tampered := append(append([]byte(nil), data...), ' ')
+	if _, err := (&engine.Activities{EngineChildren: manifestStore{tampered}}).LoadEngineChild(t.Context(), binding); err == nil {
+		t.Fatal("engine accepted bytes that differ from the admitted digest")
+	}
+}
+
+func TestEngineFreezeRefusesDrift(t *testing.T) {
+	cases := map[string]func(*freezeFixture){
+		"narrowed policy": func(f *freezeFixture) {
+			f.pinned.Admission.ParentTask.ChildWorkflows.AllowedCapabilities = []string{"agent:model"}
+		},
+		"other config digest": func(f *freezeFixture) { f.pinned.Admission.ConfigDigest = journal.Digest([]byte("other config")) },
+		"runner backend":      func(f *freezeFixture) { f.pinned.Admission.Backend = BackendRunner },
+		"other parent stage":  func(f *freezeFixture) { f.pinned.Admission.ParentTask.Name = "other" },
+		"reformatted source":  func(f *freezeFixture) { f.source = append([]byte("# reformatted\n"), f.source...) },
+		"other lineage":       func(f *freezeFixture) { f.child.Identity.InvocationKey = "call-2" },
+		"other request":       func(f *freezeFixture) { f.request.InvocationKey = "call-2" },
+		"runner envelope": func(f *freezeFixture) {
+			var e ChildStartEnvelope
+			_ = json.Unmarshal(f.payload, &e)
+			e.Backend = BackendRunner
+			f.payload, _ = json.Marshal(e)
+		},
+		"compiled identity drift": func(f *freezeFixture) {
+			var e ChildStartEnvelope
+			_ = json.Unmarshal(f.payload, &e)
+			e.WorkflowDigest = journal.Digest([]byte("other workflow"))
+			f.payload, _ = json.Marshal(e)
+		},
+		"placement drift": func(f *freezeFixture) {
+			var e ChildStartEnvelope
+			_ = json.Unmarshal(f.payload, &e)
+			e.PlacementsDigest = journal.Digest([]byte("other placements"))
+			f.payload, _ = json.Marshal(e)
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			fixture := newFreezeFixture(t)
+			change(&fixture)
+			if _, err := fixture.freezer().Freeze(t.Context(), fixture.request, fixture.child, fixture.payload, fixture.source); err == nil {
+				t.Fatal("drifted child froze")
+			}
+		})
+	}
+	t.Run("resolver failure", func(t *testing.T) {
+		fixture := newFreezeFixture(t)
+		failing := EngineFreezer{Resolve: func(context.Context, ChildStartEnvelope) (EngineFreezeContext, error) {
+			return EngineFreezeContext{}, errors.New("generation gone")
+		}}
+		if _, err := failing.Freeze(t.Context(), fixture.request, fixture.child, fixture.payload, fixture.source); err == nil {
+			t.Fatal("froze without pinned context")
+		}
+	})
+}
