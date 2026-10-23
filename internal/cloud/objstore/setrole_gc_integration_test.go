@@ -18,23 +18,15 @@ import (
 // bypassed by a superuser.
 func TestBlobGCRunsAsControllerRole(t *testing.T) {
 	_, admin, store := testMetadata(t, "goobers-config-gc-controller-role")
-	// installBlobReferenceSchema creates stand-ins for reference tables that
-	// later PRs add with their own inventory rows. Grant the controller what
-	// those rows will: SELECT on the columns blob_is_referenced probes.
+	// Only the journal stand-in still needs fixture grants until #7853 lands.
+	// Child tables and their controller privileges come from migration 0012 and
+	// the write-path inventory; no test-only grants may conceal missing access.
 	if _, err := admin.Exec(t.Context(), `
-		GRANT USAGE ON SCHEMA journal TO goobers_controller;
-		GRANT SELECT (digest) ON journal.run_artifact TO goobers_controller;
-		GRANT SELECT (actor_digest, payload_digest, proposal_digest, snapshot_receipt_digest,
-			snapshot_bundle_digest, result_receipt_digest, result_bundle_digest, result_ref, workspace_ref)
-			ON control.child_lineage TO goobers_controller;
-		GRANT SELECT (config_digest, policy_digest) ON control.child_authority TO goobers_controller;
-		GRANT SELECT (digest) ON control.child_blob TO goobers_controller;
-		GRANT SELECT (contract_digest, digest) ON control.child_blob_read TO goobers_controller;
-		GRANT SELECT (intent_digest, receipt_digest) ON control.child_publication TO goobers_controller;
-		GRANT SELECT (request_digest, previous_digest, plan_digest, result_ref) ON control.child_disposition TO goobers_controller;
-		GRANT SELECT (request_digest, previous_digest, plan_digest, result_ref) ON control.child_disposition_history TO goobers_controller`); err != nil {
+  GRANT USAGE ON SCHEMA journal TO goobers_controller;
+  GRANT SELECT (digest) ON journal.run_artifact TO goobers_controller`); err != nil {
 		t.Fatal(err)
 	}
+
 	config := admin.Config().Copy()
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")

@@ -217,6 +217,7 @@ func TestConfiguredPITRRetentionIsTheDeletionFloor(t *testing.T) {
 
 func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
 	metadata, pool, store := testMetadata(t, "goobers-config-gc-census")
+	installCensusChild(t, pool)
 	tests := []struct {
 		name   string
 		insert string
@@ -231,11 +232,16 @@ func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
 			$1,'',1,'','recovery/bundle',1,
 			clock_timestamp()+interval '1 day',1
 		)`},
-		{"pending-adoption", "INSERT INTO control.child_blob (digest) VALUES ($1)"},
-		{"child-grant", "INSERT INTO control.child_authority (config_digest) VALUES ($1)"},
-		{"child-result", "INSERT INTO control.child_lineage (result_ref) VALUES ($1)"},
-		{"child-workspace", "INSERT INTO control.child_lineage (workspace_ref) VALUES ($1)"},
-		{"disposition-result", "INSERT INTO control.child_disposition (result_ref) VALUES ($1)"},
+		{"pending-adoption", `INSERT INTO control.child_blob (instance_id,child_id,digest,kind,size_bytes,owner_epoch)
+ VALUES ('instance','census-child',$1,'result-bundle',1,1)`},
+		{"child-grant", `INSERT INTO control.child_authority
+ (instance_id,gaggle,parent_run_id,occurrence,grant_id,attempt_id,config_digest,policy_digest,expires_at,owner_epoch)
+ VALUES ('instance','g','census-parent','visit','grant','attempt',$1,'',clock_timestamp()+interval '1 hour',1)`},
+		{"child-result", "UPDATE control.child_lineage SET result_ref=$1 WHERE child_id='census-child'"},
+		{"child-workspace", "UPDATE control.child_lineage SET workspace_ref=$1 WHERE child_id='census-child'"},
+		{"disposition-result", `INSERT INTO control.child_disposition
+ (instance_id,child_id,request_digest,action,result_ref,attempt_id,requested_at,owner_epoch)
+ VALUES ('instance','census-child','','merge',$1,'attempt',clock_timestamp(),1)`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -988,44 +994,6 @@ func installBlobReferenceSchema(t *testing.T, pool *pgxpool.Pool) {
 			patch_digest text NOT NULL DEFAULT '',
 			archive_digest text NOT NULL DEFAULT '',
 			bundle_key text NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS control.child_lineage (
-			actor_digest text NOT NULL DEFAULT '',
-			payload_digest text NOT NULL DEFAULT '',
-			proposal_digest text NOT NULL DEFAULT '',
-			snapshot_receipt_digest text NOT NULL DEFAULT '',
-			snapshot_bundle_digest text NOT NULL DEFAULT '',
-			result_receipt_digest text NOT NULL DEFAULT '',
-			result_bundle_digest text NOT NULL DEFAULT '',
-			result_ref text NOT NULL DEFAULT '',
-			workspace_ref text NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS control.child_authority (
-			config_digest text NOT NULL DEFAULT '',
-			policy_digest text NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS control.child_blob (
-			digest text NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS control.child_blob_read (
-			contract_digest text NOT NULL DEFAULT '',
-			digest text NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS control.child_publication (
-			intent_digest text NOT NULL DEFAULT '',
-			receipt_digest text NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS control.child_disposition (
-			request_digest text NOT NULL DEFAULT '',
-			previous_digest text NOT NULL DEFAULT '',
-			plan_digest text NOT NULL DEFAULT '',
-			result_ref text NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS control.child_disposition_history (
-			request_digest text NOT NULL DEFAULT '',
-			previous_digest text NOT NULL DEFAULT '',
-			plan_digest text NOT NULL DEFAULT '',
-			result_ref text NOT NULL DEFAULT ''
 		);
 		INSERT INTO control.blob_reference_writer_protocol (
 			writer_class, protocol_version
