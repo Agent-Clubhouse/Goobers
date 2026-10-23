@@ -444,6 +444,147 @@ correct and total counts.
 Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
 command and counterfactual fault-injection generators.
 
+## Reviewer recall eval (R-SZZ)
+
+The attribution eval scores Backprop's blame; the reviewer eval scores
+merge-review itself. It asks: of the bugs this repository later fixed, how many
+would merge-review have flagged on the change that introduced them, and how
+many of its findings pointed at a real bug? `test/reviewereval` answers with
+three subcommands.
+
+`build -range=A..B -version=V -out=FILE` finds bug fixes in the range's
+first-parent, non-merge history: commits listed in `-fixes` (for example those
+recorded with `goobers telemetry mark-fix`), commits whose message closes an
+issue listed in `-bug-issues` (issues labeled bug or flake), and conventional
+`fix:` commits unless `-no-conventional`. For each fix it runs
+refactoring-aware SZZ (R-SZZ): the fix's deleted lines are blamed (`-w -M -C`)
+in its parent, after filtering out blank-line deletions (`whitespace`), lines
+re-added in the same hunk with only whitespace changed (`format`), and lines
+re-added elsewhere in the fix (`move`). A line blamed on a pure-refactor commit
+(non-blank deleted and added lines are the same multiset ignoring whitespace)
+is traced through it to the deleted line with the same text and blamed again
+in the refactor's parent, up to three refactors deep (`pure-refactor`). The
+commit holding the most traced lines is the introducing commit. A fix is
+dropped, by reason, when it deletes nothing (`no-traceable-lines`), when every
+line is filtered (`all-lines-filtered`), when the culprit is the root or a
+boundary commit (`root-commit`), or when the top candidate holds under half
+the traced lines or ties with the runner-up (`ambiguous`). The dataset header records how many lines each
+filter removed and how many fixes each reason dropped, so filter impact is
+reported rather than hidden. A case whose fix mostly changes non-test files the
+introducing commit never touched is tagged `out-of-diff`: its cause lay outside
+the diff a reviewer would have seen.
+
+The dataset (schema `goobers.dev/backprop/reviewer-eval-dataset/v1`) is JSONL:
+a header with the version, range, resolved commits, filter and drop counts,
+and an order-independent content digest, then one case per line. Rebuilding
+the same range yields the same bytes. Each case is assigned `train` or `eval`
+from a hash of its introducing commit, so every fix of one offending change
+lands in the same split; loading rejects a dataset whose digest does not match
+its cases, whose split assignment departs from the rule, or whose fix appears
+twice. `-hand-labels` attaches a hand-labeled introducing commit to matching
+cases, and a fix that two labels name is rejected as ambiguous; replay
+reports how often R-SZZ agrees with them (`szzCalibration`). The builder runs only read-only git commands against the repository (archive,
+blame, diff, log, rev-list, rev-parse, show, with no `--output`) and never
+writes to it.
+
+`replay -dataset=FILE -variant=NAME -reviewer-cmd=CMD -allow-real-reviewer
+-max-cases=N -budget-usd=X` replays one split (`eval` by default) through a
+reviewer. It samples at most N cases (never more than 200) of that split
+ordered by a seeded hash (`-seed`), so the same dataset and seed always replay
+the same cases; out-of-diff cases are counted, not replayed or scored as
+misses. Each offending commit is reconstructed in a fresh repository from
+`git archive` exports of its parent and itself: two commits, no remote, no
+objects shared with the live repository, so the fix and all later history are
+unreachable. The reviewer adapter runs in that repository, and the judge in an
+empty scratch directory, both under `-work-dir` (which may not lie inside the
+live repository). Each adapter's environment starts from the same default-deny
+ambient allowlist every stage and harness subprocess gets (`internal/procenv`),
+plus only the names given to `-adapter-env` (for example a model API key), so
+no forge token is inherited: not `GH_TOKEN` or `GITHUB_TOKEN`, an instance's
+configured repository token variable (`GOOBERS_GITHUB_TOKEN`, `GITEA_TOKEN`, or
+any other), nor a minted `GOOBERS_CRED_*` credential. `-adapter-env` refuses
+names that look like forge credentials (`GH_*`, `GOOBERS_*`, names containing
+a forge such as `GITHUB` or `GITEA`, any `*_TOKEN` or `*_PAT`, git, credential
+manager, and SSH configuration such as `GIT_CONFIG_PARAMETERS`, and the home
+variables below). Each
+adapter also gets fresh empty home and configuration directories (`HOME`,
+`USERPROFILE`, `APPDATA`, `XDG_*`, `GH_CONFIG_DIR`), global and system git
+config ignored, git credential helpers disabled, and git restricted to the
+local file transport (`GIT_ALLOW_PROTOCOL=file`, `GIT_TERMINAL_PROMPT=0`;
+`-adapter-env` cannot override either), so stored gh and git credentials are
+unreachable and a `git fetch` or `git clone` over https, ssh, or git fails.
+
+The threat this isolation answers is an adapter (or the model behind it)
+seeing the fix or any later history, which would turn a recall measurement
+into a lookup. What is enforced:
+
+- the frozen two-commit repository, with no remotes and no objects shared with
+  the live repository;
+- the `internal/procenv` default-deny environment plus refused credential-like
+  `-adapter-env` names;
+- isolated home and configuration directories, and no git credential helper;
+- git limited to local transport.
+
+The residual gap is non-git network access: an adapter or its model can still
+make arbitrary HTTP requests, for example to a forge's web or API endpoints for
+a public repository, because the only enforced local network block
+(`network:none`) would also cut off the model provider. A host-level egress
+allowlist for adapters is tracked in
+[#7483](https://github.com/Agent-Clubhouse/Goobers/issues/7483); until then,
+use adapters whose tools cannot browse, or run replay on a host whose egress is
+already restricted.
+
+The reviewer receives the request (an opaque case
+ID, base and head SHAs, title, diff, remaining budget) as JSON on stdin, and
+prints the verdict and its cost. Dataset case IDs name the fix commit, so the
+reviewer only ever sees its case's position in the sampled order; the mapping
+back to the fix stays on the scoring side. Nothing is posted to a pull request. A real review is always
+opt-in: replay refuses to run without both flags.
+
+The budget caps reviewer and judge spend together, including spend on failed
+cases. Every reviewer and judge request carries the budget it has left, and
+an adapter that reports spending more stops the replay with an error rather
+than produce an over-budget report. Once the budget is spent, findings still
+awaiting the judge are recorded as skipped for budget (and count as not
+matching) and the remaining cases as `budget-exhausted`. A synthesized or
+failed review, a verdict that breaks the merge-review verdict contract (an
+unknown decision, a finding with an invalid severity or class, no message, or a
+cross-PR blocker naming no PR, checked by the same validation production uses),
+or a judge failure, is recorded as `failed` with its spend kept and is never
+scored; `compare` and `publish` refuse a report whose reviewed verdicts break
+that contract.
+A reviewer or judge call that fails after reporting a cost still counts that
+cost, is checked against the budget it was given like any other call, and a
+failed judge call is recorded with its error and cost but no verdict.
+Neither counts toward recall.
+
+A finding matches its case's bug when its location names a bug file and a line
+within three lines of a bug line. If `-judge-cmd` is given, a finding that does
+not overlap is sent to that semantic judge, and every judge decision,
+rationale, and cost is recorded in the report. The report (schema
+`goobers.dev/backprop/reviewer-eval-report/v1`) holds each case's verdict and
+scored findings, overall and per-finding-class recall (bugs caught over bugs
+reviewed) and precision (matching findings over all findings), and total cost
+(failed cases included) and cost per bug.
+
+`compare` and `publish` re-validate every report they load: case IDs must be
+unique and in seeded sampling order, each case's scoring must agree with its
+verdict and judge decisions, spend must stay within the budget, and the counts,
+recall, precision, and costs must equal what the per-case results recompute
+to, so a hand-edited aggregate is rejected.
+
+`compare -baseline=FILE -candidate=FILE` compares a candidate reviewer variant
+with the baseline. Both reports must come from the same frozen dataset (version
+and digest), the same split, and the same reviewed cases, and must name
+different variants. It prints the candidate's summary with recall, precision,
+and cost-per-bug deltas, and exits 1 when overall recall or precision, or any
+baseline class's recall, drops. `-publish=<instance-root>` (or
+`publish -report=FILE -instance=ROOT` for a single report) writes the summary
+(schema `goobers.dev/backprop/reviewer-eval-summary/v1`) to
+`scheduler/backprop-audit/reviewer-eval.json`. Only the `eval` split may be
+published, and counts, ratios, costs, and comparison deltas must agree. The
+telemetry stats API returns it as `reviewerEval`.
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and
