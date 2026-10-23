@@ -95,6 +95,20 @@ jobs:
           HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
         run: go run ./test/ha/kind/cmd/nightly run
 
+      - name: Verify chaos pending references are still open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./test/ha/chaos/cmd/chaos verify-pending
+
+      - name: Run chaos harness
+        shell: bash
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: |
+          set -euo pipefail
+          go test -race ./test/ha/invariants/... ./test/ha/chaos/...
+          go run ./test/ha/chaos/cmd/chaos run | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}
         run: |

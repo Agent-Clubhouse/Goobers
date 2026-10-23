@@ -52,10 +52,6 @@ var (
 	// parallel_run.go fan-out/fan-in, @join branches and branch-qualified
 	// inputs).
 	ErrParallelsUnsupported = errors.New("spec.parallels (fan-out/fan-in branches) are not implemented on the engine walk")
-	// ErrSelectiveParallelUnsupported refuses a DSL 3.1 selective parallel
-	// (spec.parallels[].selection). It is reported alongside
-	// ErrParallelsUnsupported so the refusal names the selection explicitly.
-	ErrSelectiveParallelUnsupported = errors.New("spec.parallels selection (selective parallel) is not implemented on the engine walk")
 	// ErrMapsUnsupported refuses DSL 3.1 spec.maps (data-driven fan-out).
 	ErrMapsUnsupported = errors.New("spec.maps (data-driven fan-out) is not implemented on the engine walk")
 	// ErrHumanGateUnsupported refuses evaluator: human until the engine owns
@@ -137,11 +133,6 @@ func UnsupportedFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 	var out []*UnsupportedFeatureError
 	if len(spec.Parallels) > 0 {
 		out = append(out, &UnsupportedFeatureError{Feature: "spec.parallels", Err: ErrParallelsUnsupported})
-	}
-	for _, p := range spec.Parallels {
-		if p.Selection != nil {
-			out = append(out, &UnsupportedFeatureError{Stage: p.Name, Feature: "spec.parallels.selection", Err: ErrSelectiveParallelUnsupported})
-		}
 	}
 	for _, m := range spec.Maps {
 		out = append(out, &UnsupportedFeatureError{Stage: m.Name, Feature: "spec.maps", Err: ErrMapsUnsupported})
