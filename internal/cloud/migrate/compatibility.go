@@ -12,7 +12,7 @@ import (
 var (
 	// ErrBinaryTooOld means the database has contracted beyond this binary.
 	ErrBinaryTooOld = errors.New("cloud database requires a newer binary")
-	// ErrSchemaNewer means the database contains a migration unknown to this binary.
+	// ErrSchemaNewer means the database contains an unknown contract migration.
 	ErrSchemaNewer = errors.New("cloud database schema is newer than this binary")
 )
 
@@ -37,9 +37,6 @@ func CheckCompatibility(binary string, applied []Applied, catalog []Migration) e
 	ordered := append([]Applied(nil), applied...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Version < ordered[j].Version })
 	for _, migration := range ordered {
-		if _, ok := known[migration.Version]; !ok {
-			return fmt.Errorf("%w: migration %d", ErrSchemaNewer, migration.Version)
-		}
 		minimum, err := version.NewVersion(migration.MinCompatibleBinary)
 		if err != nil {
 			return fmt.Errorf("parse migration %d minimum binary: %w", migration.Version, err)
@@ -47,8 +44,17 @@ func CheckCompatibility(binary string, applied []Applied, catalog []Migration) e
 		if self.LessThan(minimum) {
 			return fmt.Errorf("%w: migration %d requires %s", ErrBinaryTooOld, migration.Version, minimum)
 		}
+		if _, ok := known[migration.Version]; !ok && migration.Kind != Expand {
+			return fmt.Errorf("%w: unknown %s migration %d", ErrSchemaNewer, migration.Kind, migration.Version)
+		}
 	}
 	return nil
+}
+
+// IsIncompatible reports a schema state that should make a serving process
+// unready without terminating it.
+func IsIncompatible(err error) bool {
+	return errors.Is(err, ErrBinaryTooOld) || errors.Is(err, ErrSchemaNewer)
 }
 
 // ReadmodelBuilder rebuilds and atomically activates a versioned read model.

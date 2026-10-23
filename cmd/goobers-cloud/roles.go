@@ -160,11 +160,11 @@ var (
 	}
 )
 
-type databaseRole func(context.Context, *cloudpg.Pools) error
+type databaseRole func(context.Context, *cloudpg.Pools, error) error
 
 var errRoleUnavailable = errors.New("role wiring is not available yet")
 
-func unavailableDatabaseRole(context.Context, *cloudpg.Pools) error { return errRoleUnavailable }
+func unavailableDatabaseRole(context.Context, *cloudpg.Pools, error) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -224,11 +224,12 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: direct pool: %s\n", role, cloudpg.SafeDiagnostic(err))
 		return 1
 	}
-	if err := checkCloudSchema(ctx, pools.Transaction, version.Get().Version); err != nil {
-		writef(stderr, "goobers-cloud %s: incompatible database schema: %v\n", role, err)
+	compatibilityErr := checkCloudSchema(ctx, pools.Transaction, version.Get().Version)
+	if compatibilityErr != nil && !cloudmigrate.IsIncompatible(compatibilityErr) {
+		writef(stderr, "goobers-cloud %s: check database schema compatibility: %v\n", role, compatibilityErr)
 		return 1
 	}
-	if err := serve(ctx, pools); err != nil {
+	if err := serve(ctx, pools, compatibilityErr); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
 		return 1
 	}

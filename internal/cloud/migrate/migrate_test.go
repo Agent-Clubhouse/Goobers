@@ -11,31 +11,31 @@ import (
 )
 
 func TestOldBinaryServesExpandSchema(t *testing.T) {
-	catalog := []Migration{{
-		Version: 1, Kind: Expand, Name: "0001_add.expand.sql",
-		BinaryVersion: "2.0.0", MinCompatibleBinary: "1.0.0",
+	oldCatalog := []Migration{{
+		Version: 1, Kind: Expand, Name: "0001_base.expand.sql",
+		BinaryVersion: "1.0.0", MinCompatibleBinary: "1.0.0",
 	}}
-	applied := []Applied{{
-		Version: 1, Kind: Expand, BinaryVersion: "2.0.0", MinCompatibleBinary: "1.0.0",
-	}}
-	if err := CheckCompatibility("1.0.0", applied, catalog); err != nil {
+	applied := []Applied{
+		{Version: 1, Kind: Expand, BinaryVersion: "1.0.0", MinCompatibleBinary: "1.0.0"},
+		{Version: 2, Kind: Expand, BinaryVersion: "2.0.0", MinCompatibleBinary: "1.0.0"},
+	}
+	if err := CheckCompatibility("1.0.0", applied, oldCatalog); err != nil {
 		t.Fatalf("old binary rejected expand schema: %v", err)
 	}
 }
 
 func TestMinCompatibleBinaryIsFirstNonReader(t *testing.T) {
-	catalog := []Migration{
+	oldCatalog := []Migration{
 		{Version: 1, Kind: Expand, Name: "0001_add.expand.sql", BinaryVersion: "1.0.0", MinCompatibleBinary: "1.0.0"},
-		{Version: 2, Kind: Contract, Name: "0002_drop.contract.sql", BinaryVersion: "3.0.0", MinCompatibleBinary: "2.0.0"},
 	}
 	applied := []Applied{
 		{Version: 1, Kind: Expand, BinaryVersion: "1.0.0", MinCompatibleBinary: "1.0.0"},
 		{Version: 2, Kind: Contract, BinaryVersion: "3.0.0", MinCompatibleBinary: "2.0.0"},
 	}
-	if err := CheckCompatibility("2.0.0", applied, catalog); err != nil {
-		t.Fatalf("first non-reader rejected: %v", err)
+	if err := CheckCompatibility("2.0.0", applied, oldCatalog); !errors.Is(err, ErrSchemaNewer) || !IsIncompatible(err) {
+		t.Fatalf("unknown contract error = %v, want ErrSchemaNewer", err)
 	}
-	if err := CheckCompatibility("1.9.9", applied, catalog); !errors.Is(err, ErrBinaryTooOld) {
+	if err := CheckCompatibility("1.9.9", applied, oldCatalog); !errors.Is(err, ErrBinaryTooOld) || !IsIncompatible(err) {
 		t.Fatalf("last reader error = %v, want ErrBinaryTooOld", err)
 	}
 }
