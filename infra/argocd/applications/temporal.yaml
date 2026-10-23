@@ -18,6 +18,13 @@ spec:
       helm:
         valueFiles:
           - $infra/infra/temporal/values.yaml
+        parameters:
+          - name: server.image.tag
+            value: 1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6
+            forceString: true
+          - name: admintools.image.tag
+            value: 1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87
+            forceString: true
     - repoURL: https://github.com/goobers/infra.git
       targetRevision: main
       ref: infra

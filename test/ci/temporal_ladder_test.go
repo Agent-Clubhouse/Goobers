@@ -57,6 +57,15 @@ func TestTemporalValuesPinValidatedFinalImages(t *testing.T) {
 			}
 		}
 	}
+	argoApp, err := os.ReadFile(filepath.Join(root, "infra", "argocd", "applications", "temporal.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pin := range []string{serverPin, adminPin} {
+		if !strings.Contains(string(argoApp), "value: "+pin) {
+			t.Errorf("Temporal Argo CD app is missing validated image pin %s", pin)
+		}
+	}
 	ladder, err := os.ReadFile(filepath.Join(root, "test", "ha", "kind", "cmd", "nightly", "main.go"))
 	if err != nil {
 		t.Fatal(err)
