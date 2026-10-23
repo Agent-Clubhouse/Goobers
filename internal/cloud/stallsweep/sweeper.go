@@ -23,7 +23,8 @@ const defaultStallBatch = 100
 
 // maxEventClockSkew bounds how far a writer's event clock may sit outside the
 // database's [startedAt, now] window before max-duration accounting refuses the
-// run's history.
+// run's history. It applies only to histories with events stored before the
+// journal recorded its own commit clock (EventRecord.RecordedAt).
 const maxEventClockSkew = 5 * time.Minute
 
 // ErrNoWorker means cancellation cannot be delivered because no worker serves
@@ -58,9 +59,11 @@ type StallConfig struct {
 	Manager    *cloudlease.Manager
 	Handle     *cloudlease.Handle
 	Source     StallSource
-	// Events reads one run's journal events. It is called only for candidates
+	// Events reads one run's journal records. It is called only for candidates
 	// whose timing already makes them due, so the read is bounded by the page.
-	Events func(ctx context.Context, runID string) ([]journal.Event, error)
+	// A record's RecordedAt (the journal's database commit clock), when every
+	// record has one, replaces the writer clock in duration accounting.
+	Events func(ctx context.Context, runID string) ([]journal.EventRecord, error)
 	// Report receives non-fatal findings (a run history the sweep refuses to
 	// credit); nil drops them.
 	Report         func(error)
@@ -330,56 +333,16 @@ func (s *StallSweeper) due(
 	if !pastDuration && !pastStall {
 		return "", stallTimeout, false, nil
 	}
-	events, err := s.config.Events(ctx, candidate.Identity.RunID)
+	records, err := s.config.Events(ctx, candidate.Identity.RunID)
 	if err != nil {
 		return "", 0, false, fmt.Errorf("read run events: %w", err)
 	}
-	if pastDuration {
-		// Design 10.3: maxRunDuration is run age less durable child waits (the
-		// same journal.ChildExecutionElapsed the local sweep uses). Event times
-		// are writer clocks while startedAt and now are the database clock, so
-		// the window is widened to cover events a mildly skewed writer stamped
-		// outside it; otherwise the child-wait projection rejects the history as
-		// invalid.
-		//
-		// The widening is bounded by maxEventClockSkew and fails CLOSED. An
-		// event stamped further outside the database window (a return stamped a
-		// year ahead) would stretch both "now" and the subtracted wait and let a
-		// run evade its budget forever, and an unreadable wait history would do
-		// the same. In either case the child waits get no credit: the run is
-		// measured by its raw database-clock age, and the finding is reported.
-		startedAt, now := candidate.Identity.StartedAt, candidate.DatabaseNow
-		elapsed := now.Sub(startedAt)
-		credit := true
-		if len(events) > 0 {
-			if first := events[0].Time; first.Before(startedAt) {
-				if startedAt.Sub(first) > maxEventClockSkew {
-					credit = false
-					s.report(fmt.Errorf("run event clock is %s before the run start; child waits get no credit", startedAt.Sub(first).Round(time.Second)))
-				} else {
-					startedAt = first
-				}
-			}
-			if last := events[len(events)-1].Time; credit && last.After(now) {
-				if last.Sub(now) > maxEventClockSkew {
-					credit = false
-					s.report(fmt.Errorf("run event clock is %s ahead of the database; child waits get no credit", last.Sub(now).Round(time.Second)))
-				} else {
-					now = last
-				}
-			}
-		}
-		if credit {
-			credited, err := journal.ChildExecutionElapsed(events, startedAt, now, nil)
-			if err != nil {
-				s.report(fmt.Errorf("read run execution clock: %w; child waits get no credit", err))
-			} else {
-				elapsed = credited
-			}
-		}
-		if elapsed > maxDuration {
-			return "max_duration", stallTimeout, true, nil
-		}
+	events := make([]journal.Event, len(records))
+	for i, record := range records {
+		events[i] = record.Event
+	}
+	if pastDuration && s.creditedElapsed(records, events, candidate) > maxDuration {
+		return "max_duration", stallTimeout, true, nil
 	}
 	if !pastStall {
 		return "", stallTimeout, false, nil
@@ -391,6 +354,67 @@ func (s *StallSweeper) due(
 		return "", stallTimeout, false, nil
 	}
 	return "stalled", stallTimeout, true, nil
+}
+
+// creditedElapsed is the run's age less its durable child waits (design 10.3,
+// the same journal.ChildExecutionElapsed the local sweep uses), all on the
+// database clock. When every record carries the journal's commit clock the
+// waits are measured on it and writer skew is irrelevant. Otherwise (events
+// stored before the journal recorded it) the writer clocks are used inside a
+// window widened by at most maxEventClockSkew, failing CLOSED: an event
+// stamped further outside it, or an unreadable wait history, gives the child
+// waits no credit and the run is measured by its raw database-clock age.
+func (s *StallSweeper) creditedElapsed(records []journal.EventRecord, events []journal.Event, candidate StallActivity) time.Duration {
+	startedAt, now := candidate.Identity.StartedAt, candidate.DatabaseNow
+	elapsed := now.Sub(startedAt)
+	if recorded, ok := recordedClockEvents(records); ok {
+		credited, err := journal.ChildExecutionElapsed(recorded, startedAt, now, nil)
+		if err != nil {
+			s.report(fmt.Errorf("read run execution clock: %w; child waits get no credit", err))
+			return elapsed
+		}
+		return credited
+	}
+	if len(events) > 0 {
+		if first := events[0].Time; first.Before(startedAt) {
+			if startedAt.Sub(first) > maxEventClockSkew {
+				s.report(fmt.Errorf("run event clock is %s before the run start; child waits get no credit", startedAt.Sub(first).Round(time.Second)))
+				return elapsed
+			}
+			startedAt = first
+		}
+		if last := events[len(events)-1].Time; last.After(now) {
+			if last.Sub(now) > maxEventClockSkew {
+				s.report(fmt.Errorf("run event clock is %s ahead of the database; child waits get no credit", last.Sub(now).Round(time.Second)))
+				return elapsed
+			}
+			now = last
+		}
+	}
+	credited, err := journal.ChildExecutionElapsed(events, startedAt, now, nil)
+	if err != nil {
+		s.report(fmt.Errorf("read run execution clock: %w; child waits get no credit", err))
+		return elapsed
+	}
+	return credited
+}
+
+// recordedClockEvents returns the events timed by the journal's commit clock,
+// or false when any record lacks it: one history is never measured on a mix
+// of database and writer clocks.
+func recordedClockEvents(records []journal.EventRecord) ([]journal.Event, bool) {
+	if len(records) == 0 {
+		return nil, false
+	}
+	events := make([]journal.Event, len(records))
+	for i, record := range records {
+		if record.RecordedAt.IsZero() {
+			return nil, false
+		}
+		events[i] = record.Event
+		events[i].Time = record.RecordedAt
+	}
+	return events, true
 }
 
 type stallAction struct {
