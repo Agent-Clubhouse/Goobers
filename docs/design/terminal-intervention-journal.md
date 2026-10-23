@@ -1,5 +1,10 @@
 # Fenced terminal journal interventions
 
+> Status: approved — journal seam provided here; workflow/API delivery remains pending.
+> Tracking: #7899
+> Pending-delivery: #7899
+> Scope-delta: The workflow/API layer must qualify terminal capability discovery, durable-before-ack Updates, and N-1 replay before removing the production refusal.
+
 Issue #7899 is delivered in two layers. This layer provides the durable journal
 transition and its worker-only transport. The workflow/API layer adds the
 Temporal version marker, terminal capability discovery, and durable-before-ack
