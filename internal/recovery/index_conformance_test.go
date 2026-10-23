@@ -53,6 +53,10 @@ func (i inventoryIndex) Publish(ctx context.Context, record recovery.Record, bun
 	if !errors.Is(err, os.ErrNotExist) {
 		return recovery.IndexedRecord{}, err
 	}
+	// A location another publication already moved into place is unavailable.
+	if info, err := os.Lstat(bundle); err != nil || !info.Mode().IsRegular() {
+		return recovery.IndexedRecord{}, recovery.ErrBundleUnavailable
+	}
 	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
 		return recovery.IndexedRecord{}, err
 	}
@@ -118,6 +122,9 @@ func (i inventoryIndex) Reap(ctx context.Context, limit int) ([]recovery.Indexed
 	}
 	return reaped, nil
 }
+
+// ReleaseBundle is a no-op: the inventory deletes bundles during Reap.
+func (inventoryIndex) ReleaseBundle(context.Context, string) error { return nil }
 
 func TestRecordIndexConformance(t *testing.T) {
 	recoveryindex.Run(t, func(t *testing.T) recoveryindex.Backend {

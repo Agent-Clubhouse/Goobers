@@ -37,6 +37,9 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 		"frozen-body-lost-acknowledgement": func(t *testing.T, b Backend) { frozenBody(t, b, true) },
 		"durable-across-reopen":            durableAcrossReopen,
 		"reconcile-budget":                 reconcileBudget,
+		"superseded-during-delivery":       supersededDuringDelivery,
+		"older-failure-keeps-newer-due":    olderFailureKeepsNewerDue,
+		"superseded-body-is-not-posted":    supersededBodyIsNotPosted,
 	}
 	for name, run := range cases {
 		t.Run(name, func(t *testing.T) { run(t, newBackend(t)) })
@@ -290,4 +293,83 @@ func (p *poster) UpdateWorkItem(_ context.Context, request providers.UpdateWorkI
 	p.bodies = append(p.bodies, request.Comment)
 	p.comments = append(p.comments, providers.Comment{Body: request.Comment, AuthorID: "bot-guid"})
 	return providers.WorkItem{}, p.postErr
+}
+
+// republishDuring returns an apply that, on its first call, admits a newer
+// intent for the same key while the first delivery is in flight and then
+// returns result. The nested Publish must not deliver while the lease is held.
+func republishDuring(t *testing.T, outbox terminalreport.Outbox, r *recorder, result error) func(context.Context, terminalreport.Effect) error {
+	first := true
+	return func(ctx context.Context, e terminalreport.Effect) error {
+		_ = r.apply(ctx, e)
+		if !first {
+			return nil
+		}
+		first = false
+		_ = outbox.Publish(ctx, Effect("1", 2), func(context.Context, terminalreport.Effect) error {
+			t.Error("nested Publish delivered while the older delivery held the lease")
+			return nil
+		})
+		return result
+	}
+}
+
+// supersededDuringDelivery: the older delivery's success must not acknowledge
+// the newer intent admitted while it was in flight.
+func supersededDuringDelivery(t *testing.T, backend Backend) {
+	outbox, r := backend.Open(t), &recorder{}
+	apply := republishDuring(t, outbox, r, nil)
+	if err := outbox.Publish(t.Context(), Effect("1", 1), apply); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Reconcile(t.Context(), 10, apply); err != nil {
+		t.Fatal(err)
+	}
+	if r.count() != 2 || r.last().Count != 2 {
+		t.Fatalf("applied %d intents (last count %d), want the newer intent delivered after the older one", r.count(), r.last().Count)
+	}
+}
+
+// olderFailureKeepsNewerDue: a plain failure of the older delivery must not
+// defer or charge an attempt to the newer intent; it is due immediately.
+func olderFailureKeepsNewerDue(t *testing.T, backend Backend) {
+	outbox, r := backend.Open(t), &recorder{}
+	apply := republishDuring(t, outbox, r, errUnavailable)
+	_ = outbox.Publish(t.Context(), Effect("1", 1), apply)
+	if err := outbox.Reconcile(t.Context(), 10, apply); err != nil {
+		t.Fatal(err)
+	}
+	if r.count() != 2 || r.last().Count != 2 || r.last().Attempts != 0 {
+		t.Fatalf("applies=%d last=%+v; want the newer intent delivered at once with no attempts", r.count(), r.last())
+	}
+}
+
+// supersededBodyIsNotPosted: an older delivery cannot freeze or post its body
+// once a newer intent is admitted; only the newer report is posted.
+func supersededBodyIsNotPosted(t *testing.T, backend Backend) {
+	outbox := backend.Open(t)
+	poster := &poster{}
+	first := true
+	apply := func(ctx context.Context, e terminalreport.Effect) error {
+		if first {
+			first = false
+			_ = outbox.Publish(ctx, Effect("42", 3), func(context.Context, terminalreport.Effect) error {
+				t.Error("nested Publish delivered while the older delivery held the lease")
+				return nil
+			})
+		}
+		return e.Apply(ctx, poster)
+	}
+	if err := outbox.Publish(t.Context(), Effect("42", 2), apply); err != nil {
+		t.Fatalf("superseded Publish = %v, want nil", err)
+	}
+	if len(poster.bodies) != 0 {
+		t.Fatalf("superseded delivery posted %d comments", len(poster.bodies))
+	}
+	if err := outbox.Reconcile(t.Context(), 10, apply); err != nil {
+		t.Fatal(err)
+	}
+	if len(poster.bodies) != 1 {
+		t.Fatalf("posted %d comments, want only the newer report", len(poster.bodies))
+	}
 }

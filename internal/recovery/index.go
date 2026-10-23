@@ -6,8 +6,13 @@ import (
 	"time"
 )
 
-// ErrRecordNotFound means a record index has no record for the key.
-var ErrRecordNotFound = errors.New("recovery record not found")
+var (
+	// ErrRecordNotFound means a record index has no record for the key.
+	ErrRecordNotFound = errors.New("recovery record not found")
+	// ErrBundleUnavailable means a bundle location is held by another record
+	// or was reaped and not yet released.
+	ErrBundleUnavailable = errors.New("recovery bundle location is in use or awaiting deletion")
+)
 
 // RecordKey identifies one retained snapshot. A run may retain several.
 type RecordKey struct {
@@ -36,13 +41,21 @@ type IndexedRecord struct {
 // cloud), so Publish requires a zero record.RetainUntil and sets it retention
 // past that clock. An identical retry returns the stored record unchanged; a
 // different record for the same key is ErrRecordConflict. Renew never
-// shortens a deadline. Reap removes records whose deadline has passed and
-// returns them so the caller can delete their bundles.
+// shortens a deadline.
+//
+// A bundle location belongs to one record: Publish refuses a location another
+// record holds. Reap removes records whose deadline has passed and returns
+// them. A returned bundle is referenced by no record, and its location stays
+// retired (Publish refuses it with ErrBundleUnavailable) until ReleaseBundle,
+// which the caller invokes once it has deleted the bundle. A backend that
+// deletes bundles itself during Reap (the local inventory) treats
+// ReleaseBundle as a no-op.
 type RecordIndex interface {
 	Publish(ctx context.Context, record Record, bundle string, retention time.Duration) (IndexedRecord, error)
 	Renew(ctx context.Context, key RecordKey, retention time.Duration) (IndexedRecord, error)
 	Get(ctx context.Context, key RecordKey) (IndexedRecord, error)
 	Reap(ctx context.Context, limit int) ([]IndexedRecord, error)
+	ReleaseBundle(ctx context.Context, bundle string) error
 }
 
 // SameIdentity reports whether two records differ only in RetainUntil.

@@ -24,7 +24,19 @@ CREATE TABLE control.recovery_record (
     retain_until timestamptz NOT NULL,
     owner_epoch bigint NOT NULL CHECK (owner_epoch > 0),
     CHECK (retain_until > to_timestamp(identity_unix_ns / 1e9)),
-    PRIMARY KEY (instance_id, repository_key, run_id, snapshot_sha)
+    PRIMARY KEY (instance_id, repository_key, run_id, snapshot_sha),
+    -- A bundle belongs to exactly one record, so deleting a reaped record's
+    -- bundle can never strand another record.
+    CONSTRAINT recovery_record_bundle_unique UNIQUE (instance_id, bundle_key)
+);
+
+-- Bundles handed back by a reap and not yet confirmed deleted. Publish refuses
+-- these keys, so a re-publication cannot adopt a blob its reaper is deleting.
+CREATE TABLE control.recovery_bundle_tombstone (
+    instance_id text NOT NULL,
+    bundle_key text NOT NULL,
+    reaped_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (instance_id, bundle_key)
 );
 
 CREATE INDEX recovery_record_retention ON control.recovery_record (instance_id, retain_until);
@@ -85,8 +97,12 @@ CREATE TRIGGER cancel_receipt_guard BEFORE UPDATE ON control.cancel_receipt
     FOR EACH ROW EXECUTE FUNCTION control.cancel_receipt_guard();
 
 -- The terminal-report outbox keeps one row per provider projection. Each
--- admission of a different intent advances generation; a delivery lease is
--- measured on the database clock and is only acknowledged by its token.
+-- admission of a different intent takes a new generation from a sequence, so
+-- a generation (and the key/generation idempotency key) is never reused, even
+-- after a delivered row is pruned. A delivery lease is measured on the
+-- database clock and is only acknowledged by its token.
+CREATE SEQUENCE control.terminal_report_generation AS bigint;
+
 CREATE TABLE control.terminal_report (
     instance_id text NOT NULL,
     effect_key text NOT NULL,

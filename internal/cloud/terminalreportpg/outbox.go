@@ -105,6 +105,12 @@ func (o Outbox) deliver(ctx context.Context, d Delivery, apply func(context.Cont
 	return o.acknowledge(ctx, d, err)
 }
 
+// acknowledge settles d as the local queue does. A delivered, superseded or
+// duplicate-cleanup outcome acknowledges d's generation. A failure defers it.
+// When a newer intent was admitted meanwhile, or the outcome could not be
+// journaled, the lease is only released, carrying forward a rate limit that
+// still binds the target, so the newer intent is not delayed or charged an
+// attempt.
 func (o Outbox) acknowledge(ctx context.Context, d Delivery, deliveryErr error) error {
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -118,17 +124,26 @@ func (o Outbox) acknowledge(ctx context.Context, d Delivery, deliveryErr error) 
 	case deliveryErr != nil:
 		outcome = "deferred"
 	}
-	var storeErr error
+	now := time.Now()
+	delay := terminalreport.RetryDelay(deliveryErr, now)
+	var carry time.Duration
+	if _, limited := providers.AsRateLimitError(deliveryErr); limited {
+		carry = delay
+	}
 	if outcome == "deferred" {
 		d.Effect.Attempts++
-		d.Effect.RetryAt, storeErr = o.Store.Defer(persistCtx, o.Handle, d, terminalreport.RetryDelay(deliveryErr, time.Now()))
+		d.Effect.RetryAt = now.Add(delay)
 	}
 	logErr := o.record(d.Effect, outcome, duplicates)
+	var storeErr error
 	switch {
-	case outcome == "deferred":
 	case logErr != nil:
-		// An unrecorded outcome is not acknowledged; the intent is retried.
-		storeErr = o.Store.Release(persistCtx, o.Handle, d)
+		storeErr = o.Store.Release(persistCtx, o.Handle, d, carry)
+	case outcome == "deferred":
+		_, storeErr = o.Store.Defer(persistCtx, o.Handle, d, delay)
+		if errors.Is(storeErr, terminalreport.ErrSuperseded) {
+			storeErr = o.Store.Release(persistCtx, o.Handle, d, carry)
+		}
 	default:
 		storeErr = o.Store.Delivered(persistCtx, o.Handle, d)
 	}

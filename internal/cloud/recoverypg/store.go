@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -61,12 +62,15 @@ func (s Store) Publish(ctx context.Context, handle *lease.Handle, record recover
 		if found || err != nil {
 			return err
 		}
+		if err := bundleAvailable(ctx, tx, handle, bundle); err != nil {
+			return err
+		}
 		indexed, err = scan(tx.QueryRow(ctx, `
 			INSERT INTO control.recovery_record (instance_id, repository_key, run_id, snapshot_sha,
 				version, ref, base_ref, base_sha, patch_digest, archive_digest, archive_bytes,
 				archive_format, bundle_key, identity_unix_ns, retain_until, owner_epoch)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now()+$15::interval, $16)
-			ON CONFLICT DO NOTHING
+			ON CONFLICT ON CONSTRAINT recovery_record_pkey DO NOTHING
 			RETURNING `+columns,
 			handle.InstanceID, record.RepositoryKey, record.RunID, record.SnapshotSHA,
 			record.Version, record.Ref, record.BaseRef, record.BaseSHA, record.PatchDigest,
@@ -79,12 +83,32 @@ func (s Store) Publish(ctx context.Context, handle *lease.Handle, record recover
 			}
 			return err
 		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.ConstraintName == "recovery_record_bundle_unique" {
+			return fmt.Errorf("%w: %s", recovery.ErrBundleUnavailable, bundle)
+		}
 		if err != nil {
 			return fmt.Errorf("insert recovery record: %w", err)
 		}
 		return nil
 	})
 	return indexed, err
+}
+
+// bundleAvailable refuses a location that a reap handed back for deletion
+// and that has not been released. Another record holding the location is
+// refused by the unique constraint.
+func bundleAvailable(ctx context.Context, tx pgx.Tx, handle *lease.Handle, bundle string) error {
+	var retired bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM control.recovery_bundle_tombstone WHERE instance_id=$1 AND bundle_key=$2)`,
+		handle.InstanceID, bundle).Scan(&retired); err != nil {
+		return fmt.Errorf("read recovery bundle tombstone: %w", err)
+	}
+	if retired {
+		return fmt.Errorf("%w: %s", recovery.ErrBundleUnavailable, bundle)
+	}
+	return nil
 }
 
 func validate(record recovery.Record, bundle string, retention time.Duration) error {
@@ -189,12 +213,40 @@ func (s Store) Reap(ctx context.Context, handle *lease.Handle, limit int) ([]rec
 			return fmt.Errorf("reap recovery records: %w", err)
 		}
 		reaped, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (recovery.IndexedRecord, error) { return scan(row) })
-		return err
+		if err != nil {
+			return err
+		}
+		// Retire each returned location in the same transaction, so no
+		// publication can adopt it before the caller deletes the bundle.
+		bundles := make([]string, len(reaped))
+		for i, indexed := range reaped {
+			bundles[i] = indexed.Bundle
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO control.recovery_bundle_tombstone (instance_id, bundle_key)
+			SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING`,
+			handle.InstanceID, bundles); err != nil {
+			return fmt.Errorf("retire reaped recovery bundles: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return reaped, nil
+}
+
+// ReleaseBundle makes a reaped bundle's location publishable again. Call it
+// only after the bundle is deleted from object storage.
+func (s Store) ReleaseBundle(ctx context.Context, handle *lease.Handle, bundle string) error {
+	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM control.recovery_bundle_tombstone WHERE instance_id=$1 AND bundle_key=$2`,
+			handle.InstanceID, bundle); err != nil {
+			return fmt.Errorf("release recovery bundle: %w", err)
+		}
+		return nil
+	})
 }
 
 // Bind returns the store as recovery.RecordIndex for one acquired lease.
@@ -221,4 +273,8 @@ func (b bound) Get(ctx context.Context, key recovery.RecordKey) (recovery.Indexe
 
 func (b bound) Reap(ctx context.Context, limit int) ([]recovery.IndexedRecord, error) {
 	return b.store.Reap(ctx, b.handle, limit)
+}
+
+func (b bound) ReleaseBundle(ctx context.Context, bundle string) error {
+	return b.store.ReleaseBundle(ctx, b.handle, bundle)
 }

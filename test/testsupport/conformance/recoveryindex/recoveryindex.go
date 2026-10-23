@@ -38,6 +38,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 		"reap-limit":                 reapLimit,
 		"durable-across-reopen":      durableAcrossReopen,
 		"exact-capture-time-retains": exactCaptureTime,
+		"bundle-belongs-to-one":      bundleBelongsToOne,
 	}
 	for name, run := range cases {
 		t.Run(name, func(t *testing.T) { run(t, newBackend(t)) })
@@ -212,6 +213,9 @@ func reapExpiredOnly(t *testing.T, backend Backend) {
 	if again, err := index.Reap(t.Context(), 10); err != nil || len(again) != 0 {
 		t.Fatalf("second reap = %d records, %v; want none", len(again), err)
 	}
+	if err := index.ReleaseBundle(t.Context(), reaped[0].Bundle); err != nil {
+		t.Fatalf("ReleaseBundle after deleting a reaped bundle: %v", err)
+	}
 }
 
 func reapLimit(t *testing.T, backend Backend) {
@@ -255,4 +259,31 @@ func exactCaptureTime(t *testing.T, backend Backend) {
 		t.Fatalf("CreatedAt = %s, want %s exactly", published.Record.CreatedAt, record.CreatedAt)
 	}
 	publish(t, backend, index, record, data, time.Hour)
+}
+
+// bundleBelongsToOne: a location held by one record cannot be published for
+// another, so a reaped record's bundle is never one a live record still uses.
+func bundleBelongsToOne(t *testing.T, backend Backend) {
+	index, data := backend.Open(t), []byte("bundle")
+	short, long := fixture("short", 'b', data), fixture("long", 'b', data)
+	shared := backend.StageBundle(t, data)
+	if _, err := index.Publish(t.Context(), short, shared, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Publish(t.Context(), long, shared, time.Hour); err == nil {
+		t.Fatal("a second record was published at a location another record holds")
+	}
+	publish(t, backend, index, long, data, time.Hour)
+	time.Sleep(50 * time.Millisecond)
+	reaped, err := index.Reap(t.Context(), 10)
+	if err != nil || len(reaped) != 1 {
+		t.Fatalf("Reap = %d records, %v; want the expired one", len(reaped), err)
+	}
+	live, err := index.Get(t.Context(), long.Key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Bundle == reaped[0].Bundle {
+		t.Fatalf("Reap handed back %q for deletion while a live record still references it", live.Bundle)
+	}
 }

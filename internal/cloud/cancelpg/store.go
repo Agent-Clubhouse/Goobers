@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,23 +40,11 @@ func (s Store) retention() time.Duration {
 	return cancelreceipt.Retention
 }
 
-func validKey(key string) bool {
-	if key == "" || len(key) > 200 || strings.TrimSpace(key) != key {
-		return false
-	}
-	for _, r := range key {
-		if r < 0x20 || r == 0x7f {
-			return false
-		}
-	}
-	return true
-}
-
 // Begin binds key to the actor and exact payload. An existing key resolves
 // before any capacity check: the same request returns its receipt, another
 // request is ErrConflict. Only fresh=true authorizes execution.
 func (s Store) Begin(ctx context.Context, handle *lease.Handle, key, actor string, payload []byte) (receipt cancelreceipt.Receipt, fresh bool, err error) {
-	if !validKey(key) || len(actor) > 1024 || len(payload) == 0 || len(payload) > cancelreceipt.MaxBytes {
+	if !cancelreceipt.ValidKey(key) || len(actor) > 1024 || len(payload) == 0 || len(payload) > cancelreceipt.MaxBytes {
 		return cancelreceipt.Receipt{}, false, errors.New("cancelpg: invalid request")
 	}
 	err = s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
@@ -172,16 +159,16 @@ func (b bound) Finish(ctx context.Context, key string, result []byte) error {
 	return b.store.Finish(ctx, b.handle, key, result)
 }
 
-// Adopt moves a predecessor's unfinished receipts to the live epoch so the
-// successor can resolve them. The predecessor epoch must match exactly and be
-// older than the live one.
-func (s Store) Adopt(ctx context.Context, handle *lease.Handle, predecessorEpoch int64) (int64, error) {
+// Adopt moves the unfinished receipts of one older epoch to the live epoch so
+// the successor can resolve them. It is a compare-and-set on that exact epoch,
+// which must be older than the live one.
+func (s Store) Adopt(ctx context.Context, handle *lease.Handle, olderEpoch int64) (int64, error) {
 	var adopted int64
 	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE control.cancel_receipt SET owner_epoch=$2
 			WHERE instance_id=$1 AND owner_epoch=$3 AND $3 < $2 AND result IS NULL`,
-			handle.InstanceID, handle.Epoch, predecessorEpoch,
+			handle.InstanceID, handle.Epoch, olderEpoch,
 		)
 		if err != nil {
 			return fmt.Errorf("adopt cancel receipts: %w", err)
@@ -190,4 +177,43 @@ func (s Store) Adopt(ctx context.Context, handle *lease.Handle, predecessorEpoch
 		return nil
 	})
 	return adopted, err
+}
+
+// OrphanedEpochs lists the older epochs that still own unfinished receipts:
+// every predecessor that crashed before its successor adopted from it, not
+// only the immediate one.
+func (s Store) OrphanedEpochs(ctx context.Context, handle *lease.Handle) ([]int64, error) {
+	var epochs []int64
+	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT DISTINCT owner_epoch FROM control.cancel_receipt
+			WHERE instance_id=$1 AND owner_epoch < $2 AND result IS NULL
+			ORDER BY owner_epoch`,
+			handle.InstanceID, handle.Epoch,
+		)
+		if err != nil {
+			return fmt.Errorf("list orphaned cancel receipt epochs: %w", err)
+		}
+		epochs, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+		return err
+	})
+	return epochs, err
+}
+
+// AdoptAll adopts the unfinished receipts of every orphaned epoch, one exact
+// compare-and-set per epoch, and returns how many it moved.
+func (s Store) AdoptAll(ctx context.Context, handle *lease.Handle) (int64, error) {
+	epochs, err := s.OrphanedEpochs(ctx, handle)
+	if err != nil {
+		return 0, err
+	}
+	var adopted int64
+	for _, epoch := range epochs {
+		moved, err := s.Adopt(ctx, handle, epoch)
+		if err != nil {
+			return adopted, err
+		}
+		adopted += moved
+	}
+	return adopted, nil
 }

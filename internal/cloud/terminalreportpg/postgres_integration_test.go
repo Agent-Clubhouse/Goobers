@@ -98,8 +98,8 @@ func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	if err := oldStore.Delivered(t.Context(), old, inFlight); !errors.Is(err, lease.ErrStale) {
 		t.Fatalf("stale owner acknowledgement after delivery = %v, want ErrStale", err)
 	}
-	if generation, delivered := deliveredGeneration(t, pool, e.Key()); !delivered || generation != 1 {
-		t.Fatalf("delivered=%v generation=%d, want generation 1 delivered once", delivered, generation)
+	if generation, delivered := deliveredGeneration(t, pool, e.Key()); !delivered || generation != inFlight.Generation {
+		t.Fatalf("delivered=%v generation=%d, want generation %d delivered once", delivered, generation, inFlight.Generation)
 	}
 	if deliveries, err := newStore.Claim(t.Context(), successor, 10); err != nil || len(deliveries) != 0 {
 		t.Fatalf("delivered intent was claimed again: %d, %v", len(deliveries), err)
@@ -187,21 +187,23 @@ func TestTerminalReportRetryResolvesBeforeCapacity(t *testing.T) {
 	handle := pgtest.Acquire(t, manager)
 	store := terminalreportpg.Store{Fence: manager, MaxPending: 1}
 	first := effect("1", 1)
-	if generation, err := store.Publish(t.Context(), handle, first); err != nil || generation != 1 {
-		t.Fatalf("publish = %d, %v", generation, err)
+	firstGeneration, err := store.Publish(t.Context(), handle, first)
+	if err != nil {
+		t.Fatal(err)
 	}
 	older := claimOne(t, store, handle)
 	if err := store.Freeze(t.Context(), handle, older, "rendered"); err != nil {
 		t.Fatal(err)
 	}
-	if generation, err := store.Publish(t.Context(), handle, first); err != nil || generation != 1 {
-		t.Fatalf("identical retry = %d, %v; want generation 1", generation, err)
+	if generation, err := store.Publish(t.Context(), handle, first); err != nil || generation != firstGeneration {
+		t.Fatalf("identical retry = %d, %v; want generation %d", generation, err, firstGeneration)
 	}
 	if _, err := store.Publish(t.Context(), handle, effect("2", 1)); !errors.Is(err, terminalreportpg.ErrFull) {
 		t.Fatalf("new key at capacity = %v, want ErrFull", err)
 	}
-	if generation, err := store.Publish(t.Context(), handle, effect("1", 2)); err != nil || generation != 2 {
-		t.Fatalf("changed intent = %d, %v; want generation 2", generation, err)
+	secondGeneration, err := store.Publish(t.Context(), handle, effect("1", 2))
+	if err != nil || secondGeneration <= firstGeneration {
+		t.Fatalf("changed intent = generation %d, %v; want one above %d", secondGeneration, err, firstGeneration)
 	}
 	if err := store.Freeze(t.Context(), handle, older, "late"); !errors.Is(err, terminalreport.ErrSuperseded) {
 		t.Fatalf("freeze of superseded generation = %v", err)
@@ -210,14 +212,14 @@ func TestTerminalReportRetryResolvesBeforeCapacity(t *testing.T) {
 		t.Fatalf("acknowledging superseded generation = %v", err)
 	}
 	newer := claimOne(t, store, handle)
-	if newer.Generation != 2 || newer.Effect.Count != 2 || newer.Body != "" {
+	if newer.Generation != secondGeneration || newer.Effect.Count != 2 || newer.Body != "" {
 		t.Fatalf("newer delivery = generation %d count %d body %q", newer.Generation, newer.Effect.Count, newer.Body)
 	}
 	if err := store.Delivered(t.Context(), handle, newer); err != nil {
 		t.Fatal(err)
 	}
-	if generation, delivered := deliveredGeneration(t, pool, first.Key()); !delivered || generation != 2 {
-		t.Fatalf("delivered=%v generation=%d, want generation 2", delivered, generation)
+	if generation, delivered := deliveredGeneration(t, pool, first.Key()); !delivered || generation != secondGeneration {
+		t.Fatalf("delivered=%v generation=%d, want generation %d", delivered, generation, secondGeneration)
 	}
 }
 
@@ -275,5 +277,33 @@ func TestTerminalReportMonotonicGuard(t *testing.T) {
 		if _, err := pool.Exec(context.Background(), statement); err == nil {
 			t.Fatalf("%s moved a cursor backwards", statement)
 		}
+	}
+}
+
+// TestIdempotencyKeyIsNeverReusedAfterPrune: a pruned delivered row must not
+// let a later intent for the same projection reuse its key/generation.
+func TestIdempotencyKeyIsNeverReusedAfterPrune(t *testing.T) {
+	pool := pgtest.Pool(t, "trpg")
+	manager := pgtest.Manager(t, pool, "holder", 0)
+	handle := pgtest.Acquire(t, manager)
+	store := terminalreportpg.Store{Fence: manager, Retention: time.Hour}
+	if _, err := store.Publish(t.Context(), handle, effect("5", 1)); err != nil {
+		t.Fatal(err)
+	}
+	spent := claimOne(t, store, handle)
+	if err := store.Delivered(t.Context(), handle, spent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE control.terminal_report SET delivered_at=now()-interval '2 hours'`); err != nil {
+		t.Fatal(err)
+	}
+	if pruned, err := store.Prune(t.Context(), handle); err != nil || pruned != 1 {
+		t.Fatalf("prune = %d, %v", pruned, err)
+	}
+	if _, err := store.Publish(t.Context(), handle, effect("5", 2)); err != nil {
+		t.Fatal(err)
+	}
+	if next := claimOne(t, store, handle); next.IdempotencyKey == spent.IdempotencyKey {
+		t.Fatalf("a different intent reused the spent idempotency key %q", spent.IdempotencyKey)
 	}
 }

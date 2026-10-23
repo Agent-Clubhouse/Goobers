@@ -171,3 +171,31 @@ func TestCancelReceiptRetentionUsesDatabaseClock(t *testing.T) {
 		t.Fatalf("uncertain receipt was pruned: fresh=%v err=%v", fresh, err)
 	}
 }
+
+// TestCancelReceiptSurvivesTwoTakeovers: epoch 1 begins a cancel and dies, and
+// epoch 2 dies before adopting. Epoch 3 finds and adopts the receipt.
+func TestCancelReceiptSurvivesTwoTakeovers(t *testing.T) {
+	pool := pgtest.Pool(t, "cancelpg")
+	first := pgtest.Manager(t, pool, "one", 0)
+	firstHandle := pgtest.Acquire(t, first)
+	if _, _, err := (cancelpg.Store{Fence: first}).Begin(t.Context(), firstHandle, "k", "alice", []byte("cancel")); err != nil {
+		t.Fatal(err)
+	}
+	pgtest.Takeover(t, pool, pgtest.Manager(t, pool, "two", 0))
+	third := pgtest.Manager(t, pool, "three", 0)
+	thirdHandle := pgtest.Takeover(t, pool, third)
+	store := cancelpg.Store{Fence: third}
+	epochs, err := store.OrphanedEpochs(t.Context(), thirdHandle)
+	if err != nil || len(epochs) != 1 || epochs[0] != firstHandle.Epoch {
+		t.Fatalf("orphaned epochs = %v, %v; want [%d]", epochs, err, firstHandle.Epoch)
+	}
+	if adopted, err := store.AdoptAll(t.Context(), thirdHandle); err != nil || adopted != 1 {
+		t.Fatalf("AdoptAll = %d, %v; want 1", adopted, err)
+	}
+	if err := store.Finish(t.Context(), thirdHandle, "k", []byte("ok")); err != nil {
+		t.Fatalf("successor could not resolve the adopted receipt: %v", err)
+	}
+	if epochs, err := store.OrphanedEpochs(t.Context(), thirdHandle); err != nil || len(epochs) != 0 {
+		t.Fatalf("orphaned epochs after adoption = %v, %v", epochs, err)
+	}
+}

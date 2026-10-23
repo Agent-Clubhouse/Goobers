@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 	"github.com/goobers/goobers/test/testsupport/conformance/recoveryindex"
 )
 
+var staged atomic.Int64
+
 func TestRecordIndexConformance(t *testing.T) {
 	recoveryindex.Run(t, func(t *testing.T) recoveryindex.Backend {
 		pool := pgtest.Pool(t, "recoverypg")
@@ -29,7 +32,8 @@ func TestRecordIndexConformance(t *testing.T) {
 				return recoverypg.Store{Pool: pool, Fence: manager}.Bind(handle)
 			},
 			StageBundle: func(_ *testing.T, data []byte) string {
-				return fmt.Sprintf("bundles/%x", sha256.Sum256(data))
+				// Each publication stages under its own key, as object storage would.
+				return fmt.Sprintf("bundles/%x/%d", sha256.Sum256(data), staged.Add(1))
 			},
 		}
 	})
@@ -196,5 +200,31 @@ func TestRecoveryReapUsesDatabaseClock(t *testing.T) {
 	}
 	if _, err := store.Get(t.Context(), pgtest.InstanceID, long.Key()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestReapedBundleIsRetiredUntilReleased: between a reap and the caller's
+// blob delete, a re-publication must not adopt the location being deleted.
+func TestReapedBundleIsRetiredUntilReleased(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	manager := pgtest.Manager(t, pool, "holder", 0)
+	handle := pgtest.Acquire(t, manager)
+	store := recoverypg.Store{Pool: pool, Fence: manager}
+	r := record("run-1")
+	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-1", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if reaped, err := store.Reap(t.Context(), handle, 10); err != nil || len(reaped) != 1 {
+		t.Fatalf("reap = %d, %v", len(reaped), err)
+	}
+	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-1", time.Hour); !errors.Is(err, recovery.ErrBundleUnavailable) {
+		t.Fatalf("re-publication into a reaped location = %v, want ErrBundleUnavailable", err)
+	}
+	if err := store.ReleaseBundle(t.Context(), handle, "bundles/run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-1", time.Hour); err != nil {
+		t.Fatalf("re-publication after release: %v", err)
 	}
 }

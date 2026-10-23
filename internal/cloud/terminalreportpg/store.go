@@ -158,7 +158,7 @@ func (s Store) resolve(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a a
 func (s Store) supersede(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a admission, keepBody bool, generation *int64) error {
 	err := tx.QueryRow(ctx, `
 		UPDATE control.terminal_report
-		SET effect=$3, report_identity=$4, generation=generation+1, delivered_at=NULL,
+		SET effect=$3, report_identity=$4, generation=nextval('control.terminal_report_generation'), delivered_at=NULL,
 		    body=CASE WHEN $5 THEN body END,
 		    retry_at=CASE WHEN retry_at > now() THEN retry_at ELSE '-infinity' END,
 		    attempts=CASE WHEN retry_at > now() THEN attempts ELSE 0 END,
@@ -188,20 +188,15 @@ func (s Store) admit(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a adm
 	if pending >= s.maxPending() {
 		return ErrFull
 	}
-	tag, err := tx.Exec(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO control.terminal_report
 			(instance_id, effect_key, effect, report_identity, generation, owner_epoch)
-		VALUES ($1, $2, $3, $4, 1, $5)
-`,
+		VALUES ($1, $2, $3, $4, nextval('control.terminal_report_generation'), $5)
+		RETURNING generation`,
 		handle.InstanceID, a.key, a.encoded, a.identity, handle.Epoch,
-	)
-	if err != nil {
+	).Scan(generation); err != nil {
 		return fmt.Errorf("admit terminal report: %w", err)
 	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("admit terminal report: inserted %d rows", tag.RowsAffected())
-	}
-	*generation = 1
 	return nil
 }
 
@@ -343,8 +338,11 @@ func (s Store) releaseLease(ctx context.Context, tx pgx.Tx, handle *lease.Handle
 }
 
 // Defer releases d's lease and postpones the key by delay on the database
-// clock. A later retry time already recorded for the key is never shortened.
-// It returns the recorded retry time.
+// clock, counting the attempt. A later retry time already recorded for the
+// key is never shortened. It applies only to d's own generation: when a newer
+// intent was admitted meanwhile it changes nothing and reports
+// terminalreport.ErrSuperseded, so the newer intent is not delayed. It returns
+// the recorded retry time.
 func (s Store) Defer(ctx context.Context, handle *lease.Handle, d Delivery, delay time.Duration) (time.Time, error) {
 	var retryAt time.Time
 	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
@@ -353,12 +351,12 @@ func (s Store) Defer(ctx context.Context, handle *lease.Handle, d Delivery, dela
 			SET retry_at=GREATEST(retry_at, clock_timestamp()+$5::interval), attempts=attempts+1,
 			    lease_token=NULL, lease_until=NULL
 			WHERE instance_id=$1 AND effect_key=$2 AND lease_token=$3::uuid
-			  AND owner_epoch=$4 AND delivered_at IS NULL
+			  AND owner_epoch=$4 AND generation=$6 AND delivered_at IS NULL
 			RETURNING retry_at`,
-			handle.InstanceID, d.Key, d.LeaseToken, handle.Epoch, max(delay, 0),
+			handle.InstanceID, d.Key, d.LeaseToken, handle.Epoch, max(delay, 0), d.Generation,
 		).Scan(&retryAt)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrLeaseLost
+			return s.leaseOutcome(ctx, tx, handle, d)
 		}
 		if err != nil {
 			return fmt.Errorf("defer terminal report: %w", err)
@@ -368,10 +366,41 @@ func (s Store) Defer(ctx context.Context, handle *lease.Handle, d Delivery, dela
 	return retryAt.UTC(), err
 }
 
-// Release gives up d's lease without changing its schedule, so it is claimed
-// again; it reports ErrLeaseLost if the lease was already reclaimed.
-func (s Store) Release(ctx context.Context, handle *lease.Handle, d Delivery) error {
+// leaseOutcome distinguishes a superseded generation, whose lease d still
+// holds, from a lost lease.
+func (s Store) leaseOutcome(ctx context.Context, tx pgx.Tx, handle *lease.Handle, d Delivery) error {
+	var held bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM control.terminal_report
+			WHERE instance_id=$1 AND effect_key=$2 AND lease_token=$3::uuid
+			  AND owner_epoch=$4 AND delivered_at IS NULL)`,
+		handle.InstanceID, d.Key, d.LeaseToken, handle.Epoch,
+	).Scan(&held); err != nil {
+		return fmt.Errorf("read terminal report lease: %w", err)
+	}
+	if held {
+		return terminalreport.ErrSuperseded
+	}
+	return ErrLeaseLost
+}
+
+// Release gives up d's lease, so the key is claimed again. It does not count
+// an attempt. A positive notBefore (a provider rate limit that still binds the
+// key's target) keeps the key undue for at least that long; a later recorded
+// retry time is never shortened. It reports ErrLeaseLost if the lease was
+// already reclaimed.
+func (s Store) Release(ctx context.Context, handle *lease.Handle, d Delivery, notBefore time.Duration) error {
 	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		if notBefore > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE control.terminal_report
+				SET retry_at=GREATEST(retry_at, clock_timestamp()+$5::interval)
+				WHERE instance_id=$1 AND effect_key=$2 AND lease_token=$3::uuid AND owner_epoch=$4`,
+				handle.InstanceID, d.Key, d.LeaseToken, handle.Epoch, notBefore,
+			); err != nil {
+				return fmt.Errorf("carry terminal report rate limit: %w", err)
+			}
+		}
 		return s.releaseLease(ctx, tx, handle, d)
 	})
 }
