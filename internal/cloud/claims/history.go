@@ -93,7 +93,8 @@ func releaseToHistory(
 // pruneHistory applies each store's retention: the previous binary's rule for
 // released incarnations, and the ledger's retainedHistory for run records (a
 // run holding any lease keeps every record; otherwise its records go once its
-// newest activity, release else last grant, passes ClaimHistoryTTL).
+// newest activity across both stores, release else last grant, passes
+// ClaimHistoryTTL).
 func pruneHistory(ctx context.Context, tx pgx.Tx, instanceID string, epoch int64) error {
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM control.claim_history
@@ -103,13 +104,22 @@ func pruneHistory(ctx context.Context, tx pgx.Tx, instanceID string, epoch int64
 	); err != nil {
 		return err
 	}
+	// A run's newest activity is taken over the same merge history reads use:
+	// a release the previous binary appended to claim_history keeps the run's
+	// records, so retention never drops records a merged read still keeps.
 	_, err := tx.Exec(ctx, `
 		DELETE FROM control.claim_run_history AS h
 		WHERE h.instance_id=$1 AND h.owner_epoch<=$2
 		  AND NOT EXISTS (SELECT 1 FROM control.claim AS held WHERE held.instance_id=$1 AND held.run_id=h.run_id)
 		  AND h.run_id IN (
-			SELECT run_id FROM control.claim_run_history WHERE instance_id=$1 GROUP BY run_id
-			HAVING max(coalesce(released_at, greatest(claimed_at, renewed_at))) <= clock_timestamp()-$3::interval
+			SELECT run_id FROM (
+				SELECT run_id, coalesce(released_at, greatest(claimed_at, renewed_at)) AS activity
+				FROM control.claim_run_history WHERE instance_id=$1
+				UNION ALL
+				SELECT run_id, released_at FROM control.claim_history WHERE instance_id=$1
+			) AS merged
+			GROUP BY run_id
+			HAVING max(activity) <= clock_timestamp()-$3::interval
 		  )`,
 		instanceID, epoch, localscheduler.ClaimHistoryTTL,
 	)

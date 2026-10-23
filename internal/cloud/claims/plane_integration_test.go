@@ -879,3 +879,110 @@ func TestPlaneHistorySeesPredecessorRelease(t *testing.T) {
 		t.Fatalf("history after a predecessor release = %+v, want one released record", got)
 	}
 }
+
+// TestPlaneMixedVersionRetentionKeepsRunHistory (reviewer probe E): after the
+// previous binary releases one of a long-running run's leases, an unrelated
+// claim's prune must keep the run's other records, because its newest
+// activity across both history stores is that recent release.
+func TestPlaneMixedVersionRetentionKeepsRunHistory(t *testing.T) {
+	f := newPlaneFixture(t)
+	r := f.leader(t, "review")
+	ctx := t.Context()
+	for _, item := range []string{"overwritten", "held"} {
+		if got, err := r.plane.Acquire(ctx, request(item, "long-run")); err != nil || !got.Ok {
+			t.Fatalf("grant: %+v %v", got, err)
+		}
+	}
+	// Exercise the real expired-overwrite path; only timestamps are fixtures.
+	if _, err := f.owner.Exec(ctx, `UPDATE control.claim SET expires_at=now()-interval '1 second' WHERE external_id='overwritten'`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.plane.Acquire(ctx, request("overwritten", "new-holder")); err != nil || !got.Ok {
+		t.Fatalf("overwrite: %+v %v", got, err)
+	}
+	if _, err := f.owner.Exec(ctx, `UPDATE control.claim_run_history SET claimed_at=now()-interval '60 days',renewed_at=now()-interval '60 days' WHERE run_id='long-run';
+ UPDATE control.claim SET claimed_at=now()-interval '60 days',renewed_at=now()-interval '60 days' WHERE run_id='long-run'`); err != nil {
+		t.Fatal(err)
+	}
+	// Previous Store's release, with its production role and current live epoch.
+	tag, err := f.controller.Exec(ctx, `WITH moved AS (
+ DELETE FROM control.claim WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4 AND run_id=$5 AND owner_epoch=$6 RETURNING *)
+ INSERT INTO control.claim_history (instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at,released_at,release_reason,verification)
+ SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at,clock_timestamp(),$7,verification FROM moved`, pgtest.InstanceID, "g", "github", "held", "long-run", r.handle.Load().Epoch, []byte(`{"disposition":"completed"}`))
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("N-1 release: %v %v", tag, err)
+	}
+	count := func() int {
+		got, err := r.plane.List(ctx, httpapi.ClaimListRequest{RunID: "long-run", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(got.History)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("before prune %d, want2", n)
+	}
+	if got, err := r.plane.Acquire(ctx, request("trigger", "unrelated")); err != nil || !got.Ok {
+		t.Fatalf("trigger: %+v %v", got, err)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("mixed-version prune lost retained history: before=2 after=%d; release just now must retain whole run for %v", n, localscheduler.ClaimHistoryTTL)
+	}
+}
+
+// TestPlaneDualWriteIsAtomicAtOneInstant (reviewer probe): a release that
+// fails in the run-history write rolls back the claim deletion and the
+// incarnation append, and a successful one stamps both at one instant; no
+// other runtime role can touch run history.
+func TestPlaneDualWriteIsAtomicAtOneInstant(t *testing.T) {
+	f := newPlaneFixture(t)
+	r := f.leader(t, "review")
+	ctx := t.Context()
+	req := request("atomic", "run")
+	req.Reason = claimrelease.Completed.Reason()
+	if got, err := r.plane.Acquire(ctx, req); err != nil || !got.Ok {
+		t.Fatalf("grant: %+v %v", got, err)
+	}
+	if _, err := f.owner.Exec(ctx, `ALTER TABLE control.claim_run_history ADD CONSTRAINT review_reject_release CHECK(released_at IS NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.plane.Release(ctx, req); err == nil {
+		t.Fatal("injected release rejection ignored")
+	}
+	var active, old int
+	if err := f.owner.QueryRow(ctx, `SELECT (SELECT count(*) FROM control.claim WHERE external_id='atomic'),(SELECT count(*) FROM control.claim_history WHERE external_id='atomic')`).Scan(&active, &old); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 || old != 0 {
+		t.Fatalf("non-atomic rollback: active=%d old=%d", active, old)
+	}
+	if _, err := f.owner.Exec(ctx, `ALTER TABLE control.claim_run_history DROP CONSTRAINT review_reject_release`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.plane.Release(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	var a, b time.Time
+	if err := f.owner.QueryRow(ctx, `SELECT a.released_at,b.released_at FROM control.claim_history a JOIN control.claim_run_history b USING(instance_id,run_id,gaggle,provider,external_id) WHERE a.external_id='atomic'`).Scan(&a, &b); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Equal(b) {
+		t.Fatalf("release instants differ %v %v", a, b)
+	}
+	for _, role := range []string{"goobers_api", "goobers_worker"} {
+		var exists bool
+		if err := f.owner.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)`, role).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			continue
+		}
+		var allowed bool
+		if err := f.owner.QueryRow(ctx, `SELECT has_any_column_privilege($1,'control.claim_run_history','SELECT,INSERT,UPDATE') OR has_table_privilege($1,'control.claim_run_history','DELETE')`, role).Scan(&allowed); err != nil {
+			t.Fatal(err)
+		}
+		if allowed {
+			t.Fatalf("unexpected history grants for %s", role)
+		}
+	}
+}
