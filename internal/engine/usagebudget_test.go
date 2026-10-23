@@ -145,7 +145,7 @@ func TestFailedAgenticUsagePreservesInfrastructureRetry(t *testing.T) {
 		t.Fatalf("retry delay=%v", got)
 	}
 }
-func TestBudgetRefusalDependsOnAgenticPlacement(t *testing.T) {
+func TestBudgetAdmissionAllowsRemotePlacement(t *testing.T) {
 	spec := agenticRetrySpec(nil)
 	spec.Tasks[0].Limits = &apiv1.Limits{MaxTokens: 10}
 	if err := engineadmission.RefusePlacedDefinition("flow", spec, nil); err != nil {
@@ -154,8 +154,8 @@ func TestBudgetRefusalDependsOnAgenticPlacement(t *testing.T) {
 	if err := engineadmission.RefusePlacedDefinition("flow", spec, []PinnedPlacement{{Stage: "implement", Self: true}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := engineadmission.RefusePlacedDefinition("flow", spec, []PinnedPlacement{remotePin("implement")}); !errors.Is(err, ErrRemoteUsageLimitsUnsupported) {
-		t.Fatalf("remote refusal=%v", err)
+	if err := engineadmission.RefusePlacedDefinition("flow", spec, []PinnedPlacement{remotePin("implement")}); err != nil {
+		t.Fatalf("remote budget admission=%v", err)
 	}
 }
 

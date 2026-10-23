@@ -595,10 +595,9 @@ type parityEnvelope struct {
 	// its stage a different repo.
 	CheckoutCones string
 	// Limits is the stage's execution bound (duration/tokens/cost),
-	// JSON-encoded. R9 refuses maxTokens/maxCostUSD at run start and admits
-	// maxDurationSeconds precisely BECAUSE the engine enforces it through the
-	// stage activity's StartToCloseTimeout — so the two sides passing the same
-	// Limits is the evidence that admission rests on.
+	// JSON-encoded. The engine enforces duration through the activity timeout
+	// and remote token/cost bounds through trusted supervisor usage, so the two
+	// sides passing the same Limits is the evidence that admission rests on.
 	Limits string
 	// ParentPlatformPolicy and NestedAgentPolicy are the runner-authored child
 	// authority for agentic stages, JSON-encoded. They are carried in the

@@ -209,7 +209,10 @@ func declaredEngineRuntimeBlockers(spec apiv1.WorkflowSpec) []workflow.FeatureID
 	}
 	ids := make([]workflow.FeatureID, 0, len(declared))
 	for id := range declared {
-		ids = append(ids, id)
+		feature, registered := workflow.LookupFeature(id)
+		if registered && runtimeLevel(feature, workflow.RuntimeEngine) == workflow.RuntimeUnsupported {
+			ids = append(ids, id)
+		}
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids

@@ -42,9 +42,6 @@ var (
 	// and observation recording: internal/runner/run.go's AssignAndRecord /
 	// recordBanditResult arms).
 	ErrExperimentUnsupported = errors.New("task.experiment (bandit arm assignment) is not implemented on the engine walk")
-	// ErrRemoteUsageLimitsUnsupported refuses budgeted agentic pod dispatch:
-	// the remote surrender protocol does not yet carry trusted adapter usage.
-	ErrRemoteUsageLimitsUnsupported = errors.New("task.limits.maxTokens/maxCostUSD on remote agentic tasks are not implemented on the engine walk")
 	// ErrOutboxUnsupported refuses task.outbox (internal/runner/outbox.go's
 	// workspace-relative export, #1552).
 	ErrOutboxUnsupported = errors.New("task.outbox (workspace file export) is not implemented on the engine walk")
@@ -213,10 +210,10 @@ func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
 }
 
 // RefusePlacedDefinition also checks features whose support depends on the
-// pinned executor. Local agentic usage budgets are supported; remote usage
-// must be carried in the surrender protocol before that refusal can be lifted.
-func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
-	refusals, err := placedDefinitionRefusals(name, spec, placements, RefuseDefinition)
+// pinned executor. Remote usage limits are supported through trusted
+// supervisor surrender usage; placements remain for future checks.
+func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, _ []dispatcher.PinnedPlacement) error {
+	refusals, err := placedDefinitionRefusals(name, spec, RefuseDefinition)
 	if err != nil {
 		return err
 	}
@@ -226,7 +223,6 @@ func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []d
 func placedDefinitionRefusals(
 	name string,
 	spec apiv1.WorkflowSpec,
-	placements []dispatcher.PinnedPlacement,
 	refuseDefinition func(string, apiv1.WorkflowSpec) error,
 ) ([]*UnsupportedFeatureError, error) {
 	var refusals []*UnsupportedFeatureError
@@ -238,27 +234,7 @@ func placedDefinitionRefusals(
 	if declared != nil {
 		refusals = append(refusals, declared.Refusals...)
 	}
-	refusals = append(refusals, remoteUsageRefusals(spec, placements)...)
 	return refusals, nil
-}
-
-// RefuseRemoteUsage rejects token or cost limits on agentic tasks pinned to
-// remote executors, whose surrender protocol does not carry trusted usage.
-func RefuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
-	return refusalError(name, remoteUsageRefusals(spec, placements))
-}
-
-func remoteUsageRefusals(spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) []*UnsupportedFeatureError {
-	var refusals []*UnsupportedFeatureError
-	for _, t := range spec.Tasks {
-		if t.Type != apiv1.TaskAgentic || t.Limits == nil || (t.Limits.MaxTokens <= 0 && t.Limits.MaxCostUSD <= 0) {
-			continue
-		}
-		if _, remote := remotePlacementFor(placements, t.Name); remote {
-			refusals = append(refusals, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.limits.maxTokens/maxCostUSD", Err: ErrRemoteUsageLimitsUnsupported})
-		}
-	}
-	return refusals
 }
 
 func refusalError(name string, refusals []*UnsupportedFeatureError) error {
@@ -270,12 +246,3 @@ func refusalError(name string, refusals []*UnsupportedFeatureError) error {
 
 // HumanGateUnsupported is retained verbatim for historical engine refusals.
 const HumanGateUnsupported = "engine: human gates require occurrence-bound Temporal signals and are not supported yet"
-
-func remotePlacementFor(placements []dispatcher.PinnedPlacement, stage string) (dispatcher.PinnedPlacement, bool) {
-	for _, pin := range placements {
-		if pin.Stage == stage {
-			return pin, !pin.Self
-		}
-	}
-	return dispatcher.PinnedPlacement{}, false
-}
