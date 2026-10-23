@@ -133,7 +133,7 @@ func TestSSELastEventIDResumesAcrossRestartAndFlip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("post-flip status = %d, want 409", response.StatusCode)
 	}
