@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -489,5 +491,163 @@ func TestPlaneEpochMaintenanceAcrossTwoTakeovers(t *testing.T) {
 	history, err := third.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-closed", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
 	if err != nil || len(history.History) != 1 || history.History[0].ReleaseReason.Disposition != claimrelease.StallSwept {
 		t.Fatalf("closed run history = %+v, %v", history, err)
+	}
+}
+
+// TestPlaneRecoverExpiredRefusesTypedNilGate: a typed nil *RecoveryGate is
+// non-nil as an interface and its nil-safe method permits, so it must be
+// treated as closed or an expired live-run lease is reaped before rebuild.
+func TestPlaneRecoverExpiredRefusesTypedNilGate(t *testing.T) {
+	f := newPlaneFixture(t)
+	r := f.leader(t, "a")
+	ctx := t.Context()
+	if got, err := r.plane.Acquire(ctx, request("held", "live-run")); err != nil || !got.Ok {
+		t.Fatalf("acquire = %+v, %v", got, err)
+	}
+	if _, err := f.owner.Exec(ctx, `UPDATE control.claim SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1`, pgtest.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	var gate *localscheduler.RecoveryGate
+	if !gate.RecoveryPermitted() {
+		t.Fatal("premise: the local nil gate permits recovery")
+	}
+	released, err := r.plane.RecoverExpired(ctx, r.handle.Load(), gate)
+	if err != nil || len(released) != 0 {
+		t.Fatalf("typed nil gate recover = %+v, %v; want a no-op", released, err)
+	}
+	var remaining int
+	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.claim WHERE instance_id=$1`, pgtest.InstanceID).Scan(&remaining); err != nil || remaining != 1 {
+		t.Fatalf("remaining leases = %d, %v; want the expired live-run lease kept", remaining, err)
+	}
+}
+
+// historyShape is the part of a history record both ledgers must agree on.
+type historyShape struct {
+	Run, Item string
+	Released  bool
+	Reason    claimrelease.Disposition
+}
+
+func shapes(entries []httpapi.ClaimEntry) []historyShape {
+	out := make([]historyShape, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, historyShape{entry.RunID, entry.ItemID, entry.ReleasedAt != nil, entry.ReleaseReason.Disposition})
+	}
+	return out
+}
+
+func localShapes(entries []localscheduler.ClaimEntry) []historyShape {
+	out := make([]historyShape, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, historyShape{entry.RunID, entry.ItemID, entry.ReleasedAt != nil, entry.ReleaseReason.Disposition})
+	}
+	return out
+}
+
+// TestPlaneHistoryMatchesFileLedger drives the PG plane and a file
+// ClaimLedger through the same grants and releases and requires the same
+// history: one record per run and key, present while live, completed on
+// release, superseded by a re-grant (ClaimLedger.storeClaim/recordHistory,
+// HistoryForRun, HistorySnapshot).
+func TestPlaneHistoryMatchesFileLedger(t *testing.T) {
+	f := newPlaneFixture(t)
+	p := f.leader(t, "a").plane
+	ctx := t.Context()
+	local, err := localscheduler.OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := func(item, run string) {
+		t.Helper()
+		key := localscheduler.ClaimKey{Gaggle: "g", Provider: "github", ExternalID: item}
+		if ok, _, err := local.ClaimScoped(key, run, "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("local grant %s/%s = %v, %v", item, run, ok, err)
+		}
+		if got, err := p.Acquire(ctx, request(item, run)); err != nil || !got.Ok {
+			t.Fatalf("plane grant %s/%s = %+v, %v", item, run, got, err)
+		}
+	}
+	release := func(item, run string) {
+		t.Helper()
+		reason := claimrelease.Completed.Reason()
+		key := localscheduler.ClaimKey{Gaggle: "g", Provider: "github", ExternalID: item}
+		if err := local.ReleaseScoped(key, run, reason); err != nil {
+			t.Fatal(err)
+		}
+		req := request(item, run)
+		req.Reason = reason
+		if _, err := p.Release(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compareRun := func(step, run string) {
+		t.Helper()
+		got, err := p.List(ctx, httpapi.ClaimListRequest{RunID: run, Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pg, file := shapes(got.History), localShapes(local.HistoryForRun(run)); !reflect.DeepEqual(pg, file) {
+			t.Fatalf("%s: %s history PG=%+v file=%+v", step, run, pg, file)
+		}
+	}
+	grant("42", "run-a")
+	compareRun("live", "run-a")
+	release("42", "run-a")
+	compareRun("released", "run-a")
+	grant("42", "run-a")
+	compareRun("re-granted", "run-a")
+	release("42", "run-a")
+	compareRun("released twice", "run-a")
+	grant("7", "run-a")
+	grant("42", "run-b")
+	compareRun("second key", "run-a")
+	compareRun("other run", "run-b")
+
+	namespace, err := p.List(ctx, httpapi.ClaimListRequest{Gaggle: "g", Provider: "github", RunID: "run-a", Scope: httpapi.ClaimListScopeNamespace, IncludeHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pg, file := shapes(namespace.History), localShapes(local.HistorySnapshot()); !reflect.DeepEqual(pg, file) {
+		t.Fatalf("namespace history PG=%+v file=%+v", pg, file)
+	}
+}
+
+// TestPlaneExpiredOverwriteKeepsOwnerHistory: overwriting an expired lease
+// leaves its owner's record, unreleased, as the file ledger does.
+func TestPlaneExpiredOverwriteKeepsOwnerHistory(t *testing.T) {
+	f := newPlaneFixture(t)
+	p := f.leader(t, "a").plane
+	ctx := t.Context()
+	now := time.Now()
+	local, err := localscheduler.OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "g", Provider: "github", ExternalID: "42"}
+	if ok, _, err := local.ClaimScoped(key, "old", "implementation", time.Second); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if got, err := p.Acquire(ctx, request("42", "old")); err != nil || !got.Ok {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := f.owner.Exec(ctx, `UPDATE control.claim SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1`, pgtest.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := local.ClaimScoped(key, "new", "implementation", time.Hour); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if got, err := p.Acquire(ctx, request("42", "new")); err != nil || !got.Ok {
+		t.Fatal(err)
+	}
+	got, err := p.List(ctx, httpapi.ClaimListRequest{RunID: "old", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pg, file := shapes(got.History), localShapes(local.HistoryForRun("old")); !reflect.DeepEqual(pg, file) || len(pg) != 1 {
+		t.Fatalf("overwritten owner history PG=%+v file=%+v; want its one unreleased record", pg, file)
 	}
 }

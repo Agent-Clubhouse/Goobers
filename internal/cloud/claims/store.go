@@ -84,12 +84,7 @@ func (s *Store) ClaimScoped(
 		if err := lockClaims(ctx, tx, s.instanceID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM control.claim_history
-			WHERE instance_id=$1 AND owner_epoch<=$2
-			  AND released_at<(clock_timestamp()-$3::interval)`,
-			s.instanceID, epoch, localscheduler.ClaimHistoryTTL,
-		); err != nil {
+		if err := pruneHistory(ctx, tx, s.instanceID, epoch); err != nil {
 			return err
 		}
 		for attempt := 0; attempt < 2; attempt++ {
@@ -116,6 +111,9 @@ func (s *Store) ClaimScoped(
 						token, epoch, lease,
 					)
 					if err := changed(tag.RowsAffected(), err); err != nil {
+						return err
+					}
+					if err := recordGrant(ctx, tx, s.instanceID, key, epoch); err != nil {
 						return err
 					}
 					if err := recordFairnessState(ctx, tx, s.instanceID, key, runID, epoch); err != nil {
@@ -181,6 +179,9 @@ func (s *Store) ClaimScoped(
 			if tag.RowsAffected() == 0 {
 				continue
 			}
+			if err := recordGrant(ctx, tx, s.instanceID, key, epoch); err != nil {
+				return err
+			}
 			if err := recordFairnessState(ctx, tx, s.instanceID, key, runID, epoch); err != nil {
 				return err
 			}
@@ -228,30 +229,15 @@ func (s *Store) ReleaseScoped(key localscheduler.ClaimKey, runID string, reason 
 	if !validKey(key) || runID == "" {
 		return errors.New("cloud claims: invalid release")
 	}
-	rawReason, err := json.Marshal(reason)
-	if err != nil {
-		return err
-	}
 	return s.mutate(func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 		if err := lockClaims(ctx, tx, s.instanceID); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `
-			WITH moved AS (
-				DELETE FROM control.claim
-				WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
-				  AND run_id=$5 AND owner_epoch=$6
-				RETURNING *
-			)
-			INSERT INTO control.claim_history
-				(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-				 claimed_at,renewed_at,expires_at,released_at,release_reason,verification)
-			SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-			       claimed_at,renewed_at,expires_at,clock_timestamp(),$7,verification
-			FROM moved`,
-			s.instanceID, key.Gaggle, key.Provider, key.ExternalID, runID, epoch, rawReason,
-		)
-		return changed(tag.RowsAffected(), err)
+		released, err := releaseToHistory(ctx, tx, s.instanceID, epoch, key, runID, "", false, reason)
+		if err == nil && !released {
+			return ErrTransition
+		}
+		return err
 	})
 }
 
@@ -312,7 +298,10 @@ func (s *Store) RecordClaimVerification(
 			expected.RunID, token, epoch, raw,
 		)
 		updated = err == nil && tag.RowsAffected() == 1
-		return err
+		if !updated {
+			return err
+		}
+		return recordGrant(ctx, tx, s.instanceID, key, epoch)
 	})
 	return updated, err
 }
@@ -371,16 +360,10 @@ func (s *Store) ForRunAll(runID string) []localscheduler.ClaimEntry {
 	return result
 }
 
-// HistorySnapshot returns retained released claim history.
+// HistorySnapshot returns retained claim history, newest first, as the file
+// ledger's HistorySnapshot does: one record per run and key, live or released.
 func (s *Store) HistorySnapshot() []localscheduler.ClaimEntry {
-	rows, err := s.pool.Query(context.Background(), claimHistorySelect+`
-		FROM control.claim_history WHERE instance_id=$1 ORDER BY released_at DESC`,
-		s.instanceID,
-	)
-	if err != nil {
-		return nil
-	}
-	entries, err := pgx.CollectRows(rows, scanHistoryClaim)
+	entries, err := queryHistory(context.Background(), s.pool, s.instanceID, `true`, historyNewestFirst)
 	if err != nil {
 		return nil
 	}
@@ -471,20 +454,23 @@ func scanClaimWithOwnershipAndLive(
 	return entry, token, ownerEpoch, live, err
 }
 
+// scanHistoryClaim reads one history record. A live or overwritten lease's
+// record has no release time or reason yet.
 func scanHistoryClaim(row pgx.CollectableRow) (localscheduler.ClaimEntry, error) {
 	var entry localscheduler.ClaimEntry
 	var verification, reason []byte
-	var released time.Time
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
 		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification,
-		&released, &reason,
+		&entry.ReleasedAt, &reason,
 	)
-	entry.ExternalID, entry.ReleasedAt = entry.ItemID, &released
+	entry.ExternalID = entry.ItemID
 	if len(verification) > 0 {
 		err = errors.Join(err, json.Unmarshal(verification, &entry.Verification))
 	}
-	err = errors.Join(err, json.Unmarshal(reason, &entry.ReleaseReason))
+	if len(reason) > 0 {
+		err = errors.Join(err, json.Unmarshal(reason, &entry.ReleaseReason))
+	}
 	return entry, err
 }
 

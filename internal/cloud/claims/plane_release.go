@@ -2,7 +2,6 @@ package claims
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -110,38 +109,15 @@ func (p *Plane) releaseAllForRun(ctx context.Context, request httpapi.ClaimReque
 	return httpapi.ClaimResponse{Ok: true, Released: released}, nil
 }
 
-// moveToHistory releases the run's row for key into claim_history, adopting a
-// predecessor epoch's row. token, when set, pins one incarnation and
-// requireExpired rechecks expiry under the fence (recovery decides outside
-// it); otherwise the run's current incarnation is released.
+// moveToHistory releases the run's row for key and completes its history
+// record, adopting a predecessor epoch's row. token, when set, pins one
+// incarnation and requireExpired rechecks expiry under the fence (recovery
+// decides outside it); otherwise the run's current incarnation is released.
 func (p *Plane) moveToHistory(
 	ctx context.Context, tx pgx.Tx, epoch int64, key localscheduler.ClaimKey,
 	runID, token string, requireExpired bool, reason claimrelease.Reason,
 ) (bool, error) {
-	rawReason, err := json.Marshal(reason)
-	if err != nil {
-		return false, err
-	}
-	tag, err := tx.Exec(ctx, `
-		WITH moved AS (
-			DELETE FROM control.claim
-			WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
-			  AND run_id=$5 AND owner_epoch<=$6 AND ($8='' OR owner_token=$8)
-			  AND (NOT $9 OR expires_at<=clock_timestamp())
-			RETURNING *
-		)
-		INSERT INTO control.claim_history
-			(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-			 claimed_at,renewed_at,expires_at,released_at,release_reason,verification)
-		SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,$6,
-		       claimed_at,renewed_at,expires_at,clock_timestamp(),$7,verification
-		FROM moved`,
-		p.instanceID, key.Gaggle, key.Provider, key.ExternalID, runID, epoch, rawReason, token, requireExpired,
-	)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() == 1, nil
+	return releaseToHistory(ctx, tx, p.instanceID, epoch, key, runID, token, requireExpired, reason)
 }
 
 // runEntries reads the run's active claims inside the transaction.

@@ -54,12 +54,7 @@ func (p *Plane) claim(ctx context.Context, request httpapi.ClaimRequest, lease t
 	key := localscheduler.ClaimKey{Gaggle: request.Gaggle, Provider: request.Provider, ExternalID: request.ItemID}
 	var response httpapi.ClaimResponse
 	err := p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM control.claim_history
-			WHERE instance_id=$1 AND owner_epoch<=$2
-			  AND released_at<(clock_timestamp()-$3::interval)`,
-			p.instanceID, epoch, localscheduler.ClaimHistoryTTL,
-		); err != nil {
+		if err := pruneHistory(ctx, tx, p.instanceID, epoch); err != nil {
 			return err
 		}
 		if holder, held, err := p.liveLegacyHolder(ctx, tx, request.ItemID); err != nil || held {
@@ -131,15 +126,26 @@ func (p *Plane) extend(
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
-	if err := recordFairnessState(ctx, tx, p.instanceID, key, request.RunID, epoch); err != nil {
+	return p.granted(ctx, tx, epoch, key, request.RunID, expires)
+}
+
+// granted records a grant or renewal: the holder's history record and the
+// scheduler's fairness state, both in the claim's transaction.
+func (p *Plane) granted(
+	ctx context.Context, tx pgx.Tx, epoch int64, key localscheduler.ClaimKey, runID string, expires time.Time,
+) (httpapi.ClaimResponse, error) {
+	if err := recordGrant(ctx, tx, p.instanceID, key, epoch); err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if err := recordFairnessState(ctx, tx, p.instanceID, key, runID, epoch); err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
 	return httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}, nil
 }
 
 // dropExpired removes an expired row so the key can be granted. Expiry ended
-// the old holder's authority; the scheduler's sweep records nothing for it
-// either, matching the file ledger, which overwrites an expired entry.
+// the old holder's authority; like the file ledger, which overwrites an
+// expired entry, it leaves the old holder's history record unreleased.
 func (p *Plane) dropExpired(ctx context.Context, tx pgx.Tx, epoch int64, key localscheduler.ClaimKey, row lockedRow) error {
 	tag, err := tx.Exec(ctx, `
 		DELETE FROM control.claim
@@ -183,10 +189,7 @@ func (p *Plane) insert(
 	).Scan(&expires); err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
-	if err := recordFairnessState(ctx, tx, p.instanceID, key, request.RunID, epoch); err != nil {
-		return httpapi.ClaimResponse{}, err
-	}
-	return httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}, nil
+	return p.granted(ctx, tx, epoch, key, request.RunID, expires)
 }
 
 // liveLegacyHolder reports a live unscoped claim on the item, which is

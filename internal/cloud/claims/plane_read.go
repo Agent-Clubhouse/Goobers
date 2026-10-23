@@ -49,7 +49,7 @@ func (p *Plane) listRun(ctx context.Context, request httpapi.ClaimListRequest) (
 	if err != nil || !request.IncludeHistory {
 		return httpapi.ClaimListResponse{Entries: wireEntries(entries)}, err
 	}
-	history, err := p.selectHistory(ctx, `run_id=$2`, request.RunID)
+	history, err := queryHistory(ctx, p.pool, p.instanceID, `h.run_id=$2`, historyByKey, request.RunID)
 	return httpapi.ClaimListResponse{Entries: wireEntries(entries), History: wireEntries(history)}, err
 }
 
@@ -62,11 +62,12 @@ func (p *Plane) listNamespace(ctx context.Context, request httpapi.ClaimListRequ
 		return httpapi.ClaimListResponse{}, err
 	}
 	const namespace = `((gaggle=$2 AND provider=$3) OR (gaggle='` + legacyNamespace + `' AND provider='` + legacyNamespace + `'))`
+	const historyNamespace = `((h.gaggle=$2 AND h.provider=$3) OR (h.gaggle='` + legacyNamespace + `' AND h.provider='` + legacyNamespace + `'))`
 	entries, err := p.selectEntries(ctx, p.pool, namespace, request.Gaggle, request.Provider)
 	if err != nil || !request.IncludeHistory {
 		return httpapi.ClaimListResponse{Entries: wireEntries(entries)}, err
 	}
-	history, err := p.selectHistory(ctx, namespace, request.Gaggle, request.Provider)
+	history, err := queryHistory(ctx, p.pool, p.instanceID, historyNamespace, historyNewestFirst, request.Gaggle, request.Provider)
 	return httpapi.ClaimListResponse{Entries: wireEntries(entries), History: wireEntries(history)}, err
 }
 
@@ -90,7 +91,7 @@ func (p *Plane) executionSnapshot(ctx context.Context, request httpapi.ClaimList
 	if err != nil {
 		return httpapi.ClaimListResponse{}, err
 	}
-	history, err := p.selectHistoryOn(ctx, tx, `run_id=$2`, request.RunID)
+	history, err := queryHistory(ctx, tx, p.instanceID, `h.run_id=$2`, historyByKey, request.RunID)
 	if err != nil {
 		return httpapi.ClaimListResponse{}, err
 	}
@@ -108,24 +109,6 @@ func (p *Plane) selectEntries(ctx context.Context, q querier, predicate string, 
 		return nil, err
 	}
 	return pgx.CollectRows(rows, scanClaim)
-}
-
-func (p *Plane) selectHistory(ctx context.Context, predicate string, args ...any) ([]localscheduler.ClaimEntry, error) {
-	return p.selectHistoryOn(ctx, p.pool, predicate, args...)
-}
-
-// selectHistoryOn reads retained released history, newest first.
-func (p *Plane) selectHistoryOn(ctx context.Context, q querier, predicate string, args ...any) ([]localscheduler.ClaimEntry, error) {
-	rows, err := q.Query(ctx, claimHistorySelect+`
-		FROM control.claim_history WHERE instance_id=$1 AND `+predicate+`
-		  AND released_at>=clock_timestamp()-$`+argIndex(len(args)+2)+`::interval
-		ORDER BY released_at DESC`,
-		append(append([]any{p.instanceID}, args...), localscheduler.ClaimHistoryTTL)...,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, scanHistoryClaim)
 }
 
 func argIndex(n int) string { return strconv.Itoa(n) }
@@ -219,5 +202,9 @@ func (p *Plane) verify(
 		  AND owner_token=$5 AND owner_epoch<=$6 AND expires_at>clock_timestamp()`,
 		p.instanceID, expected.Gaggle, expected.Provider, expected.ExternalID, row.token, epoch, raw,
 	)
-	return err == nil && tag.RowsAffected() == 1, err
+	if err != nil || tag.RowsAffected() != 1 {
+		return false, err
+	}
+	// The ledger records the observation on the run's history record too.
+	return true, recordGrant(ctx, tx, p.instanceID, storedKey(expected), epoch)
 }

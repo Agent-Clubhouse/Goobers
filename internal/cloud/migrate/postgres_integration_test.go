@@ -144,3 +144,63 @@ func ensureRoles(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatalf("provision cloud roles: %v", err)
 	}
 }
+
+// TestClaimHistoryBecomesOneRecordPerRunAndKey upgrades an install whose
+// claim history logged every released incarnation: 0022 keeps each run and
+// key's newest released record and replaces it with the run's live lease.
+func TestClaimHistoryBecomesOneRecordPerRunAndKey(t *testing.T) {
+	pool := privatePool(t)
+	ensureRoles(t, pool)
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before []Migration
+	for _, migration := range catalog {
+		if migration.Version != 22 {
+			before = append(before, migration)
+		}
+	}
+	runner := Runner{Direct: pool, Catalog: before, BackupRef: "test", InstanceID: "migration", Holder: "test"}
+	if err := runner.Apply(t.Context()); err != nil {
+		t.Fatalf("apply catalog without 0022: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO control.claim_history
+			(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
+			 claimed_at,renewed_at,expires_at,released_at,release_reason)
+		VALUES
+			('i','g','github','1','run-a','w','old',1,now()-interval '3 hours',now(),now(),now()-interval '2 hours','{"disposition":"failed"}'),
+			('i','g','github','1','run-a','w','new',1,now()-interval '1 hour',now(),now(),now()-interval '30 minutes','{"disposition":"completed"}'),
+			('i','g','github','2','run-a','w','gone',1,now()-interval '1 hour',now(),now(),now(),'{"disposition":"completed"}');
+		INSERT INTO control.claim
+			(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at)
+		VALUES ('i','g','github','2','run-a','w','live',1,now(),now(),now()+interval '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	runner.Catalog = catalog
+	if err := runner.Apply(t.Context()); err != nil {
+		t.Fatalf("apply 0022: %v", err)
+	}
+	rows, err := pool.Query(t.Context(), `
+		SELECT external_id, owner_token, released_at IS NULL FROM control.claim_history
+		WHERE instance_id='i' AND run_id='run-a' ORDER BY external_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type record struct {
+		item, token string
+		live        bool
+	}
+	got, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (record, error) {
+		var r record
+		return r, row.Scan(&r.item, &r.token, &r.live)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []record{{"1", "new", false}, {"2", "live", true}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("history after 0022 = %+v, want the newest released record and the live lease", got)
+	}
+}
