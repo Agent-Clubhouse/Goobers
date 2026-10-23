@@ -7,8 +7,10 @@ package enginechildplane
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/httpapi"
 )
 
 // Plane serves httpapi.EngineChildPlane over an engine.ChildAdmissions.
@@ -30,7 +32,11 @@ func (p Plane) Admit(ctx context.Context, decode func(any) error) (any, error) {
 	if err := decode(&in); err != nil {
 		return nil, err
 	}
-	return p.Admissions.Admit(ctx, in)
+	binding, err := p.Admissions.Admit(ctx, in)
+	if err != nil {
+		return nil, planeError(err)
+	}
+	return binding, nil
 }
 
 // Load decodes a binding and returns its exact digest-addressed manifest.
@@ -39,7 +45,8 @@ func (p Plane) Load(ctx context.Context, decode func(any) error) ([]byte, error)
 	if err := decode(&binding); err != nil {
 		return nil, err
 	}
-	return p.Admissions.Load(ctx, binding)
+	manifest, err := p.Admissions.Load(ctx, binding)
+	return manifest, planeError(err)
 }
 
 // Cancel decodes a binding and cancels its child family.
@@ -48,5 +55,21 @@ func (p Plane) Cancel(ctx context.Context, decode func(any) error) error {
 	if err := decode(&binding); err != nil {
 		return err
 	}
-	return p.Admissions.Cancel(ctx, binding)
+	return planeError(p.Admissions.Cancel(ctx, binding))
+}
+
+// planeError gives the worker client a status it can classify: 503 while no
+// controller holds custody, 409 for a request that can never succeed. Other
+// failures surface as a 500 without detail.
+func planeError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, engine.ErrChildCustodyUnavailable):
+		return &httpapi.InterventionError{Status: http.StatusServiceUnavailable, Code: "child_custody_unavailable", Message: "generated-child custody is temporarily unavailable; retry", Err: err}
+	case errors.Is(err, engine.ErrChildCustodyRefused):
+		return &httpapi.InterventionError{Status: http.StatusConflict, Code: "child_custody_refused", Message: "generated-child custody refused the request", Err: err}
+	default:
+		return err
+	}
 }
