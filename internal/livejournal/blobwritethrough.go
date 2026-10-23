@@ -50,7 +50,7 @@ func (w *Writer) publishArtifact(ctx context.Context, run *liveRun, ref journal.
 	if err != nil || rel != ref.Path {
 		return fmt.Errorf("publish artifact %s: committed ref is not content-addressed", ref.Digest)
 	}
-	data, err := os.ReadFile(filepath.Join(run.dir, filepath.FromSlash(rel)))
+	data, err := w.committedArtifact(ctx, run, ref)
 	if err != nil {
 		return fmt.Errorf("publish artifact %s: read committed bytes: %w", ref.Digest, err)
 	}
@@ -92,4 +92,15 @@ func (run *liveRun) rememberArtifactKey(key string, ref journal.Ref) {
 		run.artifactKeyRefs = map[string]journal.Ref{}
 	}
 	run.artifactKeyRefs[key] = ref
+}
+
+func (w *Writer) committedArtifact(ctx context.Context, run *liveRun, ref journal.Ref) ([]byte, error) {
+	if run.adopted {
+		return os.ReadFile(filepath.Join(run.dir, filepath.FromSlash(ref.Path)))
+	}
+	reader, err := w.runReader(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	return reader.ArtifactBytes(ref)
 }

@@ -48,7 +48,7 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		!strings.Contains(run.Run, " -json ") || !strings.Contains(run.Run, "set -uo pipefail") ||
 		!strings.Contains(run.Run, `tee "$RUNNER_TEMP/cloud-pg-test.json"`) ||
 		!strings.Contains(run.Run, `go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1`) ||
-		!strings.Contains(run.Run, "./internal/cloud/... ./test/ha/invariants/...") ||
+		!strings.Contains(run.Run, "./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/...") ||
 		run.Env["TESTDEP_STRICT"] != "1" {
 		t.Fatalf("cloud integration step = %+v", run)
 	}

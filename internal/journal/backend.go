@@ -87,6 +87,11 @@ type InstanceAppender interface{ Append(Event) error }
 // event. Validation failures commit nothing. The returned count is the durable
 // prefix length callers use to resume a retry.
 type Backend interface {
+	// RunRecorded reports durable existence without acquiring a writer. Lookup
+	// failures must remain errors rather than being mistaken for an absent run.
+	RunRecorded(context.Context, RunKey) (bool, error)
+	// OpenRunReader reads durable identity, events and blobs without acquiring a writer.
+	OpenRunReader(context.Context, RunKey) (RunReader, error)
 	CreateRun(context.Context, CreateRunRequest) (RunHandle, OwnerToken, error)
 	RecoverRun(context.Context, RunKey, RunWriterOptions) (RunHandle, OwnerToken, RecoverReport, error)
 	RunStatus(context.Context, RunHandle) (RunStatus, error)
