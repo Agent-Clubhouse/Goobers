@@ -84,6 +84,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -407,6 +408,8 @@ var parityExpectedFailures = map[parityRow]string{}
 // the engine may or may not have a counterpart for, and the row's own
 // assertion over the two observations.
 type parityCase struct {
+	// BanditHistory seeds identical durable observations on both experiment lanes.
+	BanditHistory []bandit.Observation
 	// Row is the finding-002 inventory row this case pins.
 	Row parityRow
 	// Name is the subtest name.
@@ -936,6 +939,7 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 		t.Fatalf("new worktree manager: %v", err)
 	}
 	runsDir := filepath.Join(instanceRoot, "runs")
+	seedExperimentJournals(t, runsDir, c.BanditHistory)
 	cfg := runner.Config{
 		InstanceID: parityInstanceID,
 		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {

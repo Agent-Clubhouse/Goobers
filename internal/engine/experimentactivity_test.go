@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/goobers/goobers/internal/bandit"
@@ -22,9 +23,19 @@ func (p *experimentTestPlane) Observe(_ context.Context, r bandit.ObservationReq
 	}
 	if r.Operation == "read" {
 		p.reads++
-		return bandit.ObservationResponse{Observations: p.history}, nil
+		return bandit.ObservationResponse{Observations: slices.Clone(p.history)}, nil
+	}
+	for _, prior := range p.writes {
+		if prior.Key == r.Record.Key {
+			if prior != *r.Record {
+				return bandit.ObservationResponse{}, bandit.ErrObservationConflict
+			}
+			return bandit.ObservationResponse{}, nil
+		}
 	}
 	p.writes = append(p.writes, *r.Record)
+	p.history = append(p.history, r.Record.Observation)
+	bandit.SortObservations(p.history)
 	return bandit.ObservationResponse{}, nil
 }
 
