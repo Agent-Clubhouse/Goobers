@@ -10,10 +10,12 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Captured on 2661f0209, before production Run assembled the controller.
-// The refused history reaches a static parallel and fails with unknown-state;
-// the serial history completes. Worker/sticky identities are sanitized, with
-// recorded commands and payloads unchanged. Both must retain their old path.
+// The serial history was captured on 2661f0209. The refused history was
+// captured on 70ec5ab65 after the #7887 run-start refusal, before assembly:
+// five events, no activities, and the original typed parallel refusal.
+// Worker/sticky identities are sanitized; commands and payloads are unchanged.
+// Pre-#7887 test-only unknown-state histories are not production-reachable:
+// admission has always refused parallels. DefaultVersion preserves #7887.
 func TestProductionRunPreFanOutHistoriesReplay(t *testing.T) {
 	for _, kind := range []string{"serial", "refused"} {
 		t.Run(kind, func(t *testing.T) {

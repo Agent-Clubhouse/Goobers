@@ -10,7 +10,8 @@ import (
 
 // journalCommitOwner serializes emissions from independent branch recorders.
 // Its queue is ordinary deterministic workflow state, never a native goroutine
-// or mutex. Serial walks leave owner nil; versioned fan-out Run assembly
+// or mutex. Serial walks without human decision ownership leave owner nil;
+// versioned fan-out Run assembly
 // installs it before the root or any branch can append journal operations.
 //
 // emitted is the acknowledged prefix. submitted also protects an uncertain

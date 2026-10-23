@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -133,7 +135,7 @@ func TestProductionRunFanOutLegacyAndAdmission(t *testing.T) {
 			switch mode {
 			case "legacy":
 				env.OnGetVersion(fanOutAssemblyVersion, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
-				want = `unknown state "parallel"`
+				want = wf.ErrParallelsUnsupported.Error()
 			case "no-live":
 				in.LiveJournal = false
 			case "no-preview":
@@ -150,17 +152,11 @@ func TestProductionRunFanOutLegacyAndAdmission(t *testing.T) {
 			if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("error=%v want=%q", err, want)
 			}
-			if mode == "legacy" {
-				if calls != 1 {
-					t.Fatalf("legacy stage dispatches=%d want seed only", calls)
-				}
-				for _, event := range liveEvents(t, dir, in.RunID) {
-					if event.Type == journal.EventParallelStarted {
-						t.Fatal("legacy history entered new controller")
-					}
-				}
-			} else if calls != 0 {
+			if calls != 0 {
 				t.Fatalf("rejected input dispatched %d stages", calls)
+			}
+			if _, err := os.Stat(filepath.Join(dir, in.RunID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("run-start refusal created a journal: %v", err)
 			}
 		})
 	}
@@ -225,6 +221,45 @@ func TestProductionRunFanOutRetainsUndeliveredTerminal(t *testing.T) {
 	for _, event := range liveEvents(t, dir, in.RunID) {
 		if event.Type == journal.EventRunFinished {
 			t.Fatal("unacknowledged terminal reached live journal")
+		}
+	}
+}
+
+func TestProductionRunFanOutComposesWithSelection(t *testing.T) {
+	in, acts, calls := selectiveParallelFixture(t, `{"schemaVersion":1,"branches":[{"name":"gamma","reason":"affected"}]}`)
+	proj := executeLive(t, in.Run, acts, false)
+	got := calls.snapshot()
+	if got["alpha"] != 1 || got["beta"] != 0 || got["gamma"] != 1 || got["join"] != 1 {
+		t.Fatalf("Run did not use frozen selection: %v", got)
+	}
+	for _, op := range proj.Ops {
+		event := op.Event
+		if event == nil || event.Type != journal.EventParallelFinished {
+			continue
+		}
+		outcomes := event.Completeness
+		if event.Target != "join" || len(outcomes) != 3 || outcomes[0].Status != journal.BranchSucceeded || outcomes[1].Status != journal.BranchSkipped || outcomes[2].Status != journal.BranchSucceeded || outcomes[1].Reason != "not selected by seed.selection" {
+			t.Fatalf("Run selection settlement=%+v", event)
+		}
+		return
+	}
+	t.Fatal("Run did not settle its selective parallel")
+}
+
+func TestProductionRunFanOutKeepsMapRefusal(t *testing.T) {
+	for _, withParallel := range []bool{false, true} {
+		def := fanOutEngineDefinition(true)
+		if withParallel {
+			def.Spec.Parallels = branchBodyInput("unused", false, false).Run.Spec.Parallels
+		}
+		in := runInput("map-still-refused", def.Spec)
+		in.DSLVersion, in.LiveJournal = "3.1", true
+		var suite testsuite.WorkflowTestSuite
+		env := temporaltest.NewWorkflowEnvironment(&suite)
+		// No activities registered: any attempt to run the producer is a failure.
+		env.ExecuteWorkflow(Run, in)
+		if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), wf.ErrMapUnsupported.Error()) {
+			t.Fatalf("map with parallel=%v: refusal=%v", withParallel, err)
 		}
 	}
 }

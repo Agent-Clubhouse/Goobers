@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engineadmission"
@@ -35,8 +36,8 @@ func fanOutEngineDefinition(withMap bool) wf.Definition {
 	return wf.Definition{Name: "fanout", DSLVersion: "3.1", Spec: spec}
 }
 
-// TestFanOutRefusedAtEngineBoundaries pins design §13 for maps at run start,
-// in the daemon preflight, and inside a direct Temporal invocation.
+// TestFanOutRefusedAtEngineBoundaries pins admission refusals and the legacy
+// direct-invocation refusal. Versioned Run assembly has separate coverage.
 func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -66,6 +67,9 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 			}
 			var ts testsuite.WorkflowTestSuite
 			env := temporaltest.NewWorkflowEnvironment(&ts)
+			if len(tc.def.Spec.Parallels) > 0 {
+				env.OnGetVersion(fanOutAssemblyVersion, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+			}
 			env.ExecuteWorkflow(Run, RunInput{RunID: "fanout-guard", WorkflowName: tc.def.Name, DSLVersion: tc.def.DSLVersion, Spec: tc.def.Spec})
 			if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), tc.direct.Error()) {
 				t.Fatalf("direct Temporal run: %v", err)
