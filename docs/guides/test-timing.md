@@ -189,7 +189,7 @@ become the floor.
 Timing budgets are intentionally soft, and the comparison command always
 succeeds regardless of what the timing data shows -- test failures and
 malformed timing data remain the only ordinary CI failures this step can
-produce. `budgetSeconds` is purely informational: shared runners (macOS in
+produce. For the existing `unit` job, `budgetSeconds` is purely informational: shared runners (macOS in
 particular) contend unpredictably enough that a fixed-second ceiling is either
 stale noise or a number someone has to keep chasing upward (#3323 -- every
 green macOS run had already exceeded the 300-second budget in place at the
@@ -197,14 +197,35 @@ time, with day-to-day swings over 20% and no code change at all). It still
 appears in the ledger row/summary table because the trend is genuinely
 useful, but it no longer drives any signal.
 
-The advisory GitHub workflow warning (an `OVER BUDGET`-style annotation) is
-driven entirely by `regressionTolerance`: the fraction of growth over the
+The unit job's advisory GitHub workflow warning is driven by
+`regressionTolerance`: the fraction of growth over the
 previous successful run's `elapsedSeconds` that counts as a genuine
 regression rather than contention noise. Growth at or below that fraction
 never fires; growth beyond it does, independent of whether the (informational)
 budget was also exceeded. With no previous measurement to compare against
 (first run, cross-fork PR missing the artifact), nothing distinguishes noise
 from regression, so no advisory fires.
+
+## Cloud PostgreSQL job budget
+
+HA-P3-24 opts `cloud-pg` into `alertOnBudget`: warn above its 900-second design
+allowance even without a previous measurement. This warning never changes the
+correctness verdict. The job's separate 30-minute timeout is a hang guard, not
+the performance target. The initial 900-second baseline field is explicitly a
+design allowance, not a claimed measurement.
+
+`testtiming wall` reads the current Actions attempt's job `started_at` and records
+elapsed time through integration cleanup. This includes service setup, checkout,
+cache restore and compilation; it excludes only the final timing upload and
+failure diagnostics. The `test-timings-cloud-pg` artifact uses the same timing
+schema, and the job summary reports actual time against the allowance even when
+tests fail. The existing unit regression-tolerance policy is unchanged.
+
+The HA-P3-24 shard refresh uses all ten timing parts from successful main run
+[39892833297](https://github.com/Agent-Clubhouse/Goobers/actions/runs/39892833297),
+commit `237244c0c92ab00854dcf0159c01b3aa82ecacd0`. Weights and test splits share that
+provenance. The checked-in plan must have max/min weighted shard totals within
+10%; this is a scheduling check, not a wall-clock assertion on shared runners.
 
 ## Adjusting timing budgets
 
