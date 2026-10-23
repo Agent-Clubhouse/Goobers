@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -88,6 +89,126 @@ func TestPruneRefusesPinned(t *testing.T) {
 	if has, err := store.Has(t.Context(), digest); err != nil || !has {
 		t.Fatalf("pinned blob Has = %v, %v", has, err)
 	}
+}
+
+func TestPruneDefersBlobUntilRetentionSweep(t *testing.T) {
+	metadata, pool, store := testMetadata(t, "goobers-config-retention")
+	archive := []byte("retained config archive")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PruneGeneration(t.Context(), "instance", digest); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := store.Has(t.Context(), digest); err != nil || !has {
+		t.Fatalf("prune synchronously removed blob: Has=%v err=%v", has, err)
+	}
+	manager, handle := gcLease(t, pool)
+	deleted, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("GC deleted %d blobs inside retention window", deleted)
+	}
+}
+
+func TestGCSweepRepublishRaceKeepsPinnedBlob(t *testing.T) {
+	metadata, pool, store := testMetadata(t, "goobers-config-gc-race")
+	archive := []byte("shared config archive")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "old-instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PruneGeneration(t.Context(), "old-instance", digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE control.blob_gc_candidate
+		SET unreferenced_at=clock_timestamp()-interval '2 hours'
+		WHERE digest=$1`,
+		digest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	pausing := &pausingStore{
+		Azure: store, removing: make(chan struct{}), resume: make(chan struct{}),
+	}
+	metadata.blobs = pausing
+	manager, handle := gcLease(t, pool)
+	sweepDone := make(chan error, 1)
+	go func() {
+		_, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour)
+		sweepDone <- err
+	}()
+	<-pausing.removing
+
+	republishDone := make(chan error, 1)
+	go func() {
+		if err := metadata.RecordGeneration(t.Context(), "new-instance", digest, archive); err != nil {
+			republishDone <- err
+			return
+		}
+		republishDone <- metadata.PinGeneration(t.Context(), "new-instance", digest, "active-run")
+	}()
+	select {
+	case err := <-republishDone:
+		t.Fatalf("republish escaped blob lock before delete completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(pausing.resume)
+	if err := <-sweepDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-republishDone; err != nil {
+		t.Fatal(err)
+	}
+	if has, err := store.Has(t.Context(), digest); err != nil || !has {
+		t.Fatalf("republished pinned blob Has=%v err=%v", has, err)
+	}
+	var pins int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM control.config_generation_pin
+		WHERE instance_id='new-instance' AND digest=$1`,
+		digest,
+	).Scan(&pins); err != nil {
+		t.Fatal(err)
+	}
+	if pins != 1 {
+		t.Fatalf("new generation pins = %d, want 1", pins)
+	}
+}
+
+func gcLease(t *testing.T, pool *pgxpool.Pool) (*cloudlease.Manager, *cloudlease.Handle) {
+	t.Helper()
+	manager, err := cloudlease.New(cloudlease.Config{
+		Pool: pool, InstanceID: "instance", Name: "gc", Holder: "gc-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := manager.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, handle
+}
+
+type pausingStore struct {
+	*Azure
+	removing chan struct{}
+	resume   chan struct{}
+}
+
+func (s *pausingStore) Remove(ctx context.Context, digest string) error {
+	close(s.removing)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.resume:
+	}
+	return s.Azure.Remove(ctx, digest)
 }
 
 func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Azure) {

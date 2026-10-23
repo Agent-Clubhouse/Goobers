@@ -264,7 +264,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: object-store initialization failed\n", role)
 		return 1
 	}
-	objects, err := newObjectMetadata(pools.Transaction, blobs)
+	objects, err := newObjectMetadata(pools.Direct, blobs)
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)
 		return 1

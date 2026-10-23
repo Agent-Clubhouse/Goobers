@@ -39,3 +39,9 @@ CREATE TABLE control.applied_config (
         REFERENCES control.config_generation (instance_id, digest)
         ON DELETE RESTRICT
 );
+
+CREATE TABLE control.blob_gc_candidate (
+    digest text PRIMARY KEY,
+    unreferenced_at timestamptz NOT NULL,
+    delete_started_at timestamptz
+);
